@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scripts/quest-replay — replay a quest's measured history as an
+# optimisation benchmark (gr608711): per-axis top-5% coverage + hit rate
+# of the LLM proposer's picks vs a seeded random baseline, best-so-far /
+# regret curves, duplicate rate, frontier coverage. Read-only, no GPU.
+#
+# Usage:
+#   scripts/quest-replay qu164903                 # prod (via prod-precis)
+#   PRECIS_DATABASE_URL=… scripts/quest-replay 7  # a dev/test DB
+#   scripts/quest-replay 7 --trials 500 --seed 3 --top-frac 0.1
+#
+# With no DSN in the environment the target is prod — quests live there;
+# prod-precis supplies the credentials and marks quest:replay read-only.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ -n "${PRECIS_DATABASE_URL:-}" ]]; then
+    exec uv run precis quest replay "$@"
+fi
+exec scripts/prod-precis quest replay "$@"

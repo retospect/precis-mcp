@@ -5,6 +5,8 @@
     precis quest dossier 7           # print quest 7's living dossier
     precis quest dossier-dedup 7 --dry-run  # preview near-dup ledger merges
     precis quest gaps 7              # print quest 7's gaps + health
+    precis quest replay 7            # replay quest 7's history as an
+                                      # optimisation benchmark (read-only)
     precis quest status 7            # ops roll-up: logbook, candidates, sim
                                       # jobs, coordinator trail, LLM spend
     precis quest review-all <draft>  # rung 3a: mint a review-todo for every
@@ -142,6 +144,32 @@ def add_parser(subparsers: Any) -> None:
     g = qsub.add_parser("gaps", help="Print a quest's gaps + health.")
     g.add_argument("id", type=int, help="Quest ref id.")
     g.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    rp = qsub.add_parser(
+        "replay",
+        help="Replay the quest's measured history as an optimisation "
+        "benchmark (gr608711): per-axis top-5% coverage + hit rate of the "
+        "LLM proposer's picks vs a seeded random baseline, best-so-far/"
+        "regret, duplicate rate, frontier coverage. Read-only, no GPU.",
+    )
+    rp.add_argument("id", help="Quest ref id or handle (164903 or qu164903).")
+    rp.add_argument(
+        "--trials",
+        type=int,
+        default=200,
+        help="Random-baseline orderings to average (default 200).",
+    )
+    rp.add_argument(
+        "--seed", type=int, default=1, help="Random-baseline seed (default 1)."
+    )
+    rp.add_argument(
+        "--top-frac",
+        type=float,
+        default=0.05,
+        help="Fraction of the measured pool that counts as the top tail "
+        "(default 0.05 = top 5%%).",
+    )
+    rp.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     f = qsub.add_parser("frontier", help="Print a quest's Pareto frontier.")
     f.add_argument("id", type=int, help="Quest ref id.")
@@ -806,6 +834,28 @@ def _cmd_reset_compute(store: Store, args: argparse.Namespace) -> None:
     print(f"quest {args.id}: {note}")
 
 
+def _cmd_replay(store: Store, args: argparse.Namespace) -> None:
+    import re as _re
+
+    from precis.quest.replay import quest_replay, render_replay
+
+    m = _re.fullmatch(r"(?:qu)?(\d+)", str(args.id))
+    if m is None:
+        print(f"quest replay: bad quest id {args.id!r} — want 164903 or qu164903")
+        return
+    report = quest_replay(
+        store,
+        int(m.group(1)),
+        top_frac=args.top_frac,
+        trials=args.trials,
+        seed=args.seed,
+    )
+    if report is None:
+        print(f"quest {args.id}: not found")
+        return
+    print(render_replay(report))
+
+
 def _cmd_status(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.status import gather_quest_status, render_quest_status
 
@@ -834,6 +884,8 @@ def run(args: argparse.Namespace) -> None:
             _cmd_dossier_dedup(store, args)
         elif args.quest_cmd == "gaps":
             _cmd_gaps(store, args)
+        elif args.quest_cmd == "replay":
+            _cmd_replay(store, args)
         elif args.quest_cmd == "frontier":
             _cmd_frontier(store, args)
         elif args.quest_cmd == "figure":

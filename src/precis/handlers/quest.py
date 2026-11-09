@@ -46,7 +46,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
@@ -658,6 +658,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "rubric",
     "served",
     "meta",
+    "replay",
 )
 
 
@@ -914,7 +915,9 @@ class QuestHandler(NumericRefHandler):
             "view='series' the controlled series among them (one axis varied "
             "per block); view='measures' the best live measured value per "
             "measurand over everything serving it; view='pourbaix' the "
-            "per-candidate surface-Pourbaix validity maps. "
+            "per-candidate surface-Pourbaix validity maps; view='replay' "
+            "the measured history as an optimisation benchmark (top-5% "
+            "coverage + regret vs a seeded random baseline). "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -1534,6 +1537,9 @@ class QuestHandler(NumericRefHandler):
         if view == "served" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_served(ref, args))
+        if view == "replay" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_replay(ref, args))
         # The eye ladder (fisheye-everywhere AC 2): `fisheye` / `fisheye+1hop` /
         # `fisheye+2hop`, any rung with a `+recall` suffix. One-hop shows the
         # quests it serves and the ones serving it under `Roadmap`, plus the
@@ -1555,7 +1561,7 @@ class QuestHandler(NumericRefHandler):
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
                     "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
-                    "rubric, served, meta (quest-specific) · "
+                    "rubric, served, meta, replay (quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",
@@ -1826,6 +1832,54 @@ class QuestHandler(NumericRefHandler):
                 f"  … +{hidden} more — narrow with args={{'has_fulltext': true|false}}"
             )
         return "\n".join(lines)
+
+    def _render_replay(self, ref: Ref, args: dict[str, Any] | None) -> str:
+        """``view='replay'`` — the optimisation-benchmark read of the
+        quest's measured history (gr608711): per-axis top-5% coverage +
+        hit rate of the LLM proposer's picks vs a seeded random baseline,
+        best-so-far/regret, duplicate rate, frontier coverage — the same
+        report ``precis quest replay``/``scripts/quest-replay`` prints.
+        ``args={'trials': N, 'seed': N, 'top_frac': F}`` tune the baseline
+        (defaults 200 / 1 / 0.05). Read-only."""
+        from precis.quest import replay as replay_mod
+
+        trials, seed, top_frac = 200, 1, 0.05
+        if isinstance(args, dict):
+            for key, default in (("trials", 200), ("seed", 1)):
+                if key in args:
+                    raw = args[key]
+                    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                        raise BadInput(
+                            f"args['{key}'] must be a non-negative int, got {raw!r}",
+                            next=f"get(kind='quest', id={ref.id}, view='replay', "
+                            f"args={{'{key}': {default}}})",
+                        )
+                    if key == "trials":
+                        trials = raw
+                    else:
+                        seed = raw
+            if "top_frac" in args:
+                raw = args["top_frac"]
+                if (
+                    isinstance(raw, bool)
+                    or not isinstance(raw, (int, float))
+                    or not 0 < float(raw) <= 1
+                ):
+                    raise BadInput(
+                        f"args['top_frac'] must be a fraction in (0, 1], got {raw!r}",
+                        next="args={'top_frac': 0.05} (the top 5%)",
+                    )
+                top_frac = float(raw)
+        report = replay_mod.quest_replay(
+            self.store, ref.id, top_frac=top_frac, trials=trials, seed=seed
+        )
+        if report is None:  # _resolve_live_ref already fetched it — defensive
+            raise NotFound(
+                f"quest {ref.id} not found",
+                next="search(kind='quest', q='...') for the quest, then "
+                "get(kind='quest', id=<id>, view='replay')",
+            )
+        return replay_mod.render_replay(report)
 
     def _render_measures(self, ref: Ref) -> str:
         """`view='measures'` — the quest's number table: the best live value of

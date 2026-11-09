@@ -13,7 +13,11 @@ engine-free kinetics v2 environment hash folded into the network basis),
 `atomcost` (static
 element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
 pareto/profile renderers + frozen data snapshots for draft export; CLI
-``precis quest figure``), `graduate` (per-candidate
+``precis quest figure``), `replay` (the optimisation-benchmark read of the
+measured history — per-axis top-5% coverage + best-so-far/regret of the
+LLM proposer's picks vs a seeded random baseline, gr608711; CLI
+``precis quest replay`` + ``get(kind='quest', view='replay')``),
+`graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
 `narrative_budget` (the growth-ratchet gate,
