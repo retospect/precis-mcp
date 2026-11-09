@@ -278,7 +278,10 @@ def test_rescued_task_node_gets_one_diagnose_task_pinned_to_claude_sub(
     (diag,) = _diagnose_tasks(store)
     ref = store.get_ref(kind="todo", id=diag)
     assert ref is not None and ref.parent_id == root
-    assert ref.meta["op"] == {"type": "run_slice", "params": {"lane": "claude-sub"}}
+    assert ref.meta["op"] == {
+        "type": "run_slice",
+        "params": {"lane": "claude-sub", "lane_capability": "mcp"},
+    }
     assert ref.meta["task_class"] == "diagnose"
     assert ref.meta["retries"] == 1
     assert ref.meta["rescue_for"] == task
@@ -344,19 +347,20 @@ def test_dead_lane_pin_falls_back_to_an_enabled_mcp_lane(
     assert ref is not None
     assert ref.meta["op"] == {
         "type": "run_slice",
-        "params": {"lane": "claude-sub-2"},
+        "params": {"lane": "claude-sub-2", "lane_capability": "mcp"},
     }
     assert any(word in c and "claude-sub-2" in c for c in _comments(store, diag))
     assert any("claude-sub-2" in n for n in res.notes)
 
 
-def test_dead_lane_pin_with_no_enabled_mcp_lane_mints_unpinned(
+def test_dead_lane_pin_with_no_enabled_mcp_lane_mints_capability_bound(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No enabled lane fits ``diagnose``: the task mints UNPINNED so
-    ``run_slice``'s lane-wait park holds it attempt-free — a free
-    code-fit lane like devin is no fallback (no MCP for the reads), and
-    the dead pin is never re-minted."""
+    """No enabled lane fits ``diagnose``: the task mints UNPINNED but
+    still bound — ``params.lane_capability`` keeps submit's pick on MCP
+    lanes so the lane-wait park holds it attempt-free (td610544) — a
+    free code-fit lane like devin is no fallback (no MCP for the
+    reads), and the dead pin is never re-minted."""
     sub = replace(seed_lane("claude-sub"), enabled=False)
     use_lanes(monkeypatch, seed_lane("devin"), seed_lane("codex"), sub)
     root = _root(store)
@@ -368,7 +372,10 @@ def test_dead_lane_pin_with_no_enabled_mcp_lane_mints_unpinned(
     (diag,) = _diagnose_tasks(store)
     ref = store.get_ref(kind="todo", id=diag)
     assert ref is not None
-    assert ref.meta["op"] == {"type": "run_slice", "params": {}}
+    assert ref.meta["op"] == {
+        "type": "run_slice",
+        "params": {"lane_capability": "mcp"},
+    }
     assert any("no enabled MCP lane" in c for c in _comments(store, diag))
 
 

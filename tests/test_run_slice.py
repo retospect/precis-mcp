@@ -17,7 +17,7 @@ import subprocess
 import sys
 import types
 import urllib.error
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
@@ -1403,6 +1403,105 @@ def test_submit_refuses_a_generator_on_a_lane_without_mcp(
     assert seams["launch"] == []
     assert "STATUS:open" in store.tag_strings(42)
     assert "claimed-by:lane-codex" not in store.tag_strings(42)
+
+
+def test_capability_pick_never_lands_on_a_lane_without_mcp(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td610544 (td610252 review): ``params.lane_capability: "mcp"`` —
+    the shape a rescue diagnose / transcript audit mint carries when no
+    MCP lane could be pinned — restricts the pick to write-MCP lanes: a
+    free code-fit lane without one (devin) is no fallback, so the
+    submit waits on an MCP slot under lane-wait instead of launching
+    the task somewhere it cannot file through."""
+    use_lanes(
+        monkeypatch,
+        seed_lane("devin"),
+        replace(seed_lane("claude-sub"), enabled=False),
+    )
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42, "lane_capability": "mcp"})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "mcp" in deferred[0][1]
+    assert ctx.failure is None
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_capability_pick_waits_on_the_mcp_lane_at_its_cap(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one MCP lane at its cap parks the wait — the free devin lane
+    alongside is never picked — and one freed slot launches on it."""
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
+    seams["live"] = {"claude-sub": 2}
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42, "lane_capability": "mcp"})
+    deferred: list[tuple[Any, str]] = []
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
+    assert run_slice.submit(ctx, None) is None
+    assert deferred and "mcp" in deferred[0][1]
+    assert seams["launch"] == []
+    seams["live"] = {"claude-sub": 1}
+    ctx2, handle = _submit(store, seams, lane_capability="mcp")
+    assert handle is not None and ctx2.meta_set["lane"] == "claude-sub"
+
+
+def test_dead_capability_pin_repicks_an_mcp_lane(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pin that went dead between mint and submit re-picks another MCP
+    lane — the capability is the contract, the lane name a preference —
+    instead of the 0-second failure a hard pin died with (gr604579)."""
+    sub = replace(seed_lane("claude-sub"), parked_reason="lane-auth:not-logged-in")
+    alt = replace(seed_lane("claude-sub"), name="claude-sub-2")
+    use_lanes(monkeypatch, seed_lane("devin"), sub, alt)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="claude-sub", lane_capability="mcp")
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub-2"
+    assert any("re-picks" in text for _kind, text in ctx.chunks)
+
+
+def test_capability_pin_offering_none_repicks(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live pin that never offered the capability — a retry climb
+    pinned a code-fit lane — re-picks an offering one."""
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("claude-sub"))
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="devin", lane_capability="mcp")
+    assert handle is not None and ctx.meta_set["lane"] == "claude-sub"
+    assert any("offers no 'mcp'" in text for _kind, text in ctx.chunks)
+
+
+def test_unknown_lane_capability_fails_without_a_wait(
+    seams: dict[str, Any],
+) -> None:
+    """An unknown capability is a mint bug: a submit refusal, not a park
+    that would wait forever for a lane that can never exist."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx = _Ctx(store, {"todo_id": 42, "lane_capability": "mcq"})
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.failure is not None and "lane_capability" in ctx.failure
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
 
 
 def test_submit_runs_a_reviewer_on_a_lane_without_mcp(

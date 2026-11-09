@@ -29,6 +29,9 @@ _MAX_PER_TICK = 1
 #: back to ``pick_lane`` at mint
 #: (:func:`precis.workers.factory_rescue._resolve_lane_pin`, gr604579) —
 #: the hard pin used to die at submit in 0 s while the lane sat parked.
+#: The mint always stamps ``params.lane_capability: "mcp"`` (td610544):
+#: with no enabled MCP lane the task waits rather than launching on a
+#: code-fit lane — devin, codex — with no write MCP to file through.
 AUDIT_LANE = "claude-sub"
 
 
@@ -161,8 +164,9 @@ def mint_audit(store: Store, chain_root_id: int, jobs: list[dict[str, Any]]) -> 
 
     chain = store.get_ref(kind="todo", id=chain_root_id)
     assert chain is not None
-    # The task carries no task_class — run_slice resolves ``code``.
-    lane, lane_note = _resolve_lane_pin(store, AUDIT_LANE, "code")
+    # The task carries no task_class — run_slice resolves ``code``; the
+    # write-MCP requirement rides ``lane_capability`` in the params.
+    lane_params, lane_note = _resolve_lane_pin(store, AUDIT_LANE, "code")
     with store.tx() as conn:
         root = store.insert_ref(
             kind="todo",
@@ -177,12 +181,7 @@ def mint_audit(store: Store, chain_root_id: int, jobs: list[dict[str, Any]]) -> 
             slug=None,
             title="Read the chain's transcripts and file inefficiency gripes",
             parent_id=root.id,
-            meta={
-                "op": {
-                    "type": "run_slice",
-                    "params": {"lane": lane} if lane is not None else {},
-                }
-            },
+            meta={"op": {"type": "run_slice", "params": lane_params}},
             conn=conn,
         )
         for ref, tags, body in (

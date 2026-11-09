@@ -1320,7 +1320,10 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 #: A dead pin — disabled or parked — falls back to ``pick_lane`` at mint
 #: (:func:`_resolve_lane_pin`, gr604579): the hard pin died at submit in
 #: 0 s while ``claude-sub`` sat parked, and every retry-cap ask landed on
-#: a human for a mechanical cause.
+#: a human for a mechanical cause. The mint always stamps
+#: ``params.lane_capability: "mcp"`` so a wait — or a pin that dies
+#: between mint and submit — never relaxes onto a lane with no write
+#: MCP (td610544).
 DIAGNOSE_LANE = "claude-sub"
 
 #: ``meta.task_class`` of the diagnose task: off ``code`` so a clean
@@ -1877,21 +1880,26 @@ def _read_diagnosis(
 
 def _resolve_lane_pin(
     store: Store, pin: str, task_class: str
-) -> tuple[str | None, str]:
-    """``(params.lane, fallback note)`` for a factory-minted task pinned
+) -> tuple[dict[str, str], str]:
+    """``(op params, fallback note)`` for a factory-minted task pinned
     to lane ``pin`` (gr604579 — the node-pin rule: a pinned lane that is
     disabled falls back to ``pick_lane`` with a comment naming the
     fallback).
 
-    ``(pin, "")`` while the pin names an enabled, unparked lane. A dead
-    pin — unknown, disabled or parked — is a 0-second ``run_slice``
-    failure whose retry cap then asks a human about a mechanical cause,
-    so the mint falls back to :func:`lanes.pick_lane` over the write-MCP
-    lanes (the capability the pin was for: a diagnose reads through the
-    precis MCP, an audit files gripes through it — a free code-fit lane
-    without it is no fallback). ``(None, note)`` when no enabled MCP
-    lane fits: the task mints unpinned and the submit's lane-wait park
-    holds it instead of burning an attempt.
+    ``({"lane": pin, "lane_capability": "mcp"}, "")`` while the pin
+    names an enabled, unparked lane. A dead pin — unknown, disabled or
+    parked — is a 0-second ``run_slice`` failure whose retry cap then
+    asks a human about a mechanical cause, so the mint falls back to
+    :func:`lanes.pick_lane` over the write-MCP lanes (the capability the
+    pin was for: a diagnose reads through the precis MCP, an audit files
+    gripes through it — a free code-fit lane without it is no fallback).
+    ``({"lane_capability": "mcp"}, note)`` when no enabled MCP lane
+    fits: the task mints unpinned but still bound — the capability stamp
+    keeps submit's pick on MCP lanes and the lane-wait park holds it, so
+    the wait never relaxes onto a lane with no write MCP (td610544). The
+    same stamp rides a held pin: one that dies between mint and submit —
+    or a retry climb onto a lane that never offered the capability —
+    re-picks instead of failing.
     """
     from precis.plans import lanes as _lanes
     from precis.workers.job_types._slice_adapters import ADAPTERS
@@ -1899,7 +1907,7 @@ def _resolve_lane_pin(
     table = _lanes.load_lanes(store)
     lane = next((ln for ln in table if ln.name == pin), None)
     if lane is not None and lane.enabled and not lane.parked:
-        return pin, ""
+        return {"lane": pin, "lane_capability": "mcp"}, ""
     why = (
         "unknown"
         if lane is None
@@ -1911,18 +1919,21 @@ def _resolve_lane_pin(
         ln for ln in table if (a := ADAPTERS.get(ln.adapter)) is not None and a.mcp
     )
     picked = _lanes.pick_lane(store, task_class, lanes=mcp)
+    params: dict[str, str] = {"lane_capability": "mcp"}
     if picked is None:
         note = (
             f"pinned lane {pin!r} {why}; no enabled MCP lane fits "
-            f"{task_class!r} — minted unpinned, the lane-wait park holds it"
+            f"{task_class!r} — minted on the capability alone, the "
+            "lane-wait park holds it"
         )
     else:
+        params["lane"] = picked.name
         note = (
             f"pinned lane {pin!r} {why}; fell back to {picked.name!r} "
             f"(pick_lane {task_class!r})"
         )
     log.warning("factory_rescue: %s", note)
-    return picked.name if picked is not None else None, note
+    return params, note
 
 
 def _mint_diagnose(
@@ -1942,12 +1953,11 @@ def _mint_diagnose(
         res.would.append((n.id, "diagnose"))
         res.notes.append(f"td{n.id}: would mint a diagnose task ({cls})")
         return
-    lane, lane_note = _resolve_lane_pin(store, DIAGNOSE_LANE, DIAGNOSE_TASK_CLASS)
+    lane_params, lane_note = _resolve_lane_pin(
+        store, DIAGNOSE_LANE, DIAGNOSE_TASK_CLASS
+    )
     meta: dict[str, Any] = {
-        "op": {
-            "type": "run_slice",
-            "params": {"lane": lane} if lane is not None else {},
-        },
+        "op": {"type": "run_slice", "params": lane_params},
         "task_class": DIAGNOSE_TASK_CLASS,
         "retries": 1,
         "rescue_for": n.id,

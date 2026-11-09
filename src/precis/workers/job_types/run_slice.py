@@ -14,7 +14,10 @@ that holds the lane's credentials with ``params.target_node``):
   ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction),
   picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one
-  (a pinned lane at its cap parks the job like a full pick does), stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
+  (a pinned lane at its cap parks the job like a full pick does) —
+  ``params.lane_capability`` restricts the pick to lanes whose adapter
+  declares it and re-picks a dead or incapable pin rather than failing —
+  stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
   the job, takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
   ``origin/main`` under the checkout root (:func:`slice_root`), writes
@@ -192,6 +195,7 @@ from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_ki
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types._slice_adapters import (
+    ADAPTERS,
     PERMISSION_MODE,
     adapter_bin,
     deny_settings,
@@ -282,6 +286,12 @@ NOREPRO_WAIT_TAG = "waiting-for:ci-rerun"
 #: the ``paper_reextract`` ``placement_parks`` shape).
 LANE_WAIT_PARK_CAP = 36
 
+#: The ``params.lane_capability`` values — :class:`Adapter` flags a mint
+#: can require of its lane (:func:`factory_rescue._resolve_lane_pin`
+#: stamps ``"mcp"`` when it cannot hold its pin, so a wait never relaxes
+#: the requirement onto a lane with no write MCP; td610544).
+_LANE_CAPABILITIES: frozenset[str] = frozenset({"mcp", "read_mcp", "budget_capable"})
+
 #: ``raise_alert`` source of the lane host-refusal alert (gr571395),
 #: bound to the registry: ``run_slice/lane-host-refusal:{lane}``.
 _REFUSAL_ALERT_SOURCE = RULES_BY_ID["run_slice/lane-host-refusal:{lane}"].rule
@@ -351,6 +361,12 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "todo_id": {"type": "integer"},
         # Lane name from precis.plans.lanes; unset → pick_lane.
         "lane": {"type": "string"},
+        # A capability the lane's adapter must declare — one of
+        # _LANE_CAPABILITIES ("mcp": the write-capable precis MCP a
+        # diagnose/audit mint files through, gr604579/td610544). The pin
+        # becomes a preference: a dead or incapable params.lane re-picks,
+        # an unpinned pick sees offering lanes only and waits on one.
+        "lane_capability": {"type": "string"},
         # Model id/alias; unset → PRECIS_RUN_SLICE_MODEL, else the lane's
         # default_model, else FRONTIER (Claude) or the account default.
         "model": {"type": "string"},
@@ -1361,8 +1377,17 @@ def validate_submit(
     reason = _todo_rejection(store, params.get("todo_id"))
     if reason is not None:
         return reason
+    cap = params.get("lane_capability")
+    if cap is not None and cap not in _LANE_CAPABILITIES:
+        return (
+            f"run_slice: unknown params.lane_capability {cap!r}; "
+            f"known capabilities: {sorted(_LANE_CAPABILITIES)}"
+        )
     lane_name = params.get("lane")
-    if lane_name is not None and store is not None:
+    # With a capability stamped the pin is a preference — submit
+    # re-picks a dead or incapable one — so only a capability-free pin
+    # is refused for naming a lane that cannot serve.
+    if lane_name is not None and store is not None and cap is None:
         lane_table = _lanes.load_lanes(store)
         lane = next((ln for ln in lane_table if ln.name == str(lane_name)), None)
         known = [ln.name for ln in lane_table if ln.enabled]
@@ -2012,6 +2037,13 @@ def _resolve_lane_refusal(store: Any, lane: str) -> None:
         )
 
 
+def _lane_offers(lane: _lanes.Lane, capability: str) -> bool:
+    """``True`` when the lane's adapter declares ``capability`` — the
+    ``params.lane_capability`` requirement the pick enforces."""
+    adapter = ADAPTERS.get(lane.adapter)
+    return adapter is not None and bool(getattr(adapter, capability, False))
+
+
 def _free_lane_wait_min(store: Any) -> int:
     """Minutes a submit parks for a free lane at its cap before a paid
     lane may take the pick — ``factory.free_lane_wait_min``, default 20
@@ -2071,6 +2103,21 @@ def submit(ctx: Any, spec: Any) -> Any:
     # vendor outright; the table shrinks, it does not fall back.
     exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
     lane_table = _lanes.load_lanes(store)
+    # ``params.lane_capability`` — the requirement a factory mint stamps
+    # when it cannot hold its pin (factory_rescue._resolve_lane_pin,
+    # td610544): the pin becomes a preference and the capability the
+    # contract — a dead or incapable pin re-picks, an unpinned pick sees
+    # offering lanes only and waits on one rather than launching without
+    # the capability the task was minted for (an audit files its gripes
+    # through a write MCP; a devin/codex slot has none).
+    cap = params.get("lane_capability")
+    if cap is not None and cap not in _LANE_CAPABILITIES:
+        # A mint bug, not capacity: parking would wait forever.
+        ctx.record_failure(
+            f"run_slice: unknown params.lane_capability {cap!r}; "
+            f"known capabilities: {sorted(_LANE_CAPABILITIES)}"
+        )
+        return None
     pinned = (
         next((ln for ln in lane_table if ln.name == str(params["lane"])), None)
         if params.get("lane")
@@ -2086,13 +2133,29 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"run_slice: pinned lane {params['lane']!r} is vendor {exclude!r}, "
             "whose window closed; picking another vendor's lane",
         )
+    lane: _lanes.Lane | None = pinned if (params.get("lane") and not left_pin) else None
     if params.get("lane") and not left_pin:
-        lane = pinned
-        if lane is None or not lane.enabled or lane.parked:
+        dead = lane is None or not lane.enabled or lane.parked
+        if dead and cap is None:
             ctx.record_failure(
                 f"run_slice: lane {params['lane']!r} unknown or disabled"
             )
             return None
+        if dead or (
+            cap is not None and lane is not None and not _lane_offers(lane, cap)
+        ):
+            # The pin went dead between mint and submit, or a retry
+            # climb pinned a lane that never offered the capability —
+            # re-pick instead of the 0-second failure a hard pin died
+            # with (gr604579).
+            ctx.append_chunk(
+                "job_event",
+                f"run_slice: params.lane {params['lane']!r} "
+                + ("is unknown, disabled or parked" if dead else f"offers no {cap!r}")
+                + f"; params.lane_capability {cap!r} re-picks",
+            )
+            lane = None
+    if lane is not None:
         # A pinned lane (an escalated retry, a reviewer pick) is held to
         # its cap like a picked one (td562568): before this an escalated
         # retry ran a free lane over its cap of 1. A lane backed off by a
@@ -2126,7 +2189,12 @@ def submit(ctx: Any, spec: Any) -> Any:
         # codex CLI rejects.
         pin = None if left_pin else params.get("model")
         model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
-        table = tuple(ln for ln in lane_table if not exclude or ln.vendor != exclude)
+        capable = (
+            tuple(ln for ln in lane_table if _lane_offers(ln, cap))
+            if cap is not None
+            else lane_table
+        )
+        table = tuple(ln for ln in capable if not exclude or ln.vendor != exclude)
         backoffs = _lanes.lane_backoffs(store)
         # Free compute first (gr573563): while a fit free lane exists the
         # pick holds paid lanes out; the build waits on the free lane's
@@ -2149,7 +2217,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 and not ln.parked
                 and ln.fits(task_class)
                 and ln.accepts_model(model_pin)
-                for ln in lane_table
+                for ln in capable
             ):
                 # A config error, not capacity: parking would wait forever.
                 ctx.record_failure(
@@ -2191,7 +2259,8 @@ def submit(ctx: Any, spec: Any) -> Any:
                     why += "; the rest at their caps"
             _park_lane_full(
                 ctx,
-                f"run_slice: no lane free for task class {task_class!r} ({why})",
+                f"run_slice: no {f'{cap} ' if cap else ''}lane free for "
+                f"task class {task_class!r} ({why})",
             )
             return None
 

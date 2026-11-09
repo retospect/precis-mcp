@@ -93,7 +93,7 @@ def test_mint_and_second_fire(store: Store, monkeypatch: pytest.MonkeyPatch) -> 
         assert rows[0][1] is None and rows[1][1] == root_id
         assert rows[1][2]["op"] == {
             "type": "run_slice",
-            "params": {"lane": "claude-sub"},
+            "params": {"lane": "claude-sub", "lane_capability": "mcp"},
         }
         assert all("llm_tier" not in row[2] for row in rows)
         for row in rows:
@@ -136,7 +136,7 @@ def test_audit_task_falls_back_when_the_pin_is_dead(
         assert row is not None
         assert row[0]["op"] == {
             "type": "run_slice",
-            "params": {"lane": "claude-sub-2"},
+            "params": {"lane": "claude-sub-2", "lane_capability": "mcp"},
         }
         comment = conn.execute(
             "SELECT c.text FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
@@ -144,6 +144,35 @@ def test_audit_task_falls_back_when_the_pin_is_dead(
             (root_id,),
         ).fetchone()
         assert comment is not None and "claude-sub-2" in str(comment[0])
+
+
+def test_audit_task_stays_mcp_bound_when_no_mcp_lane_is_free(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td610544 (td610252 review): with every write-MCP lane down the
+    audit still mints bound — ``params.lane_capability: "mcp"`` — so
+    submit's lane-wait park holds it. An unpinned ``code`` task would
+    pick a code-fit lane like devin and launch with no write MCP to
+    file the gripes through."""
+    sub = replace(seed_lane("claude-sub"), enabled=False)
+    use_lanes(monkeypatch, seed_lane("devin"), seed_lane("codex"), sub)
+    _chain(store)
+    _light(store)
+    monkeypatch.setenv("PRECIS_TRANSCRIPT_AUDIT_PERCENT", "100")
+
+    result = ta.run_transcript_audit_pass(store, host="h1")
+
+    assert result.ok == 1
+    root_id = result.extra["minted"][0]["root"]
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s", (root_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0]["op"] == {
+            "type": "run_slice",
+            "params": {"lane_capability": "mcp"},
+        }
 
 
 @pytest.mark.parametrize(
