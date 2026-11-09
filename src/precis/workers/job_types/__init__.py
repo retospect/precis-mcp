@@ -534,6 +534,14 @@ def _load_struct_neb() -> JobTypeSpec:
     return struct_neb.SPEC
 
 
+def _load_struct_md() -> JobTypeSpec:
+    # One NVT Langevin MD run on a structure, in-process on the GPU node
+    # via ssh_node (gr606465). Runs via plugin dispatch.
+    from precis.workers.job_types import struct_md
+
+    return struct_md.SPEC
+
+
 def _load_structure_propose() -> JobTypeSpec:
     # LLM turns an instruction into proposed structure ops (tool-less claude,
     # propose-only) under claude_inproc. Runs via plugin dispatch.
@@ -988,6 +996,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "struct_relax",
     "struct_search",
     "struct_neb",
+    "struct_md",
     "structure_propose",
     "cad_propose",
     "diagram_propose",
@@ -1109,6 +1118,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "struct_neb":
         _REGISTRY["struct_neb"] = _load_struct_neb()
         return _REGISTRY["struct_neb"]
+    if name == "struct_md":
+        _REGISTRY["struct_md"] = _load_struct_md()
+        return _REGISTRY["struct_md"]
     if name == "structure_propose":
         _REGISTRY["structure_propose"] = _load_structure_propose()
         return _REGISTRY["structure_propose"]

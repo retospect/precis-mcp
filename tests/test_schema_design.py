@@ -360,6 +360,16 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # 0250: one relaxed band image's canonical-rank frac rows + lattice,
         # the same shape as struct_runs.final_geometry; read whole.
         "struct_neb_images.positions",
+        # 0290: MD run (struct_md_runs). params = the engine knob set
+        # (steps/temperature_k/friction_per_fs/... plus request-context
+        # stamps like the dedupe marker) read whole to hash the cache
+        # key; msd/rdf = the per-pair RDF curves and the MSD series,
+        # variable length, read whole by view='md' — only
+        # params->>'dedupe' is probed by key and that is a single
+        # JSON-path predicate, not a join.
+        "struct_md_runs.msd",
+        "struct_md_runs.params",
+        "struct_md_runs.rdf",
         "summarizers.config",
         # 0278: a source's declared demand bag (window, tools, modality, …)
         # whose key set is open per task kind; read whole into

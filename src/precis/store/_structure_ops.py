@@ -1843,6 +1843,236 @@ class StructureMixin:
             ).fetchone()
         return int(row[0]) if row else 0
 
+    # -- MD runs (gr606465) ------------------------------------------------
+    #
+    # `struct_md_runs` (migration 0290) is the compute record for one NVT
+    # Langevin trajectory on a structure design — deliberately NOT
+    # `struct_runs`, whose readers treat `energy` as a relaxed minimum.
+    # Same lifecycle contract as `struct_neb_runs`: rows are written at
+    # mint (status `queued`) so `view='md'` shows in-flight work and the
+    # inflight dedupe fires; the job flips running → succeeded/failed.
+
+    def struct_md_record_run(
+        self,
+        *,
+        structure_ref_id: int,
+        on_version: int | None,
+        fidelity: str,
+        model: str | None,
+        params: dict[str, Any] | None,
+        cache_key: str,
+        job_ref_id: int | None,
+        status: str = "queued",
+        conn: Connection | None = None,
+    ) -> int:
+        """Open a ``struct_md_runs`` row at mint time (status ``queued``,
+        scalars NULL) and return its id. The job flips it through
+        ``running`` → ``succeeded``/``failed`` via
+        :meth:`struct_md_update_run`. ``on_version`` pins the design
+        version the trajectory was minted against (the job re-reads
+        geometry at claim time — the drift contract)."""
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            row = c.execute(
+                "INSERT INTO struct_md_runs "
+                "(structure_ref_id, on_version, fidelity, model, params, "
+                " status, cache_key, job_ref_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (
+                    structure_ref_id,
+                    on_version,
+                    fidelity,
+                    model,
+                    Jsonb(params or {}),
+                    status,
+                    cache_key,
+                    job_ref_id,
+                ),
+            ).fetchone()
+        assert row is not None  # INSERT … RETURNING always yields a row
+        return int(row[0])
+
+    def struct_md_update_run(
+        self,
+        run_id: int,
+        *,
+        status: str | None = None,
+        n_steps: int | None = None,
+        n_frames: int | None = None,
+        temperature_k: float | None = None,
+        temp_mean_k: float | None = None,
+        e_pot_mean_ev: float | None = None,
+        e_pot_std_ev: float | None = None,
+        msd: dict[str, Any] | None = None,
+        rdf: dict[str, Any] | None = None,
+        trajectory: str | None = None,
+        wall_s: float | None = None,
+        job_ref_id: int | None = None,
+        dedupe: str | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """The job-side result write: flip status and stamp the measured
+        scalars, the MSD/RDF summaries and the extXYZ trajectory in one
+        update. ``None`` leaves a column untouched — except the summary
+        columns, which the caller either always fills (a finished run) or
+        always leaves NULL (a failed one), so ``None``-means-untouched is
+        safe here. ``dedupe=<reason>`` merges a marker into ``params`` —
+        the daily-cap count excludes rows stamped that way (a mint that
+        collapsed onto a live job never queued compute)."""
+        sets: list[str] = []
+        vals: list[Any] = []
+        for col, val in (
+            ("status", status),
+            ("n_steps", n_steps),
+            ("n_frames", n_frames),
+            ("temperature_k", temperature_k),
+            ("temp_mean_k", temp_mean_k),
+            ("e_pot_mean_ev", e_pot_mean_ev),
+            ("e_pot_std_ev", e_pot_std_ev),
+            ("trajectory", trajectory),
+            ("wall_s", wall_s),
+            ("job_ref_id", job_ref_id),
+        ):
+            if val is not None:
+                sets.append(f"{col} = %s")
+                vals.append(val)
+        if msd is not None:
+            sets.append("msd = %s")
+            vals.append(Jsonb(msd))
+        if rdf is not None:
+            sets.append("rdf = %s")
+            vals.append(Jsonb(rdf))
+        if dedupe is not None:
+            sets.append("params = params || jsonb_build_object('dedupe', %s::text)")
+            vals.append(dedupe)
+        if not sets:
+            return
+        vals.append(run_id)
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            c.execute(
+                f"UPDATE struct_md_runs SET {', '.join(sets)} WHERE id = %s",
+                tuple(vals),
+            )
+
+    def struct_md_get(self, run_id: int) -> dict[str, Any] | None:
+        """One ``struct_md_runs`` row by id, or ``None``."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT * FROM struct_md_runs WHERE id = %s", (run_id,))
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def struct_md_runs_for(
+        self, ref_id: int, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Every MD run on a design, newest first (``view='md'``'s list
+        read)."""
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT * FROM struct_md_runs "
+                    "WHERE structure_ref_id = %s ORDER BY id DESC LIMIT %s",
+                    (ref_id, limit),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def struct_md_cached(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> dict[str, Any] | None:
+        """The newest ``succeeded`` run for a content address — the
+        zero-compute hit an identical ``mode='md'`` serves (the partial
+        unique index ``struct_md_runs_key_succeeded`` makes this a
+        probe). ``conn`` runs the probe inside the caller's transaction
+        (the mint lock's re-check)."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            with c.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT * FROM struct_md_runs "
+                    "WHERE cache_key = %s AND status = 'succeeded' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (cache_key,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def struct_md_inflight(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> dict[str, Any] | None:
+        """The newest live row for a content address — the one-in-flight
+        cap on top of the job's own ``idem_key`` dedupe.
+
+        A row counts as in flight only while its job is active: the row
+        status alone is written by the job itself, so a worker kill, OOM
+        or lease expiry would otherwise leave a ``running`` row blocking
+        the request forever. ``job_ref_id IS NULL`` (mint crash before
+        the backfill) is in flight — the mint transaction owns it. A job
+        ref that no longer resolves (retired or deleted outright) is dead
+        the same as a terminal one. Same contract as
+        :meth:`struct_neb_inflight`."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            with c.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT r.* FROM struct_md_runs r "
+                    "WHERE r.cache_key = %s AND r.status IN ('queued','running') "
+                    "AND (r.job_ref_id IS NULL OR ("
+                    "  EXISTS (SELECT 1 FROM refs j "
+                    "    WHERE j.ref_id = r.job_ref_id "
+                    "    AND j.retired_at IS NULL) "
+                    "  AND NOT EXISTS ("
+                    "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                    "  WHERE rt.ref_id = r.job_ref_id "
+                    "    AND t.namespace = 'STATUS' "
+                    "    AND t.value = ANY(%s) "
+                    "    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                    "))) "
+                    "ORDER BY r.id DESC LIMIT 1",
+                    (cache_key, ["succeeded", "failed", "cancelled"]),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def struct_md_reap_dead(
+        self, cache_key: str, *, conn: Connection | None = None
+    ) -> list[int]:
+        """Fail ``queued``/``running`` rows for ``cache_key`` whose job went
+        terminal — the crash path :meth:`struct_md_inflight`'s join
+        exposes. Called under the mint lock before a fresh mint, so the
+        reap is per-request; ``get`` stays read-only (same contract as
+        :meth:`struct_neb_reap_dead`). Returns the reaped run ids."""
+        with self.tx() if conn is None else nullcontext(conn) as c:
+            rows = c.execute(
+                "UPDATE struct_md_runs r SET status = 'failed' "
+                "WHERE r.cache_key = %s AND r.status IN ('queued','running') "
+                "AND r.job_ref_id IS NOT NULL AND ("
+                "  NOT EXISTS (SELECT 1 FROM refs j "
+                "    WHERE j.ref_id = r.job_ref_id "
+                "    AND j.retired_at IS NULL) "
+                "  OR EXISTS ("
+                "  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "  WHERE rt.ref_id = r.job_ref_id "
+                "    AND t.namespace = 'STATUS' "
+                "    AND t.value = ANY(%s) "
+                "    AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+                ")) RETURNING r.id",
+                (cache_key, ["succeeded", "failed", "cancelled"]),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def struct_md_mints_today(self, *, conn: Connection | None = None) -> int:
+        """``struct_md`` mints since UTC midnight — the
+        ``PRECIS_STRUCT_MD_DAILY`` cap's count. Dedupe-collapsed rows
+        (``params->>'dedupe'`` set) are excluded — they never queued
+        compute. ``conn`` runs the count inside the caller's mint-lock
+        transaction."""
+        with self.pool.connection() if conn is None else nullcontext(conn) as c:
+            row = c.execute(
+                "SELECT count(*) FROM struct_md_runs "
+                "WHERE created_at >= "
+                "  date_trunc('day', now() AT TIME ZONE 'UTC') "
+                "  AT TIME ZONE 'UTC' "
+                "AND params->>'dedupe' IS NULL",
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     # -- delete ----------------------------------------------------------
     def structure_delete(self, ref_id: int) -> int:
         """Soft-delete a design: ref deleted, atoms/bonds retired, card dropped."""

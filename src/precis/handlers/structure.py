@@ -170,6 +170,7 @@ _VIEWS = (
     "runs",
     "pair",
     "neb",
+    "md",
     "generator",
     "completion",
     "completion_digest",
@@ -491,6 +492,21 @@ _NEB_QUEST_DAILY_DEFAULT = 4
 #: knob-varying loop without this bound (gr512126 review #5).
 _NEB_GLOBAL_DAILY_ENV = "PRECIS_STRUCT_NEB_GLOBAL_DAILY"
 _NEB_GLOBAL_DAILY_DEFAULT = 20
+
+#: Env pin + default for the UTC-day ``struct_md`` mint cap — the cache
+#: key dedupes identical requests but nothing stops a knob-varying loop
+#: without this bound (same reasoning as _NEB_GLOBAL_DAILY, gr512126
+#: review #5). No per-quest lane in slice 1: every mint counts here.
+_MD_DAILY_ENV = "PRECIS_STRUCT_MD_DAILY"
+_MD_DAILY_DEFAULT = 20
+
+
+def _md_daily() -> int:
+    raw = os.environ.get(_MD_DAILY_ENV)
+    try:
+        return max(1, int(raw)) if raw else _MD_DAILY_DEFAULT
+    except ValueError:
+        return _MD_DAILY_DEFAULT
 
 
 def _neb_quest_daily() -> int:
@@ -1057,8 +1073,9 @@ class StructureHandler(Handler):
         # candidate's autocatpath sim unchanged under a fresh nonce, linked
         # to the earlier result. See precis-quest-help / request_rerun.
         # mode='neb' queues one CI-NEB edge between two gated endpoints
-        # (gr512126 slice 3) — _put_neb.
-        modes=("rerun", "neb"),
+        # (gr512126 slice 3) — _put_neb. mode='md' queues one NVT
+        # Langevin MD run on the design (gr606465) — _put_md.
+        modes=("rerun", "neb", "md"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -1105,6 +1122,8 @@ class StructureHandler(Handler):
             return self._rerun(id=id, args=args)
         if mode == "neb":
             return self._put_neb(id=id, args=args)
+        if mode == "md":
+            return self._put_md(id=id, args=args)
         a = args or {}
         if a.get("derive_from") is not None:
             return self._put_derive(id=id, title=title, args=a)
@@ -2368,6 +2387,335 @@ class StructureHandler(Handler):
             )
         )
 
+    # ── mode='md' ────────────────────────────────────────────────────
+    def _put_md(self, *, id: str | int | None, args: dict[str, Any] | None) -> Response:
+        """``put(id=<slug>, mode='md', args={'fidelity': 'ml'|'emt',
+        'model': 'mace_mp', 'steps': 1000, 'temperature_k': 300, …})`` —
+        queue one NVT Langevin MD run on a design (gr606465).
+
+        The request is content-addressed (``md.md_cache_key``): an
+        identical earlier success is a cache hit, an in-flight one
+        collapses onto it, and only a genuinely new request mints a
+        ``struct_md_runs`` row plus the ``struct_md`` job. Rungs: ``ml``
+        (MACE-MP-0 / CHGNet — the proposal's ML-MD rung) and ``emt``
+        (the always-on smoke rung — no GPU, no extra). A design with
+        every atom held fixed refuses: an all-held trajectory is a
+        tautology. ``requested_by=<todo>`` arms the wait exactly like a
+        relax; every mint counts against the UTC-day
+        :data:`_MD_DAILY_ENV` cap."""
+        from precis.structure.md import (
+            MD_DEFAULTS,
+            md_cache_key,
+            normalize_md_params,
+        )
+
+        call = (
+            "put(kind='structure', id='<slug>', mode='md', "
+            "args={'fidelity': 'ml', 'steps': 1000})"
+        )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure', mode='md') requires id= (the "
+                "design slug or st<N> handle)",
+                next=call,
+            )
+        a = args or {}
+        request_keys = {"fidelity", "model", "requested_by", "parent_id"}
+        unknown = sorted(set(a) - set(MD_DEFAULTS) - request_keys)
+        if unknown:
+            raise BadInput(
+                f"mode='md' args: unknown key(s) {unknown}",
+                next=f"the engine knobs are {sorted(MD_DEFAULTS)} plus "
+                f"{sorted(request_keys)}",
+            )
+        fidelity = str(a.get("fidelity") or "ml").strip().lower()
+        if fidelity not in ("ml", "emt"):
+            raise BadInput(
+                f"mode='md' fidelity must be 'ml' or 'emt', got {fidelity!r}",
+                next="'ml' is MACE-MP-0/CHGNet on the GPU node; 'emt' is "
+                "the always-on ASE smoke rung",
+            )
+        try:
+            engine_params = normalize_md_params(
+                {k: a[k] for k in MD_DEFAULTS if k in a}
+            )
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next="the engine knobs are " + ", ".join(sorted(MD_DEFAULTS)),
+            ) from exc
+
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        scene, _ = self.store.structure_load(ref.id)
+        if not scene.atoms:
+            raise BadInput(
+                "mode='md': the design has no atoms — nothing to propagate",
+                next="author atoms first, then run md",
+            )
+        if all(a_.fixed for a_ in scene.atoms.values()):
+            raise BadInput(
+                "mode='md': every atom is held fixed — an all-held "
+                "trajectory is a tautology, not a run",
+                next="free some atoms (edit constrain) or derive a "
+                "variant with mobile atoms",
+            )
+        if fidelity == "emt":
+            outside = {a_.element for a_ in scene.atoms.values()} - EMT_ELEMENTS
+            if outside:
+                raise BadInput(
+                    f"mode='md' fidelity='emt' has no parameters for "
+                    f"{sorted(outside)} — EMT's coverage is closed",
+                    next="use fidelity='ml' (MACE-MP-0/CHGNet)",
+                )
+            model = "emt"
+        else:
+            model = str(a.get("model") or "").strip() or route_ml_model(scene)
+        version = int((ref.meta or {}).get("version", 0))
+        slug = str(ref.slug or id)
+        cache_key = md_cache_key(
+            scene, fidelity=fidelity, model=model, params=engine_params
+        )
+        hit = self.store.struct_md_cached(cache_key)
+        if hit is not None:
+            return self._md_cached_response(hit, slug)
+        inflight = self.store.struct_md_inflight(cache_key)
+        if inflight is not None:
+            return self._md_inflight_response(inflight, slug)
+
+        requester_id = _as_int_or_none(a.get("requested_by", a.get("parent_id")))
+        if requester_id is not None:
+            # A named requester must be a live todo (fail fast, before the
+            # mint) — same contract as _dispatch_relax.
+            from precis.todo import guards as todo_guards
+
+            todo_guards.check_parent_exists(self.store, requester_id)
+        return self._dispatch_md(
+            ref,
+            version=version,
+            fidelity=fidelity,
+            model=model,
+            engine_params=engine_params,
+            cache_key=cache_key,
+            requester_id=requester_id,
+            slug=slug,
+        )
+
+    def _dispatch_md(
+        self,
+        ref: Any,
+        *,
+        version: int,
+        fidelity: str,
+        model: str | None,
+        engine_params: dict[str, Any],
+        cache_key: str,
+        requester_id: int | None,
+        slug: str,
+    ) -> Response:
+        """Mint the ``struct_md_runs`` row + ``struct_md`` job for one
+        request — the in-process GPU-node rung (gr606465).
+
+        Same mint contract as ``_dispatch_neb``: one ``store.atomic()``
+        transaction under a per-request advisory lock
+        (``struct_md_mint:<cache_key>``) → cached/inflight re-check →
+        dead-row reap → the UTC-day cap under its own lock → run row →
+        job.put → ``job_ref_id`` backfill. A job.put ``reused`` collapses
+        the fresh row as a dedupe (never counts against the cap)."""
+        from precis.handlers.job import _idem_lock_key
+        from precis.workers.job_types import struct_md
+        from precis.workers.job_types.struct_relax import target_node_for
+
+        # Both rungs run in-process on the compute group — 'emt' rides the
+        # same lane (deterministic on the cache key, so a re-dispatch
+        # lands back on the same host's warm model cache).
+        target = target_node_for("ml", key=cache_key)
+        if not target:
+            raise Internal(
+                "no compute node configured: neither PRECIS_MLIP_NODES, "
+                "PRECIS_AUTOCATPATH_ROUTE_NODE nor PRECIS_DFT_NODE is set "
+                "on this host, so a struct_md job would have nowhere to "
+                "run — deploy renders them from topology "
+                "(precis_capabilities.autocatpath / .dft)",
+                next="the node lists are deploy env this host lacks",
+            )
+        timeout_s = struct_md._timeout_s()
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        job_resp: Response | None = None
+        existing_run_id: int | None = None
+        with self.store.atomic() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (_idem_lock_key(f"struct_md_mint:{cache_key}"),),
+            )
+            hit = self.store.struct_md_cached(cache_key, conn=conn)
+            if hit is not None:
+                return self._md_cached_response(hit, slug)
+            inflight = self.store.struct_md_inflight(cache_key, conn=conn)
+            if inflight is not None:
+                return self._md_inflight_response(inflight, slug)
+            self.store.struct_md_reap_dead(cache_key, conn=conn)
+            # The mint lock is per-request, so daily mints serialize on
+            # this fixed key for the count + insert.
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (_idem_lock_key("struct_md_mint:global"),),
+            )
+            cap = _md_daily()
+            minted = self.store.struct_md_mints_today(conn=conn)
+            if minted >= cap:
+                raise BadInput(
+                    f"daily struct_md cap reached — {minted} mints today "
+                    f"({_MD_DAILY_ENV}={cap})",
+                    next="wait for the UTC-day rollover, or re-issue an "
+                    "identical request (a succeeded run is a zero-compute "
+                    "cache hit, never a mint)",
+                )
+            run_id = self.store.struct_md_record_run(
+                structure_ref_id=ref.id,
+                on_version=version,
+                fidelity=fidelity,
+                model=model,
+                params=engine_params,
+                cache_key=cache_key,
+                job_ref_id=None,
+                conn=conn,
+            )
+            job_resp = hub.sibling("job").put(
+                job_type="struct_md",
+                executor="ssh_node",
+                # The design owns the job (compute lane, like the relax).
+                parent_id=ref.id,
+                params={
+                    "md_run_id": run_id,
+                    "structure_ref_id": ref.id,
+                    "on_version": version,
+                    "is_slug": slug,
+                    "fidelity": fidelity,
+                    "model": model,
+                    "params": engine_params,
+                    "cache_key": cache_key,
+                    "target_node": target,
+                    "timeout_s": timeout_s,
+                    "resources": {"wall_seconds": int(timeout_s)},
+                },
+                idem_key=f"struct_md:{cache_key}",
+            )
+            if job_resp.reused:
+                # A live job already owns this request while no run row
+                # reads in flight — fail the fresh row as a dedupe (it
+                # never counts against the daily cap) and point the ack
+                # at the job's run.
+                jref = (
+                    self.store.get_ref(kind="job", id=int(job_resp.ref_id))
+                    if job_resp.ref_id is not None
+                    else None
+                )
+                jparams = ((jref.meta if jref is not None else None) or {}).get(
+                    "params"
+                ) or {}
+                existing_run_id = (
+                    int(jparams["md_run_id"])
+                    if jparams.get("md_run_id") is not None
+                    else None
+                )
+                self.store.struct_md_update_run(
+                    run_id,
+                    status="failed",
+                    dedupe=(
+                        "collapsed onto in-flight job "
+                        f"jo{job_resp.ref_id}"
+                        + (
+                            f" (run {existing_run_id})"
+                            if existing_run_id is not None
+                            else ""
+                        )
+                    ),
+                    conn=conn,
+                )
+            elif job_resp.ref_id is not None:
+                self.store.struct_md_update_run(
+                    run_id, job_ref_id=job_resp.ref_id, conn=conn
+                )
+        assert job_resp is not None  # put() raised → tx rolled back, exited
+        note = ""
+        if requester_id is not None:
+            if job_resp.ref_id is None:  # defensive — put always reports the id
+                log.warning(
+                    "structure._dispatch_md: job put() returned no ref_id "
+                    "for requester #%s; skipping requester wiring",
+                    requester_id,
+                )
+            else:
+                self._wire_requester(requester_id, job_resp.ref_id)
+            note = f" (todo #{requester_id} will block on it)"
+        if job_resp.reused:
+            existing = (
+                self.store.struct_md_get(existing_run_id)
+                if existing_run_id is not None
+                else None
+            )
+            if existing is not None and existing["status"] == "succeeded":
+                return self._md_cached_response(existing, slug)
+            run_txt = (
+                f"run {existing_run_id}" if existing_run_id is not None else "its run"
+            )
+            status_txt = f" ({existing['status']})" if existing is not None else ""
+            return Response(
+                body=(
+                    f"# struct_md {run_txt} already owned by jo"
+                    f"{job_resp.ref_id}{status_txt} — st{ref.id} "
+                    f"({slug}){note}\n\n"
+                    "An identical request is owned by that job — this call "
+                    "collapsed onto it instead of minting a duplicate.\n\n"
+                    f"Poll: get(kind='structure', id={slug!r}, view='md')."
+                )
+            )
+        return Response(
+            body=(
+                f"queued struct_md jo{job_resp.ref_id} run {run_id}{note}\n"
+                f"st{ref.id} ({slug}) · {fidelity}/{model} · "
+                f"{engine_params['steps']} steps × "
+                f"{engine_params['timestep_fs']} fs @ "
+                f"{engine_params['temperature_k']} K · wall cap "
+                f"{timeout_s / 3600.0:g} h\n"
+                f"\nPoll: get(kind='structure', id={slug!r}, view='md')."
+            )
+        )
+
+    def _md_cached_response(self, hit: Mapping[str, Any], slug: str) -> Response:
+        """The zero-compute ack for an identical re-request: report the
+        stored run, mint nothing."""
+        msd = hit.get("msd") or {}
+        final = msd.get("final_A2")
+        msd_txt = f"{final:.3f} Å²" if final is not None else "n/a"
+        return Response(
+            body=(
+                f"# cached struct_md run {hit['id']} — st"
+                f"{hit['structure_ref_id']} ({slug})\n\n"
+                f"{hit['fidelity']}/{hit['model']} · "
+                f"{hit['n_steps']} steps @ {hit['temperature_k']} K · "
+                f"{hit['n_frames']} frames · MSD(final) {msd_txt}\n\n"
+                "An identical request (same geometry, params and code "
+                "version) already ran this trajectory — no job minted.\n\n"
+                f"Summary + trajectory: get(kind='structure', id={slug!r}, "
+                f"view='md', args={{'run': {hit['id']}}})."
+            )
+        )
+
+    def _md_inflight_response(self, row: Mapping[str, Any], slug: str) -> Response:
+        """An identical request is already queued/running — collapse onto
+        it, mint nothing."""
+        return Response(
+            body=(
+                f"# struct_md run {row['id']} already in flight — st"
+                f"{row['structure_ref_id']} ({slug}) · status "
+                f"{row['status']}\n\n"
+                "An identical request is owned by that run — this call "
+                "collapsed onto it instead of minting a duplicate.\n\n"
+                f"Poll: get(kind='structure', id={slug!r}, view='md')."
+            )
+        )
+
     # ── get ──────────────────────────────────────────────────────────
     def get(
         self,
@@ -2466,6 +2814,8 @@ class StructureHandler(Handler):
             return self._render_pair(ref, scene, a)
         if view == "neb":
             return self._render_neb(ref, a)
+        if view == "md":
+            return self._render_md(ref, a)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -3096,6 +3446,161 @@ class StructureHandler(Handler):
             "params": params,
             "method": method,
         }
+
+    def _render_md(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``view='md'`` — the MD runs on this design (``struct_md_runs``;
+        gr606465). ``args={'run': N}`` opens one run: scalars, the MSD
+        series and the RDF peak table; ``args={'run': N,
+        'trajectory': true}`` dumps the stored extXYZ frames (the
+        trajectory handle the mint ack names)."""
+        run_arg = args.get("run")
+        if run_arg is not None:
+            return self._render_md_run(ref, run_arg, args)
+        runs = self.store.struct_md_runs_for(ref.id)
+        if not runs:
+            return Response(
+                body=f"# {ref.slug}: no MD runs\n\n"
+                + render_next_section(
+                    [
+                        (
+                            "put(kind='structure', id='<slug>', mode='md', "
+                            "args={'fidelity': 'ml'})",
+                            "queue an NVT run",
+                        ),
+                    ]
+                )
+            )
+        rows = []
+        for r in runs:
+            msd = r.get("msd") or {}
+            final = msd.get("final_A2")
+            rows.append(
+                {
+                    "run": r["id"],
+                    "status": r["status"],
+                    "fidelity": r["fidelity"],
+                    "model": r["model"] or "—",
+                    "T/K": "—"
+                    if r["temperature_k"] is None
+                    else f"{r['temperature_k']:.0f}",
+                    "steps": "—" if r["n_steps"] is None else str(r["n_steps"]),
+                    "frames": "—" if r["n_frames"] is None else str(r["n_frames"]),
+                    "MSD Å²": "—" if final is None else f"{final:.3f}",
+                    "job": f"jo{r['job_ref_id']}" if r["job_ref_id"] else "—",
+                }
+            )
+        return Response(
+            body=f"# {ref.slug}: {len(runs)} MD run(s)\n"
+            + render_agent_table(
+                rows,
+                schema=[
+                    "run",
+                    "status",
+                    "fidelity",
+                    "model",
+                    "T/K",
+                    "steps",
+                    "frames",
+                    "MSD Å²",
+                    "job",
+                ],
+            )
+            + "\n\nOne run: get(kind='structure', id="
+            + repr(ref.slug)
+            + ", view='md', args={'run': N})."
+        )
+
+    def _render_md_run(self, ref: Any, run_arg: Any, args: dict[str, Any]) -> Response:
+        """``view='md', args={'run': N}`` — one run's scalars, MSD series
+        and RDF peaks; ``trajectory: true`` returns the raw extXYZ (the
+        trajectory handle). The run must belong to this design."""
+        try:
+            run_id = int(run_arg)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"args 'run' must be a run id, got {run_arg!r}",
+                next=f"get(kind='structure', id={ref.slug!r}, view='md') "
+                "for the run list",
+            ) from exc
+        run = self.store.struct_md_get(run_id)
+        if run is None or int(run["structure_ref_id"]) != ref.id:
+            raise BadInput(
+                f"md run {run_id} doesn't belong to {ref.slug}",
+                next=f"get(kind='structure', id={ref.slug!r}, view='md') "
+                "for the run list",
+            )
+        if args.get("trajectory"):
+            traj = run.get("trajectory")
+            if not traj:
+                raise BadInput(
+                    f"md run {run_id} has no stored trajectory "
+                    f"(status {run['status']})",
+                    next=f"get(kind='structure', id={ref.slug!r}, view='md', "
+                    f"args={{'run': {run_id}}}) for the summary",
+                )
+            return Response(body=traj)
+        lines = [
+            f"# md run {run_id} — st{run['structure_ref_id']} · {run['status']}",
+            f"{run['fidelity']}/{run['model']} · version "
+            f"{run['on_version']}"
+            + (f" · wall {run['wall_s']:.0f} s" if run.get("wall_s") else "")
+            + (f" · job jo{run['job_ref_id']}" if run.get("job_ref_id") else ""),
+        ]
+        if run["status"] == "succeeded":
+            lines.append(
+                f"thermostat {run['temperature_k']:.0f} K (measured mean "
+                f"{run['temp_mean_k']:.1f} K) · {run['n_steps']} steps · "
+                f"{run['n_frames']} frames"
+            )
+            lines.append(
+                f"E_pot {run['e_pot_mean_ev']:.4f} ± "
+                f"{run['e_pot_std_ev']:.4f} eV (mean ± sd over samples)"
+            )
+        elif run["status"] == "failed":
+            lines.append("failed — see the job's job_event for the reason")
+        msd = run.get("msd") or {}
+        series = msd.get("msd_A2") or []
+        if series:
+            t = msd.get("t_ps") or []
+            lines.append(
+                f"MSD over {msd.get('n_mobile')} mobile atom(s): "
+                f"{series[0]:.4f} → {series[-1]:.4f} Å² "
+                f"({t[0] if t else 0:g} → {t[-1] if t else 0:g} ps, "
+                f"{len(series)} samples)"
+            )
+        rdf = run.get("rdf") or {}
+        pairs = rdf.get("pairs") or {}
+        if pairs:
+            peaks = []
+            for key, p in pairs.items():
+                g = p.get("g") or []
+                if not g or max(g) <= 0:
+                    continue
+                i = g.index(max(g))
+                peaks.append(
+                    {
+                        "pair": key,
+                        "r_peak Å": f"{p['r'][i]:.2f}",
+                        "g(r)": f"{g[i]:.2f}",
+                        "n_pairs": p.get("n_pairs"),
+                    }
+                )
+            if peaks:
+                lines.append("")
+                lines.append(
+                    "RDF first peaks "
+                    + render_agent_table(
+                        peaks,
+                        schema=["pair", "r_peak Å", "g(r)", "n_pairs"],
+                    )
+                )
+        if run.get("trajectory"):
+            lines.append(
+                f"\nTrajectory: get(kind='structure', id={ref.slug!r}, "
+                f"view='md', args={{'run': {run_id}, 'trajectory': true}}) "
+                f"— {run['n_frames']} extXYZ frames."
+            )
+        return Response(body="\n".join(lines))
 
     def _render_runs(self, ref: Any) -> Response:
         """The design's compute history — the fidelity levels over time (§9),

@@ -65,6 +65,10 @@ Compute-adjacent seams, each with its own module docstring:
   the one write path is ``store.structure_import``, keyed on
   ``(dataset, config_id)``; an external run never serves a compute cache hit
   and an external design refuses ``edit`` (derive a variant instead).
+- `md` — the molecular-dynamics rung (gr606465): NVT Langevin params, the
+  content address, and the pure-numpy RDF/MSD summaries the ``struct_md``
+  job stores; the trajectory itself runs in-process on the GPU node
+  (MACE-MP-0/CHGNet, or EMT as the always-on smoke rung).
 - `invariants` — representation-invariant fingerprint (composition ·
   per-layer · adsorbate site · coordination) powering the round-trip eval;
   ``handlers/structure.py::guard_energy_comparable`` refuses a

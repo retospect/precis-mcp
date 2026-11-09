@@ -469,6 +469,36 @@ edit(
 )
 ```
 
+## Molecular dynamics — `mode='md'` (`struct_md`)
+
+An MD run is a **job**, never an edit: `put(mode='md')` mints a
+`struct_md_runs` row plus a `struct_md` job on the GPU node and returns
+immediately — the trajectory lands on the row on completion (gr606465).
+Thermostat: **NVT Langevin** (Maxwell–Boltzmann init, COM drift removed);
+calculator: `fidelity='ml'` = MACE-MP-0 / CHGNet (the `model=` knob),
+`fidelity='emt'` = the always-on ASE smoke rung — no GPU spend for a
+setup check. Held atoms (`fixed`, e.g. `fix_layers` on a slab) stay
+pinned; a design with *every* atom held refuses.
+
+```python
+put(kind="structure", id="pd111_o", mode="md",
+    args={"fidelity": "ml", "model": "mace_mp",
+          "temperature_k": 300, "timestep_fs": 1.0, "steps": 1000})
+# 1000 × 1 fs = a 1 ps NVT run; knobs: friction_per_fs, traj_every,
+# rdf_rmax_A, rdf_nbins, seed. Poll:
+get(kind="structure", id="pd111_o", view="md")                 # run list
+get(kind="structure", id="pd111_o", view="md", args={"run": N})
+# scalars + MSD series + RDF first peaks
+get(kind="structure", id="pd111_o", view="md",
+    args={"run": N, "trajectory": True})                       # extXYZ frames
+```
+
+Requests are content-addressed (geometry · fidelity · model · params ·
+code version): an identical succeeded run is a zero-compute cache hit, an
+in-flight one collapses onto it. Mints are capped per UTC day
+(`PRECIS_STRUCT_MD_DAILY`, default 20); `requested_by=<todo>` blocks on
+the job like a relax.
+
 ## Search, don't guess — `struct_search`
 
 A `struct_search` job runs an AGOX/GOFEE surrogate search — in-process

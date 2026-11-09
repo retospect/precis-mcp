@@ -1997,6 +1997,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-structure-help",
     ),
     ServiceSpec(
+        name="struct_md",
+        label="Structure MD run (NVT Langevin)",
+        category="compute",
+        kind=ServiceKind.COMPUTE,
+        requires=frozenset({"gpu"}),
+        one_line=(
+            "One NVT Langevin MD run on a structure on the GPU node; sinks "
+            "the extXYZ trajectory and the MSD/RDF summaries."
+        ),
+        doc_skill="precis-structure-help",
+    ),
+    ServiceSpec(
         name="fold",
         label="AlphaFold3 fold",
         category="compute",
