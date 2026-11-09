@@ -38,7 +38,9 @@ get(kind="md", id="docs/backlog/gripe-todo-unify.md")
 
 Loop state the old wave kept on the gripe — `batch:` tags, the
 `gripe_brief`/`gripe_handoff`/`gripe_review` chunks, `meta.fix.*` — is
-still readable; see the legacy appendix at the end.
+still readable, nothing writes it for new work;
+`src/precis/handlers/_gripe_fix.py` has the field map and the queue
+derivation (`/queue`, `/batch` still render pre-phase-1 gripes).
 
 ## How does the loop run, step by step?
 
@@ -262,13 +264,19 @@ The write replaces the whole `fix` dict, so re-tagging the line clears
 the tick's `check_failed_at` marker — a retagged check starts its
 failure clock over.
 
-The grammar is the closed set in the legacy appendix below
-(`read`/`count`). When a check line exists — on the todo or the legacy
-gripe-side `meta.fix.check` — gripe-validate skips the gripe and the
-`gripe_autoclose` tick owns the close: once the sha is an ancestor of
-the recorded prod head and the head has stood 30 min, it runs the line
-read-only; pass → `resolved:` + `STATUS:done`, a confirmed failure →
-close + a `derived-from` triage refile. A fix that is NOT observable
+The grammar is the closed set `parse_check` accepts
+(`src/precis/workers/gripe_autoclose.py`): `read <kind> <id> contains
+"<substring>"` · `read <kind> <id> count "<substring>" <cmp> <n>` ·
+`count <kind> [with tag=<tag>|meta.<path>=<value> [and …]] <cmp> <n>`
+(`<cmp>`: `= != > < >= <=`). A `read` check matches the target's raw
+title + chunk text, and the tick itself ships dark — lighting it is an
+operator act (`docs/runbooks/fix-gripe-ops.md`). When a check line
+exists — on the todo or the legacy gripe-side `meta.fix.check` —
+gripe-validate skips the gripe and the `gripe_autoclose` tick owns the
+close: once the sha is an ancestor of the recorded prod head and the
+head has stood 30 min, it runs the line read-only; pass →
+`resolved:` + `STATUS:done`, a confirmed failure → close + a
+`derived-from` triage refile. A fix that is NOT observable
 through the MCP (CI workflow, harness, docs-only) gets no check line —
 the brief says so — and closes on the sha-in-prod flip as today.
 
@@ -366,86 +374,6 @@ any view. From the gripe side, the `fixed-by` link on the card finds
 its todo; from a tree name,
 `search(kind='todo', q='<tree>')` finds the item (the `lane:` comment
 carries it).
-
-## Legacy loop state (read-only after phase 1)
-
-A gripe the old wave ran still carries its
-`edit(kind='gripe', mode='fix', args=…)` state — all readable, none
-written for new work:
-
-| fact | where | set by |
-|---|---|---|
-| batch | tag `batch:<slug>` (one at a time) | `args={'batch': 'tables-s2'}` (`''` removes) |
-| brief(s) | `gripe_brief` chunks, newest in force | `args={'brief': '<text>'}` |
-| handoff(s) | `gripe_handoff` chunks | `args={'handoff': '<text>'}` |
-| review(s) | `gripe_review` chunks, first line `LAND — …` / `FIX — …` | `args={'review': 'land', 'findings': '…'}` |
-| who | `meta.fix.host`, `meta.fix.session` | `args={'host': '<host>', 'session': 'devin:tables-s2'}` |
-| tree | `meta.fix.tree` | `args={'tree': 'tables-s2'}` |
-| landed sha | `meta.fix.landed` | `args={'landed': '98aa301d6'}` |
-| prod check | `meta.fix.check` | `args={'check': 'count job with tag=STATUS:succeeded >= 1'}` |
-
-New work puts the prod-check line on the code todo instead —
-`meta.fix.check` there via `tag(kind='todo', id=T, meta={'fix': {'check':
-'<line>'}})`; the landed sha comes from the todo's `landed:` comment.
-A gripe-side line still evaluates, but the todo's wins when both exist.
-
-`host` is the machine name the fleet kind reports; `session` is
-`<vendor>:<window>` — the builder's tmux window
-(`devin:devin-tables-s2`), or `claude:<session id>` for a session with
-no window. `''` clears a meta field.
-
-Queue derivation (how `/queue` reads it): no brief → `unbriefed`;
-newest event a brief → `queued` (no session) or `in-build` (session
-set); a handoff → `in-review`; a review `LAND` → `landing`, `FIX` →
-`fix-round`; landed sha → `awaiting-deploy`; `STATUS:done`/`wontfix` →
-none.
-
-```python
-get(kind="gripe", id="/queue")                                # counts per queue, then rows
-get(kind="gripe", id="/queue", args={"queue": "in-build"})
-get(kind="gripe", id="/batch")                                # census: one row per batch
-get(kind="gripe", id=514335, view="fix")                      # newest brief, handoff, review texts
-```
-
-The `/queue` and `/batch` views go quiet for new work — they read the
-gripe chunks — but still render pre-phase-1 gripes.
-
-## Legacy — the prod check and the refusals
-
-A `meta.fix.check` line is the auto-close prod check: one line, written
-at land time, run read-only by the `gripe_autoclose` tick once the
-landed sha is in prod. Grammar (closed set):
-`read <kind> <id> contains "<substring>"` ·
-`read <kind> <id> count "<substring>" <cmp> <n>` ·
-`count <kind> [with tag=<tag>|meta.<path>=<value> [and …]] <cmp> <n>`
-where `<cmp>` is `= != > < >= <=`. A `read` check matches the target's
-raw title + chunk text, never the gripe's own id. The tick rejects
-checks a typo would silently decide — an unknown `kind`, a comparison
-true or false for every count, an unanchored `count` an empty result
-satisfies. It runs only once the landed sha is an ancestor of the
-CURRENT recorded prod head (a rolled-back sha still in the record's
-`landed` reads not-deployed; on a clone-less worker the record's
-membership is the fallback) and that head has stood 30 min. Pass →
-`resolved:` + `STATUS:done`; a first failure stamps
-`meta.fix.check_failed_at` (a pass between clears it), a repeat an hour
-later closes the gripe FIRST and files a `derived-from` refile naming
-the sha and the observed output. No check line → untouched;
-`hold:no-autoclose` → untouched (both exclusions honour
-`ref_tags.expires_at`; check queries run under a 5 s statement_timeout
-and a cancel is skipped, never a verdict). The tick ships dark; to
-light it, ask a human operator to arm the `gripe_autoclose` service
-prio (recipe: `docs/runbooks/fix-gripe-ops.md`).
-
-Refusals the legacy edit raises:
-
-- `a closed gripe takes no fix-loop state` — reopen with
-  `tag(add=['STATUS:open'])` first, or leave it; history stays readable.
-- `review verdict 'maybe' is not one of ['land', 'fix']`.
-- `landed '…' is not a 7-40 char lowercase hex sha` — the main sha.
-- `batch, brief are gripe-fix loop keys — they need mode='fix'`.
-- `args['findings'] rides with args['review']`.
-- `edit(mode='fix') needs at least one key` — the key list is in `options`.
-- `nothing to change (state already as asked)` is an ack, not a refusal.
 
 ## See also
 
