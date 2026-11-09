@@ -288,6 +288,14 @@ def test_find_replace_requires_body_and_find(todo: TodoHandler) -> None:
         todo.edit(id=rid2, mode="find-replace", find="a", text="b", body="x")
 
 
+#: Corpus literal — ``scripts/impacted-tests``' corpus scan resolves a
+#: repo-path string in a test's source into a coupling, so a todo.py
+#: diff selects this file even when the index and the coverage map miss
+#: it (gr599427: td599717's checked land skipped this spec pin and main
+#: went red).
+_TODO_HANDLER_SRC = "src/precis/handlers/todo.py"
+
+
 def test_todo_spec_edit_modes() -> None:
     assert TodoHandler.spec.edit_modes == (
         "replace",

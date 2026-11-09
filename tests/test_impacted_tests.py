@@ -154,6 +154,35 @@ def test_src_change_selects_importer_and_named_tests(
     assert "tests/test_core.py" in res["files"]
 
 
+def test_spec_pin_names_select_their_tests(mod: ModuleType, toy_repo: Path) -> None:
+    """gr599427 (comments 4–5): a spec-pin test names the changed
+    spec/tuple attribute — no import edge, no file-name match. The
+    pin tier in ``discover_tests`` selects it anyway."""
+    _write(
+        toy_repo,
+        "src/pkg/spec_thing.py",
+        "class Spec:\n    pass\n\n\nclass Thing:\n"
+        '    spec = Spec()\n    edit_modes = ("a", "b")\n',
+    )
+    _write(
+        toy_repo,
+        "tests/test_spec_pin.py",
+        'def test_modes_pin():\n    assert "edit_modes"\n',
+    )
+    _git(toy_repo, "add", "-A")
+    _git(toy_repo, "commit", "-qm", "spec thing + pin")
+    head = _commit(
+        toy_repo,
+        {
+            "src/pkg/spec_thing.py": "class Spec:\n    pass\n\n\nclass Thing:\n"
+            '    spec = Spec()\n    edit_modes = ("a", "b", "c")\n'
+        },
+    )
+    res = _sel(mod, toy_repo, f"{head}^", head)
+    assert res["mode"] == "selected"
+    assert "tests/test_spec_pin.py" in res["files"]
+
+
 def test_full_trigger_runs_everything(mod: ModuleType, toy_repo: Path) -> None:
     head = _commit(toy_repo, {"pyproject.toml": "[project]\nname='y'\n"})
     res = _sel(mod, toy_repo, f"{head}^", head)

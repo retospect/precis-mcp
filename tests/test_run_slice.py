@@ -3642,7 +3642,9 @@ def test_mint_land_checked_param(monkeypatch: pytest.MonkeyPatch) -> None:
     run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub", checked=True)
     params = minted[0]["params"]
     assert params["checked"] is True
-    assert land_slice.ship_flag(params) == "--checked"
+    # gr599427: checked asks; the spot verdict earns the flag.
+    assert land_slice.ship_flag(params) == "--quick"
+    assert land_slice.ship_flag(params, spot=True) == "--checked"
     minted.clear()
     run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub")
     assert "checked" not in minted[0]["params"]

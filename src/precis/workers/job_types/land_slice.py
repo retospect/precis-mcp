@@ -134,9 +134,15 @@ classified (``meta.pr.head_sha`` on the plan root). The subject is the PR
 title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
 ``(td<id>)``. Every land ships ``--quick`` (:func:`ship_flag`; Reto
 2026-11-05, gr570221 — lint only; the release gate on ``/go`` runs the
-suite before deploy) unless ``params.checked`` is ``True`` — what a
-pr-intake plan's land node passes, so a PR land runs the checked gate's
-contract and import-map tests. A checked land the selector refuses with
+suite before deploy) unless a checked gate was asked for —
+``params.checked`` (a pr-intake plan's land node) or an engine-path
+diff (td574937 E1) — AND the selector's answer is a small spot
+selection (:func:`spot_selection`). Reto 2026-11-08 (gr599427): lands
+run basic checks only — lint plus a spot check; GitHub CI at the
+release gate runs the suite, so no land runs the wide or the full
+local gate (E1's "an engine land never drops to lint" is superseded —
+the engine review reads the landed diff, not a checked gate). A
+checked land the selector refuses with
 FULL (a migration or harness diff: :data:`FULL_SELECTOR_MARK`) relaunches
 once with :func:`full_fallback_flag` — ``--quick``, the same lane the
 default already uses (me570388) — without consuming an attempt.
@@ -205,22 +211,68 @@ NO_DIFF_NOTE = (
 )
 
 
-def ship_flag(params: dict[str, Any], engine: bool = False) -> str:
-    """``--quick`` unless ``params.checked`` is ``True`` — or the diff is
-    ``engine`` (td574937 E1: an engine land never drops to lint; the
-    engine review gate on the release waits for its reviewer, and the
-    checked gate is what that review reads).
+def ship_flag(params: dict[str, Any], engine: bool = False, spot: bool = False) -> str:
+    """``--checked`` only when a checked gate was asked for AND the
+    selector's answer is a small spot selection — else ``--quick``.
 
-    Reto 2026-11-05 (gr570221): the factory lander defaults to ``--quick``
-    — lint only; the release gate on ``/go`` runs the suite before deploy.
-    A ``--checked`` default sent every migration/harness slice into the
-    FULL selector refusal and burned the attempts around it. ``True``
-    still runs the checked gate: r200 went red on a factory land
-    (8004d84e0) for an ``args`` key only the dispatch contract test
-    catches, and a pr-intake plan's land node asks for that gate
-    (``templates`` passes ``checked: True``).
+    A land asks for the checked gate two ways: ``params.checked`` (a
+    pr-intake plan's land node — r200 went red on a factory land for an
+    ``args`` key only the dispatch contract test catches) or an
+    engine-path diff (td574937 E1). It earns ``--checked`` only when
+    ``spot`` — :func:`spot_selection`, read by the caller — is True.
+
+    Reto 2026-11-08 (gr599427): every factory land — engine diffs
+    included — runs basic checks only; GitHub CI at the release gate
+    runs the suite and a red release goes through the existing fix
+    loop. E1's "an engine land never drops to lint" is superseded: the
+    engine review reads the landed diff, not a checked gate — and a
+    wide selection was a 1 h wall death, not a safety net (11k ids on
+    a stale coverage map, gr561463).
     """
-    return "--checked" if engine or params.get("checked") is True else "--quick"
+    if engine or params.get("checked") is True:
+        return "--checked" if spot else "--quick"
+    return "--quick"
+
+
+#: ``--checked`` earns its gate only when the impacted-tests selector's
+#: answer IS a spot check: at most this many selected ids (gr599427,
+#: comment 2's numbers).
+SPOT_SELECTION_MAX_IDS = 200
+#: The same check's fallback bound in time: a selector still answering
+#: past this many seconds counts as wide — deciding alone would already
+#: out-cost the spot gate.
+SPOT_SELECTION_TIMEOUT_S = 180
+
+
+def spot_selection(tree: Path) -> bool:
+    """True when the impacted-tests selection for this diff is a small
+    spot check — ``FULL``, an empty or a wider-than-
+    :data:`SPOT_SELECTION_MAX_IDS` answer, and an unreadable or slow
+    (:data:`SPOT_SELECTION_TIMEOUT_S`) selector all count ``False``:
+    the land then goes ``--quick`` and GitHub CI is the gate
+    (gr599427)."""
+    out = _selector_stdout(tree, SPOT_SELECTION_TIMEOUT_S)
+    if out is None:
+        return False
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    if lines == ["FULL"]:
+        return False
+    # The worktree family prints line 1 ``testmon=0|1`` then one pytest
+    # target per line.
+    if lines and lines[0].startswith("testmon="):
+        lines = lines[1:]
+    return 0 < len(lines) <= SPOT_SELECTION_MAX_IDS
+
+
+def _planned_flag(meta: dict[str, Any] | None, params: dict[str, Any]) -> str:
+    """The flag submit picked for this job — the default when a handle
+    carries none (the engine/spot stamps ride the job meta)."""
+    m = meta or {}
+    return ship_flag(
+        params,
+        engine=bool(m.get("engine_paths")),
+        spot=bool(m.get("spot_selection")),
+    )
 
 
 #: The ✖ line ``scripts/ship --checked`` dies with when the impacted-tests
@@ -234,8 +286,9 @@ FULL_SELECTOR_MARK = "the selector answers FULL"
 def full_fallback_flag() -> str | None:
     """The flag a FULL-selector refusal relaunches with: ``--quick`` (lint
     only; the release gate on ``/go`` runs the full suite before deploy —
-    Reto 2026-11-05, me570388) unless ``PRECIS_LAND_FULL_FALLBACK`` is
-    ``off``, which keeps the refusal a red."""
+    Reto 2026-11-05, me570388; engine lands included since gr599427 —
+    no land relaunches ``--full``) unless ``PRECIS_LAND_FULL_FALLBACK``
+    is ``off``, which keeps the refusal a red."""
     value = os.environ.get("PRECIS_LAND_FULL_FALLBACK", "quick").strip().lower()
     return None if value in ("off", "0", "no", "false") else "--quick"
 
@@ -314,7 +367,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "target_node": {"type": "string"},
         # A pull request's land (worktree/branch then optional, see above).
         "pr": {"type": "integer"},
-        # True ships --checked; default and False ship --quick (lint only).
+        # True asks for --checked — honoured only when the selector's
+        # answer is a spot selection (:func:`ship_flag`); else --quick.
         "checked": {"type": "boolean"},
     },
     "required": ["todo_id"],
@@ -332,7 +386,8 @@ DESCRIPTION: str = (
     "branch (local and origin). A red ship reopens the todo with attempt:<n>; "
     "a refusal about main's state (drift guard) retries ship every 30 min, up to 8 times. "
     "Minted by run_slice; with params.pr it lands a pull request's head "
-    "(slice/pr-<n>, --checked) and closes the PR. Refused while "
+    "(slice/pr-<n>, --checked when the selection is a spot check) and "
+    "closes the PR. Refused while "
     "PRECIS_FACTORY=off."
 )
 
@@ -350,17 +405,18 @@ def wall_seconds() -> float:
     return float(n if n > 0 else _DEFAULT_WALL_S)
 
 
-#: Deadline a ``--full`` ship relaunch renews (gr598110): the full local
-#: gate on a contended factory host runs past the 1 h slice wall
-#: (jo595597 died at 5463 s with the gate still running), so a relaunched
-#: ``--full`` gets its own budget — ``PRECIS_LAND_FULL_WALL_S``, default
-#: 3 h. The general 1 h land wall is unchanged.
+#: Deadline a full-selection deselect gate renews (gr598110): when the
+#: checked selection IS the suite the deselect run is a full gate, and on
+#: a contended factory host that runs past the 1 h slice wall (jo595597
+#: died at 5463 s with the gate still running), so it gets its own
+#: budget — ``PRECIS_LAND_FULL_WALL_S``, default 3 h. The general 1 h
+#: land wall is unchanged.
 _DEFAULT_FULL_WALL_S = 10800
 
 
 def full_wall_seconds() -> float:
-    """Deadline a ``--full`` relaunch renews (``PRECIS_LAND_FULL_WALL_S``,
-    default :data:`_DEFAULT_FULL_WALL_S`)."""
+    """Deadline a full-selection deselect gate renews
+    (``PRECIS_LAND_FULL_WALL_S``, default :data:`_DEFAULT_FULL_WALL_S`)."""
     try:
         n = int(os.environ.get("PRECIS_LAND_FULL_WALL_S", ""))
     except ValueError:
@@ -375,9 +431,9 @@ def _flag_wall_s(flag: str) -> float:
 
 # ── The last full-gate duration on this host ───────────────────────
 #
-# ``scripts/test --selected`` on a diff the selector answers FULL for —
-# and a ``--full`` ship run itself — is the full suite: on a contended
-# factory host that outruns the job wall (gr598110). Whether such a run
+# ``scripts/test --selected`` on a diff the selector answers FULL for is
+# the full suite: on a contended factory host that outruns the job wall
+# (gr598110). Whether such a run
 # may start at all is decided from the last full gate's measured
 # duration, kept in the worker-owned ops dir (per host, so a slow host
 # refuses while a fast one still lands). A killed run never records —
@@ -420,9 +476,8 @@ def _gate_started_at(row: dict[str, Any]) -> datetime | None:
 
 
 def _record_full_gate_duration(row: dict[str, Any]) -> None:
-    """Record a finished ``--full`` ship run's (or a full-selection
-    deselect gate's) elapsed seconds as this host's last full-gate
-    duration."""
+    """Record a finished full-selection deselect gate's elapsed seconds
+    as this host's last full-gate duration."""
     started = _gate_started_at(row)
     if started is not None:
         _record_full_gate_s((_now() - started).total_seconds())
@@ -838,14 +893,10 @@ def outside_diff_ids(tree: Path, ids: list[str]) -> list[str]:
     return [i for i in ids if i.split("::", 1)[0] not in changed]
 
 
-def _checked_selection_full(tree: Path) -> bool | None:
-    """``True`` when this diff's checked selection IS the suite — the
-    ``scripts/impacted-tests --stdin`` FULL answer ``scripts/ship
-    --checked`` refuses and ``scripts/test --selected`` expands to the
-    whole suite. Then the deselect gate runs full-gate minutes and the
-    ``--full`` budget decides whether it may start at all (gr598110).
-    ``None`` — unreadable selector — counts as non-FULL: the deselect
-    run bounds itself by what it actually is."""
+def _selector_stdout(tree: Path, timeout_s: float) -> str | None:
+    """``scripts/impacted-tests --stdin``'s stdout on the branch diff —
+    ``None`` when the diff or the selector cannot be read (missing
+    script, non-zero exit, timeout)."""
     diff = _git(["diff", "--name-only", "origin/main...HEAD"], tree)
     sel = tree / "scripts" / "impacted-tests"
     if diff.returncode != 0 or not sel.is_file():
@@ -859,14 +910,28 @@ def _checked_selection_full(tree: Path) -> bool | None:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=120,
+            timeout=timeout_s,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if cp.returncode != 0:
         return None
-    return cp.stdout.strip() == "FULL"
+    return cp.stdout
+
+
+def _checked_selection_full(tree: Path) -> bool | None:
+    """``True`` when this diff's checked selection IS the suite — the
+    ``scripts/impacted-tests --stdin`` FULL answer ``scripts/ship
+    --checked`` refuses and ``scripts/test --selected`` expands to the
+    whole suite. Then the deselect gate runs full-gate minutes and the
+    full-gate budget decides whether it may start at all (gr598110).
+    ``None`` — unreadable selector — counts as non-FULL: the deselect
+    run bounds itself by what it actually is."""
+    out = _selector_stdout(tree, 120)
+    if out is None:
+        return None
+    return out.strip() == "FULL"
 
 
 def is_main_refusal(cross: str | None) -> bool:
@@ -1430,7 +1495,6 @@ def submit(ctx: Any, spec: Any) -> Any:
     paths = _rs.changed_paths(tree)
     hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
     ctx.set_meta(engine_paths=hits[:50])
-    flag = ship_flag(params, engine=bool(hits))
     if subject is None:
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(
@@ -1444,6 +1508,12 @@ def submit(ctx: Any, spec: Any) -> Any:
             ),
         )
         return None
+    # gr599427: --checked earns its gate only when the selector's answer
+    # is a spot selection; the stamp rides the job so a flagless handle's
+    # default (:func:`_planned_flag`) agrees.
+    spot = spot_selection(tree) if hits or params.get("checked") is True else False
+    ctx.set_meta(spot_selection=spot)
+    flag = ship_flag(params, engine=bool(hits), spot=spot)
     handle = _launch_ship(ctx, tree, flag, subject)
     if handle is None:
         return None
@@ -1792,7 +1862,7 @@ def _defer_to_main(
         + (f"\ndrift probe (lander identity): {probe}" if probe else ""),
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the
-    # wait plus one fresh ship run (a ``--full`` handle's own budget).
+    # wait plus one fresh ship run (the flag's own budget).
     deadline = _now().timestamp() + delay + _flag_wall_s(str(handle.get("flag") or ""))
     ctx.set_meta(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
@@ -1814,7 +1884,7 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     params = (ctx.meta or {}).get("params") or {}
     handle.pop("not_before", None)
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
-    flag = str(handle.get("flag") or ship_flag(params))
+    flag = str(handle.get("flag") or _planned_flag(ctx.meta, params))
     fresh = _launch_ship(
         ctx, tree, flag, str(handle.get("subject") or ""), carry=handle
     )
@@ -2157,10 +2227,9 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         return _ordinary_ship_red(ctx, handle)
     if phase == "deselect":
         # The checked selection minus the red-on-main ids (gr598110):
-        # green means the land goes through ``--quick`` — for an engine
-        # land this run is the gate of record the engine review reads.
-        # Any red or dead probe is the ordinary red; a launch failure
-        # already fell back.
+        # green means the land goes through ``--quick``; the engine
+        # review reads the landed diff, not this gate. Any red or dead
+        # probe is the ordinary red; a launch failure already fell back.
         if v.get("full_selection"):
             _record_full_gate_duration(v)
         if exit_code != 0:
@@ -2215,22 +2284,20 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # "red on main too" needs the same evidence: a non-zero probe that
         # never ran the named tests is a probe failure, never a verdict.
         return _ordinary_ship_red(ctx, handle)
-    # td574937 E1 + gr598110 + td599058: EVERY checked land whose red is
+    # gr598110 + td599058 + gr599427: EVERY checked land whose red is
     # main's too gates on the checked selection MINUS the red-on-main ids
     # — a detached ``scripts/test --selected --deselect <id>…`` is exactly
-    # that gate — and ``--quick`` then lands on its green. An engine land
-    # can never drop to lint; a non-engine one used to relaunch ``--quick``
-    # straight away, which skipped the rest of the selection unproven —
-    # the deselect run is the proof either way
-    # (``PRECIS_LAND_FULL_FALLBACK=off`` still keeps a non-engine land's
-    # red a red). The full gate on a contended factory host outruns the
+    # that gate — and ``--quick`` then lands on its green, engine or not
+    # (``PRECIS_LAND_FULL_FALLBACK=off`` keeps the red a red for every
+    # land — the gr599427 ruling dropped E1's "never lint" clause). The
+    # full gate on a contended factory host outruns the
     # job's wall (jo595597 died at 5463 s), so when the selection itself
     # is the suite the deselect run IS a full gate and the last full-gate
     # duration on this host decides whether it may start — over budget
     # the job fails naming the ids for a human.
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     subject = str(handle.get("subject") or "")
-    if not (ctx.meta or {}).get("engine_paths") and full_fallback_flag() is None:
+    if full_fallback_flag() is None:
         return _ordinary_ship_red(ctx, handle)
     full_sel = _checked_selection_full(tree)
     if full_sel and not full_gate_fits():
@@ -2323,8 +2390,6 @@ def poll(ctx: Any, handle: Any) -> bool:
         elif handle.pop("gate_wait", None) is not None:
             ctx.set_meta(compute_handle=handle, compute_handle_released=False)
         return False
-    if exit_code is not None and str(handle.get("flag") or "") == "--full":
-        _record_full_gate_duration(handle)
     ctx.set_meta(compute_handle_released=True)
 
     params = (ctx.meta or {}).get("params") or {}
@@ -2370,46 +2435,27 @@ def poll(ctx: Any, handle: Any) -> bool:
             # Nothing parsed — the excerpt is all the next session gets;
             # the land log dies with the worktree (gr573347).
             handoff += f"\n\nThe gate's output before the verdict:\n{detail}"
-        # td574937 E1: an engine land's FULL refusal relaunches with the
-        # full local gate, never lint and ignoring the env flag — the
-        # release waits on the engine review, which reads the checked
-        # gate. A non-engine (or pre-E1, un-stamped) land keeps --quick.
-        fallback = (
-            "--full" if (ctx.meta or {}).get("engine_paths") else full_fallback_flag()
-        )
-        if (
-            fallback == "--full"
-            and FULL_SELECTOR_MARK in cross
-            and str(handle.get("flag") or ship_flag(params)) != fallback
-            and not full_gate_fits()
-        ):
-            # gr598110: the only lane left is the suite, and its last run
-            # on this host outran the job's wall — fail parked at the
-            # re-land ask rather than launch a doomed gate.
-            return _full_gate_over(ctx, params, [cross])
+        # gr599427 (Reto 2026-11-08): a checked land the selector refuses
+        # with FULL relaunches through the same ``--quick`` lane every
+        # land uses, engine diffs included — no land runs the full local
+        # gate; the release gate on /go is GitHub CI.
+        fallback = full_fallback_flag()
         if (
             fallback
             and FULL_SELECTOR_MARK in cross
-            and str(handle.get("flag") or ship_flag(params)) != fallback
+            and str(handle.get("flag") or _planned_flag(ctx.meta, params)) != fallback
         ):
             # The lane is refused, not the branch: relaunch through the
             # fallback lane (Reto 2026-11-05, me570388). No attempt is
             # consumed and no builder is asked to fix what the ship said
             # about itself.
             Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-            # ``cross`` is the ship's own refusal line — on an engine land
-            # it would echo "lint only" into the event, so the --full
-            # relaunch names the mark instead.
-            event = (
-                f"land_slice: {FULL_SELECTOR_MARK} — relaunching scripts/ship "
-                "--full (the full local gate; an engine land never drops "
-                "to lint)"
-                if fallback == "--full"
-                else f"land_slice: {cross} — relaunching scripts/ship "
+            ctx.append_chunk(
+                "job_event",
+                f"land_slice: {cross} — relaunching scripts/ship "
                 "--quick (lint only; the release gate on /go runs the "
-                "full suite)"
+                "full suite)",
             )
-            ctx.append_chunk("job_event", event)
             # Carried onto the fresh handle so the green path's todo
             # comment can say the checked land fell back (td573580).
             handle["fell_back_full"] = True

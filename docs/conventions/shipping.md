@@ -358,6 +358,16 @@ harness/schema diff has no honest subset — the selector answers FULL and
 It lands like a qland: no `.ship-sha`, no diff-coverage, forward-merge
 trailer `Gate: lint + selected pytest` when it races main.
 
+Factory lands run basic checks only (gr599427, Reto 2026-11-08):
+`land_slice.ship_flag` picks `--checked` only when the selector's answer
+is a small spot selection (`SPOT_SELECTION_MAX_IDS` = 200 ids, answered
+inside `SPOT_SELECTION_TIMEOUT_S` = 3 min), else `--quick` — engine
+diffs follow the same rule, and a FULL-selector refusal relaunches
+`--quick`, never `--full`. The full suite is the release gate's job —
+GitHub CI on `release/r<N>`; a red release goes through the existing
+fix loop. The td574937 E1 "an engine land never drops to lint" clause is
+superseded: the engine review reads the landed diff, not a checked gate.
+
 It exists because every r35 red was a lint-only land whose failure a cheap
 invariant/snapshot/table test would have caught (gr485791). Use it when a
 diff touches something those tests guard; the suite debt is still settled by
@@ -387,7 +397,10 @@ wire protocol (`testmon=N` then bare targets) for `ship --checked` /
 - **static** — the python index's call graph and imports: `discover_tests`
   per changed symbol, test modules importing the changed module, test
   files named `test_<stem>`, test sources naming the changed path or
-  basename (prompts, skills, templates, fixtures, scripts). The two
+  basename (prompts, skills, templates, fixtures, scripts), and test
+  sources naming a changed spec/tuple attribute — a spec-pin test
+  (`XHandler.spec.edit_modes == (...)`) has no import edge and no name
+  match (gr599427). The two
   weakest navigation tiers (test-name substrings, fixture-parameter
   guesses) are deliberately excluded — they match hundreds of tests on
   names like `main`.

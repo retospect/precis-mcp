@@ -12,6 +12,10 @@ Ranks test nodes for one symbol by evidence strength, strongest first:
                pytest fixture parameter
     low        the test module imports the symbol (or its module)
                but no call edge resolves
+    pin        the test source names one of the symbol's spec/tuple
+               attribute names — a spec-pin test
+               (``XHandler.spec.edit_modes == (...)``) often has no
+               call edge and no file-name match (gr599427)
     lowest     test file / test function name mentions the symbol's
                name — no static link at all
 
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -50,13 +55,15 @@ TIER_MEASURED = 0
 TIER_DIRECT = 1
 TIER_INDIRECT = 2
 TIER_IMPORTS = 3
-TIER_NAMING = 4
+TIER_SPEC_PIN = 4
+TIER_NAMING = 5
 
 _CONFIDENCE = {
     TIER_MEASURED: "measured",
     TIER_DIRECT: "strong",
     TIER_INDIRECT: "medium",
     TIER_IMPORTS: "low",
+    TIER_SPEC_PIN: "pin",
     TIER_NAMING: "lowest",
 }
 
@@ -315,6 +322,39 @@ def _dotted_prefixes(qualname: str) -> list[str]:
     return [".".join(parts[:i]) for i in range(1, len(parts))]
 
 
+#: gr599427 (comments 4–5): a spec-pin test — ``XHandler.spec.edit_modes
+#: == (...)`` — names the changed spec/tuple attribute, often its only
+#: link to the change: an attribute read has no call edge, the test file
+#: is named for neither the module nor the symbol, and a stale coverage
+#: map loses it (td599717's checked land missed exactly such a pin).
+#: ``_spec_pin_names`` pulls the symbol's multi-word ``snake_case``
+#: keyword/tuple names (``edit_modes``, ``requires_setting``); single-word
+#: names (``modes``, ``kind``) are skipped — they name half the suite.
+_SPEC_PIN_NAME_RE = re.compile(r"\b([a-z][a-z0-9_]*_[a-z0-9_]{2,})\s*=")
+#: Candidates tried per symbol, first in source order.
+_SPEC_PIN_MAX_NAMES = 24
+#: A name matching more test files than this is generic vocabulary
+#: (``ref_id``, ``supports_edit``), not a pin — dropped.
+_SPEC_PIN_MAX_FILES = 12
+
+
+def _spec_pin_names(sym: Symbol, mod: ModuleIndex) -> list[str]:
+    """The symbol's spec/tuple ``snake_case`` names to pin-match:
+    keyword-looking names assigned inside its source span, first
+    :data:`_SPEC_PIN_MAX_NAMES` in source order."""
+    if mod.source is None:
+        return []
+    lines = mod.source.splitlines()[sym.start_line - 1 : sym.end_line]
+    names: list[str] = []
+    for m in _SPEC_PIN_NAME_RE.finditer("\n".join(lines)):
+        name = m.group(1)
+        if name not in names:
+            names.append(name)
+        if len(names) >= _SPEC_PIN_MAX_NAMES:
+            break
+    return names
+
+
 # One-entry memo: a RepoIndex is built once and never mutated, and callers
 # (discover_tests, the impacted-tests selector) ask for the same index's
 # reverse map repeatedly. Holds the index itself, so identity can't alias.
@@ -521,6 +561,34 @@ def discover_tests(
                 )
             )
 
+    # ── spec pins (gr599427) ─────────────────────────────────────────
+    # Test sources naming one of the symbol's spec/tuple names — the
+    # only link a spec-pin test may have to the change.
+    names = _spec_pin_names(sym, mod)
+    if names:
+        hit_files = {hit.file for hit in best.values()}
+        pin_re = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
+        files_by_name: dict[str, list[str]] = {n: [] for n in names}
+        for tmod in idx.modules.values():
+            if not is_test_path(tmod.file) or tmod.source is None:
+                continue
+            for n in {m.group(0) for m in pin_re.finditer(tmod.source)}:
+                files_by_name[n].append(tmod.file)
+        for name, files in files_by_name.items():
+            if not files or len(files) > _SPEC_PIN_MAX_FILES:
+                continue
+            for f in files:
+                if f in hit_files:
+                    continue
+                offer(
+                    TestHit(
+                        nodeid=f,
+                        file=f,
+                        tier=TIER_SPEC_PIN,
+                        evidence=f"names spec attribute `{name}`",
+                    )
+                )
+
     # ── naming fallback (weakest) ────────────────────────────────────
     name = sym.name
     hit_files = {hit.file for hit in best.values()}
@@ -586,7 +654,8 @@ def render_tests(
         lines.append("")
     lines.append(
         "Evidence tiers: measured > strong (direct call) > medium "
-        f"(indirect, depth<={depth}) > low (imports) > lowest (name match)."
+        f"(indirect, depth<={depth}) > low (imports) > pin (spec-name "
+        "match) > lowest (name match)."
     )
     lines.append(
         "Not shown: dynamic dispatch (getattr/registries), tests in "

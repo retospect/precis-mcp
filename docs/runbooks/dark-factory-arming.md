@@ -569,8 +569,10 @@ The other settings a slice host reads:
   (`PRECIS_SHIP_BIN` overrides it), so the check is pre-land; that host
   needs the ship's git push and land_notify DSN. A land whose diff
   touches an `ENGINE_PATHS` glob stamps `meta.engine_paths` on its job
-  and ships `--checked` whatever `params.checked` says (a
-  FULL-selector refusal relaunches `--full`, never lint); until every
+  and ships `--checked` when the selector's answer is a small spot
+  selection — else `--quick` like every land (gr599427, Reto
+  2026-11-08: lands run lint plus a spot check; GitHub CI is the gate —
+  a FULL-selector refusal relaunches `--quick`, never `--full`); until every
   engine commit in `origin/prod..origin/main` — read from git, not
   jobs, so a hand land with no `land_slice` job still gates
   (gr597625) — is cleared by a covering reviewer closing LAND
