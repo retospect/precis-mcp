@@ -959,6 +959,19 @@ class StructureHandler(Handler):
                 "retries",
                 "tether",
                 "optimizer",
+                # mode='md' (gr606465): the rung pick plus the engine
+                # knob set (structure.md.MD_DEFAULTS); model /
+                # requested_by / parent_id are shared with mode='neb'
+                # above.
+                "fidelity",
+                "temperature_k",
+                "timestep_fs",
+                "steps",
+                "friction_per_fs",
+                "traj_every",
+                "rdf_rmax_A",
+                "rdf_nbins",
+                "seed",
             }
         ),
         "edit": ArgsSpec({"ops"}),
@@ -1013,6 +1026,9 @@ class StructureHandler(Handler):
                 "radii",
                 "name",
                 "fs",
+                # view='md': args={'run': N, 'trajectory': true} dumps the
+                # stored extXYZ frames (gr606465)
+                "trajectory",
             }
         ),
     }
