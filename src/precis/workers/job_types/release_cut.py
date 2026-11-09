@@ -8,7 +8,11 @@ detached submit/poll pair under ``ssh_node``:
   (:func:`precis.workers.job_types.run_slice.slice_root`: ``PRECIS_SLICE_ROOT``,
   else the main checkout around the worker's code) detached, stdout+stderr to
   a log and the exit code to a file beside it (under the temp dir), and
-  returns ``{pid, pgid, root, log, exit_file, started_at}``.
+  returns ``{pid, pgid, root, log, exit_file, started_at}``. The sha it
+  cuts comes from :func:`_cut_target` (gr592271): the pass's recorded
+  ``meta.release_target.sha`` for a first cut, the recomputed newest
+  fully-reviewed head for a release-fix re-cut, the tip for a pass
+  minted without a target — ``--sha`` is passed only in the first two.
 * :func:`poll` waits for the exit file; on exit 0 with a
   ``RELEASE_CUT: r<N> <sha>`` line it records the cut on the plan
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
@@ -66,6 +70,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import release_poll as _rp
@@ -344,6 +349,55 @@ def _stale_supersede_n(ctx: Any) -> int | None:
 # ── release_cut ────────────────────────────────────────────────────
 
 
+def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
+    """``(sha, refusal)`` — the sha ``scripts/release --cut-only --sha``
+    cuts, ``None`` for a tip cut, or ``(None, refusal)`` while the
+    engine-review gate holds (gr592271).
+
+    Three cases: a re-cut (the plan's ``meta.release`` exists — the
+    fix's land moved main since the pass minted, so the recorded
+    target is stale) recomputes the newest fully-reviewed head through
+    :func:`release_poll.cleared_head`; a first cut uses the pass's
+    recorded ``meta.release_target`` — only the lands inside its
+    ``upto`` window may hold it, a newer land's open review does not;
+    a pass without a recorded target (a hand mint, or pre-gr592271)
+    keeps the whole-gate tip rule."""
+    rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
+    if rel is not None:
+        repo = pr_class.resolve_repo(store, None)
+        if not repo:
+            return None, (
+                "no GitHub owner/repo (release.repo and the checkout's "
+                "origin both empty); next: set release.repo"
+            )
+        try:
+            sha, blockers, _notes = _rp.cleared_head(store, repo=repo)
+        except pr_class.GitHubUnreadable as exc:
+            return None, f"GitHub unreadable ({exc}); next: the next tick retries"
+        if sha is None:
+            return None, "; ".join(blockers)
+        return sha, None
+    target = (
+        _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
+    )
+    if target is not None:
+        verdicts, _notes, fatal = _rp._engine_verdicts(store)
+        if fatal is not None:
+            return None, fatal
+        blockers = [
+            v.line
+            for v in verdicts or ()
+            if not v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
+        ]
+        if blockers:
+            return None, "; ".join(blockers)
+        return str(target["sha"]), None
+    blockers, _notes = _rp.engine_review_blockers(store)
+    if blockers:
+        return None, "; ".join(blockers)
+    return None, None
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
@@ -352,11 +406,6 @@ def validate_submit(
     reason = factory_refusal(NAME) or todo_refusal(store, NAME, todo_id, required=False)
     if reason is not None or store is None or not isinstance(todo_id, int):
         return reason
-    # td574937 E1: no cut over an unread engine review — the same gate
-    # release_poll.run_pass runs; no asks are filed from here.
-    blockers, _notes = _rp.engine_review_blockers(store)
-    if blockers:
-        return f"{NAME}: {'; '.join(blockers)}"
     # A re-cut runs where the plan's first cut ran: the .release-owner marker
     # is in that checkout, so --cut-only elsewhere cuts nothing (td543855).
     # The first cut has no meta.release yet and is not pinned.
@@ -364,7 +413,10 @@ def validate_submit(
         _release.release_of(store, todo_id),
         host=str(params.get("target_node") or "").strip() or None,
     )
-    return f"{NAME}: {pin}" if pin is not None else None
+    if pin is not None:
+        return f"{NAME}: {pin}"
+    _sha, refusal = _cut_target(store, todo_id)
+    return f"{NAME}: {refusal}" if refusal is not None else None
 
 
 def submit(ctx: Any, spec: Any) -> Any:
@@ -376,10 +428,11 @@ def submit(ctx: Any, spec: Any) -> Any:
     if reason is not None:
         ctx.record_failure(reason)
         return None
-    blockers, _notes = _rp.engine_review_blockers(ctx.store)
-    if blockers:
-        ctx.record_failure(f"{NAME}: {'; '.join(blockers)}")
+    sha, refusal = _cut_target(ctx.store, params.get("todo_id"))
+    if refusal is not None:
+        ctx.record_failure(f"{NAME}: {refusal}")
         return None
+    argv = ["--cut-only"] + (["--sha", sha] if sha else [])
     if ctx.store is not None:
         n = _stale_supersede_n(ctx)
         if n is not None:
@@ -396,9 +449,9 @@ def submit(ctx: Any, spec: Any) -> Any:
                 env={"PRECIS_GRIPE_NOTE": "0"},
             )
             if isinstance(handle, dict):
-                handle.update(phase="supersede", n=n)
+                handle.update(phase="supersede", n=n, cut_argv=argv)
             return handle
-    return launch_script(ctx, NAME, ["--cut-only"])
+    return launch_script(ctx, NAME, argv)
 
 
 def _superseded(ctx: Any, handle: dict[str, Any]) -> bool:
@@ -421,7 +474,7 @@ def _superseded(ctx: Any, handle: dict[str, Any]) -> bool:
         return True
     note = f"superseded stale local r{n}, prod moved past it"
     tail = log_text.strip()[-300:]
-    fresh = launch_script(ctx, NAME, ["--cut-only"])
+    fresh = launch_script(ctx, NAME, list(handle.get("cut_argv") or ["--cut-only"]))
     ctx.append_chunk("job_event", f"{NAME}: {note}" + (f" — {tail}" if tail else ""))
     ctx.set_meta(stale_round_superseded={"n": n})
     if fresh is None:

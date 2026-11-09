@@ -661,10 +661,12 @@ def _tag(m: _Minter, todo_id: int, value: str) -> None:
     )
 
 
-#: The tag a release-pass root carries for the main head it was minted
-#: on — ``release-main:<sha12>`` (the ``pr-head:`` shape). ``release_poll``
-#: mints no second pass for a sha that already has a root in any state:
-#: a new pass needs main to move (td573430 fix round 1).
+#: The tag a release-pass root carries for the sha it cuts —
+#: ``release-main:<sha12>`` (the ``pr-head:`` shape), the newest
+#: fully-reviewed head ``release_poll`` computed (gr592271 — not
+#: always the tip). ``release_poll`` mints no second pass for a sha
+#: that already has a root in any state: a new pass needs the cleared
+#: head to move (td573430 fix round 1).
 RELEASE_MAIN_TAG_PREFIX = "release-main:"
 
 

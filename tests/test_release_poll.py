@@ -1945,15 +1945,18 @@ def _engine_land(
     paths: list[str] | None = None,
     hours_ago: float | None = None,
     landed: bool | None = True,
+    sha: str | None = None,
 ) -> int:
     """A ``land_slice`` job for ``td<todo_id>``; ``paths`` is the
     ``meta.engine_paths`` stamp (``None`` = a pre-E1 job, no stamp).
-    ``landed``: True stamps a ``landed_sha`` (a succeeded land — the only
-    kind that can block), None a JSON null (a no-diff land) and False no
-    key at all (a failed land). A succeeded land also puts its commit in
-    the fake cut range: the gate reads lands from git (gr597625) — the
-    job is only the sha → todo lookup."""
-    sha = (f"{todo_id:x}" + "f" * 40)[:40]  # a realistic, per-todo sha
+    ``landed``: True stamps ``landed_sha = sha`` (a succeeded land — the
+    only kind that can block), None a JSON null (a no-diff land) and
+    False no key at all (a failed land). A succeeded land also puts its
+    commit in the fake cut range: the gate reads lands from git
+    (gr597625) — the job is only the sha → todo lookup. ``sha`` defaults
+    to a realistic, per-todo sha; pass one to position the land on a
+    fake compare's commit list (gr592271)."""
+    sha = sha or (f"{todo_id:x}" + "f" * 40)[:40]
     meta: dict[str, Any] = {
         "job_type": "land_slice",
         "params": {"todo_id": todo_id},
@@ -2028,7 +2031,10 @@ def test_open_engine_reviewer_blocks_a_pass(
     assert res.blocker is not None
     assert f"td{rid}" in res.blocker and "td42" in res.blocker
     assert "next:" in res.blocker
-    assert calls == []  # the DB gates run before any GitHub read
+    # gr592271: the blocked verdict needs the compare's commit window —
+    # the one read it costs. The in-flight and main-sha probes stay
+    # unspent.
+    assert calls == [f"{API}/compare/prod...main"]
 
 
 def test_a_slicer_reviewer_covers_its_childs_land(
@@ -2054,6 +2060,89 @@ def test_reviewer_closed_land_does_not_block(
     _reviewer(store, 42, status="done", review={"verdict": "LAND"})
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
+
+
+def test_the_pass_cuts_the_newest_fully_reviewed_head(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr592271: main = prod + [A reviewed, B pending] — the pass mints
+    at A; B's open review no longer starves it (the r252 stall)."""
+    a, b = "a" * 40, "b" * 40
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
+    _reviewer(store, 43)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == a and target["upto"] == [a[:12]]
+    assert any("td43" in n for n in res.notes)
+
+
+def test_an_uncleared_land_blocks_everything_after_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr592271: [A LAND, B FIX unlanded, C LAND] — B's fix gates C, so
+    the pass cuts A even though C is reviewed."""
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _reviewer(store, 43, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    _engine_land(store, 44, paths=["scripts/ship"], sha=c)
+    _reviewer(store, 44, status="done", review={"verdict": "LAND"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == a and target["upto"] == [a[:12]]
+
+
+def test_nothing_cleared_blocks_and_names_the_pending_reviews(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr592271 keeps the fail-closed rule: an uncleared land at the
+    window's start leaves nothing to cut — the blocker names the
+    pending review."""
+    a, b = "a" * 40, "b" * 40
+    calls = _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    rid = _reviewer(store, 42)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td42" in res.blocker
+    assert calls == [f"{API}/compare/prod...main"]
 
 
 def test_fix_reviewer_with_an_unlanded_fix_blocks(
@@ -2822,6 +2911,7 @@ def test_engine_review_gate_unreadable_fails_closed(
     assert res.minted is None
     assert res.blocker is not None and "unreadable" in res.blocker
     assert "fail closed" in res.blocker
+    assert calls == []  # the gate fails closed before any GitHub read
 
 
 # ── the cut range comes from git, not jobs (gr597625) ─────────────

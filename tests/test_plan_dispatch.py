@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from precis.plans import lanes as L
+from precis.plans import pr_class as P
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
@@ -1962,10 +1963,25 @@ def test_accepted_rerun_mints_the_verdict_poll(store: Store) -> None:
     assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
 
 
-def test_green_rerun_closes_the_fix_and_the_recut_runs(store: Store) -> None:
+def test_green_rerun_closes_the_fix_and_the_recut_runs(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The rerun's poll recording green closes the fix moot-style
     (``validated: flake`` comment, no attempt, no ask) — then the
     loop's own re-cut node re-reads the run: nothing re-mints it."""
+
+    def _gh(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        # The re-cut's validate recomputes the newest fully-reviewed
+        # head (gr592271): no lands, so it reads the main ref.
+        data: Any = (
+            {"ref": "refs/heads/main", "object": {"sha": "5" * 40}}
+            if url.endswith("/git/ref/heads/main")
+            else {}
+        )
+        return SimpleNamespace(status_code=200, json=lambda: data)
+
+    monkeypatch.setattr(P, "_http_get", _gh)
+    monkeypatch.setattr(P, "resolve_repo", lambda *a, **k: "o/r")
     mint, it = _parked_release_fix(store)
     pd.run_pass(store)
     _succeed_rerun(store, it["fix"])

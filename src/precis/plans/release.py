@@ -186,6 +186,27 @@ def pinned_host(store: Store, todo_id: int) -> str | None:
     return host or None
 
 
+def release_target_of(store: Store, todo_id: int) -> dict[str, Any] | None:
+    """The pass's recorded cut — ``{sha, upto}`` on the plan root's
+    ``meta.release_target``, stamped by ``release_poll`` at mint
+    (gr592271): ``sha`` the newest fully-reviewed head the poll
+    computed, ``upto`` the sha12s on main at-or-before it and ahead of
+    prod. ``release_cut`` gates the first cut on exactly the lands in
+    ``upto`` — a newer land's open review does not hold it — and passes
+    ``sha`` to ``scripts/release --sha``. ``None`` when the pass was
+    minted without one (a hand mint, or pre-gr592271): the cut falls
+    back to the whole-gate tip."""
+    ref = store.get_ref(kind="todo", id=plan_root(store, todo_id))
+    t = (ref.meta or {}).get("release_target") if ref is not None else None
+    if not isinstance(t, dict):
+        return None
+    sha = str(t.get("sha") or "").strip().lower()
+    upto = t.get("upto")
+    if not sha or not isinstance(upto, list):
+        return None
+    return {"sha": sha, "upto": [str(s).lower() for s in upto]}
+
+
 def pin_refusal(
     rel: dict[str, Any] | None, *, host: str | None, checkout: str | None = None
 ) -> str | None:

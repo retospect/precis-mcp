@@ -43,7 +43,19 @@ the unauthenticated api.github.com budget (60/h) is shared with
 4. ``GET /repos/<repo>/compare/prod...main``: ``behind_by > 0`` or
    ``status == 'diverged'`` means prod holds commits main lacks — no
    mint, whatever ``ahead_by`` says; ``ahead_by == 0`` mints nothing.
-5. In flight on origin: ``GET .../git/matching-refs/heads/release/`` and
+   The payload's ``commits`` is also the ordering the review gate
+   positions lands on.
+5. The engine-review cut sha (gr592271): the gate's per-land verdicts
+   are computed on the DB and a git scan of ``origin/prod..origin/main``
+   (:func:`_gate_lands`, gr597625) before any api.github.com read — its
+   reviewer mints and review-wait asks file regardless — but an
+   uncleared land no longer holds the whole pass. The cut sha is the
+   newest commit on main such that every engine land at-or-before it is
+   cleared: the commit just ahead of the oldest uncleared land, the tip
+   when nothing is uncleared. An uncleared land off the ahead-of-prod
+   window reads as at-or-before everything — no cleared sha, the pass
+   stays blocked and the blocker names the pending reviews.
+6. In flight on origin: ``GET .../git/matching-refs/heads/release/`` and
    ``.../git/matching-refs/tags/deployed/`` (each returns the whole
    prefix unpaginated — :data:`_HEAD_CAP` and :data:`_TAG_CAP` bound
    what a read may claim; over-cap heads is unreadable, over-cap tags
@@ -55,15 +67,18 @@ the unauthenticated api.github.com budget (60/h) is shared with
    (``GET .../compare/<head sha>...main`` answers ``identical`` or
    ``ahead``) — a superseded re-cut leaves its stale ref on origin and
    must not block the next pass forever (gr585785).
-6. The sha claim — one pass per main sha (td573430 fix round 1):
-   ``GET .../git/ref/heads/main``, then inside one transaction under the
-   ``_MINT_LOCK_KEY`` advisory lock the pass re-checks the open-pass
-   gate and refuses when a ``release-main:<sha12>``-tagged root already
-   exists in any state (open, done, failed, abandoned) — a new pass
-   needs main to move. The lock makes check-then-mint atomic: two
-   concurrent runners cannot both mint.
-7. Only then: :func:`precis.plans.templates.mint_release_pass` stamps
-   the root ``release-main:<sha12>``. The plan itself runs when
+7. The sha claim — one pass per cut sha (td573430 fix round 1): inside
+   one transaction under the ``_MINT_LOCK_KEY`` advisory lock the pass
+   re-checks the open-pass gate and refuses when a
+   ``release-main:<sha12>``-tagged root already exists in any state
+   (open, done, failed, abandoned) — a new pass needs the cleared head
+   to move. The lock makes check-then-mint atomic: two concurrent
+   runners cannot both mint.
+8. Only then: :func:`precis.plans.templates.mint_release_pass` stamps
+   the root ``release-main:<sha12>`` and the pass records
+   ``meta.release_target = {sha, upto}`` — the cut sha and the sha12
+   window at-or-before it that ``release_cut`` gates on and passes to
+   ``scripts/release --sha``. The plan itself runs when
    ``plan_dispatch`` is armed, so minting is safe while
    ``PRECIS_FACTORY=off`` — this op mints; it never cuts or deploys.
 
@@ -1186,7 +1201,11 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 #
 # A release never cuts over an engine land its reviewer has not read:
 # the factory may build engine paths once ``factory.deny_relaxed`` is
-# flipped, but only through the review lane. The gate's lands come from
+# flipped, but only through the review lane. Since gr592271 the gate is
+# positional — a land holds only the commits at-or-after it, so the
+# pass cuts the newest commit ahead of the oldest uncleared land
+# instead of waiting for the tip (see the section below
+# :func:`_cut_below`). The gate's lands come from
 # GIT, not jobs (gr597625): every first-parent commit in
 # ``origin/prod..origin/main`` whose diff touches
 # ``lanes.ENGINE_PATHS`` — the commits the cut would carry. A commit
@@ -1329,7 +1348,8 @@ def _landed_jobs(store: Any) -> list[tuple[str, int, int]]:
 
     Succeeded = ``meta->>'landed_sha' IS NOT NULL``: a failed land has no
     key and a no-diff land stamps JSON null (``->>`` reads both as SQL
-    NULL)."""
+    NULL) — neither blocks. ALL jobs are read, not the newest: a later
+    failed re-land must not mask an earlier land."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -1894,14 +1914,30 @@ def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
     return f"engine review: minted reviewer td{rid} for {sha12}", rid, True
 
 
-def engine_review_blockers(
+@dataclass
+class _LandVerdict:
+    """One gate unit's verdict (:func:`_gate_lands`; gr592271).
+
+    ``cleared`` lands never hold a cut; ``line`` is the blocker an
+    uncleared one carries. ``unit.sha12`` positions the land on main
+    for :func:`_cut_below`."""
+
+    unit: _GateLand
+    cleared: bool
+    line: str = ""
+
+
+def _engine_verdicts(
     store: Any,
     *,
     now: datetime | None = None,
     file_asks: bool = False,
     dry_run: bool = False,
-) -> tuple[list[str], list[str]]:
-    """``(blocker lines, notes)`` — the engine-review gate's verdict.
+) -> tuple[list[_LandVerdict] | None, list[str], str | None]:
+    """``(verdicts, notes, fatal)`` — the engine-review gate's per-land
+    verdict plus the pass's side effects. ``fatal`` non-``None`` is the
+    fail-closed line any read error returns (``verdicts`` is ``None``
+    then).
 
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
     ``release-review-wait:<key>`` ask clears it; no covering reviewer
@@ -1928,7 +1964,7 @@ def engine_review_blockers(
 
     now = now or datetime.now(UTC)
     notes: list[str] = []
-    blockers: list[str] = []
+    verdicts: list[_LandVerdict] = []
     try:
         lane_table = _lanes.load_lanes(store) if file_asks else ()
         # plan_dispatch's own kill switch — the env OR a service_config
@@ -1952,7 +1988,10 @@ def engine_review_blockers(
             if m is not None:
                 by_sha.setdefault(m.group(1).lower(), []).append((rid, meta))
         for unit in _gate_lands(store):
+            verdict = _LandVerdict(unit, cleared=False)
             if _answered_wait_ask(store, unit.ask_key):
+                verdict.cleared = True
+                verdicts.append(verdict)
                 continue
             covering: list[tuple[int, dict[str, Any]]] = []
             if unit.todo_id is not None:
@@ -1994,11 +2033,12 @@ def engine_review_blockers(
                             mintable = refusal is None
                     if mintable and not dry_run:
                         if minted >= _MINT_PER_PASS:
-                            blockers.append(
+                            verdict.line = (
                                 f"engine land {unit.label} has "
                                 "no reviewer; reviewer mint deferred; the "
                                 "release waits — next: a later tick mints it"
                             )
+                            verdicts.append(verdict)
                             continue
                         try:
                             if unit.todo_id is not None and plan_root is not None:
@@ -2026,21 +2066,23 @@ def engine_review_blockers(
                                 if fresh
                                 else f"reviewer td{minted_id} is running"
                             )
-                            blockers.append(
+                            verdict.line = (
                                 f"engine land {unit.label} had "
                                 f"no reviewer; {state} — the release waits "
                                 f"— next: let td{minted_id} run"
                             )
+                            verdicts.append(verdict)
                             continue
                     elif mintable:
                         notes.append(
                             f"engine review: would mint a reviewer for {unit.land}"
                         )
-                        blockers.append(
+                        verdict.line = (
                             f"engine land {unit.label} has no "
                             "reviewer; the release waits — next: a live "
                             "tick with the factory on mints one"
                         )
+                        verdicts.append(verdict)
                         continue
                     note, filed_id = _file_review_wait_ask(
                         store,
@@ -2059,10 +2101,11 @@ def engine_review_blockers(
                     next_step = f"answer the review-wait ask on {unit.land}"
                 else:
                     next_step = "the review gate holds the cut"
-                blockers.append(
+                verdict.line = (
                     f"engine land {unit.label} has no "
                     f"reviewer; the release waits — next: {next_step}"
                 )
+                verdicts.append(verdict)
                 continue
             waiting: tuple[int, str] | None = None
             hopeless: tuple[int, str] | None = None
@@ -2077,9 +2120,13 @@ def engine_review_blockers(
                 elif outcome == "hopeless" and hopeless is None:
                     hopeless = (rid, line)
             if satisfied:
+                verdict.cleared = True
+                verdicts.append(verdict)
                 continue
             pick = waiting or hopeless
             if pick is None:
+                verdict.cleared = True
+                verdicts.append(verdict)
                 continue
             rid, line = pick
             if hopeless is not None and waiting is None:
@@ -2110,17 +2157,150 @@ def engine_review_blockers(
                     ask_id = filed_id
             if ask_id is not None:
                 line = f"{line} — the open ask is td{ask_id}"
-            blockers.append(line)
+            verdict.line = line
+            verdicts.append(verdict)
     except Exception as exc:
         log.warning("release_poll: engine review gate unreadable", exc_info=True)
         return (
-            [
-                f"engine review gate unreadable ({type(exc).__name__}); "
-                "next: retry next tick — fail closed"
-            ],
+            None,
             notes,
+            f"engine review gate unreadable ({type(exc).__name__}); "
+            "next: retry next tick — fail closed",
         )
-    return blockers, notes
+    return verdicts, notes, None
+
+
+def engine_review_blockers(
+    store: Any,
+    *,
+    now: datetime | None = None,
+    file_asks: bool = False,
+    dry_run: bool = False,
+) -> tuple[list[str], list[str]]:
+    """``(blocker lines, notes)`` — the engine-review gate's verdict for
+    callers that hold the whole tip (``release_cut``'s fallback for a
+    pass minted without a recorded cut target; gr592271): every
+    uncleared engine land's line, or the single fail-closed line."""
+    verdicts, notes, fatal = _engine_verdicts(
+        store, now=now, file_asks=file_asks, dry_run=dry_run
+    )
+    if fatal is not None:
+        return [fatal], notes
+    return [v.line for v in verdicts or () if not v.cleared], notes
+
+
+# ── the review gate's cut-sha computation (gr592271) ────────────────
+#
+# The gate used to hold the whole pass while ANY engine land's review
+# was pending — effectively waiting for the tip of main. With lands
+# arriving hourly and reviews taking 10–30 min a busy afternoon starved
+# the release: every new engine land minted its own reviewer and pushed
+# the clear point past the tip again (r252 blocked four ticks while the
+# two oldest lands sat LAND-reviewed). The gate now computes the newest
+# commit on main such that every engine land at-or-before it is cleared
+# — the commit just ahead of the oldest uncleared land — and the pass
+# cuts THAT sha (``release_cut --sha``). An uncleared land off the
+# ahead-of-prod window reads as at-or-before everything: no cleared
+# sha, the pass stays blocked and the blocker names the pending
+# reviews — fail closed, as before.
+
+
+def _commit_shas(cmp_: Any) -> list[str]:
+    """The ``compare prod...main`` payload's commits as full shas,
+    oldest first — the ordered window the gate positions lands on."""
+    out: list[str] = []
+    if not isinstance(cmp_, dict):
+        return out
+    for c in cmp_.get("commits") or []:
+        if isinstance(c, dict) and c.get("sha"):
+            out.append(str(c["sha"]).lower())
+    return out
+
+
+def _sha_on(land_sha: str, commits: list[str]) -> int:
+    """The position of ``land_sha`` in ``commits`` (the first match — a
+    short prefix hitting two commits takes the earlier, the
+    fail-closed direction), or ``-1`` when it names no commit in the
+    window: behind prod or never reached main both read as
+    at-or-before every candidate cut."""
+    s = land_sha.lower()
+    if not s:
+        return -1
+    for i, c in enumerate(commits):
+        if c.startswith(s) or s.startswith(c[: _release.LANDED_SHA_LEN]):
+            return i
+    return -1
+
+
+def _sha_in(land_sha: str, upto: Any) -> bool:
+    """``land_sha`` names a commit in the recorded ``upto`` window — the
+    same prefix match as :func:`_sha_on` over sha12s."""
+    s = land_sha.lower()
+    if not s or not isinstance(upto, (list, set, frozenset)):
+        return False
+    return any(
+        str(c).lower().startswith(s) or s.startswith(str(c).lower()) for c in upto
+    )
+
+
+def _cut_below(
+    uncleared: list[_LandVerdict], commits: list[str]
+) -> tuple[str | None, list[str]]:
+    """``(cut sha, upto)`` — the commit just ahead of the oldest
+    uncleared engine land, ``upto`` the sha12s at-or-before it;
+    ``(None, [])`` when an uncleared land sits at-or-before the oldest
+    commit ahead of prod (nothing cleared to cut)."""
+    p = min((_sha_on(v.unit.sha12, commits) for v in uncleared), default=-1)
+    if p <= 0:
+        return None, []
+    return commits[p - 1], [c[: _release.LANDED_SHA_LEN] for c in commits[:p]]
+
+
+def cleared_head(
+    store: Any,
+    *,
+    repo: str,
+    now: datetime | None = None,
+    file_asks: bool = False,
+    dry_run: bool = False,
+) -> tuple[str | None, list[str], list[str]]:
+    """``(cut sha, blocker lines, notes)`` — the newest commit on main
+    such that every engine land at-or-before it is cleared (gr592271):
+    main's head when nothing is uncleared, else the commit just ahead
+    of the oldest uncleared engine land, else ``None`` with the pending
+    reviews named. ``release_cut`` recomputes it for a re-cut, whose
+    recorded target is stale. Raises
+    :class:`precis.plans.pr_class.GitHubUnreadable`."""
+    verdicts, notes, fatal = _engine_verdicts(
+        store, now=now, file_asks=file_asks, dry_run=dry_run
+    )
+    if fatal is not None:
+        return None, [fatal], notes
+    base = _API.format(repo=repo)
+    uncleared = [v for v in verdicts or () if not v.cleared]
+    if not uncleared:
+        return _main_sha(base), [], notes
+    cmp_ = pr_class._get_json(f"{base}/compare/prod...main", {})
+    if not isinstance(cmp_, dict):
+        raise pr_class.GitHubUnreadable(
+            f"GET {base}/compare/prod...main: expected an object"
+        )
+    try:
+        ahead = int(cmp_["ahead_by"])
+        behind = int(cmp_["behind_by"])
+    except (KeyError, TypeError, ValueError):
+        raise pr_class.GitHubUnreadable(
+            f"GET {base}/compare/prod...main: no ahead_by/behind_by"
+        ) from None
+    status = str(cmp_.get("status") or "unknown")
+    if behind > 0 or status == "diverged":
+        return None, [f"prod has commits main lacks ({status})"], notes
+    if ahead <= 0:
+        return None, [f"main is not ahead of prod ({status})"], notes
+    cut, _upto = _cut_below(uncleared, _commit_shas(cmp_))
+    if cut is None:
+        return None, [v.line for v in uncleared], notes
+    return cut, [], notes
 
 
 def run_pass(
@@ -2158,13 +2338,14 @@ def run_pass(
     if blocked is not None:
         res.blocker = blocked
         return res
-    lines, notes = engine_review_blockers(
+    verdicts, notes, fatal = _engine_verdicts(
         store, now=now, file_asks=True, dry_run=dry_run
     )
     res.notes.extend(notes)
-    if lines:
-        res.blocker = "; ".join(lines)
+    if fatal is not None:
+        res.blocker = fatal
         return res
+    uncleared = [v for v in verdicts or () if not v.cleared]
     res.repo = pr_class.resolve_repo(store, repo)
     if not res.repo:
         res.notes.append(
@@ -2193,15 +2374,33 @@ def run_pass(
         if ahead <= 0:
             res.blocker = f"main is not ahead of prod ({status})"
             return res
+        # gr592271: the review gate no longer waits for the tip — the cut
+        # sha is the newest commit such that every engine land at-or-
+        # before it is cleared; a pending review past that point holds
+        # nothing. The compare's ``commits`` is the ordering.
+        commits = _commit_shas(cmp_)
+        cut: str | None = None
+        upto: list[str] = [c[: _release.LANDED_SHA_LEN] for c in commits]
+        if uncleared:
+            cut, upto = _cut_below(uncleared, commits)
+            if cut is None:
+                res.blocker = "; ".join(v.line for v in uncleared)
+                return res
+            res.notes.append(
+                f"cut {cut[:9]}: {len(uncleared)} engine land(s) still "
+                f"pending past it ({', '.join(v.unit.land for v in uncleared)})"
+            )
         flying = _in_flight(res.repo)
         if flying is not None:
             res.blocker = f"{flying} is in flight"
             return res
         main_sha = _main_sha(base)
+        if cut is None:
+            cut = main_sha
     except pr_class.GitHubUnreadable as exc:
         res.blocker = f"GitHub unreadable ({exc}); nothing minted, next tick retries"
         return res
-    sha12 = main_sha.strip().lower()[:12]
+    sha12 = cut.strip().lower()[:12]
     with store.atomic() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (_MINT_LOCK_KEY,))
         open_id = _open_pass_id(store)
@@ -2216,11 +2415,19 @@ def run_pass(
             res.would_mint = True
             return res
         try:
-            mint = templates.mint_release_pass(store, main_sha=main_sha)
+            mint = templates.mint_release_pass(store, main_sha=cut)
         except Exception as exc:  # one error line, not a raise
             log.warning("release_poll: mint failed", exc_info=True)
             res.blocker = f"mint failed: {type(exc).__name__}: {exc}"
             return res
+        # The recorded cut: ``release_cut`` gates on exactly the lands in
+        # ``upto`` — a newer land's open review does not hold the cut —
+        # and passes ``sha`` to ``scripts/release --sha`` (gr592271).
+        store.stamp_ref_meta(
+            int(mint.root_id),
+            {"release_target": {"sha": cut, "upto": upto}},
+            conn=conn,
+        )
         res.minted = int(mint.root_id)
     return res
 
@@ -2269,6 +2476,7 @@ __all__ = [
     "WINDOWS_SETTING",
     "PollResult",
     "branch_in_flight",
+    "cleared_head",
     "engine_review_blockers",
     "in_window",
     "load",
