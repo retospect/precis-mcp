@@ -20,6 +20,12 @@ import pytest
 from precis.bench import corpus
 
 
+def _meta(chunk: Any) -> dict[str, Any]:
+    """A chunk's meta dict; every bench chunk carries one."""
+    assert chunk.meta is not None
+    return chunk.meta
+
+
 def _fake_paper(
     i: int,
     *,
@@ -271,20 +277,20 @@ def test_chunks_carry_source_ids_and_exact_offsets(fake_papers):
     text = corpus.canonical_text(paper)
     chunks = corpus.chunk_units(units)
     assert [c.ord for c in chunks] == list(range(len(chunks)))
-    long_chunks = [c for c in chunks if c.meta["qasper"]["para_id"] == "s0p2"]
+    long_chunks = [c for c in chunks if _meta(c)["qasper"]["para_id"] == "s0p2"]
     assert len(long_chunks) > 1  # the 2.4k-char paragraph was split
-    starts = [c.meta["qasper"]["para_char_start"] for c in long_chunks]
+    starts = [_meta(c)["qasper"]["para_char_start"] for c in long_chunks]
     assert starts == sorted(starts) and starts[0] == 0
     for c in chunks:
-        q = c.meta["qasper"]
+        q = _meta(c)["qasper"]
         unit = by_id[q["para_id"]]
         assert unit.text[q["para_char_start"] : q["para_char_end"]] == c.text
         assert text[q["doc_char_start"] : q["doc_char_end"]] == c.text
         assert q["doc_char_start"] == unit.doc_start + q["para_char_start"]
-        assert c.meta["chunker_version"] == corpus.CHUNKER_VERSION
+        assert _meta(c)["chunker_version"] == corpus.CHUNKER_VERSION
         assert c.section_path == list(unit.section_path)
     # overlapping chunks: consecutive pieces of one paragraph share text
-    a, b = long_chunks[0].meta["qasper"], long_chunks[1].meta["qasper"]
+    a, b = _meta(long_chunks[0])["qasper"], _meta(long_chunks[1])["qasper"]
     assert b["para_char_start"] < a["para_char_end"]
 
 
@@ -293,7 +299,7 @@ def test_duplicate_texts_are_dropped_before_ord_is_assigned(fake_papers):
     units = corpus.canonical_units(fake_papers["9901.00001"][1])
     chunks = corpus.chunk_units(units)
     shorts = [c for c in chunks if c.text == "Short fake paragraph."]
-    assert len(shorts) == 1 and shorts[0].meta["qasper"]["para_id"] == "s0p0"
+    assert len(shorts) == 1 and _meta(shorts[0])["qasper"]["para_id"] == "s0p0"
     assert [c.ord for c in chunks] == list(range(len(chunks)))
 
 
@@ -306,8 +312,8 @@ def test_paper_to_write_cards_body_and_meta(fake_papers):
     assert kinds == ["card_combined", "card_title", "card_abstract"]
     body = [c for c in ptw.chunks if c.ord >= 0]
     # title and the short abstract are the cards, not repeated as body chunks
-    assert "title" not in {c.meta["qasper"]["para_id"] for c in body}
-    assert "abstract" not in {c.meta["qasper"]["para_id"] for c in body}
+    assert "title" not in {_meta(c)["qasper"]["para_id"] for c in body}
+    assert "abstract" not in {_meta(c)["qasper"]["para_id"] for c in body}
     assert {c.chunk_kind for c in body} == {"paragraph", "caption"}
     m = ptw.meta["qasper"]
     assert m["id"] == qid and m["split"] == "train" and m["n_questions"] == 6
@@ -321,7 +327,7 @@ def test_long_abstract_becomes_body_chunks():
     )
     ptw = corpus.paper_to_write("9901.00007", "train", paper)
     abs_chunks = [
-        c for c in ptw.chunks if c.ord >= 0 and c.meta["qasper"]["src"] == "abstract"
+        c for c in ptw.chunks if c.ord >= 0 and _meta(c)["qasper"]["src"] == "abstract"
     ]
     assert len(abs_chunks) > 1
     assert abs_chunks[0].chunk_kind == "paragraph"

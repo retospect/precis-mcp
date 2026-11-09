@@ -460,13 +460,21 @@ def test_load_tasks_checks_json_rows_and_duplicate_ids(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _row_with(*doc_spans: tuple[str, str, list[int], list[int] | None]) -> dict:
+def _row_with(
+    *doc_spans: tuple[str, str | int, list[int], list[int] | None],
+) -> dict:
     return {
         "evidence": [
             {"doc": d, "unit": u, "span": s, **({"doc_span": ds} if ds else {})}
             for d, u, s, ds in doc_spans
         ]
     }
+
+
+def _meta(chunk: Any) -> dict[str, Any]:
+    """A chunk's meta dict; every bench chunk carries one."""
+    assert chunk.meta is not None
+    return chunk.meta
 
 
 def test_spans_overlap_chunk_is_half_open_on_both_sides():
@@ -522,23 +530,23 @@ def test_one_gold_span_can_touch_two_overlapping_chunks(papers):
     paper["full_text"][0]["paragraphs"][2] = long_para
     units = corpus.canonical_units(paper)
     chunks = [
-        c for c in corpus.chunk_units(units) if c.meta["qasper"]["para_id"] == "s0p2"
+        c for c in corpus.chunk_units(units) if _meta(c)["qasper"]["para_id"] == "s0p2"
     ]
     assert len(chunks) > 1
-    a, b = chunks[0].meta["qasper"], chunks[1].meta["qasper"]
+    a, b = _meta(chunks[0])["qasper"], _meta(chunks[1])["qasper"]
     assert b["para_char_start"] < a["para_char_end"]  # they overlap
     s, e = b["para_char_start"], a["para_char_end"]
     unit = next(u for u in units if u.para_id == "s0p2")
     row = _row_with(
         ("qasper:x", "s0p2", [s, e], [unit.doc_start + s, unit.doc_start + e])
     )
-    hits = [gold.spans_overlap_chunk(row, c.meta) for c in chunks]
+    hits = [gold.spans_overlap_chunk(row, _meta(c)) for c in chunks]
     assert hits[0] and hits[1] and not any(hits[2:])
     # and the other paragraphs' chunks never match
     others = [
-        c for c in corpus.chunk_units(units) if c.meta["qasper"]["para_id"] != "s0p2"
+        c for c in corpus.chunk_units(units) if _meta(c)["qasper"]["para_id"] != "s0p2"
     ]
-    assert not any(gold.spans_overlap_chunk(row, c.meta) for c in others)
+    assert not any(gold.spans_overlap_chunk(row, _meta(c)) for c in others)
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +582,7 @@ def test_paragraph_offsets_follow_canonical_text(papers):
     # identical to corpus.canonical_units for a title/abstract-free paper
     paper = {"title": "", "abstract": "", "full_text": [{"paragraphs": paras}]}
     for u in corpus.canonical_units(paper):
+        assert u.para_idx is not None
         assert off[u.para_idx] == u.doc_start
     assert gold.joined_text(paras) == corpus.canonical_text(paper)
 

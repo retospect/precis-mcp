@@ -438,10 +438,10 @@ def canonical_units(paper: Mapping[str, Any]) -> list[Unit]:
 
     units: list[Unit] = []
     pos = 0
-    for para_id, src, text, path, s_idx, p_idx in raw:
+    for para_id, src, text, path, sec_idx, par_idx in raw:
         if not text.strip():
             continue
-        units.append(Unit(para_id, src, text, path, s_idx, p_idx, pos))
+        units.append(Unit(para_id, src, text, path, sec_idx, par_idx, pos))
         pos += len(text) + len(_UNIT_SEP)
     return units
 
@@ -577,7 +577,7 @@ def assert_throwaway_dsn(dsn: str) -> None:
     """Refuse a database that is not a dev/test/bench one (never prod)."""
     from psycopg.conninfo import conninfo_to_dict
 
-    name = conninfo_to_dict(dsn).get("dbname") or ""
+    name = str(conninfo_to_dict(dsn).get("dbname") or "")
     if not _SAFE_DBNAME_RE.match(name):
         raise BenchCorpusError(
             f"refusing to ingest into database {name!r}: the bench writes only to "

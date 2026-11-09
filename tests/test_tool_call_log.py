@@ -177,7 +177,9 @@ def test_dispatch_sums_text_parts_of_multipart_result(monkeypatch, caplog) -> No
 
     class _ImgRuntime(_FakeRuntime):
         def dispatch_with_status(self, verb, payload, *, fold=False):
-            _RESPONSE_IMAGES.get().append(_Img())
+            sink = _RESPONSE_IMAGES.get()
+            assert sink is not None
+            sink.append(_Img())
             return "caption", False
 
     result, rec = _dispatch_logged(monkeypatch, caplog, _ImgRuntime())

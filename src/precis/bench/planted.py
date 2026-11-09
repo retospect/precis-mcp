@@ -2,6 +2,7 @@ import argparse
 import json
 import random
 import re
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -311,7 +312,12 @@ class _Minter:
         return self.name() if kind == "triple" else self.date()
 
     def fact(self, kind: str, entity: str | None = None) -> Fact:
-        table = {"quantity": QUANTITIES, "triple": RELATIONS, "event": EVENTS}[kind]
+        tables: dict[str, Mapping[str, object]] = {
+            "quantity": QUANTITIES,
+            "triple": RELATIONS,
+            "event": EVENTS,
+        }
+        table = tables[kind]
         key = self.rng.choice(sorted(table))
         self.n += 1
         return Fact(
@@ -323,7 +329,7 @@ class _Minter:
             QUANTITIES[key][0] if kind == "quantity" else "",
         )
 
-    def variant(self, f: Fact, avoid: set[str] = frozenset()) -> Fact:
+    def variant(self, f: Fact, avoid: Set[str] = frozenset()) -> Fact:
         """Same fact with exactly one value changed (decoy / contradiction)."""
         while True:
             v = self.value(f.kind, f.key)

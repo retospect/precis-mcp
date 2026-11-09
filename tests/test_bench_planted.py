@@ -5,6 +5,7 @@ import itertools
 import json
 import random
 import re
+from typing import Any
 
 import pytest
 
@@ -64,7 +65,7 @@ def make_hosts(n_docs=20, n_paras=10, seed=0):
         ]
         return " ".join(sents)
 
-    hosts = [
+    hosts: list[dict[str, Any]] = [
         {"id": f"doc{d}", "paragraphs": [para() for _ in range(n_paras)]}
         for d in range(n_docs)
     ]
@@ -116,7 +117,7 @@ def test_types_and_levels_covered():
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_spans_index_exactly_the_planted_sentence(seed):
     hosts, rows, side = run(seed=seed, decoys=2)
-    nodes_by_task = {}
+    nodes_by_task: dict[str, list[str]] = {}
     for nd in side["memory_nodes"]:
         nodes_by_task.setdefault(nd["task_id"], []).append(nd["body"])
     checked = 0
@@ -176,7 +177,7 @@ def test_entity_names_do_not_collide():
 def test_level2_shares_no_content_words_beyond_entity(seed):
     hosts = make_hosts()
     rows, side = pl.build(hosts, seed, 60, at=AT, levels=(2,))
-    bodies = {}
+    bodies: dict[str, list[str]] = {}
     for nd in side["memory_nodes"]:
         bodies.setdefault(nd["task_id"], []).append(nd["body"])
     for r in rows:
@@ -210,7 +211,7 @@ def test_level1_substitutes_synonyms_but_keeps_entity():
 
 def test_khop_answers_need_every_component():
     _, rows, side = run(n=80)
-    bodies = {}
+    bodies: dict[str, list[str]] = {}
     for nd in side["memory_nodes"]:
         bodies.setdefault(nd["task_id"], []).append(nd["body"])
     hop_rows = [r for r in rows if r["type"] == "k-hop"]
@@ -220,10 +221,14 @@ def test_khop_answers_need_every_component():
         sents = [sentence_at(side, ev) for ev in r["evidence"]]
         assert len(sents) == k == len(r["difficulty"]["fact_ids"])
         assert sents == bodies[r["id"]]
-        first = re.search(r"of (\w+) (?:is|was)", sents[0]).group(1)
+        m_first = re.search(r"of (\w+) (?:is|was)", sents[0])
+        assert m_first is not None
+        first = m_first.group(1)
         assert first in r["question"]
         for prev, cur in itertools.pairwise(sents):
-            hop_name = re.search(r"is (\w+)\.$", prev).group(1)
+            m_hop = re.search(r"is (\w+)\.$", prev)
+            assert m_hop is not None
+            hop_name = m_hop.group(1)
             assert hop_name in cur  # fact i+1 is about fact i's answer
             assert hop_name not in r["question"]  # intermediate hop is not given away
         assert r["answer"] in sents[-1]
