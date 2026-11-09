@@ -183,6 +183,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "git": [],
         "launch": [],
         "alive": True,
+        "group_alive": False,
         "signals": [],
         "identity": None,
         "ps_identity": "Sat Oct 31 19:57:00 2026 slice-user",
@@ -254,6 +255,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "_process_alive", lambda pid, **kw: calls["alive"])
+    monkeypatch.setattr(run_slice, "_group_alive", lambda pgid: calls["group_alive"])
     monkeypatch.setattr(run_slice, "_process_identity", lambda pid: calls["identity"])
     monkeypatch.setattr(
         run_slice, "_darwin_process_identity", lambda pid: calls["ps_identity"]
@@ -6198,6 +6200,101 @@ def test_watch_budget_sigkills_when_the_term_never_landed(
     assert run_slice.poll(pctx2, handle) is False
     assert sig_calls == [signal.SIGTERM, signal.SIGKILL]
     assert handle["budget_kill"]["sig"] == "kill"
+
+
+def test_watch_budget_sigkills_a_child_that_outlives_the_wrapper(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td602769: the TERM can kill the wrapper's ``sh`` while the vendor
+    ignores it — a dead leader with a surviving group is still a live
+    session: the watch keeps escalating SIGKILL until the group stops
+    answering, and only then fails the attempt on the bound."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25})
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    # The TERM killed the wrapper (pid dead, no exit file) but the
+    # vendor child keeps the group open; grace expired: SIGKILL —
+    # every live pass until the group is gone.
+    seams["alive"] = False
+    seams["group_alive"] = True
+    handle["budget_kill"]["at"] = "2000-01-01T00:00:00Z"
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    pctx3 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx3, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    # Only when the group stops answering does the attempt fail on the bound.
+    seams["group_alive"] = False
+    pctx4 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx4, handle) is True
+    assert pctx4.status == "failed"
+    assert pctx4.failure is not None and "remaining budget" in pctx4.failure
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_waits_out_a_child_that_outlives_the_wrapper(
+    seams: dict[str, Any],
+) -> None:
+    """td602769: a dead wrapper with no exit record is not the session's
+    end while its group still has a member — the survivor still holds
+    the worktree, so the poll waits it out and only then reads the
+    missing exit as the failed run it is."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    Path(handle["log"]).write_text("transcript tail\n", encoding="utf-8")
+    seams["alive"] = False
+    seams["group_alive"] = True
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    seams["group_alive"] = False
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is True
+    assert pctx2.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_group_alive_rejects_a_recycled_leader_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td602769: ``killpg(pgid, 0)`` answering while the recorded leader
+    is gone is our survivors — unless the dead leader's pid slot now
+    LEADS that group, which can only happen after ours emptied: a
+    recycled id, not our session."""
+    live: dict[int, int] = {}
+
+    def getpgid(pid: int) -> int:
+        if pid not in live:
+            raise ProcessLookupError
+        return live[pid]
+
+    monkeypatch.setattr(run_slice.os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(run_slice.os, "getpgid", getpgid)
+    # Foreign process holds the slot but its own group is elsewhere:
+    # the answering members are ours.
+    live[4242] = 7777
+    assert run_slice._group_alive(4242) is True
+    # The slot now leads the group that answered — recycled, foreign.
+    live[4242] = 4242
+    assert run_slice._group_alive(4242) is False
+    # The slot itself is dead: survivors hold the group open.
+    live.clear()
+    assert run_slice._group_alive(4242) is True
+    assert run_slice._group_alive(1) is False
+
+    def gone(pgid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(run_slice.os, "killpg", gone)
+    assert run_slice._group_alive(4242) is False
 
 
 def test_budget_kill_fails_the_attempt_even_on_a_clean_exit(

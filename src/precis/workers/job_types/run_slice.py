@@ -47,7 +47,9 @@ that holds the lane's credentials with ``params.target_node``):
   On Darwin it carries ``ps_identity`` (start time + user); polling
   requires a recorded identity to match, since a reused pid can pass
   signal 0. Legacy Darwin handles cannot use EPERM as evidence of liveness.
-* :func:`poll` waits for the exit file (or a dead pid), checks the branch
+* :func:`poll` waits for the exit file (or a dead pid AND an emptied
+  group — a TERM can kill the wrapping ``sh`` while a vendor process
+  keeps the group open, td602769), checks the branch
   against the lane's ``deny_write_paths`` (:func:`deny_violations`),
   stamps the vendor's reported usage on ``meta.usage`` each pass —
   devin's ATIF ``--export`` file, live per turn; claude's result
@@ -59,8 +61,8 @@ that holds the lane's credentials with ``params.target_node``):
   any other adapter is refused outright (devin's paid ATIF carries
   tokens only, codex/kimi report no spend — the bound would read zero
   while real spend accrued), and the poll's watch SIGTERMs the group
-  once live usage meets the bound, escalating to SIGKILL while a
-  survivor still answers liveness past the grace. A budget stop is
+  once live usage meets the bound, escalating to SIGKILL while the
+  group still answers past the grace. A budget stop is
   always a failed attempt — even on a clean exit, it never mints a
   land;
   posts the session's last message as a ``handoff:`` comment on the todo,
@@ -641,18 +643,58 @@ def _darwin_process_identity(pid: int) -> str | None:
     return identity if result.returncode == 0 and identity else None
 
 
+def _handle_pgid(handle: dict[str, Any]) -> int:
+    """The session's process group, 0 when the handle names none — never
+    our own group (ssh_node's ``_detached_pgid`` rule: a record pointing
+    at the poller's group must be unsignallable, never enforceable)."""
+    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
+    if pgid <= 1 or pgid == os.getpgrp():
+        return 0
+    return pgid
+
+
+def _group_alive(pgid: int) -> bool:
+    """Signal-0 on the group: a member still answers. ESRCH means gone;
+    EPERM names a group we cannot signal — not our session's survivors. A
+    group id cannot be recycled while any member lives, so an answering
+    group is this session's — unless its leader pid was recycled into a
+    NEW group's leader after ours emptied (``os.getpgid`` resolving the
+    slot back to this group), in which case every member is foreign."""
+    if pgid <= 1:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    try:
+        if os.getpgid(pgid) == pgid:
+            # Reaching here means the recorded leader failed liveness, so
+            # the process now leading this group is not ours — the slot
+            # was recycled, and escalation must not chase it.
+            return False
+    except OSError:
+        pass  # pid slot dead: the answering members are the survivors
+    return True
+
+
 def _session_alive(handle: dict[str, Any]) -> bool:
     pid = int(handle.get("pid") or 0)
-    if pid <= 1:
-        return False
-    if "ps_identity" in handle:
-        expected = handle.get("ps_identity")
-        if not expected or _darwin_process_identity(pid) != expected:
-            return False
-        return _process_alive(pid, identity_matches=True)
-    # If ps failed at submit there is no ps_identity, so Darwin falls
-    # back to the legacy rule: EPERM without matching identity is not ours.
-    return _process_alive(pid)
+    if pid > 1:
+        if "ps_identity" in handle:
+            expected = handle.get("ps_identity")
+            if expected and _darwin_process_identity(pid) == expected:
+                if _process_alive(pid, identity_matches=True):
+                    return True
+        # If ps failed at submit there is no ps_identity, so Darwin falls
+        # back to the legacy rule: EPERM without matching identity is not
+        # ours.
+        elif _process_alive(pid):
+            return True
+    # A dead or unidentifiable leader does not prove the session ended:
+    # the budget TERM can kill the wrapping ``sh`` while a vendor process
+    # that ignores the signal keeps the group open (td602769), so the
+    # watch — and the unknown-exit wait — runs against the group.
+    return _group_alive(_handle_pgid(handle))
 
 
 def _signal_group(pgid: int, sig: int) -> None:
@@ -3137,10 +3179,12 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     so a job minted under the cap cannot run past it. The kill rides
     the handle as ``budget_kill``; the dead-process path then fails the
     attempt naming the bound — and even a clean exit after it is a
-    failure, never a land (td601426). A survivor still answering
+    failure, never a land (td601426). A group still answering
     liveness past :data:`_BUDGET_TERM_GRACE_S` — or a TERM that raised
     — escalates to SIGKILL, retried on every live pass: one signal is
-    not the enforcement, termination is. No live usage channel (a
+    not the enforcement, termination is. Liveness is the group's, not
+    the wrapper's — a TERM can kill the ``sh`` while a vendor process
+    ignores it (td602769). No live usage channel (a
     vendor reporting no spend, or none yet) means the bound simply
     cannot trip."""
     params = (ctx.meta or {}).get("params") or {}
@@ -3150,7 +3194,7 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     budget = float(raw)
     if not math.isfinite(budget) or budget <= 0:
         return
-    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
+    pgid = _handle_pgid(handle)
     kill = handle.get("budget_kill")
     if isinstance(kill, dict):
         try:
@@ -3167,7 +3211,7 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
             return
         # The grace expired (or the TERM never landed): SIGKILL —
         # retried every live pass while the group keeps answering.
-        if pgid > 1:
+        if pgid:
             try:
                 _signal_group(pgid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
@@ -3193,7 +3237,7 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
         "at": datetime.now(UTC).strftime(_TS_FMT),
         "sig": "none",
     }
-    if pgid > 1:
+    if pgid:
         try:
             _signal_group(pgid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
@@ -3677,8 +3721,8 @@ def kill(ctx: Any, handle: Any) -> None:
             _revoke_slice_grant(ctx, int(params.get("todo_id") or 0), grant, "aborted")
         except Exception:  # pragma: no cover — the signal still goes
             log.warning("run_slice: slice-token revoke on kill failed")
-    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
-    if pgid <= 1:
+    pgid = _handle_pgid(handle)
+    if not pgid:
         return
     try:
         _signal_group(pgid, signal.SIGTERM)
