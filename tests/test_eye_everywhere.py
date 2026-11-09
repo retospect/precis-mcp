@@ -483,7 +483,7 @@ class TestPerKind:
         assert not err and "Roadmap:" in out
         assert f"  serves: qu{quest.id} — Grow the mesh" in out
 
-    def test_skill_eye_is_the_verbatim_body_with_no_ring(
+    def test_skill_eye_is_the_verbatim_body_plus_its_wikilink_ring(
         self, runtime_with_store: Any
     ) -> None:
         out, err = _get(
@@ -494,7 +494,12 @@ class TestPerKind:
         )
         assert not err
         assert out.startswith("sk:precis-fisheye-help [skill]")
-        assert "— linked (1 hop) —" not in out
+        # gr572706: the ring derives from [[slug]] wikilinks, both
+        # directions — precis-fisheye-help's own See-also list out and
+        # the skills linking back in.
+        assert "— linked (1 hop) —" in out
+        assert "see-also" in out and "sk:precis-get-help" in out
+        assert "see-also-by" in out
         kwd, err = _get(
             runtime_with_store, kind="skill", id="precis-fisheye-help", extent="kwd"
         )

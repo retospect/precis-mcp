@@ -33,8 +33,9 @@ branches that used to call the renderer directly now delegate to ``eye`` as
 well, so a direct handler call and the MCP door render the same thing.
 
 ``skill`` is the one kind whose eye is not refs-backed: ``sk:<slug>`` renders
-straight from the skill corpus (atomic — a file has no corpus position to be
-a neighbour of), which the renderer already handles by prefix.
+straight from the skill corpus (no spatial neighborhood — a file has no
+corpus position; its ring is the derived ``[[slug]]`` wikilink graph), which
+the renderer already handles by prefix.
 """
 
 from __future__ import annotations

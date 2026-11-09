@@ -38,7 +38,8 @@ get(kind="taxon", id="tn88", extent="fisheye+1hop")  # specialises / has-instanc
 get(kind="paper", id="mao18", extent="fisheye")  # the cluster map; pc<id> rows to drill
 get(id="pc13234", extent="fisheye")  # a chunk, bare handle: the split within its cluster
 get(kind="draft", id="dc41", extent="fisheye+1hop")  # a section + reading order + reference ring
-get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: body, no ring
+get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: the body alone
+get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # body + its wikilink ring
 ```
 
 `extent=` selects the rung; `view='fisheye'` (and the other rung labels
@@ -85,7 +86,7 @@ only at `fisheye` and up.
 | Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | the reference ring (Cited / Cross-refs / Notes / Claims) |
 | Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
 | Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, … | the card (title → gist → body) | the link neighborhood by ring |
-| Skill | `skill` (`sk:<slug>`) | the verbatim body; `kwd` a bookmark | nothing — a file has no corpus position |
+| Skill | `skill` (`sk:<slug>`) | the verbatim body; `kwd` a bookmark | the wikilink ring — `see-also` out, `see-also-by` in |
 
 `Unsupported`, with the reason: a **whole draft or plan** (the eye
 focuses one section — `view='toc'` lists the `dc<id>` handles); a
@@ -137,6 +138,14 @@ neighbour's body is 1 kB or more (the stored `ref_body_bytes` row;
 an uncomputed ref shows none). A memory merely *about* the section
 but never linked is a `search` hit, not a hop.
 
+A **skill** eye has no spatial rung (a file has no corpus position) but
+does carry a link ring: the `[[…]]` wikilinks it writes (`see-also`)
+and the skills that link to it (`see-also-by`), derived live from the
+skill graph — no stored edges, so the pointers can't drift from the
+files. `fisheye+2hop` counts what those neighbours link to in the same
+shape (`N skill via see-also`); `q='see-also'` expands one first-hop
+group, `q='skill:see-also'` a second-hop one.
+
 ## The link neighborhood — one heading per ring, one line per neighbour
 
 On a link or document kind, `fisheye+1hop` lists every ref linked to the
@@ -183,7 +192,9 @@ untagged neighbours; `tags` keeps only neighbours carrying *all* the
 listed tags — the AND of `search(tags=[…])`). First hop, second hop and
 `+recall` all honour it. The `?kind=&space=` state on the browser page
 `/eye/<handle>` is the same narrowing; a draft/plan section eye (reading
-order, not link edges) and a skill eye have no ring to narrow.
+order, not link edges) has no ring to narrow, and a skill eye's ring
+narrows on `kinds` only — a file carries no `SPACE:` or open tags, so
+either filter empties it.
 
 ```python
 get(kind="memory", id="me474312", extent="fisheye+1hop",

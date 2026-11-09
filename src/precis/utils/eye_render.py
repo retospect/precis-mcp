@@ -41,9 +41,13 @@ kind, so the ladder generalizes but its shape does not:
   is dispatched on its ``sk:`` prefix ahead of the decimal parse and renders
   straight from the skill corpus (``handlers.skill``'s own accessors —
   ``_load_skill`` / ``_skill_title``, the same ones ``SkillHandler.get``
-  uses). It's **atomic**: no fisheye/1hop neighborhood (a skill has no
-  corpus position to be a neighbor of) — ``toc``/``none`` collapse to a
-  one-line bookmark, anything richer is the verbatim body.
+  uses). No *spatial* neighborhood (a file has no corpus position), but it
+  does have a **link ring**: the ``[[slug]]`` wikilinks, derived from the
+  shared :class:`~precis.skill_index.SkillGraph` rather than stored edges
+  (gr572706 ruling — outbound ``see-also``, inbound ``see-also-by``).
+  ``toc``/``none`` collapse to a one-line bookmark, ``summary``…``fisheye``
+  render the verbatim body, ``fisheye+1hop`` appends the wikilink ring and
+  ``fisheye+2hop`` the second hop, both in the link-kind shape.
 
 Reached from every kind's ``get`` through one door: ``get(kind=K, id=…,
 extent=<rung>)`` (or a ladder label in ``view=``) is routed by the
@@ -171,8 +175,10 @@ class RingFilter:
     every neighbour not carrying *all* the listed tags (the AND of
     ``search(tags=[…])`` — the ``scratch-for:td<N>`` owner tag that
     partitions ``SPACE:scratch`` by task). The focus itself always
-    renders; the tree eyes (reading order, not link edges) and the
-    atomic skill eye have no ring to narrow.
+    renders; the tree eyes (reading order, not link edges) have no ring
+    to narrow, and a skill eye's wikilink ring narrows only on
+    ``kinds`` — a file carries no ``SPACE:`` or open tags, so either of
+    those filters empties it.
     """
 
     kinds: frozenset[str] | None = None
@@ -270,7 +276,7 @@ def render_eye(
             "q='<kind>:<label>' expands a second-hop group at fisheye+2hop"
         )
     if handle.startswith(_SKILL_HANDLE_PREFIX):
-        return _render_skill_eye(handle, ext)
+        return _render_skill_eye(handle, ext, expand=q, ring=filt)
     parsed = handle_registry.parse(handle)
     if parsed is None:
         raise ValueError(f"eye: unresolvable handle {handle!r}")
@@ -445,18 +451,149 @@ def _cap(text: str, cap: int) -> str:
     return t if len(t) <= cap else t[: cap - 1].rstrip() + "…"
 
 
-# ── skill kind: file-backed, atomic verbatim (no neighborhood) ────────
+# ── skill kind: file-backed, verbatim + the wikilink ring ─────────────
+
+#: The labels a skill eye's ring renders. A skill carries no stored edges
+#: (the gr572706 ruling: no link rows for file-backed kinds) — its ring is
+#: derived from ``[[slug]]`` wikilinks via the shared
+#: :class:`~precis.skill_index.SkillGraph`: ``see-also`` the links the file
+#: wrote, ``see-also-by`` the skills linking in. The ingest gate
+#: hard-fails a dangling wikilink, so every row below resolves.
+_SKILL_OUT_LABEL = "see-also"
+_SKILL_IN_LABEL = "see-also-by"
 
 
-def _render_skill_eye(handle: str, ext: Extent) -> str:
+def _skill_link_groups(slug: str) -> dict[str, tuple[str, ...]]:
+    """``{label: (slugs,)}`` — ``slug``'s wikilink edges by direction.
+
+    Under a read connection a ``scope: write`` neighbour drops out, same
+    as the served footer's ``linked:`` line (gr512233): following the
+    pointer would only serve the stub.
+    """
+    from precis.handlers.skill import _get_skill_graph, _skill_is_write_only
+    from precis.runtime.scope import current_scope
+
+    graph = _get_skill_graph()
+    groups = {
+        _SKILL_OUT_LABEL: tuple(graph.outbound.get(slug, ())),
+        _SKILL_IN_LABEL: tuple(graph.inbound.get(slug, ())),
+    }
+    if current_scope() == "read":
+        groups = {
+            label: tuple(s for s in slugs if not _skill_is_write_only(s))
+            for label, slugs in groups.items()
+        }
+    return groups
+
+
+def _skill_row(slug: str) -> str:
+    """One ring row: ``sk:<slug> — <title>`` (title capped like any
+    neighbour's)."""
+    from precis.handlers.skill import _skill_title
+
+    title = _cap(" ".join((_skill_title(slug) or "").split()), _NEIGHBOR_TITLE_CAP)
+    handle = f"{_SKILL_HANDLE_PREFIX}{slug}"
+    return f"{handle} — {title}" if title else handle
+
+
+def _skill_first_hop(slug: str, groups: dict[str, tuple[str, ...]]) -> str:
+    """``— linked (1 hop) —`` over the wikilink groups in the link-kind
+    shape — a single-member group inline, a larger one a capped block
+    with a ``… +N more`` line naming the ``q='<label>'`` expansion call."""
+    lines = ["— linked (1 hop) —"]
+    for label in (_SKILL_OUT_LABEL, _SKILL_IN_LABEL):
+        slugs = groups.get(label, ())
+        if not slugs:
+            continue
+        if len(slugs) == 1:
+            lines.append(f"  {label}: {_skill_row(slugs[0])}")
+            continue
+        lines.append(f"  {label} ({len(slugs)}):")
+        lines.extend(f"    {_skill_row(s)}" for s in slugs[:_NEIGHBOR_GROUP_CAP])
+        if len(slugs) > _NEIGHBOR_GROUP_CAP:
+            lines.append(
+                f"    … +{len(slugs) - _NEIGHBOR_GROUP_CAP} more · "
+                f"get(kind='skill', id={slug!r}, "
+                f"extent='fisheye+1hop', q={label!r})"
+            )
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _skill_expand_first_hop(label: str, groups: dict[str, tuple[str, ...]]) -> str:
+    """One first-hop label's members, uncapped — the skill eye's
+    ``q='<label>'`` expansion (:func:`_expand_first_hop`'s shape)."""
+    slugs = groups.get(label, ())
+    if not slugs:
+        known = ", ".join(lab for lab, s in groups.items() if s) or "none"
+        raise ValueError(f"eye: no first-hop group {label!r}; groups here: {known}")
+    lines = [f"— linked (1 hop) · {label} ({len(slugs)}) —"]
+    lines.extend(f"    {_skill_row(s)}" for s in slugs)
+    return "\n".join(lines)
+
+
+def _skill_second_hop(
+    slug: str, groups: dict[str, tuple[str, ...]]
+) -> dict[str, tuple[str, ...]]:
+    """``{label: (slugs,)}`` — what the first-hop neighbours link to, the
+    same labels read from the neighbour's side, minus the focus and the
+    ring itself (:func:`_second_hop`'s grouping)."""
+    first = {s for slugs in groups.values() for s in slugs}
+    out: dict[str, set[str]] = {_SKILL_OUT_LABEL: set(), _SKILL_IN_LABEL: set()}
+    for neighbour in first:
+        for label, slugs in _skill_link_groups(neighbour).items():
+            out[label].update(s for s in slugs if s != slug and s not in first)
+    return {label: tuple(sorted(ids)) for label, ids in out.items() if ids}
+
+
+def _skill_render_second_hop(second: dict[str, tuple[str, ...]], n_first: int) -> str:
+    """The second hop as counts per label, in the link-kind shape."""
+    lines = [
+        f"— second hop ({n_first} neighbours out; counts — "
+        "expand one with q='skill:<label>') —"
+    ]
+    for label in (_SKILL_OUT_LABEL, _SKILL_IN_LABEL):
+        if slugs := second.get(label):
+            lines.append(f"  {len(slugs)} skill via {label}")
+    return "\n".join(lines)
+
+
+def _skill_expand_second_hop(expand: str, second: dict[str, tuple[str, ...]]) -> str:
+    """One second-hop group's members — ``q='skill:<label>'``, the
+    ``<kind>:<label>`` grammar the link kinds use."""
+    kind, _, label = expand.partition(":")
+    slugs = second.get(label.strip()) if kind.strip() == "skill" else ()
+    if not slugs:
+        known = (
+            ", ".join(f"skill:{lab}" for lab, s in sorted(second.items()) if s)
+            or "none"
+        )
+        raise ValueError(f"eye: no second-hop group {expand!r}; groups here: {known}")
+    lines = [f"— second hop: {len(slugs)} skill via {label.strip()} —"]
+    lines.extend(f"    {_skill_row(s)}" for s in slugs)
+    return "\n".join(lines)
+
+
+def _render_skill_eye(
+    handle: str,
+    ext: Extent,
+    *,
+    expand: str | None = None,
+    ring: RingFilter | None = None,
+) -> str:
     """A skill eye (``sk:<slug>``): file-backed, so it renders straight from
     the skill corpus via ``handlers.skill``'s own accessors — the same ones
-    ``SkillHandler.get`` uses — rather than a store round trip. No fisheye /
-    1hop ring: a skill has no corpus position to be a neighbor of, so the
-    ladder collapses to two rungs — ``toc``/``none`` render a one-line
-    bookmark, anything richer renders the verbatim body (capped like any
-    other eye)."""
-    from precis.handlers.skill import _load_skill, _skill_title
+    ``SkillHandler.get`` uses — rather than a store round trip.
+
+    ``toc``/``none`` render a one-line bookmark, ``summary``…``fisheye``
+    the verbatim body (capped like any other eye): a skill has no corpus
+    position to be a spatial neighbour of. Its *link* ring is derived,
+    not stored — the ``[[slug]]`` wikilinks, outbound plus inbound, from
+    the shared :class:`SkillGraph` (gr572706). ``fisheye+1hop`` appends
+    it; ``fisheye+2hop`` adds the second hop as counts. ``q='<label>'``
+    expands one first-hop group, ``q='skill:<label>'`` one second-hop
+    group — the same grammar a link-kind eye takes. Wikilinks in the
+    body render expanded like the whole-skill serve."""
+    from precis.handlers.skill import _expand_wikilinks, _load_skill, _skill_title
 
     slug = handle[len(_SKILL_HANDLE_PREFIX) :]
     text = _load_skill(slug)
@@ -466,7 +603,42 @@ def _render_skill_eye(handle: str, ext: Extent) -> str:
     head = f"{handle} [skill] {title}".rstrip()
     if ext <= Extent.TOC:
         return f"· {head}"
-    return f"{head}\n{_cap(text, _VERBATIM_CAP)}"
+    block = f"{head}\n{_cap(_expand_wikilinks(text), _VERBATIM_CAP)}"
+    if ext < Extent.HOP1:
+        return block
+
+    # ring= narrows like on any eye: a kinds filter without 'skill'
+    # empties the ring; a space or tags filter always does — a file
+    # carries no tags.
+    if ring is not None and (
+        (ring.kinds is not None and "skill" not in ring.kinds)
+        or ring.spaces is not None
+        or ring.tags is not None
+    ):
+        groups: dict[str, tuple[str, ...]] = {}
+    else:
+        groups = {
+            label: slugs for label, slugs in _skill_link_groups(slug).items() if slugs
+        }
+
+    sections: list[str] = []
+    first_hop_label = expand if expand is not None and ":" not in expand else None
+    if first_hop_label is not None:
+        sections.append(_skill_expand_first_hop(first_hop_label, groups))
+    elif expand is None:
+        first = _skill_first_hop(slug, groups)
+        sections.append(
+            first or "no linked skills — no [[slug]] edges in either direction"
+        )
+    if ext >= Extent.HOP2 and first_hop_label is None:
+        second = _skill_second_hop(slug, groups)
+        if expand is not None:
+            sections.append(_skill_expand_second_hop(expand, second))
+        elif second:
+            sections.append(
+                _skill_render_second_hop(second, sum(len(s) for s in groups.values()))
+            )
+    return "\n\n".join([block, *sections])
 
 
 # ── doc kinds: the keyword-cluster fisheye (paper / patent / web / …) ──

@@ -20,6 +20,7 @@ from precis.utils.toc_db import cluster_blocks
 from precis.utils.working_set_render import render_working_set
 from precis.workers.working_set import Extent, WorkingSet
 from tests._refs import insert_gripe
+from tests._skill_corpus import _install_corpus, _md
 
 
 def _pe(body: str) -> str:
@@ -1289,7 +1290,7 @@ def test_quest_eye_opens_with_the_gist_not_the_logbook(hub: Hub) -> None:
     assert "Tried Fe-N4 sites" not in out
 
 
-# ── skill eyes: file-backed, atomic (no neighborhood) ──────────────────
+# ── skill eyes: file-backed, verbatim + the wikilink ring ─────────────
 
 
 def test_skill_eye_toc_is_a_one_line_bookmark() -> None:
@@ -1311,6 +1312,100 @@ def test_skill_eye_verbatim_renders_the_skill_body() -> None:
 def test_skill_eye_unknown_slug_raises() -> None:
     with pytest.raises(ValueError):
         render_eye(None, "sk:no-such-skill-slug", "verbatim")
+
+
+def test_skill_eye_1hop_lists_wikilink_neighbours_both_directions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr572706: fisheye+1hop derives the ring from [[slug]] wikilinks —
+    outbound (see-also) and inbound (see-also-by)."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "a": _md(body="see [[b]] and [[c]]"),
+            "b": _md(body="body"),
+            "c": _md(body="see [[a]] too"),
+        },
+    )
+    out = render_eye(None, "sk:a", "fisheye+1hop")
+    assert "— linked (1 hop) —" in out
+    assert "see-also (2):" in out
+    assert "sk:b" in out and "sk:c" in out
+    assert "see-also-by: sk:c" in out  # c links back to a
+
+
+def test_skill_eye_fisheye_rung_has_no_ring(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="see [[b]]"), "b": _md(body="b")})
+    out = render_eye(None, "sk:a", "fisheye")
+    assert "— linked (1 hop) —" not in out
+
+
+def test_skill_eye_1hop_empty_ring_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="no links")})
+    out = render_eye(None, "sk:a", "fisheye+1hop")
+    assert "no linked skills" in out
+
+
+def test_skill_eye_1hop_expand_lists_one_group_uncapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = {"hub": _md(body="hub body")}
+    files.update({f"leaf{i}": _md(body="see [[hub]]") for i in range(10)})
+    _install_corpus(monkeypatch, files)
+    capped = render_eye(None, "sk:hub", "fisheye+1hop")
+    assert "… +2 more" in capped
+    out = render_eye(None, "sk:hub", "fisheye+1hop", q="see-also-by")
+    assert "— linked (1 hop) · see-also-by (10) —" in out
+    assert "sk:leaf9" in out
+
+
+def test_skill_eye_1hop_expand_unknown_label_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="see [[b]]"), "b": _md(body="b")})
+    with pytest.raises(ValueError, match="no first-hop group"):
+        render_eye(None, "sk:a", "fisheye+1hop", q="see-also-by")
+
+
+def test_skill_eye_2hop_counts_neighbour_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "a": _md(body="see [[b]]"),
+            "b": _md(body="see [[c]]"),
+            "c": _md(body="body"),
+        },
+    )
+    out = render_eye(None, "sk:a", "fisheye+2hop")
+    assert "— second hop (1 neighbours out" in out
+    assert "1 skill via see-also" in out  # b's outbound {c}
+    assert "sk:c" not in out  # counts, not rows
+
+
+def test_skill_eye_2hop_expand_lists_one_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_corpus(
+        monkeypatch,
+        {
+            "a": _md(body="see [[b]]"),
+            "b": _md(body="see [[c]]"),
+            "c": _md(body="body"),
+        },
+    )
+    out = render_eye(None, "sk:a", "fisheye+2hop", q="skill:see-also")
+    assert "— second hop: 1 skill via see-also —" in out
+    assert "sk:c" in out
+
+
+def test_skill_eye_ring_narrows_on_kinds(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_corpus(monkeypatch, {"a": _md(body="see [[b]]"), "b": _md(body="b")})
+    out = render_eye(None, "sk:a", "fisheye+1hop", ring={"kinds": "memory"})
+    assert "no linked skills" in out
+    out = render_eye(None, "sk:a", "fisheye+1hop", ring={"kinds": "skill"})
+    assert "sk:b" in out
 
 
 def test_skill_eye_unknown_slug_degrades_not_crashes_in_working_set(hub: Hub) -> None:
