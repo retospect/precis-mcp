@@ -17,7 +17,7 @@ from precis.plans import pr_class as P
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
-from precis.store.types import ChunkInsert, Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
@@ -710,6 +710,102 @@ def test_a_fresh_mint_hold_is_untouched(store: Store, hub: Any) -> None:
     assert res.asks == 0
     assert "waiting-for:mint" in _open_tags(store, kid)
     assert not _jobs_under(store, kid)
+
+
+@pytest.mark.parametrize("settle", ["link", "body"])
+def test_an_orphaned_mints_hold_releases_once_settled(
+    store: Store, hub: Any, settle: str
+) -> None:
+    """td601973 review of gr574881: the orphan ask's ``blocked-by`` edge
+    is the ask's dedup mark, not a settled link — but it must not pin
+    the hold either. Once the mint settles the way the ask's own body
+    instructs (a dependency lands, or a body is written), the next tick
+    releases the hold; the open ask — not the tag — is what parks it."""
+    from precis.handlers.todo import TodoHandler
+
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+    _age_tag(store, kid, "waiting-for:mint", "11 minutes")
+
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert res.released == 0
+    assert "waiting-for:mint" in _open_tags(store, kid)
+
+    # The mint settles — a real dependency edge, or a body.
+    if settle == "link":
+        store.add_link(src_ref_id=kid, dst_ref_id=task, relation="blocked-by")
+    else:
+        store.chunks.insert_chunks(
+            kid,
+            [ChunkInsert(ord=0, text="Do it.", meta={"chunk_kind": TODO_BODY_KIND})],
+        )
+
+    res = pd.run_pass(store)
+    assert res.released == 1
+    assert res.asks == 0
+    assert "waiting-for:mint" not in _open_tags(store, kid)
+    assert not _jobs_under(store, kid)
+
+    # The ask (and, for a link, the blocker) — not the hold — is what
+    # parks the mint; resolved, it dispatches.
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    if settle == "link":
+        store.add_tag(
+            task, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, kid)) == 1
+
+
+def test_a_mint_behind_a_pre_existing_ask_releases(store: Store, hub: Any) -> None:
+    """td601973 review of gr574881: a ``blocked-by`` edge to a REAL ask —
+    a ruling the minter wired the mint behind — is a settled link, not
+    the orphan ask's dedup mark: hygiene releases the stale hold, files
+    no second ask, and the open ask parks the mint until it is answered."""
+    from precis.handlers.todo import TodoHandler
+
+    mint = _one_task_plan(store)
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+
+    # The minter's wiring lands — the mint waits on a real ruling ask —
+    # then it dies before removing the hold.
+    ask = _ask_child(store, mint.root_id, f"td{kid}")
+    store.add_link(src_ref_id=kid, dst_ref_id=ask, relation="blocked-by")
+    _age_tag(store, kid, "waiting-for:mint", "11 minutes")
+
+    res = pd.run_pass(store)
+    assert res.released == 1
+    assert res.asks == 0
+    assert "waiting-for:mint" not in _open_tags(store, kid)
+    assert not _jobs_under(store, kid)
+
+    # The open ask, not the hold, parks it; answered, it dispatches.
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, kid)) == 1
 
 
 def _failed_job(

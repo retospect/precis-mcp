@@ -132,7 +132,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    a ``waiting-for:mint`` tag older than :data:`MINT_STALE` on a mint whose
    links or body settled is released — a dead minter cannot strand the child
    (gr574881) — while an orphan mint (no ``blocked-by``/``part-of`` edge, no
-   body) is not released and files one ask on the plan root instead;
+   body — its own orphan-ask edge is the ask's dedup mark, not a link) is
+   not released and files one ask on the plan root instead;
    a task whose newest job ended
    (failed, or succeeded without closing it) with attempts at its retry
    cap is parked. The cap is an explicit ``meta.retries`` pin, else the
@@ -226,6 +227,7 @@ Workers never import handlers: every write here is a store call.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -3675,7 +3677,9 @@ def _mint_orphan_ask(store: Any, n: _Node, minutes: int) -> int:
     calls. The hold stays (an empty task released would dispatch into
     the void); the ask parks it for a human. Insert shape of
     :func:`_mint_ask`; the ``blocked-by`` edge lands on the orphan so
-    :func:`_step_mint_holds` never asks twice."""
+    :func:`_step_mint_holds` never asks twice — :func:`_mint_settled`
+    reads the options/blocks-signed edge as that dedup mark, not a
+    settled link, so a mint the human then settles still releases."""
     context = (
         f"waiting-for:mint held {minutes}m with no links and no body — "
         f"orphan mint td{n.id} under plan td{n.root}"
@@ -3880,12 +3884,26 @@ def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> N
 def _mint_settled(store: Any, ref_id: int) -> bool:
     """Whether a held mint's put→link session settled: a ``blocked-by``
     or ``part-of`` edge touches it, or it carries a non-empty body — the
-    hold is then a leftover, not a guard (gr574881)."""
+    hold is then a leftover, not a guard (gr574881). The edge to the
+    mint's own orphan ask — options/blocks-signed by
+    :func:`_mint_orphan_ask` — is the ask's dedup mark, not a settled
+    link: the mint behind it is still the empty task the ask parks
+    (td601973)."""
     with store.pool.connection() as conn:
         linked = conn.execute(
-            "SELECT 1 FROM links WHERE relation IN ('blocked-by', 'part-of') "
-            "AND (src_ref_id = %s OR dst_ref_id = %s) LIMIT 1",
-            (ref_id, ref_id),
+            "SELECT 1 FROM links l WHERE l.relation IN ('blocked-by', 'part-of') "
+            "AND (l.src_ref_id = %s OR l.dst_ref_id = %s) "
+            "AND NOT (l.relation = 'blocked-by' AND l.src_ref_id = %s "
+            "AND EXISTS (SELECT 1 FROM refs b WHERE b.ref_id = l.dst_ref_id "
+            "AND b.retired_at IS NULL AND b.meta->'ask'->>'blocks' = %s "
+            "AND b.meta->'ask'->'options' = %s::jsonb)) LIMIT 1",
+            (
+                ref_id,
+                ref_id,
+                ref_id,
+                f"td{ref_id}",
+                json.dumps(list(_ORPHAN_MINT_ASK_OPTIONS)),
+            ),
         ).fetchone()
     if linked is not None:
         return True
@@ -3903,21 +3921,23 @@ def _step_mint_holds(
     the me570515 contract leaves removal to the minter, and a minter that
     died, errored or forgot would hold the child forever. An unsettled
     orphan mints one ask on its plan root instead (:func:`_mint_orphan_ask`);
-    the ask's ``blocked-by`` edge dedupes the step, open or answered."""
+    the ask's ``blocked-by`` edge dedupes the ASK decision only — a mint
+    settled past its ask (or behind a pre-existing ask dependency) still
+    releases (td601973)."""
     for n in plan.todos():
         if _closed(n):
             continue
         stamped = n.open_tags.get(MINT_HOLD_TAG)
         if stamped is None or now - stamped <= MINT_STALE:
             continue
-        if any(b.is_ask for b in plan.blockers.get(n.id, [])):
-            continue  # the orphan ask is already filed
         minutes = int((now - stamped).total_seconds() // 60)
         if _mint_settled(store, n.id):
             w.remove_tags(n, [MINT_HOLD_TAG])
             res.released += 1
             res.notes.append(f"mint hold released: td{n.id} (minter silent {minutes}m)")
             continue
+        if any(b.is_ask for b in plan.blockers.get(n.id, [])):
+            continue  # still an orphan — the ask is already filed
         if w.dry_run:
             res.asks += 1
             res.notes.append(
