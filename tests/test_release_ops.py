@@ -2280,6 +2280,8 @@ def test_digest_infra_red_past_the_park_cap_posts_blocked_and_fails(
         c for c in _todo_comments(store, mint.root_id) if c.startswith("blocked:")
     ]
     assert plan_blocked == [comments[0]]
+    # The stamp routes the retry-cap ask to the coordinator.
+    assert "infra red" in ctx.stamped[crd.COORDINATOR_ASK_KEY]
 
     # A retried digest posts no second blocked: note for the same run.
     ctx2 = Ctx(store, {"todo_id": digest_id})
@@ -2321,6 +2323,114 @@ def test_digest_infra_red_rerun_refused_posts_blocked_and_fails(
     assert comments[0] in [
         c for c in _todo_comments(store, mint.root_id) if c.startswith("blocked:")
     ]
+    # The stamp routes the retry-cap ask to the coordinator.
+    assert "refused" in ctx.stamped[crd.COORDINATOR_ASK_KEY]
+
+
+def _fail_digest_job(store: Store, digest_id: int, why: str, *, coord: bool) -> int:
+    """The row the executor leaves for a failed ``ci_red_digest`` job:
+    the job_event tail plus STATUS:failed (:func:`_fail_job`), and for
+    an :func:`crd._infra_blocked` exit the ``ctx.set_meta`` stamp the
+    tick reads (:data:`crd.COORDINATOR_ASK_KEY`)."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="ci_red_digest job",
+        meta={"job_type": "ci_red_digest"},
+        parent_id=digest_id,
+    )
+    job_id = int(ref.id)
+    if coord:
+        store.stamp_ref_meta(job_id, {crd.COORDINATOR_ASK_KEY: why})
+    _fail_job(store, job_id, why)
+    return job_id
+
+
+def test_coordinator_ask_key_matches_plan_dispatch() -> None:
+    """``plan_dispatch`` restates the key ``ci_red_digest`` stamps (the
+    dependency stays one-way); the two spellings must never drift."""
+    assert pd.COORDINATOR_ASK_KEY == crd.COORDINATOR_ASK_KEY == "coordinator_ask"
+
+
+def test_infra_blocked_stamp_routes_the_cap_ask_to_the_coordinator(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td612107 review: a persistent infra red stamps the failed job, so
+    the retry cap files an ``ask-coordinator`` ask blocking the digest
+    node — the coordinator's call, not a generic lane-retry ask. Closing
+    the ask re-arms the node."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, _fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, _calls = _gh_run_stub(
+        {"status": "completed", "conclusion": "failure", "jobs": [], "attempt": 2}
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    handle["parks"] = crd._PARK_CAP
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is True
+    stamp = str(ctx.stamped[crd.COORDINATOR_ASK_KEY])
+    assert "infra red" in stamp
+
+    # The tick's retries spent with the newest stamped: the cap ask goes
+    # to the coordinator.
+    _fail_digest_job(
+        store, digest_id, "ci_red_digest: scripts/ci-failed exit 1", coord=False
+    )
+    _fail_digest_job(store, digest_id, stamp, coord=True)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask_id,) = _asks_under(store, mint.root_id)
+    tags = {str(t.value) for t in store.tags_for(ask_id)}
+    assert {"ask-coordinator", "ask-user", "showstopper"} <= tags
+    assert f"plan:{mint.root_id}" in tags
+    meta = _meta(store, ask_id)
+    assert meta["ask"]["blocks"] == f"td{digest_id}"
+    assert meta["ask"]["options"] == ["acknowledged"]
+    assert "infra red" in meta["ask"]["context"]
+    with store.pool.connection() as conn:
+        link = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'blocked-by'",
+            (digest_id, ask_id),
+        ).fetchone()
+    assert link is not None
+
+    # The open ask dedupes the cap mint; answering it re-arms the node
+    # for a re-digest.
+    assert pd.run_pass(store).asks == 0
+    store.add_tag(
+        ask_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    # The loop rides the poll's blocked-by edge; closing it lifts the
+    # subtree hold so the re-armed node can dispatch.
+    _close(store, mint.ids["poll"])
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _meta(store, digest_id)["rearmed_by_ask"] == ask_id
+    jobs = _jobs_under(store, digest_id)
+    assert len(jobs) == 3  # the re-arm minted a fresh digest job
+    assert jobs[-1][1]["job_type"] == "ci_red_digest"
+
+
+def test_an_unstamped_digest_cap_files_the_plain_ask(store: Store) -> None:
+    """The stamp discriminates: capped digest failures without it keep
+    the generic retry-cap ask — ``ask-user`` + ``showstopper``, never
+    ``ask-coordinator``."""
+    mint = _cut(store)
+    digest_id, _fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    why = "ci_red_digest: scripts/ci-failed exit 1"
+    _fail_digest_job(store, digest_id, why, coord=False)
+    _fail_digest_job(store, digest_id, why, coord=False)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    (ask_id,) = _asks_under(store, mint.root_id)
+    tags = {str(t.value) for t in store.tags_for(ask_id)}
+    assert {"ask-user", "showstopper"} <= tags
+    assert "ask-coordinator" not in tags
 
 
 def test_digest_parks_and_recovers_a_still_running_run(

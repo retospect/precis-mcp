@@ -36,7 +36,8 @@ pinned to that host the same way.
   that never concluded) and park on the rerun, so the loop waits
   without burning an iteration; a run that stays infra past
   :data:`_PARK_CAP` fails the job so the tick retries, then files the
-  ask. A digest whose ``== job ==`` sections are all blind (the
+  coordinator ask (:data:`COORDINATOR_ASK_KEY`). A digest whose
+  ``== job ==`` sections are all blind (the
   ``(no signal lines`` tail — the shared stream carrying only step
   headers, gr587536) is never posted: the job first re-reads the failed
   jobs' own logs through ``gh api actions/jobs/<id>/logs``
@@ -132,6 +133,13 @@ _RUN_STATE_JSON = "status,conclusion,jobs,attempt"
 #: again — the marker on the node's meta survives a job re-dispatch
 #: where the compute handle's fields do not.
 _INFRA_RERUN_KEY = "ci_infra_rerun"
+
+#: The job-meta stamp :func:`_infra_blocked` leaves on the job it fails
+#: (``plan_dispatch`` reads the same key, restated): a run still infra
+#: past the park cap, or a ``gh run rerun`` the credential refused, is a
+#: persistent infrastructure failure — the retry-cap ask files on the
+#: ``ask-coordinator`` channel, never to a lane retry.
+COORDINATOR_ASK_KEY = "coordinator_ask"
 
 #: A completed run whose conclusion is one of these is green — the same
 #: set ``ci_verdict_poll`` records its green verdict on.
@@ -443,13 +451,16 @@ def _infra_blocked(
 ) -> bool:
     """The infra ruling's terminal exit: post ``note`` — deduped per
     run by :func:`_blocked_posted` — on the plan root and each fix node,
-    then fail the job with ``fail`` and the masked log tail. The plan
-    tick re-dispatches within the node's retries, then files the ask."""
+    then fail the job with ``fail`` and the masked log tail, stamped
+    :data:`COORDINATOR_ASK_KEY` so the plan tick — after re-dispatching
+    within the node's retries — files the cap ask on the
+    ``ask-coordinator`` channel."""
     root = _release.plan_root(ctx.store, todo_id)
     for tid in dict.fromkeys([root, *targets]):
         if not _blocked_posted(ctx.store, tid, run_id):
             _rs._append_comment(ctx.store, tid, note)
     ctx.append_chunk("job_summary", f"{NAME}: {note}")
+    ctx.set_meta(**{COORDINATOR_ASK_KEY: fail})
     _rc.fail_with_tail(ctx, fail, mask_secrets(log_text))
     return True
 
@@ -474,7 +485,8 @@ def _infra_done(
     unreadable — and parks on it, so the loop waits without burning an
     iteration. A run green now is recorded and the fix nodes close
     moot; a run that stays infra past :data:`_PARK_CAP` fails the job —
-    the tick retries within the node's retries, then files the ask."""
+    the tick retries within the node's retries, then files the
+    coordinator ask."""
     rn = str(rel.get("rN") or "r?")
     sha = str(rel.get("sha") or "")
     sha9 = sha[:9] or "unknown"
@@ -513,7 +525,7 @@ def _infra_done(
             f"{why}; an infra red, not a test red, and still red after "
             f"{_PARK_CAP} re-reads waiting on a rerun's verdict. A hand "
             "rerun or a push unblocks the loop; the digest job failed "
-            "so the plan tick retries, then files the ask."
+            "so the plan tick retries, then files the coordinator ask."
         )
         return _infra_blocked(
             ctx,
@@ -595,7 +607,7 @@ def _infra_done(
             f"`gh {' '.join(argv)}` was refused ({detail}); the "
             "credential may lack Actions write. A hand rerun or a push "
             "unblocks the loop; the digest job failed so the plan tick "
-            "retries, then files the ask."
+            "retries, then files the coordinator ask."
         )
         return _infra_blocked(
             ctx,

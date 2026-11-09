@@ -245,12 +245,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    mechanical op (``meta.op`` other than ``run_slice``) asks too. The
    ask is one ask-user todo under the plan root (``meta.ask`` kind
    ``ruling``, tags ``ask-user`` + ``showstopper``) the task is
-   ``blocked-by``. A land that died past its own gate-kill retries
-   carries ``meta.land_again_cap`` and goes straight to that ask — the
-   capped run is done, no auto re-land (gr570187). An answered re-land
-   ask re-lands only when the answer names ``land again (no builder)``
-   and the task's brief is untouched; a rewritten brief — or any other
-   answer — mints a builder on the task's new brief.
+   ``blocked-by``. A failed job stamped ``meta.coordinator_ask``
+   (``ci_red_digest``'s persistent infra red or refused rerun) gets an
+   ``ask-coordinator``-tagged ask instead — a CI or credential fault is
+   the coordinator's call (td612107 review). A land that died past its
+   own gate-kill retries carries ``meta.land_again_cap`` and goes
+   straight to that ask — the capped run is done, no auto re-land
+   (gr570187). An answered re-land ask re-lands only when the answer
+   names ``land again (no builder)`` and the task's brief is untouched;
+   a rewritten brief — or any other answer — mints a builder on the
+   task's new brief.
    Attempts count the ended jobs since the newest ask on
    the task (or the ``attempt:<n>`` tag ``run_slice`` writes, before any ask),
    so answering the ask re-arms the task — except a job carrying
@@ -497,6 +501,14 @@ NO_COMMIT_KEY = "no_commit"
 #: the succeeded job; :func:`_step_moot` resolves the plan's gripe on
 #: that sha exactly as a land does (td584381 S1d).
 MOOT_VERIFIED_KEY = "moot_verified"
+
+#: ``ci_red_digest.COORDINATOR_ASK_KEY``, restated — the same one-way
+#: rule (a test pins the two spellings equal). The digest stamps it on
+#: the job a persistent infra red or a refused ``gh run rerun`` failed
+#: (td612107 review): the retry-cap ask files on the
+#: ``ask-coordinator`` channel — a CI or credential fault is the
+#: coordinator's call, not another lane retry's.
+COORDINATOR_ASK_KEY = "coordinator_ask"
 
 #: Consecutive ``_notify_gripe`` raises on a verified task moot —
 #: stamped on the moot node's meta by :func:`_step_moot` (td584381 S1d
@@ -3052,6 +3064,20 @@ def _no_commit(plan: _Plan, n: _Node) -> bool:
     )
 
 
+def _coordinator_hit(plan: _Plan, n: _Node) -> str | None:
+    """The ``ci_red_digest.COORDINATOR_ASK_KEY`` stamp's reason on the
+    newest attempt job — a persistent infra red or a refused rerun,
+    whose cap ask routes to the coordinator (td612107 review). Only the
+    newest attempt's stamp counts (``_human_hit``'s scope rule): a
+    stamped job below the re-arm floor or the newest ask was already
+    answered for."""
+    ended = _attempt_jobs(plan, n)
+    if not ended or ended[-1].status != "failed":
+        return None
+    why = ended[-1].meta.get(COORDINATOR_ASK_KEY)
+    return str(why) if why else None
+
+
 def _rearm_floor(n: _Node) -> int | None:
     raw = n.meta.get("rearmed_after_job")
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -5457,11 +5483,13 @@ def _step_hygiene(
         human = _human_hit(plan, n)
         land_capped = _land_again_capped(plan, n)
         mech_sig = _mech_done(plan, n)
+        coord = _coordinator_hit(plan, n)
         lane_gap: str | None = None
         if (
             not human
             and not land_capped
             and mech_sig is None
+            and coord is None
             and job_type == DEFAULT_OP
             and not rungs
         ):
@@ -5473,7 +5501,8 @@ def _step_hygiene(
                 else f"no enabled lane fits task class {task_class!r}"
             )
         rescue = (
-            mech_sig is None
+            coord is None
+            and mech_sig is None
             and not human
             and not land_capped
             and job_type == DEFAULT_OP
@@ -5483,6 +5512,8 @@ def _step_hygiene(
             what = (
                 f"enter rescue ({'review' if _is_reviewer(n) else 'builder'})"
                 if rescue
+                else f"file a coordinator ask (retry cap {cap})"
+                if coord is not None
                 else f"file an ask (retry cap {cap})"
             )
             res.notes.append(f"td{n.id}: would {what}")
@@ -5494,19 +5525,50 @@ def _step_hygiene(
         if rescue:
             _rescue_node(plan, w, res, n, cap, attempts)
             continue
-        ask_id = _mint_ask(
-            w.store,
-            plan,
-            n,
-            attempts,
-            cap,
-            relands=_infra_red_lands(plan, n) if land_capped else 0,
-            human=human,
-            lane_gap=lane_gap,
-            mech=mech_sig,
-        )
+        if coord is not None:
+            # A persistent infra red or a refused ``gh run rerun`` — the
+            # stamp :data:`COORDINATOR_ASK_KEY` — is the coordinator's
+            # call, never a lane retry's (td612107 review). The
+            # ``blocked-by`` edge re-arms the node on the answer.
+            ask_id = _mint_coordinator_ask(
+                w.store,
+                plan,
+                n,
+                title=(
+                    f"td{n.id}: infra-blocked at retry cap {cap} — a coordinator call"
+                ),
+                body=(
+                    f"The plan tick stopped dispatching td{n.id} "
+                    f"({n.title.splitlines()[0] if n.title else ''}): "
+                    f"{coord}. A run still infra past its parks, or a "
+                    "`gh run rerun` the credential refused, is the "
+                    "coordinator's call — a hand rerun, a push or an "
+                    "Actions-write credential unblocks the loop; no lane "
+                    "retry can. Close this ask `acknowledged` once the "
+                    f"unblock is in — closing re-arms td{n.id} with a "
+                    "fresh retry budget so a re-digest reads the run's "
+                    "real verdict."
+                ),
+                context=coord,
+                now=now,
+                block_node=True,
+            )
+        else:
+            ask_id = _mint_ask(
+                w.store,
+                plan,
+                n,
+                attempts,
+                cap,
+                relands=_infra_red_lands(plan, n) if land_capped else 0,
+                human=human,
+                lane_gap=lane_gap,
+                mech=mech_sig,
+            )
         why = (
-            f"mechanical red loop ({mech_sig})"
+            "infra red routed to coordinator"
+            if coord is not None
+            else f"mechanical red loop ({mech_sig})"
             if mech_sig
             else "human-only hit"
             if human
