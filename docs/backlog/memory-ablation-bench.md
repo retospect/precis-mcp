@@ -111,12 +111,21 @@ curve per arm.
 
 ## Reproducibility
 
-- **Fixture corpus**: a manifest of CC-BY arXiv papers (ids, sha256,
-  licence), fetched by the harness; never prod text. The agent-memory
-  papers already serving qu604835 are the seed.
-- **Task set + gold**: committed JSONL in the `retrieval_qu164903.jsonl`
-  shape (`{id, type, question, answer, evidence, gold_chunks, labelled_by}`);
-  every label `reto` or marked `model:<id>`.
+- **Fixture corpus**: a subset of **QASPER** (AI2; 1,585 CC-licensed
+  full-text NLP papers, dataset CC BY 4.0, pinned HF revision) — 30
+  papers for `--quick`, 200 for the full run — so `lookup` and
+  `grounding` tasks come with published paragraph- and sentence-level
+  gold and public evidence-selection baselines to compare against.
+  Manifest records ids, sha256, licence; never prod text. Cross-paper
+  retrieval check: LitSearch (MIT, 64K abstracts, gold paper ids).
+  Stance via SciFact only as a research-only annex (CC BY-NC 2.0).
+  Memory-benchmark control: LongMemEval (MIT). Source:
+  perplexity-research:605814, verify before citing.
+- **Task set + gold**: QASPER's own questions for `lookup`/`grounding`;
+  our additions for `cross-paper`, `stance` and the memory kind over the
+  same papers, committed JSONL in the `retrieval_qu164903.jsonl` shape
+  (`{id, type, question, answer, evidence, gold_chunks, labelled_by}`);
+  every added label `reto` or marked `model:<id>`.
 - **Results header**: precis sha, corpus hash, embedder id, model ids,
   judge model, seeds, flag set, machine class — eval-run-spine.md's run
   versioning with a first consumer.
