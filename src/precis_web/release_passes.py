@@ -11,7 +11,9 @@ steward's ticks. Every shape read here is written by the dark release ops;
   ``r259 → r260`` on the one row, never two unrelated rows;
 - the plan nodes' STATUS + ``blocked-by`` edges give the pipeline's
   current step — a node is *active* when open and every blocker closed;
-- ``release.ci_verdicts`` gives the gate's GitHub run + verdict,
+- ``release.ci_verdicts`` gives the gate's GitHub run + verdict — and
+  before a verdict lands, the parked poll job's own
+  ``meta.ci_verdict_poll`` stamp carries the in-flight run's id;
   ``release.round`` the shared lifecycle record, ``release.prod_head``
   what prod actually serves.
 
@@ -81,17 +83,22 @@ SELECT r.ref_id, r.parent_id, r.meta,
  ORDER BY r.ref_id
 """
 
-#: The recorded cuts: every ``release_cut`` job that reached its stamp
-#: (``meta.release_cut``), oldest first — the r<N> history one pass's
-#: re-cuts write. Scoped by ``parent_id`` (the dispatcher's ``_mint_job``
-#: parents a job to the plan node it serves — an indexed column, so the
-#: read stays off the whole jobs table).
-_CUTS_SQL = """
-SELECT r.ref_id, r.parent_id AS node_id, r.meta -> 'release_cut' AS cut
+#: The recorded job stamps: every ``release_cut`` job that reached its
+#: stamp (``meta.release_cut``), oldest first — the r<N> history one
+#: pass's re-cuts write — plus every ``ci_verdict_poll`` stamp, which is
+#: the only record of the in-flight run's id while its verdict is still
+#: out (a parked poll restamps it each wake). Scoped by ``parent_id``
+#: (the dispatcher's ``_mint_job`` parents a job to the plan node it
+#: serves — an indexed column, so the read stays off the whole jobs
+#: table).
+_JOBS_SQL = """
+SELECT r.ref_id, r.parent_id AS node_id, r.updated_at,
+       r.meta -> 'release_cut' AS cut,
+       r.meta -> 'ci_verdict_poll' AS poll
   FROM refs r
  WHERE r.kind = 'job' AND r.retired_at IS NULL
    AND r.parent_id = ANY(%s)
-   AND r.meta ? 'release_cut'
+   AND (r.meta ? 'release_cut' OR r.meta ? 'ci_verdict_poll')
  ORDER BY r.ref_id
 """
 
@@ -162,6 +169,25 @@ def _run_url(repo: str | None, run_id: str) -> str | None:
     return f"https://github.com/{repo}/actions/runs/{run_id}"
 
 
+def _poll_for(jobs: list[dict[str, Any]], sha: str, rng: str) -> dict[str, Any] | None:
+    """The newest ``ci_verdict_poll`` job stamp covering the cut — the
+    gate's own match rule (:func:`_verdict_for`: sha prefix or range
+    equality). ``jobs`` arrive ordered by ref_id, so the last hit is the
+    newest poll; a stamp for an earlier cut never poses as the live CI."""
+    want = rng.strip().lower()
+    pick: dict[str, Any] | None = None
+    for job in jobs:
+        meta = job.get("poll")
+        if not isinstance(meta, dict):
+            continue
+        hit = _prefix_match(sha, str(meta.get("sha") or "").lower()) or (
+            bool(want) and str(meta.get("range") or "").strip().lower() == want
+        )
+        if hit:
+            pick = job
+    return pick
+
+
 def _current_step(
     active: set[str],
     *,
@@ -169,32 +195,41 @@ def _current_step(
     verdict: dict[str, Any] | None,
     ask_user: bool,
     ruling: int | None,
+    note: int | None,
+    poll_run: str,
 ) -> str:
     """One-line "where is it now" from the active (open + unblocked)
-    pipeline steps — checked deepest stage first."""
+    pipeline steps — checked deepest stage first. An open blocking ask
+    (``blocks: td<…>`` — the exhausted-loop ruling, a retry-cap ask)
+    outranks every stage: the pass is parked on a human decision
+    whatever the strip shows. An informational ask (``blocks:
+    "nothing"`` — the poll's no-run stall note) stays last resort."""
+    if ruling is not None:
+        return f"awaiting a ruling — td{ruling}"
     if "confirm" in active:
         return "confirming the deployed runtime"
     if "deploy" in active:
         return "deploying the release"
     if "approval" in active:
         return "awaiting deploy approval" + (" · ask-user" if ask_user else "")
+    pending = f"CI running — run {poll_run}" if poll_run else "awaiting the CI verdict"
     if "loop" in active:
         count = int(loop.get("count") or 0)
         if count:
             return f"fix loop — iteration {count} of {loop.get('max', '?')}"
         if verdict is not None and verdict.get("verdict") == "red":
             return "CI red — next fix iteration pending"
-        return "awaiting the CI verdict"
+        return pending
     if "gate" in active:
         if verdict is None:
-            return "awaiting the CI verdict"
+            return pending
         return f"CI {verdict.get('verdict')}"
     if "poll" in active:
-        return "recording the CI verdict"
+        return pending if poll_run else "recording the CI verdict"
     if "cut" in active:
         return "cutting the release"
-    if ruling is not None:
-        return f"awaiting a ruling — td{ruling}"
+    if note is not None:
+        return f"awaiting a ruling — td{note}"
     return "waiting on the plan tick"
 
 
@@ -242,7 +277,7 @@ def _query(conn: Any) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
         _NODES_SQL, ([f"{_PLAN_PREFIX}{i}" for i in root_ids],)
     ).fetchall()
     node_ids = [int(r[0]) for r in node_rows]
-    job_rows = conn.execute(_CUTS_SQL, (node_ids,)).fetchall()
+    job_rows = conn.execute(_JOBS_SQL, (node_ids,)).fetchall()
     link_rows = conn.execute(_LINKS_SQL, (node_ids,)).fetchall()
     return roots, node_rows, job_rows, link_rows
 
@@ -293,12 +328,15 @@ def release_passes(
             }
         )
 
-    # release_cut jobs -> their pass root, via the parent node's plan tag
+    # stamped jobs (release_cut / ci_verdict_poll) -> their pass root,
+    # via the parent node's plan tag
     jobs_by_root: dict[int, list[dict[str, Any]]] = {}
-    for jid, node_id, cut in job_rows:
+    for jid, node_id, stamp, cut, poll in job_rows:
         root = node_root.get(int(node_id or 0), 0)
         if root:
-            jobs_by_root.setdefault(root, []).append({"id": int(jid), "cut": cut})
+            jobs_by_root.setdefault(root, []).append(
+                {"id": int(jid), "at": stamp, "cut": cut, "poll": poll}
+            )
 
     # src node id -> statuses of its blocked-by targets
     blockers: dict[int, list[str]] = {}
@@ -379,6 +417,9 @@ def _row(
     repo = _release.valid_repo((rel or {}).get("repo")) or repo_default
 
     verdict = _verdict_for(verdicts, sha, rng) if sha or rng else None
+    poll_job = _poll_for(jobs, sha, rng) if sha or rng else None
+    poll_meta = (poll_job or {}).get("poll")
+    poll_run = str((poll_meta or {}).get("run_id") or "") if verdict is None else ""
     if verdict is not None:
         gate = {
             "verdict": str(verdict["verdict"]),
@@ -389,9 +430,9 @@ def _row(
     else:
         gate = {
             "verdict": "pending" if cur else "none",
-            "run_id": "",
-            "run_url": None,
-            "ago": "",
+            "run_id": poll_run,
+            "run_url": _run_url(repo, poll_run),
+            "ago": _ago((poll_job or {}).get("at")),
         }
 
     # Pipeline nodes are the root's direct children — a loop's iteration
@@ -399,6 +440,7 @@ def _row(
     pipeline = [n for n in nodes if n["parent"] == root_id]
     by_role: dict[str, dict[str, Any]] = {}
     ruling: int | None = None
+    note: int | None = None
     for n in pipeline:
         role = _role(n["meta"])
         if role is not None and role not in by_role:
@@ -408,9 +450,14 @@ def _row(
             role != "approval"
             and isinstance(ask, dict)
             and n["status"] not in TERMINAL_TODO_STATUSES
-            and ruling is None
         ):
-            ruling = n["id"]
+            if ask.get("blocks") == "nothing":
+                # Informational (the poll's no-run stall note): a record,
+                # not a decision the pass waits on — stays last resort.
+                if note is None:
+                    note = n["id"]
+            elif ruling is None:
+                ruling = n["id"]
 
     def _active(node: dict[str, Any]) -> bool:
         return all(s in BLOCKER_TERMINAL_STATUSES for s in blockers.get(node["id"], ()))
@@ -460,6 +507,8 @@ def _row(
             verdict=verdict,
             ask_user=ask_user,
             ruling=ruling,
+            note=note,
+            poll_run=poll_run,
         )
 
     served: bool | None = None
