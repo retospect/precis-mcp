@@ -1128,9 +1128,10 @@ class TodoHandler(NumericRefHandler):
         # (gr590954; td599743, td601023, td601626, td602770, td603427).
         # The minter removes the tag once its links are settled — the
         # mint-held runbook contract (me570515) enforced; the factory's
-        # own mint sequences end in ``plans.nodes.finish_mint``;
-        # plan_dispatch hygiene releases a settled mint's hold past
-        # ``MINT_STALE`` and asks on an orphan (gr574881). A
+        # own mint sequences end in ``plans.nodes.finish_mint``; a clean
+        # ``run_slice`` exit finishes its job window's settled mints
+        # (gr603945); plan_dispatch hygiene releases a settled mint's
+        # hold past ``MINT_STALE`` and asks on an orphan (gr574881). A
         # caller-supplied hold is already held.
         mint_hold = False
         if parent_int is not None and not _mint_held(tags):

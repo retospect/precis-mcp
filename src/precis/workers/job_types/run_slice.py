@@ -75,7 +75,12 @@ that holds the lane's credentials with ``params.target_node``):
   ``land_slice`` job (:mod:`precis.workers.job_types.land_slice`; idem key
   ``land_slice:td<id>``, a child of the todo, params ``{todo_id, worktree,
   branch, lane, target_node}``) and ends ``succeeded``; the lease stays
-  until the land. A clean exit that left no commit is also a success —
+  until the land. A clean exit also finishes the ``waiting-for:mint``
+  holds on the settled todos its job window minted under the plan
+  (:func:`_release_mint_holds`, gr603945 — the mint barrier's hold,
+  td603429, would otherwise idle every child a generator or planner
+  session put for the 10-minute hygiene sweep). A clean exit that left
+  no commit is also a success —
   no land — when the node's work is a document, not a branch
   (:func:`_no_commit_kind`: ``task_class`` off ``code``, or a
   ``_NO_COMMIT_ROLES`` generate role; gr570534): the todo closes done
@@ -3360,6 +3365,38 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     return False
 
 
+def _release_mint_holds(ctx: Any, handle: dict[str, Any], todo_id: int) -> list[int]:
+    """td603429 follow-up (gr603945): the mint barrier stamps
+    ``waiting-for:mint`` on every ``put`` landing inside a live plan and
+    ``_generator_close`` never tells the session to remove it, so each
+    minted child idled ``plan_dispatch.MINT_STALE`` (10 min) plus a
+    hygiene tick on every generator run. A session that exits clean is
+    the minter done writing: finish the settled mints under its plan
+    root created in this job's window — plan_dispatch owns the settled
+    rule and the sweep stays the fallback for anything less."""
+    try:
+        job = ctx.store.get_ref(kind="job", id=int(ctx.ref_id or 0))
+    except Exception:
+        job = None
+    since = getattr(job, "created_at", None)
+    if since is None:
+        try:
+            since = datetime.strptime(
+                str(handle.get("started_at") or ""), _TS_FMT
+            ).replace(tzinfo=UTC)
+        except ValueError:
+            return []
+    try:
+        from precis.workers.job_types import plan_dispatch as _pd
+
+        return _pd.release_session_mints(ctx.store, todo_id, since)
+    except Exception:  # pragma: no cover — the job outcome still lands
+        log.warning(
+            "run_slice: mint-hold release for td%d failed", todo_id, exc_info=True
+        )
+        return []
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while the session runs; once it has
     exited, the handoff, the branch state and the terminal status."""
@@ -3540,6 +3577,18 @@ def poll(ctx: Any, handle: Any) -> bool:
     if committed:
         summary.append(f"Commit: {committed}.")
     clean = exit_code == 0 and not is_error and not denied and budget_note is None
+    if clean:
+        # gr603945 (td603429 follow-up): a clean exit is the minter done
+        # writing — finish the ``waiting-for:mint`` holds on the settled
+        # children this job's window produced rather than idling them
+        # for the MINT_STALE sweep.
+        released = _release_mint_holds(ctx, handle, todo_id)
+        if released:
+            summary.append(
+                "Mints: waiting-for:mint finished on "
+                + ", ".join(f"td{i}" for i in released)
+                + " (clean session end)."
+            )
     # A clean task run hands its branch to the lander; a generator's work is
     # its child todos, so it has nothing to land.
     land = clean and not _is_generator(ctx.store, todo_id)

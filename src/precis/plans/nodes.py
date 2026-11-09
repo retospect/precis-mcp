@@ -330,10 +330,12 @@ MOOT_TAG = "verdict:moot"
 #: The ``waiting-for:`` prefix keeps the linkless child out of dispatch
 #: until the minter finishes: the factory's own mint sequences end in
 #: :func:`finish_mint`, an interactive minter removes the tag once its
-#: links are settled (the me570515 contract enforced), and a minter that
-#: never comes back leaves it to plan_dispatch hygiene — past
-#: ``MINT_STALE`` a settled mint's hold is released and an orphan mint
-#: (no links, no body) files an ask on the plan root (gr574881).
+#: links are settled (the me570515 contract enforced), a clean
+#: ``run_slice`` exit finishes the settled mints its job window
+#: produced (``plan_dispatch.release_session_mints``, gr603945), and a
+#: minter that never comes back leaves it to plan_dispatch hygiene —
+#: past ``MINT_STALE`` a settled mint's hold is released and an orphan
+#: mint (no links, no body) files an ask on the plan root (gr574881).
 MINT_HOLD_TAG = "waiting-for:mint"
 
 

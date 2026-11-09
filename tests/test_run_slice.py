@@ -2270,6 +2270,57 @@ def test_poll_clean_exit_without_a_commit_fails(seams: dict[str, Any]) -> None:
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
 
 
+def test_poll_finishes_session_mints_on_a_clean_exit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr603945 (td603429 follow-up): a clean exit calls
+    ``plan_dispatch.release_session_mints`` with the job's window —
+    the session's minted children do not idle for the MINT_STALE
+    sweep — and the released ids land in the job summary."""
+    calls: list[tuple[Any, int, Any]] = []
+
+    def fake_release(store: Any, todo_id: int, since: Any) -> list[int]:
+        calls.append((store, todo_id, since))
+        return [7]
+
+    monkeypatch.setattr(pd, "release_session_mints", fake_release)
+    store = _Store()
+    store.add_todo(42, "Triage", meta={"generate": {"role": "triage", "from": "gr1"}})
+    store.add_todo(43, "The minted child", parent_id=42)
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "minted td43"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert len(calls) == 1
+    s_, tid, _since = calls[0]
+    assert s_ is store and tid == 42
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "waiting-for:mint finished on td7" in summary
+
+
+def test_poll_leaves_session_mints_on_a_failed_exit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr603945: no clean exit, no release — a session that died
+    mid-mint leaves its holds to the MINT_STALE sweep."""
+    calls: list[tuple[Any, int, Any]] = []
+
+    def fake_release(store: Any, todo_id: int, since: Any) -> list[int]:
+        calls.append((store, todo_id, since))
+        return []
+
+    monkeypatch.setattr(pd, "release_session_mints", fake_release)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, json.dumps({"is_error": True, "result": "died"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert calls == []
+
+
 def test_poll_brief_node_clean_exit_without_a_commit_succeeds(
     seams: dict[str, Any],
 ) -> None:

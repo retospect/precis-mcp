@@ -146,9 +146,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    it and a done generator reopens for it — until the
    minter finishes — the factory's own mint sequences end in
    :func:`precis.plans.nodes.finish_mint` as their last call (a test
-   greps every site for it), an interactive minter removes the tag
-   once its links are settled — the runbook contract (me570515)
-   enforced — and a minter that dies or forgets leaves the hold to
+   scans the source for every site), an interactive minter removes
+   the tag once its links are settled — the runbook contract
+   (me570515) enforced — a clean ``run_slice`` exit finishes the
+   settled mints its job window produced
+   (:func:`release_session_mints`, gr603945 — a generator's children
+   would otherwise idle :data:`MINT_STALE` plus a tick on every run) —
+   and a minter that dies or forgets leaves the hold to
    hygiene (step 5, gr574881).
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
@@ -4356,36 +4360,103 @@ def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> N
         )
 
 
-def _mint_settled(store: Any, ref_id: int) -> bool:
-    """Whether a held mint's put→link session settled: a ``blocked-by``
-    or ``part-of`` edge touches it, or it carries a non-empty body — the
-    hold is then a leftover, not a guard (gr574881). The edge to the
-    mint's own orphan ask — options/blocks-signed by
+def _mint_linked(store: Any, ref_id: int) -> bool:
+    """A ``blocked-by``/``part-of`` edge touches the mint. The edge to
+    the mint's own orphan ask — options/blocks-signed by
     :func:`_mint_orphan_ask` — is the ask's dedup mark, not a settled
     link: the mint behind it is still the empty task the ask parks
     (td601973)."""
     with store.pool.connection() as conn:
-        linked = conn.execute(
-            "SELECT 1 FROM links l WHERE l.relation IN ('blocked-by', 'part-of') "
-            "AND (l.src_ref_id = %s OR l.dst_ref_id = %s) "
-            "AND NOT (l.relation = 'blocked-by' AND l.src_ref_id = %s "
-            "AND EXISTS (SELECT 1 FROM refs b WHERE b.ref_id = l.dst_ref_id "
-            "AND b.retired_at IS NULL AND b.meta->'ask'->>'blocks' = %s "
-            "AND b.meta->'ask'->'options' = %s::jsonb)) LIMIT 1",
-            (
-                ref_id,
-                ref_id,
-                ref_id,
-                f"td{ref_id}",
-                json.dumps(list(_ORPHAN_MINT_ASK_OPTIONS)),
-            ),
-        ).fetchone()
-    if linked is not None:
-        return True
+        return (
+            conn.execute(
+                "SELECT 1 FROM links l WHERE l.relation IN ('blocked-by', 'part-of') "
+                "AND (l.src_ref_id = %s OR l.dst_ref_id = %s) "
+                "AND NOT (l.relation = 'blocked-by' AND l.src_ref_id = %s "
+                "AND EXISTS (SELECT 1 FROM refs b WHERE b.ref_id = l.dst_ref_id "
+                "AND b.retired_at IS NULL AND b.meta->'ask'->>'blocks' = %s "
+                "AND b.meta->'ask'->'options' = %s::jsonb)) LIMIT 1",
+                (
+                    ref_id,
+                    ref_id,
+                    ref_id,
+                    f"td{ref_id}",
+                    json.dumps(list(_ORPHAN_MINT_ASK_OPTIONS)),
+                ),
+            ).fetchone()
+            is not None
+        )
+
+
+def _mint_has_body(store: Any, ref_id: int) -> bool:
+    """A non-empty ``TODO_BODY_KIND`` chunk on the mint — the minter's
+    brief landed."""
     return any(
         c.chunk_kind == TODO_BODY_KIND and str(c.text or "").strip()
         for c in store.chunks.list_chunks_for_ref(ref_id)
     )
+
+
+def _mint_settled(store: Any, ref_id: int) -> bool:
+    """Whether a held mint's put→link session settled: a ``blocked-by``
+    or ``part-of`` edge touches it (:func:`_mint_linked`), or it carries
+    a non-empty body (:func:`_mint_has_body`) — the hold is then a
+    leftover, not a guard (gr574881)."""
+    return _mint_linked(store, ref_id) or _mint_has_body(store, ref_id)
+
+
+def _mint_finished(store: Any, ref_id: int) -> bool:
+    """The job-end release rule (gr603945): the mint is provably written
+    — a non-empty body AND a ``blocked-by``/``part-of`` edge
+    (:func:`_mint_has_body` and :func:`_mint_linked`). Stricter than
+    :func:`_mint_settled`'s either/or: a sibling session's mint inside
+    the same job window can still be half-written — a body waiting on
+    its links — and its hold stays the minter's, or the sweep's, to
+    lift."""
+    return _mint_linked(store, ref_id) and _mint_has_body(store, ref_id)
+
+
+def release_session_mints(store: Any, todo_id: int, since: datetime) -> list[int]:
+    """td603429 follow-up (gr603945): ``run_slice`` calls this at a clean
+    job end — the session's mints are done being written, so every todo
+    under the session todo's plan root created in the job window
+    (``refs.created_at >= since``) that still carries
+    ``waiting-for:mint`` and is fully settled (:func:`_mint_finished`)
+    gets :func:`finish_mint` now instead of idling :data:`MINT_STALE`
+    plus a tick for the sweep. ``since`` is the job's ``created_at`` —
+    mints older than the window are not this session's. A hand-put leaf
+    (title-only, no body, no link) keeps the hold: the orphan ask is
+    intended, not a bug (:func:`_mint_orphan_ask`). Returns the released
+    ids."""
+    root = _plan_root_of(store, todo_id)
+    if root is None:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE walk(ref_id, lvl) AS (
+                SELECT %s::bigint, 0
+                UNION ALL
+                SELECT r.ref_id, w.lvl + 1
+                  FROM refs r
+                  JOIN walk w ON r.parent_id = w.ref_id
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND w.lvl < 25
+            )
+            SELECT r.ref_id FROM refs r JOIN walk w USING (ref_id)
+             WHERE r.retired_at IS NULL AND r.created_at >= %s
+               AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                            WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                              AND t.value = %s)
+             ORDER BY r.ref_id
+            """,
+            (root, since, MINT_HOLD_TAG),
+        ).fetchall()
+    released: list[int] = []
+    for (rid,) in rows:
+        rid = int(rid)
+        if _mint_finished(store, rid) and finish_mint(store, rid):
+            released.append(rid)
+    return released
 
 
 def _step_mint_holds(
@@ -4394,11 +4465,13 @@ def _step_mint_holds(
     """gr574881: a ``waiting-for:mint`` hold past :data:`MINT_STALE` on a
     mint whose links or body settled (:func:`_mint_settled`) is released —
     the me570515 contract leaves removal to the minter, and a minter that
-    died, errored or forgot would hold the child forever. An unsettled
-    orphan mints one ask on its plan root instead (:func:`_mint_orphan_ask`);
-    the ask's ``blocked-by`` edge dedupes the ASK decision only — a mint
-    settled past its ask (or behind a pre-existing ask dependency) still
-    releases (td601973)."""
+    died, errored or forgot would hold the child forever. This is the
+    fallback: a clean ``run_slice`` exit already finishes its job window's
+    fully-settled mints (:func:`release_session_mints`, gr603945). An
+    unsettled orphan mints one ask on its plan root instead
+    (:func:`_mint_orphan_ask`); the ask's ``blocked-by`` edge dedupes the
+    ASK decision only — a mint settled past its ask (or behind a
+    pre-existing ask dependency) still releases (td601973)."""
     for n in plan.todos():
         if _closed(n):
             continue

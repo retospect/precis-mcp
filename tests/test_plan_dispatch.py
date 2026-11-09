@@ -339,29 +339,45 @@ def test_mint_barrier_td599743(store: Store, hub: Any) -> None:
     infer coverage from (the pass is a session's whatever todo it runs
     on, not only a generator's). No inference remains: the ``put``
     inside the plan is born held, the job's end frees nothing —
-    explicit completion does."""
+    explicit completion does. The ``slice:``-granted put is the
+    variant the old inference minted OPEN (the grant's own todo
+    carries the running job): it fails on the pre-barrier code."""
+    from precis import principal
 
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
         m.node("task", "A sibling's task", {"op": "run_slice"}, body="Do it.")
 
     mint = T._run(store, None, build)
-    job = _slice_job(store, mint.ids["task"], "run_slice", "running")
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "running")
 
     kid = _put_kid(store, hub, mint.root_id)
     _minted_held(store, kid)
+
+    # The grant's own session minting a sibling under the root: the
+    # old coverage read the running job on td<task> as the caller's
+    # own and let the child mint open.
+    with principal.bind(f"slice:td{task}:generator"):
+        kid2 = _put_kid(store, hub, mint.root_id)
+    _minted_held(store, kid2)
 
     # The sibling's signal ends: the hold is a tag, not the signal.
     _set_job_status(store, job, "succeeded")
     pd.run_pass(store)
     _minted_held(store, kid)
+    _minted_held(store, kid2)
 
 
 def test_mint_barrier_td601023(store: Store, hub: Any) -> None:
-    """td603429 covers td601023: a caller leaving no signal anywhere —
-    no job, no lease — was a cell every coverage inference answered
-    differently. The barrier asks nothing: the put inside a live plan
-    is born held, and explicit completion frees it."""
+    """td603429 covers td601023: a caller leaving no session signal of
+    its own anywhere — no job, no lease it wrote — was a cell every
+    coverage inference answered differently; the last one read an
+    ambient ``worker:cli``-stamped lease on a plan sibling as the
+    caller's own coverage and minted the child open — that variant
+    fails on the pre-barrier code. The barrier asks nothing: the put
+    inside a live plan is born held, and explicit completion frees
+    it."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
 
@@ -373,13 +389,27 @@ def test_mint_barrier_td601023(store: Store, hub: Any) -> None:
     assert not _jobs_under(store, kid)
     assert len(_jobs_under(store, task)) == 1
 
+    # A ``claimed-by:`` lease stamped under the ambient ``worker:cli``
+    # — the same write principal the put carries — was verified
+    # coverage to the old inference: born open. Not this session's
+    # signal at all; the barrier holds it anyway.
+    store.add_tag(task, Tag.open("claimed-by:interactive"), set_by="agent")
+    kid2 = _put_kid(store, hub, mint.root_id)
+    _minted_held(store, kid2)
+    pd.run_pass(store)
+    assert not _jobs_under(store, kid2)
+
 
 def test_mint_barrier_td601626(store: Store, hub: Any) -> None:
     """td603429 covers td601626: an *unrelated* sibling's signal — an
     in-flight job or a ``claimed-by:`` lease — ends on the sibling's
     clock and must not free the linkless child before the minter's
-    links land. Under the barrier there is no freeing signal at all:
-    born held, stays held."""
+    links land. The old inferences each found a way to read a foreign
+    signal as the caller's own: a ``slice:`` grant made the sibling's
+    job its own todo's signal, and a shared ``worker:cli`` stamp made
+    the sibling's lease the caller's own — both minted open, so both
+    ``covered`` variants fail on the pre-barrier code. Under the
+    barrier there is no freeing signal at all: born held, stays held."""
     from precis import principal
 
     def build(m: T._Minter) -> None:
@@ -387,43 +417,65 @@ def test_mint_barrier_td601626(store: Store, hub: Any) -> None:
         m.node("task", "A sibling's task", {"op": "run_slice"}, body="Do it.")
 
     for signal in ("job", "lease"):
-        mint = T._run(store, None, build)
-        task = mint.ids["task"]
-        job = None
-        if signal == "job":
-            job = _slice_job(store, task, "run_slice", "running")
-        else:
-            # The sibling's mark — stamped under ITS write principal,
-            # not the ambient ``worker:cli`` the put below carries.
-            with principal.bind("user:other-session"):
+        for covered in (False, True):
+            mint = T._run(store, None, build)
+            task = mint.ids["task"]
+            job = None
+            if signal == "job":
+                job = _slice_job(store, task, "run_slice", "running")
+            elif covered:
+                # A lease the old inference read as the caller's OWN:
+                # stamped under the ambient ``worker:cli`` — the same
+                # principal the put below carries — though another
+                # session wrote it.
                 store.add_tag(task, Tag.open("claimed-by:interactive"), set_by="agent")
-            store.add_tag(
-                task,
-                Tag.closed("STATUS", "doing"),
-                set_by="agent",
-                replace_prefix=True,
-            )
+            else:
+                # The sibling's mark — stamped under ITS write
+                # principal, not the ambient ``worker:cli`` the put
+                # below carries.
+                with principal.bind("user:other-session"):
+                    store.add_tag(
+                        task, Tag.open("claimed-by:interactive"), set_by="agent"
+                    )
+            if signal == "lease":
+                store.add_tag(
+                    task,
+                    Tag.closed("STATUS", "doing"),
+                    set_by="agent",
+                    replace_prefix=True,
+                )
 
-        kid = _put_kid(store, hub, mint.root_id)
-        _minted_held(store, kid)
+            if covered and signal == "job":
+                # The grant's own session: the sibling's job is its
+                # own todo's signal — verified coverage to the old
+                # inference.
+                with principal.bind(f"slice:td{task}:generator"):
+                    kid = _put_kid(store, hub, mint.root_id)
+            else:
+                kid = _put_kid(store, hub, mint.root_id)
+            _minted_held(store, kid)
 
-        # The sibling's signal ends before the minter's links land: the
-        # hold — not the dead signal — keeps the child parked.
-        if job is not None:
-            _set_job_status(store, job, "succeeded")
-        else:
-            store.remove_tag(task, Tag.open("claimed-by:interactive"))
-        pd.run_pass(store)
-        _minted_held(store, kid)
+            # The sibling's signal ends before the minter's links land:
+            # the hold — not the dead signal — keeps the child parked.
+            if job is not None:
+                _set_job_status(store, job, "succeeded")
+            else:
+                store.remove_tag(task, Tag.open("claimed-by:interactive"))
+            pd.run_pass(store)
+            _minted_held(store, kid)
 
 
 def test_mint_barrier_td602770(store: Store, hub: Any) -> None:
     """td603429 covers td602770: ancestry is not ownership — an
     unsigned caller can point ``parent_id`` at another session's todo,
     so a signal on the *parent itself* — the foreign session's job or
-    lease — was the last inference's verification surface. The barrier
-    removes the question: born held, and that signal's end frees
-    nothing."""
+    lease — was the last inference's verification surface. And a
+    signal that IS the parent's still proves nothing about the put:
+    a ``slice:`` grant made the parent's job the caller's own todo's
+    signal, and a shared ``worker:cli`` stamp made the parent's lease
+    the caller's own — both minted open, so both ``covered`` variants
+    fail on the pre-barrier code. The barrier removes the question:
+    born held, and that signal's end frees nothing."""
     from precis import principal
 
     def build(m: T._Minter) -> None:
@@ -431,33 +483,48 @@ def test_mint_barrier_td602770(store: Store, hub: Any) -> None:
         m.node("work", "Another session's work", {"op": "run_slice"}, body="Do it.")
 
     for signal in ("job", "lease"):
-        mint = T._run(store, None, build)
-        work = mint.ids["work"]
-        job = None
-        if signal == "job":
-            job = _slice_job(store, work, "run_slice", "running")
-        else:
-            # The other session's mark — stamped under ITS write
-            # principal, not the ambient ``worker:cli`` the put below
-            # carries.
-            with principal.bind("user:other-session"):
+        for covered in (False, True):
+            mint = T._run(store, None, build)
+            work = mint.ids["work"]
+            job = None
+            if signal == "job":
+                job = _slice_job(store, work, "run_slice", "running")
+            elif covered:
+                # A lease on the parent the old inference read as the
+                # caller's OWN — stamped under the ambient
+                # ``worker:cli`` the put below carries — though
+                # another session wrote it.
                 store.add_tag(work, Tag.open("claimed-by:other"), set_by="agent")
-            store.add_tag(
-                work,
-                Tag.closed("STATUS", "doing"),
-                set_by="agent",
-                replace_prefix=True,
-            )
+            else:
+                # The other session's mark — stamped under ITS write
+                # principal, not the ambient ``worker:cli`` the put
+                # below carries.
+                with principal.bind("user:other-session"):
+                    store.add_tag(work, Tag.open("claimed-by:other"), set_by="agent")
+            if signal == "lease":
+                store.add_tag(
+                    work,
+                    Tag.closed("STATUS", "doing"),
+                    set_by="agent",
+                    replace_prefix=True,
+                )
 
-        kid = _put_kid(store, hub, work)
-        _minted_held(store, kid)
+            if covered and signal == "job":
+                # The grant's own session putting under its own
+                # job-running todo: verified coverage to the old
+                # inference.
+                with principal.bind(f"slice:td{work}:generator"):
+                    kid = _put_kid(store, hub, work)
+            else:
+                kid = _put_kid(store, hub, work)
+            _minted_held(store, kid)
 
-        if job is not None:
-            _set_job_status(store, job, "succeeded")
-        else:
-            store.remove_tag(work, Tag.open("claimed-by:other"))
-        pd.run_pass(store)
-        _minted_held(store, kid)
+            if job is not None:
+                _set_job_status(store, job, "succeeded")
+            else:
+                store.remove_tag(work, Tag.open("claimed-by:other"))
+            pd.run_pass(store)
+            _minted_held(store, kid)
 
 
 def test_mint_barrier_td603427(store: Store, hub: Any) -> None:
@@ -465,7 +532,9 @@ def test_mint_barrier_td603427(store: Store, hub: Any) -> None:
     verified-caller exception — the grant binds the session to its own
     todo, so a live signal on it used to cover the mint and let the
     put mint open. The exception is gone: even the grant's own session
-    mints held; ``finish_mint`` is its completion."""
+    mints held; ``finish_mint`` is its completion. The finding's named
+    case — the shared ``install``/``worker:cli`` principals — is
+    :func:`test_mint_barrier_td603427_shared_principal`."""
     from precis import principal
     from precis.plans.nodes import finish_mint
 
@@ -493,11 +562,15 @@ def test_mint_barrier_td603427(store: Store, hub: Any) -> None:
     assert len(_jobs_under(store, kid)) == 1
 
 
-def test_unsigned_put_under_a_leased_parent_is_held(store: Store, hub: Any) -> None:
-    """td603429 design: the caller's OWN ``claimed-by:`` lease was the
-    last verified-coverage cell — stamped under the same ambient write
-    principal the put carries, it used to let the mint be born open.
-    Under the barrier the lease changes nothing: born held."""
+def test_mint_barrier_td603427_shared_principal(store: Store, hub: Any) -> None:
+    """td603429 covers td603427's named case: the shared principals —
+    ``install`` / ``worker:cli``. The caller's OWN ``claimed-by:``
+    lease was the last verified-coverage cell: stamped under the same
+    ambient write principal the put carries, the old inference read
+    the mint as the caller's own and let it mint open — but a shared
+    principal cannot tell this session from another's. Under the
+    barrier the lease changes nothing: born held — this test goes red
+    on the pre-barrier code."""
 
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
@@ -621,43 +694,152 @@ def test_a_done_generator_reopens_for_a_held_mint(store: Store, hub: Any) -> Non
     assert _status(store, gen) == "open"
 
 
-def test_every_factory_mint_site_calls_finish_mint() -> None:
-    """td603429 contract: every factory mint sequence ends its mint
-    transaction in :func:`precis.plans.nodes.finish_mint` — a
-    put-stamped mint needs it and a store-direct mint is a no-op, so
-    the call is the contract: no site hand-rolls the removal and no new
-    site forgets it. The table names every ``insert_ref`` mint site
-    writing plan children plus the three ``_Minter`` transactions
-    (``_Minter.node`` itself has no transaction — its callers' txns
-    carry the call)."""
-    import inspect
+#: Writes a mint sequence settles its child with; ``finish_mint`` must
+#: come after the last of them.
+_MINT_SETTLE_CALLS = ("add_tag", "add_link", "insert_chunks", "stamp_ref_meta")
+#: The ``add_link`` relations that mark a minted todo as a plan child.
+_MINT_LINK_RELATIONS = ("blocked-by", "part-of")
 
-    from precis.workers import factory_rescue, transcript_audit
-    from precis.workers.job_types import ci_verdict_poll
 
-    sites: tuple[tuple[Any, str], ...] = (
-        (pd, "_mint_ask"),
-        (pd, "_mint_stamp_ask"),
-        (pd, "_mint_loop_ask"),
-        (pd, "_mint_brief_ask"),
-        (pd, "_mint_rerun_ask"),
-        (pd, "_mint_orphan_ask"),
-        (T, "_run"),
-        (T, "_run_body"),
-        (T, "mint_sha_reviewer"),
-        (rp, "_file_stuck_ask"),
-        (rp, "_file_review_wait_ask"),
-        (factory_rescue, "_mint_diagnose"),
-        (factory_rescue, "_ask_node"),
-        (ci_verdict_poll, "_mint_no_run_ask"),
-        (transcript_audit, "mint_audit"),
+def _call_name(n: Any) -> str:
+    """The called function's bare name (``mod.fn`` / ``fn``)."""
+    import ast
+
+    f = n.func
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    return f.id if isinstance(f, ast.Name) else ""
+
+
+def _is_todo_insert(n: Any) -> bool:
+    """An ``insert_ref`` call minting a ``kind='todo'`` ref."""
+    import ast
+
+    if _call_name(n) != "insert_ref":
+        return False
+    for k in n.keywords:
+        if (
+            k.arg == "kind"
+            and isinstance(k.value, ast.Constant)
+            and k.value.value == "todo"
+        ):
+            return True
+    return bool(
+        n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "todo"
     )
-    missing = [
-        f"{mod.__name__}.{fn}"
-        for mod, fn in sites
-        if "finish_mint(" not in inspect.getsource(getattr(mod, fn))
-    ]
-    assert not missing, f"mint sites without finish_mint: {missing}"
+
+
+def _is_mint_link(n: Any) -> bool:
+    """An ``add_link`` writing a ``blocked-by``/``part-of`` edge."""
+    import ast
+
+    if _call_name(n) != "add_link":
+        return False
+    atoms = list(n.args) + [k.value for k in n.keywords if k.arg == "relation"]
+    return any(
+        isinstance(a, ast.Constant) and a.value in _MINT_LINK_RELATIONS for a in atoms
+    )
+
+
+def _is_plan_literal(n: Any) -> bool:
+    """A ``plan:<id>`` tag literal (plain or inside an f-string)."""
+    import ast
+
+    if isinstance(n, ast.Constant) and isinstance(n.value, str):
+        return n.value.startswith("plan:")
+    if isinstance(n, ast.JoinedStr):
+        return any(
+            isinstance(v, ast.Constant)
+            and isinstance(v.value, str)
+            and v.value.startswith("plan:")
+            for v in n.values
+        )
+    return False
+
+
+def _scan_fn(fn: Any) -> dict[str, Any]:
+    """One function's mint facts: does it insert a todo, write a plan
+    marker (``plan:`` tag or sequencing link), call ``finish_mint``, and
+    the lines of its settle writes."""
+    import ast
+
+    out: dict[str, Any] = {"insert": False, "plan": False, "finish": [], "writes": []}
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            if _is_todo_insert(n):
+                out["insert"] = True
+            if _is_mint_link(n):
+                out["plan"] = True
+            name = _call_name(n)
+            if name == "finish_mint":
+                out["finish"].append(n.lineno)
+            if name in _MINT_SETTLE_CALLS:
+                out["writes"].append(n.lineno)
+        if _is_plan_literal(n):
+            out["plan"] = True
+    out["ends_in_finish"] = bool(out["finish"]) and (
+        not out["writes"] or max(out["finish"]) > max(out["writes"])
+    )
+    return out
+
+
+def test_every_factory_mint_site_calls_finish_mint() -> None:
+    """td603429 contract (gr603945): every plan-child mint sequence ends
+    in :func:`precis.plans.nodes.finish_mint`, after the mint's
+    link/tag/body writes — a put-stamped mint needs it and a
+    store-direct mint is a no-op, so the call is the contract: no site
+    hand-rolls the removal and no new site forgets it. This scans
+    ``src/precis`` source — the hard-coded table it replaces let a new
+    ``insert_ref(kind='todo')`` site slip past (gr603945): a function
+    that mints a todo AND writes a ``plan:`` tag or a
+    ``blocked-by``/``part-of`` link on it is a plan-child mint site. A
+    method whose own source lacks the call is covered when every
+    construction site of its class in the same module ends the mint —
+    ``_Minter.node`` mints inside its callers' transactions
+    (``_run``/``_run_body``/``mint_sha_reviewer`` carry the finish)."""
+    import ast
+
+    src_root = Path(__file__).resolve().parents[1] / "src" / "precis"
+    problems: list[str] = []
+    for path in sorted(src_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        # Every function in the file -> (its scan, its class when a method).
+        scans: list[tuple[Any, str | None, dict[str, Any]]] = []
+        class_of: dict[int, str] = {}
+        for cls in ast.walk(tree):
+            if isinstance(cls, ast.ClassDef):
+                for sub in cls.body:
+                    if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        class_of[id(sub)] = cls.name
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scans.append((fn, class_of.get(id(fn)), _scan_fn(fn)))
+        for fn, cls_name, scan in scans:
+            if not (scan["insert"] and scan["plan"]):
+                continue
+            where = f"{path.relative_to(src_root.parents[0])}:{fn.lineno} {fn.name}"
+            if scan["ends_in_finish"]:
+                continue
+            if cls_name is None:
+                problems.append(where)
+                continue
+            # A mint helper with no transaction of its own: every
+            # ``<Class>(`` construction site in the module must finish.
+            owners = [
+                (ofn, osc)
+                for ofn, _cls, osc in scans
+                if any(
+                    isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name)
+                    and n.func.id == cls_name
+                    for n in ast.walk(ofn)
+                )
+            ]
+            if not owners or not all(o["ends_in_finish"] for _f, o in owners):
+                problems.append(f"{where} (class {cls_name})")
+    assert not problems, (
+        f"plan-child mint sites without a trailing finish_mint: {problems}"
+    )
 
 
 def _age_tag(store: Store, ref_id: int, value: str, interval: str) -> None:
@@ -880,6 +1062,77 @@ def test_a_mint_behind_a_pre_existing_ask_releases(store: Store, hub: Any) -> No
     res = pd.run_pass(store)
     assert res.dispatched == 1
     assert len(_jobs_under(store, kid)) == 1
+
+
+def test_a_clean_job_end_finishes_the_window_settled_mints(
+    store: Store, hub: Any
+) -> None:
+    """gr603945 (td603429 follow-up): a generator's session puts its
+    children through the MCP and exits — the barrier holds each
+    ``put``, so without the job-end release every child idled
+    :data:`pd.MINT_STALE` plus a tick. ``release_session_mints``
+    finishes the mints the job window produced — settled is stricter
+    than hygiene's here: a body AND a ``blocked-by``/``part-of`` edge —
+    so a half-written or hand-put mint keeps its hold for the minter,
+    the sweep or the orphan ask."""
+    from precis.handlers.todo import TodoHandler
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("gen", "Triage", {"generate": {"role": "triage", "from": "gr1"}})
+        m.node("sib", "A sibling", {"op": "run_slice"}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    gen, sib = mint.ids["gen"], mint.ids["sib"]
+
+    # Minted BEFORE the job window — not this session's to release.
+    older = _put_kid(store, hub, gen)
+    job = _slice_job(store, gen, "run_slice", "running")
+
+    settled = _put_kid(store, hub, gen)
+    body_only = _put_kid(store, hub, gen)
+    resp = TodoHandler(hub=hub).put(
+        text="Links, no body", parent_id=gen, meta={"op": "run_slice"}
+    )
+    assert resp.ref_id is not None
+    link_only = int(resp.ref_id)
+    resp = TodoHandler(hub=hub).put(
+        text="Title-only leaf", parent_id=gen, meta={"op": "run_slice"}
+    )
+    assert resp.ref_id is not None
+    orphan = int(resp.ref_id)
+    for kid in (older, settled, body_only, link_only, orphan):
+        _minted_held(store, kid)
+
+    store.add_link(src_ref_id=settled, dst_ref_id=sib, relation="blocked-by")
+    store.add_link(src_ref_id=link_only, dst_ref_id=sib, relation="blocked-by")
+    # The pre-window mint is fully settled too: only the window keeps
+    # its hold — a different session's mint is not this job's to finish.
+    store.add_link(src_ref_id=older, dst_ref_id=sib, relation="blocked-by")
+
+    ref = store.get_ref(kind="job", id=job)
+    assert ref is not None
+    assert pd.release_session_mints(store, gen, ref.created_at) == [settled]
+    assert "waiting-for:mint" not in _open_tags(store, settled)
+    # Everything else keeps the hold: the pre-window mint, the
+    # half-written ones and the hand-put orphan.
+    for kid in (older, body_only, link_only, orphan):
+        assert "waiting-for:mint" in _open_tags(store, kid)
+
+    # Idempotent; a todo outside a live plan is a no-op.
+    assert pd.release_session_mints(store, gen, ref.created_at) == []
+    resp = TodoHandler(hub=hub).put(text="Outside any plan")
+    assert resp.ref_id is not None
+    assert pd.release_session_mints(store, int(resp.ref_id), ref.created_at) == []
+
+    # The released child dispatches once its own blocker closes — the
+    # other holds stay the sweep's.
+    store.add_tag(
+        sib, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, settled)) == 1
 
 
 def _failed_job(
