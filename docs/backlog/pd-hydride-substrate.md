@@ -156,6 +156,29 @@ the duration, and record the pause in the quest logbook.
   occupancy axis. This item is the discrete route, and stage 0's result
   (MACE gives no α/β gap at that sampling and overbinds H) bears on that
   question.
+- **Note, Reto 2026-11-08 (me598835), for the next round.** The gate on
+  subsurface H is μ_H, i.e. U on the RHE scale; pH enters only when the
+  operating point is held at fixed SHE (U_RHE = U_SHE + 0.059·pH, the
+  fixed-SHE route of pathway-selectivity-u-ph-window), which is why
+  pa4682's surface Pourbaix terminations look pH-dependent. At the
+  quest's point (−0.3 V_RHE, pH 7) Pd is β whatever the pH. The open
+  piece behind q6: at a given μ_H the H inventory is a distribution over
+  site classes (surface hollow H*, first-sublayer tetrahedral, bulk
+  octahedral), and a candidate's barrier belongs on the slab whose site
+  occupancies match μ_H, not on one hand-picked loading. Discrete slabs
+  sample that distribution at a few points.
+  **Sharing rule (Reto, same day):** regions of the Pourbaix diagram share
+  one simulation, because the H is part of the slab and more H is a new
+  slab. A pathway simulation is keyed by region = surface termination
+  (SPSO coverage scan) × subsurface level (item 2's computed steps); the
+  CHE shift serves every (U, pH) inside the region, crossing a boundary
+  requests a new slab. This settles SPSO q6 as discrete slabs. The
+  optimizer mask already refuses a point whose resting termination
+  differs from the pathway's surface (`point_states`); it has no
+  subsurface level yet, the invariant "one simulation per region, reuse
+  inside, new slab on exit" is not stated anywhere, and the Pourbaix tab
+  does not show which region a simulation covers. Those three are the
+  design items.
 
 - **Decided, Reto 2026-10-02 (`catalysis-selectivity-16`):** approved as
   staged. Stage 0 gates the top-10 β re-run. Lattice on expansion
