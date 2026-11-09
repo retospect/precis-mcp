@@ -50,6 +50,20 @@ Executed-run specifics:
 - **Serve**: `--serve-cmd` / `PRECIS_SKILL_EVAL_SERVE_CMD` (default
   `precis serve`, i.e. inside the dev container); `PRECIS_MCP_PROFILE` is
   pinned `typed` and `PRECIS_BIO_ENABLED=1` for the protein corpus.
+- **Run namespacing**: a case that creates a record names it
+  `<slug>-{run}` in the prompt; the runner expands `{run}` to its
+  per-run `<pid>-<epoch>` token (`0-0` in dry runs) so repeat passes and
+  per-model comparisons can't collide or read each other's rows on the
+  shared dev DB. Criteria match the minted slug with
+  `re:<slug>-\d+-\d+` and the fake declares a `<slug>-0-0` literal.
+- **Landed records**: `expect.record` is judged on the row
+  `fetch_record` reads back from the eval DSN — its `id` is the ref's
+  cite_key (the slug the case minted) when it has one, the decimal
+  handle under `handle`.
+- **Errored calls**: a precis call whose `tool_result` is `is_error` or
+  an `[error:…]` envelope counts as a failed call — it can't satisfy an
+  `expect.calls` pattern and fails the case with a `call errored:`
+  reason. A call-only case whose every call errored is a fail.
 - **Models**: repeat `--model` — one corpus pass per model; the report's
   *accuracy by subtask count* table and `accuracy_by_depth` JSON block
   split by model (the llm-scorecard shape). A case declares its depth via

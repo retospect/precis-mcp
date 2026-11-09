@@ -1,17 +1,20 @@
 # Eval cases for precis-draft-help (schema: precis.skill_eval.cases).
+# Write-target slugs carry `{run}` so repeated/parallel executed passes
+# on the shared eval DB can't collide; expect/record match the minted
+# slug with re:<slug>-\d+-\d+, fakes declare the dry-run -0-0 form.
 skill: precis-draft-help
 cases:
   - id: create-draft-for-project
     prompt: |
       Start the write-up for project todo 4821: a draft with id
-      'perovskite-review' titled 'Perovskite stability review'. Then tag
-      the draft 'review' so I can find it.
+      'perovskite-review-{run}' titled 'Perovskite stability review'.
+      Then tag the draft 'review' so I can find it.
     expect:
       calls:
         - verb: put
           kind: draft
-          args: {id: perovskite-review, project: "re:.*4821.*", title: "re:(?i)perovskite stability review"}
-      record: {kind: draft, id: perovskite-review}
+          args: {id: 're:perovskite-review-\d+-\d+', project: "re:.*4821.*", title: "re:(?i)perovskite stability review"}
+      record: {kind: draft, id: 're:perovskite-review-\d+-\d+'}
     forbid:
       calls:
         - {verb: tag, kind: draft}                         # tag/link raise Unsupported on drafts
@@ -20,10 +23,10 @@ cases:
       calls:
         - verb: put
           kind: draft
-          args: {id: perovskite-review, project: "4821", title: "Perovskite stability review"}
-      record: {kind: draft, id: perovskite-review, title: "Perovskite stability review"}
+          args: {id: perovskite-review-0-0, project: "4821", title: "Perovskite stability review"}
+      record: {kind: draft, id: perovskite-review-0-0, title: "Perovskite stability review"}
       answer: >
-        put(kind='draft', id='perovskite-review', project='4821',
+        put(kind='draft', id='perovskite-review-0-0', project='4821',
         title='Perovskite stability review') creates the draft and its title
         heading dc1. A draft is not taggable as a whole (tag raises
         Unsupported); tag the project todo instead if you need a 'review' label.
@@ -32,93 +35,94 @@ cases:
   - id: draft-scaffold
     subtasks: 2
     prompt: |
-      Create a draft 'eval-review' titled 'NO reduction review', then
-      scaffold it as a paper (the usual section skeleton).
+      Create a draft 'eval-review-{run}' titled 'NO reduction review',
+      then scaffold it as a paper (the usual section skeleton).
     expect:
       calls:
-        - {verb: put, kind: draft, args: {id: eval-review}}
-        - {verb: edit, kind: draft, args: {id: eval-review, scaffold: paper}}
-      record: {kind: draft, id: eval-review}
+        - {verb: put, kind: draft, args: {id: 're:eval-review-\d+-\d+'}}
+        - {verb: edit, kind: draft, args: {id: 're:eval-review-\d+-\d+', scaffold: paper}}
+      record: {kind: draft, id: 're:eval-review-\d+-\d+'}
     forbid:
       calls:
         - {verb: tag, kind: draft}
         - {verb: link, kind: draft}
     fake:
       calls:
-        - {verb: put, kind: draft, args: {id: eval-review, title: "NO reduction review"}}
-        - {verb: edit, kind: draft, args: {id: eval-review, scaffold: paper}}
-      record: {kind: draft, id: eval-review}
+        - {verb: put, kind: draft, args: {id: eval-review-0-0, title: "NO reduction review"}}
+        - {verb: edit, kind: draft, args: {id: eval-review-0-0, scaffold: paper}}
+      record: {kind: draft, id: eval-review-0-0}
       answer: >
-        put creates the draft; edit(kind='draft', id='eval-review',
+        put creates the draft; edit(kind='draft', id='eval-review-0-0',
         scaffold='paper') lays down the section skeleton.
 
   - id: draft-retitle-read
     subtasks: 3
     prompt: |
-      Create a draft 'eval-brief' titled 'Scratch brief', retitle it
-      'Nitrate brief', then read the outline back to me.
+      Create a draft 'eval-brief-{run}' titled 'Scratch brief', retitle
+      it 'Nitrate brief', then read the outline back to me.
     expect:
       calls:
-        - {verb: put, kind: draft, args: {id: eval-brief}}
-        - {verb: edit, kind: draft, args: {id: eval-brief, title: 're:(?i)nitrate brief'}}
-        - {verb: get, kind: draft, args: {id: eval-brief}}
-      record: {kind: draft, id: eval-brief}
+        - {verb: put, kind: draft, args: {id: 're:eval-brief-\d+-\d+'}}
+        - {verb: edit, kind: draft, args: {id: 're:eval-brief-\d+-\d+', title: 're:(?i)nitrate brief'}}
+        - {verb: get, kind: draft, args: {id: 're:eval-brief-\d+-\d+'}}
+      record: {kind: draft, id: 're:eval-brief-\d+-\d+'}
     fake:
       calls:
-        - {verb: put, kind: draft, args: {id: eval-brief, title: "Scratch brief"}}
-        - {verb: edit, kind: draft, args: {id: eval-brief, title: "Nitrate brief"}}
-        - {verb: get, kind: draft, args: {id: eval-brief}}
-      record: {kind: draft, id: eval-brief}
+        - {verb: put, kind: draft, args: {id: eval-brief-0-0, title: "Scratch brief"}}
+        - {verb: edit, kind: draft, args: {id: eval-brief-0-0, title: "Nitrate brief"}}
+        - {verb: get, kind: draft, args: {id: eval-brief-0-0}}
+      record: {kind: draft, id: eval-brief-0-0}
       answer: >
-        edit(kind='draft', id='eval-brief', title='Nitrate brief')
-        retitles; get(kind='draft', id='eval-brief') reads the outline.
+        edit(kind='draft', id='eval-brief-0-0', title='Nitrate brief')
+        retitles; get(kind='draft', id='eval-brief-0-0') reads the outline.
 
   - id: draft-search-inside
     subtasks: 3
     prompt: |
-      Create a draft 'eval-notes' with a line that says 'TODO cite the
-      ammonia paper', then find the TODO inside it (a scoped regex
+      Create a draft 'eval-notes-{run}' with a line that says 'TODO cite
+      the ammonia paper', then find the TODO inside it (a scoped regex
       search, not a corpus search) and read the matching passage.
     expect:
       calls:
-        - {verb: put, kind: draft, args: {id: eval-notes}}
-        - {verb: search, kind: draft, args: {mode: regex, scope: eval-notes}}
-        - {verb: get, kind: draft, args: {id: eval-notes, q: 're:.*'}}
-      record: {kind: draft, id: eval-notes}
+        - {verb: put, kind: draft, args: {id: 're:eval-notes-\d+-\d+'}}
+        - {verb: search, kind: draft, args: {mode: regex, scope: 're:eval-notes-\d+-\d+'}}
+        - {verb: get, kind: draft, args: {id: 're:eval-notes-\d+-\d+', q: 're:.*'}}
+      record: {kind: draft, id: 're:eval-notes-\d+-\d+'}
     forbid:
       calls:
         - {verb: search, kind: web}
     fake:
       calls:
-        - {verb: put, kind: draft, args: {id: eval-notes, text: "TODO cite the ammonia paper"}}
-        - {verb: search, kind: draft, args: {mode: regex, q: TODO, scope: eval-notes}}
-        - {verb: get, kind: draft, args: {id: eval-notes, q: TODO}}
-      record: {kind: draft, id: eval-notes}
+        - {verb: put, kind: draft, args: {id: eval-notes-0-0, text: "TODO cite the ammonia paper"}}
+        - {verb: search, kind: draft, args: {mode: regex, q: TODO, scope: eval-notes-0-0}}
+        - {verb: get, kind: draft, args: {id: eval-notes-0-0, q: TODO}}
+      record: {kind: draft, id: eval-notes-0-0}
       answer: >
-        search(kind='draft', mode='regex', q='TODO', scope='eval-notes')
-        is find-in-ref; get(id='eval-notes', q='TODO') reads the passage.
+        search(kind='draft', mode='regex', q='TODO',
+        scope='eval-notes-0-0') is find-in-ref; get(id='eval-notes-0-0',
+        q='TODO') reads the passage.
 
   - id: draft-of-project
     subtasks: 4
     prompt: |
       Mint a project todo 'eval draft project', create a draft
-      'eval-proj-draft' for it, bind the draft to the todo with the
+      'eval-proj-draft-{run}' for it, bind the draft to the todo with the
       draft-of link, then read the todo's draft outline.
     expect:
       calls:
         - {verb: put, kind: todo}
-        - {verb: put, kind: draft, args: {id: eval-proj-draft}}
+        - {verb: put, kind: draft, args: {id: 're:eval-proj-draft-\d+-\d+'}}
         - {verb: link, args: {rel: draft-of}}
         - {verb: get, kind: draft, args: {project: 're:.*'}}
-      record: {kind: draft, id: eval-proj-draft}
+      record: {kind: draft, id: 're:eval-proj-draft-\d+-\d+'}
     fake:
       calls:
         - {verb: put, kind: todo, args: {text: "eval draft project"}}
-        - {verb: put, kind: draft, args: {id: eval-proj-draft, title: "eval proj draft"}}
-        - {verb: link, kind: draft, args: {id: eval-proj-draft, target: "todo:99", rel: draft-of}}
+        - {verb: put, kind: draft, args: {id: eval-proj-draft-0-0, title: "eval proj draft"}}
+        - {verb: link, kind: draft, args: {id: eval-proj-draft-0-0, target: "todo:99", rel: draft-of}}
         - {verb: get, kind: draft, args: {project: "99"}}
-      record: {kind: draft, id: eval-proj-draft}
+      record: {kind: draft, id: eval-proj-draft-0-0}
       answer: >
-        link(kind='draft', id='eval-proj-draft', target='todo:<id>',
+        link(kind='draft', id='eval-proj-draft-0-0', target='todo:<id>',
         rel='draft-of') binds 1:1; get(kind='draft', project=<id>) reads
         the project's draft outline.

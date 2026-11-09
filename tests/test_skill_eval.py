@@ -31,9 +31,11 @@ from precis.skill_eval.__main__ import main
 from precis.skill_eval.cases import load_case_file, value_matches
 from precis.skill_eval.runners import (
     DEFAULT_DEV_DSN,
+    DRY_RUN_TOKEN,
     ExecutedClaudeRunner,
     build_exec_prompt,
     build_prompt,
+    fetch_record,
     serve_mcp_config,
     stream_tool_calls,
 )
@@ -245,7 +247,8 @@ def test_seed_corpus_is_green_under_the_fake_runner_and_prompts_carry_skills() -
     assert report.count("pass") == len(cases)
     assert [r.case_id for r in runner.recorded] == [c.case_id for c in cases]
     for case, rec in zip(cases, runner.recorded, strict=True):
-        assert case.prompt in rec.prompt
+        # ``{run}`` in a task renders as the dry-run token in the prompt.
+        assert case.prompt.replace("{run}", DRY_RUN_TOKEN) in rec.prompt
         for slug in case.skills:
             assert f"<skill id='{slug}'>" in rec.prompt
             assert f"id: {slug}" in rec.prompt  # the skill's own front-matter
@@ -781,6 +784,178 @@ def test_executed_runner_failed_put_yields_no_record_candidate(
     case = _case(Criterion(record={"kind": "quest"}))
     t = runner.run(case, "do it")
     assert seen_fetch == [] and t.record is None
+    assert t.calls[0].error is not None  # the failed put is scored, not dropped
+
+
+def _exec_stream(
+    calls: list[tuple[str, str, dict[str, Any]]],
+    results: dict[str, dict[str, Any]],
+) -> str:
+    """One assistant ``tool_use`` batch + a user ``tool_result`` batch +
+    the trailing result event, as stream-json lines."""
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": tid, "name": name, "input": inp}
+                    for tid, name, inp in calls
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": tid, **block}
+                    for tid, block in results.items()
+                ]
+            },
+        },
+        {"type": "result", "result": "done", "total_cost_usd": 0.01},
+    ]
+    return "\n".join(json.dumps(e) for e in events)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"is_error": True, "content": [{"type": "text", "text": "tool exploded"}]},
+        {"content": [{"type": "text", "text": "[error:NotFound] no such ref"}]},
+    ],
+    ids=["is_error", "error-envelope"],
+)
+def test_executed_runner_errored_call_cannot_satisfy_expect(
+    monkeypatch: pytest.MonkeyPatch, block: dict[str, Any]
+) -> None:
+    """A call whose tool_result failed never did the work: it can't fill
+    an ``expect.calls`` slot and the error is named in the reasons — the
+    call-only case is a fail, not a pass."""
+    stream = _exec_stream(
+        [("tu1", "mcp__precis__get", {"kind": "draft", "id": "eval-x-0-0"})],
+        {"tu1": block},
+    )
+    runner = _exec_runner(monkeypatch, call=lambda *a, **k: _agent_result(stream))
+    case = _case(
+        Criterion(calls=(CallPattern("get", "draft", {"id": "re:eval-x-.*"}),))
+    )
+    report = run_cases([case], runner, skill_text=lambda s: "# s")
+    assert report.cases[0].status == "fail"
+    reasons = report.cases[0].reasons
+    assert any(r.startswith("expected call not made: get(") for r in reasons)
+    assert any(r.startswith("call errored: get(") for r in reasons)
+
+
+def test_exec_prompt_expands_run_token_and_dry_prompt_uses_the_dry_token() -> None:
+    """``{run}`` namespaces the records a case mints: the executed prompt
+    carries the runner's per-run id, the dry-run prompt the fixed token —
+    both shaped ``<digits>-<digits>`` so one ``re:`` criterion fits."""
+    case = EvalCase(
+        "demo-skill/one",
+        "demo-skill",
+        ("demo-skill",),
+        "create a draft 'eval-x-{run}' and read it back",
+        Criterion(calls=(CallPattern("put"),)),
+        Transcript(),
+    )
+    texts = {"demo-skill": "# demo"}
+    exec_prompt = build_exec_prompt(case, texts, run_id="4821-1730000000")
+    assert "eval-x-4821-1730000000" in exec_prompt and "{run}" not in exec_prompt
+    assert "eval-x-0-0" in build_prompt(case, texts)
+    runner = ExecutedClaudeRunner(
+        dsn="postgresql://localhost/precis_test_eval",
+        call=lambda *a, **k: _agent_result(),
+        run_id="9-9",
+    )
+    assert "eval-x-9-9" in runner.build_prompt(case, texts)
+
+
+def test_fetch_record_reads_landed_row_against_the_real_schema(store) -> None:
+    """Real-DB pin for the executed landed-record check: seeds a ref and
+    reads it back through the migrated schema — ``retired_at`` (the
+    ``deleted_at`` rename that silently sank every fetch), the cite_key
+    as ``id`` (corpus criteria address slugs), handle, body, meta."""
+    from tests import conftest
+    from tests.workers._helpers import seed_chunk
+
+    ref = store.insert_ref(
+        kind="paper", slug="eval-fetch-1", title="Fetch target", meta={"m": 1}
+    )
+    seed_chunk(store, ref_id=ref.id, text="body paragraph")
+    dsn = conftest._active_dsn()
+    rec = fetch_record(dsn, "paper", "eval-fetch-1")
+    assert rec is not None
+    assert rec["kind"] == "paper"
+    assert rec["id"] == "eval-fetch-1"  # the slug, not the pa<N> handle
+    assert rec["handle"].startswith("pa") and rec["ref_id"] == ref.id
+    assert rec["title"] == "Fetch target" and "body paragraph" in rec["body"]
+    assert rec["meta"] == {"m": 1}
+    by_handle = fetch_record(dsn, "paper", rec["handle"])
+    by_id = fetch_record(dsn, "paper", f"id={ref.id}")
+    assert by_handle is not None and by_id is not None
+    assert by_handle["ref_id"] == ref.id == by_id["ref_id"]
+    store.retire_ref(ref.id)
+    assert fetch_record(dsn, "paper", "eval-fetch-1") is None
+
+
+def test_executed_run_fetches_the_record_the_stream_landed(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end minus the model: a canned stream-json run whose put
+    ack names the seeded row is judged on the real fetch (the default
+    ``fetch_record``, no stub) — the record criterion sees the landed
+    cite_key, and a second case whose write never landed goes red."""
+    from tests import conftest
+
+    ref = store.insert_ref(kind="paper", slug="eval-landed-1", title="Landed")
+    seed = "\n".join(
+        json.dumps(ev)
+        for ev in [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu1",
+                            "name": "mcp__precis__put",
+                            "input": {"kind": "paper", "id": "eval-landed-1"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "created paper eval-landed-1.",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+            {"type": "result", "result": "ok", "total_cost_usd": 0.01},
+        ]
+    )
+    runner = _exec_runner(
+        monkeypatch,
+        dsn=conftest._active_dsn(),
+        call=lambda *a, **k: _agent_result(seed, cost=0.01),
+    )
+    crit = Criterion(
+        calls=(CallPattern("put", "paper"),),
+        record={"kind": "paper", "id": "eval-landed-1"},
+    )
+    t = runner.run(_case(crit), "do it")
+    assert t.record is not None and t.record["id"] == "eval-landed-1"
+    assert check(crit, t).passed
 
 
 def test_executed_runner_uses_edit_id_when_no_created_ack(

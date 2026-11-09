@@ -30,6 +30,14 @@ anything else compares by ``==`` or by ``str()``. Every case carries a
 ``fake:`` transcript so the shipped corpus is self-checking under the fake
 runner (``scripts/skill-eval --runner fake`` is green by construction;
 ``tests/test_skill_eval.py`` pins it).
+
+Records a case creates on the shared eval DB are named ``<slug>-{run}``
+in the prompt — the executed runner expands ``{run}`` to its per-run
+token (``<pid>-<epoch>``) so a repeat pass or a second model's pass can
+never collide with or read this run's rows; dry-run prompts render it
+``0-0``. Criteria then match the minted slug with a
+``re:<slug>-<digits>-<digits>`` pattern (and the fake declares a
+``<slug>-0-0`` literal to match).
 """
 
 from __future__ import annotations
@@ -53,11 +61,18 @@ _RE_PREFIX = "re:"
 
 @dataclass(frozen=True, slots=True)
 class VerbCall:
-    """One precis verb call an agent made (or declared it would make)."""
+    """One precis verb call an agent made (or declared it would make).
+
+    ``error`` is set by the executed runner when the call's ``tool_result``
+    came back ``is_error`` or an ``[error:…]`` envelope: the call was
+    attempted but its work never happened, so it cannot satisfy an
+    ``expect.calls`` pattern and fails the case on its own.
+    """
 
     verb: str
     kind: str | None = None
     args: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
     def render(self) -> str:
         parts = [f"kind={self.kind!r}"] if self.kind else []

@@ -65,6 +65,11 @@ DEFAULT_SERVE_CMD = "precis serve"
 #: ``scripts/exercise-mcp``).
 _SERVE_CONNECT_TIMEOUT_MS = "180000"
 
+#: What ``{run}`` expands to in a dry-run (fake/live) prompt — the same
+#: ``<digits>-<digits>`` shape as an executed ``run_id``, so a corpus
+#: ``re:<slug>-\d+-\d+`` expectation matches either surface.
+DRY_RUN_TOKEN = "0-0"
+
 #: Prefix the typed MCP profile registers per-verb tools under.
 _MCP_TOOL_PREFIX = "mcp__precis__"
 
@@ -107,7 +112,13 @@ class Runner(Protocol):
 
 
 def build_prompt(case: EvalCase, skill_texts: Mapping[str, str]) -> str:
-    """The dry-run prompt: skills in full, the task, one-JSON-object reply."""
+    """The dry-run prompt: skills in full, the task, one-JSON-object reply.
+
+    A ``{run}`` token in the case prompt renders as
+    :data:`DRY_RUN_TOKEN` — corpus cases address the records they create
+    as ``<slug>-{run}`` so executed runs on a shared eval DB never
+    collide, and dry runs get the same ``<digits>-<digits>`` shape.
+    """
     skills = "\n\n".join(
         f"<skill id={slug!r}>\n{skill_texts[slug]}\n</skill>" for slug in case.skills
     )
@@ -117,7 +128,7 @@ def build_prompt(case: EvalCase, skill_texts: Mapping[str, str]) -> str:
         f"{verbs}). This is a dry run: you cannot execute calls. Read the "
         "skill(s) below, then plan exactly how you would complete the task.\n\n"
         f"{skills}\n\n"
-        f"Task: {case.prompt}\n\n"
+        f"Task: {case.prompt.replace('{run}', DRY_RUN_TOKEN)}\n\n"
         "Reply with exactly one JSON object and nothing else:\n"
         '{"calls": [{"verb": "get", "kind": "paper", "args": {"id": "pa40"}}], '
         '"record": null, "answer": "..."}\n'
@@ -260,9 +271,20 @@ class LiveClaudeRunner:
         return parse_transcript(data, cost_usd=cost)
 
 
-def build_exec_prompt(case: EvalCase, skill_texts: Mapping[str, str]) -> str:
+def build_exec_prompt(
+    case: EvalCase,
+    skill_texts: Mapping[str, str],
+    *,
+    run_id: str = DRY_RUN_TOKEN,
+) -> str:
     """The executed prompt: same skill injection as :func:`build_prompt`,
-    a *call the tools* contract in place of the declared-JSON one."""
+    a *call the tools* contract in place of the declared-JSON one.
+
+    ``run_id`` is the runner's per-run token — a ``{run}`` placeholder in
+    the task text expands to it so every record the case mints is
+    namespaced to this run on the shared eval DB (a second pass, or a
+    second model's pass, can't collide with or read this one's rows).
+    """
     skills = "\n\n".join(
         f"<skill id={slug!r}>\n{skill_texts[slug]}\n</skill>" for slug in case.skills
     )
@@ -272,7 +294,7 @@ def build_exec_prompt(case: EvalCase, skill_texts: Mapping[str, str]) -> str:
         "below, then complete the task by actually calling the tools — a "
         "plan without calls is a failure.\n\n"
         f"{skills}\n\n"
-        f"Task: {case.prompt}\n\n"
+        f"Task: {case.prompt.replace('{run}', run_id)}\n\n"
         "Do it now with the precis tools. Finish with a short reply "
         "naming the calls you made and the result."
     )
@@ -412,6 +434,25 @@ def _write_candidates(
     return out
 
 
+def _scored_calls(
+    pairs: list[tuple[str, VerbCall]],
+    results: dict[str, tuple[str, bool]],
+) -> tuple[VerbCall, ...]:
+    """The transcript's call list with each call's tool-result error
+    attached: a ``tool_result`` that came back ``is_error`` or an
+    ``[error:…]`` envelope means the call's work never happened, so it
+    must not quietly satisfy an ``expect.calls`` pattern — a call-only
+    case whose every call failed is a fail, not a pass."""
+    out: list[VerbCall] = []
+    for tid, call in pairs:
+        text, is_error = results.get(tid, ("", False))
+        if is_error or _ERROR_ENVELOPE_RE.match(text):
+            err = text.strip().splitlines()[0][:200] if text.strip() else "tool error"
+            call = VerbCall(call.verb, call.kind, call.args, error=err)
+        out.append(call)
+    return tuple(out)
+
+
 def fetch_record(dsn: str, kind: str | None, ident: str) -> dict[str, Any] | None:
     """One landed ref as a subset-matchable dict, or ``None``.
 
@@ -419,8 +460,11 @@ def fetch_record(dsn: str, kind: str | None, ident: str) -> dict[str, Any] | Non
     the row that actually *landed* on the eval DSN, so a ``put`` that
     errored or wrote a different shape fails here where a declared record
     passed the live runner. ``ident`` resolves as ``id=N``, a decimal
-    handle, or a cite_key slug. Lazy imports: psycopg/handle_registry stay
-    off the fake/live runners' import path.
+    handle, or a cite_key slug. The returned ``id`` is the ref's cite_key
+    when it has one — corpus criteria address records by the slug the
+    case minted — else its decimal handle; ``handle`` always carries the
+    decimal handle. Lazy imports: psycopg/handle_registry stay off the
+    fake/live runners' import path.
     """
     import psycopg
 
@@ -448,13 +492,16 @@ def fetch_record(dsn: str, kind: str | None, ident: str) -> dict[str, Any] | Non
                     return None
                 ref_id = int(row[0])
             row = conn.execute(
-                "SELECT kind, title, meta FROM refs WHERE ref_id=%s "
-                "AND deleted_at IS NULL AND retired_at IS NULL",
+                "SELECT kind, title, meta,"
+                " (SELECT id_value FROM ref_identifiers ri"
+                "  WHERE ri.ref_id = refs.ref_id AND ri.id_kind = 'cite_key'"
+                "  ORDER BY id_value LIMIT 1)"
+                " FROM refs WHERE ref_id=%s AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
             if row is None:
                 return None
-            kind_db, title, meta = row
+            kind_db, title, meta, cite_key = row
             tags = [
                 r[0]
                 for r in conn.execute(
@@ -476,11 +523,12 @@ def fetch_record(dsn: str, kind: str | None, ident: str) -> dict[str, Any] | Non
     except Exception as exc:
         log.warning("skill eval: fetch_record(%s, %r) failed: %s", kind, ident, exc)
         return None
-    handle = handle_registry.try_format(str(kind_db), int(ref_id))
+    handle = handle_registry.try_format(str(kind_db), int(ref_id)) or str(ref_id)
     return {
         "kind": str(kind_db),
-        "id": handle or str(ref_id),
+        "id": str(cite_key) if cite_key else handle,
         "ref_id": int(ref_id),
+        "handle": handle,
         "title": title,
         "body": body,
         "tags": tags,
@@ -529,6 +577,11 @@ class ExecutedClaudeRunner:
     caps/skip contract as :class:`LiveClaudeRunner`: a missing or
     unauthenticated ``claude`` (or an MCP that never connects — the test
     stack is down) skips the run, exit 0.
+
+    A precis call whose ``tool_result`` is ``is_error`` or an
+    ``[error:…]`` envelope keeps its place in the transcript but carries
+    the error on :attr:`VerbCall.error` — scoring counts it as a failed
+    call, not work done.
 
     ``call`` defaults to :func:`precis.utils.claude_agent.call_claude_agent`;
     tests inject a stub returning an ``AgentResult``-shaped object with a
@@ -592,7 +645,7 @@ class ExecutedClaudeRunner:
         self.spent_usd = 0.0
 
     def build_prompt(self, case: EvalCase, skill_texts: Mapping[str, str]) -> str:
-        return build_exec_prompt(case, skill_texts)
+        return build_exec_prompt(case, skill_texts, run_id=self.run_id)
 
     def unavailable_reason(self) -> str | None:
         binary = resolve_binary()
@@ -671,7 +724,7 @@ class ExecutedClaudeRunner:
         from precis.utils.claude_agent import stream_final_text
 
         return Transcript(
-            calls=tuple(c for _, c in pairs),
+            calls=_scored_calls(pairs, results),
             record=record,
             answer=stream_final_text(stdout),
             cost_usd=cost,
@@ -688,6 +741,7 @@ __all__ = [
     "DEFAULT_RUN_USD",
     "DEFAULT_SERVE_CMD",
     "DEFAULT_TIMEOUT_S",
+    "DRY_RUN_TOKEN",
     "ExecutedClaudeRunner",
     "FakeRunner",
     "LiveClaudeRunner",

@@ -20,8 +20,11 @@ class Verdict:
 def check(criterion: Criterion, transcript: Transcript) -> Verdict:
     reasons: list[str] = []
     for pat in criterion.calls:
-        if not any(pat.matches(c) for c in transcript.calls):
+        if not any(pat.matches(c) for c in transcript.calls if c.error is None):
             reasons.append(f"expected call not made: {pat.render()}")
+    for call in transcript.calls:
+        if call.error is not None:
+            reasons.append(f"call errored: {call.render()} — {call.error}")
     for pat in criterion.forbid_calls:
         hits = [c for c in transcript.calls if pat.matches(c)]
         if hits:
