@@ -192,11 +192,31 @@ class _PutState:
     #: ``meta.llm_tier='opus'`` (auto-dispatch armed) — the create ack
     #: announces it so the arming is never silent.
     stamped_default_tier: bool = False
+    #: ``waiting-for:mint`` stamped because the put landed inside a live
+    #: plan with no session signal covering it — the ack says so, since
+    #: the hold keeps the child out of dispatch until released.
+    mint_hold: bool = False
 
 
 _PUT_STATE: RequestState[_PutState] = RequestState("precis_todo_put", _PutState())
 #: Chunk kind of an appended comment (migration 0195; the gripe_comment shape).
 _COMMENT_KIND = "todo_comment"
+
+
+def _mint_held(tags: list[str] | None) -> bool:
+    """True when ``tags`` already holds a fresh mint out of dispatch —
+    a doable-exclusion tag (``waiting-for:`` / ``halt`` / ``ask-user`` /
+    a ``claimed-by:`` lease) or a non-``open`` ``STATUS:`` — so the
+    held-at-creation stamp doesn't double up."""
+    for t in tags or []:
+        if t.startswith(("waiting-for:", "halt:", "ask-user:", "claimed-by:")) or t in (
+            "halt",
+            "ask-user",
+        ):
+            return True
+        if t.startswith("STATUS:") and t != "STATUS:open":
+            return True
+    return False
 
 
 class TodoView(StrEnum):
@@ -1098,6 +1118,22 @@ class TodoHandler(NumericRefHandler):
             )
 
             validate_auto_check_spec(meta["auto_check"])
+        # A put landing inside a live plan subtree mints the child held
+        # (``waiting-for:mint``) when no session signal —
+        # ``plan_dispatch._mint_in_flight``'s in-flight job or
+        # ``claimed-by:`` lease — covers it: the row commits open and
+        # linkless and the ``blocked-by`` links land in later calls, so
+        # an unsigned session's mint must not dispatch in the gap
+        # (gr590954 review, td601078). The minter removes the tag once
+        # its links are settled — the mint-held runbook contract
+        # (me570515) enforced. A caller-supplied hold is already held.
+        mint_hold = False
+        if parent_int is not None and not _mint_held(tags):
+            from precis.workers.job_types import plan_dispatch as _pd
+
+            if _pd.mint_needs_hold(self.store, parent_int):
+                tags = [*(tags or []), plan_nodes.MINT_HOLD_TAG]
+                mint_hold = True
         # Delegate to the base put for the remaining D6 guardrails
         # (mode=/untags=/unlink= rejection, tag validation, link target
         # resolution, atomic tx) — id= was already rejected above (it's
@@ -1111,6 +1147,7 @@ class TodoHandler(NumericRefHandler):
             prio=prio,
             body=body.strip() if isinstance(body, str) and body.strip() else None,
             stamped_default_tier=stamped_default_tier,
+            mint_hold=mint_hold,
         )
         with _PUT_STATE.bind(state):
             resp = super().put(
@@ -2689,6 +2726,12 @@ class TodoHandler(NumericRefHandler):
                 " dispatcher will auto-run this leaf as a plan_tick; run"
                 f" edit(kind={self.kind!r}, id={ref_id},"
                 " meta={'llm_tier': None}) to park it instead."
+            )
+        if state.mint_hold:
+            body += (
+                f" minted held ({plan_nodes.MINT_HOLD_TAG}) — inside a live "
+                "plan with no session signal covering it; remove the tag "
+                "once its blocked-by links are settled."
             )
         ask_blocks = guards.check_ask_meta(state.meta)
         if ask_blocks is not None:

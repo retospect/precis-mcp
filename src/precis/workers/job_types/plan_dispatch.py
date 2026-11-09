@@ -113,10 +113,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    parent to the root, an interactive session's anywhere
    (:func:`_mint_in_flight`). The signal is an in-flight job for a
    dispatched session, a live ``claimed-by:`` lease for an interactive
-   one, which mints no job. A node minted while no plan session runs
-   keeps the runbook contract (me570515): mint it held — any
-   non-``open`` status or a ``waiting-for:`` tag — and release it once
-   linked.
+   one, which mints no job — so an unsigned session's mint is born
+   held instead: ``put`` stamps ``waiting-for:mint``
+   (:data:`precis.plans.nodes.MINT_HOLD_TAG`) on a child landing
+   inside a live plan no signal covers (:func:`mint_needs_hold`), and
+   the minter removes the tag once its ``blocked-by`` links are
+   settled — the runbook contract (me570515) enforced.
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
    gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
@@ -597,10 +599,12 @@ def _candidate_roots(conn: Any) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _load(store: Any) -> _Plan:
-    """The in-memory model of every plan subtree."""
+def _load(store: Any, roots: list[int] | None = None) -> _Plan:
+    """The in-memory model of every plan subtree — or, ``roots`` given,
+    of just those (:func:`mint_needs_hold` loads the one plan a put
+    lands in)."""
     with store.pool.connection() as conn:
-        candidates = _candidate_roots(conn)
+        candidates = _candidate_roots(conn) if roots is None else roots
     subtrees = {root: _fetch_subtree(store, root) for root in candidates}
     contained: set[int] = set()
     for root, rows in subtrees.items():
@@ -2082,6 +2086,81 @@ def _mint_in_flight(plan: _Plan, n: _Node) -> bool:
         g.id != n.id and g.root == n.root and _may_mint(g) and suspect(g)
         for g in plan.todos()
     )
+
+
+def _plan_root_of(store: Any, ref_id: int) -> int | None:
+    """The live plan root ``ref_id`` sits under (itself included), or
+    ``None`` outside a live plan: the highest live ancestor carrying the
+    self ``plan:<id>`` tag or plan-kind meta — :func:`_candidate_roots`'
+    two root shapes — so a root inside another root's subtree folds into
+    the outer."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE walk(ref_id, parent_id, meta, lvl) AS (
+                SELECT ref_id, parent_id, meta, 0
+                  FROM refs WHERE ref_id = %s
+                            AND kind = 'todo' AND retired_at IS NULL
+                UNION ALL
+                SELECT r.ref_id, r.parent_id, r.meta, w.lvl + 1
+                  FROM refs r
+                  JOIN walk w ON r.ref_id = w.parent_id
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND w.lvl < 25
+            )
+            SELECT w.ref_id, w.meta,
+                   (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = w.ref_id AND t.namespace = 'STATUS'
+                     LIMIT 1),
+                   EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = w.ref_id AND t.namespace = 'OPEN'
+                        AND t.value = 'plan:' || w.ref_id
+                   )
+              FROM walk w ORDER BY w.lvl DESC
+            """,
+            (ref_id,),
+        ).fetchall()
+    for rid, meta, status, self_root in rows:
+        if str(status or "open") in TERMINAL_TODO_STATUSES:
+            continue
+        if self_root or node_kind(dict(meta or {})) in (
+            "gate",
+            "loop",
+            "generator",
+            "phase",
+        ):
+            return int(rid)
+    return None
+
+
+def mint_needs_hold(store: Any, parent_id: int) -> bool:
+    """Whether a ``put`` minting a todo under ``parent_id`` must mint it
+    held (``waiting-for:mint``): the put lands inside a live plan
+    subtree and no session signal covers the mint — the put commits the
+    row open and linkless and the ``blocked-by`` links land in later
+    calls, so only :func:`_mint_in_flight`'s in-flight job or
+    ``claimed-by:`` lease keeps the tick from dispatching it mid-mint,
+    and an unsigned session (an interactive one without a lease) has
+    neither (td601078, review of gr590954). With a signal live the mint
+    is born open and that hold does the rest."""
+    root = _plan_root_of(store, parent_id)
+    if root is None:
+        return False
+    plan = _load(store, roots=[root])
+    n = _Node(
+        id=-1,
+        kind="todo",
+        parent_id=parent_id,
+        title="",
+        meta={},
+        status="open",
+        created_at=datetime.now(UTC),
+        prio=None,
+        depth=0,
+        root=root,
+    )
+    return not _mint_in_flight(plan, n)
 
 
 def _attempt_tag(n: _Node) -> int:

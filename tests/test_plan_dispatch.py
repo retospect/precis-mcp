@@ -448,6 +448,87 @@ def test_an_interactive_sessions_mint_holds_on_its_lease(
     assert len(_jobs_under(store, c2)) == 1
 
 
+def test_an_unsigned_sessions_mint_is_born_held(store: Store, hub: Any) -> None:
+    """td601078 review of gr590954: an interactive session carrying no
+    signal — no job (interactive sessions mint none) and no
+    ``claimed-by:`` lease — is invisible to ``_mint_in_flight``, so its
+    ``put`` mints the child held (``waiting-for:mint``) instead: the
+    put→``blocked-by`` gap cannot dispatch it. Releasing the hold sends
+    the child on."""
+    from precis.handlers.todo import TodoHandler
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice"}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+
+    # No signal on the plan: the put mints the child held, not open.
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+        body="Do it.",
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+
+    # Held: the task dispatches, the linkless mint does not.
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert not _jobs_under(store, kid)
+    assert len(_jobs_under(store, task)) == 1
+
+    # The minter releases once its links are settled — it goes.
+    store.remove_tag(kid, Tag.open("waiting-for:mint"))
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, kid)) == 1
+
+
+def test_a_leased_sessions_mint_is_born_open(store: Store, hub: Any) -> None:
+    """td601078 review of gr590954: the interactive mint born open is
+    the lease's — a ``claimed-by:`` lease on the session's todo is the
+    signal that lets its ``put`` mint open, and the tick's
+    mint-in-flight hold covers it from there."""
+    from precis.handlers.todo import TodoHandler
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("work", "Work item", {"op": "run_slice"}, body="Work it.")
+
+    mint = T._run(store, None, build)
+    work = mint.ids["work"]
+    store.add_tag(work, Tag.open("claimed-by:interactive"), set_by="agent")
+    store.add_tag(
+        work, Tag.closed("STATUS", "doing"), set_by="agent", replace_prefix=True
+    )
+
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=work,
+        meta={"op": "run_slice"},
+        body="Do it.",
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" not in _open_tags(store, kid)
+
+    # Born open but held by the lease's signal while it lives — the
+    # doing work item itself is claimed, so nothing dispatches.
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert not _jobs_under(store, kid)
+
+    # The session drops its lease: the mint's links are settled — it goes.
+    store.remove_tag(work, Tag.open("claimed-by:interactive"))
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, kid)) == 1
+
+
 def _failed_job(
     store: Store,
     task: int,
