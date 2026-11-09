@@ -256,7 +256,7 @@ def test_vacuity_follows_layer_coverage():
         "lexical-only",
     ):
         v = layers.arm_vacuity(arm, ZERO, embedder_id="bge-m3")
-        assert v["vacuous"] is True and "nothing to remove" in v["reason"], arm
+        assert v["vacuous"] is True and "holds nothing of it" in v["reason"], arm
     v = layers.arm_vacuity("semantic-only", ZERO, embedder_id="bge-m3")
     assert v["vacuous"] is False and v["degenerate"] is True
     full = {k: (0.9 if k.endswith("_frac") else v) for k, v in ZERO.items()}
@@ -375,8 +375,10 @@ def test_report_markdown_has_one_row_per_arm_and_deltas_vs_all_on():
             lines.setdefault(line.split("|")[1].strip(), line)
     # all-on: n=2, recall@5 mean 0.5, median of (100, 300) = 200; no delta shown
     assert "| 2 | 0.500 | 200 | 0 | 4.0 | 0 | — | — |" in lines["all-on"]
-    # no-kwd: n=2, median of (60, 8000) = 4030, 1 censored, refusals 2; delta vs all-on
-    assert "| 2 | 0.500 | 4030 | 1 | 4.5 | 2 | +0.000 | +3830 |" in lines["no-kwd"]
+    # no-kwd: n=2, median over the one task that reached gold = 60 (the censored
+    # task, carrying the 8000 budget, is counted in "censored" and not averaged
+    # in), 1 censored, refusals 2; delta vs all-on's 200
+    assert "| 2 | 0.500 | 60 | 1 | 4.5 | 2 | +0.000 | -140 |" in lines["no-kwd"]
     assert "VACUOUS" in lines["no-kwd"]
     assert "| 1 | — | 5000 |" in lines["whole-paper"]
     assert "Unanswerable tasks" in md and "| all-on | 1 | 900 |" in md

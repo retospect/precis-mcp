@@ -785,8 +785,10 @@ def aggregate(
     rows: Sequence[Mapping[str, Any]], arm: str, *, source: str | None = None
 ) -> dict[str, Any]:
     """Per-arm answerable-task summary: n, recall@5, median tokens to first
-    gold (censored tasks count at the budget), censored, mean calls,
-    refusals and errors."""
+    gold over the tasks that reached it (as ``mesh_eval.retrieval`` does; a
+    censored task would just contribute the budget, and when more than half
+    are censored the median would be the budget itself), the censored count,
+    mean calls, refusals and errors."""
     sel = [
         r
         for r in rows
@@ -797,7 +799,9 @@ def aggregate(
     ]
     r5 = [r["recall_at_5"] for r in sel if r["recall_at_5"] is not None]
     toks = [
-        r["tokens_to_first_gold"] for r in sel if r["tokens_to_first_gold"] is not None
+        r["tokens_to_first_gold"]
+        for r in sel
+        if r["tokens_to_first_gold"] is not None and not r["censored"]
     ]
     return {
         "n": len(sel),
@@ -824,8 +828,8 @@ def _table(results: Mapping[str, Any], *, source: str | None, title: str) -> lis
     lines = [
         f"### {title}",
         "",
-        "| arm | n | recall@5 | median tok→gold | censored | mean calls | refusals "
-        "| Δ recall@5 | Δ median tok | flags |",
+        "| arm | n | recall@5 | median tok→gold (reached) | censored | mean calls "
+        "| refusals | Δ recall@5 | Δ median tok | flags |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for arm in present:
@@ -907,7 +911,10 @@ def report_markdown(results: Mapping[str, Any]) -> str:
     if vac:
         out += [
             "",
-            f"**Vacuous arms (identical to all-on by construction): {', '.join(vac)}**",
+            f"**Vacuous arms: {', '.join(vac)}.** The layer is (nearly) empty in "
+            "the DB, so there is nothing to remove: a delta on these rows comes "
+            "from the rungs and hint lines the caller still pays for, not from "
+            "the layer. Do not read it as a layer effect.",
         ]
     return "\n".join(out) + "\n"
 

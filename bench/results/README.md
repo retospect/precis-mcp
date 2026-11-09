@@ -83,6 +83,18 @@ effect.
 | `transcript_sha256` | hash of the normalised call/output stream (drives the vacuity check); `null` for the baselines |
 | `wall_s` | wall time; the only non-deterministic field |
 
+## Report
+
+`scripts/bench report` prints, per arm over the answerable tasks: `n`, mean
+`recall@5`, the **median tokens to first gold over the tasks that reached it**
+(a censored task carries the budget in the file; averaging it in would make the
+median the budget whenever over half are censored), the `censored` count, mean
+`calls`, `refusals`, and the deltas against `all-on`. A delta between arms with
+different `censored` counts compares different task subsets; read the two
+columns together. Tables follow for the QASPER and planted tasks separately,
+then the unanswerable tasks (mean tokens and calls only). A vacuous arm is
+flagged `VACUOUS` and its delta is not a layer effect.
+
 ## What counts as found
 
 The scripted caller (`search` -> `get` up the ladder `kwd`, `summary`,

@@ -167,9 +167,10 @@ def arm_vacuity(
         if share < VACUOUS_BELOW:
             res["vacuous"] = True
             res["reason"] = (
-                f"layer '{layer}' coverage {share:.4f} < {VACUOUS_BELOW}: nothing "
-                f"to remove, so {arm} can change at most boilerplate lines "
-                "(identical_to_all_on_frac says how many tasks differ at all)"
+                f"layer '{layer}' coverage {share:.4f} < {VACUOUS_BELOW}: the DB "
+                f"holds nothing of it to remove, so any {arm} delta comes from "
+                "rungs/hint lines the caller still pays for, not from the layer "
+                "(see refusals and identical_to_all_on_frac)"
             )
     elif arm == "semantic-only":
         share = float(cov.get(LAYER_FRACTION["embeddings"], 0.0))
