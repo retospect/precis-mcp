@@ -579,12 +579,13 @@ The other settings a slice host reads:
   `release-review-wait:td<land>` ask once the newer of the land and
   its newest covering reviewer is 24 h old; a land with no covering
   reviewer gets one minted under the plan root its own `plan:` tag
-  names (a commit no todo links gets a sha-keyed reviewer under a
-  fresh phase root), `blocked-by` the landed todo so a REVERT verdict
+  names (a commit no todo links — or whose linked todo has no live
+  plan root — gets a sha-keyed reviewer under a fresh phase root),
+  `blocked-by` the landed todo so a REVERT verdict
   holds it
   through the rebuild, at most two mints a pass — the ask files at
-  once only where minting cannot run (no review-fit lane, no live
-  root, the mint raised), where `plan_dispatch` itself is switched
+  once only where minting cannot run (no review-fit lane, the mint
+  raised), where `plan_dispatch` itself is switched
   off, or the wait can never resolve — a dead verdict, a dead root,
   a fix that ended unlanded — and an answered ask clears that one
   land. An ask closed without an `answer:` comment holds nothing:

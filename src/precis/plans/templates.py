@@ -305,12 +305,13 @@ _REVIEWER_BRIEF_TAIL = (
 
 
 def _sha_reviewer_brief(sha12: str) -> str:
-    """The sha-keyed reviewer's brief: the commit IS the brief — no todo
-    carried one (gr597625)."""
+    """The sha-keyed reviewer's brief: the commit IS the brief — no live
+    plan root claims it (gr597625)."""
     return (
         "Review after land, from another lane than the builder's. Commit "
-        f"{sha12} is on main — an engine land no `land_slice` job or "
-        "subject handle links a todo to. Read `git show " + sha12 + "` and "
+        f"{sha12} is on main — an engine land no live plan root claims "
+        "(no `land_slice` job or subject handle links it, or the linked "
+        "todo's root is dead). Read `git show " + sha12 + "` and "
         "judge whether the diff is fit for main, and does nothing it "
         "should not.\n\n" + _REVIEWER_BRIEF_TAIL
     )
@@ -366,11 +367,13 @@ def mint_reviewer(store: Store, plan_root: int, target_id: int) -> int:
 
 
 def mint_sha_reviewer(store: Store, sha12: str) -> int:
-    """Mint the sha-keyed reviewer over a hand-landed engine commit no
-    ``land_slice`` job or subject handle links a todo to (gr597625): a
+    """Mint the sha-keyed reviewer over a hand-landed engine commit —
+    nothing links it, or the linked todo has no live plan root to hang
+    a td-keyed reviewer under (gr597625, td599062): a
     phase root plus one reviewer child whose ``generate.from`` is
     ``sha:<sha12>`` — the key the engine-review gate dedupes and covers
-    on. The phase root keeps the FIX/REVERT task
+    on (a sha key covers every unit of its commit). The phase root keeps
+    the FIX/REVERT task
     ``plan_dispatch._step_reviews`` mints under it reachable while it
     runs, then closes once every child closed.
     ``release_poll._mint_sha_reviewer`` calls this inside its dedupe-lock

@@ -1197,9 +1197,12 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # todo itself or its parent — the one level
 # ``plan_dispatch._review_targets`` reviews (a slicer's slices). A
 # commit nothing links — a hand land from a tmux tree or the
-# coordinator seat mints no ``land_slice`` job — is its own unit: the
-# gate mints a sha-keyed reviewer (``generate.from`` = ``sha:<sha12>``,
-# one per commit) and holds the cut until it closes LAND.
+# coordinator seat mints no ``land_slice`` job — is its own unit, and
+# a linked todo with no live plan root joins it: there is nothing to
+# hang a td-keyed reviewer under, so the gate mints the sha-keyed
+# reviewer (``generate.from`` = ``sha:<sha12>``, one per commit,
+# covering every unit of the commit) and holds the cut until it
+# closes LAND.
 # A covering reviewer clears the land when it closed ``LAND``, or
 # ``FIX`` whose fix task landed — a sha-keyed reviewer's ``REVERT``
 # tracks its revert task the same way, since a hand land has no todo
@@ -1215,10 +1218,11 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # REVERT holds it through the rebuild, which ``plan_dispatch`` runs on
 # a review lane of a vendor that did not build the land — and files the
 # ask only when no minted reviewer could run: no enabled review-fit
-# lane, no ``plan:`` tag naming a live root (a dead root is hopeless to
-# this same gate, and the reviewed todo itself would read as its own
-# review target), or a mint that raised; when ``plan_dispatch`` itself
-# is switched off the gate mints nothing and files the ask as before.
+# lane, or a mint that raised; when ``plan_dispatch`` itself is
+# switched off the gate mints nothing and files the ask as before.
+# (No ``plan:`` tag naming a live root used to ask too — a dead root
+# is hopeless to this same gate — but the sha-keyed mint needs no
+# root, so it answers instead.)
 # An answered ask
 # (``release-review-wait:td<land>`` with an ``answer:`` comment) clears
 # that one land; one closed without the comment holds nothing — the
@@ -1397,8 +1401,9 @@ def _gate_lands(store: Any) -> list[_GateLand]:
     linked todos — the succeeded ``land_slice`` job whose
     ``meta.landed_sha`` matches (the stamped path, kept as the fast
     lookup) or the ``td<id>`` handles in the subject's trailing list.
-    A commit neither links is its own unit: the gate mints a sha-keyed
-    reviewer for it."""
+    A commit neither links is its own unit, and a sha-keyed reviewer
+    minted for it (or for a linked todo with no live plan root) covers
+    every unit of the commit."""
     from precis.plans import lanes as _lanes
 
     stamped = _landed_jobs(store)
@@ -1767,7 +1772,8 @@ def _reviewer_hang(
     ``_review_targets``); or the root the tag names is terminal,
     cancelled or gone — an open reviewer under a dead root is judged
     hopeless by this same gate, so minting it burns a review lane and
-    asks anyway."""
+    asks anyway. The caller does not ask on a root refusal: it mints
+    the sha-keyed reviewer under a fresh root instead (:func:`_sha_hang`)."""
     from precis.plans import templates as _templates
 
     if not any(
@@ -1834,7 +1840,10 @@ def _sha_hang(lane_table: tuple[Any, ...]) -> str | None:
     """The only refusal a sha-keyed mint can hit before it starts —
     the sha land's reviewer mints its own fresh phase root (always
     live), so just the lane fit decides (the sha half of
-    :func:`_reviewer_hang`, gr597625)."""
+    :func:`_reviewer_hang`, gr597625). It is also the fallback gate
+    for a td-linked unit whose own hang refused on the root: a lane
+    refusal is the same string either helper returns, a root refusal
+    never blocks the sha mint."""
     from precis.plans import templates as _templates
 
     if not any(
@@ -1845,14 +1854,19 @@ def _sha_hang(lane_table: tuple[Any, ...]) -> str | None:
 
 
 def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
-    """Mint the sha-keyed reviewer over a hand-landed engine commit with
-    no linked todo; returns ``(note, reviewer id, fresh)`` — one per
-    commit: the locked re-read (a live reviewer whose ``generate.from``
-    is ``sha:<sha12>`` — either direction's prefix, so a fuller sha key
+    """Mint the sha-keyed reviewer over a hand-landed engine commit —
+    nothing links it, or the linked todo has no live plan root;
+    returns ``(note, reviewer id, fresh)`` — one per commit: the
+    locked re-read (a live reviewer whose ``generate.from`` is
+    ``sha:<sha12>`` — either direction's prefix, so a fuller sha key
     also dedupes) and the insert share the
     :data:`_REVIEW_MINT_LOCK_KEY` advisory-locked transaction
     (:func:`templates.mint_sha_reviewer`'s ``store.tx()`` joins it as a
-    savepoint)."""
+    savepoint). The dup scan matches only well-formed ``sha:<hex>``
+    keys: a malformed ``from`` (``sha:``, a bare prefix) would
+    prefix-match every key here while the coverage read
+    (:data:`_REVIEW_FROM_SHA_RE`) counts it as covering nothing — a
+    mint that never lands and a land that never unblocks."""
     from precis.plans import templates as _templates
 
     with store.atomic() as conn:
@@ -1862,8 +1876,9 @@ def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
             SELECT ref_id FROM refs
              WHERE kind = 'todo' AND retired_at IS NULL
                AND meta->'generate'->>'role' = 'reviewer'
-               AND (%s LIKE (meta->'generate'->>'from') || '%%'
-                    OR (meta->'generate'->>'from') LIKE %s || '%%')
+               AND lower(meta->'generate'->>'from') ~ '^sha:[0-9a-f]{7,40}$'
+               AND (%s LIKE lower(meta->'generate'->>'from') || '%%'
+                    OR lower(meta->'generate'->>'from') LIKE %s || '%%')
              ORDER BY ref_id
              LIMIT 1
             """,
@@ -1891,9 +1906,11 @@ def engine_review_blockers(
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
     ``release-review-wait:<key>`` ask clears it; no covering reviewer
     (``generate.from`` naming the landed todo or its parent, or the
-    commit's ``sha:<sha12>`` for a hand land nothing links) mints one —
+    commit's ``sha:<sha12>`` — sha-keyed covers every unit of the
+    commit) mints one —
     under the root a linked todo's own ``plan:<id>`` tag names, under a
-    fresh phase root for a sha-keyed land — at most
+    fresh phase root for a sha-keyed land — a commit nothing links, or
+    a linked todo with no live plan root — at most
     :data:`_MINT_PER_PASS` a pass — the mint is covering next tick —
     and files the ask only when minting cannot run or ``plan_dispatch``
     itself is switched off (td584381 S1b); covering reviewers are judged
@@ -1937,21 +1954,24 @@ def engine_review_blockers(
         for unit in _gate_lands(store):
             if _answered_wait_ask(store, unit.ask_key):
                 continue
+            covering: list[tuple[int, dict[str, Any]]] = []
             if unit.todo_id is not None:
                 parent = _parent_of(store, unit.todo_id)
-                covering = [
+                covering += [
                     r
                     for fid in (unit.todo_id, parent)
                     if fid is not None
                     for r in by_from.get(fid, ())
                 ]
-            else:
-                covering = [
-                    r
-                    for key, rs in by_sha.items()
-                    if unit.sha12.startswith(key) or key.startswith(unit.sha12)
-                    for r in rs
-                ]
+            # A sha-keyed reviewer covers every unit of its commit —
+            # including a td-linked one it was minted for when the linked
+            # todo had no live plan root to hang under (td599062).
+            covering += [
+                r
+                for key, rs in by_sha.items()
+                if unit.sha12.startswith(key) or key.startswith(unit.sha12)
+                for r in rs
+            ]
             if not covering:
                 ask_id = _open_wait_ask_id(store, unit.ask_key)
                 if file_asks:
@@ -1964,7 +1984,12 @@ def engine_review_blockers(
                                 store, unit.todo_id, lane_table
                             )
                             mintable = plan_root is not None
-                        else:
+                        if plan_root is None:
+                            # No linked todo — or the linked todo has no
+                            # live plan root to hang under (the briefed
+                            # case): the sha-keyed reviewer mints its own
+                            # fresh root, so only the lane fit can refuse
+                            # — a lane refusal is _reviewer_hang's too.
                             refusal = _sha_hang(lane_table)
                             mintable = refusal is None
                     if mintable and not dry_run:
@@ -1976,8 +2001,7 @@ def engine_review_blockers(
                             )
                             continue
                         try:
-                            if unit.todo_id is not None:
-                                assert plan_root is not None  # mintable says so
+                            if unit.todo_id is not None and plan_root is not None:
                                 note, minted_id, fresh = _mint_engine_reviewer(
                                     store, unit.todo_id, plan_root
                                 )

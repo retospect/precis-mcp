@@ -2142,8 +2142,9 @@ def test_the_fix_tasks_own_engine_land_blocks(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A fix task's own engine land has no reviewer covering it (its
-    parent is the plan, not the slicer): it blocks and files its own ask
-    even though the review it answered is satisfied."""
+    parent is the plan, not the slicer): the gate mints the sha-keyed
+    reviewer for it and blocks, even though the review it answered is
+    satisfied."""
     _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])
     fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
@@ -2153,28 +2154,31 @@ def test_the_fix_tasks_own_engine_land_blocks(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is None
     assert res.blocker is not None
-    assert "has no reviewer" in res.blocker and f"td{fix.id}" in res.blocker
-    asks = _review_wait_asks(store)
-    assert len(asks) == 1
-    assert f"release-review-wait:td{fix.id}" in _tags(store, asks[0])
+    assert "no reviewer" in res.blocker and f"td{fix.id}" in res.blocker
+    keys = [
+        str((m.get("generate") or {}).get("from")) for _r, m in rp._reviewer_rows(store)
+    ]
+    assert sorted(keys) == [f"sha:{(f'{int(fix.id):x}' + 'f' * 40)[:12]}", "td42"]
+    assert _review_wait_asks(store) == []
 
 
-def test_an_engine_land_with_no_reviewer_asks_at_once(
+def test_an_engine_land_with_no_reviewer_mints_one_at_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """No covering reviewer at all: the gate mints the sha-keyed
+    reviewer at once — the pass still refuses, on the minted node."""
     _fake_github(monkeypatch)
     job = _engine_land(store, 42, paths=["scripts/ship"])
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is None
     assert res.blocker is not None
-    assert "has no reviewer" in res.blocker
+    assert "no reviewer" in res.blocker
     assert "td42" in res.blocker and f"jo{job}" in res.blocker
-    asks = _review_wait_asks(store)
-    assert len(asks) == 1
-    ref = store.get_ref(kind="todo", id=asks[0])
-    assert ref is not None
-    assert "td42" in ref.meta["ask"]["context"]
-    assert "release-review-wait:td42" in _tags(store, asks[0])
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert str((meta.get("generate") or {}).get("from")).startswith("sha:")
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.parent_id is not None
+    assert _review_wait_asks(store) == []
 
 
 # ── the gate mints its own reviewer (td584381 S1b) ────────────────
@@ -2184,9 +2188,10 @@ def test_an_engine_land_with_no_reviewer_asks_at_once(
 # a plan reviewer node under the landed todo's live plan root, run by
 # ``plan_dispatch``'s review machinery on a lane of a vendor that did
 # not build the land — and files the ask only when no minted reviewer
-# could run: no enabled review-fit lane, no plan root to hang it under
-# (or a dead root, which this gate itself would judge hopeless), or a
-# mint that raised.
+# could run: no enabled review-fit lane or a mint that raised. A land
+# with no live plan root to hang the reviewer under (a dead root this
+# gate would itself judge hopeless, or no ``plan:`` tag at all) gets
+# the sha-keyed reviewer under a fresh root instead (td599062).
 
 
 def _plan_landed(store: Store) -> tuple[int, int]:
@@ -2340,36 +2345,49 @@ def test_no_enabled_review_lane_files_the_ask(
     assert "no enabled lane" in _todo_text(store, ask_id)
 
 
-def test_a_land_under_no_plan_root_asks(
+def test_a_land_under_no_plan_root_mints_a_sha_reviewer(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A standalone landed todo tops its own parent chain: no plan
-    root to hang the reviewer under, so the gate asks."""
+    """A standalone landed todo tops its own parent chain — no plan
+    root to hang a td-keyed reviewer under, so the gate mints the
+    sha-keyed one under a fresh root, keyed on the commit (td599062)."""
     _fake_github(monkeypatch)
     use_lanes(monkeypatch)
     lone = store.insert_ref(kind="todo", slug=None, title="bare build", meta=None)
     _engine_land(store, int(lone.id), paths=["scripts/ship"])
     rp.engine_review_blockers(store, now=NOW, file_asks=True)
-    assert rp._reviewer_rows(store) == []
-    [ask_id] = _review_wait_asks(store)
-    assert "no plan root" in _todo_text(store, ask_id)
+    sha = (f"{int(lone.id):x}" + "f" * 40)[:12]
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert meta["generate"] == {"role": "reviewer", "from": f"sha:{sha}"}
+    assert _review_wait_asks(store) == []
+    # The sha key covers the td unit next tick: judged, no second
+    # node, no ask.
+    lines, _notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(rp._reviewer_rows(store)) == 1
+    assert _review_wait_asks(store) == []
+    assert f"td{rid}" in "; ".join(lines)
 
 
-def test_a_land_under_a_dead_root_asks(
+def test_a_land_under_a_dead_root_mints_a_sha_reviewer(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reviewer minted under a closed root is judged hopeless by
-    this same gate on the next tick — minting it buys nothing, so the
-    gate asks at once instead."""
+    """A td-keyed reviewer hung under the closed plan root would be
+    judged hopeless by this same gate — minting it buys nothing, so
+    the gate mints the sha-keyed reviewer under a FRESH root instead
+    (td599062)."""
     _fake_github(monkeypatch)
     use_lanes(monkeypatch)
     root, build = _plan_landed(store)
     _engine_land(store, build, paths=["scripts/ship"])
     _close(store, root)
     rp.engine_review_blockers(store, now=NOW, file_asks=True)
-    assert rp._reviewer_rows(store) == []
-    [ask_id] = _review_wait_asks(store)
-    assert f"td{root}" in _todo_text(store, ask_id)
+    sha = (f"{build:x}" + "f" * 40)[:12]
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert meta["generate"]["from"] == f"sha:{sha}"
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.parent_id is not None
+    assert ref.parent_id != root  # a fresh root, not the dead one
+    assert _review_wait_asks(store) == []
 
 
 def test_no_mint_without_file_asks_dry_run_or_factory_off(
@@ -2494,12 +2512,13 @@ def test_the_wait_clock_counts_from_the_newest_reviewer(
     assert len(_review_wait_asks(store)) == 1
 
 
-def test_a_land_under_a_non_plan_epic_asks(
+def test_a_land_under_a_non_plan_epic_mints_a_sha_reviewer(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A landed todo whose parent is a plain epic — no ``plan:<id>``
-    tag of its own — has no plan root: the gate asks and mints
-    nothing, and the epic never becomes a plan root (S2)."""
+    tag of its own — has no plan root: the gate mints the sha-keyed
+    reviewer under a FRESH root; the epic never becomes a plan root
+    and its other leaf stays outside every plan subtree (S2)."""
     _fake_github(monkeypatch)
     use_lanes(monkeypatch)
     epic = store.insert_ref(kind="todo", slug=None, title="the epic", meta=None)
@@ -2510,7 +2529,7 @@ def test_a_land_under_a_non_plan_epic_asks(
         meta=None,
         parent_id=int(epic.id),
     )
-    store.insert_ref(
+    leaf = store.insert_ref(
         kind="todo",
         slug=None,
         title="another leaf",
@@ -2519,14 +2538,18 @@ def test_a_land_under_a_non_plan_epic_asks(
     )
     _engine_land(store, int(build.id), paths=["scripts/ship"])
     rp.engine_review_blockers(store, now=NOW, file_asks=True)
-    assert rp._reviewer_rows(store) == []
-    [ask_id] = _review_wait_asks(store)
-    assert "no plan root" in _todo_text(store, ask_id)
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert str((meta.get("generate") or {}).get("from")).startswith("sha:")
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.parent_id != int(epic.id)
+    assert _review_wait_asks(store) == []
     assert not any(v.startswith("plan:") for v in _tags(store, int(epic.id)))
-    # No plan root was made up: the epic's other leaf stays outside
-    # every plan subtree — nothing dispatches it as a run_slice task.
+    # The minted reviewer is the only thing the tick dispatches — the
+    # epic's other leaf is no plan's task.
     res = pd.run_pass(store, dry_run=True)
-    assert res.dispatched == 0
+    dispatch = [n for n in res.notes if "would dispatch" in n]
+    assert len(dispatch) == 1 and f"td{rid}" in dispatch[0]
+    assert all(f"td{int(leaf.id)}" not in n for n in res.notes)
 
 
 def test_the_plan_dispatch_kill_switch_files_the_ask(
@@ -2743,8 +2766,13 @@ def test_a_wait_ask_closed_unanswered_is_refiled(
 ) -> None:
     """Closing the ruling ask without an ``answer:`` comment does not
     clear the land: the gate files a new ask for it and the blocker
-    names that ask's id."""
+    names that ask's id. The land is unmintable on a code-only lane
+    table, so the ask path is what runs."""
     _fake_github(monkeypatch)
+    use_lanes(
+        monkeypatch,
+        L.Lane("code-only", "claude_p", "s", 1, frozenset({"code"}), vendor="x"),
+    )
     _engine_land(store, 42, paths=["scripts/ship"])
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is None
@@ -2803,8 +2831,9 @@ def test_engine_review_gate_unreadable_fails_closed(
 # engine commit ride the cut unseen (186513b6e into r257 with two FIX
 # reviewers open). The gate now reads ``origin/prod..origin/main``: an
 # engine commit links its todos through the stamp or the subject's
-# trailing ``td`` handles; a commit nothing links gets a sha-keyed
-# reviewer minted and holds the cut until it closes LAND.
+# trailing ``td`` handles; a commit nothing links — or whose linked
+# todo has no live plan root (td599062) — gets a sha-keyed reviewer
+# minted and holds the cut until it closes LAND.
 
 
 def _hand_land(sha: str, subject: str, paths: list[str]) -> None:
@@ -2867,6 +2896,62 @@ def test_a_non_engine_hand_land_never_blocks(
     )
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
+
+
+def test_a_hand_land_naming_a_rootless_todo_gets_a_sha_reviewer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The td599062 brief verbatim: a hand land whose subject names a
+    todo with no live plan root — nothing to hang a td-keyed reviewer
+    under — used to file only the ask. The gate mints the sha-keyed
+    reviewer under a fresh root, and that key covers the td unit."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    lone = store.insert_ref(kind="todo", slug=None, title="bare build", meta=None)
+    sha = "186513b6e12f" + "0" * 28
+    _hand_land(
+        sha,
+        f"fix(ship): tighten the gate (td{int(lone.id)})",
+        ["scripts/ship"],
+    )
+    lines, notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    [(rid, meta)] = rp._reviewer_rows(store)
+    assert meta["generate"] == {"role": "reviewer", "from": f"sha:{sha[:12]}"}
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.parent_id is not None
+    assert _review_wait_asks(store) == []
+    blocker = "; ".join(lines)
+    assert f"td{int(lone.id)}" in blocker and f"td{rid}" in blocker
+    assert any(f"minted reviewer td{rid} for {sha[:12]}" in n for n in notes)
+    # The sha key covers the td unit next tick: judged, no re-mint,
+    # no ask.
+    lines, _notes = rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    assert len(rp._reviewer_rows(store)) == 1
+    assert _review_wait_asks(store) == []
+    assert f"td{rid}" in "; ".join(lines)
+
+
+def test_a_malformed_sha_from_does_not_shadow_the_mint(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reviewer whose ``generate.from`` is no well-formed sha key
+    covers nothing — and must not shadow the mint's dedupe read either
+    (the unanchored prefix match would have wedged every sha mint)."""
+    _fake_github(monkeypatch)
+    use_lanes(monkeypatch)
+    store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="odd reviewer",
+        meta={"generate": {"role": "reviewer", "from": "sha"}},
+    )
+    _hand_land("a" * 40, "fix(ship): tighten the gate", ["scripts/ship"])
+    rp.engine_review_blockers(store, now=NOW, file_asks=True)
+    keys = [
+        str((m.get("generate") or {}).get("from")) for _r, m in rp._reviewer_rows(store)
+    ]
+    assert sorted(keys) == ["sha", f"sha:{'a' * 12}"]
+    assert _review_wait_asks(store) == []
 
 
 def test_a_stamp_less_engine_commit_gets_one_reviewer(
