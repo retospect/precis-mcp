@@ -267,6 +267,20 @@ BARE_HANDLE_PATTERN = re.compile(
     r"(?![\w-])"
 )
 
+#: A bare *citable* handle in prose — a paper / patent / finding record or
+#: chunk code plus **≥4 digits** (``pa57151``, ``pc12345``). The digit floor
+#: keeps short tokens like ``pt111`` (a Pt surface) or ``co2`` literal; the
+#: exporters (``export/latex.py``, ``export/docx.py``) resolve these to real
+#: citations — an author who drops the ``[…]`` around a paper handle still
+#: gets a numbered mark instead of the raw ``pa<id>`` leaking into the PDF
+#: (gr606572). Resolution stays store-gated downstream: a token that doesn't
+#: resolve to a live record falls back to plain text.
+BARE_CITABLE_PATTERN = re.compile(
+    r"(?<![\w./:~@-])"
+    r"(?:pa|pc|pt|pk|fi)[0-9]{4,}"
+    r"(?![\w-])"
+)
+
 
 def bare_handle_tokens(body: str) -> list[str]:
     """Every bare-handle-shaped token in ``body`` — deduplicated,

@@ -792,6 +792,40 @@ def test_bare_number_and_bare_pub_id_brackets_stay_literal() -> None:
     assert ctx.cited == []
 
 
+def test_bare_paper_handle_renders_cite() -> None:
+    """gr606572: a bare ``pa<id>``/``pc<id>`` left unbracketed in draft
+    prose cites like the ``[pa<id>]`` form — the raw handle never leaks
+    into the PDF as literal text ("pa57151 <citation>" → a numbered mark)."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="miller23")
+            if h in ("pc7890", "pa5715")
+            else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("see pa5715 and pc7890 in passing.", ctx)
+    assert out.count(r"\cite{miller23}") == 2
+    assert "pa5715" not in out
+    assert ctx.cited == ["miller23"]  # collapsed to one bib entry
+
+
+def test_bare_citable_handle_unresolved_stays_literal() -> None:
+    """A bare citable-shaped token that doesn't resolve stays prose, and
+    the ≥4-digit floor keeps ``pt111``-shaped text off the cite path."""
+    import types
+
+    store = types.SimpleNamespace(resolve_handle=lambda h: None)
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("the pa99999 stub and pt111 surface.", ctx)
+    assert "pa99999" in out
+    assert "pt111" in out
+    assert r"\cite" not in out
+    assert ctx.cited == []
+
+
 # ── Taproot claim-hub finding handle (Phase 1 — living citations reach
 # draft export): a [fi<id>] finding handle that resolves to a
 # TAPROOT:claim hub cites its *derived* establishes originator(s)

@@ -212,6 +212,10 @@ _COMBINED = re.compile(
     + r"(?P<bare_paper>"
     + mentions.BARE_PAPER_PATTERN.pattern
     + r")"
+    + "|"
+    + r"(?P<bcite>"
+    + mentions.BARE_CITABLE_PATTERN.pattern
+    + r")"
 )
 
 #: LaTeX special characters → their escaped forms (text mode). Applied to
@@ -1111,6 +1115,15 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
     if m.group("bare_paper") is not None:
         slug = m.group("bare_paper").split("~", 1)[0]
         return _cite(slug, ctx)
+    if m.group("bcite") is not None:
+        # A bare citable handle (``pa57151`` left unbracketed in prose,
+        # gr606572): cite it like the ``[pa<id>]`` form. An unresolved or
+        # non-live token stays literal — it may be prose.
+        tgt = m.group("bcite")
+        parsed = handle_registry.parse(tgt)
+        if parsed is not None and (parsed[0] == "finding" or _handle_cite(tgt, ctx)[0]):
+            return _render_target(tgt, None, ctx)
+        return _encode_unicode(_latex_escape(tgt))
     return ""
 
 

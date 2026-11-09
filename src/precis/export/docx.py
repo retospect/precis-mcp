@@ -1039,6 +1039,19 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
     if m.group("bare_paper") is not None:
         _cite(m.group("bare_paper").split("~", 1)[0], ctx, paragraph)
         return
+    if m.group("bcite") is not None:
+        # A bare citable handle (``pa57151`` unbracketed in prose, gr606572):
+        # cite it like the ``[pa<id>]`` form. An unresolved or non-live token
+        # keeps today's prose fallback (the record-title splice).
+        tgt = m.group("bcite")
+        parsed = handle_registry.parse(tgt)
+        if parsed is not None and (parsed[0] == "finding" or _handle_cite_si(tgt, ctx)):
+            _render_target(tgt, None, ctx, paragraph)
+        else:
+            ctx.cite_run.interrupt()
+            _flush_cites(ctx, paragraph)
+            _emit_text(tgt, ctx, paragraph)
+        return
 
 
 def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
