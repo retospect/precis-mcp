@@ -355,3 +355,51 @@ def test_pointer_drops_cleanly_when_probe_fails(
     out = h.search(q="marine cloud brightening", mode="lexical")
     assert "no memory entries match" in out.body
     assert "title-matched refs" not in out.body
+
+
+def test_skill_joins_fanout_python_md_stay_out(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr568412: 'skill' joins the default fan-out (its search_hits now
+    exists); 'python'/'md' stay excluded per the coordinator ruling."""
+    kinds = runtime_with_store._cross_kind_kinds()
+    assert "skill" in kinds
+    assert "python" not in kinds
+    assert "md" not in kinds
+
+
+def test_draft_search_hits_floors_semantic_pool(hub, store: Store) -> None:
+    """gr568412: draft's search_hits lacked the corpus floor — a far
+    sem-only chunk must not reach the merge."""
+    from precis.handlers.draft import DraftHandler
+
+    dim = store.embedding_dim()
+    q_vec = _unit_vec(dim, [(0, 1.0)])
+    far = _unit_vec(dim, [(0, 0.1), (1, math.sqrt(0.99))])
+    ref = store.insert_ref(kind="draft", slug="d-floor", title="unrelated aaa")
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text="unrelated filler words only", embedding=far)],
+    )
+    hits = DraftHandler(hub=hub).search_hits(
+        q="frobnicate", page_size=5, query_vec=q_vec
+    )
+    assert hits == []
+
+
+def test_orcid_search_hits_floors_semantic_pool(hub, store: Store) -> None:
+    """gr568412: orcid's card leg lacked the corpus floor too."""
+    from precis.handlers.orcid import OrcidHandler
+
+    dim = store.embedding_dim()
+    q_vec = _unit_vec(dim, [(0, 1.0)])
+    far = _unit_vec(dim, [(0, 0.1), (1, math.sqrt(0.99))])
+    ref = store.insert_ref(kind="orcid", slug="o-floor", title="unrelated bbb")
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text="unrelated filler words only", embedding=far)],
+    )
+    hits = OrcidHandler(hub=hub).search_hits(
+        q="frobnicate", page_size=5, query_vec=q_vec
+    )
+    assert hits == []

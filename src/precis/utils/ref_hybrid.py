@@ -103,10 +103,15 @@ def _block_leg(
     ``_numeric_ref._best_body_hits`` uses — rather than calling
     ``search_chunks_fused`` directly, so an explicit ``mode='semantic'``
     gets the true semantic-only cut (``search_chunks_semantic``, floored at
-    ``SEMANTIC_DISTANCE_FLOOR``) instead of RRF-fusing in a lexical leg. For
-    ``mode=None``/``'hybrid'`` this dispatches straight through to
-    ``search_chunks_fused`` with the same arguments as before — byte-
-    identical to the pre-gr343635 behaviour.
+    ``SEMANTIC_DISTANCE_FLOOR``) instead of RRF-fusing in a lexical leg.
+
+    ``max_distance=SEMANTIC_DISTANCE_FLOOR`` bounds the semantic pool in
+    every mode that has one (gr568412): the hybrid fan-out fed each kind's
+    ``page_size`` nearest embedded chunks into the cross-kind RRF whatever
+    their distance — a kind with no real match still contributed k
+    rank-1..k hits. The cut is the same one every chunk-level
+    ``search_hits`` already applies; lexical hits are unaffected — a
+    lexical-only mode never reaches the semantic pool to floor.
     """
     raw = store.chunks.search_chunks(
         q=q,
@@ -117,9 +122,7 @@ def _block_leg(
         limit=limit * _BLOCK_OVERFETCH,
         chunk_kinds=chunk_kinds,
         exclude_tags=exclude_tags,
-        max_distance=SEMANTIC_DISTANCE_FLOOR
-        if (mode or "").strip().lower() == "semantic"
-        else None,
+        max_distance=SEMANTIC_DISTANCE_FLOOR,
         exclude_ref_ids=exclude_ref_ids,
         include_ref_ids=include_ref_ids,
         card_kinds=card_kinds,

@@ -483,3 +483,60 @@ def test_search_related_line_on_top_hit(
     )
     out = skill.search(q="widget gadget thing")
     assert "related: widget-parts" in out.body
+
+
+# ── cross-kind fan-out (gr568412) ────────────────────────────────────
+
+
+def _sem_hits(*rows: tuple[str, float]) -> list:
+    from precis.skill_index import SearchHit as _IdxHit
+
+    return [
+        _IdxHit(
+            slug=slug,
+            chunk_idx=1,
+            heading="h",
+            score=score,
+            snippet="snip",
+            variant="structural",
+        )
+        for slug, score in rows
+    ]
+
+
+def test_search_hits_floors_semantic_leg(skill: SkillHandler, monkeypatch) -> None:
+    """A below-floor semantic hit contributes nothing to the merge;
+    above-floor and lexical rows pass (gr568412)."""
+    monkeypatch.setattr(
+        skill,
+        "_semantic_hits",
+        lambda q, *, page_size: _sem_hits(
+            ("precis-overview", 0.8), ("precis-pcb-help", 0.10)
+        ),
+    )
+    monkeypatch.setattr(skill, "_lexical_hits", lambda q: [])
+    out = skill.search_hits(q="zzqxy-nonsense")
+    assert [h.slug for h in out] == ["precis-overview"]
+    assert all(h.kind == "skill" for h in out)
+    assert all(h.dedupe_key == f"skill:{h.slug}" for h in out)
+
+
+def test_search_hits_lexical_and_exclude(skill: SkillHandler, monkeypatch) -> None:
+    """Lexical rows are never floored; exclude= drops named slugs."""
+    monkeypatch.setattr(skill, "_semantic_hits", lambda q, *, page_size: [])
+    monkeypatch.setattr(
+        skill,
+        "_lexical_hits",
+        lambda q: [("precis-gripe-help", 3, "gripe", True, 0)],
+    )
+    out = skill.search_hits(q="zzqxy", exclude=["precis-gripe-help"])
+    assert out == []
+    out = skill.search_hits(q="zzqxy")
+    assert [h.slug for h in out] == ["precis-gripe-help"]
+
+
+def test_search_hits_empty_q_and_bad_mode(skill: SkillHandler) -> None:
+    assert skill.search_hits(q="  ") == []
+    assert skill.spec.supports_search_hits
+    with pytest.raises(BadInput, match="mode"):
+        skill.search_hits(q="kind", mode="fuzzy")

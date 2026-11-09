@@ -652,9 +652,9 @@ class SearchMixin(RuntimeShape):
         """Active kinds whose ``KindSpec.supports_search_hits`` is True.
 
         These are the kinds the cross-kind merge knows how to
-        ingest.  Excluded handlers (calc, skill, python, perplexity,
-        …) keep their single-kind ``search()`` contract; their
-        absence from this list is by design.
+        ingest.  Excluded handlers (calc, python, md, tag, …) keep
+        their single-kind ``search()`` contract; their absence from
+        this list is by design.
         """
         out: list[str] = []
         for k in sorted(self.hub.kinds):
@@ -2354,7 +2354,7 @@ class SearchMixin(RuntimeShape):
 
         # Broad-pass finding #7: when cross-kind ran with the wildcard
         # (kind=None or kind='*'), surface the kinds that have search
-        # but opt out of search_hits (skill, citation, finding, tag —
+        # but opt out of search_hits (python, md, citation, tag —
         # each by design, because their per-kind renderer carries
         # structure the SearchHit shape would flatten). Lets the agent
         # know those kinds exist + were skipped on purpose, and where

@@ -51,7 +51,11 @@ CROSS_KIND_SOURCE_KINDS: tuple[str, ...] = ("paper", "finding")
 # them from the merge (footer-noted) so the common unscoped call still
 # works. See ``runtime.search._dispatch_cross_kind`` /
 # ``runtime.dispatch._dispatch_inner_core``.
-UNCITED_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"patent", "edgar"})
+# ``skill`` joined the fan-out with gr568412 but is in the same boat:
+# its hits name markdown-file slugs, not DB ref_ids the include/exclude
+# sets are built from — under ``cited=`` an unfiltered skill stream
+# would be exactly the false-positive the facet exists to prevent.
+UNCITED_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"patent", "edgar", "skill"})
 
 #: Payload key the search-facet resolutions (``uncited=``/``cited=``/
 #: ``hubbed=``/``under=``) use to record the caller's original keys after

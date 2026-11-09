@@ -49,7 +49,7 @@ from precis.handlers._slug_ref_shared import (
 from precis.ingest import orcid as orcid_api
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Store
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Store
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
@@ -465,6 +465,11 @@ class OrcidHandler(Handler):
             kind="orcid",
             limit=limit,
             card_kinds=("card_combined",),
+            # gr568412: the same corpus floor every other chunk-level
+            # ``search_hits`` applies — without it the fan-out's RRF got
+            # this kind's ``page_size`` nearest embedded chunks whatever
+            # their distance.
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
 
     # -- tag / link ----------------------------------------------------------

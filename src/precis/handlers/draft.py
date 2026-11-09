@@ -62,7 +62,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response, ResponseImage
-from precis.store import Ref
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.store._draft_ops import (
     _HEADING_LINE_RE,
     content_sha,
@@ -1204,6 +1204,7 @@ class DraftHandler(Handler):
             chunk_kinds=chunk_kinds,
             limit=page_size,
             offset=offset,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         # refs.title has no paging: past page 1 (or for a headings-only
         # query) the leg would only repeat page-1 title hits.
@@ -1339,6 +1340,11 @@ class DraftHandler(Handler):
             exclude_ref_ids=excluded or None,
             include_ref_ids=include_ref_ids,
             limit=page_size,
+            # gr568412: the same corpus floor every other chunk-level
+            # ``search_hits`` applies — without it the fan-out's RRF got
+            # this kind's ``page_size`` nearest embedded chunks whatever
+            # their distance.
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         out = block_hits_to_search_hits(triples, kind="draft")
         title_pairs = self._title_lexical_pairs(

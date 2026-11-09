@@ -68,8 +68,9 @@ from precis.skill_index import (
     build_skill_graph,
     chunk_by_h2,
 )
-from precis.store import _refs_ops
+from precis.store import SEMANTIC_DISTANCE_FLOOR, _refs_ops
 from precis.utils.match_all import fold_match_all_q
+from precis.utils.search_merge import SearchHit as _MergeSearchHit
 from precis.utils.skill_common import (
     VALID_TAGS,
     WIKILINK_RE,
@@ -624,6 +625,14 @@ _SKILL_SEARCH_MODES = ("hybrid", "semantic", "lexical", "verbatim")
 #: decent semantic top.
 _LEXICAL_SCORE_CAP = 0.49
 
+#: Relevance floor on a *semantic* skill hit, as a cosine similarity —
+#: ``1 - SEMANTIC_DISTANCE_FLOOR`` (the corpus 0.65 distance cut every
+#: chunk-level ``search_hits`` already applies, gr568412). The skill
+#: index's ``score`` is a similarity in ``[-1, 1]``, so the same cut
+#: reads "keep ``score >= 0.35``" here. Lexical/title/slug-pin rows
+#: carry their own match evidence and are never floored.
+_SKILL_SEMANTIC_FLOOR = 1.0 - SEMANTIC_DISTANCE_FLOOR
+
 
 def _lexical_row(
     slug: str, count: int, preview: str, *, verbatim: bool, compounds: int = 0
@@ -716,6 +725,7 @@ class SkillHandler(Handler):
         supports_get=True,
         supports_search=True,
         supports_put=False,
+        supports_search_hits=True,
         is_numeric=False,
         id_required=False,
         placement="system",
@@ -1469,6 +1479,343 @@ class SkillHandler(Handler):
         if q is None or not q.strip():
             return self.get(tag=tag, kinds=kinds, family=family)
 
+        all_rows, sem_hits_per_slug, hidden_slugs = self._ranked_rows(
+            q, mode_norm=mode_norm, page_size=page_size
+        )
+        conn_scope = current_scope()
+
+        if not all_rows:
+            # Distinguish "genuinely no match" from "lexical drew blank
+            # while semantic was unavailable" — the latter is recoverable
+            # by retrying once the embedder warms (or by pointing the MCP
+            # at the always-hot precis serve-embeddings via
+            # PRECIS_EMBEDDER=remote). Broad-pass finding #1: the
+            # previous unconditional "no skills mention" was over-
+            # confident during the bge-m3 cold-start window.
+            semantic_available = self._semantic_available()
+            if semantic_available:
+                headline = f"no skills mention {q!r}"
+                tip = (
+                    "This search ran and matched nothing. Reword once if the "
+                    "phrasing was unusual; otherwise stop rewording and open "
+                    "the index — the skill may be named differently, or this "
+                    "isn't a skill:"
+                )
+            else:
+                headline = (
+                    f"no lexical matches for {q!r}; semantic search is "
+                    "warming and didn't contribute this turn"
+                )
+                tip = (
+                    "Retry in ~30s once the embedder warms, or fall back to the index:"
+                )
+            return Response(
+                body=(
+                    f"{headline}\n\n"
+                    f"{tip}"
+                    + render_next_section(
+                        [
+                            *_family_rows_for_query(q, family),
+                            (
+                                "get(kind='skill')",
+                                "browse the grouped catalogue",
+                            ),
+                            (
+                                "get(kind='skill', id='toc')",
+                                "table of contents with synopses",
+                            ),
+                        ]
+                    )
+                    + (
+                        f"\n\n({len(hidden_slugs)} write-scope "
+                        f"{'hit' if len(hidden_slugs) == 1 else 'hits'} "
+                        "hidden — read-only connection)"
+                        if hidden_slugs
+                        else ""
+                    )
+                )
+            )
+
+        # tag=/kinds= axis filter (docs/backlog/skill-graph.md slice 1)
+        # — applied before the availability partition below so a
+        # narrowed search is actually narrowed, not just annotated.
+        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
+        if wanted is not None:
+            all_rows = [row for row in all_rows if row.slug in wanted]
+
+        # Title-pinned rows bypass the hit filters above (the pin loop
+        # writes straight into ``merged``) — a ``scope: write`` skill
+        # pinned by identity still drops here.
+        if conn_scope == "read":
+            kept_rows = []
+            for row in all_rows:
+                if _skill_is_write_only(row.slug):
+                    hidden_slugs.add(row.slug)
+                else:
+                    kept_rows.append(row)
+            all_rows = kept_rows
+
+        # gr51206: unconfigured skills stay in the ranked rows, marked
+        # ``[not configured: <why>]`` so the agent learns the capability
+        # exists but is off here; ``configured_only=True`` drops them for
+        # task-specific search where only runnable recipes matter.
+        gaps: dict[str, str] = {}
+        for row in all_rows:
+            parts = _availability_gap_parts(row.slug, hub=self.hub)
+            if parts is not None:
+                gaps[row.slug] = parts[0]
+        wired_rows = (
+            [r for r in all_rows if r.slug not in gaps] if configured_only else all_rows
+        )
+
+        total_wired = len(wired_rows)
+
+        # gr496170 (rerank-after-top-k, slice 1): on a default-page,
+        # non-verbatim search whose top hit is NOT title-pinned, trim
+        # the rendered menu at the first decisive score drop — one
+        # dominant hit makes the tail menu bloat the agent would only
+        # get() anyway. A page carrying a title pin never cuts: the pin
+        # already declared the intent match and the skill-eval probe
+        # corpus (recall@cut bar) shows the tail below a pin still
+        # carries the named answer — the cut only runs where the score
+        # curve is the sole dominance signal. The cut index also sets
+        # the page-1/page-2 boundary so ``page=2`` returns exactly the
+        # rows the cut hid (a plain (page-1)*page_size stride when
+        # nothing was cut).
+        first_len = page_size
+        if (
+            not page_size_explicit
+            and mode_norm != "verbatim"
+            and wired_rows
+            and wired_rows[0].score < _TITLE_MATCH_SCORE
+        ):
+            first_len = _gap_cut_index(wired_rows[:10])
+        if page <= 1:
+            offset, limit = 0, first_len
+        else:
+            offset = first_len + (page - 2) * page_size
+            limit = offset + page_size
+        visible = wired_rows[offset:limit]
+
+        # Round-2 picky 2026-05-31: dropped low-signal columns
+        # (status/source/score) that the maintainer flagged as
+        # uninformative for a top-K skill search. Replaced the raw
+        # snippet with RAKE-extracted key phrases — agents scanning
+        # results want the *topic* of the matched section, not its
+        # first 140 characters of prose.
+        #
+        # 2026-06-06: added a ``more`` column counting additional
+        # semantic H2 hits in the same skill (``+3`` / ``.``) —
+        # mirrors the paper-mode ``more`` design. Informational
+        # only: ``get(kind='skill', id=…)`` returns the whole file,
+        # so unlike papers there's no per-section drill verb to
+        # spend the signal on, but it still distinguishes "broadly
+        # relevant skill" from "one paragraph happens to match."
+        table_rows: list[dict[str, str]] = []
+        for row in visible:
+            extra = max(0, sem_hits_per_slug.get(row.slug, 0) - 1)
+            more = f"+{extra}" if extra > 0 else "."
+            table_rows.append(
+                {
+                    "slug": row.slug
+                    + (
+                        f" [not configured: {gaps[row.slug]}]"
+                        if row.slug in gaps
+                        else ""
+                    ),
+                    "section": row.section,
+                    "more": more,
+                    "keywords": keyword_summary(row.snippet, top_k=5),
+                    "size": _skill_size_cell(row.slug),
+                }
+            )
+
+        if visible:
+            head = format_search_headline(
+                n_returned=len(visible),
+                total=total_wired,
+                noun="skill match",
+                query=q,
+            )
+            body = (
+                head
+                + "\n\n"
+                + render_agent_table(
+                    table_rows,
+                    schema=["slug", "section", "more", "keywords", "size"],
+                )
+            )
+        elif page > 1:
+            body = f"# no more skill matches for {q!r} on page {page}"
+        else:
+            body = f"# no actionable skill matches for {q!r}"
+
+        # ``related:`` line on the top hit (docs/backlog/skill-graph.md
+        # slice 1 surfacing) — the top result's graph neighbours, so a
+        # search doubles as a peek at what else is nearby before the
+        # agent commits to a full ``get()``.
+        if visible:
+            # Land review: filter the write-fence BEFORE capping —
+            # capping first can drop every readable neighbour behind a
+            # front-run of ``scope: write`` skills.
+            linked = _get_skill_graph().linked(visible[0].slug)
+            if conn_scope == "read":
+                related = tuple(s for s in linked if not _skill_is_write_only(s))[
+                    :_FOOTER_LINK_CAP
+                ]
+            else:
+                related = linked[:_FOOTER_LINK_CAP]
+            if related:
+                body += "\n\nrelated: " + ", ".join(related)
+
+        # Drill-down: interpolate the top hit's real slug (mirrors
+        # tag.py's ``_render_search_body`` pattern) rather than a
+        # ``<slug-from-above>`` placeholder — nothing on an empty
+        # results page to substitute it with anyway.
+        nav: list[tuple[str, str]] = []
+        fam_counts = Counter(_skill_family_of(r.slug) for r in visible)
+        if family is None and len(fam_counts) >= 2:
+            ranked = fam_counts.most_common()
+            body += "\n\nfamilies in these hits: " + " · ".join(
+                f"{f} {n}" for f, n in ranked
+            )
+            nav.append(
+                (
+                    f"search(kind='skill', q={q!r}, args={{'family': {ranked[0][0]!r}}})",
+                    "narrow to a family",
+                )
+            )
+        # The gap cut only ever hides rows — it never drops them, so
+        # ``page=2`` returns exactly what page 1 trimmed. Print the tail
+        # whenever rows sit beyond this render AND the reader got here
+        # through a cut or an explicit page turn; a full default page
+        # keeps the historical shape (headline already says "N of M").
+        remaining = max(0, total_wired - offset - len(visible))
+        if remaining and (page > 1 or first_len < page_size):
+            call = f"search(kind='skill', q={q!r}"
+            if mode is not None:
+                call += f", mode={mode_norm!r}"
+            if page_size_explicit:
+                call += f", page_size={page_size}"
+            if tag is not None:
+                call += f", tag={tag!r}"
+            if kinds is not None:
+                call += f", kinds={kinds!r}"
+            args_extra: dict[str, Any] = {}
+            if family is not None:
+                args_extra["family"] = family
+            if configured_only:
+                args_extra["configured_only"] = True
+            if args_extra:
+                call += f", args={args_extra!r}"
+            call += f", page={page + 1})"
+            body += f"\n\n…and {remaining} more — {call}"
+        if visible:
+            nav.append(
+                (
+                    f"get(kind='skill', id={visible[0].slug!r})",
+                    "read the full skill (top hit above)",
+                )
+            )
+        nav.append(
+            (
+                f"search(kind='skill', q={q!r}, page_size=25)",
+                "widen to more hits",
+            )
+        )
+        body += render_next_section(nav)
+        if hidden_slugs:
+            body += (
+                f"\n\n({len(hidden_slugs)} write-scope "
+                f"{'hit' if len(hidden_slugs) == 1 else 'hits'} hidden "
+                "— read-only connection)"
+            )
+        return Response(body=body)
+
+    def search_hits(
+        self,
+        *,
+        q: str | None = None,
+        page_size: int = 10,
+        mode: str | None = None,
+        exclude: list[str] | None = None,
+        **_kw: Any,
+    ) -> list[_MergeSearchHit]:
+        """Skill rows as ``SearchHit``\\ s for the cross-kind merge (gr568412).
+
+        The same ranked merge :meth:`search` runs — floored semantic
+        leg, word-overlap/verbatim lexical rows, title/slug identity
+        pins — minus the TOON render and paging, one row per skill.
+        ``exclude=`` drops named slugs. ``tags=`` stays with the
+        dispatcher's post-filter; the ``*_ref_ids`` facets never reach
+        this kind (no ref-id wiring — it sits in
+        ``UNCITED_UNSUPPORTED_KINDS`` so a ``cited=``/``uncited=``
+        call can't get silently unfiltered skill hits). Empty q →
+        ``[]``, matching every other ``search_hits``.
+        """
+        q = fold_match_all_q(q)
+        if q is None or not str(q).strip():
+            return []
+        q = str(q)
+        mode_norm = (mode or "hybrid").strip().lower()
+        if mode_norm not in _SKILL_SEARCH_MODES:
+            raise BadInput(
+                f"search_hits(kind='skill'): mode={mode!r} not recognized",
+                options=list(_SKILL_SEARCH_MODES),
+            )
+        rows, _per_slug, _hidden = self._ranked_rows(
+            q, mode_norm=mode_norm, page_size=page_size
+        )
+        # gr568412: the cross-kind merge counts what a kind returns —
+        # drop semantic-leg rows under the corpus floor the same way
+        # every chunk-level ``search_hits`` does via ``max_distance``
+        # (a row's ``score`` is a similarity, so the cut reads >= 0.35).
+        # Lexical/title/slug-pin rows carry their own match evidence
+        # and are never floored.
+        rows = [
+            r
+            for r in rows
+            if r.source != "semantic" or r.score >= _SKILL_SEMANTIC_FLOOR
+        ]
+        if current_scope() == "read":
+            rows = [r for r in rows if not _skill_is_write_only(r.slug)]
+        dropped = set(exclude or [])
+        out: list[_MergeSearchHit] = []
+        for row in rows:
+            if row.slug in dropped or len(out) >= page_size:
+                continue
+            title = _skill_title(row.slug) or row.slug
+            preview = (row.snippet or row.section).strip() or title
+            out.append(
+                _MergeSearchHit(
+                    score=float(row.score),
+                    kind="skill",
+                    title=title,
+                    preview=preview[:200],
+                    slug=row.slug,
+                    dedupe_key=f"skill:{row.slug}",
+                )
+            )
+        return out
+
+    def _ranked_rows(
+        self,
+        q: str,
+        *,
+        mode_norm: str,
+        page_size: int,
+    ) -> tuple[list[_SkillSearchRow], Counter[str], set[str]]:
+        """Merged + score-sorted skill rows — the ranking core shared by
+        :meth:`search` and :meth:`search_hits`.
+
+        Runs the two retrieval streams — the semantic index and the
+        substring / word-overlap lexical leg — merges per slug, applies
+        the title/slug identity pins, and sorts deterministically.
+        Read-scope hit fencing runs here and its hidden-slug set comes
+        back with the rows; the axis (``tag``/``kinds``/``family``) and
+        write-only row filters stay with the caller. Returns
+        ``(all_rows, sem_hits_per_slug, hidden_slugs)``.
+        """
         # gr512233 slice 3: one scope verdict per call. On a read
         # connection, hits from a ``scope: write`` skill or a fully
         # dropped section are filtered after ranking (the embedding
@@ -1719,58 +2066,6 @@ class SkillHandler(Handler):
                     ).strip(),
                 )
 
-        if not merged:
-            # Distinguish "genuinely no match" from "lexical drew blank
-            # while semantic was unavailable" — the latter is recoverable
-            # by retrying once the embedder warms (or by pointing the MCP
-            # at the always-hot precis serve-embeddings via
-            # PRECIS_EMBEDDER=remote). Broad-pass finding #1: the
-            # previous unconditional "no skills mention" was over-
-            # confident during the bge-m3 cold-start window.
-            semantic_available = self._semantic_available()
-            if semantic_available:
-                headline = f"no skills mention {q!r}"
-                tip = (
-                    "This search ran and matched nothing. Reword once if the "
-                    "phrasing was unusual; otherwise stop rewording and open "
-                    "the index — the skill may be named differently, or this "
-                    "isn't a skill:"
-                )
-            else:
-                headline = (
-                    f"no lexical matches for {q!r}; semantic search is "
-                    "warming and didn't contribute this turn"
-                )
-                tip = (
-                    "Retry in ~30s once the embedder warms, or fall back to the index:"
-                )
-            return Response(
-                body=(
-                    f"{headline}\n\n"
-                    f"{tip}"
-                    + render_next_section(
-                        [
-                            *_family_rows_for_query(q, family),
-                            (
-                                "get(kind='skill')",
-                                "browse the grouped catalogue",
-                            ),
-                            (
-                                "get(kind='skill', id='toc')",
-                                "table of contents with synopses",
-                            ),
-                        ]
-                    )
-                    + (
-                        f"\n\n({len(hidden_slugs)} write-scope "
-                        f"{'hit' if len(hidden_slugs) == 1 else 'hits'} "
-                        "hidden — read-only connection)"
-                        if hidden_slugs
-                        else ""
-                    )
-                )
-            )
-
         # Score ties must not fall back to corpus iteration order:
         # ``_load_skills_map`` walks the package dir in filesystem order,
         # which differs between the bind-mounted dev container and the
@@ -1800,201 +2095,7 @@ class SkillHandler(Handler):
             ),
         )
 
-        # tag=/kinds= axis filter (docs/backlog/skill-graph.md slice 1)
-        # — applied before the availability partition below so a
-        # narrowed search is actually narrowed, not just annotated.
-        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
-        if wanted is not None:
-            all_rows = [row for row in all_rows if row.slug in wanted]
-
-        # Title-pinned rows bypass the hit filters above (the pin loop
-        # writes straight into ``merged``) — a ``scope: write`` skill
-        # pinned by identity still drops here.
-        if conn_scope == "read":
-            kept_rows = []
-            for row in all_rows:
-                if _skill_is_write_only(row.slug):
-                    hidden_slugs.add(row.slug)
-                else:
-                    kept_rows.append(row)
-            all_rows = kept_rows
-
-        # gr51206: unconfigured skills stay in the ranked rows, marked
-        # ``[not configured: <why>]`` so the agent learns the capability
-        # exists but is off here; ``configured_only=True`` drops them for
-        # task-specific search where only runnable recipes matter.
-        gaps: dict[str, str] = {}
-        for row in all_rows:
-            parts = _availability_gap_parts(row.slug, hub=self.hub)
-            if parts is not None:
-                gaps[row.slug] = parts[0]
-        wired_rows = (
-            [r for r in all_rows if r.slug not in gaps] if configured_only else all_rows
-        )
-
-        total_wired = len(wired_rows)
-
-        # gr496170 (rerank-after-top-k, slice 1): on a default-page,
-        # non-verbatim search whose top hit is NOT title-pinned, trim
-        # the rendered menu at the first decisive score drop — one
-        # dominant hit makes the tail menu bloat the agent would only
-        # get() anyway. A page carrying a title pin never cuts: the pin
-        # already declared the intent match and the skill-eval probe
-        # corpus (recall@cut bar) shows the tail below a pin still
-        # carries the named answer — the cut only runs where the score
-        # curve is the sole dominance signal. The cut index also sets
-        # the page-1/page-2 boundary so ``page=2`` returns exactly the
-        # rows the cut hid (a plain (page-1)*page_size stride when
-        # nothing was cut).
-        first_len = page_size
-        if (
-            not page_size_explicit
-            and mode_norm != "verbatim"
-            and wired_rows
-            and wired_rows[0].score < _TITLE_MATCH_SCORE
-        ):
-            first_len = _gap_cut_index(wired_rows[:10])
-        if page <= 1:
-            offset, limit = 0, first_len
-        else:
-            offset = first_len + (page - 2) * page_size
-            limit = offset + page_size
-        visible = wired_rows[offset:limit]
-
-        # Round-2 picky 2026-05-31: dropped low-signal columns
-        # (status/source/score) that the maintainer flagged as
-        # uninformative for a top-K skill search. Replaced the raw
-        # snippet with RAKE-extracted key phrases — agents scanning
-        # results want the *topic* of the matched section, not its
-        # first 140 characters of prose.
-        #
-        # 2026-06-06: added a ``more`` column counting additional
-        # semantic H2 hits in the same skill (``+3`` / ``.``) —
-        # mirrors the paper-mode ``more`` design. Informational
-        # only: ``get(kind='skill', id=…)`` returns the whole file,
-        # so unlike papers there's no per-section drill verb to
-        # spend the signal on, but it still distinguishes "broadly
-        # relevant skill" from "one paragraph happens to match."
-        table_rows: list[dict[str, str]] = []
-        for row in visible:
-            extra = max(0, sem_hits_per_slug.get(row.slug, 0) - 1)
-            more = f"+{extra}" if extra > 0 else "."
-            table_rows.append(
-                {
-                    "slug": row.slug
-                    + (
-                        f" [not configured: {gaps[row.slug]}]"
-                        if row.slug in gaps
-                        else ""
-                    ),
-                    "section": row.section,
-                    "more": more,
-                    "keywords": keyword_summary(row.snippet, top_k=5),
-                    "size": _skill_size_cell(row.slug),
-                }
-            )
-
-        if visible:
-            head = format_search_headline(
-                n_returned=len(visible),
-                total=total_wired,
-                noun="skill match",
-                query=q,
-            )
-            body = (
-                head
-                + "\n\n"
-                + render_agent_table(
-                    table_rows,
-                    schema=["slug", "section", "more", "keywords", "size"],
-                )
-            )
-        elif page > 1:
-            body = f"# no more skill matches for {q!r} on page {page}"
-        else:
-            body = f"# no actionable skill matches for {q!r}"
-
-        # ``related:`` line on the top hit (docs/backlog/skill-graph.md
-        # slice 1 surfacing) — the top result's graph neighbours, so a
-        # search doubles as a peek at what else is nearby before the
-        # agent commits to a full ``get()``.
-        if visible:
-            # Land review: filter the write-fence BEFORE capping —
-            # capping first can drop every readable neighbour behind a
-            # front-run of ``scope: write`` skills.
-            linked = _get_skill_graph().linked(visible[0].slug)
-            if conn_scope == "read":
-                related = tuple(s for s in linked if not _skill_is_write_only(s))[
-                    :_FOOTER_LINK_CAP
-                ]
-            else:
-                related = linked[:_FOOTER_LINK_CAP]
-            if related:
-                body += "\n\nrelated: " + ", ".join(related)
-
-        # Drill-down: interpolate the top hit's real slug (mirrors
-        # tag.py's ``_render_search_body`` pattern) rather than a
-        # ``<slug-from-above>`` placeholder — nothing on an empty
-        # results page to substitute it with anyway.
-        nav: list[tuple[str, str]] = []
-        fam_counts = Counter(_skill_family_of(r.slug) for r in visible)
-        if family is None and len(fam_counts) >= 2:
-            ranked = fam_counts.most_common()
-            body += "\n\nfamilies in these hits: " + " · ".join(
-                f"{f} {n}" for f, n in ranked
-            )
-            nav.append(
-                (
-                    f"search(kind='skill', q={q!r}, args={{'family': {ranked[0][0]!r}}})",
-                    "narrow to a family",
-                )
-            )
-        # The gap cut only ever hides rows — it never drops them, so
-        # ``page=2`` returns exactly what page 1 trimmed. Print the tail
-        # whenever rows sit beyond this render AND the reader got here
-        # through a cut or an explicit page turn; a full default page
-        # keeps the historical shape (headline already says "N of M").
-        remaining = max(0, total_wired - offset - len(visible))
-        if remaining and (page > 1 or first_len < page_size):
-            call = f"search(kind='skill', q={q!r}"
-            if mode is not None:
-                call += f", mode={mode_norm!r}"
-            if page_size_explicit:
-                call += f", page_size={page_size}"
-            if tag is not None:
-                call += f", tag={tag!r}"
-            if kinds is not None:
-                call += f", kinds={kinds!r}"
-            args_extra: dict[str, Any] = {}
-            if family is not None:
-                args_extra["family"] = family
-            if configured_only:
-                args_extra["configured_only"] = True
-            if args_extra:
-                call += f", args={args_extra!r}"
-            call += f", page={page + 1})"
-            body += f"\n\n…and {remaining} more — {call}"
-        if visible:
-            nav.append(
-                (
-                    f"get(kind='skill', id={visible[0].slug!r})",
-                    "read the full skill (top hit above)",
-                )
-            )
-        nav.append(
-            (
-                f"search(kind='skill', q={q!r}, page_size=25)",
-                "widen to more hits",
-            )
-        )
-        body += render_next_section(nav)
-        if hidden_slugs:
-            body += (
-                f"\n\n({len(hidden_slugs)} write-scope "
-                f"{'hit' if len(hidden_slugs) == 1 else 'hits'} hidden "
-                "— read-only connection)"
-            )
-        return Response(body=body)
+        return all_rows, sem_hits_per_slug, hidden_slugs
 
     # ── search helpers ─────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ paraphrase recall is verified against prod with the real embedder.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from precis.dispatch import Hub
@@ -24,6 +25,14 @@ from precis.embedder import MockEmbedder
 from precis.handlers.finding import FindingHandler
 from precis.store.types import ChunkInsert
 from precis.utils.ref_hybrid import fused_ref_hits
+
+
+def _unit_vec(dim: int, pairs: list[tuple[int, float]]) -> list[float]:
+    v = [0.0] * dim
+    for i, x in pairs:
+        v[i] = x
+    norm = math.sqrt(sum(x * x for x in v))
+    return [x / norm for x in v]
 
 
 def _hub(store) -> Hub:
@@ -250,3 +259,41 @@ class TestFindingHandlerWiring:
             q="defect differential conductivity metallic", status="*", page_size=5
         )
         assert "no finding matches" not in resp.body
+
+
+class TestHybridBlockLegFloor:
+    """gr568412: the block leg's semantic pool is floored at
+    ``SEMANTIC_DISTANCE_FLOOR`` in hybrid mode — before this, the
+    cross-kind fan-out got every kind's ``page_size`` nearest embedded
+    chunks whatever their distance, so a kind with no real match still
+    contributed k rank-1..k hits to the RRF merge."""
+
+    def test_far_semantic_only_chunk_is_dropped_lex_hits_pass(self, store) -> None:
+        dim = store.embedding_dim()
+        q_vec = _unit_vec(dim, [(0, 1.0)])
+        # cosine distance ≈ 0.9 — beyond the 0.65 corpus floor.
+        far = _unit_vec(dim, [(0, 0.1), (1, math.sqrt(0.99))])
+        # cosine distance ≈ 0.2 — inside the floor.
+        close = _unit_vec(dim, [(0, 0.8), (1, math.sqrt(0.36))])
+
+        far_ref = store.insert_ref(kind="todo", slug=None, title="unrelated aaa")
+        store.chunks.insert_chunks(
+            far_ref.id,
+            [ChunkInsert(ord=0, text="unrelated filler words only", embedding=far)],
+        )
+        close_ref = store.insert_ref(kind="todo", slug=None, title="unrelated bbb")
+        store.chunks.insert_chunks(
+            close_ref.id,
+            [ChunkInsert(ord=0, text="no shared terms here", embedding=close)],
+        )
+        lex_ref = store.insert_ref(
+            kind="todo", slug=None, title="frobnicate the widget"
+        )
+
+        hits = fused_ref_hits(
+            store, None, q="frobnicate", kind="todo", limit=10, query_vec=q_vec
+        )
+        ids = {r.id for r in hits}
+        assert far_ref.id not in ids
+        assert close_ref.id in ids
+        assert lex_ref.id in ids

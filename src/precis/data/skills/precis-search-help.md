@@ -132,8 +132,8 @@ hit.
 
 By default `search` is **hybrid**: a lexical pass fused with a semantic
 pass into one ranked list — the right default for "find me things about
-X". Hybrid isn't uniform: `skill`, `citation`, `finding`, `tag`,
-`calc`, `python`, `perplexity-*`/`websearch` don't join the merge;
+X". Hybrid isn't uniform: `citation`, `tag`, `calc`, `python`, `md`
+don't join the merge;
 `patent`/`edgar` are lexical-only whatever `mode=` says; `tags=` is
 honoured per-handler (a runtime backstop covers the common cases).
 Pin it with `mode=` when you know better:
@@ -419,9 +419,13 @@ applies the same gap/corpus boundary as a hard cut with no hint. The omission ap
 default hybrid mode only: `mode='semantic'` and `mode='lexical'` never
 omit, so a semantic search lists everything within the 0.65 corpus floor.
 
-Cross-kind search (`kind='*'` or a kind list) applies the shared gap/corpus
-cut to uncorroborated semantic hits in hybrid mode. The single-kind
-`search(kind='paper'|'patent'|'web', ...)` does not apply these cuts.
+Cross-kind search (`kind='*'` or a kind list) floors every kind's
+semantic leg at the 0.65 corpus distance cut before the merge, so a
+kind with no real match contributes nothing — the per-kind count line
+is real matches, not `min(k, page_size)`; the shared gap/corpus cut
+additionally trims uncorroborated hits on kinds that wire it. The
+single-kind `search(kind='paper'|'patent'|'web', ...)` does not apply
+the gap cut.
 The provisional delta defaults to 0.15; to retune it or to restore the
 old per-kind floors for one release, ask a human operator (knobs:
 `docs/reference/config-variables.md` §Tuning knobs).
