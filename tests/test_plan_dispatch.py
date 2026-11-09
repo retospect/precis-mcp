@@ -363,6 +363,91 @@ def test_a_node_waits_for_a_mint_pass_still_in_flight(store: Store) -> None:
     assert len(_jobs_under(store, c2)) == 1
 
 
+def test_a_task_session_minting_a_sibling_holds_it(store: Store) -> None:
+    """td599743 review of gr590954: the mint pass is a session's,
+    whatever todo it runs on — a task's ``run_slice`` job, not only a
+    generator's. A sibling the session mints under the plan root while
+    its job runs holds until the job ends; a node older than the job is
+    settled and dispatches."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice"}, body="Do it.")
+        m.node("settled", "Settled leaf", {"op": "run_slice"}, body="Older.")
+
+    mint = T._run(store, None, build)
+    task, settled = mint.ids["task"], mint.ids["settled"]
+    job = _slice_job(store, task, "run_slice", "running")
+
+    def kid(m: T._Minter) -> None:
+        m.node("c", "Minted mid-session", {"op": "run_slice"}, body="Do it.")
+
+    # The task's session puts a sibling under the plan root — committed
+    # open and linkless, its links still to come.
+    sib = T._run_body(store, mint.root_id, mint.root_id, kid).ids["c"]
+
+    # The sibling holds while the task's job runs; the leaf minted
+    # before it dispatches — its links are settled.
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert not _jobs_under(store, sib)
+    assert len(_jobs_under(store, settled)) == 1
+
+    # The session ends (its land_slice is queued, the task is not the
+    # mint's suspect any more): the sibling's links are settled — it
+    # dispatches.
+    _set_job_status(store, job, "succeeded")
+    _slice_job(store, task, "land_slice", "queued")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, sib)) == 1
+
+
+def test_an_interactive_sessions_mint_holds_on_its_lease(
+    store: Store,
+) -> None:
+    """td599743 review of gr590954: an interactive session mints no job
+    — its mark is the ``claimed-by:`` lease on the todo it works. A node
+    it mints mid-lease holds (one under the leased todo, one sibling
+    under the root); a node older than the lease is settled and
+    dispatches; once the lease drops the mints go."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("work", "Work item", {"op": "run_slice"}, body="Work it.")
+        m.node("settled", "Settled leaf", {"op": "run_slice"}, body="Older.")
+
+    mint = T._run(store, None, build)
+    work, settled = mint.ids["work"], mint.ids["settled"]
+    # The interactive session's only mark — a claim lease; it mints no
+    # job row.
+    store.add_tag(work, Tag.open("claimed-by:interactive"), set_by="agent")
+    store.add_tag(
+        work, Tag.closed("STATUS", "doing"), set_by="agent", replace_prefix=True
+    )
+
+    def kid(m: T._Minter) -> None:
+        m.node("c", "Minted mid-session", {"op": "run_slice"}, body="Do it.")
+
+    c1 = T._run_body(store, work, mint.root_id, kid).ids["c"]
+    c2 = T._run_body(store, mint.root_id, mint.root_id, kid).ids["c"]
+
+    # Both hold while the lease is live; the leaf minted before it
+    # dispatches — its links are settled.
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert not _jobs_under(store, c1)
+    assert not _jobs_under(store, c2)
+    assert len(_jobs_under(store, settled)) == 1
+
+    # The session drops its lease: its mints are settled — they go.
+    store.remove_tag(work, Tag.open("claimed-by:interactive"))
+    res = pd.run_pass(store)
+    assert res.dispatched == 2
+    assert len(_jobs_under(store, c1)) == 1
+    assert len(_jobs_under(store, c2)) == 1
+
+
 def _failed_job(
     store: Store,
     task: int,

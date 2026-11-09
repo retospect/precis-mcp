@@ -106,13 +106,17 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    builder's lane and the action note says so. **Mint in flight**
    (gr590954): a session mints each child with one ``put`` — the row
    commits open and linkless — and adds the ``blocked-by`` links in
-   later calls, so a node minted mid-session gets no job while the
-   minting session's job is in flight on an ancestor (the ``put``'s
+   later calls, so a node minted mid-session gets no job while a
+   session signal older than it is live on an ancestor (the ``put``'s
    ``parent_id`` default is the session's own todo) or on a
-   child-minting generator of the same plan (:func:`_mint_in_flight`).
-   A node minted while no plan session runs keeps the runbook contract
-   (me570515): mint it held — any non-``open`` status or a
-   ``waiting-for:`` tag — and release it once linked.
+   mint-capable todo of the same plan — a task session's puts may
+   parent to the root, an interactive session's anywhere
+   (:func:`_mint_in_flight`). The signal is an in-flight job for a
+   dispatched session, a live ``claimed-by:`` lease for an interactive
+   one, which mints no job. A node minted while no plan session runs
+   keeps the runbook contract (me570515): mint it held — any
+   non-``open`` status or a ``waiting-for:`` tag — and release it once
+   linked.
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
    gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
@@ -2016,16 +2020,20 @@ def _claims(n: _Node) -> list[str]:
 
 #: ``meta.generate.role``s whose session posts a document instead of
 #: minting children (``run_slice``'s ``_NO_COMMIT_ROLES``, restated —
-#: the dependency stays one-way). A live job on any other generator
-#: role is a mint pass still in flight (:func:`_mint_in_flight`).
+#: the dependency stays one-way). A live session signal on any other
+#: todo of the plan is a mint pass still in flight
+#: (:func:`_mint_in_flight`).
 _DOC_ROLES = frozenset({"reviewer", "analyst"})
 
 
-def _minting_generator(n: _Node) -> bool:
-    """A generator whose session mints child todos — any role but the
-    document roles."""
+def _may_mint(n: _Node) -> bool:
+    """A todo a mint pass may still be writing through — every kind but
+    the document generators (:data:`_DOC_ROLES` post a doc, they never
+    mint): a child-minting generator's session mints under itself; a
+    task or interactive session mints siblings under the plan root, or
+    wherever it points ``parent_id``."""
     if node_kind(n.meta) != "generator":
-        return False
+        return True
     gen = n.meta.get("generate")
     return (gen or {}).get("role") not in _DOC_ROLES
 
@@ -2040,20 +2048,34 @@ def _job_in_flight(j: _Node) -> bool:
 def _mint_in_flight(plan: _Plan, n: _Node) -> bool:
     """A mint pass on ``n``'s plan may still be running (gr590954):
     the links of a node minted mid-session are settled only once the
-    minting session's job ends, so ``n`` holds while an ancestor of it,
-    or a child-minting generator of the same plan, has an in-flight job
-    older than ``n``. A node older than the job cannot be the session's
-    own write — its links are already settled."""
+    minting session ends, so ``n`` holds while a session signal older
+    than ``n`` is live on an ancestor of it (the ``put``'s
+    ``parent_id`` default is the session's own todo) or on a
+    mint-capable todo of the same plan (:func:`_may_mint`) — a task
+    session's puts may parent to the root, an interactive session's
+    anywhere. The signal: an in-flight job for a dispatched session, a
+    live ``claimed-by:`` lease for an interactive one, which mints no
+    job. A node older than the signal cannot be that session's write —
+    its links are already settled."""
 
     def suspect(owner: _Node) -> bool:
-        return any(
+        if any(
             _job_in_flight(j) and j.created_at < n.created_at for j in plan.jobs(owner)
+        ):
+            return True
+        # A live ``claimed-by:`` lease — an interactive session's mark
+        # (it mints no job). A closed todo's lingering tag is dead: the
+        # tick's closes do not strip claims and hygiene skips them.
+        return not _closed(owner) and any(
+            set_at < n.created_at
+            for value, set_at in owner.open_tags.items()
+            if value.startswith("claimed-by:")
         )
 
     if any(suspect(a) for a in plan.ancestors(n)):
         return True
     return any(
-        g.id != n.id and g.root == n.root and _minting_generator(g) and suspect(g)
+        g.id != n.id and g.root == n.root and _may_mint(g) and suspect(g)
         for g in plan.todos()
     )
 
