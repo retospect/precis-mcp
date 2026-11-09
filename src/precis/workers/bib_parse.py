@@ -94,7 +94,10 @@ log = logging.getLogger(__name__)
 #: Bumping this re-parses (and re-matches, since a fresh row starts with
 #: ``match_conf IS NULL`` again) the corpus lazily — mirrors
 #: ``paper_glossary.GLOSSARY_VERSION`` / ``classify.CLASSIFY_VERSION``.
-BIB_PARSE_VERSION = 1
+#: v2: the spliced-ref detector (gr572843) landed under v1 — papers
+#: stamped before it (and their already-resolved, non-NULL-``match_conf``
+#: entries) must be re-swept so printed-vs-record titles get audited.
+BIB_PARSE_VERSION = 2
 
 #: Key stamped onto ``refs.meta`` (paper-level convergence marker — see
 #: module docstring).

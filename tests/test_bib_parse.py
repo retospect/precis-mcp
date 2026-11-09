@@ -1744,3 +1744,59 @@ class TestSplicedRefDetector:
         bumped = run_bib_parse_pass(store, client=client, ref_ids=[ref_id])
         assert bumped == {"claimed": 1, "ok": 1, "failed": 0}
         assert "AUDIT:spliced-ref" not in _paper_tags(store, ref_id)
+
+    def test_version_bump_reaudits_previously_matched_spliced_entry(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression (review td609167): the detector landed under
+        ``BIB_PARSE_VERSION`` 1, so an entry parsed and matched before it
+        existed -- resolved DOI recorded, ``match_conf`` non-NULL, no tag
+        -- would never have reached it. The version bump re-claims the
+        stamped paper, deletes the stale row and re-matches it through
+        the detector."""
+        ref_id = seed_ref(store, title="pa783 stand-in")
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            chunk_kind="references",
+            text="- [15] " + SPLICED_LINE,
+        )
+        # The row + stamp as the pre-detector pass left them: parsed,
+        # matched (Krishnan 1997's DOI, match_conf non-NULL), one version
+        # behind -- and never audited.
+        entry_id = _insert_parsed_entry(
+            store, ref_id, 15, SPLICED_LINE, _SPLICED_FIELDS
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE paper_bib_entries SET doi = %s, match_conf = %s, "
+                "parse_version = %s WHERE id = %s",
+                ("10.1038/41284", 0.8, BIB_PARSE_VERSION - 1, entry_id),
+            )
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "'bib_parse_version', %s) WHERE ref_id = %s",
+                (BIB_PARSE_VERSION - 1, ref_id),
+            )
+            conn.commit()
+
+        # The Springer-style line doesn't fit the ACS regex, so the SMALL
+        # tier supplies the parsed fields (as in the tag-clearing test).
+        client = _FakeClient(
+            '{"entries":[{"marker":15,"authors":"Krishnan P, Dujardin E, '
+            'Treacy MMJ, Hugdahl J, Lynum S, Ebbesen TW","journal":"Nature",'
+            '"year":1997,"volume":"388","first_page":"451"}]}'
+        )
+        calls = _crossref_hit(monkeypatch, [_KRISHNAN_1997])
+
+        out = run_bib_parse_pass(store, client=client, ref_ids=[ref_id])
+
+        assert out == {"claimed": 1, "ok": 1, "failed": 0}
+        assert calls == [SPLICED_LINE]  # the stale row was actually re-matched
+        assert "AUDIT:spliced-ref" in _paper_tags(store, ref_id)
+        rows = _bib_rows(store, ref_id)
+        assert rows[0][7] == "10.1038/41284"  # doi
+        assert rows[0][8] == pytest.approx(0.8)  # match_conf, re-resolved
+        assert rows[0][9] == BIB_PARSE_VERSION  # rewritten, not stale
+        assert _meta_version(store, ref_id) == BIB_PARSE_VERSION
