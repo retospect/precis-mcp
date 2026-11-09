@@ -23,7 +23,20 @@ pinned to that host the same way.
   ``ssh_node`` wires no ``ctx.defer``) and re-digests, so a brief always
   reflects a finished run; past :data:`_PARK_CAP` waits the job fails
   "still in progress" and the tick re-dispatches within the node's
-  retries. A digest whose ``== job ==`` sections are all blind (the
+  retries. A *completed* run it can digest nothing of — the marker
+  without ``yet``: every job cancelled, skipped or infra-killed, or the
+  run never started one (a startup failure, ``jobs=[]``) — is an
+  INFRASTRUCTURE red, not a test red (gr611682, the coordinator ruling):
+  the fix node never closes ``no-op`` on it — closing it let the loop
+  re-cut and republish the same sha, so the same jobless run re-read as
+  red every iteration until the cap. :func:`_infra_done` re-reads the
+  run live instead: green now → record the green and close the fix
+  nodes moot; still red → fire ``gh run rerun`` once per run
+  (``--failed`` only when failed jobs exist — it cannot re-fire jobs
+  that never concluded) and park on the rerun, so the loop waits
+  without burning an iteration; a run that stays infra past
+  :data:`_PARK_CAP` fails the job so the tick retries, then files the
+  ask. A digest whose ``== job ==`` sections are all blind (the
   ``(no signal lines`` tail — the shared stream carrying only step
   headers, gr587536) is never posted: the job first re-reads the failed
   jobs' own logs through ``gh api actions/jobs/<id>/logs``
@@ -60,6 +73,7 @@ from typing import Any
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
+from precis.workers.job_types import ci_verdict_poll as _cvp
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import run_slice as _rs
 
@@ -80,16 +94,19 @@ _PROBE_RE = re.compile(
 )
 
 #: ``scripts/ci-failed`` prints this (without ``yet``) when a *completed*
-#: run left it nothing to digest — every job cancelled or infra-killed.
-#: There is no failing test to fix; the fix node closes ``no-op`` and the
-#: loop re-cuts instead of dispatching a session. The in-progress variant
-#: (:data:`_STILL_RUNNING`) shares this prefix and is checked first.
+#: run left it nothing to digest — every job cancelled, skipped or
+#: infra-killed, or the run never started one (a startup failure,
+#: ``jobs=[]``). That is an infrastructure red, not a test red (gr611682,
+#: the coordinator ruling): :func:`_infra_done` owns it — the fix node
+#: never closes ``no-op`` and the loop never re-cuts the same sha on it.
+#: The in-progress variant (:data:`_STILL_RUNNING`) shares this prefix
+#: and is checked first.
 _NO_LINES = "no failed-job log"
 
 #: A run still in progress with nothing failed yet — a superset of
-#: :data:`_NO_LINES`. It is a deferral, never the no-op close: the digest
+#: :data:`_NO_LINES`. It is a deferral, never a ruling: the digest
 #: parks on ``not_before`` and re-reads the run until it carries a failed
-#: job or completes (the completed marker above is then final).
+#: job or completes (the completed marker then takes the infra ruling).
 _STILL_RUNNING = "no failed-job log lines yet"
 
 #: Wait between digests while the run is still in progress
@@ -102,9 +119,23 @@ _PARK_CAP = 6
 #: ``not_before``'s timestamp shape in a parked handle (land_slice's).
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
-#: What the job records on that outcome (and what the fix node's close
-#: comment says).
-_NO_FAIL_NOTE = "no failing test in the logs (cancelled or infra)"
+#: ``gh run view --json`` fields the infra ruling reads live at decision
+#: time — a rerun landing between the ``ci-failed`` read and this one
+#: changes the answer: status/conclusion (green now?), the jobs list
+#: (a jobless or skipped-only run is gr611682's startup failure) and the
+#: attempt counter (``attempt`` ≥ 2 means a rerun was already fired — by
+#: this node or by hand — so never fire another).
+_RUN_STATE_JSON = "status,conclusion,jobs,attempt"
+
+#: The digest node's once-per-run marker, ``meta.<key> = {run_id, at}``:
+#: a node that already fired ``gh run rerun`` for a run never fires it
+#: again — the marker on the node's meta survives a job re-dispatch
+#: where the compute handle's fields do not.
+_INFRA_RERUN_KEY = "ci_infra_rerun"
+
+#: A completed run whose conclusion is one of these is green — the same
+#: set ``ci_verdict_poll`` records its green verdict on.
+_OK_CONCLUSIONS = _cvp.OK_CONCLUSIONS
 
 #: A GitHub auth refusal in the script's captured output — the factory
 #: token cannot read the run's logs. The failure names the probe, which
@@ -328,6 +359,267 @@ def _blocked_posted(store: Any, todo_id: int, run_id: str) -> bool:
     return False
 
 
+# ── the infra ruling (gr611682) ────────────────────────────────────
+
+
+def _run_state(run_id: str) -> dict[str, Any] | None:
+    """The run's live ``{status, conclusion, jobs, attempt}`` —
+    ``gh run view --json`` read at ruling time, not from the digest's
+    snapshot: a rerun landing between the ``ci-failed`` read and this
+    one changes the answer. ``None`` when gh or the read fails — callers
+    treat an unreadable state as still-infra, never as green."""
+    cp = _gh(["run", "view", run_id, "--json", _RUN_STATE_JSON])
+    if cp is None or cp.returncode != 0:
+        return None
+    try:
+        data = json.loads(cp.stdout)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _state_attempt(state: dict[str, Any]) -> int:
+    """The run's ``attempt`` counter from the live read; 0 when absent
+    or unreadable — an unproven rerun, so a first fire stays allowed."""
+    try:
+        return int(state.get("attempt") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _infra_why(state: dict[str, Any] | None) -> str:
+    """The one-line infra classification for comments and the job
+    summary — jobless (gr611682's startup failure), skipped/cancelled
+    only, or failed jobs whose logs are unreadable: each is 'no failing
+    test in the logs', never a test red."""
+    if state is None:
+        return "the run is unreadable"
+    jobs = [j for j in state.get("jobs") or [] if isinstance(j, dict)]
+    if not jobs:
+        return "the run never started a job (jobs=[])"
+    if any(j.get("conclusion") == "failure" for j in jobs):
+        return "the failed jobs' logs are unreadable"
+    counts: dict[str, int] = {}
+    for j in jobs:
+        key = str(j.get("conclusion") or j.get("status") or "?")
+        counts[key] = counts.get(key, 0) + 1
+    seen = ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
+    return f"no job concluded failure ({seen})"
+
+
+def _rerun_argv(run_id: str, state: dict[str, Any]) -> list[str]:
+    """``gh run rerun`` args for an infra red: ``--failed`` re-fires the
+    failed legs only when the run HAS failed jobs — on a jobless or
+    skipped-only run it errors 'no failed jobs', and it can never
+    re-fire jobs that did not conclude
+    (``scripts/lib/ci_run.rerun_hint``)."""
+    argv = ["run", "rerun", run_id]
+    jobs = state.get("jobs") or []
+    if any(isinstance(j, dict) and j.get("conclusion") == "failure" for j in jobs):
+        argv.append("--failed")
+    return argv
+
+
+def _infra_rerun_marked(store: Any, todo_id: int, run_id: str) -> bool:
+    """``True`` once this digest node fired ``gh run rerun`` for
+    ``run_id`` — the :data:`_INFRA_RERUN_KEY` marker on the node's meta
+    survives a job re-dispatch where the compute handle does not."""
+    try:
+        ref = store.get_ref(kind="todo", id=todo_id)
+    except Exception:
+        return False
+    marker = (ref.meta or {}).get(_INFRA_RERUN_KEY) if ref is not None else None
+    return isinstance(marker, dict) and str(marker.get("run_id") or "") == run_id
+
+
+def _infra_blocked(
+    ctx: Any,
+    todo_id: int,
+    run_id: str,
+    targets: list[int],
+    note: str,
+    fail: str,
+    log_text: str,
+) -> bool:
+    """The infra ruling's terminal exit: post ``note`` — deduped per
+    run by :func:`_blocked_posted` — on the plan root and each fix node,
+    then fail the job with ``fail`` and the masked log tail. The plan
+    tick re-dispatches within the node's retries, then files the ask."""
+    root = _release.plan_root(ctx.store, todo_id)
+    for tid in dict.fromkeys([root, *targets]):
+        if not _blocked_posted(ctx.store, tid, run_id):
+            _rs._append_comment(ctx.store, tid, note)
+    ctx.append_chunk("job_summary", f"{NAME}: {note}")
+    _rc.fail_with_tail(ctx, fail, mask_secrets(log_text))
+    return True
+
+
+def _infra_done(
+    ctx: Any,
+    handle: dict[str, Any],
+    todo_id: int,
+    run_id: str,
+    targets: list[int],
+    rel: dict[str, Any],
+    log_text: str,
+) -> bool:
+    """The ``_NO_LINES`` ruling (gr611682, the coordinator's): a
+    completed red run with no failing test in the logs is an
+    INFRASTRUCTURE red — jobless (a startup failure), skipped-only, or
+    cancelled — never a test red. The fix node never closes ``no-op``
+    on it: closing it let the loop re-cut and republish the same sha,
+    so the same jobless run re-read as red every iteration until the
+    cap. The digest asks for the rerun once — ``gh run rerun``;
+    ``--failed`` only when failed jobs exist but their logs are
+    unreadable — and parks on it, so the loop waits without burning an
+    iteration. A run green now is recorded and the fix nodes close
+    moot; a run that stays infra past :data:`_PARK_CAP` fails the job —
+    the tick retries within the node's retries, then files the ask."""
+    rn = str(rel.get("rN") or "r?")
+    sha = str(rel.get("sha") or "")
+    sha9 = sha[:9] or "unknown"
+    rng = str(rel.get("range") or sha)
+    state = _run_state(run_id)
+    why = _infra_why(state)
+    if (
+        state is not None
+        and str(state.get("status") or "") == "completed"
+        and str(state.get("conclusion") or "") in _OK_CONCLUSIONS
+    ):
+        # The rerun landed green: the recorded red is stale. Record the
+        # green so the tests-green gate and the loop's ``until`` open,
+        # then close the fix nodes — nothing ever needed fixing.
+        line = _release.record_ci_verdict(ctx.store, sha, rng, "green", run_id)
+        for tid in targets:
+            _rs._append_comment(
+                ctx.store,
+                tid,
+                f"no-op: release {rn} red at {sha9} (run {run_id}) was an "
+                f"infra red ({why}); the run is green now — nothing to fix.",
+            )
+            _rs.close_todo(ctx.store, tid, None)
+        ctx.append_chunk(
+            "job_summary",
+            f"{NAME}: {rn} at {sha9} (run {run_id}) was an infra red and is "
+            f"green now ({line}); fix node(s) closed no-op",
+        )
+        ctx.set_status("succeeded")
+        return True
+    if int(handle.get("parks") or 0) >= _PARK_CAP:
+        # Still nothing to digest after the whole wait: the infra
+        # ruling is terminal.
+        note = (
+            f"blocked: release {rn} is red at {sha9} (run {run_id}) — "
+            f"{why}; an infra red, not a test red, and still red after "
+            f"{_PARK_CAP} re-reads waiting on a rerun's verdict. A hand "
+            "rerun or a push unblocks the loop; the digest job failed "
+            "so the plan tick retries, then files the ask."
+        )
+        return _infra_blocked(
+            ctx,
+            todo_id,
+            run_id,
+            targets,
+            note,
+            f"{NAME}: run {run_id} is still an infra red ({why}) after "
+            f"{_PARK_CAP} parks",
+            log_text,
+        )
+    if state is None or str(state.get("status") or "") != "completed":
+        # A rerun already in flight — or GitHub unreadable: the next
+        # digest re-reads the run, like the still-running marker.
+        status = str(state.get("status")) if state is not None else "unreadable"
+        return _park_for_run(
+            ctx,
+            handle,
+            run_id,
+            log_text,
+            waiting=f"{status} — the rerun's verdict has not landed",
+            stuck=f"{status} past the rerun",
+        )
+    # A completed non-green run with nothing to digest — the infra red
+    # proper. Ask for the rerun once, then wait on it.
+    if _state_attempt(state) <= 1 and not _infra_rerun_marked(
+        ctx.store, todo_id, run_id
+    ):
+        argv = _rerun_argv(run_id, state)
+        cp = _gh(argv)
+        if cp is not None and cp.returncode == 0:
+            ctx.store.stamp_ref_meta(
+                todo_id,
+                {
+                    _INFRA_RERUN_KEY: {
+                        "run_id": run_id,
+                        "at": datetime.now(UTC).strftime(_TS_FMT),
+                    }
+                },
+            )
+            shown = f"gh {' '.join(argv)}"
+            root = _release.plan_root(ctx.store, todo_id)
+            note = (
+                f"note: release {rn} is red at {sha9} (run {run_id}) — "
+                f"{why}; an infra red, not a test red. The digest fired "
+                f"`{shown}` and waits on the rerun's verdict instead of "
+                "re-cutting the same sha; the fix node stays open."
+            )
+            for tid in dict.fromkeys([root, *targets]):
+                _rs._append_comment(ctx.store, tid, note)
+            ctx.append_chunk(
+                "job_event",
+                f"{NAME}: {rn} red at {sha9} (run {run_id}) is infra "
+                f"({why}) — `{shown}` fired; the loop waits",
+            )
+            return _park_for_run(
+                ctx,
+                handle,
+                run_id,
+                log_text,
+                waiting=f"the rerun of run {run_id} landing",
+                stuck="still an infra red after the fired rerun",
+            )
+        if cp is None:
+            # A local fault (no checkout or gh), not a refusal — wait.
+            return _park_for_run(
+                ctx,
+                handle,
+                run_id,
+                log_text,
+                waiting=f"gh unreadable for the rerun of run {run_id}",
+                stuck="still an infra red with gh unreadable",
+            )
+        lines = (cp.stderr or cp.stdout or "").strip().splitlines()
+        detail = lines[-1][:160] if lines else f"exit {cp.returncode}"
+        note = (
+            f"blocked: release {rn} is red at {sha9} (run {run_id}) — "
+            f"{why}; an infra red, not a test red, but "
+            f"`gh {' '.join(argv)}` was refused ({detail}); the "
+            "credential may lack Actions write. A hand rerun or a push "
+            "unblocks the loop; the digest job failed so the plan tick "
+            "retries, then files the ask."
+        )
+        return _infra_blocked(
+            ctx,
+            todo_id,
+            run_id,
+            targets,
+            note,
+            f"{NAME}: run {run_id} is an infra red ({why}) and its rerun "
+            f"was refused ({detail})",
+            log_text,
+        )
+    # A rerun was already asked for — by this node (the marker) or by
+    # hand (attempt >= 2) — and the run is still an infra red: wait on
+    # it, never fire another.
+    return _park_for_run(
+        ctx,
+        handle,
+        run_id,
+        log_text,
+        waiting=f"the asked-for rerun of run {run_id} producing a verdict",
+        stuck=f"still an infra red ({why}) after the rerun",
+    )
+
+
 def _refusal(store: Any, params: dict[str, Any]) -> str | None:
     return (
         _rc.factory_refusal(NAME)
@@ -428,25 +720,7 @@ def _digest_done(
     rng = str(rel.get("range") or "")
     targets = _fix_targets(ctx.store, todo_id)
     if _NO_LINES in log_text:
-        for tid in targets:
-            _rs._append_comment(
-                ctx.store,
-                tid,
-                f"no-op: release {rn} is red at {sha9} (run {run_id}) — "
-                f"{_NO_FAIL_NOTE}; nothing to fix, the loop re-cuts.",
-            )
-            _rs.close_todo(ctx.store, tid, None)
-        closed = (
-            f"; td{', td'.join(str(t) for t in targets)} closed no-op"
-            if targets
-            else ""
-        )
-        ctx.append_chunk(
-            "job_summary",
-            f"{NAME}: {rn} red at {sha9} (run {run_id}); {_NO_FAIL_NOTE}{closed}",
-        )
-        ctx.set_status("succeeded")
-        return True
+        return _infra_done(ctx, handle, todo_id, run_id, targets, rel, log_text)
     sections = _sections(log_text)
     blind = [name for name, is_blind in sections if is_blind]
     rescue = ""
@@ -509,17 +783,27 @@ def _digest_done(
     return True
 
 
-def _park_for_run(ctx: Any, handle: dict[str, Any], run_id: str, log_text: str) -> bool:
-    """The run is still in progress with nothing failed yet: park the
-    handle until ``not_before`` (land_slice's handle deferral — poll
-    cannot hand a handle back, so it is mutated in place and persisted to
-    ``meta.compute_handle``) and re-digest then. Past :data:`_PARK_CAP`
-    the job fails "still in progress". ``False`` keeps the job running."""
+def _park_for_run(
+    ctx: Any,
+    handle: dict[str, Any],
+    run_id: str,
+    log_text: str,
+    *,
+    waiting: str = "still in progress, nothing failed yet",
+    stuck: str = "still in progress",
+) -> bool:
+    """Park the handle until ``not_before`` (land_slice's handle
+    deferral — poll cannot hand a handle back, so it is mutated in place
+    and persisted to ``meta.compute_handle``) and re-digest then.
+    ``waiting``/``stuck`` name what the park is for in the event line and
+    the cap failure — a run still in progress, or an infra red waiting
+    on its rerun (:func:`_infra_done`). Past :data:`_PARK_CAP` the job
+    fails. ``False`` keeps the job running."""
     parks = int(handle.get("parks") or 0) + 1
     if parks > _PARK_CAP:
         _rc.fail_with_tail(
             ctx,
-            f"{NAME}: run {run_id} still in progress after {_PARK_CAP} "
+            f"{NAME}: run {run_id} {stuck} after {_PARK_CAP} "
             "parks; the plan tick re-dispatches within the node's retries",
             mask_secrets(log_text),
         )
@@ -531,7 +815,7 @@ def _park_for_run(ctx: Any, handle: dict[str, Any], run_id: str, log_text: str) 
     handle.update(not_before=due.strftime(_TS_FMT), parks=parks)
     ctx.append_chunk(
         "job_event",
-        f"{NAME}: run {run_id} still in progress, nothing failed yet — "
+        f"{NAME}: run {run_id} {waiting} — "
         f"re-digest after {due:%H:%M}Z (park {parks}/{_PARK_CAP})",
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the

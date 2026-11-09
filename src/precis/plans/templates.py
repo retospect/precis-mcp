@@ -1470,9 +1470,15 @@ def mint_release_fix(
     The digest runs ``scripts/ci-failed`` on the plan's newest red
     check.yml run and posts the masked digest as a ``brief:`` comment on
     the fix node -- the run_slice session reads it through
-    ``run_slice._brief_parts``. The re-cut is the mechanical op the
-    release-pass ``cut`` is: it records the new cut on the plan root
-    (:func:`precis.plans.release.record_cut` overwrites ``meta.release``
+    ``run_slice._brief_parts``. An INFRA red instead -- a completed run
+    with no failing test in the logs (jobless, skipped-only, cancelled;
+    ``ci_red_digest._infra_done``, gr611682) -- never closes the fix node
+    ``no-op``: the digest fires ``gh run rerun`` once and parks on it,
+    so the loop waits on a real verdict instead of re-cutting and
+    republishing the same sha iteration after iteration. The re-cut is
+    the mechanical op the release-pass ``cut`` is: it records the new
+    cut on the plan root (:func:`precis.plans.release.record_cut`
+    overwrites ``meta.release``
     and rewrites the open ``tests-green`` gate, the loop's ``until`` and
     the approval options to the new range / r<N>). The poll reads that new
     ``meta.release``, so the loop -- which waits for every child to close

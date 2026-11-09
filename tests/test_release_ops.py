@@ -2102,53 +2102,235 @@ def test_digest_fails_with_no_fix_node_to_brief(
     assert "no run_slice todo" in ctx.failures[0]
 
 
-def test_digest_with_no_failing_test_closes_fix_and_the_plan_recuts(
+def _gh_run_stub(
+    state: dict[str, Any] | None, *, rerun_rc: int = 0, rerun_err: str = ""
+) -> tuple[Any, list[list[str]]]:
+    """A ``crd._gh`` fake for the infra ruling: ``gh run view --json``
+    answers ``state`` (``None`` reads as a failed read); ``gh run
+    rerun`` exits ``rerun_rc``. ``calls`` records every argv."""
+    calls: list[list[str]] = []
+
+    def fake(args: list[str]) -> Any:
+        calls.append(list(args))
+        if args[:2] == ["run", "view"]:
+            if state is None:
+                return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+            return SimpleNamespace(returncode=0, stdout=json.dumps(state), stderr="")
+        if args[:2] == ["run", "rerun"]:
+            return SimpleNamespace(
+                returncode=rerun_rc,
+                stdout="",
+                stderr=rerun_err or ("refused" if rerun_rc else ""),
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return fake, calls
+
+
+def test_digest_infra_red_fires_one_rerun_and_parks_the_loop(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancelled-only / infra-killed red run leaves nothing to digest:
-    the job succeeds, the fix node closes no-op without a session, and
-    the loop goes on to recut + poll."""
+    """gr611682: a jobless startup-failed run is an INFRA red, not a
+    test red — the digest fires ``gh run rerun`` once and parks on the
+    verdict; the fix node stays open so the loop waits instead of
+    re-cutting and republishing the same sha."""
     mint = _cut(store)
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
-    for key in ("cut", "poll"):
-        _close(store, mint.ids[key])
-    T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1)
-    it = _iteration(store, mint.ids["loop"])
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
     _ci_failed_script(checkout)
-    ctx = Ctx(store, {"todo_id": it["digest"]})
+    fake, calls = _gh_run_stub(
+        {"status": "completed", "conclusion": "failure", "jobs": [], "attempt": 1}
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    ctx = Ctx(store, {"todo_id": digest_id})
     handle = crd.submit(ctx, None)
     assert ctx.failures == []
     _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is False  # parked on the rerun, not done
+    assert ctx.status is None and ctx.failures == []
+    assert calls == [
+        ["run", "view", "31", "--json", crd._RUN_STATE_JSON],
+        ["run", "rerun", "31"],
+    ]
+    assert _status(store, fix_id) == "open"  # never the no-op close
+    assert handle.get("not_before") and handle["parks"] == 1
+    assert _meta(store, digest_id)[crd._INFRA_RERUN_KEY]["run_id"] == "31"
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    assert comments[0].startswith("note:")
+    assert "infra" in comments[0] and "gh run rerun 31" in comments[0]
+    # The plan root carries the same note — the wait is a plan-level fact.
+    assert comments[0] in _todo_comments(store, mint.root_id)
+    # The loop does not iterate: the fix node is open and blocked-by the
+    # digest, so nothing dispatches under it.
+    pd.run_pass(store)
+    assert _jobs_under(store, fix_id) == []
+
+    # The re-digest of a still-jobless attempt-2 run — the asked-for
+    # rerun, fired by hand or by this node — never fires another.
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert crd.poll(ctx, handle) is False  # ci-failed relaunched
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    fake2, calls2 = _gh_run_stub(
+        {"status": "completed", "conclusion": "failure", "jobs": [], "attempt": 2}
+    )
+    monkeypatch.setattr(crd, "_gh", fake2)
+    assert crd.poll(ctx, handle) is False  # still parked — no second fire
+    assert calls2 == [["run", "view", "31", "--json", crd._RUN_STATE_JSON]]
+    assert _status(store, fix_id) == "open"
+
+
+def test_digest_infra_red_uses_failed_rerun_when_jobs_failed(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run whose failed jobs' logs are unreadable is also 'no failing
+    test in the logs': the rerun re-fires those legs with ``--failed``
+    (a full rerun is only needed when no job ever ran)."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {
+            "status": "completed",
+            "conclusion": "failure",
+            "jobs": [{"name": "lint", "conclusion": "failure"}],
+            "attempt": 1,
+        }
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is False
+    assert calls == [
+        ["run", "view", "31", "--json", crd._RUN_STATE_JSON],
+        ["run", "rerun", "31", "--failed"],
+    ]
+    assert _status(store, fix_id) == "open"
+
+
+def test_digest_infra_red_turned_green_records_and_closes_noop(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rerun landed green between the ``ci-failed`` read and the
+    ruling read: the stale red row is replaced by a recorded green — the
+    tests-green gate opens on it — and the fix nodes close no-op."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {
+            "status": "completed",
+            "conclusion": "success",
+            "jobs": [{"name": "lint", "conclusion": "success"}],
+            "attempt": 2,
+        }
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
     assert crd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
-    assert "no failing test in the logs (cancelled or infra)" in ctx.chunks[-1][1]
-    assert _status(store, it["fix"]) == "done"
-    comments = [
-        str(c.text)
-        for c in store.chunks.list_chunks_for_ref(it["fix"])
-        if c.chunk_kind == "todo_comment"
-    ]
+    assert not any(c[:2] == ["run", "rerun"] for c in calls)
+    assert _status(store, fix_id) == "done"
+    comments = _todo_comments(store, fix_id)
     assert len(comments) == 1
-    assert comments[0].startswith("no-op:")
-    assert "no failing test in the logs" in comments[0]
+    assert comments[0].startswith("no-op:") and "green now" in comments[0]
+    newest = gates._newest_verdict(store, SHA, RNG)
+    assert newest is not None and newest["verdict"] == "green"
+    assert gates.evaluate(
+        store,
+        {"kind": "tests-green", "args": {"range": RNG}},
+        todo_id=mint.ids["gate"],
+    ).open
 
-    # The loop goes on: no fix session is dispatched, the re-cut is.
-    _close(store, it["digest"])
-    _fake_gh_api(monkeypatch, main_sha=SHA2)  # the re-cut recomputes the head
-    res = pd.run_pass(store)
-    assert _jobs_under(store, it["fix"]) == []
-    _job, meta = _only_job(store, it["recut"])
-    assert meta["job_type"] == "release_cut", res.notes
+
+def test_digest_infra_red_past_the_park_cap_posts_blocked_and_fails(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Still jobless after the asked-for rerun (attempt >= 2 — by this
+    node or by hand): never fire another; past the park cap the job
+    fails with deduped ``blocked:`` notes on the plan and the fix node —
+    the tick retries, then files the ask."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {"status": "completed", "conclusion": "failure", "jobs": [], "attempt": 2}
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    handle["parks"] = crd._PARK_CAP
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None and len(ctx.failures) == 1
+    assert "infra red" in ctx.failures[0]
+    # attempt 2 means a rerun was already asked for — none fired here.
+    assert not any(c[:2] == ["run", "rerun"] for c in calls)
+    assert _status(store, fix_id) == "open"
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    assert comments[0].startswith("blocked:") and "run 31" in comments[0]
+    plan_blocked = [
+        c for c in _todo_comments(store, mint.root_id) if c.startswith("blocked:")
+    ]
+    assert plan_blocked == [comments[0]]
+
+    # A retried digest posts no second blocked: note for the same run.
+    ctx2 = Ctx(store, {"todo_id": digest_id})
+    handle2 = crd.submit(ctx2, None)
+    handle2["parks"] = crd._PARK_CAP
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx2, handle2) is True
+    assert _todo_comments(store, fix_id) == comments
+
+
+def test_digest_infra_red_rerun_refused_posts_blocked_and_fails(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The credential cannot write Actions (a 403): the refusal is
+    noted once on the plan and the fix node and the job fails — the
+    escalation is the tick's retry ladder, not a wait."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    fake, calls = _gh_run_stub(
+        {"status": "completed", "conclusion": "failure", "jobs": [], "attempt": 1},
+        rerun_rc=1,
+        rerun_err="gh: Resource not accessible by integration (HTTP 403)",
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status is None and len(ctx.failures) == 1
+    assert "infra red" in ctx.failures[0] and "refused" in ctx.failures[0]
+    assert calls[-1] == ["run", "rerun", "31"]
+    assert _status(store, fix_id) == "open"
+    comments = _todo_comments(store, fix_id)
+    assert len(comments) == 1
+    assert comments[0].startswith("blocked:")
+    assert "refused" in comments[0] and "Actions write" in comments[0]
+    assert comments[0] in [
+        c for c in _todo_comments(store, mint.root_id) if c.startswith("blocked:")
+    ]
 
 
 def test_digest_parks_and_recovers_a_still_running_run(
-    store: Store, checkout: dict[str, Any]
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run still in progress prints the ``… lines yet`` marker: that is
     a deferral, never the no-op close — the handle parks on
     ``not_before``, nothing closes, and once the marker passes the same
     run is digested again. The finished run's marker then takes the
-    usual no-op path."""
+    infra ruling — here landing green, which closes the fix no-op."""
     mint = _cut(store)
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
     digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
@@ -2178,7 +2360,13 @@ def test_digest_parks_and_recovers_a_still_running_run(
     assert "not_before" not in handle and handle["run_id"] == "31"
     assert handle["parks"] == 1
 
-    # The completed run's marker then takes the usual no-op close.
+    # The completed run's marker takes the infra ruling (gr611682): the
+    # run landed green between reads, so the stale red is recorded green
+    # and the fix closes no-op.
+    fake, _calls = _gh_run_stub(
+        {"status": "completed", "conclusion": "success", "jobs": [], "attempt": 2}
+    )
+    monkeypatch.setattr(crd, "_gh", fake)
     _exit(checkout, 0, "ci-failed: no failed-job log lines\n")
     assert crd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
