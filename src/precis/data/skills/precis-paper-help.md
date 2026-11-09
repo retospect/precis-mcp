@@ -369,7 +369,10 @@ search(kind="paper", args={"linked_from": "memory", "lacks": "finding"})
 Add `tags=[...]` to narrow the linking side — e.g. a `SPACE:` tag
 filters the memories that link, not the papers.
 
-No `q=` gives a paged listing; `view='count'` the filtered total.
+No `q=` gives a paged listing; `view='count'` the filtered total. The
+same `args=` cohort keys compose there — `serves`, `linked_from`/`lacks`,
+`stamp`, `record_type`, `has_fulltext` — and args the count can't express
+(`chunk_kind`, ranking/paging knobs) refuse instead of dropping silently.
 
 To keep only chunks of one body kind — e.g. table-chunk hits across
 the corpus, the search-side companion to `view='tables'`:

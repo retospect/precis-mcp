@@ -4606,6 +4606,9 @@ class RefsMixin:
         since: Any = None,
         until: Any = None,
         meta_eq: tuple[str, str] | None = None,
+        has_body: bool | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
     ) -> tuple[int, list[tuple[tuple[str | None, ...], int, FacetSpan]]]:
@@ -4673,6 +4676,9 @@ class RefsMixin:
             since=since,
             until=until,
             meta_eq=meta_eq,
+            has_body=has_body,
+            year_from=year_from,
+            year_to=year_to,
             id_min=id_min,
             id_max=id_max,
         )
@@ -4783,6 +4789,9 @@ class RefsMixin:
         since: Any = None,
         until: Any = None,
         meta_eq: tuple[str, str] | None = None,
+        has_body: bool | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
     ) -> int:
@@ -4810,6 +4819,9 @@ class RefsMixin:
             since=since,
             until=until,
             meta_eq=meta_eq,
+            has_body=has_body,
+            year_from=year_from,
+            year_to=year_to,
             id_min=id_min,
             id_max=id_max,
         )
@@ -4848,6 +4860,9 @@ def filtered_ref_clauses(
     since: Any = None,
     until: Any = None,
     meta_eq: tuple[str, str] | None = None,
+    has_body: bool | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
     id_min: int | None = None,
     id_max: int | None = None,
 ) -> tuple[list[str], list[Any]]:
@@ -4947,6 +4962,17 @@ def filtered_ref_clauses(
     if meta_eq is not None:
         clauses.append("r.meta ->> %s = %s")
         params.extend(meta_eq)
+    if has_body is not None:
+        # Same predicate the chunk-search ``has_body=`` filters use
+        # (paper's ``args={'has_fulltext': …}``, gr605583).
+        frag = has_body_sql("r")
+        clauses.append(frag if has_body else f"NOT {frag}")
+    if year_from is not None:
+        clauses.append("r.year >= %s")
+        params.append(int(year_from))
+    if year_to is not None:
+        clauses.append("r.year <= %s")
+        params.append(int(year_to))
     if id_min is not None:
         clauses.append("r.ref_id >= %s")
         params.append(id_min)

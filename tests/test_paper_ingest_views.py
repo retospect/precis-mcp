@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
 from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
@@ -116,6 +116,172 @@ class TestCount:
             papers.search(view="bogus")
         assert "count" in (ei.value.options or [])
         assert "view='status'" in (ei.value.next or "")
+
+
+class TestCountViewCohortFilters:
+    """gr605583: ``view='count'`` composes the ref-level filters the
+    listing paths honour (``serves``/``stamp``/``record_type``/
+    ``has_fulltext``/``ids``/``exclude``/``after``/``before``) and
+    refuses the hit-shape args — an arg is applied or refused, never
+    silently dropped."""
+
+    def _quest(self, store: Store, *paper_ids: int) -> int:
+        quest = store.insert_ref(kind="quest", slug=None, title="q")
+        for rid in paper_ids:
+            store.add_link(
+                src_ref_id=rid,
+                dst_ref_id=quest.id,
+                relation="serves",
+                set_by="agent",
+            )
+        return quest.id
+
+    def test_serves_counts_the_serving_set(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        a = _paper(store, "srv-a2024", body=1)
+        _paper(store, "srv-b2024", body=1)
+        qid = self._quest(store, a)
+        body = papers.search(view="count", serves=f"quest:{qid}").body
+        assert body.startswith("# 1 paper entry"), body
+        assert f"serves='quest:{qid}'" in body
+
+    def test_serves_with_created_window(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        """The gripe's second call shape: serves= + since= both apply."""
+        a = _paper(store, "srv-old2024", body=1)
+        b = _paper(store, "srv-new2024", body=1)
+        qid = self._quest(store, a, b)
+        _backdate(store, a, datetime(2020, 1, 1, tzinfo=UTC))
+        body = papers.search(
+            view="count", serves=f"quest:{qid}", since="2021-01-01"
+        ).body
+        assert body.startswith("# 1 paper entry"), body
+        assert "created [2021-01-01" in body
+
+    def test_serves_empty_cohort_counts_zero(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        _paper(store, "srv-c2024", body=1)
+        qid = self._quest(store)  # a real quest nothing serves
+        body = papers.search(view="count", serves=f"quest:{qid}").body
+        assert body.startswith("# 0 paper entries"), body
+
+    def test_serves_unknown_quest_refuses(self, papers: PaperHandler) -> None:
+        with pytest.raises(NotFound):
+            papers.search(view="count", serves="quest:99999999")
+
+    def test_serves_via_dispatch_args(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """The gripe's call shape — args={'serves': …} flattened by
+        dispatch must reach the count filter."""
+        a = _paper(store, "dsp-served2024", body=1)
+        _paper(store, "dsp-other2024", body=1)
+        qid = self._quest(store, a)
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "paper",
+                "view": "count",
+                "__extras__": {"serves": f"quest:{qid}"},
+            },
+        )
+        assert body.startswith("# 1 paper entry"), body
+
+    def test_record_type_filters(self, papers: PaperHandler, store: Store) -> None:
+        store.insert_ref(
+            kind="paper",
+            slug="rt-ds2024",
+            title="rt-ds2024",
+            meta={"record_type": "dataset"},
+        )
+        _paper(store, "rt-paper2024", body=1)
+        body = papers.search(view="count", record_type="dataset").body
+        assert body.startswith("# 1 paper entry"), body
+        assert "meta.record_type='dataset'" in body
+        with pytest.raises(BadInput):
+            papers.search(view="count", record_type="bogus")
+
+    def test_stamp_filters(self, papers: PaperHandler, store: Store) -> None:
+        store.insert_ref(
+            kind="paper",
+            slug="st-one2024",
+            title="st-one2024",
+            meta={"context_sentence_failed": True},
+        )
+        _paper(store, "st-plain2024", body=1)
+        body = papers.search(view="count", stamp="context_sentence_failed").body
+        assert body.startswith("# 1 paper entry"), body
+        assert "stamp='context_sentence_failed'" in body
+
+    def test_has_fulltext_filters(self, papers: PaperHandler, store: Store) -> None:
+        _paper(store, "ft-yes2024", body=1)
+        _paper(store, "ft-no2024")
+        body = papers.search(view="count", has_fulltext=True).body
+        assert body.startswith("# 1 paper entry"), body
+        body = papers.search(view="count", has_fulltext=False).body
+        assert body.startswith("# 1 paper entry"), body
+        non_bool: Any = "yes"  # args= can carry a non-bool over JSON
+        with pytest.raises(BadInput):
+            papers.search(view="count", has_fulltext=non_bool)
+
+    def test_fulltext_facet_over_filtered_set(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        """has_fulltext= also bounds the group rows and the passages
+        trailer — same filtered set everywhere."""
+        _paper(store, "fa-full2024", body=2)
+        _paper(store, "fa-card2024", card=True)
+        body = papers.search(view="count", group_by="fulltext", has_fulltext=True).body
+        assert body.startswith("# 1 paper entry"), body
+        assert "  full-text: 1" in body
+        assert "passages: 2 live body chunks" in body
+
+    def test_ids_filters(self, papers: PaperHandler, store: Store) -> None:
+        _paper(store, "id-a2024", body=1)
+        _paper(store, "id-b2024", body=1)
+        body = papers.search(view="count", ids=["id-a2024"]).body
+        assert body.startswith("# 1 paper entry"), body
+        assert "ids (1 resolved)" in body
+
+    def test_exclude_and_year_bounds(self, papers: PaperHandler, store: Store) -> None:
+        _paper(store, "yb-2020a", body=1)
+        store.insert_ref(kind="paper", slug="yb-old", title="yb-old", year=2010)
+        _paper(store, "yb-2020b", body=1)
+        body = papers.search(
+            view="count", after=2019, before=2025, exclude=["yb-2020b"]
+        ).body
+        assert body.startswith("# 1 paper entry"), body
+        assert "year [2019, 2025]" in body
+
+    def test_unapplied_args_refuse(self, papers: PaperHandler) -> None:
+        """Every kwarg the count can't express refuses with the same
+        'not applied' shape the source-search path uses."""
+        kw: dict[str, Any]
+        for kw, name in (
+            ({"chunk_kind": "table"}, "args['chunk_kind']"),
+            ({"title": "x"}, "title="),
+            ({"scope": "s"}, "scope="),
+            ({"mode": "verbatim"}, "mode="),
+            ({"queries": ["a"]}, "queries="),
+            ({"per_paper": 2}, "per_paper="),
+            ({"unique_per": "chunk"}, "unique_per="),
+            ({"good": True}, "good="),
+            ({"days": 7}, "days="),
+            ({"page": 2}, "page="),
+            ({"page_size": 50}, "page_size="),
+        ):
+            with pytest.raises(BadInput) as ei:
+                papers.search(view="count", **kw)
+            assert name in str(ei.value), (kw, str(ei.value))
+            assert "not applied by view='count'" in str(ei.value)
+
+    def test_days_refusal_points_at_ingest(self, papers: PaperHandler) -> None:
+        with pytest.raises(BadInput) as ei:
+            papers.search(view="count", days=7)
+        assert "view='ingest'" in str(ei.value)
 
 
 class TestFetchStatus:

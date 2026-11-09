@@ -2669,7 +2669,11 @@ class PaperHandler(Handler):
         # and must return zero hits, not fall through unfiltered.
         include_ref_ids: list[int] | None = None,
         # ``view='count'`` (gr500649): filtered total + ``group_by=``
-        # facets, same contract as the numeric-ref kinds. ``view='status'``
+        # facets, same contract as the numeric-ref kinds. The count
+        # composes the ref-level filters (serves=/stamp=/record_type=/
+        # has_fulltext=/linked_from/lacks plus ids=/exclude=/after=/
+        # before=) and refuses the hit-shape args it can't express —
+        # nothing drops silently (gr605583). ``view='status'``
         # (gr500651, ``ids=`` handles/slugs) and ``view='ingest'``
         # (gr500643, ``days=``) are paper-only ingest-state reads.
         view: str | None = None,
@@ -2743,15 +2747,152 @@ class PaperHandler(Handler):
         )
         if linked_from_kind is not None:
             tags = None
+        # ``args={'stamp': …}`` normalisation is hoisted ahead of the
+        # view dispatch so ``view='count'`` sees the same validated value
+        # the stamp/listing doors do (gr605583).
+        stamp_norm = (
+            str(stamp).strip() if isinstance(stamp, str) and stamp.strip() else None
+        )
+        if stamp is not None and stamp_norm is None:
+            raise BadInput(
+                f"args={{'stamp': …}} takes a non-empty meta key, got {stamp!r}",
+                next="search(kind='paper', args={'stamp': 'context_sentence_failed'})",
+            )
         if view is not None and view not in ("index", "ids"):
             if view == "count":
+                # The count's filtered set composes the ref-level
+                # filters the listing paths honour (gr605583 — an arg
+                # the view can't express refuses, it never silently
+                # drops): ``serves=``/``stamp=``/``ids=`` intersect the
+                # include channel the same way the q= path composes
+                # them, ``record_type=`` is the ``meta_eq`` filter,
+                # ``has_fulltext=`` is the same body predicate the
+                # fused legs apply, and ``exclude=``/``after=``/
+                # ``before=`` resolve like the browse listings. What
+                # remains — hit-shape args and other views' knobs —
+                # refuses first so no key is silently dropped.
+                unapplied: list[str] = []
+                for label, value in (
+                    ("title=", title),
+                    ("author=", author),
+                    ("scope=", scope),
+                    ("mode=", mode),
+                    ("queries=", queries),
+                    ("answers=", answers),
+                    ("per_paper=", per_paper),
+                    ("unique_per=", unique_per),
+                    ("good=", good or None),
+                    ("days=", days),
+                    ("page=", page if page != 1 else None),
+                    ("page_size=", page_size),
+                    ("args['chunk_kind']", chunk_kind),
+                ):
+                    if value is not None and value != [] and value != "":
+                        unapplied.append(label)
+                unapplied.extend(
+                    sorted(
+                        f"args[{k!r}]"
+                        for k, v in _kw.items()
+                        if v is not None and not str(k).startswith("__")
+                    )
+                )
+                if unapplied:
+                    hints: list[str] = [
+                        f"search(kind={kind!r}, view='count', q=…, "
+                        "tags=[…], since=…, until=…, after=…, before=…, "
+                        "ids=[…], args={'group_by': …, 'serves': "
+                        "'quest:<id>', 'record_type': 'dataset', 'stamp': "
+                        "'<meta key>', 'has_fulltext': true, "
+                        "'linked_from'/'lacks': '<kind>'})"
+                    ]
+                    if days is not None:
+                        hints.append(
+                            "days= is the view='ingest' spell: "
+                            f"search(kind={kind!r}, view='ingest', days=14)"
+                        )
+                    if title or author:
+                        hints.append(
+                            "title=/author= is the byline record lookup — "
+                            "drop view='count'"
+                        )
+                    raise BadInput(
+                        f"{unapplied!r} "
+                        f"{'is' if len(unapplied) == 1 else 'are'} not "
+                        f"applied by view='count' on {kind} search — "
+                        "silently dropping "
+                        f"{'it' if len(unapplied) == 1 else 'them'} would "
+                        "return a result the call didn't ask for",
+                        next=hints,
+                    )
+                bf = self._resolve_browse_filters(
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    exclude=exclude,
+                    after=after,
+                    before=before,
+                    since=since,
+                    until=until,
+                )
+                include_ref_ids = bf["include_ref_ids"]
+                extra_filters: list[str] = []
+                if serves is not None:
+                    serving = self._resolve_serves_scope(serves)
+                    include_ref_ids = sorted(
+                        (set(include_ref_ids) & serving)
+                        if include_ref_ids is not None
+                        else serving
+                    )
+                    extra_filters.append(f"serves={serves!r}")
+                if stamp_norm is not None:
+                    stamped = self._resolve_stamp_scope(stamp_norm)
+                    include_ref_ids = sorted(
+                        (set(include_ref_ids) & stamped)
+                        if include_ref_ids is not None
+                        else stamped
+                    )
+                    extra_filters.append(f"stamp={stamp_norm!r}")
+                if ids:
+                    wanted = resolve_exclude_paper_ids(
+                        [str(i) for i in ids], store=self.store, kind=kind
+                    )
+                    include_ref_ids = sorted(
+                        (set(include_ref_ids) & set(wanted))
+                        if include_ref_ids is not None
+                        else wanted
+                    )
+                    extra_filters.append(f"ids ({len(wanted)} resolved)")
+                meta_eq: tuple[str, str] | None = None
+                if record_type is not None:
+                    rt = str(record_type).strip().lower()
+                    if rt not in RECORD_TYPES:
+                        raise BadInput(
+                            f"record_type= takes 'software' or 'dataset', "
+                            f"got {record_type!r}",
+                            options=sorted(RECORD_TYPES),
+                            next=f"search(kind='{kind}', "
+                            "args={'record_type': 'software'})",
+                        )
+                    meta_eq = ("record_type", rt)
+                if has_fulltext is not None and not isinstance(has_fulltext, bool):
+                    raise BadInput(
+                        f"has_fulltext must be a boolean, got {has_fulltext!r}",
+                        next="args={'has_fulltext': true} keeps only refs "
+                        "with body chunks",
+                    )
+                if has_fulltext is not None:
+                    extra_filters.append(f"has_fulltext={has_fulltext}")
                 return self._count_view(
                     q=q,
                     tags=tags,
                     group_by=group_by,
-                    since=since,
-                    until=until,
-                    exclude_ref_ids=exclude_ref_ids,
+                    since=bf["since"],
+                    until=bf["until"],
+                    year_from=bf["year_from"],
+                    year_to=bf["year_to"],
+                    meta_eq=meta_eq,
+                    has_body=has_fulltext,
+                    extra_filters=extra_filters,
+                    exclude_ref_ids=bf["exclude_ref_ids"],
                     include_ref_ids=include_ref_ids,
                     linked_from_kind=linked_from_kind,
                     linked_from_tags=from_tags,
@@ -2813,14 +2954,6 @@ class PaperHandler(Handler):
         # cohort filter is SQL-side, not an id-array round trip); with
         # q= it restricts hits through the same include channel
         # serves=/record_type= use.
-        stamp_norm = (
-            str(stamp).strip() if isinstance(stamp, str) and stamp.strip() else None
-        )
-        if stamp is not None and stamp_norm is None:
-            raise BadInput(
-                f"args={{'stamp': …}} takes a non-empty meta key, got {stamp!r}",
-                next="search(kind='paper', args={'stamp': 'context_sentence_failed'})",
-            )
         # The link-cohort listing (gr538073) precedes the stamp door so a
         # combined ``stamp`` + ``linked_from``/``lacks`` call composes —
         # the stamp then rides along as one more WHERE clause.
@@ -3579,13 +3712,18 @@ class PaperHandler(Handler):
         q: str | None,
         tags: list[str] | None,
         group_by: Any,
-        since: str | None,
-        until: str | None,
+        since: str | datetime | None,
+        until: str | datetime | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
         linked_from_kind: str | None = None,
         linked_from_tags: list[str] | None = None,
         lacks_kind: str | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        meta_eq: tuple[str, str] | None = None,
+        has_body: bool | None = None,
+        extra_filters: list[str] | None = None,
     ) -> Response:
         """``search(kind='paper', view='count')`` — filtered total + facets.
 
@@ -3596,6 +3734,13 @@ class PaperHandler(Handler):
         ``full-text | card-only | stub`` (the ``view='status'``
         vocabulary) and trails a ``passages:`` line counting live body
         chunks over the same filtered set (gr518168).
+
+        The ref-level cohort args the listing paths take all compose
+        here (gr605583): ``serves=``/``stamp=``/``ids=`` arrive already
+        folded into ``include_ref_ids``, ``record_type=`` as
+        ``meta_eq``, ``has_fulltext=`` as ``has_body`` and
+        ``after=``/``before=`` as the ``r.year`` bounds;
+        ``extra_filters`` carries their headline labels.
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
@@ -3624,6 +3769,10 @@ class PaperHandler(Handler):
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            meta_eq=meta_eq,
+            has_body=has_body,
+            year_from=year_from,
+            year_to=year_to,
             exclude_tags=_junk_exclude(tags),
         )
         filters: list[str] = []
@@ -3635,6 +3784,13 @@ class PaperHandler(Handler):
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
             filters.append(f"created [{lo}, {hi})")
+        if year_from is not None or year_to is not None:
+            ylo = year_from if year_from is not None else "…"
+            yhi = year_to if year_to is not None else "…"
+            filters.append(f"year [{ylo}, {yhi}]")
+        if meta_eq is not None:
+            filters.append(f"meta.{meta_eq[0]}={meta_eq[1]!r}")
+        filters.extend(extra_filters or [])
         head = f"# {total} {kind} entr{'y' if total == 1 else 'ies'}"
         if filters:
             head += f" ({', '.join(filters)})"
@@ -3663,6 +3819,10 @@ class PaperHandler(Handler):
                     exclude_ref_ids=exclude_ref_ids,
                     since=since_dt,
                     until=until_dt,
+                    meta_eq=meta_eq,
+                    has_body=has_body,
+                    year_from=year_from,
+                    year_to=year_to,
                     exclude_tags=_junk_exclude(tags),
                 )
                 parts.append(f"  passages: {passages} live body chunks")
