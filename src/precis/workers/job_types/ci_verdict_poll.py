@@ -23,7 +23,8 @@ The newest check.yml run (on the release branch when one is known):
   closes the poll node and the ``tests-green`` gate reads the row.
 - no run yet, still running, or GitHub unreadable (rate limit, network) →
   **pending**: a ``pending`` summary, then the job parks itself
-  (``ctx.defer``, ``STATUS:waiting_time``) for :data:`POLL_INTERVAL`; the
+  (``ctx.defer``, ``STATUS:waiting_time``) for :func:`poll_interval`
+  (10 min, 2 min once the run is 18+ min old — gr611302); the
   wake runner re-queues the same job, which polls again. A parked job is
   live, so the tick neither closes the node nor mints a second poll (one
   poll per node: the tick's ``plan_dispatch:td<id>`` idem key). Past the
@@ -83,6 +84,11 @@ NAME = "ci_verdict_poll"
 
 #: Wait between polls while CI runs.
 POLL_INTERVAL = timedelta(minutes=10)
+#: Wait between polls once the run is :data:`POLL_FAST_AFTER` old —
+#: check.yml is near its end then, so a fixed 10-minute wait adds ~4
+#: minutes to the average gate for nothing (gr611302).
+POLL_INTERVAL_LATE = timedelta(minutes=2)
+POLL_FAST_AFTER = timedelta(minutes=18)
 #: The workflow whose run is the release verdict (scripts/release's gate).
 WORKFLOW_FILE = "check.yml"
 OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
@@ -122,7 +128,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
 DESCRIPTION: str = (
     "Dark release pass: read check.yml's GitHub Actions run on a release "
     "cut's sha and record green/red in release.ci_verdicts (the tests-green "
-    "gate reads it); parks itself and re-polls every 10 min while CI runs."
+    "gate reads it); parks itself and re-polls every 10 min while CI runs "
+    "(2 min once the run is 18+ min old, gr611302)."
 )
 
 
@@ -234,6 +241,29 @@ def _picked_run(
         and (not branch or r.get("head_branch") == branch)
     ]
     return max(mine, key=lambda r: int(r.get("id") or 0)) if mine else None
+
+
+def _run_age(run: dict[str, Any] | None, now: datetime) -> timedelta | None:
+    """The picked run's age from its ``created_at``; ``None`` without a
+    run or a parsable stamp — no clock, the slow interval."""
+    if run is None:
+        return None
+    try:
+        created = datetime.strptime(
+            str(run.get("created_at") or ""), "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except ValueError:
+        return None
+    return now - created.replace(tzinfo=UTC)
+
+
+def poll_interval(run_age: timedelta | None) -> timedelta:
+    """Wait to the next poll: :data:`POLL_INTERVAL_LATE` once the run is
+    :data:`POLL_FAST_AFTER` old (check.yml is near its end; gr611302),
+    else :data:`POLL_INTERVAL`."""
+    if run_age is not None and run_age >= POLL_FAST_AFTER:
+        return POLL_INTERVAL_LATE
+    return POLL_INTERVAL
 
 
 def _run_attempt(run: dict[str, Any]) -> int:
@@ -564,17 +594,19 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         log.info("%s: %s %s", NAME, sha[:9], state)
         return
     stall: list[str] = []
+    now = datetime.now(UTC)
     if runs is not None and picked is None:
         # GitHub answered and no run exists for the sha: the confirmed-
         # absent case the gr589270 ladder covers (an in-progress run or
         # an unreadable GitHub is ordinary pending, no rungs).
-        stall = _no_run_stall(ctx, params.get("todo_id"), target, now=datetime.now(UTC))
-    note = f"{NAME}: pending on {sha[:9]} ({why}); next poll in {POLL_INTERVAL}"
+        stall = _no_run_stall(ctx, params.get("todo_id"), target, now=now)
+    interval = poll_interval(_run_age(picked, now))
+    note = f"{NAME}: pending on {sha[:9]} ({why}); next poll in {interval}"
     if stall:
         note += "; " + "; ".join(stall)
     ctx.append_chunk("job_summary", note)
     defer = getattr(ctx, "defer", None)
-    wake = datetime.now(UTC) + POLL_INTERVAL
+    wake = now + interval
     if defer is not None and defer(wake, note):
         return
     ctx.record_failure(
@@ -602,9 +634,11 @@ __all__ = [
     "NAME",
     "PARAMS_SCHEMA",
     "POLL_INTERVAL",
+    "POLL_INTERVAL_LATE",
     "SPEC",
     "fetch_runs",
     "load",
+    "poll_interval",
     "resolve_target",
     "verdict_of",
 ]

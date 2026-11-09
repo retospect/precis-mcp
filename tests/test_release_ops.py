@@ -370,6 +370,50 @@ def test_poll_parks_while_pending_and_records_nothing(
     assert gates.read_ci_verdicts(store) == []
 
 
+@pytest.mark.parametrize(
+    ("age_min", "expected"),
+    [
+        (None, cvp.POLL_INTERVAL),
+        (5, cvp.POLL_INTERVAL),
+        (18, cvp.POLL_INTERVAL_LATE),
+        (19, cvp.POLL_INTERVAL_LATE),
+        (40, cvp.POLL_INTERVAL_LATE),
+    ],
+)
+def test_poll_interval_quickens_on_an_old_run(
+    age_min: int | None, expected: timedelta
+) -> None:
+    """gr611302: a run 18+ min old is near check.yml's end — poll every
+    2 min instead of 10 so the gate stops eating the fixed wait."""
+    age = timedelta(minutes=age_min) if age_min is not None else None
+    assert cvp.poll_interval(age) == expected
+    assert expected <= timedelta(minutes=10)
+
+
+def test_poll_parks_two_minutes_on_an_old_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatch wiring: an in_progress run created 30 min ago parks
+    for POLL_INTERVAL_LATE, not the fixed ten minutes."""
+    mint = _cut(store)
+    created = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _fake_github(monkeypatch, [_run(35, "in_progress", None, created_at=created)])
+    parks: list[tuple[datetime, str]] = []
+
+    def defer(at: datetime, note: str) -> bool:
+        parks.append((at, note))
+        return True
+
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]}, defer=defer)
+    before = datetime.now(UTC)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
+    assert len(parks) == 1
+    wait = parks[0][0] - before
+    assert timedelta(minutes=1) < wait <= timedelta(minutes=2, seconds=5)
+    assert gates.read_ci_verdicts(store) == []
+
+
 def test_poll_fails_past_the_park_cap(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
