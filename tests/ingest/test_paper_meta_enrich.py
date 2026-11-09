@@ -511,25 +511,106 @@ class TestDoiLessHeuristic:
         assert ref.authors == [{"given": "Alice", "family": "Jones"}]
 
 
-class TestMissingBlanksOnly:
-    def test_journal_not_overwritten_when_already_set(self, store: Store) -> None:
+class TestJournalCrossrefPrecedence:
+    """gr606459: Crossref's ``container-title`` is authoritative for a
+    DOI-registered work — an S2 ``venue`` minted onto the stub (or any
+    other differing stored value on a non-verified ref) loses, and the
+    displaced string is kept in ``meta.journal_aliases``."""
+
+    def test_crossref_journal_corrects_stored_s2_venue(self, store: Store) -> None:
         rid = _paper(
             store,
             slug="p10",
             doi="10.1234/j",
-            meta={"journal": "Existing Journal"},
+            meta={"journal": "Applications of Surface Science"},
         )
-        msg = _crossref_msg(doi="10.1234/j", journal="Crossref Journal")
-        enrich_paper(
+        msg = _crossref_msg(doi="10.1234/j", journal="Applied Surface Science")
+        outcome = enrich_paper(
             store,
             rid,
             doi="10.1234/j",
             crossref_fn=lambda doi, mailto: msg,
             openalex_fn=lambda doi, **k: None,
         )
-        ref = _ref(store, rid)
-        assert (ref.meta or {}).get("journal") == "Existing Journal"
+        assert outcome is not None
+        assert outcome.journal_corrected == "Applied Surface Science"
+        meta = _ref(store, rid).meta or {}
+        assert meta["journal"] == "Applied Surface Science"
+        assert meta["journal_aliases"] == ["Applications of Surface Science"]
 
+    def test_journal_correction_merges_existing_aliases(self, store: Store) -> None:
+        rid = _paper(
+            store,
+            slug="p10b",
+            doi="10.1234/jb",
+            meta={
+                "journal": "Advancement of science",
+                "journal_aliases": [
+                    "Adv. Sci.",
+                    "Advanced Science",  # stale dup of the incoming canonical
+                    "",
+                ],
+            },
+        )
+        msg = _crossref_msg(doi="10.1234/jb", journal="Advanced Science")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/jb",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        meta = _ref(store, rid).meta or {}
+        assert meta["journal"] == "Advanced Science"
+        assert meta["journal_aliases"] == ["Adv. Sci.", "Advancement of science"]
+
+    def test_matching_journal_writes_no_alias(self, store: Store) -> None:
+        rid = _paper(
+            store,
+            slug="p10c",
+            doi="10.1234/jc",
+            meta={"journal": "Applied Surface Science"},
+        )
+        msg = _crossref_msg(doi="10.1234/jc", journal="Applied Surface Science")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/jc",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.journal_corrected is None
+        meta = _ref(store, rid).meta or {}
+        assert meta["journal"] == "Applied Surface Science"
+        assert "journal_aliases" not in meta
+
+    def test_journal_not_corrected_on_human_verified_ref(self, store: Store) -> None:
+        """A hand correction is never clobbered — the verified stamp
+        freezes journal the same way it freezes the byline."""
+        rid = _paper(
+            store,
+            slug="p10d",
+            doi="10.1234/jd",
+            meta={"journal": "Hand-Corrected Journal"},
+        )
+        store.set_human_verified(rid, by="operator")
+        msg = _crossref_msg(doi="10.1234/jd", journal="Crossref Journal")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/jd",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.journal_corrected is None
+        meta = _ref(store, rid).meta or {}
+        assert meta["journal"] == "Hand-Corrected Journal"
+        assert "journal_aliases" not in meta
+
+
+class TestMissingBlanksOnly:
     def test_entry_type_not_overwritten_when_already_set(self, store: Store) -> None:
         """A human edit via the web Meta tab's entry_type form (or any
         prior write) on a not-yet-enriched paper must survive this pass —

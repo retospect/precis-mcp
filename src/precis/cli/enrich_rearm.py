@@ -10,9 +10,12 @@ worker pass re-claims them on its next cycle. Only papers that carry a DOI
 and are currently stamped are selected. Dry-run by default; pass
 ``--apply`` to commit.
 
-A re-visit is safe: the pass never clobbers human-verified authors
-(``refs.human_verified_at``) or any meta field the ref already carries —
-every field it writes is fill-blanks-only.
+A re-visit is safe: the pass never clobbers human-verified authors or a
+human-verified journal (``refs.human_verified_at``); every other field it
+writes is fill-blanks-only — except ``meta.journal``, where Crossref's
+``container-title`` corrects a differing stored value on a non-verified
+ref and keeps the displaced string in ``meta.journal_aliases``
+(gr606459).
 
 No network is touched here — this only decides *which* refs the worker
 looks at again, under its own cadence and fetch budget. Like
@@ -49,7 +52,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "paper refs (those with a DOI) so the paper_meta_enrich worker "
             "re-visits them and fills fields added since their first visit "
             "(e.g. volume/issue/pages). Never clobbers verified authors or "
-            "existing fields. Dry-run by default; --apply to commit."
+            "a verified journal; other fields fill blanks only (a journal "
+            "correction keeps the old value in meta.journal_aliases). "
+            "Dry-run by default; --apply to commit."
         ),
     )
     p.add_argument(

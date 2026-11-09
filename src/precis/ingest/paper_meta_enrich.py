@@ -31,15 +31,24 @@ What lands where:
   by definition not a placeholder, so a PDF-derived title or a human's
   Meta-tab correction is never clobbered (and needs no ``verified``
   special case — there is nothing to protect in a blank).
-* **``meta.entry_type`` / ``meta.journal`` / ``meta.issn`` /
-  ``meta.abstract`` / ``meta.volume`` / ``meta.number`` / ``meta.pages``**
-  — filled only when the ref doesn't already carry one (never clobbers a
-  better existing value, or a human edit made via the web Meta tab's
-  entry_type form on a paper this pass hasn't visited yet). ``number`` is
-  Crossref's ``issue``; ``pages`` is Crossref's ``page`` verbatim. These
-  three are what the LaTeX ``.bib`` / EndNote exporters read. Papers
-  visited before these fields existed get them via ``precis
-  enrich-rearm`` (clears the visited stamp).
+* **``meta.entry_type`` / ``meta.issn`` / ``meta.abstract`` /
+  ``meta.volume`` / ``meta.number`` / ``meta.pages``** — filled only when
+  the ref doesn't already carry one (never clobbers a better existing
+  value, or a human edit made via the web Meta tab's entry_type form on
+  a paper this pass hasn't visited yet). ``number`` is Crossref's
+  ``issue``; ``pages`` is Crossref's ``page`` verbatim. These are what
+  the LaTeX ``.bib`` / EndNote exporters read. Papers visited before
+  these fields existed get them via ``precis enrich-rearm`` (clears the
+  visited stamp).
+* **``meta.journal``** — the one corrective field. Crossref's
+  ``container-title`` is authoritative for a DOI-registered work, so a
+  stored value that differs is replaced (gr606459 — S2's ``venue`` is
+  lossy: it minted "Applications of Surface Science" for a paper in
+  "Applied Surface Science", "Angewandte Chemie" for "Angewandte Chemie
+  International Edition"). The displaced string is kept in
+  ``meta.journal_aliases`` so the S2 name still resolves for a human;
+  a ``human_verified_at`` ref keeps its journal (a hand correction
+  wins). A blank fills the same as the other fields.
 * **``ref_identifiers``** — OpenAlex's id cluster (``openalex``,
   ``pubmed``, ``mag``) is pulled *only* when a DOI resolved via Crossref
   (an OpenAlex-only fetch adds identifiers, nothing else in scope here)
@@ -148,6 +157,11 @@ class EnrichOutcome:
     title_filled: str | None = None
     title_recased: str | None = None
     year_filled: int | None = None
+    #: gr606459 — the Crossref ``container-title`` that displaced a
+    #: different stored ``meta.journal`` (the old string survives in
+    #: ``meta.journal_aliases``). ``None`` when journal was filled into
+    #: a blank, matched, or left alone on a verified ref.
+    journal_corrected: str | None = None
     skipped_authors: bool = False
     cards_rebuilt: bool = False
     cite_key_reminted: str | None = None
@@ -213,6 +227,26 @@ def _orcid_lookup(msg: dict[str, Any]) -> dict[tuple[str, str], str]:
         if not orcid_url or (not family and not given):
             continue
         out[(family, given)] = orcid_url.rsplit("/", 1)[-1].strip()
+    return out
+
+
+def _journal_aliases_with(
+    meta: dict[str, Any], *, displaced: str, canonical: str
+) -> list[str]:
+    """``meta.journal_aliases`` plus the just-displaced ``journal`` value.
+
+    Order-stable and deduped: prior aliases keep their place, the newly
+    displaced string appends; the new canonical journal is never listed
+    as its own alias.
+    """
+    raw = meta.get("journal_aliases")
+    out: list[str] = []
+    for a in raw if isinstance(raw, list) else []:
+        s = str(a).strip() if isinstance(a, str) else ""
+        if s and s != canonical and s not in out:
+            out.append(s)
+    if displaced != canonical and displaced not in out:
+        out.append(displaced)
     return out
 
 
@@ -520,8 +554,21 @@ def enrich_paper(
         if norm.get("entry_type") and not current_meta.get("entry_type"):
             meta_patch["entry_type"] = norm["entry_type"]
             outcome.entry_type = norm["entry_type"]
-        if norm.get("journal") and not current_meta.get("journal"):
-            meta_patch["journal"] = norm["journal"]
+        crossref_journal = str(norm.get("journal") or "").strip()
+        existing_journal = str(current_meta.get("journal") or "").strip()
+        if crossref_journal and not existing_journal:
+            meta_patch["journal"] = crossref_journal
+        elif crossref_journal and crossref_journal != existing_journal and not verified:
+            # gr606459: Crossref's ``container-title`` is authoritative for
+            # a DOI-registered work — an S2 ``venue`` minted onto the stub
+            # ("Applications of Surface Science" for a paper in "Applied
+            # Surface Science") loses. The displaced string is kept as a
+            # journal alias; a human-verified ref keeps its journal.
+            meta_patch["journal"] = crossref_journal
+            meta_patch["journal_aliases"] = _journal_aliases_with(
+                current_meta, displaced=existing_journal, canonical=crossref_journal
+            )
+            outcome.journal_corrected = crossref_journal
         if norm.get("issn") and not current_meta.get("issn"):
             meta_patch["issn"] = norm["issn"]
         if norm.get("abstract") and not current_meta.get("abstract"):
