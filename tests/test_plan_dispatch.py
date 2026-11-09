@@ -4773,7 +4773,7 @@ def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
     assert ref.title == f"Fix review findings for td{build}"
     fix_meta = dict(ref.meta or {})
     fix_meta.pop("filed_by", None)  # the server-side origin stamp is not under test
-    assert fix_meta == {"op": "run_slice"}
+    assert fix_meta == {"op": "run_slice", "fix_depth": 1}
     assert f"plan:{mint.root_id}" in _open_tags(store, fix)
     body = [
         c.text
@@ -4793,6 +4793,172 @@ def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
     assert _status(store, mint.root_id) == "open"
     assert res.dispatched == 1
     assert len(_jobs_under(store, fix)) == 1
+
+
+def _land(store: Store, task: int, sha: str) -> None:
+    """The landed shape a covering reviewer needs to stay alive: every
+    job succeeded, the newest a ``land_slice``, a ``landed:`` comment
+    and STATUS:done."""
+    for jid, _meta in _jobs_under(store, task):
+        _set_job_status(store, jid, "succeeded")
+    _slice_job(store, task, "land_slice", "succeeded")
+    _todo_comment(store, task, f"landed: {sha} — the land")
+    _mark_done(store, task)
+
+
+def _depth2_fix(store: Store) -> tuple[T.PlanMint, int, int]:
+    """gr603118's shape: a first FIX minted and landed its fix, the
+    covering reviewer (the release_poll mint shape) judged the land
+    ``review: FIX`` — one pass holds the fix-of-a-fix on
+    ``waiting-for:brief`` with its design-call ask. Returns
+    ``(mint, fix2, ask)``."""
+    mint = _reviewed(store, "review: FIX — hole one")
+    build, review, root = mint.ids["build"], mint.ids["review"], mint.root_id
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    (f1,) = [c for c in _children(store, root) if c not in (build, review)]
+    assert "waiting-for:brief" not in _open_tags(store, f1)
+    assert _meta(store, f1)["fix_depth"] == 1
+    _land(store, f1, "def2222")
+    r2 = T.mint_reviewer(store, root, f1)
+    _job(store, r2, lane="claude-sub")
+    store.add_tag(r2, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    _todo_comment(store, r2, "review: FIX — hole two")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, r2) == "done"
+    new = [c for c in _children(store, root) if c not in (build, review, f1, r2)]
+    fix = next(c for c in new if "ask" not in _meta(store, c))
+    (ask,) = [c for c in new if "ask" in _meta(store, c)]
+    return mint, fix, ask
+
+
+def test_fix_of_a_fix_is_held_for_the_design_call(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr603118: a fix minted at chain depth ≥2 is born parked on
+    ``waiting-for:brief`` — the design call must reach it before a slice
+    starts — with one ask on the plan root and one comment there."""
+    use_lanes(monkeypatch)
+    mint, fix, ask = _depth2_fix(store)
+    res = pd.run_pass(store)  # idempotent: the hold stays, nothing mints
+    assert res.dispatched == 0
+    assert _jobs_under(store, fix) == []
+    assert "waiting-for:brief" in _open_tags(store, fix)
+    fm = _meta(store, fix)
+    assert fm["fix_depth"] == 2
+    assert fm["brief_wait"]["ask"] == ask
+    assert fm["brief_wait"]["depth"] == 2
+    am = _meta(store, ask)["ask"]
+    assert am["kind"] == "ruling"
+    assert am["blocks"] == f"td{fix}"
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None and "chain depth 2" in (ask_ref.title or "")
+    assert f"td{mint.ids['build']}" in am["context"]
+    assert f"td{fix}" in am["context"]
+    assert {"ask-user", "showstopper"} <= _open_tags(store, ask)
+    assert _todo_comments(store, mint.root_id)[-1].startswith(
+        f"plan_dispatch: fix td{fix} is held waiting-for:brief — chain depth 2"
+    )
+
+
+def test_brief_hold_releases_on_tag_removal(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The coordinator's path: post the ``brief:`` and remove the tag —
+    the next tick dispatches the fix one rung up the ladder (swe-2-max,
+    not the swe-2-high foot that produced the chain) and closes the ask."""
+    use_lanes(monkeypatch)
+    mint, fix, ask = _depth2_fix(store)
+    _todo_comment(store, fix, "brief: the design call")
+    store.remove_tag(fix, Tag.open("waiting-for:brief"))
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _status(store, ask) == "done"
+    (_job_id, job_meta) = _jobs_under(store, fix)[-1]
+    params = job_meta.get("params") or {}
+    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+
+
+def test_brief_hold_releases_on_continue(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `continue` answer: the ask closes, the tick drops the tag and
+    the ladder tries again — one rung up like every depth-2 dispatch."""
+    use_lanes(monkeypatch)
+    mint, fix, ask = _depth2_fix(store)
+    _todo_comment(store, ask, "answer: continue")
+    _mark_done(store, ask)
+    res = pd.run_pass(store)
+    assert "waiting-for:brief" not in _open_tags(store, fix)
+    assert res.dispatched == 1
+    (_job_id, job_meta) = _jobs_under(store, fix)[-1]
+    params = job_meta.get("params") or {}
+    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+
+
+def test_brief_hold_times_out_and_the_ladder_continues(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sixty minutes of silence releases the hold: the tag drops, the
+    ask closes ``auto-timeout`` and the fix dispatches in the same
+    pass."""
+    use_lanes(monkeypatch)
+    mint, fix, ask = _depth2_fix(store)
+    res = pd.run_pass(store, now=datetime.now(UTC) + timedelta(minutes=61))
+    assert res.released >= 1
+    assert "waiting-for:brief" not in _open_tags(store, fix)
+    assert _status(store, ask) == "auto-timeout"
+    assert res.dispatched == 1
+    assert _jobs_under(store, fix)
+
+
+def test_brief_hold_keeps_on_a_non_continue_answer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different ruling is not silence and not `continue`: the hold
+    stays (stamped once on meta.brief_wait.ruling) — only a hand
+    tag-removal or closing the node ends it."""
+    use_lanes(monkeypatch)
+    mint, fix, ask = _depth2_fix(store)
+    _todo_comment(store, ask, "answer: hold it — I am still thinking")
+    _mark_done(store, ask)
+    res = pd.run_pass(store)
+    assert "waiting-for:brief" in _open_tags(store, fix)
+    assert res.dispatched == 0
+    assert _meta(store, fix)["brief_wait"]["ruling"].startswith("hold it")
+    # The keep is noted once, not every pass.
+    res = pd.run_pass(store, now=datetime.now(UTC) + timedelta(minutes=61))
+    assert "waiting-for:brief" in _open_tags(store, fix)
+    assert res.dispatched == 0
+
+
+def test_fix_chain_depth_counts_the_lineage(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The depth walk follows ``meta.review.task`` back through every
+    FIX minter on the chain: a third-generation fix mints at depth 3 and
+    holds the same way."""
+    use_lanes(monkeypatch)
+    mint, fix2, ask2 = _depth2_fix(store)
+    # Silence releases fix2; it lands and its reviewer says FIX again.
+    pd.run_pass(store, now=datetime.now(UTC) + timedelta(minutes=61))
+    _land(store, fix2, "abc3333")
+    r3 = T.mint_reviewer(store, mint.root_id, fix2)
+    _job(store, r3, lane="claude-sub")
+    _todo_comment(store, r3, "review: FIX — hole three")
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    f3 = next(
+        c
+        for c in _children(store, mint.root_id)
+        if (ref := store.get_ref(kind="todo", id=c)) is not None
+        and f"Fix review findings for td{fix2}" in (ref.title or "")
+    )
+    assert _meta(store, f3)["fix_depth"] == 3
+    assert "waiting-for:brief" in _open_tags(store, f3)
+    assert res.dispatched == 0
+    assert _jobs_under(store, f3) == []
 
 
 def test_review_revert_mints_a_revert_and_requeues_the_build(store: Store) -> None:

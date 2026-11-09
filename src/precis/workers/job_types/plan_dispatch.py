@@ -48,7 +48,18 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    marker never strands a review. A LAND is a diff read, never a test
    result. ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
    ``Fix review findings for td<id>`` (body = the list) under the plan root
-   and closes the node. ``REVERT`` mints one ``run_slice`` task ``Revert
+   and closes the node — the mint is stamped ``meta.fix_depth``, the
+   count of consecutive FIX mints on the review→fix→land→review chain
+   walked through the ``meta.review.task`` backlinks. A fix minted at
+   :data:`FIX_BRIEF_DEPTH` or deeper is born parked on
+   ``waiting-for:brief`` with a design-call ask on the plan root
+   (gr603118): a chain that deep needs the coordinator's ``brief:``
+   comment, which a slice dispatched at mint would outrun (me570353).
+   ``_step_brief_holds`` releases the hold on the coordinator's tag
+   removal, a ``continue`` answer on the ask, or :data:`BRIEF_WAIT_CAP`
+   of silence (the ask closes ``STATUS:auto-timeout``), and the node's
+   first attempt starts one ladder rung up — swe-2-max on the devin
+   table (:func:`_chain_floor`). ``REVERT`` mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
    does) under the root, reopens each reviewed node ``blocked-by`` that
@@ -313,6 +324,50 @@ QUEUED_NOTE_AFTER = timedelta(minutes=10)
 #: on a settled mint — a ``blocked-by``/``part-of`` edge or a non-empty
 #: body — is released; an unsettled orphan files an ask on its plan root.
 MINT_STALE = timedelta(minutes=10)
+
+#: The hold a fix node is minted with once its review→fix→land→review
+#: chain is :data:`FIX_BRIEF_DEPTH` or deeper (gr603118): each fix in such
+#: a chain patches the previous reviewer's latest hole and the next
+#: reviewer finds the next one, while a fix dispatched at mint outruns
+#: the coordinator's ``brief:`` comment — the only channel a design call
+#: has to reach the slice (me570353). A ``waiting-for:`` prefix is a
+#: doable exclusion, so the node parks until the coordinator removes the
+#: tag (the posted brief rides the todo), the design-call ask's newest
+#: ``answer:`` is ``continue``, or :data:`BRIEF_WAIT_CAP` of silence
+#: passes and the ladder tries again anyway.
+BRIEF_HOLD_TAG = "waiting-for:brief"
+
+#: The chain depth that holds a minted fix node for the design call:
+#: the first review fix dispatches at once; the fix of a fix (and every
+#: deeper generation) waits.
+FIX_BRIEF_DEPTH = 2
+
+#: Silence past this lifts the brief hold — no brief and no answer came,
+#: so the ladder continues and the design-call ask closes
+#: ``STATUS:auto-timeout``.
+BRIEF_WAIT_CAP = timedelta(minutes=60)
+
+#: Options of the design-call ask a held fix node files: the only
+#: releasing answer is ``continue`` (a different ruling — including
+#: dropping the node — is a human close on the fix todo itself).
+_BRIEF_ASK_OPTIONS: list[str] = [
+    "continue",
+]
+
+#: ``meta.fix_depth`` on a minted fix node — the FIX-chain generation
+#: :func:`_fix_chain` counted at mint. Stamped on every review fix
+#: (depth 1 included) so the node's place on the lineage is auditable
+#: without a re-walk; :func:`_chain_floor` reads it for the ladder
+#: escalation, ``meta.brief_wait`` for the hold's ask record.
+FIX_DEPTH_KEY = "fix_depth"
+
+#: ``meta.brief_wait`` on a held fix node — ``{ask, at, depth, ruling?}``:
+#: the design-call ask's id (the step's lookup, since no ``blocked-by``
+#: edge may tie it — removing the tag alone must release), the hold's
+#: mint time and the chain depth; ``ruling`` is stamped once when the
+#: ask closed on a non-``continue`` answer, so the kept hold is noted
+#: once, not every pass.
+BRIEF_WAIT_KEY = "brief_wait"
 
 #: Default ``meta.retries`` of a task.
 DEFAULT_RETRIES = 2
@@ -844,6 +899,14 @@ class _Writer:
             if not self.dry_run:
                 self.store.remove_tag(n.id, Tag.open(value))
 
+    def add_tag(self, n: _Node, value: str, at: datetime) -> None:
+        """One open tag, mirrored on the in-memory node at ``at`` (its
+        ``created_at`` once the write lands — the hold steps age tags off
+        that clock)."""
+        n.open_tags[value] = at
+        if not self.dry_run:
+            self.store.add_tag(n.id, Tag.open(value), set_by="system")
+
     def add_tags(self, n: _Node, values: list[str]) -> None:
         for value in values:
             n.open_tags.setdefault(value, datetime.now(UTC))
@@ -1280,10 +1343,115 @@ def _mint_task(
     return new_id
 
 
+def _fix_minter(plan: _Plan, todo_id: int) -> _Node | None:
+    """The reviewer whose recorded FIX verdict minted ``todo_id`` — the
+    ``meta.review.task`` backlink ``_step_reviews`` stamps — else
+    ``None`` (``todo_id`` was not born a review fix)."""
+    for m in plan.todos():
+        rec = m.meta.get("review")
+        if (
+            _is_reviewer(m)
+            and isinstance(rec, dict)
+            and rec.get("verdict") == "FIX"
+            and rec.get("task") == todo_id
+        ):
+            return m
+    return None
+
+
+def _fix_chain(plan: _Plan, n: _Node) -> tuple[int, list[int]]:
+    """``(depth, lineage)`` for the fix node the reviewer ``n`` is about
+    to mint (gr603118). ``depth`` counts the consecutive FIX mints on
+    the review→fix→land→review chain — 1 when the reviewed todo was not
+    itself minted by a FIX verdict — and ``lineage`` is the walked
+    ``generate.from`` target ids, oldest first (the chain the ask and
+    the root comment name)."""
+    depth = 1
+    lineage: list[int] = []
+    cur = _review_from(n)
+    seen: set[int] = set()
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        lineage.append(cur)
+        minter = _fix_minter(plan, cur)
+        if minter is None:
+            break
+        depth += 1
+        cur = _review_from(minter)
+    lineage.reverse()
+    return depth, lineage
+
+
+def _mint_brief_ask(store: Any, n: _Node, depth: int, lineage: str) -> int:
+    """The design-call ask a held fix node files under the plan root
+    (gr603118): the node waits on the ``waiting-for:brief`` TAG, not on
+    this ask — no ``blocked-by`` edge, or removing the tag alone could
+    never release it. Insert shape of :func:`_mint_orphan_ask`; the
+    fix's ``meta.brief_wait.ask`` is the step's lookup."""
+    context = (
+        f"fix chain depth {depth} on {lineage}: the next fix waits for a "
+        f"design call before a slice starts (fix td{n.id})"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_BRIEF_ASK_OPTIONS),
+            "blocks": f"td{n.id}",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = f"td{n.id}: design call needed — chain depth {depth} on {lineage}"
+    body = (
+        f"The review chain on {lineage} is {depth} FIXes deep on the same "
+        "land lineage: each fix patched the previous reviewer's latest "
+        "hole and the next reviewer found the next one — a design call "
+        "is needed, and the only channel for it (a `brief:` comment on "
+        "the fix node) never reaches a slice that dispatches at mint.\n\n"
+        f"td{n.id} ({n.title.splitlines()[0] if n.title else ''}) is held "
+        "on `waiting-for:brief` — no job mints while the tag is on. "
+        "Either:\n"
+        f"- post a `brief:` comment on td{n.id} carrying the design call "
+        "and remove its `waiting-for:brief` tag — the next tick "
+        "dispatches it, or\n"
+        "- answer `continue` on this ask and close it — the ladder tries "
+        "again with no brief.\n\n"
+        f"Sixty minutes of silence releases the hold too: the ladder "
+        "continues and this ask closes auto-timeout. To drop the fix "
+        f"altogether, close td{n.id} STATUS:won't-do (this ask then "
+        "closes moot)."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{n.root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+    return int(ref.id)
+
+
 def _review_fix(
     store: Any,
     plan: _Plan,
     w: _Writer,
+    res: PassResult,
     n: _Node,
     handle: str,
     findings: str,
@@ -1298,9 +1466,37 @@ def _review_fix(
         f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
         f"main. Fix them on a fresh slice and land it; {intent}."
     )
-    return _mint_task(
+    fix_id = _mint_task(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
     )
+    node = plan.nodes[fix_id]
+    depth, lineage = _fix_chain(plan, n)
+    w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
+    if depth < FIX_BRIEF_DEPTH:
+        return fix_id
+    # gr603118: a chain this deep needs the coordinator's design call
+    # before a slice starts — hold the mint behind waiting-for:brief.
+    chain = " → ".join(f"td{i}" for i in (*lineage, fix_id))
+    w.add_tag(node, BRIEF_HOLD_TAG, now)
+    ask_id = None if w.dry_run else _mint_brief_ask(store, node, depth, chain)
+    w.stamp_meta(
+        node,
+        {BRIEF_WAIT_KEY: {"ask": ask_id, "at": _iso(now), "depth": depth}},
+    )
+    root = plan.nodes.get(n.root)
+    if root is not None:
+        w.comment(
+            root,
+            f"plan_dispatch: fix td{fix_id} is held waiting-for:brief — "
+            f"chain depth {depth} on {chain}; a design call is needed "
+            + (f"(ask td{ask_id})" if ask_id is not None else "(dry run)"),
+        )
+    res.asks += 1
+    res.notes.append(
+        f"td{n.id}: minted td{fix_id} held waiting-for:brief "
+        f"(chain depth {depth} on {chain})"
+    )
+    return fix_id
 
 
 def _review_revert(
@@ -1580,7 +1776,7 @@ def _step_reviews(
             w.set_status(n, "done")
             res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
         elif kind == "FIX":
-            fix_id = _review_fix(store, plan, w, n, handle, rest, now)
+            fix_id = _review_fix(store, plan, w, res, n, handle, rest, now)
             record["task"] = fix_id
             w.set_status(n, "done")
             res.notes.append(
@@ -2733,6 +2929,18 @@ def _climb_start(
     return min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
 
 
+def _chain_floor(n: _Node) -> int:
+    """The ladder rung a deep fix node's first attempt starts on
+    (gr603118): a chain at :data:`FIX_BRIEF_DEPTH` or deeper begins one
+    rung up — swe-2-max on the devin table — since the foot rung's model
+    produced every partial fix in the chain. 0 for anything shallower
+    (an untagged first fix climbs from the foot as before)."""
+    depth = n.meta.get(FIX_DEPTH_KEY)
+    if isinstance(depth, bool) or not isinstance(depth, int):
+        return 0
+    return 1 if depth >= FIX_BRIEF_DEPTH else 0
+
+
 def _spend_hit(
     plan: _Plan,
     n: _Node,
@@ -2932,12 +3140,13 @@ def _escalate(
     ):
         return True, None
     attempts = _attempts(plan, n)
-    if attempts <= 0:
+    floor = _chain_floor(n)
+    if attempts <= 0 and floor <= 0:
         return True, None
     rungs = _task_rungs(lane_table, n, params)
     if not rungs:
         return True, None
-    start = _climb_start(plan, n, rungs, attempts)
+    start = max(_climb_start(plan, n, rungs, attempts), min(floor, len(rungs) - 1))
     backed = set(_lanes.lane_backoffs(w.store))
     spend = _node_spend_usd(plan, n, rules) if rules else 0.0
     spend_blocked = frozenset(
@@ -2990,11 +3199,15 @@ def _escalate(
     params["lane"] = target.lane
     if target.model is not None:
         params["model"] = target.model
-    return True, (
-        f"td{n.id}: retry {attempts} climbs to lane {target.lane}"
-        f"{f' model {target.model}' if target.model else ''} "
-        f"(rung {idx + 1}/{len(rungs)})"
-    )
+    model_bit = f" model {target.model}" if target.model else ""
+    if attempts <= 0:
+        head = (
+            f"td{n.id}: chain depth {n.meta.get(FIX_DEPTH_KEY)} starts one "
+            f"rung up on lane {target.lane}"
+        )
+    else:
+        head = f"td{n.id}: retry {attempts} climbs to lane {target.lane}"
+    return True, f"{head}{model_bit} (rung {idx + 1}/{len(rungs)})"
 
 
 def _pick_executor(compatible: frozenset[str]) -> str:
@@ -3424,6 +3637,135 @@ def _step_ci_rerun(
                 "over two hours waiting on the rerun and its verdict",
                 unpark=False,
                 marker=live_run,
+            )
+
+
+# ── (4b) the design-call hold on a deep fix chain (gr603118) ───────
+
+
+def _step_brief_holds(
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    """Settle every ``waiting-for:brief`` hold (:data:`BRIEF_HOLD_TAG`,
+    minted by :func:`_review_fix` at :data:`FIX_BRIEF_DEPTH`) and the
+    design-call ask it left. Release paths:
+
+    * the coordinator removed the tag — the posted ``brief:`` rides the
+      todo, and the ask, still open, closes ``done`` as moot;
+    * the ask closed with ``answer: continue`` — the tick drops the tag
+      and the ladder tries again;
+    * the tag outlived :data:`BRIEF_WAIT_CAP` while the ask was still
+      open — silence, so the tag drops, the ask closes
+      ``auto-timeout`` and the ladder continues;
+    * a closed ask with a different (or no) answer is a ruling the hold
+      keeps — stamped once on ``meta.brief_wait.ruling`` so the note is
+      not repeated; only a hand tag-removal or closing the node ends it;
+    * a closed node's ask, still open, closes ``won't-do`` as moot.
+
+    Runs between :func:`_step_ci_rerun` and :func:`_step_dispatch` so a
+    released node dispatches in the same pass."""
+    for n in plan.todos():
+        bw = n.meta.get(BRIEF_WAIT_KEY)
+        tag_at = n.open_tags.get(BRIEF_HOLD_TAG)
+        if tag_at is None and not isinstance(bw, dict):
+            continue
+        ask_id = bw.get("ask") if isinstance(bw, dict) else None
+        ask = plan.nodes.get(ask_id) if isinstance(ask_id, int) else None
+        if _closed(n):
+            if ask is not None and not _closed(ask):
+                w.comment(
+                    ask,
+                    f"plan_dispatch: td{n.id} is closed — the design call "
+                    "it waited on is moot.",
+                )
+                w.set_status(ask, "won't-do")
+                res.notes.append(
+                    f"td{ask.id}: design-call ask closed won't-do — td{n.id} is closed"
+                )
+            continue
+        if tag_at is None:
+            # The hold was lifted by hand — the coordinator's brief path.
+            # The ask it left, still open, records that and closes.
+            if ask is not None and not _closed(ask):
+                w.comment(
+                    ask,
+                    f"plan_dispatch: td{n.id}'s waiting-for:brief was "
+                    "removed — the brief path released it; this ask is "
+                    "moot.",
+                )
+                w.set_status(ask, "done")
+                res.notes.append(
+                    f"td{ask.id}: design-call ask closed — td{n.id}'s "
+                    "hold was lifted by hand"
+                )
+            continue
+        if ask is not None and not _closed(ask):
+            if now - tag_at <= BRIEF_WAIT_CAP:
+                continue  # still inside the design-call window
+            minutes = int((now - tag_at).total_seconds() // 60)
+            w.remove_tags(n, [BRIEF_HOLD_TAG])
+            w.comment(
+                ask,
+                f"plan_dispatch: {minutes} min with no brief and no "
+                "answer — the hold lifts, the ladder continues; this "
+                "ask closes timed out.",
+            )
+            w.set_status(ask, "auto-timeout")
+            w.comment(
+                n,
+                "plan_dispatch: waiting-for:brief lifted — the "
+                "design-call window passed in silence; the node "
+                "dispatches on the ladder.",
+            )
+            res.released += 1
+            res.notes.append(
+                f"td{n.id}: brief hold timed out at {minutes}m — "
+                "released, the ladder continues"
+            )
+            continue
+        if ask is not None:
+            # The ask closed with the tag still on: only ``continue``
+            # releases; any other ruling (or none) keeps the hold.
+            if isinstance(bw, dict) and bw.get("ruling"):
+                continue
+            answer = (_release._newest_answer(store, ask.id) or "").strip()
+            if answer.lower().startswith("continue"):
+                w.remove_tags(n, [BRIEF_HOLD_TAG])
+                w.comment(
+                    n,
+                    f"plan_dispatch: waiting-for:brief lifted — ask "
+                    f"td{ask.id} answered 'continue'.",
+                )
+                res.released += 1
+                res.notes.append(
+                    f"td{n.id}: brief hold released — ask td{ask.id} answered continue"
+                )
+            else:
+                if isinstance(bw, dict):
+                    w.stamp_meta(
+                        n,
+                        {
+                            BRIEF_WAIT_KEY: {
+                                **bw,
+                                "ruling": answer[:80] or "(closed, no answer)",
+                            }
+                        },
+                    )
+                res.notes.append(
+                    f"td{n.id}: design-call ask td{ask.id} closed "
+                    f"{(answer[:80] or 'with no answer')!r} — hold kept; "
+                    "remove waiting-for:brief to release it"
+                )
+            continue
+        # No ask on record (a hand-placed tag, or the ask retired): the
+        # silence cap still applies.
+        if now - tag_at > BRIEF_WAIT_CAP:
+            w.remove_tags(n, [BRIEF_HOLD_TAG])
+            res.released += 1
+            res.notes.append(
+                f"td{n.id}: waiting-for:brief outlived "
+                f"{int(BRIEF_WAIT_CAP.total_seconds() // 60)}m with no "
+                "ask on record — released"
             )
 
 
@@ -4478,6 +4820,7 @@ def run_pass(
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
         _step_ci_rerun(store, plan, w, res, now)
+        _step_brief_holds(store, plan, w, res, now)
         _step_dispatch(plan, w, res, lane_table, rules)
         _step_hygiene(plan, w, res, now, lane_table, rules)
     return res
