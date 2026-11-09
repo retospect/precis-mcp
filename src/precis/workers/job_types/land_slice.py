@@ -940,6 +940,15 @@ _GATE_SLOT_DONE_RE = re.compile(
     r"^(?:stole gate slot|gate slot: (?:gave up|cannot|needs write access"
     r"|PRECIS_GATE_WAIT_MAX_S))"
 )
+#: ``scripts/test``'s queue ticker — its ``hb_start "gate-slot wait"``
+#: prints ``scripts/test: gate-slot wait … Ns`` on stderr every 10 s
+#: while the run queues inside ``gate_slot_acquire``. In a verify probe's
+#: log the ticker displaces the holder dump as the newest line, so the
+#: scan below skips it: it carries no queue state of its own and a LIVE
+#: wait would otherwise read as working and stop re-arming the deadline
+#: (td600305). Only this phase's ticker is transparent — the next
+#: phase's (``test db up``, ``pytest``) proves the wait ended.
+_GATE_SLOT_HEARTBEAT_RE = re.compile(r"^scripts/test: gate-slot wait\b")
 
 
 def gate_slot_waiting(log_text: str) -> str | None:
@@ -950,12 +959,24 @@ def gate_slot_waiting(log_text: str) -> str | None:
     give-up) means it left the queue. The holder dump is INDENTED
     (``  gate slot 0: …``), so the match runs on the unstripped line —
     stripping first made every real queue log read as working and the
-    wait ate the deadline (td599058)."""
+    wait ate the deadline (td599058). ``scripts/test``'s
+    ``gate-slot wait`` ticker lines (:data:`_GATE_SLOT_HEARTBEAT_RE`)
+    ride the same log every 10 s and would otherwise displace the
+    chatter as the newest line (td600305); skipped for the newest-line
+    pick, a ticker still answers ``waiting`` on its own when it is all
+    the log holds."""
     last = ""
+    heartbeat = ""
     for line in _lines(log_text):
-        if line.strip():
+        if not line.strip():
+            continue
+        if _GATE_SLOT_HEARTBEAT_RE.match(line):
+            heartbeat = line
+        else:
             last = line
-    if not last or _GATE_SLOT_DONE_RE.match(last):
+    if not last:
+        return heartbeat.strip() or None
+    if _GATE_SLOT_DONE_RE.match(last):
         return None
     return last.strip() if _GATE_SLOT_CHATTER_RE.match(last) else None
 

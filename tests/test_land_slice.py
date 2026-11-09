@@ -2345,6 +2345,40 @@ def test_gate_slot_waiting_reads_the_indented_holder_dump() -> None:
     assert land_slice.gate_slot_waiting("") is None
 
 
+def test_gate_slot_waiting_sees_through_the_scripts_test_ticker() -> None:
+    """td600305: a queued ``scripts/test`` appends
+    ``scripts/test: gate-slot wait … Ns`` every 10 s — each tick
+    displaces the holder dump as the newest line. The ticker is
+    transparent queue chatter, not the wait's end."""
+    log = (
+        "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 45m by slice-td97 (pid 111 on spark, alive)\n"
+        "  gate slot 1: held 12m by slice-td98 (pid 222 on spark, alive)\n"
+        "scripts/test: gate-slot wait … 10s\n"
+        "scripts/test: gate-slot wait … 20s\n"
+    )
+    got = land_slice.gate_slot_waiting(log)
+    assert got is not None and got.startswith("gate slot 1: held")
+    # a done line still ends it, even under a straggler tick
+    assert (
+        land_slice.gate_slot_waiting(
+            log + "stole gate slot 0\nscripts/test: gate-slot wait … 30s\n"
+        )
+        is None
+    )
+    # so does the next phase's own ticker — only the queue's is
+    # transparent
+    assert (
+        land_slice.gate_slot_waiting(log + "scripts/test: test db up … 10s\n") is None
+    )
+    assert land_slice.gate_slot_waiting(log + "pytest -q -n3\n") is None
+    # and the ticker alone is still positive evidence of the queue
+    assert (
+        land_slice.gate_slot_waiting("scripts/test: gate-slot wait … 5s\n")
+        == "scripts/test: gate-slot wait … 5s"
+    )
+
+
 def test_poll_ship_queued_behind_the_holder_dump_eats_no_wall(
     seams: dict[str, Any], clock: dict[str, datetime]
 ) -> None:
@@ -2393,6 +2427,60 @@ def test_poll_verify_queued_on_a_gate_slot_eats_no_wall(
     )
     # the queue drains: the marker drops and the wall stops growing
     Path(verify["log"]).write_text("gate env → synced offline\n", encoding="utf-8")
+    assert land_slice.poll(pctx, handle) is False
+    assert "gate_wait" not in verify
+
+
+def test_poll_verify_queued_behind_scripts_test_ticks_eats_no_wall(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """td600305: the verify probe IS ``scripts/test`` — its
+    ``gate-slot wait`` ticker lands in the probe log every 10 s and
+    displaces the holder dump as the newest line. The wait must keep
+    re-arming the deadline, and a fresh tick must not heartbeat a new
+    job_event: the reported wait line stays the holder dump."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # phase alone launched
+    verify = handle["verify"]
+    Path(verify["log"]).write_text(
+        "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n"
+        "scripts/test: gate-slot wait … 10s\n"
+        "scripts/test: gate-slot wait … 20s\n",
+        encoding="utf-8",
+    )
+    clock["t"] = T0 + timedelta(seconds=60)
+    assert land_slice.poll(pctx, handle) is False
+    assert verify["gate_wait"].startswith("gate slot 0: held")
+    assert (
+        pctx.meta_set["deadline"]
+        == (T0 + timedelta(seconds=60)).timestamp() + land_slice.wall_seconds()
+    )
+    # a newer tick under unchanged chatter re-arms without re-heartbeating
+    Path(verify["log"]).write_text(
+        "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n"
+        "scripts/test: gate-slot wait … 30s\n",
+        encoding="utf-8",
+    )
+    clock["t"] = T0 + timedelta(seconds=90)
+    assert land_slice.poll(pctx, handle) is False
+    assert sum("gate slot 0: held" in t for _k, t in pctx.chunks) == 1
+    assert (
+        pctx.meta_set["deadline"]
+        == (T0 + timedelta(seconds=90)).timestamp() + land_slice.wall_seconds()
+    )
+    # the wait ends: the marker drops even under a straggler queue tick
+    Path(verify["log"]).write_text(
+        "stole gate slot 0\nscripts/test: gate-slot wait … 40s\n"
+        "scripts/test: test db up … 10s\n",
+        encoding="utf-8",
+    )
     assert land_slice.poll(pctx, handle) is False
     assert "gate_wait" not in verify
 
