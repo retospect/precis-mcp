@@ -923,3 +923,261 @@ def test_topo_route_shove_empty_keeps_committed_pose(
     record = tb._job_meta(store, job_id).get("run_record") or {}
     for refdes, p in (record.get("poses") or {}).items():
         assert (p["x"], p["y"]) == pytest.approx(stored[refdes], abs=1e-6)
+
+
+def test_topo_route_legalise_pose_skips_the_failure_push(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td598637: the LP legalise re-route PRECEDES the failure-push
+    shove — a ``route_design`` that surfaces a part pose on
+    ``legalise_sink`` gets its keep-best re-route at that pose, and
+    when the LP FIXED the board (``best_failed == 0``) the push round
+    (``_route_failure_pushes`` / ``shove_pose``) never runs. The
+    shoved pose still commits exactly like the push path's."""
+    import types
+
+    import numpy as np
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise as _tprealise
+    from precis.pcb.topoplace import shove as _tpshove
+    from precis.workers.job_types import pcb_place
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-legalise", args=_TINY).body
+
+    def _plan(**kw: Any) -> Any:
+        fields = {
+            "pieces": (),
+            "vias": (),
+            "layers": (),
+            "crossings": (),
+            "unreachable": (),
+            "stranded": (),
+            "no_via": (),
+            "guarded": (),
+            "severed": (),
+        }
+        fields.update(kw)
+        return types.SimpleNamespace(**fields)
+
+    marker = pcb_realize.RealizedTrack(
+        seg_id=0,
+        net_id=0,
+        layer=0,
+        segments=({"shape": "line", "start": [0.0, 0.0], "end": [1.0, 1.0]},),
+        length_mm=1.0,
+        blocked_by=None,
+        width_mm=0.2,
+    )
+    first_plan = (_plan(no_via=(0,)), pcb_realize.RealizeResult((), (), ()))
+    later = (_plan(), pcb_realize.RealizeResult((marker,), (), ()))
+
+    calls: dict[str, Any] = {"route": 0, "poses": [], "routing": False, "pushes": 0}
+    dx, dy = 0.5, -0.25
+
+    def _fake_shove(d: Any, pose: Any, *, rounds: int = 10, push: Any = None) -> Any:
+        # the PLACE stage's settle legitimately shoves; once routing has
+        # started any shove_pose call is the push round that must be
+        # skipped — the count stays on pushes, this is the hard pin.
+        if calls["routing"]:
+            raise AssertionError("shove_pose ran — the push round must be skipped")
+        moved = np.asarray(pose, dtype=np.float64).copy()
+        moved[:, 0] += dx
+        moved[:, 1] += dy
+        return _tpshove.ShoveResult(
+            pose=moved,
+            resolved=True,
+            rounds=1,
+            moved_mm=(abs(dx) + abs(dy)) * len(moved),
+            lp_optimum_mm=1.0,
+        )
+
+    def _pushes(*a: Any, **k: Any) -> list[Any]:
+        calls["pushes"] += 1
+        return []
+
+    def _fake_route(d: Any, ir: Any, **kw: Any) -> Any:
+        calls["route"] += 1
+        calls["routing"] = True
+        pose = np.asarray(kw.get("pose", d.pose0), dtype=np.float64)
+        calls["poses"].append(
+            {
+                str(ir.instance_refdes[i]): (float(pose[i, 0]), float(pose[i, 1]))
+                for i in range(len(pose))
+            }
+        )
+        if kw.get("pose_sink") is not None:
+            kw["pose_sink"].append(pose)
+        if calls["route"] == 1:
+            # the LP's part translation surfaces on legalise_sink — the
+            # keep-best re-route below runs at it, not at a shove pose
+            moved = pose.copy()
+            moved[:, 0] += dx
+            moved[:, 1] += dy
+            kw["legalise_sink"].append(moved)
+            return first_plan
+        return later
+
+    monkeypatch.setattr(_tpshove, "shove_pose", _fake_shove)
+    monkeypatch.setattr(_tprealise, "route_design", _fake_route)
+    monkeypatch.setattr(pcb_place, "_route_failure_pushes", _pushes)
+
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-legalise", seed=1, effort=200, force=True
+    )
+    ref = store.get_ref(kind="pcb", id="tiny-topo-legalise")
+    assert ref is not None
+    job_id = _latest_job(store, ref.id)
+    route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
+    assert route_meta is not None and "error" not in route_meta, side.note
+    # the LP re-route ran once; the push round was skipped whole
+    # (_route_failure_pushes never ran; a post-route shove_pose call
+    # would have raised inside the job)
+    assert calls["route"] == 2 and route_meta["route_shove_rounds"] == 1
+    assert calls["pushes"] == 0
+    # the legalise pose commits like a kept shove pose (gr541685)
+    routed = calls["poses"][1]
+    stored = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref.id)["instances"]
+    }
+    for refdes, xy in routed.items():
+        assert stored[refdes] == pytest.approx(xy, abs=1e-6)
+
+
+def test_topo_route_legalise_pose_without_improvement_still_pushes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td598637 (round-3 ruling): an LP pose that does NOT improve the
+    failed count leaves the board no better than main — the push round
+    still runs, and it starts from the KEPT plan's pose (``best_pose``,
+    call 1's pose0), not the rejected LP pose. Calls: route1 (fails,
+    emits the LP pose) → route2 at the LP pose (still fails, rejected)
+    → push shove from pose0 → route3 clean."""
+    import types
+
+    import numpy as np
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise as _tprealise
+    from precis.pcb.topoplace import shove as _tpshove
+    from precis.workers.job_types import pcb_place
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-legalise-push", args=_TINY).body
+
+    def _plan(**kw: Any) -> Any:
+        fields = {
+            "pieces": (),
+            "vias": (),
+            "layers": (),
+            "crossings": (),
+            "unreachable": (),
+            "stranded": (),
+            "no_via": (),
+            "guarded": (),
+            "severed": (),
+        }
+        fields.update(kw)
+        return types.SimpleNamespace(**fields)
+
+    marker = pcb_realize.RealizedTrack(
+        seg_id=0,
+        net_id=0,
+        layer=0,
+        segments=({"shape": "line", "start": [0.0, 0.0], "end": [1.0, 1.0]},),
+        length_mm=1.0,
+        blocked_by=None,
+        width_mm=0.2,
+    )
+    failing = (_plan(no_via=(0,)), pcb_realize.RealizeResult((), (), ()))
+    later = (_plan(), pcb_realize.RealizeResult((marker,), (), ()))
+    sentinel_push = object()
+
+    calls: dict[str, Any] = {
+        "route": 0,
+        "poses": [],
+        "routing": False,
+        "pushes": 0,
+        "shove": [],
+        "pose0": None,
+        "lp_pose": None,
+    }
+    dx, dy = 0.5, -0.25
+
+    def _fake_shove(d: Any, pose: Any, *, rounds: int = 10, push: Any = None) -> Any:
+        moved = np.asarray(pose, dtype=np.float64).copy()
+        moved[:, 0] += dx
+        moved[:, 1] += dy
+        if calls["routing"]:
+            # a ROUTE-stage shove_pose call — the push round; record the
+            # pose it started from and the pushes it was handed
+            calls["shove"].append((np.asarray(pose).copy(), push))
+        return _tpshove.ShoveResult(
+            pose=moved,
+            resolved=True,
+            rounds=1,
+            moved_mm=(abs(dx) + abs(dy)) * len(moved),
+            lp_optimum_mm=1.0,
+        )
+
+    def _pushes(*a: Any, **k: Any) -> list[Any]:
+        calls["pushes"] += 1
+        return [sentinel_push]
+
+    def _fake_route(d: Any, ir: Any, **kw: Any) -> Any:
+        calls["route"] += 1
+        calls["routing"] = True
+        pose = np.asarray(kw.get("pose", d.pose0), dtype=np.float64)
+        calls["poses"].append(
+            {
+                str(ir.instance_refdes[i]): (float(pose[i, 0]), float(pose[i, 1]))
+                for i in range(len(pose))
+            }
+        )
+        if kw.get("pose_sink") is not None:
+            kw["pose_sink"].append(pose)
+        if calls["route"] == 1:
+            calls["pose0"] = pose.copy()
+            moved = pose.copy()
+            moved[:, 0] += dx
+            moved[:, 1] += dy
+            calls["lp_pose"] = moved
+            kw["legalise_sink"].append(moved)
+            return failing
+        if calls["route"] == 2:
+            # the LP re-route at the moved pose does NOT improve — the
+            # kept plan stays call 1's at pose0
+            return failing
+        return later
+
+    monkeypatch.setattr(_tpshove, "shove_pose", _fake_shove)
+    monkeypatch.setattr(_tprealise, "route_design", _fake_route)
+    monkeypatch.setattr(pcb_place, "_route_failure_pushes", _pushes)
+
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-legalise-push", seed=1, effort=200, force=True
+    )
+    ref = store.get_ref(kind="pcb", id="tiny-topo-legalise-push")
+    assert ref is not None
+    job_id = _latest_job(store, ref.id)
+    route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
+    assert route_meta is not None and "error" not in route_meta, side.note
+    # initial route + LP re-route + push re-route; the counter sums
+    # both remedy kinds (1 LP round + 1 push round)
+    assert calls["route"] == 3 and route_meta["route_shove_rounds"] == 2
+    # the push round ran exactly once, handed the built pushes
+    assert calls["pushes"] == 1 and len(calls["shove"]) == 1
+    shove_pose_arg, shove_push = calls["shove"][0]
+    assert shove_push == [sentinel_push]
+    # and it started from the KEPT plan's pose (pose0), not the
+    # rejected LP pose
+    assert np.allclose(shove_pose_arg, calls["pose0"])
+    assert not np.allclose(shove_pose_arg, calls["lp_pose"])
+    # the shove-won pose commits like any kept route pose (gr541685)
+    routed = calls["poses"][2]
+    stored = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref.id)["instances"]
+    }
+    for refdes, xy in routed.items():
+        assert stored[refdes] == pytest.approx(xy, abs=1e-6)

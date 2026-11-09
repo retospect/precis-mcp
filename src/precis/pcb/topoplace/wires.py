@@ -2585,6 +2585,7 @@ class _ViaPlanter:
             net_name=names + tuple("" for _ in range(max(0, need - len(names))))
         )
         pad_b: list[Body] = []
+        pad_part: list[int] = []
         pin_nets = d.pin_nets()
         seen: set[int] = set()
         for rows in _realise._pad_polys(d, shim, ctx.n_layers, pose_a).values():
@@ -2604,6 +2605,10 @@ class _ViaPlanter:
                         else 0.0,
                     )
                 )
+                pad_part.append(
+                    int(d.pin_part[pin]) if 0 <= pin < len(d.pin_part) else -1
+                )
+        self.pad_part = pad_part
         self.pad_ix = CopperIndex(pad_b)
         # Physical drilling has its own radius and fabrication wall. Net
         # copper clearance and a via's larger copper land do not enlarge it.

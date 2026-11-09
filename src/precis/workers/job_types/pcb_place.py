@@ -874,6 +874,21 @@ def _topo_route(
         fixed_copper=fixed_copper or [],
         hole_clearance_mm=hole_fab_clearance_mm(capability),
     )
+    # td569542: the legalisation round runs INSIDE route_design — via
+    # centres, per-crossing wire offsets and unfrozen part translations
+    # solved jointly after the wire search. Via/offset moves are already
+    # applied to the emitted copper; part translations surface on
+    # legalise_sink as candidate poses for the keep-best re-route below
+    # — the FIRST remedy (the LP rows name the same blockers the pushes
+    # did — contested cuts, via keepouts, part separation — but move
+    # everything legalisable at once).
+    legalise_poses: list[Any] = []
+    # pose_sink reports the pose each route_design call actually built
+    # its plan at — a corridor-overflow recovery inside route_design
+    # (cleanup-66) can return copper at a legalise shove deeper than the
+    # pose requested, and the kept plan's pose is what ir must carry
+    # (gr541685).
+    pose_sink: list[np.ndarray] = []
     plan, rres = _tprealise.route_design(
         td_route,
         ir,
@@ -885,53 +900,38 @@ def _topo_route(
         masks=_route_masks(
             td_route, td_route.pose0, ir.n_layers, net_rules, min_via_dia
         ),
+        legalise_sink=legalise_poses,
+        pose_sink=pose_sink,
         **plane_kw,
     )
 
-    # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
-    # vias to be generated, and things to be pushed — don't log it, make it
-    # work"): the plan's own failures name their blockers — a no_via
-    # branch's endpoint parts, a guarded net's closest-approach pair —
-    # and those pairs become targeted LP push rows (see
-    # _route_failure_pushes).  Bounded rounds, keep the best
-    # realization.  A board that routes clean the first time takes the
-    # zero-cost path (failed empty -> break before any shove); a shove
-    # that stops moving, overflows the mesh, or stops improving gives
-    # up and keeps the best plan so far.
-    from precis.pcb.topoplace import shove as _tpshove
-
+    # Bounded keep-best rounds: a legalise part pose that does not
+    # improve the failed count is dropped, the best plan so far stands.
+    # A board that routes clean the first time takes the zero-cost path
+    # (failed empty -> break before any re-route); a pose that stops
+    # moving, overflows the mesh, or stops improving gives up.
     route_shove_mm = 0.0
     route_shove_rounds = 0
     pose = td_route.pose0
+    prev_pose = pose
     best_plan, best_rres = plan, rres
-    best_pose = pose
+    best_pose = pose_sink[-1] if pose_sink else pose
     best_failed = _plan_failed_count(plan)
     for _round in range(3):
-        if best_failed == 0:
+        if best_failed == 0 or _round >= len(legalise_poses):
             break
-        pushes = _route_failure_pushes(
-            td_route, best_plan, pose, net_rules, min_via_dia
+        pose = legalise_poses[_round]
+        route_shove_mm += float(
+            np.abs(np.asarray(pose)[:, :2] - np.asarray(prev_pose)[:, :2]).sum()
         )
-        # pushes name the participants when the plan's geometry supports
-        # it; a failing plan that names none still shoves blind (the v1
-        # contract the bench fakes encode: failures exist -> shove and
-        # re-route, pushes only steer the direction).
-        shoved = (
-            _tpshove.shove_pose(td_route, pose, rounds=3, push=pushes)
-            if pushes
-            else _tpshove.shove_pose(td_route, pose, rounds=3)
-        )
-        route_shove_mm += shoved.moved_mm
-        if shoved.moved_mm <= 1e-6:
-            break
         route_shove_rounds += 1
-        pose = shoved.pose
+        prev_pose = pose
         ctx.append_chunk(
             "job_event",
-            f"topo-route: shove round {route_shove_rounds} — "
-            f"{best_failed} unresolved, {len(pushes)} push(es), "
-            f"re-routing",
+            f"topo-route: legalise round {route_shove_rounds} — "
+            f"{best_failed} unresolved, re-routing at the shoved pose",
         )
+        pose_sink.clear()
         try:
             plan, rres = _tprealise.route_design(
                 td_route,
@@ -943,14 +943,99 @@ def _topo_route(
                 min_via_ring=None if min_via_ring is None else float(min_via_ring),
                 event=event,
                 masks=_route_masks(td_route, pose, ir.n_layers, net_rules, min_via_dia),
+                legalise_sink=legalise_poses,
+                pose_sink=pose_sink,
                 **plane_kw,
             )
         except _tprealise.CorridorOverflow:
             break
+        eff_pose = pose_sink[-1] if pose_sink else pose
         failed = _plan_failed_count(plan)
         if failed >= best_failed:
             break
-        best_plan, best_rres, best_pose, best_failed = plan, rres, pose, failed
+        best_plan, best_rres, best_pose, best_failed = (
+            plan,
+            rres,
+            eff_pose,
+            failed,
+        )
+    # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
+    # vias to be generated, and things to be pushed — don't log it, make it
+    # work") — the FALLBACK (td598637 ruling): it runs whenever failures
+    # remain after the LP rounds — the LP moved no part
+    # (``legalise_poses`` empty) or moved one without fixing the board —
+    # so a still-failing plan always gets the same push the pre-legalise
+    # loop gave it; only a board the LP fixed skips it. It starts from
+    # the KEPT plan's pose (``best_pose`` — the LP loop can leave
+    # ``pose`` on a rejected candidate). The plan's own failures name
+    # their blockers — a no_via branch's endpoint parts, a guarded
+    # net's closest-approach pair — and those pairs become targeted LP
+    # push rows (see _route_failure_pushes).  Bounded rounds, keep the
+    # best realization.  A board that routes clean the first time takes
+    # the zero-cost path (failed empty -> break before any shove); a
+    # shove that stops moving, overflows the mesh, or stops improving
+    # gives up and keeps the best plan so far.
+    if not legalise_poses or best_failed > 0:
+        from precis.pcb.topoplace import shove as _tpshove
+
+        pose = best_pose
+        for _round in range(3):
+            if best_failed == 0:
+                break
+            pushes = _route_failure_pushes(
+                td_route, best_plan, pose, net_rules, min_via_dia
+            )
+            # pushes name the participants when the plan's geometry supports
+            # it; a failing plan that names none still shoves blind (the v1
+            # contract the bench fakes encode: failures exist -> shove and
+            # re-route, pushes only steer the direction).
+            shoved = (
+                _tpshove.shove_pose(td_route, pose, rounds=3, push=pushes)
+                if pushes
+                else _tpshove.shove_pose(td_route, pose, rounds=3)
+            )
+            route_shove_mm += shoved.moved_mm
+            if shoved.moved_mm <= 1e-6:
+                break
+            route_shove_rounds += 1
+            pose = shoved.pose
+            ctx.append_chunk(
+                "job_event",
+                f"topo-route: shove round {route_shove_rounds} — "
+                f"{best_failed} unresolved, {len(pushes)} push(es), "
+                f"re-routing",
+            )
+            pose_sink.clear()
+            try:
+                plan, rres = _tprealise.route_design(
+                    td_route,
+                    ir,
+                    pose=pose,
+                    net_rules=net_rules,
+                    min_via_dia=None if min_via_dia is None else float(min_via_dia),
+                    min_via_drill=None
+                    if min_via_drill is None
+                    else float(min_via_drill),
+                    min_via_ring=None if min_via_ring is None else float(min_via_ring),
+                    event=event,
+                    masks=_route_masks(
+                        td_route, pose, ir.n_layers, net_rules, min_via_dia
+                    ),
+                    pose_sink=pose_sink,
+                    **plane_kw,
+                )
+            except _tprealise.CorridorOverflow:
+                break
+            eff_pose = pose_sink[-1] if pose_sink else pose
+            failed = _plan_failed_count(plan)
+            if failed >= best_failed:
+                break
+            best_plan, best_rres, best_pose, best_failed = (
+                plan,
+                rres,
+                eff_pose,
+                failed,
+            )
     plan, rres = best_plan, best_rres
 
     # gr541685: the kept plan may come from a SHOVED pose — that pose is

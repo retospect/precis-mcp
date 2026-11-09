@@ -255,6 +255,14 @@ class RoutePlan:
     fanout_missing_reason: dict[tuple[int, int], str] = dataclasses.field(
         default_factory=dict
     )
+    #: Nets the legalisation round could not satisfy (td569542): a
+    #: spacing/via row stayed infeasible inside the move caps, or every
+    #: safe placement for the net was rejected at emission, so this
+    #: pass's geometry for it is provisional — ``_route_signals``
+    #: withdraws them with the other failures and routes them last
+    #: against the survivors' frozen copper. ``sketch_rows`` reports a
+    #: net still carrying the mark ``failed: legalise``.
+    legalise_reroute: tuple[int, ...] = ()
     #: The wires' phase-3 corridor cuts, routed and refused-negotiation
     #: demand alike (``CorridorCut.refused`` tags the latter):
     #: ``_route_pass`` raises on routed demand alone — a refused cut is
@@ -290,6 +298,17 @@ def _plan_failed_nets(plan: RoutePlan) -> set[int]:
         if br in net_by_branch:
             out.add(net_by_branch[br])
     return out
+
+
+def _route_failed_nets(plan: RoutePlan) -> set[int]:
+    """``_plan_failed_nets`` plus the legalisation round's re-route
+    names (td569542): a net whose spacing rows stayed infeasible inside
+    the move caps is provisional THIS pass — ``_route_signals`` withdraws
+    it with the other failures and gives it the re-route-last rounds.
+    Kept out of ``_plan_failed_nets`` itself: a direct ``_route_pass``
+    caller (the invariant boards) reads the marks as information, not
+    as failures — the emit guards still judge the copper."""
+    return _plan_failed_nets(plan) | set(getattr(plan, "legalise_reroute", ()))
 
 
 def _pin_forced(d: TopoDesign, pin: int, n_layers: int) -> int | None:
@@ -1872,6 +1891,7 @@ def _spoke_offsets(
     *,
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
+    placed: Mapping[tuple[int, int], float] | None = None,
 ) -> list[tuple[tuple[float, float], ...]]:
     """The SURF spoke model (topo S2, gr520900): per-branch polylines
     with the wires that share an obstacle vertex fanned out to legal
@@ -2005,6 +2025,9 @@ def _spoke_offsets(
         for bi, b in enumerate(wires.branches)
         if b.vias
     }
+    # td569542: crossings the legalisation LP already placed — they are
+    # not the spread's to move, only to realise as polyline vertices
+    placed_set = set(placed) if placed else set()
     eu = mesh.verts[mesh.edges[:, 0]]
     ev = mesh.verts[mesh.edges[:, 1]]
     edge_pos = [{int(e): i for i, e in enumerate(b.edges)} for b in wires.branches]
@@ -2020,7 +2043,11 @@ def _spoke_offsets(
             key=lambda h: h[2],
         )
         fixed = [h for h in hits_all if h[1] in via_of.get(h[0], ())]
-        hits = [h for h in hits_all if h[1] not in via_of.get(h[0], ())]
+        hits = [
+            h
+            for h in hits_all
+            if h[1] not in via_of.get(h[0], ()) and (h[0], h[1]) not in placed_set
+        ]
         seglen = float(np.hypot(*(ev[e] - eu[e])))
         if len(hits) < 2 or seglen <= 1e-9:
             continue
@@ -2122,6 +2149,29 @@ def _spoke_offsets(
                     float(eu[e][0] + t_new * (ev[e][0] - eu[e][0])),
                     float(eu[e][1] + t_new * (ev[e][1] - eu[e][1])),
                 )
+    # legalise-placed crossings join the same insertion path — the LP
+    # chose the parameter, this stage owns the vertex and its guards
+    if placed:
+        for (bi, i), t_new in placed.items():
+            if bi >= len(wires.branches):
+                continue
+            br = wires.branches[bi]
+            if i >= len(br.edges) or i in via_of.get(bi, ()):
+                continue
+            e = int(br.edges[i])
+            if e < 0 or e >= len(eu):
+                continue
+            t_old = float(br.t[i]) if i < len(br.t) else 0.5
+            t_new = float(t_new)
+            if abs(t_new - t_old) <= 1e-12:
+                continue
+            moved.setdefault(bi, {}).setdefault(
+                i,
+                (
+                    float(eu[e][0] + t_new * (ev[e][0] - eu[e][0])),
+                    float(eu[e][1] + t_new * (ev[e][1] - eu[e][1])),
+                ),
+            )
     for bi, mv in moved.items():
         br = wires.branches[bi]
         by_leg: dict[int, list[tuple[float, tuple[float, float]]]] = {}
@@ -5739,7 +5789,7 @@ def _plane_trees(
     return tree_tracks, tree_vias, ok
 
 
-def route_design(
+def _route_design_once(
     d: TopoDesign,
     ir: Any,
     *,
@@ -5754,6 +5804,7 @@ def route_design(
     fixed_copper: Sequence[Mapping[str, Any]] | None = None,
     hole_clearance_mm: float = 0.0,
     hv_weight: float = 0.0,
+    legalise_sink: list[np.ndarray] | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local``) shares.
@@ -5778,6 +5829,7 @@ def route_design(
         event=event,
         masks=masks,
         hv_weight=hv_weight,
+        legalise_sink=legalise_sink,
     )
     planes = _plane_nets(d, ir)
     if not planes:
@@ -6026,6 +6078,93 @@ def route_design(
     return plan, rres
 
 
+def route_design(
+    d: TopoDesign,
+    ir: Any,
+    *,
+    pose: Any = None,
+    net_rules: Mapping[str, NetRules] | None = None,
+    min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
+    min_via_ring: float | None = None,
+    event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
+    footprints: Mapping[str, Any] | None = None,
+    fixed_copper: Sequence[Mapping[str, Any]] | None = None,
+    hole_clearance_mm: float = 0.0,
+    hv_weight: float = 0.0,
+    legalise_sink: list[np.ndarray] | None = None,
+    pose_sink: list[np.ndarray] | None = None,
+) -> tuple[RoutePlan, Any]:
+    """:func:`_route_design_once` plus the corridor-overflow recovery
+    (cleanup-66): a ``CorridorOverflow`` is a legalise input, so the
+    first attempt's legalise shove poses — collected on
+    ``legalise_sink`` — are each tried as the route pose, bounded, until
+    one routes every net or they run out. Only then does the overflow
+    stay the refusal it always was (gr520904).
+
+    ``pose_sink`` reports the pose the RETURNED plan was actually built
+    at — the input ``pose`` (or ``d.pose0``) when the first attempt
+    stands, the recovering shove pose otherwise. A caller committing
+    the board MUST stamp that pose into its IR (gr541685: pads measured
+    at a different pose than the copper read as connectivity errors)."""
+    poses: list[np.ndarray] = legalise_sink if legalise_sink is not None else []
+    start = len(poses)
+    kw: dict[str, Any] = dict(
+        pose=pose,
+        net_rules=net_rules,
+        min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
+        min_via_ring=min_via_ring,
+        event=event,
+        masks=masks,
+        footprints=footprints,
+        fixed_copper=fixed_copper,
+        hole_clearance_mm=hole_clearance_mm,
+        hv_weight=hv_weight,
+        legalise_sink=poses,
+    )
+    first_exc: CorridorOverflow | None = None
+    try:
+        plan, rres = _route_design_once(d, ir, **kw)
+    except CorridorOverflow as exc:
+        first_exc = exc
+    else:
+        if pose_sink is not None:
+            pose_sink.append(
+                np.asarray(d.pose0 if pose is None else pose, dtype=np.float64)
+            )
+        return plan, rres
+    # each legalise pose is one ≤_CAP_MM shove deeper than the last;
+    # deeper shoves appended by the retries themselves extend the walk.
+    # A retry only counts as recovery when it ROUTES — a pose that
+    # clears the corridor cuts but still fails nets has not satisfied
+    # the overflow, so the original refusal stands (cleanup-66).
+    tried = 0
+    idx = start
+    while idx < len(poses) and tried < 4:
+        p = np.asarray(poses[idx], dtype=np.float64)
+        idx += 1
+        tried += 1
+        kw["pose"] = p
+        try:
+            plan, rres = _route_design_once(d, ir, **kw)
+        except CorridorOverflow:
+            continue
+        if _plan_failed_nets(plan):
+            continue
+        if pose_sink is not None:
+            pose_sink.append(p)
+        if event is not None:
+            event(
+                f"route: corridor overflow cleared at legalise shove "
+                f"{tried} — re-routed at the shoved pose"
+            )
+        return plan, rres
+    assert first_exc is not None
+    raise first_exc
+
+
 def _route_signals(
     d: TopoDesign,
     ir: Any,
@@ -6039,6 +6178,7 @@ def _route_signals(
     masks: BoardMasks | None = None,
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
+    legalise_sink: list[np.ndarray] | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -6100,9 +6240,10 @@ def _route_signals(
         masks=masks,
         mesh_sink=mesh_sink,
         hv_weight=hv_weight,
+        legalise_sink=legalise_sink,
     )
     plan, rres = _route_pass(d, ir, **kw)
-    failed = _plan_failed_nets(plan)
+    failed = _route_failed_nets(plan)
     survivors = {p.net for p in plan.pieces} - failed
     if not failed or not survivors:
         return plan, rres
@@ -6124,7 +6265,7 @@ def _route_signals(
         )
     except CorridorOverflow:
         return plan, rres
-    if _plan_failed_nets(plan2):
+    if _route_failed_nets(plan2):
         # a survivor fails without its neighbours — pass 1 stands for
         # the survivors, but the failed set still gets its re-route
         # rounds below, against the survivors' pass-1 copper (its own
@@ -6178,7 +6319,7 @@ def _route_signals(
             # remaining nets stay withdrawn rather than routed without it
             break
         last_plan, last_rres = plan3, rres3
-        landed = batch - _plan_failed_nets(plan3)
+        landed = batch - _route_failed_nets(plan3)
         if not landed:
             if small_phase:
                 small_phase = False
@@ -6189,7 +6330,7 @@ def _route_signals(
                 d4 = dataclasses.replace(d3, net_pins=_only(landed))
                 plan4, rres4 = _route_pass(d4, ir, **kw)
                 pass_no += 1
-                if not (_plan_failed_nets(plan4) & landed):
+                if not (_route_failed_nets(plan4) & landed):
                     plan3, rres3 = plan4, rres4
             except (CorridorOverflow, MeshConflictError):
                 pass
@@ -6326,6 +6467,9 @@ def _merge_pass(
         },
         guarded=tuple(sorted(set(base.guarded) | (set(extra.guarded) & nets))),
         severed=tuple(sorted(set(base.severed) | (set(extra.severed) & nets))),
+        legalise_reroute=tuple(
+            sorted(set(base.legalise_reroute) | (set(extra.legalise_reroute) & nets))
+        ),
         via_need={**base.via_need, **extra.via_need},
         # one record per edge — rounds re-cut the same edge with
         # different demand; the LATER pass's measurement stands (M2)
@@ -6378,6 +6522,7 @@ def _strip_failed(
         },
         guarded=tuple(k for k in plan.guarded if k not in failed),
         severed=tuple(k for k in plan.severed if k not in failed),
+        legalise_reroute=tuple(k for k in plan.legalise_reroute if k not in failed),
         via_need={k: v for k, v in plan.via_need.items() if k not in failed},
     )
     rres = dataclasses.replace(
@@ -6595,6 +6740,7 @@ def _route_pass(
     masks: BoardMasks | None = None,
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
+    legalise_sink: list[np.ndarray] | None = None,
 ) -> tuple[RoutePlan, Any]:
     """One mesh → wires → plan → copper pass; :func:`route_design`'s body."""
     from precis.pcb.topoplace.mesh import build_mesh
@@ -6634,67 +6780,160 @@ def _route_pass(
     )
     routed_over = tuple(c for c in wires.overflow if not c.refused)
     if routed_over:
-        # honest refusal (gr520904): a channel whose routed demand
-        # exceeds capacity is named with its owners — never silently
-        # crammed. A cut that is only refused-negotiation demand stays
-        # on the plan's record; the board still routes (G2h ruling).
+        # cleanup-66: a corridor overflow is a legalise input, not a
+        # refusal — the joint round moves the bounding unfrozen parts
+        # apart by the deficit (locks/measures/2 mm per round hold in
+        # its rows). The moved pose cannot be applied mid-pass (the
+        # wires, mesh and vias were all built at ``mesh_pose``), so it
+        # surfaces on ``legalise_sink`` for the caller's re-route at the
+        # shoved pose — the same contract part moves already use. Only
+        # when legalise cannot move anything does the cut stay a
+        # refusal (gr520904): honest, naming owners and demanding nets.
+        from precis.pcb.topoplace import legalise_route as _tplegalise
+
+        ov_poses: list[np.ndarray] = []
+        _tplegalise.legalise_route(
+            d,
+            mesh,
+            wires,
+            np.asarray(mesh_pose, dtype=np.float64),
+            n_layers=ir.n_layers,
+            net_rules=rules,
+            rules_t=rules_t,
+            part_sink=ov_poses,
+        )
+        if ov_poses:
+            if legalise_sink is not None:
+                legalise_sink.extend(ov_poses)
+            if event is not None:
+                event(
+                    f"route: corridor overflow — legalise shove(d) "
+                    f"{len(ov_poses)} pose(s), re-route at the new pose"
+                )
         raise CorridorOverflow(routed_over)
     if event is not None:
         event(
             f"route: wires — {len(wires.branches)} branch(es) "
             f"over {len(d.net_pins)} net(s)"
         )
-    # gr520900: the taut paths share obstacle vertices and edge
-    # crossings — the spoke offsets fan coincident copper to legal
-    # spacing before the plan freezes it.
-    paths = _spoke_offsets(d, mesh, wires, ir.n_layers, net_rules=rules, pose=mesh_pose)
-    plan = plan_route(
+    # td569542: the legalisation round — via centres, per-crossing wire
+    # offsets and unfrozen part translations solved jointly after the
+    # search, before emission. Via moves rewrite the wires here (the via
+    # IS its vertex, homotopy preserved); crossing offsets are NOT baked
+    # into the wires — ``b.t`` stays the search's corridor record and the
+    # offsets go to ``_spoke_offsets`` as placements, which owns turning
+    # them into polyline vertices under its own guards. Part
+    # translations surface on legalise_sink for the caller's re-route.
+    from precis.pcb.topoplace import legalise_route as _tplegalise
+
+    part_poses: list[np.ndarray] = []
+    leg = _tplegalise.legalise_route(
         d,
         mesh,
         wires,
-        ir.n_layers,
+        np.asarray(mesh_pose, dtype=np.float64),
+        n_layers=ir.n_layers,
         net_rules=rules,
-        pose=mesh_pose,
-        min_via_dia=min_via_dia,
-        min_via_drill=min_via_drill,
-        paths=paths,
-        event=event,
-        masks=masks,
-        hv_weight=hv_weight,
+        rules_t=rules_t,
+        part_sink=part_poses,
     )
-    if wires.overflow:
-        plan = dataclasses.replace(plan, overflow=wires.overflow)
-    via_need = _via_need(plan, d, rules, via_cur)
-    if via_need:
-        plan = dataclasses.replace(plan, via_need=via_need)
-    if event is not None:
-        event(
-            f"route: plan — {len(plan.pieces)} piece(s), "
-            f"{len(plan.vias)} via(s), {len(plan.crossings)} unresolved "
-            f"crossing(s), {len(plan.unreachable)} unreachable"
+    if leg.vias:
+        wires = _tplegalise.apply_legalise(wires, leg.vias, {}, mesh)
+    if leg.vias or leg.offsets:
+        if event is not None:
+            event(
+                f"route: legalise — {len(leg.vias)} via(s), "
+                f"{len(leg.offsets)} wire offset(s) placed"
+                + (f", {len(leg.reroute)} net(s) to re-route" if leg.reroute else "")
+            )
+    if legalise_sink is not None:
+        legalise_sink.extend(part_poses)
+    # gr520900: the taut paths share obstacle vertices and edge
+    # crossings — the spoke offsets fan coincident copper to legal
+    # spacing before the plan freezes it. Legalise placements ride the
+    # same insertion path; when one produces short-risk copper on the
+    # EMITTED geometry (geometry the corridor-level LP rows cannot
+    # see), the placements on the flagged nets' branches are dropped
+    # and emission retried — a net that recovers stays recovered, and
+    # only nets still flagged after the last try are withdrawn.
+    placed = dict(leg.offsets) if leg.offsets else {}
+    emit: Any = None
+    guarded: set[int] = set()
+    gbr: dict[int, set[int]] = {}
+    for _emit_try in range(8):
+        paths = _spoke_offsets(
+            d,
+            mesh,
+            wires,
+            ir.n_layers,
+            net_rules=rules,
+            pose=mesh_pose,
+            placed=placed or None,
         )
-    # Any angle, few segments (Reto 2026-11-01): every emitted piece is
-    # drawn once, here, as the copper it will commit — the guard below
-    # and realize_result read the same points.
-    bad = {b for pair in plan.crossings for b in pair}
-    plan = _emit_shapes(
-        plan, d, ir, ir.n_layers, np.asarray(mesh_pose), rules, skip=bad
-    )
-    emit = plan
-    if bad:
-        emit = dataclasses.replace(
-            plan,
-            pieces=tuple(p for p in plan.pieces if p.branch not in bad),
-            vias=tuple(v for v in plan.vias if v.branch not in bad),
+        plan = plan_route(
+            d,
+            mesh,
+            wires,
+            ir.n_layers,
+            net_rules=rules,
+            pose=mesh_pose,
+            min_via_dia=min_via_dia,
+            min_via_drill=min_via_drill,
+            paths=paths,
+            event=event,
+            masks=masks,
+            hv_weight=hv_weight,
         )
-    # gr524239: the order-based crossing detector misses geometric
-    # shorts (a taut polyline crossing a foreign pad, an overlap without
-    # order inversion), so the emit set is checked against foreign
-    # copper before it may be realized. A flagged net is withdrawn
-    # whole — never commit shorting copper; the plan records it so
-    # sketch_rows reports the net failed.
-    gbr = _guarded_branches(emit, d, ir, ir.n_layers, np.asarray(mesh_pose), rules)
-    guarded = set(gbr)
+        if wires.overflow:
+            plan = dataclasses.replace(plan, overflow=wires.overflow)
+        via_need = _via_need(plan, d, rules, via_cur)
+        if via_need:
+            plan = dataclasses.replace(plan, via_need=via_need)
+        if event is not None:
+            event(
+                f"route: plan — {len(plan.pieces)} piece(s), "
+                f"{len(plan.vias)} via(s), {len(plan.crossings)} unresolved "
+                f"crossing(s), {len(plan.unreachable)} unreachable"
+            )
+        # Any angle, few segments (Reto 2026-11-01): every emitted piece is
+        # drawn once, here, as the copper it will commit — the guard below
+        # and realize_result read the same points.
+        bad = {b for pair in plan.crossings for b in pair}
+        plan = _emit_shapes(
+            plan, d, ir, ir.n_layers, np.asarray(mesh_pose), rules, skip=bad
+        )
+        emit = plan
+        if bad:
+            emit = dataclasses.replace(
+                plan,
+                pieces=tuple(p for p in plan.pieces if p.branch not in bad),
+                vias=tuple(v for v in plan.vias if v.branch not in bad),
+            )
+        # gr524239: the order-based crossing detector misses geometric
+        # shorts (a taut polyline crossing a foreign pad, an overlap
+        # without order inversion), so the emit set is checked against
+        # foreign copper before it may be realized.
+        gbr = _guarded_branches(emit, d, ir, ir.n_layers, np.asarray(mesh_pose), rules)
+        guarded = set(gbr)
+        if not guarded or not placed:
+            break
+        drop = {
+            k
+            for k in placed
+            if 0 <= k[0] < len(wires.branches)
+            and int(wires.branches[k[0]].net) in guarded
+        }
+        if not drop:
+            # no placement sits on a flagged net — the short is not the
+            # offsets' doing (pre-existing or a via move); re-emitting
+            # without them would not clear it
+            break
+        placed = {k: v for k, v in placed.items() if k not in drop}
+        if event is not None:
+            event(
+                f"route: legalise — {len(drop)} wire placement(s) dropped "
+                f"({len(placed)} remain), re-emitting"
+            )
     if guarded:
         bad_br = {(n, b) for n, bs in gbr.items() for b in bs}
         emit = dataclasses.replace(
@@ -6708,6 +6947,10 @@ def _route_pass(
                 f"route: guard — {len(bad_br)} branch(es) of {len(guarded)} "
                 "net(s) withdrawn (short risk)"
             )
+    if leg.reroute:
+        plan = dataclasses.replace(
+            plan, legalise_reroute=tuple(sorted(set(leg.reroute)))
+        )
     # gr537831: a net is "realized" only when its committed copper —
     # pieces, vias and the pads they must reach — is ONE connected
     # piece. A severed emit (the edgeless F↔B hop ending on the wrong
@@ -6891,6 +7134,14 @@ def sketch_rows(
                     "reason": "unconnected",
                     "message": "copper withdrawn: emitted copper is not one "
                     "connected piece (emit check)",
+                }
+            )
+        if k in getattr(plan, "legalise_reroute", ()):
+            problems.append(
+                {
+                    "reason": "legalise",
+                    "message": "legalisation could not realise this net's "
+                    "spacing inside the move caps — re-routed last",
                 }
             )
         if problems:
