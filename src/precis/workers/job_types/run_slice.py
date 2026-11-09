@@ -1274,7 +1274,11 @@ def render_brief(
         "missing test annotations). Run each before you commit:",
         "",
         *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
-        f"{n + 1}. Run the tests you added or changed with `scripts/test <paths>`.",
+        f"{n + 1}. Run the tests you added or changed with `scripts/test "
+        "<paths>` — a diff under `src/precis/data/skills/` adds "
+        "`tests/test_skill_ingest.py`: the land's lint fails a skill whose "
+        "H2 section runs past 4000 chars (gr610185: three builds cycled "
+        "land → red on that cap alone).",
         "",
         "Fix every report and re-run until all are clean — do not commit "
         "while any step is red. End your final message with exactly one "

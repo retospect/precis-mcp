@@ -962,6 +962,25 @@ def test_render_brief_asks_for_the_tests_marker() -> None:
     assert "Your final message is posted on the todo as the `handoff:` comment" in brief
 
 
+def test_render_brief_names_the_skill_h2_cap() -> None:
+    """gr610185: the builder brief names the skill H2 cap next to the
+    run-your-tests step, so a diff under ``src/precis/data/skills/`` reds
+    in the builder's own run — not at the land's lint (three builds cycled
+    land → red → rebuild on the 4000-char cap in one day)."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Build the widget",
+        body="Do X.",
+        latest=None,
+        lane="claude-sub",
+        model="m",
+        effort="high",
+    )
+    assert "src/precis/data/skills/" in brief
+    assert "tests/test_skill_ingest.py" in brief
+    assert "4000 chars" in brief
+
+
 def test_code_brief_pins_the_verified_moot_wording() -> None:
     """td584381 S1d review round 2: a CODE task's brief asks for
     ``moot: gr<N> already fixed by <sha>`` and says a bare ``moot:`` is
