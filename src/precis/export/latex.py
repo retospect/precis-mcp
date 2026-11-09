@@ -225,19 +225,30 @@ _COMBINED = re.compile(
 #: line resolves to a real ``\cite`` so the PDF shows the bibliography mark,
 #: not the raw handle and text (gr606570). The match is line-anchored
 #: (chunk start or after ``\n``, an optional list/quote marker allowed) and
-#: the tail — the pasted citation text, detected by an ``et al.`` or a year
-#: — is MANDATORY, so mid-prose bare handles stay in ``_BARE_HANDLE``'s
-#: domain (td607054): they cite but keep their following sentence. A ``[``
-#: ends the swallow so a bracketed ref inside the line survives. Kept out
-#: of ``_COMBINED`` (docx shares it) — the docx reader keeps bare handles
-#: literal by contract. The ``rawcite`` alternative LEADS the alternation:
-#: at a line-start pasted citation the bare-handle ``bcite`` arm inside
-#: ``_COMBINED`` would otherwise match just the handle (alternation is
-#: ordered) and leave the citation text in prose.
+#: the tail — the pasted citation text — is MANDATORY and must carry real
+#: citation evidence, so a handle leading ordinary prose keeps its sentence
+#: instead of being silently superseded (td607624): the tail may not open
+#: with a lowercase word or digit (a pasted citation leads with an author
+#: name or ``(`` — ``reports``/``shows`` fail the gate; a ``van der Waals``
+#: paste degrades to literal text rather than risking prose deletion),
+#: ``et al.`` counts only in citation position (followed by ``,``/``;``/``:``
+#: or a year — never by a verb), and a year counts only punctuation-wrapped
+#: (``J. 2026,`` / ``(2020)`` / ``, 2026.`` — a bare ``the 2026 dataset`` or
+#: ``results in 2026.`` does not). Failures fall through to ``bcite``, which
+#: cites the handle and leaves the text. A ``[`` ends the swallow so a
+#: bracketed ref inside the line survives. Kept out of ``_COMBINED`` (docx
+#: shares it) — the docx reader keeps bare handles literal by contract. The
+#: ``rawcite`` alternative LEADS the alternation: at a line-start pasted
+#: citation the bare-handle ``bcite`` arm inside ``_COMBINED`` would
+#: otherwise match just the handle (alternation is ordered) and leave the
+#: citation text in prose.
 _COMBINED_BODY = re.compile(
     r"(?:\A|(?<=\n))[ \t]*(?:(?:[-*+]|\d{1,3}[.)])[ \t]+|>[ \t]*)?"
     + r"(?P<rawcite>(?:pa|pc|pk|pt)\d+(?:~\d+(?:\.\.\d+)?)?"
-    + r"[ \t]+[^\n\[]*?(?:et al\.|\b(?:19|20)\d{2}\b)[^\n\[]*)"
+    + r"[ \t]+(?![a-z\d\s])[^\n\[]*?"
+    + r"(?:\bet\ al\.[ \t]*(?=[,;:]|[(][ \t]*(?:19|20)\d{2}|(?:19|20)\d{2})"
+    + r"|[(.,;:][ \t]*(?:19|20)\d{2}[a-z]?(?=[ \t]*[).,;:\n]|[ \t]*$))"
+    + r"[^\n\[]*)"
     + "|"
     + _COMBINED.pattern
 )

@@ -788,6 +788,75 @@ def test_bare_handle_mid_prose_keeps_year_tail() -> None:
     assert "for the 2026 dataset." in out
 
 
+def test_handle_leading_prose_with_year_keeps_text() -> None:
+    """td607624: a line-leading ``pa<id>`` opening ordinary prose cites but
+    keeps its sentence — ``pa57151 reports results from the 2026 dataset.``
+    is not a pasted citation line. A bare year mid-sentence is not citation
+    evidence; the rawcite tail requires ``et al.`` in citation position or
+    a punctuation-wrapped year, and may not open on a lowercase word."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kim26") if h == "pa57151" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("pa57151 reports results from the 2026 dataset.", ctx)
+    assert r"\cite{kim26}" in out
+    assert "reports results from the 2026 dataset." in out
+    assert "pa57151" not in out
+
+    # Same rule after a newline, and a year at sentence end is still prose.
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("Intro.\npa57151 reports results in 2026.", ctx)
+    assert r"\cite{kim26}" in out
+    assert "reports results in 2026." in out
+
+
+def test_handle_leading_prose_with_et_al_verb_keeps_text() -> None:
+    """``et al.`` counts as citation evidence only in citation position —
+    ``pa57151 Kim et al. showed the phase.`` is prose crediting a paper,
+    not a pasted reference line: it cites and keeps its text."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kim26") if h == "pa57151" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("pa57151 Kim et al. showed the phase.", ctx)
+    assert r"\cite{kim26}" in out
+    assert "Kim et al. showed the phase." in out
+
+
+def test_pasted_citation_paren_year_line_renders_cite() -> None:
+    """The ``<authors> (YYYY). <title>`` citation shape — the search-table
+    format — still resolves under the stronger gate, including the
+    ``;``-joined ≤3-author byline that carries no ``et al.``."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="vaswani17") if h == "pa2928" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(
+        "pa2928 Ashish Vaswani et al. (2017). Attention is All you Need", ctx
+    )
+    assert r"\cite{vaswani17}" in out
+    assert "pa2928" not in out
+    assert "Vaswani" not in out
+    assert ctx.cited == ["vaswani17"]
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("pa2928 Kim; Park (2020). A title.", ctx)
+    assert r"\cite{vaswani17}" in out
+    assert "Kim; Park" not in out
+
+
 def test_unresolved_raw_citation_line_keeps_literal_text() -> None:
     """A ``pa<id> <citation>`` line whose handle resolves to nothing keeps
     the literal text — never silently dropped."""
