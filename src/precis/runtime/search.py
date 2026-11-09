@@ -1734,9 +1734,15 @@ class SearchMixin(RuntimeShape):
                     )
                 ]
             )
-        body += exclude_notice
+        # The post-split notices are not hit rows, so they ride into the
+        # fit as the trailer it re-appends past the cut — a budget-fitted
+        # page keeps the exclude= dead-handle warning and the fence's
+        # skipped-kinds footer + door (td611710 review: the appends used
+        # to land outside the fitted render and were dropped).
+        trailer = exclude_notice
         if domain_footer is not None:
-            body += f"\n_({domain_footer})_"
+            trailer += f"\n_({domain_footer})_"
+        body += trailer
         return replace(
             response,
             body=body,
@@ -1752,6 +1758,7 @@ class SearchMixin(RuntimeShape):
                     has_more=has_more,
                     pinned=at_head and handle_hit is not None,
                     dropped=dropped,
+                    trailer=trailer,
                 )
                 if split is not None
                 else None
@@ -1809,10 +1816,11 @@ class SearchMixin(RuntimeShape):
         has_more: bool,
         pinned: bool,
         dropped: list[int],
+        trailer: str,
     ) -> Callable[[int], str]:
         """The ``budget_fit`` for an over-cap source-search page.
 
-        Cuts at whole hit rows; the trailer names the resume call that
+        Cuts at whole hit rows; the tail names the resume call that
         continues the same ordering where the cut fell — ``args=
         {'offset': <M>}`` places the window at the exact underlying
         result offset, ``page_size`` keeps the caller's own (gr608577:
@@ -1825,6 +1833,12 @@ class SearchMixin(RuntimeShape):
         (a parent-handle collapse — the ``dropped`` indices) still
         consumes its slot: a resume that re-fetched it would re-show
         the last displayed row.
+
+        ``trailer`` is the post-split notices (the ``exclude=``
+        dead-handle warning, the domain fence's skipped-kinds footer +
+        door — td611710): required reading, not hit rows, so the tail
+        re-appends it past the cut and the row fit counts it against
+        the cap.
         """
         from precis._result_budget import body_bytes
 
@@ -1846,7 +1860,7 @@ class SearchMixin(RuntimeShape):
 
         def tail(k: int) -> str:
             if k >= len(rows) and not has_more:
-                return ""
+                return trailer
             shown = body_bytes(head + "".join(rows[:k]))
             return (
                 f"\n\n… truncated: showing {shown} of {total} bytes\nnext: "
@@ -1856,6 +1870,7 @@ class SearchMixin(RuntimeShape):
                     page_size=page_size,
                     offset=offset + consumed(k),
                 )
+                + trailer
             )
 
         def fit(cap: int) -> str:

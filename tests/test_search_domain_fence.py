@@ -11,11 +11,15 @@ skipped and the door.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 import precis.runtime.scope as scope_mod
+from precis.embedder import MockEmbedder
 from precis.runtime.core import PrecisRuntime
 from precis.runtime.scope import DOMAINS, Domain, request_domain
+from precis.store import ChunkInsert, Store
 from precis.utils.search_merge import SearchHit
 
 
@@ -189,3 +193,47 @@ def test_ad_hoc_domain_fences_without_registry(
     assert seen["kinds"] == [
         k for k in rt._cross_kind_kinds() if k in {"memory", "todo"}
     ]
+
+
+def test_source_search_budget_fit_keeps_the_fence_footer(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source-search ``budget_fit`` rebuilds an over-cap page as
+    head + cut rows + a resume tail — the fence footer is a post-split
+    append, not a hit row, so it must ride that tail or a fitted page
+    drops the skipped-kinds notice and the door (td611330 review)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    marker = f"zephyr{uuid4().hex[:8]}"
+    for i in range(30):
+        ref = store.insert_ref(
+            kind="memory", slug=None, title=f"{marker} note {i}", meta={}
+        )
+        text = f"{marker} tide gauge reading {i}"
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=text, embedding=emb.embed_one(text))],
+        )
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1200")
+    with request_domain(DOMAINS["pcb"]):
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "search",
+            {
+                "kind": "*",
+                "q": marker,
+                "mode": "lexical",
+                "since": "2000-01-01",
+                "page_size": 30,
+            },
+        )
+    assert is_error is False, body
+    # The fit really ran — the assertions below are not the unfitted body.
+    assert "… truncated: showing" in body
+    skipped = set(runtime_with_store._cross_kind_kinds()) - (
+        DOMAINS["pcb"].kinds or set()
+    )
+    assert f"{len(skipped)} kinds outside domain pcb not searched" in body
+    assert 'args={"domain": "all"}' in body
+    # …and it sits past the resume call, where the unfitted page puts it.
+    assert body.index("kinds outside domain pcb") > body.index("next: search(")
