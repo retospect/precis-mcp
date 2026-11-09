@@ -111,7 +111,11 @@ class TestReplayCounts:
         assert report is not None
         assert report.n_duplicates == 1
         assert report.n_rejected == 1
-        assert report.n_proposals == 1  # only the minted candidate's hypothesis
+        # Direct ensure_candidate attempts leave only their outcome receipt
+        # (no `candidate:` hypothesis) — proposals counts attempts, so the
+        # invalid-or-duplicate share can never exceed 100%.
+        assert report.n_proposals == 3
+        assert "66.7%" in render_replay(report)
         assert report.n_picks == 1
         assert report.pick_order == "lineage"
 
@@ -244,6 +248,70 @@ class TestReplayAxes:
         # b (energy -2) is the top-5% member and was measured first
         assert ax.llm_first_hit == 1
         assert ax.llm_curve[-1] == -2.0
+
+    def test_axis_specific_evidence_and_unknown_timing(self, store: Any) -> None:
+        """A barrier stamp is revealed at its pathway receipt, not its
+        relax — and a value with no receipt at all is timing-unknown, not
+        mint-dated."""
+        from precis.quest.logbook import MEASURED_BY, append_entry
+
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "barrier", "sense": "min"},
+                ]
+            },
+        )
+        a = _mk_candidate(store, qid, 0)
+        b = _mk_candidate(store, qid, 1)
+        c = _mk_candidate(store, qid, 2)
+        # a relaxed long before b — relax order is [a, b].
+        _backdate_run(store, _run(store, a, -1.0), days_ago=10)
+        _backdate_run(store, _run(store, b, -2.0), days_ago=9)
+        _run(store, c, -3.0)
+        # Pathway lane: b's barrier receipt is the older one; a's lands now;
+        # c's barrier has no receipt at all.
+        store.stamp_ref_meta(a, {"barrier": 0.5})
+        store.stamp_ref_meta(b, {"barrier": 0.4})
+        store.stamp_ref_meta(c, {"barrier": 0.6})
+        entry_no = append_entry(
+            store,
+            qid,
+            text=f"autocatpath result for [st{b}] (cand-1): barrier=0.4 eV",
+            entry_type="result",
+            by=MEASURED_BY,
+        )
+        chunk = store.chunks.get_chunk(qid, pos=int(entry_no) - 1)
+        assert chunk is not None
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET created_at=%s WHERE chunk_id=%s",
+                (datetime.now(UTC) - timedelta(days=5), int(chunk.id)),
+            )
+            conn.commit()
+        append_entry(
+            store,
+            qid,
+            text=f"autocatpath result for [st{a}] (cand-0): barrier=0.5 eV",
+            entry_type="result",
+            by=MEASURED_BY,
+        )
+
+        report = quest_replay(store, qid, trials=5)
+        assert report is not None
+        axes = {ax.key: ax for ax in report.axes}
+        # Relax order [a, b, c]: the top-5% energy member is c (-3), hit last.
+        assert axes["energy"].llm_first_hit == 3
+        assert axes["energy"].llm_unknown_timing == 0
+        # Barrier order [b, a, c]: the top-5% barrier member is b (0.4) —
+        # its older pathway receipt pulls it ahead of a despite a's older
+        # relax; c's receipt-less stamp sorts last, flagged.
+        assert axes["barrier"].llm_first_hit == 1
+        assert axes["barrier"].llm_evaluated == 3
+        assert axes["barrier"].llm_unknown_timing == 1
 
 
 class TestReplayRender:

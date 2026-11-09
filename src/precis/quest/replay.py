@@ -10,11 +10,9 @@ The benchmark, on one quest's recorded history:
 
 * **Pool** — every `structure` candidate serving the quest, with its
   *final* measures (:func:`precis.quest.frontier._candidate_from_structure`:
-  best converged run + meta stamps). A candidate counts as *measured* when
-  any evidence timestamp exists: the first ``result`` logbook entry citing
-  it, the first converged energy-bearing ``struct_runs`` row, or — a
-  measures-carrying candidate with neither (e.g. a creation-time
-  ``atom_cost`` stamp) — its own mint time.
+  best converged run + meta stamps). A candidate counts as *measured* on
+  an axis when it carries a value there; the reveal order needs
+  *evidence* (below), not just the value.
 * **Picks** — the LLM proposer's materialised proposals, in mint order:
   the logbook's ``minted [st<N>] from proposal`` lineage entries
   (``meta.section == 'lineage'``, falling back to the entry text). A
@@ -22,11 +20,21 @@ The benchmark, on one quest's recorded history:
   design, a pre-lineage import) is pool-but-not-pick, so coverage can
   honestly read < 1. A quest with no lineage entries at all (pre-metadata
   history) falls back to ref-creation order, flagged on the report.
-* **Measurement order** — picks sorted by their first-evidence timestamp
-  (then evidence id, then pick index). The replay walks that order: at
-  each step the candidate's final measured values are revealed — the
-  standard replay simplification; it answers "did the proposer front-load
-  the eventual winners", not "was a later re-measure predictable".
+* **Measurement order** — *per axis*: the proposer's picks carrying that
+  axis's measure, sorted by the earliest evidence FOR THAT MEASURE (then
+  evidence id, then pick index). Evidence is family-specific: a converged
+  energy-bearing ``struct_runs`` row or a ``relax result`` receipt attests
+  the relax measures; an ``autocatpath result``/``struct_neb result``
+  receipt attests the pathway family (barrier/kinetics/selectivity); a
+  creation-time stamp (``atom_cost``) attests at mint; a receipt naming
+  the key verbatim (``window measures for [st<N>]: <keys>``, ``barrier=…``
+  in a gate note) attests that key. A measured pick with no timestamped
+  evidence for the axis sorts last, in pick order, flagged
+  ``timing-unknown`` — the replay never invents a relax-time or mint-time
+  reveal for a later lane's number. At each step the candidate's final
+  measured value is revealed — the standard replay simplification; it
+  answers "did the proposer front-load the eventual winners", not "was a
+  later re-measure predictable".
 * **Per rubric axis** (``meta.rubric_objectives``, same resolution as the
   frontier): the **top-5% set** is the best ``top_frac`` share of the
   pool's values on that axis (at least one member). Reported for the LLM:
@@ -41,8 +49,12 @@ The benchmark, on one quest's recorded history:
   mean curve.
 * **Duplicate rate** — logbook ``duplicate proposal:`` (content-addressed
   slug hit), ``symmetry-duplicate proposal:`` (canonical-geometry twin)
-  and ``rejected proposal:`` (unbuildable spec) observations over named
-  proposals (hypothesis ``candidate:`` entries) — the GOLLuM
+  and ``rejected proposal:`` (unbuildable spec) observations over proposal
+  *attempts*: the larger of the named ``candidate:`` hypotheses and the
+  attempts that left an outcome receipt (a mint, a duplicate or a
+  rejection). A tick proposal always leaves a hypothesis receipt; a direct
+  ``ensure_candidate`` duplicate/rejection leaves only the outcome — the
+  outcome count keeps the denominator honest there — the GOLLuM
   "invalid-or-duplicate" number.
 * **Frontier coverage** — how much of the current confirmed frontier
   (:func:`precis.quest.frontier.quest_frontier`) sits inside the LLM's
@@ -67,7 +79,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.frontier import (
+    _RUN_NON_MEASURE,
     _candidate_from_structure,
+    _numeric,
     _objectives_for,
     axis_label_for,
 )
@@ -97,6 +111,55 @@ _MINTED_RE = re.compile(r"minted \[st(\d+)\]")
 #: :func:`precis.quest.compute._note_minted_candidate`'s fallback entry).
 _PROPOSAL_PREFIX = "candidate:"
 
+#: A ``result`` receipt attests timing only for the measurement family it
+#: reports: ``relax result`` (the relax numerics ``struct_runs`` carries)
+#: or ``autocatpath result``/``struct_neb result`` (the pathway scalars
+#: :func:`precis.quest.compute._autocatpath_measures_from_job` stamps onto
+#: candidate meta). Everything else — a ``window measures for [st<N>]:
+#: <key list>``, a gate note's ``barrier=…`` — attests only the keys its
+#: text names verbatim.
+_RELAX_RESULT_RE = re.compile(r"\brelax result\b")
+_PATHWAY_RESULT_RE = re.compile(r"\b(?:autocatpath|struct_neb) result\b")
+
+#: The relax family's canonical keys — what a ``relax result`` receipt
+#: attests even when the measure rode in via a meta stamp with no run row
+#: at all. Any extra numeric column the candidate's best converged run
+#: actually carries joins the family at read time (``run_keys``).
+_RELAX_MEASURE_KEYS: frozenset[str] = frozenset(
+    {"energy", "max_force", "max_disp", "n_steps"}
+)
+
+#: Measures the autocatpath/struct_neb harvest lanes stamp onto candidate
+#: ``meta`` — one ``result`` receipt attests the whole family its lane
+#: writes (a single harvest stamps barrier, kinetics and selectivity
+#: together).
+_PATHWAY_MEASURE_KEYS: frozenset[str] = frozenset(
+    {
+        "barrier",
+        "span",
+        "adsorption_barrier",
+        "U_L",
+        "U_L_abs",
+        "U_opt",
+        "span_at_Uopt",
+        "P_side",
+        "selectivity_margin",
+        "trap_margin",
+        "poison_margin",
+        "side_span_margin",
+        "trap_depth",
+        "tof",
+        "log_tof",
+        "log_tof_p5",
+        "log_tof_p95",
+    }
+)
+
+#: Creation-time stamps (:func:`precis.quest.compute._stamp_atom_cost` runs
+#: inside ``_ensure_candidate_detail``) — mint time is their real
+#: evidence, not a fallback.
+_MINT_MEASURE_KEYS: frozenset[str] = frozenset({"atom_cost"})
+
 #: Best-so-far checkpoints (fractions of the measured sequence).
 _CHECKPOINTS: tuple[float, ...] = (0.1, 0.25, 0.5, 0.75, 1.0)
 
@@ -115,6 +178,10 @@ class AxisReport:
     llm_hit_rate: float
     llm_coverage: float
     llm_first_hit: int | None
+    #: Picks carrying the axis measure with no timestamped evidence —
+    #: sorted last in pick order rather than revealed at an invented
+    #: mint/relax time.
+    llm_unknown_timing: int
     llm_curve: list[float | None]
     final_best: float
     llm_final_best: float | None
@@ -251,22 +318,21 @@ def quest_replay(
     ]
 
     # ── proposals / duplicates / lineage / measurement citations ────────
-    n_proposals = 0
+    n_named = 0
     n_dup = n_symdup = n_rejected = 0
     lineage: list[tuple[int, int]] = []  # (entry pos, candidate id)
-    cited_at: dict[int, tuple[Any, int]] = {}  # cid -> (ts, chunk ord)
-
-    def _note_cite(cid: int, ts: Any, pos: int) -> None:
-        prev = cited_at.get(cid)
-        if prev is None or (ts, pos) < prev:
-            cited_at[cid] = (ts, pos)
+    # cid -> [(entry ts, chunk ord, text)] — `result` receipts citing the
+    # candidate. The text rides along: a receipt attests timing only for
+    # the measurement family it reports, so axis evidence is matched later
+    # per key, not pooled into one first-citation stamp.
+    citations: dict[int, list[tuple[Any, int, str]]] = {}
 
     for c in entries:
         meta = c.meta or {}
         etype = meta.get("entry_type")
         text = c.text or ""
         if etype == "hypothesis" and text.startswith(_PROPOSAL_PREFIX):
-            n_proposals += 1
+            n_named += 1
         elif etype == "observation":
             if text.startswith(_DUP_PREFIX):
                 n_dup += 1
@@ -286,14 +352,39 @@ def quest_replay(
             for m in _ST_HANDLE_RE.finditer(text):
                 cid = int(m.group(1))
                 if cid in cands:
-                    _note_cite(cid, c.created_at, int(c.ord))
+                    citations.setdefault(cid, []).append(
+                        (c.created_at, int(c.ord), text)
+                    )
 
-    # ── first-evidence timestamp per candidate ──────────────────────────
+    # Named hypotheses alone undercount: a direct ``ensure_candidate``
+    # duplicate/rejection writes ONLY its outcome receipt, no ``candidate:``
+    # hypothesis, so invalid-or-duplicate could exceed 100%. Every attempt
+    # leaves exactly one outcome — a mint lineage entry, or a duplicate/
+    # symmetry/rejected observation — so the consistent denominator is the
+    # larger of the two views (tick attempts all carry hypotheses; the
+    # outcome count only wins where receipts are missing).
+    n_proposals = max(n_named, len(lineage) + n_dup + n_symdup + n_rejected)
+
+    # ── first-evidence timestamp per measurement family ─────────────────
     # (ts, seq) — seq is the run id or chunk ord that supplied the ts, so a
     # same-timestamp pair still orders by insertion order, not at random.
-    first_evidence: dict[int, tuple[Any, float]] = {}
-    for cid, (ts, pos) in cited_at.items():
-        first_evidence[cid] = (ts, float(pos))
+    relax_ev: dict[int, tuple[Any, float]] = {}
+    pathway_ev: dict[int, tuple[Any, float]] = {}
+
+    def _offer(
+        into: dict[int, tuple[Any, float]], cid: int, ts: Any, seq: float
+    ) -> None:
+        ev = (ts, seq)
+        prev = into.get(cid)
+        if prev is None or ev < prev:
+            into[cid] = ev
+
+    for cid, cites in citations.items():
+        for ts, pos, text in cites:
+            if _RELAX_RESULT_RE.search(text):
+                _offer(relax_ev, cid, ts, float(pos))
+            if _PATHWAY_RESULT_RE.search(text):
+                _offer(pathway_ev, cid, ts, float(pos))
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id, MIN(created_at), MIN(id) FROM struct_runs "
@@ -302,19 +393,53 @@ def quest_replay(
             (list(cands) or [-1],),
         ).fetchall()
     for ref_id, ts, run_id in rows:
-        cid = int(ref_id)
-        cur = first_evidence.get(cid)
-        ev = (ts, float(run_id))
-        if cur is None or ev < cur:
-            first_evidence[cid] = ev
-    # A measured candidate with no timestamped evidence (meta-only
-    # measures, e.g. a creation-time atom_cost stamp) counts as measured at
-    # mint time — the value existed from the proposal onward.
-    for cid, candidate in cands.items():
-        if cid not in first_evidence and candidate.measures:
-            first_evidence[cid] = (ref_by_id[cid].created_at, float("inf"))
+        _offer(relax_ev, int(ref_id), ts, float(run_id))
 
-    measured_pool = [cid for cid in cands if cid in first_evidence]
+    # Numeric keys the candidate's best converged run supplies (the same
+    # selection :func:`_candidate_from_structure` makes) — relax-family
+    # members even when a rubric names a non-default one.
+    run_keys: dict[int, set[str]] = {}
+    for cid, runs in runs_by.items():
+        best_run = next(
+            (r for r in runs if r.get("converged") and r.get("energy") is not None),
+            None,
+        )
+        if best_run is not None:
+            run_keys[cid] = {
+                k
+                for k, v in best_run.items()
+                if k not in _RUN_NON_MEASURE and _numeric(v) is not None
+            }
+
+    key_res = {key: re.compile(rf"\b{re.escape(key)}\b") for key, _ in objectives}
+
+    def _evidence(cid: int, key: str) -> tuple[Any, float] | None:
+        """Earliest timestamped evidence for ``key``'s measure on ``cid`` —
+        or ``None`` when the value has no timestamped provenance (flagged
+        timing-unknown on the axis, never back-dated to mint)."""
+        ev = (
+            relax_ev.get(cid)
+            if key in _RELAX_MEASURE_KEYS or key in run_keys.get(cid, ())
+            else None
+        )
+        if key in _PATHWAY_MEASURE_KEYS:
+            p = pathway_ev.get(cid)
+            if p is not None and (ev is None or p < ev):
+                ev = p
+        if key in _MINT_MEASURE_KEYS:
+            mint = (ref_by_id[cid].created_at, float("inf"))
+            if ev is None or mint < ev:
+                ev = mint
+        key_re = key_res.get(key)
+        if key_re is not None:
+            for ts, pos, text in citations.get(cid, ()):
+                if key_re.search(text):
+                    cand_ev = (ts, float(pos))
+                    if ev is None or cand_ev < ev:
+                        ev = cand_ev
+        return ev
+
+    measured_pool = [cid for cid, c in cands.items() if c.measures]
 
     # ── the LLM's pick sequence ─────────────────────────────────────────
     picks: list[int] = []
@@ -333,20 +458,37 @@ def quest_replay(
         unattributed = []
 
     pick_index = {cid: i for i, cid in enumerate(picks)}
-    measured_picks = [cid for cid in picks if cid in first_evidence]
-    measured_picks.sort(key=lambda cid: (*first_evidence[cid], pick_index[cid]))
-    seq_index = {cid: i for i, cid in enumerate(measured_picks)}  # 0-based
+    n_measured_picks = sum(1 for cid in picks if cands[cid].measures)
 
     # ── per-axis top-5% coverage / hit rate / best-so-far ───────────────
     rng = random.Random(seed)
     axes: list[AxisReport] = []
+    primary_seq: list[int] = []  # first reported axis's order — the frontier index
     for key, sense in objectives:
         values = {cid: c.measures[key] for cid, c in cands.items() if key in c.measures}
         if not values:
             continue
+        # This axis's own measurement order: picks carrying the measure,
+        # sorted by the earliest evidence FOR THIS AXIS — a barrier that
+        # landed in a later autocatpath harvest is not back-dated to the
+        # relax. A value with no timestamped provenance sorts last in pick
+        # order and counts toward ``llm_unknown_timing``.
+        timed: list[tuple[tuple[Any, float], int]] = []
+        unknown: list[int] = []
+        for cid in picks:
+            if cid not in values:
+                continue
+            ev = _evidence(cid, key)
+            if ev is None:
+                unknown.append(cid)
+            else:
+                timed.append((ev, cid))
+        timed.sort(key=lambda t: (*t[0], pick_index[t[1]]))
+        llm_seq = [cid for _, cid in timed] + unknown
+        if not axes:
+            primary_seq = list(llm_seq)
         n_top = max(1, math.ceil(top_frac * len(values)))
         top, threshold = _top_set(values, sense, n_top)
-        llm_seq = [cid for cid in measured_picks if cid in values]
         hits = [cid for cid in llm_seq if cid in top]
         first_hit = (llm_seq.index(hits[0]) + 1) if hits else None
         llm_curve = _checkpoints([values[cid] for cid in llm_seq], sense)
@@ -366,6 +508,7 @@ def quest_replay(
                 llm_hit_rate=(len(hits) / len(llm_seq)) if llm_seq else 0.0,
                 llm_coverage=(len(hits) / n_top) if n_top else 0.0,
                 llm_first_hit=first_hit,
+                llm_unknown_timing=len(unknown),
                 llm_curve=llm_curve,
                 final_best=best,
                 llm_final_best=llm_curve[-1] if llm_curve else None,
@@ -377,6 +520,7 @@ def quest_replay(
         )
 
     # ── frontier coverage ───────────────────────────────────────────────
+    seq_index = {cid: i for i, cid in enumerate(primary_seq)}  # 0-based
     frontier_total = frontier_captured = 0
     frontier_last: int | None = None
     random_fc: float | None = None
@@ -391,7 +535,7 @@ def quest_replay(
         idxs = [seq_index[cid] + 1 for cid in captured if cid in seq_index]
         frontier_last = max(idxs) if idxs else None
         if fset and measured_pool:
-            draws = min(len(measured_picks), len(measured_pool))
+            draws = min(n_measured_picks, len(measured_pool))
             cov = 0.0
             for _ in range(trials):
                 sample = rng.sample(measured_pool, draws)
@@ -412,7 +556,7 @@ def quest_replay(
         n_symmetry_duplicates=n_symdup,
         n_rejected=n_rejected,
         n_picks=len(picks),
-        n_measured_picks=len(measured_picks),
+        n_measured_picks=n_measured_picks,
         n_pool=len(measured_pool),
         n_unattributed=len(unattributed),
         pick_order=pick_order,
@@ -443,7 +587,7 @@ def render_replay(report: ReplayReport) -> str:
         "objectives: "
         + " · ".join(f"{axis_label_for(k)} {s}" for k, s in r.objectives),
         (
-            f"proposals: {r.n_proposals} named — {r.n_duplicates} duplicate + "
+            f"proposals: {r.n_proposals} — {r.n_duplicates} duplicate + "
             f"{r.n_symmetry_duplicates} symmetry-duplicate + {r.n_rejected} "
             f"rejected = {_pct((r.n_duplicates + r.n_symmetry_duplicates + r.n_rejected) / r.n_proposals) if r.n_proposals else '—'} "
             "invalid-or-duplicate"
@@ -475,6 +619,11 @@ def render_replay(report: ReplayReport) -> str:
                 f" first-hit pick #{ax.llm_first_hit}"
                 if ax.llm_first_hit is not None
                 else " first-hit —"
+            )
+            + (
+                f" ({ax.llm_unknown_timing} timing-unknown)"
+                if ax.llm_unknown_timing
+                else ""
             )
         )
         lines.append(
