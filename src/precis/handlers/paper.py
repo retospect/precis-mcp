@@ -112,6 +112,7 @@ from precis.store._identifiers_ops import (
 from precis.store._review_ops import trust_refusal
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from precis.store._tag_filter import build_tag_filter
+from precis.store._venue_ops import ISSN_NORMALISE_SQL, VenueMetrics
 from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ChunkRow
 from precis.utils import handle_registry
 from precis.utils.authors import (
@@ -2714,6 +2715,15 @@ class PaperHandler(Handler):
         # restricts hits through the include channel like ``serves=``.
         linked_from: str | None = None,
         lacks: str | None = None,
+        # ``args={'min_quartile': 'Q1'|'Q2'|'Q3'|'Q4'}`` (gr606422):
+        # restrict to refs whose venue's latest Scimago SJR quartile is
+        # at least that good (``'Q2'`` keeps Q1 and Q2 venues), read off
+        # the ``venue_metrics`` table ``precis venue-metrics`` loads.
+        # Rides the include channel like ``serves=`` — it composes into
+        # the stamp/link/tags listings the same way, and alone (no
+        # ``q=``/``tags=``/listing filter) refuses rather than silently
+        # widening to the whole corpus.
+        min_quartile: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -2758,6 +2768,19 @@ class PaperHandler(Handler):
                 f"args={{'stamp': …}} takes a non-empty meta key, got {stamp!r}",
                 next="search(kind='paper', args={'stamp': 'context_sentence_failed'})",
             )
+        # ``args={'min_quartile': 'Qn'}`` — hoisted ahead of the view
+        # dispatch like ``stamp_norm`` so view='count' sees the same
+        # validated value the hit/listing doors do (gr606422).
+        quartile_norm: str | None = None
+        if min_quartile is not None:
+            candidate = str(min_quartile).strip().upper()
+            if candidate not in ("Q1", "Q2", "Q3", "Q4"):
+                raise BadInput(
+                    f"args={{'min_quartile': …}} takes 'Q1'–'Q4', got {min_quartile!r}",
+                    options=["Q1", "Q2", "Q3", "Q4"],
+                    next=f"search(kind='{kind}', q='…', args={{'min_quartile': 'Q1'}})",
+                )
+            quartile_norm = candidate
         if view is not None and view not in ("index", "ids"):
             if view == "count":
                 # The count's filtered set composes the ref-level
@@ -2861,6 +2884,14 @@ class PaperHandler(Handler):
                         else wanted
                     )
                     extra_filters.append(f"ids ({len(wanted)} resolved)")
+                if quartile_norm is not None:
+                    quartiled = self._resolve_quartile_scope(quartile_norm)
+                    include_ref_ids = sorted(
+                        (set(include_ref_ids) & quartiled)
+                        if include_ref_ids is not None
+                        else quartiled
+                    )
+                    extra_filters.append(f"min_quartile={quartile_norm!r}")
                 meta_eq: tuple[str, str] | None = None
                 if record_type is not None:
                     rt = str(record_type).strip().lower()
@@ -2946,6 +2977,31 @@ class PaperHandler(Handler):
                 # apply here, so an unset page_size keeps the old 10.
                 page_size=page_size if page_size is not None else 10,
                 kind=kind,
+            )
+
+        # ``args={'min_quartile': 'Qn'}`` (gr606422) — the venue-quartile
+        # cohort intersects the include channel. Resolved here, ahead of
+        # the no-q listing doors, so it composes into linked_from/lacks,
+        # stamp and tags-only listings the same way ``serves=`` does.
+        # Alone it refuses: a cohort filter with nothing to narrow would
+        # widen silently to the whole corpus.
+        if quartile_norm is not None:
+            if (
+                (q is None or not q.strip())
+                and not tags
+                and stamp_norm is None
+                and not link_scope
+            ):
+                raise BadInput(
+                    "args={'min_quartile': …} narrows a search — it needs "
+                    "q=, tags= or a listing filter (stamp/linked_from/lacks)",
+                    next=f"search(kind='{kind}', q='…', args={{'min_quartile': 'Q1'}})",
+                )
+            quartiled = self._resolve_quartile_scope(quartile_norm)
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & quartiled)
+                if include_ref_ids is not None
+                else quartiled
             )
 
         # ``args={'stamp': '<meta key>'}`` (gr517627): alone, a paged
@@ -3305,6 +3361,29 @@ class PaperHandler(Handler):
                 "SELECT ref_id FROM refs WHERE kind = %s "
                 "AND retired_at IS NULL AND meta ? %s",
                 (self.spec.kind, stamp),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def _resolve_quartile_scope(self, quartile: str) -> set[int]:
+        """``args={'min_quartile': 'Q1'}`` → the live refs of this kind
+        whose venue's LATEST Scimago SJR quartile is at least that good
+        (``'Q2'`` keeps Q1 and Q2 venues; gr606422). Joins the paper's
+        normalized ``meta.issn`` to the newest ``venue_metrics`` row per
+        ISSN — the table ``precis venue-metrics`` loads. A venue absent
+        from the feed (or never quartiled) drops out, honestly: the
+        filter can only keep what the data attests."""
+        norm = ISSN_NORMALISE_SQL % "r.meta->>'issn'"
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id FROM refs r WHERE r.kind = %s "
+                "AND r.retired_at IS NULL AND EXISTS ("
+                "  SELECT 1 FROM ("
+                "    SELECT DISTINCT ON (issn) issn, sjr_quartile "
+                "    FROM venue_metrics WHERE sjr_quartile IS NOT NULL "
+                "    ORDER BY issn, year DESC"
+                f"  ) v WHERE v.issn = {norm} AND v.sjr_quartile <= %s"
+                ")",
+                (self.spec.kind, quartile),
             ).fetchall()
         return {int(r[0]) for r in rows}
 
@@ -3971,6 +4050,11 @@ class PaperHandler(Handler):
         # ._resolve_hubbed_facet): the inclusion mirror. ``None`` means no
         # restriction; an empty list means "restricted to zero sources".
         include_ref_ids: list[int] | None = None,
+        # ``args={'min_quartile': 'Qn'}`` (gr606422) — the same venue
+        # cohort :meth:`search` applies, resolved onto the include
+        # channel here so the cross-kind fan-out honours it too (an
+        # out-of-vocabulary value raises BadInput, same boundary).
+        min_quartile: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -3993,6 +4077,21 @@ class PaperHandler(Handler):
         """
         if not (q and q.strip()):
             return []
+        if min_quartile is not None:
+            qn = str(min_quartile).strip().upper()
+            if qn not in ("Q1", "Q2", "Q3", "Q4"):
+                raise BadInput(
+                    f"args={{'min_quartile': …}} takes 'Q1'–'Q4', got {min_quartile!r}",
+                    options=["Q1", "Q2", "Q3", "Q4"],
+                    next=f"search(kind='{self.spec.kind}', q='…', "
+                    "args={'min_quartile': 'Q1'})",
+                )
+            quartiled = self._resolve_quartile_scope(qn)
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & quartiled)
+                if include_ref_ids is not None
+                else quartiled
+            )
         normalized_tags = Tag.normalize_filter(tags, kind=self.spec.kind)
         resolved_exclude_ref_ids: set[int] = set(exclude_ref_ids or ())
         # gr312636: batched (one ``fetch_refs_by_ids``/``fetch_ref_ids_by_slugs``
@@ -8395,6 +8494,17 @@ class PaperHandler(Handler):
             venue.append(str(year))
         if venue:
             lines.append(", ".join(venue))
+        # Venue metrics (gr606422): SJR quartile + OpenAlex source stats
+        # joined on meta.issn — quiet when the feed never covered the
+        # venue or none was loaded.
+        issn = str(meta.get("issn") or "").strip()
+        if issn:
+            paper_year = None
+            with contextlib.suppress(TypeError, ValueError):
+                paper_year = int(str(year).strip()) if year is not None else None
+            vm = self.store.venue_metrics_for_issn(issn, year=paper_year)
+            if vm is not None:
+                lines.append(_venue_metrics_line(vm))
         if doi:
             lines.append(f"doi: {doi}")
         # Whole-record cite marker (gr514384): a typed software/dataset
@@ -10183,6 +10293,23 @@ def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
         lines.append(f"> [!] **{ONE_PAGE_COVERAGE_NOTE}**")
     out = [ln for ln in lines if ln]
     return "\n".join(out) if out else None
+
+
+def _venue_metrics_line(vm: VenueMetrics) -> str:
+    """The one-line venue-metrics read on the paper overview (gr606422):
+    ``venue metrics: SJR 2.71 · Q1 (SJR 2024) · OA 2yr-mean-cited 11.4 ·
+    OA h-index 244`` — only the feeds that actually reported."""
+    bits: list[str] = []
+    if vm.sjr is not None:
+        bits.append(f"SJR {vm.sjr:.3g}")
+    if vm.sjr_quartile:
+        vintage = f" {vm.sjr_year}" if vm.sjr_year else ""
+        bits.append(f"{vm.sjr_quartile} (SJR{vintage})")
+    if vm.openalex_2yr_mean_citedness is not None:
+        bits.append(f"OA 2yr-mean-cited {vm.openalex_2yr_mean_citedness:.3g}")
+    if vm.openalex_h_index is not None:
+        bits.append(f"OA h-index {vm.openalex_h_index}")
+    return "venue metrics: " + " · ".join(bits)
 
 
 def _is_journal_template_heading(title: str) -> bool:

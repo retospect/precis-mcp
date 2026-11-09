@@ -203,6 +203,11 @@ COMMANDS: tuple[Command, ...] = (
         "Stream OpenAlex snapshot works parts; stage held-paper cite edges.",
     ),
     _c(
+        "venue-metrics",
+        "venue_metrics",
+        "Load Scimago SJR / OpenAlex journal metrics into venue_metrics.",
+    ),
+    _c(
         "backfill-oa-refs",
         "oa_refs_backfill",
         "Source paper_bib_entries from OpenAlex referenced_works (gr513755).",

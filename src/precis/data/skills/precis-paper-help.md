@@ -323,7 +323,6 @@ Search returns a bounded top-N set, not continuation pages. Add distinctive
 terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
 
 ## How many papers? Is ingestion landing full text?
-## Which of these papers are full text, abstract-card only, or stubs?
 
 ```python
 search(kind="paper", view="count")                                  # total
@@ -331,16 +330,23 @@ search(kind="paper", view="count", tags=["studytype:review"],
        args={"group_by": "tag:studytype"}, since="2026-10-01")      # filtered + facets
 search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs card-only vs stub + passages
 search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
-search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
 ```
 
 `view='count'` = the numeric-ref count view (`precis-search-help`).
 `view='ingest'`: per day, papers whose first **full-text** chunk landed
 (non-card, non-references body chunk) vs **card-only** papers created
-(only `card_*` abstract/title chunks so far). `view='status'` (up to 200
-handles/slugs/DOIs): per paper `full-text | card-only | stub`, PDF
-present, and the newest fetcher outcome (`fetch_ok`, `fetch_failed`,
-`no_oa_version`, or never tried). Backlog to chase: `view='stubs'`.
+(only `card_*` abstract/title chunks so far).
+
+## Which of these papers are full text, abstract-card only, or stubs?
+
+```python
+search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
+```
+
+`view='status'` (up to 200 handles/slugs/DOIs): per paper
+`full-text | card-only | stub`, PDF present, and the newest fetcher
+outcome (`fetch_ok`, `fetch_failed`, `no_oa_version`, or never tried).
+Backlog to chase: `view='stubs'`.
 
 `view='chunks'` sizes one paper (or an `id=[...]` batch, ≤50): total
 chunks, body count, and breakdowns by `chunk_kind` and `section_path`
@@ -371,8 +377,27 @@ filters the memories that link, not the papers.
 
 No `q=` gives a paged listing; `view='count'` the filtered total. The
 same `args=` cohort keys compose there — `serves`, `linked_from`/`lacks`,
-`stamp`, `record_type`, `has_fulltext` — and args the count can't express
-(`chunk_kind`, ranking/paging knobs) refuse instead of dropping silently.
+`stamp`, `record_type`, `has_fulltext`, `min_quartile` — and args the
+count can't express (`chunk_kind`, ranking/paging knobs) refuse instead
+of dropping silently.
+
+To filter papers by journal standing — Scimago SJR quartile plus OpenAlex
+source stats, loaded into `venue_metrics` by `precis venue-metrics`
+(`--scimago` yearly CSV / `--openalex` corpus ISSN sweep; JCR is licensed
+and stays out):
+
+```python
+search(kind="paper", q="ammonia", args={"min_quartile": "Q1"})   # Q1 venues only
+search(kind="paper", q="ammonia", args={"min_quartile": "Q2"})   # Q1 or Q2
+```
+
+`min_quartile` joins the paper's `meta.issn` to the venue's **latest**
+SJR vintage; a venue the feed never covered (or never quartiled) drops
+out. It composes with the other cohort keys and with `view='count'`,
+and needs a driver — `q=`, `tags=` or a listing filter — alone it
+refuses. The same stats ride the overview: a `venue metrics:` line
+(SJR, quartile vintage, OA 2yr-mean-cited, OA h-index) appears under
+the journal/year line when the paper's ISSN is covered.
 
 To keep only chunks of one body kind — e.g. table-chunk hits across
 the corpus, the search-side companion to `view='tables'`:
