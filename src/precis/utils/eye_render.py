@@ -840,12 +840,16 @@ class _RingNeighbour:
     reach it (parallel chunk-grounded edges — a claim hub's evidence, any
     passage-level fan-in — fold into one row, gr524665), and the far-end
     ``(chunk_id, ord)`` passages those edges arrive at, first-seen order.
-    ``edges`` counts every collapsed edge, ref-level ones included."""
+    ``edges`` counts every collapsed edge, ref-level ones included.
+    ``suspect`` marks a row whose folded edges include one whose stored
+    ``asserted_fingerprint`` no longer matches the target's sha
+    (:func:`_suspect_edge_keys`, gr568170)."""
 
     ref_id: int
     edges: int = 1
     passages: tuple[tuple[int, int | None], ...] = ()
     log_entry: tuple[int, str] | None = None
+    suspect: bool = False
 
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
@@ -1181,22 +1185,63 @@ def _chunk_ords(store: Store, chunk_ids: Any) -> dict[int, int]:
     return {int(r[0]): int(r[1]) for r in rows}
 
 
+def _suspect_edge_keys(store: Store, ref_id: int) -> set[tuple[int, int | None]]:
+    """``{(other ref, other chunk)}`` for the focus's *suspect* edges —
+    ones carrying an ``asserted_fingerprint`` (stamped at link write for
+    memory-sourced edges, gr568170) that no longer equals the target's
+    current ``precis_target_sha``. Derived lazily here, so a target edit
+    never propagates a write back onto its incident edges. The far end
+    from this side is the dst of an outbound edge, the src of an inbound
+    one — an inbound edge's fingerprint asserts about the focus itself,
+    so it shows suspect here too. A read failure reads as no suspects,
+    never a broken render."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id "
+                "FROM links "
+                "WHERE (src_ref_id = %s OR dst_ref_id = %s) "
+                "  AND meta ? 'asserted_fingerprint' "
+                "  AND meta->>'asserted_fingerprint' IS DISTINCT FROM "
+                "      precis_target_sha("
+                "        CASE WHEN dst_chunk_id IS NULL THEN 'ref' "
+                "             ELSE 'chunk' END, "
+                "        coalesce(dst_chunk_id, dst_ref_id))",
+                (ref_id, ref_id),
+            ).fetchall()
+    except Exception:
+        log.debug("suspect-edge read failed", exc_info=True)
+        return set()
+    out: set[tuple[int, int | None]] = set()
+    for src, sck, dst, dck in rows:
+        if int(src) == ref_id:
+            out.add((int(dst), int(dck) if dck is not None else None))
+        else:
+            out.add((int(src), int(sck) if sck is not None else None))
+    return out
+
+
 def _collapse_pairs(
-    pairs: list[tuple[int, int | None]], ords: dict[int, int]
+    pairs: list[tuple[int, int | None]],
+    ords: dict[int, int],
+    suspect: set[tuple[int, int | None]]
+    | frozenset[tuple[int, int | None]] = frozenset(),
 ) -> list[_RingNeighbour]:
     """``(ref, far chunk)`` per edge → one :class:`_RingNeighbour` per ref —
     first-seen order, every edge counted, far-end chunks deduped (gr524665:
     a claim hub's ``paper --corroborates--> hub`` fan-in grounds at N chunks
-    of one source and must render as one row, not N identical rows)."""
-    acc: dict[int, tuple[int, list[int]]] = {}
+    of one source and must render as one row, not N identical rows). A row
+    is ``suspect`` when any folded edge's ``(ref, chunk)`` is in
+    ``suspect``."""
+    acc: dict[int, tuple[int, list[int], bool]] = {}
     order: list[int] = []
     for oid, ck in pairs:
         slot = acc.get(oid)
         if slot is None:
-            acc[oid] = slot = (0, [])
+            acc[oid] = slot = (0, [], False)
             order.append(oid)
-        edges, chunks = slot
-        acc[oid] = (edges + 1, chunks)
+        edges, chunks, sus = slot
+        acc[oid] = (edges + 1, chunks, sus or (oid, ck) in suspect)
         if ck is not None and ck not in chunks:
             chunks.append(ck)
     return [
@@ -1204,6 +1249,7 @@ def _collapse_pairs(
             oid,
             edges=acc[oid][0],
             passages=tuple((c, ords.get(c)) for c in acc[oid][1]),
+            suspect=acc[oid][2],
         )
         for oid in order
     ]
@@ -1244,6 +1290,7 @@ def _first_hop(
     ords = _chunk_ords(
         store, (c for pairs in live.values() for _o, c in pairs if c is not None)
     )
+    suspect = _suspect_edge_keys(store, ref_id) if live else set()
     entries = _quest_log_entries(store, ref_id, live, refs)
     out: dict[tuple[str, str], list[_RingNeighbour]] = {}
     for key, pairs in live.items():
@@ -1266,7 +1313,7 @@ def _first_hop(
                 _RingNeighbour(oid, passages=((cid, ord_),), log_entry=(ord_, preview))
             )
         if ordinary:
-            out.setdefault(key, []).extend(_collapse_pairs(ordinary, ords))
+            out.setdefault(key, []).extend(_collapse_pairs(ordinary, ords, suspect))
     for (group, _label), ns in out.items():
         rank = RING_GROUP_KIND_RANK.get(group)
         if rank:
@@ -1557,9 +1604,11 @@ def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -
         ord_, preview = n.log_entry
         handle = handle_registry.format_handle("quest", n.passages[0][0], chunk=True)
         return f"{handle} ~{ord_} — {preview}"
-    return _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
+    row = _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
         n, str(getattr(ref, "kind", "") or "")
     )
+    # gr568170: a folded edge whose target moved since it was asserted.
+    return f"{row}  · suspect" if n.suspect else row
 
 
 def _render_first_hop(
@@ -1583,6 +1632,7 @@ def _render_first_hop(
             heading = group
         if hub_members is not None and label == _HUB_MEMBER_LABEL:
             live = {n.ref_id for n in live_ids}
+            by_id = {n.ref_id: n for n in live_ids}
             listed = [o for o in hub_members if o in live]
             if len(live_ids) == 1:
                 oid = live_ids[0].ref_id
@@ -1590,6 +1640,8 @@ def _render_first_hop(
                 row = _neighbor_label(
                     refs[oid], oid, chips=chips.get(oid, ""), size=sizes.get(oid, "")
                 )
+                if by_id[oid].suspect:
+                    row += "  · suspect"
                 lines.append(
                     f"  {label}: {row} — {hook}" if hook else f"  {label}: {row}"
                 )
@@ -1603,6 +1655,8 @@ def _render_first_hop(
                         chips=chips.get(oid, ""),
                         size=sizes.get(oid, ""),
                     )
+                    if by_id[oid].suspect:
+                        row += "  · suspect"
                     lines.append(f"    {row} — {hook}" if hook else f"    {row}")
                 if len(live_ids) > len(listed):
                     lines.append(

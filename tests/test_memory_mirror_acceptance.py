@@ -20,6 +20,7 @@ from psycopg.conninfo import conninfo_to_dict
 
 from precis.cli import _build_parser
 from precis.cli.memory import parse_index, run
+from precis.store._links_ops import _EDGE_VALIDITY_META_KEYS
 from precis.utils.text import slugify
 from tests.conftest import PG_TEST_DSN, _active_dsn, _pg_available
 
@@ -241,9 +242,11 @@ def _graph(dsn: str, namespace: str) -> dict[str, Any]:
             "ORDER BY event_id",
             (ids,),
         ).fetchall()
+    # gr568170: store-stamped edge-validity keys are not provenance.
     assert all(
         rel == "related-to"
-        and meta == {"source": "file-mirror", "namespace": namespace}
+        and {k: v for k, v in meta.items() if k not in _EDGE_VALIDITY_META_KEYS}
+        == {"source": "file-mirror", "namespace": namespace}
         for _, _, rel, meta in edges
     )
     named_edges = {(names[src], names[dst]) for src, dst, _, _ in edges}

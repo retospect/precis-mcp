@@ -104,8 +104,10 @@ def test_real_edit_reports_removed_and_added_edges_and_restore_call(
     handler.link(**payload)
     links = store.links_for(source, direction="out")
     assert {link.dst_ref_id for link in links} == {old, new}
+    # gr568170: the restore re-stamps the target's write-time sha.
     assert next(link for link in links if link.dst_ref_id == old).meta == {
-        "auto": "mention"
+        "auto": "mention",
+        "asserted_fingerprint": store.target_sha("ref", old),
     }
 
 
@@ -381,7 +383,10 @@ def test_chunk_target_removal_preserves_selector_in_restore_call(
     restored = store.links_for(source, direction="out")
     assert len(restored) == 1
     assert (restored[0].dst_ref_id, restored[0].dst_ord) == (target, 0)
-    assert restored[0].meta == {"auto": "mention"}
+    assert restored[0].meta == {
+        "auto": "mention",
+        "asserted_fingerprint": store.target_sha("chunk", restored[0].dst_chunk_id),
+    }
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -443,7 +448,10 @@ def test_card_chunk_restore_call_parses_and_restores(
             -1,
             card_id,
         )
-        assert restored[0].meta == {"auto": "mention"}
+        assert restored[0].meta == {
+            "auto": "mention",
+            "asserted_fingerprint": store.target_sha("chunk", card_id),
+        }
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

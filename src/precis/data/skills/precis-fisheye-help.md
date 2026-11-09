@@ -148,7 +148,11 @@ reads from the focus's side: an edge it is the source of keeps its name
 inverse reads `<-establishes: pa5` ("pa5 establishes this"). Each row
 carries the stored body size (`· <n>kB` from 1 kB; none while
 recompute is pending). `AUDIT:ungrounded-number` neighbours are flagged.
-A memory with a mirrored file reads `me4641 (diagnosis.md)`.
+A memory with a mirrored file reads `me4641 (diagnosis.md)`. A row
+trailing `· suspect` is an edge whose target changed since a memory
+linked it (the edge's stored `asserted_fingerprint` no longer matches
+the target's sha) — re-read the target, then re-link to clear
+(`precis-link-help`).
 
 Parallel edges to the **same** neighbour collapse into one row:
 `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12 ~28 · +2 more)`. `×N`

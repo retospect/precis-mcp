@@ -157,6 +157,11 @@ class MentionSync:
             self.after.setdefault(edge.key, edge)
 
     def render(self) -> str:
+        # Edge-validity keys (asserted_fingerprint, suspect_cleared_*) are
+        # store-stamped, not caller meta: add_link refuses them and a
+        # restore re-stamps the target's sha fresh anyway (gr568170).
+        from precis.store._links_ops import _EDGE_VALIDITY_META_KEYS
+
         removed = [v for k, v in self.before.items() if k not in self.after]
         added = [v for k, v in self.after.items() if k not in self.before]
         notices = "".join(f"\n\n{notice}" for notice in self.notices)
@@ -205,7 +210,12 @@ class MentionSync:
                                 dst.kind, edge.chunk_id, chunk=True
                             )
                         ) or address
-                    meta = f", meta={edge.meta!r}" if edge.meta else ""
+                    restore_meta = {
+                        k: v
+                        for k, v in edge.meta.items()
+                        if k not in _EDGE_VALIDITY_META_KEYS
+                    }
+                    meta = f", meta={restore_meta!r}" if restore_meta else ""
                     restore = (
                         "Restore after target is live (currently retired)"
                         if dst.retired_at is not None

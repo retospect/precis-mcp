@@ -27,6 +27,7 @@ from psycopg import Connection
 
 from precis.cli.memory import GRAPH_MARKER, ImportRefused
 from precis.store import ChunkInsert, Store, Tag
+from precis.store._links_ops import _EDGE_VALIDITY_META_KEYS
 from precis.utils.text import slugify
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
@@ -587,7 +588,14 @@ def import_mirror(
                         meta={"source": "file-mirror", "namespace": namespace},
                         conn=conn,
                     )
-                    if edge.meta != {"source": "file-mirror", "namespace": namespace}:
+                    # Store-stamped edge-validity keys (gr568170) ride on
+                    # every memory-sourced edge now — they are not
+                    # provenance, so compare the caller meta only.
+                    if {
+                        k: v
+                        for k, v in edge.meta.items()
+                        if k not in _EDGE_VALIDITY_META_KEYS
+                    } != {"source": "file-mirror", "namespace": namespace}:
                         raise ImportRefused(
                             f"{name}: link to {target} already has other provenance"
                         )

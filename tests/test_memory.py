@@ -1735,8 +1735,11 @@ def test_anchored_edit_resyncs_mentions_and_preserves_manual_links(
     )
     links = store.links_for(mid, direction="out", relation="related-to")
     assert {link.dst_ref_id for link in links} == {new, manual}
-    assert next(link for link in links if link.dst_ref_id == new).meta == {
-        "auto": "mention"
+    synced = next(link for link in links if link.dst_ref_id == new).meta
+    assert synced == {
+        "auto": "mention",
+        # gr568170: memory-sourced edges carry the dst's write-time sha
+        "asserted_fingerprint": store.target_sha("ref", new),
     }
 
 

@@ -37,7 +37,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from psycopg import Connection
@@ -451,6 +451,30 @@ MACHINE_EDGE_STRUCTURAL: frozenset[str] = frozenset(
 #: this edge (:func:`_reviewed_structural_edge`, gr507641). The undo
 #: path finds the edge by ``meta->'garden_relink'->>'relink_id'``.
 GARDEN_RELINK_META = "garden_relink"
+
+#: The ``links.meta`` key a memory-sourced edge carries: the dst
+#: endpoint's content sha (``precis_target_sha`` — a chunk's sha for a
+#: chunk-grounded edge, the ref's otherwise) as it stood when the edge
+#: was last written (gr568170, Doorstop-style suspect links). A reader
+#: derives "suspect" lazily — stored sha ≠ the target's sha now — so a
+#: target edit never propagates a write back onto its incident edges.
+ASSERTED_FINGERPRINT_META = "asserted_fingerprint"
+
+#: The ``links.meta`` keys the conflict path writes when a re-link
+#: refreshes a drifted :data:`ASSERTED_FINGERPRINT_META` — the reviewed
+#: clear's actor (``set_by``) and UTC time.
+SUSPECT_CLEARED_BY_META = "suspect_cleared_by"
+SUSPECT_CLEARED_AT_META = "suspect_cleared_at"
+
+#: Edge-validity keys a caller may not supply: the store stamps them
+#: itself, and a hand-set value would forge a valid edge or a fake clear.
+_EDGE_VALIDITY_META_KEYS = frozenset(
+    {
+        ASSERTED_FINGERPRINT_META,
+        SUSPECT_CLEARED_BY_META,
+        SUSPECT_CLEARED_AT_META,
+    }
+)
 
 #: Who may approve a reviewed structural write — an allowlist, not a
 #: deny-list: the garden consumer's identity, or a human. The review
@@ -1101,6 +1125,15 @@ class LinksMixin:
         co-retrieves are refused; ``explains`` between claim hubs routes
         through :func:`precis.taproot.hub.link_claims`. Human and
         agent-without-model writes are untouched.
+
+        Edge validity (gr568170): when the *source* ref is a ``memory``,
+        the write also stamps ``meta.asserted_fingerprint`` — the
+        target's ``precis_target_sha`` at link time (the chunk's sha for
+        a chunk-grounded dst). A re-link refreshes it; if the stored sha
+        had drifted (the edge was suspect), the conflict path records
+        the reviewed clear under ``suspect_cleared_by`` /
+        ``suspect_cleared_at``. These keys are store-stamped only — a
+        caller-supplied one is refused above.
         """
 
         if relation == "rejects":
@@ -1110,6 +1143,15 @@ class LinksMixin:
                     "rejects requires a non-empty meta.reason",
                     next="link(..., rel='rejects', meta={'reason': 'why this part was rejected'})",
                 )
+
+        forged = _EDGE_VALIDITY_META_KEYS & (meta or {}).keys()
+        if forged:
+            raise BadInput(
+                f"meta keys {sorted(forged)} are stamped by the link write "
+                "itself (edge validity, gr568170)",
+                next="drop them from meta= — re-linking an edge refreshes "
+                "its asserted_fingerprint and records the clear",
+            )
 
         def _do(c: Connection) -> Link:
             src_chunk_id = _resolve_chunk_id_for_link(c, src_ref_id, src_pos)
@@ -1216,9 +1258,53 @@ class LinksMixin:
                         "writing evidence on it",
                     )
 
-            # ``meta_clause`` is a fixed literal (never interpolates caller
-            # data), toggled only by the ``merge_meta`` opt-in above.
-            meta_clause = ", meta = links.meta || EXCLUDED.meta" if merge_meta else ""
+            # Edge validity (gr568170): a memory-sourced edge records the
+            # target's content sha at write time. The one SELECT doubles
+            # as the source-kind gate — a non-memory src returns no row
+            # and nothing is stamped.
+            t_kind, t_id = (
+                ("chunk", dst_chunk_id)
+                if dst_chunk_id is not None
+                else ("ref", dst_ref_id)
+            )
+            fp_row = c.execute(
+                "SELECT precis_target_sha(%s, %s) "
+                "FROM refs WHERE ref_id = %s AND kind = 'memory'",
+                (t_kind, t_id, src_ref_id),
+            ).fetchone()
+            asserted_sha = fp_row[0] if fp_row else None
+
+            ins_meta = dict(meta or {})
+            if asserted_sha is not None:
+                ins_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
+
+            extra_params: tuple[Any, ...] = ()
+            if asserted_sha is not None:
+                # A re-link always refreshes the stored sha; caller meta
+                # merges only under ``merge_meta`` (unchanged semantics).
+                # When the stored sha had drifted the edge was suspect and
+                # this reviewed re-link is the clear — record actor + UTC.
+                conflict_meta = dict(meta or {}) if merge_meta else {}
+                conflict_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
+                meta_clause = (
+                    ", meta = links.meta || %s || CASE WHEN "
+                    f"links.meta ? '{ASSERTED_FINGERPRINT_META}' AND "
+                    f"links.meta->>'{ASSERTED_FINGERPRINT_META}' "
+                    "IS DISTINCT FROM %s THEN "
+                    f"jsonb_build_object('{SUSPECT_CLEARED_BY_META}', %s::text, "
+                    f"'{SUSPECT_CLEARED_AT_META}', %s::text) "
+                    "ELSE '{}'::jsonb END"
+                )
+                extra_params = (
+                    Jsonb(conflict_meta),
+                    asserted_sha,
+                    set_by,
+                    datetime.now(UTC).isoformat(),
+                )
+            else:
+                meta_clause = (
+                    ", meta = links.meta || EXCLUDED.meta" if merge_meta else ""
+                )
             sql = (
                 "INSERT INTO links "
                 "  (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
@@ -1239,7 +1325,8 @@ class LinksMixin:
                         dst_chunk_id,
                         relation,
                         set_by,
-                        Jsonb(meta or {}),
+                        Jsonb(ins_meta),
+                        *extra_params,
                     ),
                 ).fetchone()
             except ForeignKeyViolation as exc:

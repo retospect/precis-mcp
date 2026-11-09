@@ -130,6 +130,21 @@ link(kind="memory", id=42, target="pc38", rel="annotates")
 link(kind="todo", id=158, target="gr7", rel="blocks")
 ```
 
+## Edge validity — `asserted_fingerprint` and `· suspect`
+
+Every edge **from a memory** records the target's content sha at write
+time (`meta.asserted_fingerprint`; a `~chunk` target's own sha). When
+the target later changes, the edge turns **suspect** — derived at read
+time, never written back — and the `fisheye+1hop` ring marks the row
+`· suspect` on both ends' eyes. Nothing else changes: the edge still
+works.
+
+Clearing is a reviewed re-link: read the target again, then `link` the
+same pair once more. The re-link refreshes the fingerprint and records
+`suspect_cleared_by` / `suspect_cleared_at`. `mode='remove'` deletes
+the edge outright, as before. Callers cannot set these meta keys by
+hand.
+
 ## Reparent a todo (`rel='parent'`)
 
 Todos form a tree. `rel='parent'` places one todo under another;
