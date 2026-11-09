@@ -275,7 +275,13 @@ curve per arm.
    `tool_calls` (`precis.tools.core._log_tool_call`); the one missing
    instrument. Ships first, independent of the rest.
 2. Ablation flags on the server, default all-on, read once per call.
-3. Fixture corpus manifest + `ingest-local` into a fresh DB.
+3. Fixture corpus manifest + `ingest-local` into a fresh DB. Landed
+   (td604844): `bench/corpus/manifest.json` (30 quick ⊂ 200 full, QASPER
+   v0.3 train+dev, archive sha256-pinned), `src/precis/bench/corpus.py`,
+   `scripts/bench ingest --set quick|full`. Chunk meta keeps `para_id` and
+   paragraph/document char offsets for span gold (see the corpus.py
+   docstring). Not done: loading committed `derived/` (keywords, summaries,
+   tags, embeddings) instead of running workers; LitSearch second corpus.
 4. Task set + gold, Reto-reviewed.
 5. Harness + results schema + report script (tables, figures).
 6. CI nightly + Zenodo bundle.

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# scripts/bench — memory-ablation benchmark entry point (thin wrapper).
+#
+# Usage:
+#   scripts/bench ingest --set quick|full   # fetch (pinned) + ingest the QASPER fixture into the DEV db
+#   scripts/bench manifest [--check]        # maintainers: rebuild/verify bench/corpus/manifest.json
+#   scripts/bench run | report              # not built yet (stubs)
+#
+# Everything runs inside the precis-dev container via scripts/dev, which points
+# PRECIS_DATABASE_URL at this worktree's precis_dev; the loader refuses any
+# database not named precis_dev*/precis_test*/precis_bench*, so prod is never
+# reachable. `ingest` brings the dev DB up first (idempotent). The pinned
+# archive is cached under PRECIS_BENCH_CACHE (a path inside the container;
+# default /app/.scratch/bench-cache, i.e. the gitignored .scratch/ of this
+# checkout). Embeddings are the worker's job:
+#   scripts/dev uv run --no-sync precis worker --only embed --embedder mock
+#
+# Design and slices: docs/backlog/memory-ablation-bench.md
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ "${1:-}" == "ingest" ]]; then
+    scripts/dev db-up
+fi
+
+export PRECIS_DEV_ENV="${PRECIS_DEV_ENV:-} PRECIS_BENCH_CACHE=${PRECIS_BENCH_CACHE:-/app/.scratch/bench-cache}"
+exec scripts/dev uv run --no-sync python -m precis.bench "$@"
