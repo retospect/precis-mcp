@@ -644,6 +644,24 @@ def probe_soft_signals() -> dict[str, int | None]:
     return signals
 
 
+def mem_used_pct() -> float | None:
+    """This host's memory utilisation percent (0–100), or ``None``.
+
+    The continuous complement of :func:`_mem_free_bucket`'s coarse gauge —
+    the heartbeat logs it per beat into ``host_heartbeat_log.mem_used_pct``
+    (gr592932's host utilisation sample; the footprint-admission headroom
+    series). ``None`` on a platform the probe can't read. Deliberately
+    ignores ``PRECIS_MEM_PRESSURE_FREE`` — that override pins the claim
+    gauge, not the measurement.
+    """
+    pct = _linux_mem_avail_pct()
+    if pct is None:
+        pct = _macos_mem_free_pct()
+    if pct is None:
+        return None
+    return round(max(0.0, 100.0 - pct), 1)
+
+
 def mem_capacity() -> int:
     """Nominal capacity of the soft ``mem`` gauge (for the heartbeat writer)."""
     return _MEM_CAP
@@ -665,6 +683,7 @@ __all__ = [
     "claude_auth_present",
     "claude_bin_present",
     "mem_capacity",
+    "mem_used_pct",
     "probe_host_resources",
     "probe_soft_signals",
     "resource_kind",

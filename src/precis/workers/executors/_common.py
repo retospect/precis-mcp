@@ -39,6 +39,7 @@ from precis.store._todo_sql import (
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
+from precis.utils import job_footprint
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 from precis.workers.executors import suspended_job_types
@@ -89,6 +90,12 @@ CLAIMABLE = (QUEUED, YIELDED)
 # Terminal STATUS values — a row carrying any of these is not
 # claimable. Waiting statuses are NOT terminal; they're paused.
 TERMINAL = (SUCCEEDED, FAILED, CANCELLED)
+
+#: Non-terminal values that mean the job LEFT ``STATUS:running``
+#: (checkpoint yield, park, requeue) — the footprint segment folds
+#: there. ``cancel_requested`` is absent on purpose: the job is still
+#: running; the fold happens at its real leave or terminal stamp.
+LEAVE_RUNNING = frozenset({QUEUED, YIELDED, *WAITING})
 
 # Chunk kinds the executors write.
 JOB_EVENT_KIND = "job_event"
@@ -1577,6 +1584,9 @@ def claim_executor_jobs(
         meta["lease_host"] = lease_host
         meta["lease_code"] = fields["lease_code"]
         meta["started_at"] = fields["started_at"]
+        # gr595536: open this process's rusage segment for the run — the
+        # terminal STATUS stamp reads it into ``meta.footprint``.
+        job_footprint.begin(ref_id)
 
     def _finish_claim(
         ref_id: int,
@@ -2258,6 +2268,11 @@ def set_status(
         replace_prefix=True,
         conn=conn,
     )
+    if value in LEAVE_RUNNING:
+        # Segment close short of terminal (yield / park / requeue): the
+        # rusage spent so far folds into the accumulator the terminal
+        # stamp drains (gr595536).
+        job_footprint.fold(ref_id)
     if value in TERMINAL:
         if conn is not None:
             release_job_reservation(conn, ref_id)

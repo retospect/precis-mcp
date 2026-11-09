@@ -4431,6 +4431,20 @@ class JobHandler(NumericRefHandler):
                 lines.append(f"wall_s: {meta['wall_s']:.1f}")
             if meta.get("node"):
                 lines.append(f"node: {meta['node']}")
+        if isinstance(meta.get("footprint"), dict):
+            # gr595536 run footprint — the measured per-(job_type,size)
+            # row footprint admission reads. Null fields are simply
+            # unmeasured (a job this process never claimed); omit them
+            # rather than printing "None".
+            fp = meta["footprint"]
+            parts = []
+            if fp.get("ru_maxrss_mb") is not None:
+                parts.append(f"rss {fp['ru_maxrss_mb']:.0f} MiB")
+            if fp.get("cpu_s") is not None:
+                parts.append(f"cpu {fp['cpu_s']:.1f} s")
+            if fp.get("wall_s") is not None:
+                parts.append(f"wall {fp['wall_s']:.1f} s")
+            lines.append(f"footprint: {', '.join(parts)}")
         if meta.get("job_type"):
             lines.append(f"job_type: {meta['job_type']}")
         if meta.get("executor"):

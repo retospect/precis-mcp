@@ -269,6 +269,23 @@ def collect_loads() -> tuple[float | None, float | None, float | None]:
     return (one, five, fifteen)
 
 
+def collect_mem_used_pct() -> float | None:
+    """Best-effort host memory utilisation percent (0–100), else ``None``.
+
+    The memory half of the per-beat host utilisation sample (gr592932) —
+    logged into ``host_heartbeat_log.mem_used_pct`` alongside the load
+    averages. Never fails the report, same contract as
+    :func:`collect_loads`.
+    """
+    try:
+        from precis.workers.capability_probe import mem_used_pct
+
+        return mem_used_pct()
+    except Exception:
+        log.warning("heartbeat: mem utilisation probe failed", exc_info=True)
+        return None
+
+
 def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
     """Best-effort top-``n`` processes by CPU %, for the factory host strip.
 
@@ -967,6 +984,7 @@ def _collect_and_upsert(
     that will never advertise again, not a machine that went dark.
     """
     load1, load5, load15 = collect_loads()
+    mem_used_pct = collect_mem_used_pct()
     temp_c = read_temp_c()
     meta: dict[str, Any] = {
         "platform": platform.system(),
@@ -1016,6 +1034,10 @@ def _collect_and_upsert(
     # running the old release).
     if code_sha := _served_code_sha():
         meta["code_sha"] = code_sha
+    # Host memory utilisation (gr592932): the latest-snapshot view of the
+    # series host_heartbeat_log.mem_used_pct keeps per beat.
+    if mem_used_pct is not None:
+        meta["mem_used_pct"] = mem_used_pct
 
     # llm-lane-scheduler S0: on a serving host, the SGLang /metrics scrape
     # (running/queued/KV/retractions) plus host swap-in; self-gates to {}
@@ -1046,6 +1068,7 @@ def _collect_and_upsert(
             load1=load1,
             load5=load5,
             load15=load15,
+            mem_used_pct=mem_used_pct,
             retention_days=_history_retention_days(),
             **serving,
         )

@@ -67,6 +67,8 @@ _CPU_UTILIZATION_SCHEMA: list[str] = [
     "load1_avg",
     "load1_max",
     "temp_max",
+    "mem_avg",
+    "mem_max",
 ]
 _LLM_UTILIZATION_SCHEMA: list[str] = ["hr", "calls", "busy_pct", "cost_usd", "errors"]
 _LLM_GAPS_SCHEMA: list[str] = ["gap_ended_at", "gap_minutes"]
@@ -402,6 +404,8 @@ def _query_cpu_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
             if r["load1_max"] is not None
             else None,
             "temp_max": round(r["temp_max"], 1) if r["temp_max"] is not None else None,
+            "mem_avg": round(r["mem_avg"], 1) if r["mem_avg"] is not None else None,
+            "mem_max": round(r["mem_max"], 1) if r["mem_max"] is not None else None,
         }
         for r in rows
     ]

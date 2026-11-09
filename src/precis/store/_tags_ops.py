@@ -53,6 +53,7 @@ from psycopg_pool import ConnectionPool
 from precis.store._chunks_ops import _vec_param
 from precis.store._mappers import _lookup_chunk_id, _upsert_tag
 from precis.store.types import ActorSlug, Tag
+from precis.utils import job_footprint
 
 
 def _tag_to_namespace_value(tag: Tag) -> tuple[str, str]:
@@ -129,6 +130,14 @@ def _stamp_job_completion(conn: Connection, ref_id: int) -> None:
     ``node`` is the pinned ``params.target_node`` else the claiming host
     (``meta.lease_host``), else null. A re-terminalised job is re-stamped.
     The compute-dir reaper keys on ``finished_at`` (gr496403).
+
+    ``meta.footprint`` (gr595536) mirrors the same ``wall_s`` and adds the
+    per-run measurements the footprint-admission table derives from —
+    ``ru_maxrss_mb``/``cpu_s`` out of :mod:`precis.utils.job_footprint`'s
+    process-local rusage registry. They stay ``null`` for a job this
+    process never claimed (a swept orphan from a dead worker, a queued
+    row cancelled before it ran); on a re-terminalisation a previously
+    measured field is kept rather than overwritten with ``null``.
     """
     row = conn.execute(
         "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'job'", (ref_id,)
@@ -147,6 +156,19 @@ def _stamp_job_completion(conn: Connection, ref_id: int) -> None:
             wall_s = 0.0
     params = meta.get("params") or {}
     node = params.get("target_node") or meta.get("lease_host") or None
+    measured = job_footprint.take(ref_id)
+    previous = meta.get("footprint")
+    if not isinstance(previous, dict):
+        previous = {}
+    footprint = {
+        "ru_maxrss_mb": measured["ru_maxrss_mb"]
+        if measured["ru_maxrss_mb"] is not None
+        else previous.get("ru_maxrss_mb"),
+        "wall_s": round(wall_s, 1),
+        "cpu_s": measured["cpu_s"]
+        if measured["cpu_s"] is not None
+        else previous.get("cpu_s"),
+    }
     conn.execute(
         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
         (
@@ -155,6 +177,7 @@ def _stamp_job_completion(conn: Connection, ref_id: int) -> None:
                     "finished_at": now.isoformat(),
                     "wall_s": round(wall_s, 3),
                     "node": node,
+                    "footprint": footprint,
                 }
             ),
             ref_id,

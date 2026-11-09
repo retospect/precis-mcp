@@ -184,6 +184,7 @@ class HeartbeatMixin:
         serving_kv_usage: float | None = None,
         serving_retractions_total: float | None = None,
         swap_in_pages_total: float | None = None,
+        mem_used_pct: float | None = None,
         retention_days: float = 14.0,
     ) -> None:
         """Append one beat to ``host_heartbeat_log`` and prune the window.
@@ -197,7 +198,9 @@ class HeartbeatMixin:
         The ``serving_*``/``swap_in_pages_total`` columns (llm-lane-scheduler
         S0) are the local-serving pressure signals: NULL when the host has
         no serving endpoint answering or isn't on Linux — a host that never
-        serves writes them absent every beat.
+        serves writes them absent every beat. ``mem_used_pct`` (gr592932,
+        migration 0295) is the host memory-utilisation sample: NULL on a
+        platform the probe can't read.
         """
         if retention_days <= 0:
             return
@@ -207,8 +210,9 @@ class HeartbeatMixin:
                     "INSERT INTO host_heartbeat_log "
                     "(host, ts, temp_c, load1, load5, load15, "
                     "serving_running, serving_queued, serving_kv_usage, "
-                    "serving_retractions_total, swap_in_pages_total) "
-                    "VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "serving_retractions_total, swap_in_pages_total, "
+                    "mem_used_pct) "
+                    "VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         host,
                         temp_c,
@@ -220,6 +224,7 @@ class HeartbeatMixin:
                         serving_kv_usage,
                         serving_retractions_total,
                         swap_in_pages_total,
+                        mem_used_pct,
                     ),
                 )
                 conn.execute(
@@ -269,16 +274,19 @@ class HeartbeatMixin:
         """Hourly per-host rollup of ``host_heartbeat_log``.
 
         One dict per (hour, host) in the trailing ``hours`` window:
-        ``{"hr", "host", "beats", "load1_avg", "load1_max", "temp_max"}``,
-        ordered by hour then host — the CPU half of
-        ``precis stats --utilization``.
+        ``{"hr", "host", "beats", "load1_avg", "load1_max", "temp_max",
+        "mem_avg", "mem_max"}``, ordered by hour then host — the CPU and
+        memory halves of ``precis stats --utilization``. ``mem_*`` are
+        NULL until migration 0295's column has been populated by a beat.
         """
         sql = (
             "SELECT date_trunc('hour', ts) AS hr, host, "
             "       count(*)::int AS beats, "
             "       avg(load1) AS load1_avg, "
             "       max(load1) AS load1_max, "
-            "       max(temp_c) AS temp_max "
+            "       max(temp_c) AS temp_max, "
+            "       avg(mem_used_pct) AS mem_avg, "
+            "       max(mem_used_pct) AS mem_max "
             "FROM host_heartbeat_log "
             "WHERE ts > now() - (%s || ' hours')::interval "
             "GROUP BY 1, 2 ORDER BY 1, 2"
@@ -293,6 +301,8 @@ class HeartbeatMixin:
                 "load1_avg": float(r[3]) if r[3] is not None else None,
                 "load1_max": float(r[4]) if r[4] is not None else None,
                 "temp_max": float(r[5]) if r[5] is not None else None,
+                "mem_avg": float(r[6]) if r[6] is not None else None,
+                "mem_max": float(r[7]) if r[7] is not None else None,
             }
             for r in rows
         ]

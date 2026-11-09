@@ -198,6 +198,28 @@ def test_heartbeat_history_serving_columns(store: Store) -> None:
     assert quiet == (None, None)
 
 
+def test_heartbeat_history_mem_column_and_rollup(store: Store) -> None:
+    """gr592932: the memory-utilisation sample lands verbatim and rolls
+    up as mem_avg / mem_max; unmeasured beats stay NULL."""
+    store.record_heartbeat_history("caspar-mem", mem_used_pct=40.0)
+    store.record_heartbeat_history("caspar-mem", mem_used_pct=80.0)
+    store.record_heartbeat_history("caspar-nomem", load1=0.5)
+    with store.pool.connection() as conn:
+        vals = conn.execute(
+            "SELECT mem_used_pct FROM host_heartbeat_log "
+            "WHERE host = 'caspar-mem' ORDER BY mem_used_pct"
+        ).fetchall()
+        nomem = conn.execute(
+            "SELECT mem_used_pct FROM host_heartbeat_log WHERE host = 'caspar-nomem'"
+        ).fetchone()
+    assert [r[0] for r in vals] == [40.0, 80.0]
+    assert nomem == (None,)
+    rows = _history_for(store, "caspar-mem")
+    assert len(rows) == 1
+    assert rows[0]["mem_avg"] == 60.0
+    assert rows[0]["mem_max"] == 80.0
+
+
 def test_set_host_retired_stamps_and_clears(store: Store) -> None:
     """The marker that takes a decommissioned host off nursery's host-dark
     detector. An ISO timestamp, not `true`: "when was this retired" is the
