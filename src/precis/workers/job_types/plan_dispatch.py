@@ -71,14 +71,18 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    moot runs, re-swept each pass while a straggler's live job defers
    it), so the root settles and no ask files (gr575912).
    **Verdicts** — a node carrying a ``no-op:``/``moot:``/``validated:``
-   line on its newest ``handoff:``, posted by hand as a comment, or in
-   its newest failed job's event text is dropped before the moot close
+   line on a ``handoff:``, posted by hand as a bare verdict comment
+   (first line the verdict — a ``brief:`` or other prose quoting an
+   example verdict line is never read, td604234), or in its newest
+   failed job's event text is dropped before the moot close
    (gr602896): a job recorded ``failed`` is no bar — the verdict IS the
    result. The node closes done, a ``moot:`` also tagged
    ``verdict:moot`` so the moot close drops its chain this pass; a
    ``moot:`` pinned to a ``gr<N>`` other than the plan's gripe is never
    this plan's verdict, and nodes under a ``release-pass`` root keep
-   the fix loop's own rulings. An unverified or hand-posted moot has
+   the fix loop's own rulings. A newest attempt stamped
+   ``human_only_hit`` keeps its ask — no verdict closes ahead of the
+   human-only ruling (td604234). An unverified or hand-posted moot has
    no sha for a ``resolved:`` — the plan's gripe gets
    ``<verdict> — plan dropped`` instead, so the record of why the plan
    went away survives.
@@ -261,7 +265,13 @@ from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans import templates as _templates
 from precis.plans.logbook import log_plan_event
-from precis.plans.nodes import MINT_HOLD_TAG, MOOT_TAG, any_verdict, node_kind
+from precis.plans.nodes import (
+    MINT_HOLD_TAG,
+    MOOT_TAG,
+    any_verdict,
+    generator_verdict,
+    node_kind,
+)
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -1769,21 +1779,29 @@ def _verdict_comment(
     store: Any, todo_id: int, *, since: datetime | None = None
 ) -> tuple[str, str] | None:
     """``(kind, why)`` of the verdict the todo's comments carry
-    (gr602896): the newest ``handoff:`` — prefix stripped first, the
-    line read by :func:`precis.plans.nodes.any_verdict` — or a
-    ``no-op:``/``moot:``/``validated:`` line posted by hand as a bare
-    comment. Comments older than ``since`` (the newest attempt job's
-    ``created_at``) never count — an earlier attempt's verdict is not
-    this one's; a comment whose ``created_at`` cannot be read fails
-    closed like :func:`_handoff_verdict`. Newest first, first hit wins."""
+    (gr602896): a ``handoff:`` — prefix stripped first, the line read
+    by :func:`precis.plans.nodes.any_verdict` — or a comment that IS
+    the verdict: ``no-op:``/``moot:``/``validated:`` on its first
+    non-empty line, posted by hand
+    (:func:`precis.plans.nodes.generator_verdict`). Any other comment
+    never counts (td604234): a ``brief:`` quoting the grammar — "if the
+    fix is already on main, answer ``moot: <why>``" — carries the
+    verdict-shaped line as an example, not a ruling, and reading it
+    dropped work no job ever ran. Comments older than ``since`` (the
+    newest attempt job's ``created_at``) never count — an earlier
+    attempt's verdict is not this one's; a comment whose ``created_at``
+    cannot be read fails closed like :func:`_handoff_verdict`. Newest
+    first, first hit wins."""
     for c in _comments(store, todo_id):
         created = getattr(c, "created_at", None)
         if since is not None and (not isinstance(created, datetime) or created < since):
             continue
         body = str(c.text).strip()
-        if body.lower().startswith("handoff:"):
-            body = body[len("handoff:") :]
-        hit = any_verdict(body)
+        hit = (
+            any_verdict(body[len("handoff:") :])
+            if body.lower().startswith("handoff:")
+            else generator_verdict(body)
+        )
         if hit is not None:
             return hit
     return None
@@ -1811,8 +1829,10 @@ def _foreign_verdict(store: Any, n: _Node, verdict: tuple[str, str]) -> bool:
 
 def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
     """A node carrying a verdict is dropped here, ahead of the moot
-    close (gr602896): a ``no-op:``/``moot:``/``validated:`` line on the
-    newest ``handoff:``, posted by hand as a comment, or in the newest
+    close (gr602896): a ``no-op:``/``moot:``/``validated:`` line on a
+    ``handoff:``, posted by hand as a bare verdict comment (its first
+    line is the verdict — a ``brief:`` or other prose quoting an
+    example verdict line is never read, td604234), or in the newest
     failed job's event text — a job recorded ``failed`` is no bar, the
     run_slice that read the verdict as a failure was the bug (jo602411:
     four escalation artefacts for a plan that should have dropped).
@@ -1820,7 +1840,12 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     also tagged ``verdict:moot`` for ``_step_moot``'s plan drop. A live
     job defers to the next tick; a node under a ``release-pass`` root
     keeps the fix loop's own rulings; a ``moot:`` pinned to another
-    gripe is never this plan's."""
+    gripe is never this plan's. A newest attempt stamped
+    ``human_only_hit`` keeps its ask (td604234): the denied run's
+    ``handoff:`` still posts the session's result — ``attempt FAILED,
+    touched deny_write_paths: …`` over a ``moot:`` line — and its log
+    tail carries it too, but no verdict closes ahead of the human-only
+    ruling."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
             continue
@@ -1828,6 +1853,8 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
             continue
         root = plan.nodes.get(n.root)
         if root is not None and "release-pass" in root.open_tags:
+            continue
+        if _human_hit(plan, n):
             continue
         ended = _attempt_jobs(plan, n)
         last = ended[-1] if ended else (plan.jobs(n)[-1] if plan.jobs(n) else None)

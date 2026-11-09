@@ -3954,6 +3954,90 @@ def test_no_commit_hand_posted_moot_drops_the_plan(
     assert _status(store, mint.root_id) == "won't-do"
 
 
+def test_brief_comment_example_verdict_never_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td604234 (gr602896 review): a ``brief:`` quoting the verdict
+    grammar — "answer ``moot: <why>`` if the fix is already on main" —
+    is no ruling. With no job yet ``_verdict_comment`` read every
+    comment's every line, so the quoted ``moot:`` dropped work no
+    session ever ran. Only a ``handoff:`` body or a comment that IS
+    the verdict counts now; a prose comment whose verdict-shaped line
+    sits under its own first line is likewise out."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _todo_comment(
+        store,
+        task,
+        "brief: check the flaky gate on main. If it is already green, "
+        "end your run with\n"
+        "moot: gr1 already fixed by f628e681f\n"
+        "as the first line of your final message.",
+    )
+    _todo_comment(
+        store,
+        task,
+        "Coordinator note — I looked at origin/main and it still reads "
+        "red to me.\nmoot: gr1 already fixed by f628e681f",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, task) != "done"
+    assert "verdict:moot" not in _open_tags(store, task)
+    assert _status(store, mint.root_id) != "won't-do"
+    assert res.dispatched == 1
+
+
+def test_bare_verdict_comment_needs_no_job(store: Store) -> None:
+    """The other half of the td604234 restriction: a comment that IS
+    the verdict — ``moot:`` on its first line — still drops a node no
+    job ever ran (a hand-posted ruling needs no attempt)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _todo_comment(store, task, "moot: gr1 already fixed by b258df7ae")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert _status(store, task) == "done"
+    assert _status(store, mint.root_id) == "won't-do"
+
+
+def test_human_only_hit_verdict_never_closes(store: Store) -> None:
+    """td604234 (gr602896 review): a denied attempt still posts its
+    ``handoff:`` — ``attempt FAILED, touched deny_write_paths: …`` over
+    the session's own ``moot:`` line — and the log tail carries the
+    verdict too. Neither may close the node while the job is stamped
+    ``human_only_hit``: the ask owns that ruling."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session for td0 touched deny_write_paths: "
+        "`deploy/inventory/x.yml`; todo back to open\n"
+        "--- log tail ---\n"
+        "moot: gr1 already fixed by f628e681f",
+        lane="devin",
+        model="swe-2-high",
+        meta={"human_only_hit": ["deploy/inventory/x.yml"]},
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: attempt FAILED, touched deny_write_paths: "
+        "`deploy/inventory/x.yml`.\n\n"
+        "moot: gr1 already fixed by f628e681f\n\nChecked origin/main.",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    assert _status(store, task) != "done"
+    assert "verdict:moot" not in _open_tags(store, task)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "a human must edit" in _body_text(store, ask)
+    assert "deploy/inventory/x.yml" in _body_text(store, ask)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+
+
 def test_unverified_moot_writes_the_verdict_to_the_gripe(
     store: Store,
 ) -> None:
