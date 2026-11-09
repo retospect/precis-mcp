@@ -72,7 +72,11 @@ from precis.export._patent_cite import (
     render_paper_inline_citation,
     render_patent_citation,
 )
-from precis.export._provenance_strip import record_title, strip_provenance_handles
+from precis.export._provenance_strip import (
+    _neutralise,
+    record_title,
+    strip_provenance_handles,
+)
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -961,6 +965,43 @@ class _Ctx:
         return self.doc_type == _PATENT_DOC_TYPE
 
 
+#: A bare (unbracketed) internal handle token in prose — two-letter kind
+#: code + a 4+-digit id, not inside a URL/DOI/path (no ``/``, ``.``, ``:``,
+#: ``~``, ``-`` right before it) and no ``~``-selector or numeric-fraction
+#: continuation after. Same shape as the docx exporter's: the 4-digit
+#: floor keeps chemistry (``co2``, ``pt111``) literal and
+#: :func:`_bare_handle_tex`'s registry check does the rest.
+_BARE_HANDLE = re.compile(r"(?<![\w/.:~-])[a-z]{2}\d{4,}(?![\w~]|[-.]\d)")
+
+#: Kinds whose bare handle token dispatches as a citation — the same set
+#: ``_render_target`` routes to a cite dispatch rather than a record link.
+_BARE_CITE_KINDS = frozenset({"paper", "patent", "finding"})
+
+
+def _bare_handle_tex(m: re.Match[str], ctx: _Ctx, stash: Callable[[str], str]) -> str:
+    """A bare handle token in prose → its render, for :data:`_BARE_HANDLE`.
+
+    The web reader autolinks ``pa57151`` (gripe 553317); a bare token here
+    takes the same dispatch the bracketed ``[pa5]`` form uses — cite kinds
+    cite, a ``dc`` chunk cross-refs, an audience-aware record links. A
+    cite-kind token that resolves to nothing stays literal (a bare token
+    must never silently vanish); any other unrendered record splices its
+    title, the docx exporter's treatment (gr493181)."""
+    token = m.group(0)
+    parsed = handle_registry.parse(token)
+    if parsed is None:
+        return token
+    rendered = _render_target(token, None, ctx)
+    if rendered:
+        return stash(rendered)
+    if parsed[0] in _BARE_CITE_KINDS:
+        return token
+    title = _neutralise(record_title(token, ctx.store))
+    if title == parsed[0]:  # fell back to the kind name — worth a warning
+        ctx.warnings.append(f"bare handle {token!r} in prose rendered as {parsed[0]!r}")
+    return title
+
+
 def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     """Render a non-reference run of prose to LaTeX: math + code stashed
     verbatim, sub/sup → ``\\textsubscript`` / ``\\textsuperscript``,
@@ -1005,6 +1046,11 @@ def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     # 3b. Abbreviations → \gls (first use) / \glstip tooltip (later uses),
     #     stashed, on the raw prose (the docx exporter's matcher).
     s = _glsify(s, ctx, preceding, _stash)
+    # 3c. Bare internal handles (``pa57151`` — no brackets): the web reader
+    #     autolinks them; a cite-kind handle takes the bracketed form's
+    #     dispatch, other records splice their title — a raw ``pa<id>``
+    #     never leaks into the PDF (gr606571).
+    s = _BARE_HANDLE.sub(lambda m: _bare_handle_tex(m, ctx, _stash), s)
     # 4. Escape the remaining prose, then translate any non-ASCII glyphs.
     s = _encode_unicode(_latex_escape(s))
     # 5. Bold then italic (the * survived escaping — not a LaTeX special).

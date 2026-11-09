@@ -667,6 +667,84 @@ def test_handle_paper_pc_pa_render_cite() -> None:
     assert ctx.cited == ["miller23"]  # collapsed to one bib entry
 
 
+def test_bare_pa_handle_in_prose_renders_cite() -> None:
+    """A bare ``pa<id>`` in prose — no brackets — cites like ``[pa<id>]``:
+    the web reader autolinks it (gr553317) so the PDF must not print the
+    raw handle (gr606571)."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kim26") if h == "pa57151" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(
+        "Recent work pa57151 reports high-entropy alloy catalysts.", ctx
+    )
+    assert r"\cite{kim26}" in out
+    assert "pa57151" not in out
+    assert ctx.cited == ["kim26"]
+
+
+def test_bare_pa_handle_unresolvable_stays_literal() -> None:
+    """An unresolvable bare ``pa<id>`` keeps the token — a bare handle in
+    prose must never silently vanish."""
+    import types
+
+    store = types.SimpleNamespace(resolve_handle=lambda h: None)
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("see pa57151 for the alloy.", ctx)
+    assert "pa57151" in out
+    assert ctx.cited == []
+
+
+def test_bare_pc_handle_in_prose_renders_cite() -> None:
+    """A bare ``pc<id>`` chunk handle cites its parent paper's key."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kong24") if h == "pc45678" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("the seawater result pc45678.", ctx)
+    assert r"\cite{kong24}" in out
+    assert "pc45678" not in out
+
+
+def test_bare_record_handle_splices_title() -> None:
+    """A bare non-cite record handle (``dr<id>``) splices the record's
+    title — the docx exporter's treatment (gr493181)."""
+    import types
+
+    store = types.SimpleNamespace(
+        fetch_refs_by_ids=lambda ids: {
+            173020: types.SimpleNamespace(title="Quarterly results memo")
+        }
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("see dr173020 for details.", ctx)
+    assert "Quarterly results memo" in out
+    assert "dr173020" not in out
+
+
+def test_bare_handle_guards_prose_tokens() -> None:
+    """Lookalike tokens are untouched: short ids, chemistry, and tokens
+    inside math or code spans never parse as handles."""
+    import types
+
+    store = types.SimpleNamespace(resolve_handle=lambda h: None)
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(
+        "id pa12 and CO2 levels; `pa57151` literal and $x_2$.", ctx
+    )
+    assert "pa12" in out  # <4 digits — not a handle
+    assert "`pa57151`" not in out and "pa57151" in out  # code span → texttt literal
+    assert r"\texttt{pa57151}" in out
+
+
 def test_handle_patent_pk_renders_cite() -> None:
     """[pk<id>] (a patent chunk) resolves to the patent's cite_key -> \\cite."""
     import types
