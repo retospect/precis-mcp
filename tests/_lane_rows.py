@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -81,7 +82,9 @@ def seed_lane(name: str) -> Lane:
     return next(ln for ln in SEED_LANES if ln.name == name)
 
 
-def _account_of(lane: Lane, rank: int) -> Account:
+def _account_of(
+    lane: Lane, rank: int, entitlement: dict[str, Any] | None = None
+) -> Account:
     """The ``llm_account`` row that derives back to ``lane``."""
     # Lane health fields (gr588221): carried when both sides grew them —
     # the field filter keeps a lane/account pair built before the columns
@@ -109,7 +112,7 @@ def _account_of(lane: Lane, rank: int) -> Account:
         models=lane.models,
         default_model=lane.default_model,
         enabled=lane.enabled,
-        entitlement={},
+        entitlement=entitlement or {},
         privacy={},
         promo_expiry=None,
         pools=(),
@@ -119,14 +122,21 @@ def _account_of(lane: Lane, rank: int) -> Account:
     )
 
 
-def use_lanes(monkeypatch: pytest.MonkeyPatch, *table: Lane) -> tuple[Lane, ...]:
+def use_lanes(
+    monkeypatch: pytest.MonkeyPatch,
+    *table: Lane,
+    entitlements: dict[str, dict[str, Any]] | None = None,
+) -> tuple[Lane, ...]:
     """Stand ``table`` (default :data:`SEED_LANES`) as the lane table:
     patch ``accounts.list_accounts`` to return rows that derive to it —
-    rank = position. Returns the lanes for lookups."""
+    rank = position. ``entitlements`` maps a lane name to its account
+    row's ``entitlement`` (e.g. ``rung_caps`` for spend caps, gr599486).
+    Returns the lanes for lookups."""
     from precis.utils.llm import accounts
 
     lanes = table or SEED_LANES
-    rows = [_account_of(lane, i) for i, lane in enumerate(lanes)]
+    ents = entitlements or {}
+    rows = [_account_of(lane, i, ents.get(lane.name)) for i, lane in enumerate(lanes)]
     monkeypatch.setattr(accounts, "list_accounts", lambda store: list(rows))
     return lanes
 

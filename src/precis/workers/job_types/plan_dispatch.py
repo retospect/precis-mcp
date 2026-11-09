@@ -124,7 +124,19 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    node's lane-ladder length for a ``run_slice`` op — one rung per
    attempt, so the ladder is spent before the cap fires (td584381 S1a);
    a reviewer counts only the picked lane's rungs, a model-pinned op
-   keeps :data:`DEFAULT_RETRIES`, and so does a ladder-less one. What
+   keeps :data:`DEFAULT_RETRIES`, and so does a ladder-less one. A
+   ``rung_caps`` entry on the lane's ``llm_account.entitlement``
+   (``{model id: usd}``, gr599486 — Reto's $25-per-node bound for a
+   paid top rung like ``claude-fable-5-1-medium`` on devin) makes the
+   rung spend-blocked once the node's recorded spend meets it: the
+   spend is summed ``meta.usage`` over the node's job rows
+   (``on_demand_usd``/``cost_usd`` direct, ``acus_consumed`` at the
+   lane's ``entitlement.acu_usd`` rate, default
+   :data:`DEFAULT_ACU_USD`), ``_escalate`` skips the rung like a
+   backed-off lane, the retry-cap ladder loses it too, and an
+   all-blocked tail caps the node with ``meta.spend = {usd, cap_usd,
+   blocked, at}`` stamped; the rescue step names the cap. An uncapped
+   rung is never spend-blocked. What
    parks it follows the failure: a failed job stamped ``no_commit``
    (a clean exit that wrote nothing — no rung teaches that) or an
    exhausted ``run_slice`` node enters rescue —
@@ -196,6 +208,7 @@ Workers never import handlers: every write here is a store call.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -338,6 +351,17 @@ _RERUN_ASK_OPTIONS: list[str] = [
 #: parks the node behind a "land again" ask (gr570187): the re-land is
 #: bounded so a broken gate environment cannot loop the lander forever.
 LAND_AGAIN_CAP = 2
+
+#: ``meta.spend`` on a task node — the dispatcher's spend record
+#: ``{usd, cap_usd, blocked, at}`` (gr599486). ``blocked: True`` means
+#: a paid rung's ``rung_caps`` cap refused the climb; the rescue step
+#: and the ask path read the stamp to name the cap.
+SPEND_KEY = "spend"
+
+#: ACU→USD for ``meta.usage.acus_consumed`` when the lane's
+#: ``entitlement.acu_usd`` names no rate — Devin's published list price
+#: per ACU (~$2 on the metered plans, gr599486).
+DEFAULT_ACU_USD = 2.0
 
 #: Dispatch prio of a node with no prio on it or any ancestor.
 DEFAULT_PRIO = 5
@@ -1419,6 +1443,7 @@ def _step_reviews(
     res: PassResult,
     now: datetime,
     lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     for n in plan.todos():
         if not _is_reviewer(n) or plan.paused(n):
@@ -1458,7 +1483,9 @@ def _step_reviews(
                 else "no `review:` comment"
             )
             job_type_, params_ = _resolve_op(n)
-            cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type_, params_))
+            cap = _retry_cap(
+                n, _cap_rungs(plan, lane_table, n, job_type_, params_, rules)
+            )
             w.stamp_meta(n, {"review": {**record, "verdict": None}})
             w.comment(
                 n,
@@ -2220,6 +2247,124 @@ def _land_again_capped(plan: _Plan, n: _Node) -> bool:
     )
 
 
+# ── per-node spend caps (gr599486) ─────────────────────────────
+
+
+def _usd_number(v: Any) -> float | None:
+    """``float(v)`` when ``v`` is a finite number, else ``None`` — a
+    bool or a non-number never counts toward spend or caps."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if math.isfinite(f) else None
+
+
+def _spend_rules(store: Any) -> dict[str, dict[str, Any]]:
+    """Per-lane spend rules from ``llm_account.entitlement`` (gr599486):
+    ``{lane: {"caps": {model: usd}, "acu_usd": rate}}``. ``rung_caps``
+    maps a model id to the per-node USD cap for attempts pinned to it
+    (Reto's $25 for ``claude-fable-5-1-medium`` on devin, billed to
+    Devin credits); ``acu_usd`` is the lane's ACU→USD rate for
+    ``meta.usage.acus_consumed``. A lane with neither has no spend rule.
+    Read at call time through the accounts module attribute — the same
+    seam ``lanes.load_lanes``'s tests patch."""
+    from precis.utils.llm import accounts
+
+    out: dict[str, dict[str, Any]] = {}
+    for a in accounts.list_accounts(store):
+        ent = a.entitlement if isinstance(a.entitlement, dict) else {}
+        caps: dict[str, float] = {}
+        raw = ent.get("rung_caps")
+        if isinstance(raw, dict):
+            for model, usd in raw.items():
+                v = _usd_number(usd)
+                if v is not None and v > 0:
+                    caps[str(model)] = v
+        rate = _usd_number(ent.get("acu_usd"))
+        if caps or (rate is not None and rate > 0):
+            out[str(a.name)] = {
+                "caps": caps,
+                "acu_usd": (rate if rate is not None and rate > 0 else DEFAULT_ACU_USD),
+            }
+    return out
+
+
+def _job_spend_usd(meta: dict[str, Any], rules: dict[str, dict[str, Any]]) -> float:
+    """USD the job row's ``meta.usage`` reports having cost —
+    ``on_demand_usd``/``cost_usd`` direct, ``acus_consumed`` at the
+    job's lane's ``acu_usd`` rate (gr599486)."""
+    usage = meta.get("usage")
+    if not isinstance(usage, dict):
+        return 0.0
+    total = 0.0
+    for key in ("on_demand_usd", "cost_usd"):
+        v = _usd_number(usage.get(key))
+        if v is not None and v > 0:
+            total += v
+    acus = _usd_number(usage.get("acus_consumed"))
+    if acus is not None and acus > 0:
+        lane = str(meta.get("lane") or "")
+        total += acus * float(rules.get(lane, {}).get("acu_usd", DEFAULT_ACU_USD))
+    return total
+
+
+def _node_spend_usd(plan: _Plan, n: _Node, rules: dict[str, dict[str, Any]]) -> float:
+    """The node's recorded spend — summed over every job row parented
+    to it, ended or live (a live job's reported usage is real spend)."""
+    return sum(_job_spend_usd(j.meta, rules) for j in plan.jobs(n))
+
+
+def _rung_cap_usd(rung: _lanes.Rung, rules: dict[str, dict[str, Any]]) -> float | None:
+    """The per-node USD cap a ``rung_caps`` entry puts on this rung's
+    model — ``None`` for an uncapped rung, which is never
+    spend-blocked."""
+    if rung.model is None:
+        return None
+    v = rules.get(rung.lane, {}).get("caps", {}).get(rung.model)
+    return float(v) if v is not None else None
+
+
+def _climb_start(
+    plan: _Plan, n: _Node, rungs: tuple[_lanes.Rung, ...], attempts: int
+) -> int:
+    """The ladder index the next attempt climbs from — one rung above
+    where the newest REAL attempt ran (a no-attempt job is no rung to
+    climb from, gr571395), else the attempt count, floored at the top.
+    The ``_escalate`` floor, factored so :func:`_spend_hit` reads the
+    same tail the climb does."""
+    ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED and not _no_attempt(j)]
+    prev = (
+        _lanes.rung_index(
+            rungs, ended[-1].meta.get("lane"), ended[-1].meta.get("model")
+        )
+        if ended
+        else None
+    )
+    return min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
+
+
+def _spend_hit(
+    plan: _Plan,
+    n: _Node,
+    rungs: tuple[_lanes.Rung, ...],
+    rules: dict[str, dict[str, Any]],
+) -> tuple[float, float] | None:
+    """``(spend, cap_usd)`` when every rung at or above the node's
+    climb floor carries a ``rung_caps`` cap its recorded spend already
+    meets — the ladder is spent on dollars, not retries (gr599486).
+    ``None`` when no caps apply or an affordable rung remains."""
+    if not rungs or not rules:
+        return None
+    spend = _node_spend_usd(plan, n, rules)
+    if spend <= 0:
+        return None
+    start = _climb_start(plan, n, rungs, _attempts(plan, n))
+    caps = [_rung_cap_usd(rungs[i], rules) for i in range(start, len(rungs))]
+    if any(c is None or spend < c for c in caps):
+        return None
+    return spend, min(c for c in caps if c is not None)
+
+
 def _task_rungs(
     lane_table: tuple[_lanes.Lane, ...], n: _Node, params: dict[str, Any]
 ) -> tuple[_lanes.Rung, ...]:
@@ -2240,13 +2385,17 @@ def _cap_rungs(
     n: _Node,
     job_type: str,
     params: dict[str, Any],
+    rules: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[_lanes.Rung, ...]:
     """The ladder the retry cap counts, in one place (td584381 S1a
     F2/F3): ``()`` for a non-run_slice op or a model-pinned one —
     ``_escalate`` never climbs those, so the cap falls back to
     :data:`DEFAULT_RETRIES`. A reviewer climbs inside the lane its
     newest attempt ran on (``_review_lane``'s pick): its cap is that
-    lane's rung count, never the full review-class table's."""
+    lane's rung count, never the full review-class table's. A rung a
+    ``rung_caps`` cap refuses at the node's recorded spend is out of
+    the budget too — the spend cap shrinks the ladder the retry cap
+    counts (gr599486)."""
     if job_type != DEFAULT_OP or "model" in params:
         return ()
     rungs = _task_rungs(lane_table, n, params)
@@ -2262,6 +2411,12 @@ def _cap_rungs(
         )
         if lane is not None:
             rungs = tuple(r for r in rungs if r.lane == lane)
+    if rules:
+        spend = _node_spend_usd(plan, n, rules)
+        if spend > 0:
+            rungs = tuple(
+                r for r in rungs if (c := _rung_cap_usd(r, rules)) is None or spend < c
+            )
     return rungs
 
 
@@ -2275,7 +2430,7 @@ def _retry_cap(n: _Node, rungs: tuple[_lanes.Rung, ...]) -> int:
     return len(rungs) or DEFAULT_RETRIES
 
 
-def _capped(plan: _Plan, n: _Node, cap: int) -> bool:
+def _capped(plan: _Plan, n: _Node, cap: int, *, spend_capped: bool = False) -> bool:
     jobs = plan.jobs(n)
     # The newest job need only be TERMINAL: a cancelled job burns no
     # attempt itself (:func:`_attempt_jobs` skips it), but the attempts
@@ -2292,6 +2447,10 @@ def _capped(plan: _Plan, n: _Node, cap: int) -> bool:
     if _no_commit(plan, n):
         return True
     if _land_again_capped(plan, n):
+        return True
+    # A spend cap is spent money, not retries — every rung left for the
+    # node sits over its per-node USD bound (gr599486).
+    if spend_capped:
         return True
     attempts = _attempts(plan, n)
     # ``attempts > 0``: with ``meta.retries: 0`` a no-attempt job (a host
@@ -2335,6 +2494,7 @@ def _escalate(
     n: _Node,
     params: dict[str, Any],
     lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[bool, str | None]:
     """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
@@ -2352,7 +2512,12 @@ def _escalate(
     the floor is read on the FULL ladder so a backed-off lane never drops
     the retry below the last real attempt's rung, and when nothing free
     sits at or above the floor the node parks (lane-wait) rather than
-    climbing down.
+    climbing down. A rung a ``rung_caps`` cap refuses at the node's
+    recorded spend is skipped the same way (gr599486): the all-blocked
+    tail was already caught by :func:`_spend_hit`'s cap, so a pick that
+    runs out here means a backed-off lane shares the tail — the note
+    names both. A climb onto a capped rung stamps ``meta.spend`` so the
+    node carries its spend record (``blocked: False`` = headroom left).
 
     Returns ``(go, note)``: ``go=False`` parks the node this tick — no
     job is minted — and ``note`` is the action line for the summary.
@@ -2380,30 +2545,52 @@ def _escalate(
     rungs = _task_rungs(lane_table, n, params)
     if not rungs:
         return True, None
-    # A no-attempt job is no rung to climb from either (gr571395): the
-    # retry starts from the newest job that actually attempted.
-    ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED and not _no_attempt(j)]
-    prev = (
-        _lanes.rung_index(
-            rungs, ended[-1].meta.get("lane"), ended[-1].meta.get("model")
-        )
-        if ended
-        else None
-    )
-    start = min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
+    start = _climb_start(plan, n, rungs, attempts)
     backed = set(_lanes.lane_backoffs(w.store))
+    spend = _node_spend_usd(plan, n, rules) if rules else 0.0
+    spend_blocked = frozenset(
+        i
+        for i, r in enumerate(rungs)
+        if (c := _rung_cap_usd(r, rules or {})) is not None and spend >= c
+    )
     idx = next(
-        (i for i in range(start, len(rungs)) if rungs[i].lane not in backed),
+        (
+            i
+            for i in range(start, len(rungs))
+            if rungs[i].lane not in backed and i not in spend_blocked
+        ),
         None,
     )
     if idx is None:
         blocked_lanes = sorted({r.lane for r in rungs[start:]})
-        return False, (
+        note = (
             f"td{n.id}: lane-wait — every rung from {start + 1}/{len(rungs)} "
             f"up sits on a backed-off lane ({', '.join(blocked_lanes)}); the "
             "retry waits, it never climbs down"
         )
+        capped = sorted(
+            {rungs[i].model or "default" for i in spend_blocked if i >= start}
+        )
+        if capped:
+            note += (
+                f"; rung(s) {', '.join(capped)} also sit over the node's "
+                f"${spend:.2f} recorded spend"
+            )
+        return False, note
     target = rungs[idx]
+    cap_usd = _rung_cap_usd(target, rules) if rules else None
+    if cap_usd is not None:
+        w.stamp_meta(
+            n,
+            {
+                SPEND_KEY: {
+                    "usd": round(spend, 4),
+                    "cap_usd": cap_usd,
+                    "blocked": False,
+                    "at": _iso(datetime.now(UTC)),
+                }
+            },
+        )
     params["lane"] = target.lane
     if target.model is not None:
         params["model"] = target.model
@@ -2845,7 +3032,11 @@ def _step_ci_rerun(
 
 
 def _step_dispatch(
-    plan: _Plan, w: _Writer, res: PassResult, lane_table: tuple[_lanes.Lane, ...]
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     for n in sorted(plan.todos(), key=lambda x: (_effective_prio(plan, x), x.id)):
         if not _dispatchable(plan, n) or n.status != "open":
@@ -2853,12 +3044,26 @@ def _step_dispatch(
         if _excluded(n) or _claims(n) or plan.live_job(n):
             continue
         job_type, params = _resolve_op(n)
-        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params))
+        rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
+        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
+        spend_hit = _spend_hit(plan, n, rungs, rules) if rules else None
+        if spend_hit is not None:
+            w.stamp_meta(
+                n,
+                {
+                    SPEND_KEY: {
+                        "usd": round(spend_hit[0], 4),
+                        "cap_usd": spend_hit[1],
+                        "blocked": True,
+                        "at": _iso(datetime.now(UTC)),
+                    }
+                },
+            )
         if (
             plan.blocked(n)
             or plan.paused(n)
             or _mint_in_flight(plan, n)
-            or _capped(plan, n, cap)
+            or _capped(plan, n, cap, spend_capped=spend_hit is not None)
         ):
             continue
         jobs = plan.jobs(n)
@@ -2901,7 +3106,7 @@ def _step_dispatch(
                 continue
             params["lane"] = lane_name
         if job_type == DEFAULT_OP:
-            go, climbed = _escalate(w, plan, n, params, lane_table)
+            go, climbed = _escalate(w, plan, n, params, lane_table, rules)
             if climbed:
                 res.notes.append(climbed)
             if not go:
@@ -3502,6 +3707,14 @@ def _rescue_node(
         f"retry cap {cap}: the lane ladder is spent "
         f"({attempts} attempts; rungs tried: {rungs_tried or 'unrecorded'})"
     )
+    spend = n.meta.get(SPEND_KEY)
+    if isinstance(spend, dict) and isinstance(spend.get("cap_usd"), (int, float)):
+        # The per-node USD cap stopped the climb — name it (gr599486).
+        step += (
+            f"; the per-node spend cap ${float(spend['cap_usd']):.2f} for a "
+            f"paid rung held — ${float(spend.get('usd') or 0):.2f} recorded "
+            "spent on the node's job rows"
+        )
     verdict = _verdict_line(text)
     if verdict is None:
         # The log tail missed it — the posted ``handoff:`` comment still
@@ -3559,6 +3772,7 @@ def _step_hygiene(
     res: PassResult,
     now: datetime,
     lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     _step_gripe_leases(w.store, w, res, now)
     _step_unplaced(w.store, plan, res, now)
@@ -3577,8 +3791,21 @@ def _step_hygiene(
             continue
         job_type, params = _resolve_op(n)
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
-        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params))
-        if not _capped(plan, n, cap):
+        cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
+        spend_hit = _spend_hit(plan, n, rungs, rules) if rules else None
+        if spend_hit is not None:
+            w.stamp_meta(
+                n,
+                {
+                    SPEND_KEY: {
+                        "usd": round(spend_hit[0], 4),
+                        "cap_usd": spend_hit[1],
+                        "blocked": True,
+                        "at": _iso(now),
+                    }
+                },
+            )
+        if not _capped(plan, n, cap, spend_capped=spend_hit is not None):
             continue
         if plan.open_asks(n):
             continue
@@ -3700,17 +3927,18 @@ def run_pass(
         plan = _load(store)
         res.roots = len(plan.roots)
         lane_table = _lanes.load_lanes(store)
+        rules = _spend_rules(store)
         w = _Writer(store, dry_run)
         _step_gates(store, plan, w, res, now)
         _step_loops(store, plan, w, res, now)
-        _step_reviews(store, plan, w, res, now, lane_table)
+        _step_reviews(store, plan, w, res, now, lane_table, rules)
         _step_reopen(plan, w, res)
         _step_rearm(plan, w, res)
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
         _step_ci_rerun(store, plan, w, res, now)
-        _step_dispatch(plan, w, res, lane_table)
-        _step_hygiene(plan, w, res, now, lane_table)
+        _step_dispatch(plan, w, res, lane_table, rules)
+        _step_hygiene(plan, w, res, now, lane_table, rules)
     return res
 
 

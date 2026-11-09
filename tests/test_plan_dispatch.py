@@ -900,6 +900,188 @@ def test_retry_cap_climbs_the_ladder_then_rescues(
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
 
 
+def _paid_devin_lane() -> L.Lane:
+    """A devin lane with a paid top rung (gr599486): free swe-2 models
+    below ``claude-fable-5-1-medium`` — the shape Reto armed with a
+    $25-per-node bound."""
+    return L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=True,
+        vendor="cognition",
+        models=("swe-2-high", "claude-fable-5-1-medium"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+
+
+def _fable_caps() -> dict[str, dict[str, Any]]:
+    """``llm_account.entitlement.rung_caps`` for the paid rung."""
+    return {"devin": {"rung_caps": {"claude-fable-5-1-medium": 25.0}}}
+
+
+def test_spend_cap_refuses_the_paid_rung(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr599486: at the per-node USD cap the climb to the paid rung is
+    refused — the node is spent, enters rescue, carries ``meta.spend``
+    and the signature gripe's step names the cap."""
+    use_lanes(
+        monkeypatch,
+        _paid_devin_lane(),
+        seed_lane("claude-sub"),
+        entitlements=_fable_caps(),
+    )
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        # A lane pin narrows the ladder to the devin lane's two rungs —
+        # the capped rung is the only one left to climb.
+        m.node(
+            "task",
+            "The task",
+            {"op": {"type": "run_slice", "params": {"lane": "devin"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    # Attempt 1 ran the free foot and reported $30 of spend.
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model="swe-2-high",
+        meta={"usage": {"on_demand_usd": 30.0}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    spend = _meta(store, task)["spend"]
+    assert spend["blocked"] is True
+    assert spend["cap_usd"] == 25.0
+    assert spend["usd"] == 30.0
+    # The rescue signature gripe's step names the cap.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'related-to'",
+            (task,),
+        ).fetchall()
+    (gripe,) = [int(r[0]) for r in rows]
+    gripe_body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(gripe))
+    assert "spend cap $25.00" in gripe_body
+
+
+def test_spend_cap_allows_below_the_cap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr599486: spend under the rung's cap climbs the paid rung as
+    before — ``meta.spend`` records the headroom (``blocked: False``)."""
+    use_lanes(
+        monkeypatch,
+        _paid_devin_lane(),
+        seed_lane("claude-sub"),
+        entitlements=_fable_caps(),
+    )
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model="swe-2-high",
+        meta={"usage": {"on_demand_usd": 10.0}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params["lane"], params["model"]) == (
+        "devin",
+        "claude-fable-5-1-medium",
+    )
+    spend = _meta(store, task)["spend"]
+    assert spend["blocked"] is False
+    assert spend["usd"] == 10.0
+    assert spend["cap_usd"] == 25.0
+
+
+def test_spend_cap_skips_only_the_capped_rung(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr599486: the spend cap refuses THE capped rung — uncapped
+    (free/subscription) rungs above it still climb."""
+    use_lanes(
+        monkeypatch,
+        _paid_devin_lane(),
+        seed_lane("claude-sub"),
+        entitlements=_fable_caps(),
+    )
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model="swe-2-high",
+        meta={"usage": {"on_demand_usd": 30.0}},
+    )
+    res = pd.run_pass(store)
+    # $30 ≥ $25 skips fable; the claude-sub subscription rungs remain.
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert (params["lane"], params["model"]) == ("claude-sub", "claude-sonnet-5")
+
+
+def test_spend_cap_maps_acu_to_usd(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr599486: ``meta.usage.acus_consumed`` maps to USD at the lane's
+    ``entitlement.acu_usd`` rate — 15 ACU × $3 = $45 ≥ $25."""
+    use_lanes(
+        monkeypatch,
+        _paid_devin_lane(),
+        seed_lane("claude-sub"),
+        entitlements={
+            "devin": {
+                "rung_caps": {"claude-fable-5-1-medium": 25.0},
+                "acu_usd": 3.0,
+            }
+        },
+    )
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "The task",
+            {"op": {"type": "run_slice", "params": {"lane": "devin"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model="swe-2-high",
+        meta={"usage": {"acus_consumed": 15.0}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    spend = _meta(store, task)["spend"]
+    assert spend["blocked"] is True
+    assert spend["usd"] == 45.0
+
+
 def test_human_only_hit_files_the_ask_at_once(store: Store) -> None:
     """td584381 S1a: a failed attempt stamped ``human_only_hit`` skips
     the ladder and rescue — the ask names the paths a human must edit."""
