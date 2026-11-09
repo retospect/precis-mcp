@@ -41,10 +41,15 @@ HEAD_SHA = "a" * 40
 MAIN_SHA = "d" * 40
 
 
-#: The fake ``origin/prod..origin/main`` range the engine-review gate
+#: The fake ``origin/prod..<pin>`` range the engine-review gate
 #: reads (gr597625): tests put ``rp._GitLand`` commits here — the real
 #: ``lanes.engine_hits`` filter still applies inside the gate.
 _GIT_LANDS: list[Any] = []
+
+#: The pinned ``origin/main`` head the fake scan resolves — the one
+#: commit snapshot the pass pins its compare, ordering and recorded
+#: target to (td601005); tests move it to model main moving.
+_GIT_PIN: list[str] = [MAIN_SHA]
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +61,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_RELEASE_REPO", raising=False)
     psettings.invalidate()
     _GIT_LANDS.clear()
-    monkeypatch.setattr(rp, "_git_lands", lambda: list(_GIT_LANDS))
+    _GIT_PIN[0] = MAIN_SHA
+    monkeypatch.setattr(rp, "_git_lands", lambda: (list(_GIT_LANDS), _GIT_PIN[0]))
 
 
 def _at(hour: int, minute: int) -> datetime:
@@ -94,7 +100,8 @@ def _fake_github(
         calls.append(url)
         if error is not None:
             raise error
-        if url.endswith("/compare/prod...main"):
+        # td601005: the compare's head is the scan's pin, not ``main``.
+        if "/compare/prod..." in url:
             data: Any = compare
         elif url.endswith("/git/matching-refs/heads/release/"):
             data = list(heads) if isinstance(heads, (list, tuple)) else heads
@@ -163,9 +170,8 @@ def test_mints_when_ahead_and_idle(
     # one compare, the heads probe (no tag read with no release heads),
     # then the main-sha read for the stamp
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
-        f"{API}/git/ref/heads/main",
     ]
     root = res.minted
     assert root is not None and "release-pass" in _tags(store, root)
@@ -213,7 +219,7 @@ def test_skips_on_an_in_flight_branch(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == "release/r7 is in flight"
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
         f"{API}/compare/{HEAD_SHA}...main",
@@ -228,11 +234,10 @@ def test_skips_on_an_in_flight_branch(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
         f"{API}/compare/{HEAD_SHA}...prod",
-        f"{API}/git/ref/heads/main",
     ]
     _close(store, res.minted)
     # head + tag but prod lacks the head: in flight
@@ -268,29 +273,29 @@ def test_a_stale_head_on_main_does_not_block(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
         f"{API}/compare/{HEAD_SHA}...main",
-        f"{API}/git/ref/heads/main",
     ]
     _close(store, res.minted)
     # identical to main's tip clears the same way (main moved: new sha)
+    _GIT_PIN[0] = "e" * 40
     _fake_github(
         monkeypatch,
         heads=[_head(7)],
         main_cmp={"status": "identical"},
-        main_ref={"ref": "refs/heads/main", "object": {"sha": "e" * 40}},
     )
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
     _close(store, res.minted)
     # a head whose commits main does not contain still blocks
+    _GIT_PIN[0] = MAIN_SHA
     calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "behind"})
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == "release/r7 is in flight" and res.minted is None
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
         f"{API}/git/matching-refs/tags/deployed/",
         f"{API}/compare/{HEAD_SHA}...main",
@@ -322,7 +327,7 @@ def test_skips_when_prod_equals_main(
     )
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == blocker
-    assert calls == [f"{API}/compare/prod...main"]
+    assert calls == [f"{API}/compare/prod...{MAIN_SHA}"]
 
 
 @pytest.mark.parametrize(
@@ -365,12 +370,11 @@ def test_window_list_and_midnight_crossing(
     for at in (_at(23, 30), _at(0, 30)):
         res = rp.run_pass(store, repo=REPO, now=at)
         assert res.blocker == "inside the no-release window 23:00-01:00Z", at
-    # one pass per main sha: each mint here needs main to have moved
+    # one pass per main sha: each mint here needs main to have moved —
+    # main moving is the scan's pin moving (td601005).
     for at, sha in ((_at(1, 0), "e" * 40), (_at(22, 59), "f" * 40)):
-        _fake_github(
-            monkeypatch,
-            main_ref={"ref": "refs/heads/main", "object": {"sha": sha}},
-        )
+        _GIT_PIN[0] = sha
+        _fake_github(monkeypatch)
         res = rp.run_pass(store, repo=REPO, now=at)
         assert res.minted is not None, at
         _close(store, res.minted)
@@ -551,9 +555,8 @@ def test_the_job_written_row_blocks_then_the_confirm_clears(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
-        f"{API}/git/ref/heads/main",
     ]
 
 
@@ -842,7 +845,7 @@ def test_over_cap_release_heads_are_unreadable(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert "GitHub unreadable" in res.blocker and res.minted is None
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
     ]
 
@@ -854,7 +857,7 @@ def test_a_non_list_matching_refs_payload_is_unreadable(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert "GitHub unreadable" in res.blocker and res.minted is None
     assert calls == [
-        f"{API}/compare/prod...main",
+        f"{API}/compare/prod...{MAIN_SHA}",
         f"{API}/git/matching-refs/heads/release/",
     ]
 
@@ -889,10 +892,8 @@ def test_a_pass_for_the_same_sha_blocks(
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.blocker == f"pass for {MAIN_SHA[:12]} already ran: done"
     assert res.minted is None
-    _fake_github(
-        monkeypatch,
-        main_ref={"ref": "refs/heads/main", "object": {"sha": "e" * 40}},
-    )
+    _GIT_PIN[0] = "e" * 40
+    _fake_github(monkeypatch)
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None
     assert f"release-main:{'e' * 12}" in _tags(store, res.minted)
@@ -910,20 +911,6 @@ def test_dry_run_reports_an_existing_claim(
     assert not res.would_mint
 
 
-@pytest.mark.parametrize(
-    "main_ref",
-    [{"ref": "refs/heads/main", "object": {}}, [], [{"ref": "refs/heads/mainx"}]],
-    ids=["no-sha", "empty-list", "prefix-only"],
-)
-def test_an_unreadable_main_sha_blocks(
-    store: Store, monkeypatch: pytest.MonkeyPatch, main_ref: Any
-) -> None:
-    _fake_github(monkeypatch, main_ref=main_ref)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert "GitHub unreadable" in res.blocker and res.minted is None
-    assert rp._release_pass_ids(store) == []
-
-
 def test_two_interleaved_runners_mint_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -932,13 +919,13 @@ def test_two_interleaved_runners_mint_once(
     loser's re-check inside the lock sees the winner's root."""
     _fake_github(monkeypatch)
     barrier = threading.Barrier(2)
-    real_main_sha = rp._main_sha
+    real_in_flight = rp._in_flight
 
-    def synced_main_sha(base: str) -> str:
+    def synced_in_flight(repo: str) -> str | None:
         barrier.wait(timeout=30)  # both runners reach the claim together
-        return real_main_sha(base)
+        return real_in_flight(repo)
 
-    monkeypatch.setattr(rp, "_main_sha", synced_main_sha)
+    monkeypatch.setattr(rp, "_in_flight", synced_in_flight)
     results: list[rp.PollResult] = []
 
     def run() -> None:
@@ -1984,12 +1971,14 @@ def _engine_land(
     return int(ref.id)
 
 
-def _landed_comment(store: Store, todo_id: int) -> None:
+def _landed_comment(store: Store, todo_id: int, sha: str = "abc1234") -> None:
     store.chunks.insert_chunks(
         todo_id,
         [
             ChunkInsert(
-                ord=1, text="landed: abc1234 — fix", meta={"chunk_kind": "todo_comment"}
+                ord=1,
+                text=f"landed: {sha} — fix",
+                meta={"chunk_kind": "todo_comment"},
             )
         ],
     )
@@ -2034,7 +2023,7 @@ def test_open_engine_reviewer_blocks_a_pass(
     # gr592271: the blocked verdict needs the compare's commit window —
     # the one read it costs. The in-flight and main-sha probes stay
     # unspent.
-    assert calls == [f"{API}/compare/prod...main"]
+    assert calls == [f"{API}/compare/prod...{MAIN_SHA}"]
 
 
 def test_a_slicer_reviewer_covers_its_childs_land(
@@ -2142,7 +2131,124 @@ def test_nothing_cleared_blocks_and_names_the_pending_reviews(
     assert res.minted is None
     assert res.blocker is not None
     assert f"td{rid}" in res.blocker and "td42" in res.blocker
-    assert calls == [f"{API}/compare/prod...main"]
+    assert calls == [f"{API}/compare/prod...{MAIN_SHA}"]
+
+
+def test_a_fix_cleared_land_needs_its_fix_inside_the_cut(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601005: [A FIX, B pending, C fixes A] — A's clearance rests on
+    C, and C sits past the pending B. The pass may not cut A without
+    its fix: nothing clears, the blocker names B's review."""
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha=c)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
+    rid = _reviewer(store, 43)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td43" in res.blocker
+
+
+def test_the_cut_carries_the_fix_commit(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601005: [A FIX, C fixes A, B pending] — the cut reaches C, so
+    A's FIX clearance holds: the pass mints at C, shipping land and
+    fix together."""
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _GIT_PIN[0] = b
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": c}, {"sha": b}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha=c)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
+    _reviewer(store, 43)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{c[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == c and target["upto"] == [a[:12], c[:12]]
+
+
+def test_a_fix_sha_off_main_blocks_and_says_so(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601005: the fix's ``landed:`` sha names no commit on main
+    ahead of prod — an unverifiable clearance; the pass stays blocked
+    and the blocker names the missing corrective commit."""
+    a = "a" * 40
+    _GIT_PIN[0] = a
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "commits": [{"sha": a}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha="0" * 40)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert "corrective commit" in res.blocker and "0" * 12 in res.blocker
+
+
+def test_the_pass_pins_the_cut_to_the_scanned_head(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601005: main moved after the scan — the recorded target is
+    the scanned head, never the newer tip, so an unreviewed land
+    reaching main mid-pass cannot ride the recorded sha. The pass
+    never reads the main ref at all."""
+    a = "a" * 40
+    _GIT_PIN[0] = a
+    calls = _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "commits": [{"sha": a}],
+        },
+        # a newer head than the pin — must go unread
+        main_ref={"ref": "refs/heads/main", "object": {"sha": "e" * 40}},
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == a and target["upto"] == [a[:12]]
+    assert f"{API}/git/ref/heads/main" not in calls
+    assert f"{API}/compare/prod...{a}" in calls
 
 
 def test_fix_reviewer_with_an_unlanded_fix_blocks(
@@ -2755,7 +2861,7 @@ def test_a_terminal_unlanded_fix_asks_at_once(
     assert res.minted is None
     assert res.blocker is not None
     assert f"td{rid}" in res.blocker and f"td{fix.id}" in res.blocker
-    assert "no landed: comment" in res.blocker
+    assert "no `landed: <sha>` record" in res.blocker
     assert len(_review_wait_asks(store)) == 1
 
 

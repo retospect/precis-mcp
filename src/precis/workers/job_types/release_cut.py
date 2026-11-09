@@ -13,6 +13,8 @@ detached submit/poll pair under ``ssh_node``:
   ``meta.release_target.sha`` for a first cut, the recomputed newest
   fully-reviewed head for a release-fix re-cut, the tip for a pass
   minted without a target — ``--sha`` is passed only in the first two.
+  A land cleared on a corrective commit also holds the cut while that
+  commit sits outside the selected sha (td601005).
 * :func:`poll` waits for the exit file; on exit 0 with a
   ``RELEASE_CUT: r<N> <sha>`` line it records the cut on the plan
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
@@ -381,13 +383,25 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
         _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
     )
     if target is not None:
-        verdicts, _notes, fatal = _rp._engine_verdicts(store)
+        verdicts, _notes, fatal, _pin = _rp._engine_verdicts(store)
         if fatal is not None:
             return None, fatal
         blockers = [
             v.line
             for v in verdicts or ()
             if not v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
+        ]
+        # td601005: a clearance that rests on a corrective commit only
+        # holds while the cut CARRIES it — a land whose fix/revert
+        # commit sits outside the recorded window still blocks it.
+        blockers += [
+            f"engine land {v.unit.label} cleared on a corrective commit "
+            f"({r[:12]}) outside the recorded cut — next: land it inside "
+            "the window or drop the pass so a fresh mint re-reads it"
+            for v in verdicts or ()
+            if v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
+            for r in v.requires
+            if not _rp._sha_in(r, target["upto"])
         ]
         if blockers:
             return None, "; ".join(blockers)

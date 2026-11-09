@@ -40,19 +40,26 @@ the unauthenticated api.github.com budget (60/h) is shared with
    gr575362). No GitHub read has happened yet.
 3. The repo: ``params.repo``, else ``release.repo``, else the checkout's
    ``origin`` (:func:`precis.plans.pr_class.resolve_repo`).
-4. ``GET /repos/<repo>/compare/prod...main``: ``behind_by > 0`` or
+4. ``GET /repos/<repo>/compare/prod...<pin>``: ``behind_by > 0`` or
    ``status == 'diverged'`` means prod holds commits main lacks — no
    mint, whatever ``ahead_by`` says; ``ahead_by == 0`` mints nothing.
    The payload's ``commits`` is also the ordering the review gate
    positions lands on.
 5. The engine-review cut sha (gr592271): the gate's per-land verdicts
-   are computed on the DB and a git scan of ``origin/prod..origin/main``
+   are computed on the DB and a git scan of ``origin/prod..<pin>``
    (:func:`_gate_lands`, gr597625) before any api.github.com read — its
    reviewer mints and review-wait asks file regardless — but an
    uncleared land no longer holds the whole pass. The cut sha is the
    newest commit on main such that every engine land at-or-before it is
-   cleared: the commit just ahead of the oldest uncleared land, the tip
-   when nothing is uncleared. An uncleared land off the ahead-of-prod
+   cleared AND every corrective commit a clearance needs is carried
+   (td601005: a FIX/REVERT whose fix or revert landed past the cut is
+   no clearance — [A FIX, B pending, C fixes A] cuts nothing): the
+   newest commit the gate's spans allow, the scanned head when nothing
+   holds it. ``pin`` is the ``origin/main`` head the scan's fetch
+   resolved — the ONE snapshot the scan, the compare's ordering, the
+   minted target and ``release_cut``'s ``upto`` validation all share;
+   a main move mid-pass can no longer smuggle an unreviewed land inside
+   the recorded sha. An uncleared land off the ahead-of-prod
    window reads as at-or-before everything — no cleared sha, the pass
    stays blocked and the blocker names the pending reviews.
 6. In flight on origin: ``GET .../git/matching-refs/heads/release/`` and
@@ -1144,30 +1151,6 @@ def _in_flight(repo: str) -> str | None:
     return None
 
 
-def _main_sha(base: str) -> str:
-    """main's head sha on origin. ``GET .../git/ref/heads/main`` answers
-    one ref object — a prefix list (no exact ``refs/heads/main`` match)
-    or a payload without the sha is unreadable. Raises
-    :class:`precis.plans.pr_class.GitHubUnreadable`."""
-    url = f"{base}/git/ref/heads/main"
-    data = pr_class._get_json(url, {})
-    if isinstance(data, list):
-        data = next(
-            (
-                e
-                for e in data
-                if isinstance(e, dict) and e.get("ref") == "refs/heads/main"
-            ),
-            None,
-        )
-    sha = ""
-    if isinstance(data, dict):
-        sha = str((data.get("object") or {}).get("sha") or "")
-    if not sha:
-        raise pr_class.GitHubUnreadable(f"GET {url}: no refs/heads/main sha")
-    return sha
-
-
 def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
     """``(id, STATUS)`` of the oldest live pass root tagged
     ``release-main:<sha12>``, in any state — a closed pass for this sha
@@ -1207,7 +1190,7 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # instead of waiting for the tip (see the section below
 # :func:`_cut_below`). The gate's lands come from
 # GIT, not jobs (gr597625): every first-parent commit in
-# ``origin/prod..origin/main`` whose diff touches
+# ``origin/prod..<pin>`` whose diff touches
 # ``lanes.ENGINE_PATHS`` — the commits the cut would carry. A commit
 # links its todos through the succeeded ``land_slice`` job whose
 # ``meta.landed_sha`` matches it (the stamped path, kept as the fast
@@ -1225,7 +1208,10 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # A covering reviewer clears the land when it closed ``LAND``, or
 # ``FIX`` whose fix task landed — a sha-keyed reviewer's ``REVERT``
 # tracks its revert task the same way, since a hand land has no todo
-# to rebuild and re-read. While a reviewer is open under a live root
+# to rebuild and re-read. A FIX/REVERT clearance is only half the
+# story: the cut must also CARRY the corrective commit — a land whose
+# fix or revert landed past the selected cut still holds it
+# (:func:`_cut_below`, td601005). While a reviewer is open under a live root
 # the release waits, and once the NEWER of the land and its newest
 # covering reviewer is :data:`REVIEW_WAIT_AFTER` old one ``ask-user``
 # ruling files — at once when the wait can never resolve (a dead
@@ -1269,7 +1255,7 @@ def _reviewer_rows(store: Any) -> list[tuple[int, dict[str, Any]]]:
 
 @dataclass(frozen=True)
 class _GitLand:
-    """One first-parent commit in ``origin/prod..origin/main`` — the
+    """One first-parent commit in ``origin/prod..<pin>`` — the
     gate's source of truth for what landed (gr597625): a ``scripts/ship``
     run from a tmux tree or the coordinator seat mints no ``land_slice``
     job, so a stamped-job scan alone lets a hand land ride the cut
@@ -1281,10 +1267,15 @@ class _GitLand:
     paths: tuple[str, ...]
 
 
-def _git_lands() -> list[_GitLand]:
-    """Every first-parent commit in ``origin/prod..origin/main``, oldest
-    first, with its touched paths — the engine-review gate's source of
-    truth (gr597625). ``origin`` is fetched first so a stale checkout
+def _git_lands() -> tuple[list[_GitLand], str]:
+    """``(lands, pin)`` — every first-parent commit in
+    ``origin/prod..<pin>``, oldest first, with its touched paths, and
+    ``pin`` the ``origin/main`` head the same fetch resolved: the ONE
+    commit snapshot the pass pins its scan, the compare's ordering and
+    the recorded target to (td601005 — a ``git/ref/heads/main`` read
+    AFTER the scan could record a cut sha carrying an engine land the
+    scan never saw, and ``release_cut``'s ``upto`` validation would
+    wave it through). ``origin`` is fetched first so a stale checkout
     cannot hide a hand land; any failure raises (the caller fails
     closed). Seam: tests patch it."""
     from precis.workers.job_types import run_slice as _rs
@@ -1301,11 +1292,17 @@ def _git_lands() -> list[_GitLand]:
     if proc.returncode != 0:
         raise RuntimeError(f"git fetch origin main prod: {proc.stderr.strip()[:200]}")
     proc = _rs._git(
+        ["-c", "safe.directory=*", "rev-parse", "origin/main^{commit}"], root
+    )
+    pin = proc.stdout.strip().lower()
+    if proc.returncode != 0 or not pin:
+        raise RuntimeError(f"git rev-parse origin/main: {proc.stderr.strip()[:200]}")
+    proc = _rs._git(
         [
             "-c",
             "safe.directory=*",
             "log",
-            "origin/prod..origin/main",
+            f"origin/prod..{pin}",
             "--first-parent",
             "--format=%x00%H%x1f%ct%x1f%s",
             "--name-only",
@@ -1336,7 +1333,7 @@ def _git_lands() -> list[_GitLand]:
             )
         )
     out.reverse()
-    return out
+    return out, pin
 
 
 def _landed_jobs(store: Any) -> list[tuple[str, int, int]]:
@@ -1415,8 +1412,9 @@ class _GateLand:
         return f"{self.land}{job}"
 
 
-def _gate_lands(store: Any) -> list[_GateLand]:
-    """The gate's units, oldest land first: every commit in the cut
+def _gate_lands(store: Any) -> tuple[list[_GateLand], str]:
+    """``(units, pin)`` — the gate's units, oldest land first, and the
+    pinned main head they were scanned at: every commit in the cut
     range whose diff touches :data:`lanes.ENGINE_PATHS`, stitched to its
     linked todos — the succeeded ``land_slice`` job whose
     ``meta.landed_sha`` matches (the stamped path, kept as the fast
@@ -1426,9 +1424,10 @@ def _gate_lands(store: Any) -> list[_GateLand]:
     every unit of the commit."""
     from precis.plans import lanes as _lanes
 
+    lands, pin = _git_lands()
     stamped = _landed_jobs(store)
     out: list[_GateLand] = []
-    for land in _git_lands():
+    for land in lands:
         if not _lanes.engine_hits(land.paths):
             continue
         sha12 = land.sha[:12]
@@ -1445,22 +1444,35 @@ def _gate_lands(store: Any) -> list[_GateLand]:
             )
         else:
             out.append(_GateLand(sha12, None, None, land.committed_at))
-    return out
+    return out, pin
 
 
-def _fix_landed(store: Any, fix_id: int) -> bool:
-    """``True`` once the fix todo carries a ``landed:`` comment."""
+#: The sha a ``landed: <sha>`` comment records — land-notify's land
+#: record; ``landed: nothing``/``landed: pending`` deliberately do not
+#: match (the newest-wins land record, ``gripe_autoclose._LANDED_RE``'s
+#: shape).
+_FIX_LANDED_RE = re.compile(r"^\s*landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+
+
+def _fix_landed_sha(store: Any, fix_id: int) -> str | None:
+    """The sha the fix todo's NEWEST ``landed:`` comment records — the
+    corrective commit the cut must carry for the clearance to hold —
+    else ``None``: no ``landed:`` comment, or the newest records no sha
+    (newest wins; ``landed: nothing`` after a real sha is no record)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT 1 FROM chunks c
+            SELECT c.text FROM chunks c
              WHERE c.ref_id = %s AND c.chunk_kind = 'todo_comment'
                AND c.retired_at IS NULL AND c.text LIKE 'landed:%%'
-             LIMIT 1
+             ORDER BY c.ord DESC LIMIT 1
             """,
             (fix_id,),
         ).fetchone()
-    return row is not None
+    if row is None:
+        return None
+    m = _FIX_LANDED_RE.match(str(row[0]))
+    return m.group(1).lower() if m is not None else None
 
 
 def _status_of(store: Any, ref_id: int) -> str:
@@ -1575,12 +1587,16 @@ def _sha_keyed(meta: dict[str, Any]) -> bool:
 
 def _review_outcome(
     store: Any, rid: int, meta: dict[str, Any], land: str
-) -> tuple[str, str]:
-    """``(outcome, blocker line)`` for one covering reviewer on the
-    ``land`` (``td<N>`` or the sha12) — ``satisfied`` clears it;
-    ``waiting`` is a live reviewer still holding it (the line is the
-    blocker); ``hopeless`` can never resolve, so the wait ask files at
-    once."""
+) -> tuple[str, str, tuple[str, ...]]:
+    """``(outcome, blocker line, requires)`` for one covering reviewer
+    on the ``land`` (``td<N>`` or the sha12) — ``satisfied`` clears it,
+    ``requires`` naming the corrective commit shas the selected cut
+    must CARRY for the clearance to hold: a FIX's fix commit, a
+    sha-keyed REVERT's revert (td601005 — the review being done is not
+    enough when the cut ends ahead of the land but behind its
+    corrective commit); ``waiting`` is a live reviewer still holding
+    it (the line is the blocker); ``hopeless`` can never resolve, so
+    the wait ask files at once."""
     status = _status_of(store, rid)
     base = f"engine review td{rid} on the {land} land"
     if status in TERMINAL_TODO_STATUSES or status == "cancelled":
@@ -1588,41 +1604,62 @@ def _review_outcome(
         review = review if isinstance(review, dict) else {}
         verdict = review.get("verdict")
         if verdict == "LAND":
-            return "satisfied", ""
+            return "satisfied", "", ()
         if verdict == "FIX" or (verdict == "REVERT" and _sha_keyed(meta)):
             task = review.get("task")
             if isinstance(task, int):
                 noun = "revert" if verdict == "REVERT" else "fix"
-                if _fix_landed(store, task):
-                    return "satisfied", ""
+                sha = _fix_landed_sha(store, task)
+                if sha is not None:
+                    return "satisfied", "", (sha,)
                 task_status = _status_of(store, task)
                 if (
                     task_status not in TERMINAL_TODO_STATUSES
                     and task_status != "cancelled"
                 ):
-                    return "waiting", (
-                        f"{base} was {verdict}; its {noun} td{task} is not "
-                        f"landed yet — next: let td{task} land"
+                    return (
+                        "waiting",
+                        (
+                            f"{base} was {verdict}; its {noun} td{task} is not "
+                            f"landed yet — next: let td{task} land"
+                        ),
+                        (),
                     )
-                return "hopeless", (
-                    f"{base} was {verdict}; its {noun} td{task} ended "
-                    f"{task_status} with no landed: comment — next: "
-                    "acknowledge the review-wait ask or land a fix"
+                return (
+                    "hopeless",
+                    (
+                        f"{base} was {verdict}; its {noun} td{task} ended "
+                        f"{task_status} with no `landed: <sha>` record — next: "
+                        "acknowledge the review-wait ask or land a fix"
+                    ),
+                    (),
                 )
-        return "hopeless", (
-            f"{base} closed {status} without a usable verdict; the wait "
-            "can never resolve — next: acknowledge the review-wait ask "
-            f"or re-review {land}"
+        return (
+            "hopeless",
+            (
+                f"{base} closed {status} without a usable verdict; the wait "
+                "can never resolve — next: acknowledge the review-wait ask "
+                f"or re-review {land}"
+            ),
+            (),
         )
     root_id, root_status = _root(store, rid)
     if root_status in TERMINAL_TODO_STATUSES or root_status in ("cancelled", "gone"):
-        return "hopeless", (
-            f"{base} is open under a {root_status} root (td{root_id}); it "
-            f"will never finish — next: close td{rid} or acknowledge the "
-            "review-wait ask"
+        return (
+            "hopeless",
+            (
+                f"{base} is open under a {root_status} root (td{root_id}); it "
+                f"will never finish — next: close td{rid} or acknowledge the "
+                "review-wait ask"
+            ),
+            (),
         )
-    return "waiting", (
-        f"{base} is {status}; the release waits — next: let td{rid} finish or close it"
+    return (
+        "waiting",
+        (
+            f"{base} is {status}; the release waits — next: let td{rid} finish or close it"
+        ),
+        (),
     )
 
 
@@ -1918,13 +1955,17 @@ def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
 class _LandVerdict:
     """One gate unit's verdict (:func:`_gate_lands`; gr592271).
 
-    ``cleared`` lands never hold a cut; ``line`` is the blocker an
-    uncleared one carries. ``unit.sha12`` positions the land on main
-    for :func:`_cut_below`."""
+    ``cleared`` lands never hold a cut for their own review's sake;
+    ``line`` is the blocker an uncleared one carries. ``requires``
+    names corrective commit shas the selected cut must CARRY for the
+    clearance to hold — a FIX's fix, a sha-keyed REVERT's revert
+    (td601005). ``unit.sha12`` positions the land on main for
+    :func:`_cut_below`."""
 
     unit: _GateLand
     cleared: bool
     line: str = ""
+    requires: tuple[str, ...] = ()
 
 
 def _engine_verdicts(
@@ -1933,11 +1974,13 @@ def _engine_verdicts(
     now: datetime | None = None,
     file_asks: bool = False,
     dry_run: bool = False,
-) -> tuple[list[_LandVerdict] | None, list[str], str | None]:
-    """``(verdicts, notes, fatal)`` — the engine-review gate's per-land
-    verdict plus the pass's side effects. ``fatal`` non-``None`` is the
-    fail-closed line any read error returns (``verdicts`` is ``None``
-    then).
+) -> tuple[list[_LandVerdict] | None, list[str], str | None, str | None]:
+    """``(verdicts, notes, fatal, pin)`` — the engine-review gate's
+    per-land verdict plus the pass's side effects, and ``pin`` the
+    ``origin/main`` head the scan resolved: the one commit snapshot the
+    caller pins its compare's ordering and recorded target to
+    (td601005). ``fatal`` non-``None`` is the fail-closed line any read
+    error returns (``verdicts`` and ``pin`` are ``None`` then).
 
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
     ``release-review-wait:<key>`` ask clears it; no covering reviewer
@@ -1965,6 +2008,7 @@ def _engine_verdicts(
     now = now or datetime.now(UTC)
     notes: list[str] = []
     verdicts: list[_LandVerdict] = []
+    pin: str | None = None
     try:
         lane_table = _lanes.load_lanes(store) if file_asks else ()
         # plan_dispatch's own kill switch — the env OR a service_config
@@ -1987,7 +2031,8 @@ def _engine_verdicts(
             m = _REVIEW_FROM_SHA_RE.fullmatch(src)
             if m is not None:
                 by_sha.setdefault(m.group(1).lower(), []).append((rid, meta))
-        for unit in _gate_lands(store):
+        units, pin = _gate_lands(store)
+        for unit in units:
             verdict = _LandVerdict(unit, cleared=False)
             if _answered_wait_ask(store, unit.ask_key):
                 verdict.cleared = True
@@ -2111,8 +2156,9 @@ def _engine_verdicts(
             hopeless: tuple[int, str] | None = None
             satisfied = False
             for rid, meta in covering:
-                outcome, line = _review_outcome(store, rid, meta, unit.land)
+                outcome, line, requires = _review_outcome(store, rid, meta, unit.land)
                 if outcome == "satisfied":
+                    verdict.requires = requires
                     satisfied = True
                     break
                 if outcome == "waiting" and waiting is None:
@@ -2166,8 +2212,9 @@ def _engine_verdicts(
             notes,
             f"engine review gate unreadable ({type(exc).__name__}); "
             "next: retry next tick — fail closed",
+            None,
         )
-    return verdicts, notes, None
+    return verdicts, notes, None, pin
 
 
 def engine_review_blockers(
@@ -2181,7 +2228,7 @@ def engine_review_blockers(
     callers that hold the whole tip (``release_cut``'s fallback for a
     pass minted without a recorded cut target; gr592271): every
     uncleared engine land's line, or the single fail-closed line."""
-    verdicts, notes, fatal = _engine_verdicts(
+    verdicts, notes, fatal, _pin = _engine_verdicts(
         store, now=now, file_asks=file_asks, dry_run=dry_run
     )
     if fatal is not None:
@@ -2203,10 +2250,19 @@ def engine_review_blockers(
 # ahead-of-prod window reads as at-or-before everything: no cleared
 # sha, the pass stays blocked and the blocker names the pending
 # reviews — fail closed, as before.
+#
+# td601005 tightens "cleared": a FIX/REVERT verdict clears a land only
+# for a cut that CARRIES its corrective commit — [A FIX, B pending,
+# C fixes A] has no cleared sha (shipping A without C is the bug this
+# closed) — and the whole computation sits on the scan's own pin: the
+# fetch resolved ``origin/main`` once, and the scan, the compare's
+# ordering, the minted target and ``release_cut``'s ``upto``
+# validation all name that same sha, so a land that reaches main
+# mid-pass can never ride a recorded sha the scan never saw.
 
 
 def _commit_shas(cmp_: Any) -> list[str]:
-    """The ``compare prod...main`` payload's commits as full shas,
+    """The ``compare prod...<pin>`` payload's commits as full shas,
     oldest first — the ordered window the gate positions lands on."""
     out: list[str] = []
     if not isinstance(cmp_, dict):
@@ -2243,17 +2299,64 @@ def _sha_in(land_sha: str, upto: Any) -> bool:
     )
 
 
+def _requires_line(v: _LandVerdict, commits: list[str]) -> str | None:
+    """The blocker for a cleared land whose corrective commit the
+    window never reaches — a ``landed:`` sha that is not on main ahead
+    of prod makes the clearance unverifiable inside any cut, so the
+    pass waits and says why — or ``None`` when every required commit
+    is positioned."""
+    missing = [r for r in v.requires if _sha_on(r, commits) < 0]
+    if not missing:
+        return None
+    return (
+        f"engine land {v.unit.label} cleared on a corrective commit "
+        f"({', '.join(r[:12] for r in missing)}) that is not on main "
+        "ahead of prod — next: land the fix on main or answer the "
+        "review-wait ask"
+    )
+
+
 def _cut_below(
-    uncleared: list[_LandVerdict], commits: list[str]
+    verdicts: list[_LandVerdict], commits: list[str]
 ) -> tuple[str | None, list[str]]:
-    """``(cut sha, upto)`` — the commit just ahead of the oldest
-    uncleared engine land, ``upto`` the sha12s at-or-before it;
-    ``(None, [])`` when an uncleared land sits at-or-before the oldest
-    commit ahead of prod (nothing cleared to cut)."""
-    p = min((_sha_on(v.unit.sha12, commits) for v in uncleared), default=-1)
-    if p <= 0:
+    """``(cut sha, upto)`` — the newest position in ``commits`` every
+    gate unit allows, ``upto`` the sha12s at-or-before it; ``(None,
+    [])`` when no position clears.
+
+    Each unit holds a span of positions: an uncleared land holds
+    everything at-or-after it (gr592271); a land cleared on a
+    corrective commit (a FIX's fix, a sha-keyed REVERT's revert) holds
+    the span from its own position to just under the newest required
+    commit — the cut must CARRY the corrective, and a land is also
+    satisfied by being left out entirely (td601005: [A FIX, B pending,
+    C fixes A] must not cut A without C). A required commit the window
+    never reaches holds like an uncleared land; a cleared land off the
+    window is already on prod — nothing the cut decides."""
+    spans: list[tuple[int, int]] = []  # [first, last] positions a unit holds
+    for v in verdicts:
+        p = _sha_on(v.unit.sha12, commits)
+        if p < 0:
+            if not v.cleared:
+                return None, []  # off-window uncleared: at-or-before everything
+            continue  # already on prod: the cut cannot change it
+        if not v.cleared:
+            spans.append((p, len(commits)))
+            continue
+        req = [_sha_on(r, commits) for r in v.requires]
+        if not req:
+            continue
+        top = len(commits) if any(r < 0 for r in req) else max(req)
+        if top > p:
+            spans.append((p, top - 1))
+    cut = len(commits) - 1
+    while cut >= 0:
+        start = min((a for a, b in spans if a <= cut <= b), default=None)
+        if start is None:
+            break
+        cut = start - 1
+    if cut < 0:
         return None, []
-    return commits[p - 1], [c[: _release.LANDED_SHA_LEN] for c in commits[:p]]
+    return commits[cut], [c[: _release.LANDED_SHA_LEN] for c in commits[: cut + 1]]
 
 
 def cleared_head(
@@ -2265,41 +2368,50 @@ def cleared_head(
     dry_run: bool = False,
 ) -> tuple[str | None, list[str], list[str]]:
     """``(cut sha, blocker lines, notes)`` — the newest commit on main
-    such that every engine land at-or-before it is cleared (gr592271):
-    main's head when nothing is uncleared, else the commit just ahead
-    of the oldest uncleared engine land, else ``None`` with the pending
+    such that every engine land at-or-before it is cleared AND every
+    corrective commit a clearance needs is carried (gr592271,
+    td601005): the scanned head when nothing holds it, else the newest
+    commit the gate's spans allow, else ``None`` with the pending
     reviews named. ``release_cut`` recomputes it for a re-cut, whose
-    recorded target is stale. Raises
+    recorded target is stale — the scan, the compare's ordering and the
+    answer all sit on the one pinned snapshot. Raises
     :class:`precis.plans.pr_class.GitHubUnreadable`."""
-    verdicts, notes, fatal = _engine_verdicts(
+    verdicts, notes, fatal, pin = _engine_verdicts(
         store, now=now, file_asks=file_asks, dry_run=dry_run
     )
     if fatal is not None:
         return None, [fatal], notes
     base = _API.format(repo=repo)
-    uncleared = [v for v in verdicts or () if not v.cleared]
-    if not uncleared:
-        return _main_sha(base), [], notes
-    cmp_ = pr_class._get_json(f"{base}/compare/prod...main", {})
+    cmp_ = pr_class._get_json(f"{base}/compare/prod...{pin}", {})
     if not isinstance(cmp_, dict):
         raise pr_class.GitHubUnreadable(
-            f"GET {base}/compare/prod...main: expected an object"
+            f"GET {base}/compare/prod...{pin}: expected an object"
         )
     try:
         ahead = int(cmp_["ahead_by"])
         behind = int(cmp_["behind_by"])
     except (KeyError, TypeError, ValueError):
         raise pr_class.GitHubUnreadable(
-            f"GET {base}/compare/prod...main: no ahead_by/behind_by"
+            f"GET {base}/compare/prod...{pin}: no ahead_by/behind_by"
         ) from None
     status = str(cmp_.get("status") or "unknown")
     if behind > 0 or status == "diverged":
         return None, [f"prod has commits main lacks ({status})"], notes
     if ahead <= 0:
         return None, [f"main is not ahead of prod ({status})"], notes
-    cut, _upto = _cut_below(uncleared, _commit_shas(cmp_))
+    commits = _commit_shas(cmp_)
+    uncleared = [v for v in verdicts or () if not v.cleared]
+    cut, _upto = _cut_below(verdicts or [], commits)
+    if cut is None and not uncleared and not commits:
+        # ahead > 0 without a commit list: the pinned head is the only
+        # honest target.
+        cut = pin
     if cut is None:
-        return None, [v.line for v in uncleared], notes
+        lines = [v.line for v in uncleared]
+        lines += [
+            ln for v in verdicts or () if (ln := _requires_line(v, commits)) is not None
+        ]
+        return None, lines or ["the engine gate cleared nothing to cut"], notes
     return cut, [], notes
 
 
@@ -2338,7 +2450,7 @@ def run_pass(
     if blocked is not None:
         res.blocker = blocked
         return res
-    verdicts, notes, fatal = _engine_verdicts(
+    verdicts, notes, fatal, pin = _engine_verdicts(
         store, now=now, file_asks=True, dry_run=dry_run
     )
     res.notes.extend(notes)
@@ -2355,17 +2467,20 @@ def run_pass(
         return res
     base = _API.format(repo=res.repo)
     try:
-        cmp_ = pr_class._get_json(f"{base}/compare/prod...main", {})
+        # td601005: the compare's head is the scan's own pin, so a main
+        # move after the fetch can never smuggle an unreviewed land
+        # inside the recorded sha — there is no second main-head read.
+        cmp_ = pr_class._get_json(f"{base}/compare/prod...{pin}", {})
         if not isinstance(cmp_, dict):
             raise pr_class.GitHubUnreadable(
-                f"GET {base}/compare/prod...main: expected an object"
+                f"GET {base}/compare/prod...{pin}: expected an object"
             )
         try:
             ahead = int(cmp_["ahead_by"])
             behind = int(cmp_["behind_by"])
         except (KeyError, TypeError, ValueError):
             raise pr_class.GitHubUnreadable(
-                f"GET {base}/compare/prod...main: no ahead_by/behind_by"
+                f"GET {base}/compare/prod...{pin}: no ahead_by/behind_by"
             ) from None
         status = str(cmp_.get("status") or "unknown")
         if behind > 0 or status == "diverged":
@@ -2376,16 +2491,26 @@ def run_pass(
             return res
         # gr592271: the review gate no longer waits for the tip — the cut
         # sha is the newest commit such that every engine land at-or-
-        # before it is cleared; a pending review past that point holds
-        # nothing. The compare's ``commits`` is the ordering.
+        # before it is cleared AND carries the corrective commits its
+        # clearance needs (td601005); a pending review past that point
+        # holds nothing. The compare's ``commits`` is the ordering.
         commits = _commit_shas(cmp_)
-        cut: str | None = None
-        upto: list[str] = [c[: _release.LANDED_SHA_LEN] for c in commits]
+        cut, upto = _cut_below(verdicts or [], commits)
+        if cut is None and not uncleared and not commits:
+            # ahead > 0 without a commit list: the pinned head is the
+            # only honest target (the ``upto`` window stays empty, as
+            # it did when the ordering came back truncated).
+            cut, upto = pin, []
+        if cut is None:
+            lines = [v.line for v in uncleared]
+            lines += [
+                ln
+                for v in verdicts or ()
+                if (ln := _requires_line(v, commits)) is not None
+            ]
+            res.blocker = "; ".join(lines) or ("the engine gate cleared nothing to cut")
+            return res
         if uncleared:
-            cut, upto = _cut_below(uncleared, commits)
-            if cut is None:
-                res.blocker = "; ".join(v.line for v in uncleared)
-                return res
             res.notes.append(
                 f"cut {cut[:9]}: {len(uncleared)} engine land(s) still "
                 f"pending past it ({', '.join(v.unit.land for v in uncleared)})"
@@ -2394,9 +2519,6 @@ def run_pass(
         if flying is not None:
             res.blocker = f"{flying} is in flight"
             return res
-        main_sha = _main_sha(base)
-        if cut is None:
-            cut = main_sha
     except pr_class.GitHubUnreadable as exc:
         res.blocker = f"GitHub unreadable ({exc}); nothing minted, next tick retries"
         return res

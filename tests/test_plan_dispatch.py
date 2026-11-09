@@ -33,9 +33,9 @@ FUTURE = {"kind": "not-before", "args": {"ts": "2999-01-01T00:00:00Z"}}
 def _factory_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     # The engine-review gate reads the cut range from git (gr597625) —
-    # stub its seam: the host checkout's real ``origin/prod..origin/main``
+    # stub its seam: the host checkout's real ``origin/prod..<pin>``
     # carries engine lands that must not leak into a dispatch test.
-    monkeypatch.setattr(rp, "_git_lands", lambda: [])
+    monkeypatch.setattr(rp, "_git_lands", lambda: ([], "0" * 40))
 
 
 def _status(store: Store, ref_id: int) -> str | None:
@@ -2239,10 +2239,16 @@ def test_green_rerun_closes_the_fix_and_the_recut_runs(
 
     def _gh(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         # The re-cut's validate recomputes the newest fully-reviewed
-        # head (gr592271): no lands, so it reads the main ref.
+        # head (gr592271) — the compare against the scan's pin
+        # (td601005); no lands, so it cuts the pinned tip.
         data: Any = (
-            {"ref": "refs/heads/main", "object": {"sha": "5" * 40}}
-            if url.endswith("/git/ref/heads/main")
+            {
+                "status": "ahead",
+                "ahead_by": 1,
+                "behind_by": 0,
+                "commits": [{"sha": "5" * 40}],
+            }
+            if "/compare/prod..." in url
             else {}
         )
         return SimpleNamespace(status_code=200, json=lambda: data)

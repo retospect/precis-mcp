@@ -52,7 +52,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
     psettings.invalidate()
     _GIT_LANDS.clear()
-    monkeypatch.setattr(rc._rp, "_git_lands", lambda: list(_GIT_LANDS))
+    monkeypatch.setattr(rc._rp, "_git_lands", lambda: (list(_GIT_LANDS), "5" * 40))
 
 
 class Ctx:
@@ -2883,20 +2883,19 @@ def _fake_gh_api(
     main_sha: str = "5" * 40,
 ) -> None:
     """``release_cut``'s re-cut path reads GitHub through
-    ``pr_class._get_json``: the compare when a land is pending, the
-    main ref when everything is clear. ``resolve_repo`` is stubbed to
-    ``o/r`` so no checkout or setting is needed."""
+    ``pr_class._get_json``: the compare against the scan's pin
+    (td601005 — the compare's head is ``prod...<pin>``, no longer a
+    ``prod...main`` literal). ``resolve_repo`` is stubbed to ``o/r`` so
+    no checkout or setting is needed."""
 
     def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
-        if url.endswith("/compare/prod...main"):
+        if "/compare/prod..." in url:
             data: Any = compare or {
                 "status": "ahead",
                 "ahead_by": 1,
                 "behind_by": 0,
                 "commits": [{"sha": main_sha}],
             }
-        elif url.endswith("/git/ref/heads/main"):
-            data = {"ref": "refs/heads/main", "object": {"sha": main_sha}}
         else:
             data = {}
         return SimpleNamespace(status_code=200, json=lambda: data)
@@ -2992,6 +2991,29 @@ def test_a_land_inside_the_recorded_window_holds_the_cut(
     assert rc.submit(ctx, None) is None
     assert checkout["argv"] == []
     assert ctx.failures and f"td{rid}" in ctx.failures[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_recorded_cut_holds_while_the_fix_commit_is_outside(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """td601005: land A inside the recorded window cleared on a FIX
+    whose corrective commit sits OUTSIDE the window — the cut must
+    carry the fix, so it still holds."""
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _comment(store, int(fix.id), f"landed: {'f' * 9} — fix")
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None and refusal.startswith("release_cut:")
+    assert "corrective commit" in refusal and "td42" in refusal
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert checkout["argv"] == []
+    assert ctx.failures and "corrective commit" in ctx.failures[0]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
