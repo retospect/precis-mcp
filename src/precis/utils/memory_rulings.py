@@ -287,21 +287,20 @@ def _sort_key(row: _Row) -> tuple[int, int, int, int, int]:
     )
 
 
-def render_rulings(
+def _ruling_rows(
     store: Store,
     *,
-    status: str | None = None,
-    tags: list[str] | None = None,
-    include_ref_ids: Collection[int] | None = None,
-    exclude_ref_ids: Collection[int] | None = None,
-    today: date | None = None,
-    budget: int | None = None,
-) -> str:
-    """The ``view='rulings'`` body: rulings grouped by status, each with its
-    governed nodes. ``status=None`` shows in-force only and counts the rest;
-    ``'*'`` shows all."""
+    status: str | None,
+    tags: list[str] | None,
+    include_ref_ids: Collection[int] | None,
+    exclude_ref_ids: Collection[int] | None,
+    today: date,
+) -> tuple[list[_Row], dict[str, int]]:
+    """The rulings corpus under these predicates: visible rows plus the
+    per-status count of those the filter hides. Shared by
+    :func:`render_rulings` and :func:`count_rulings` — the domain footer
+    must count the same set the view renders."""
     wanted = parse_status_filter(status)
-    today = today or today_utc()
     wanted_tags = [RULING_TAG, *(t for t in tags or [] if t.strip() != RULING_TAG)]
     normalized = Tag.normalize_filter(wanted_tags, kind="memory")
     refs = store.list_refs(kind="memory", tags=normalized, limit=5000)
@@ -334,6 +333,52 @@ def render_rulings(
             )
         )
     rows.sort(key=_sort_key)
+    return rows, hidden
+
+
+def count_rulings(
+    store: Store,
+    *,
+    status: str | None = None,
+    tags: list[str] | None = None,
+    include_ref_ids: Collection[int] | None = None,
+    exclude_ref_ids: Collection[int] | None = None,
+) -> int:
+    """The size of the rulings-view corpus under these predicates — the
+    domain-footer's before/after counter."""
+    rows, _hidden = _ruling_rows(
+        store,
+        status=status,
+        tags=tags,
+        include_ref_ids=include_ref_ids,
+        exclude_ref_ids=exclude_ref_ids,
+        today=today_utc(),
+    )
+    return len(rows)
+
+
+def render_rulings(
+    store: Store,
+    *,
+    status: str | None = None,
+    tags: list[str] | None = None,
+    include_ref_ids: Collection[int] | None = None,
+    exclude_ref_ids: Collection[int] | None = None,
+    today: date | None = None,
+    budget: int | None = None,
+) -> str:
+    """The ``view='rulings'`` body: rulings grouped by status, each with its
+    governed nodes. ``status=None`` shows in-force only and counts the rest;
+    ``'*'`` shows all."""
+    today = today or today_utc()
+    rows, hidden = _ruling_rows(
+        store,
+        status=status,
+        tags=tags,
+        include_ref_ids=include_ref_ids,
+        exclude_ref_ids=exclude_ref_ids,
+        today=today,
+    )
     counts = {s: sum(1 for r in rows if r.status == s) for s in STATUSES}
     summary = " · ".join(f"{n} {s}" for s, n in counts.items() if n) or "none"
     lines = [f"# rulings: {summary}"]

@@ -62,6 +62,63 @@ def render_memory_smells(store: Store, ref: Ref) -> Response:
     )
 
 
+def _scoped_proposals(
+    store: Store,
+    *,
+    include_ref_ids: list[int] | None,
+    exclude_ref_ids: list[int] | None,
+    tags: list[str] | None,
+) -> list[tuple[MemorySmell, set[str]]]:
+    """Ledger proposals in scope that pass the ``tags=`` filter, each
+    paired with its node's effective tag strings. Shared by the rollup
+    and :func:`count_smell_nodes` — the domain footer must count the
+    same corpus the view renders."""
+    proposals = memory_smells(
+        store, include_ref_ids=include_ref_ids, exclude_ref_ids=exclude_ref_ids
+    )
+    wanted: list[str] = Tag.normalize_filter(tags, kind="memory") or []
+    # ``'!<tag>'`` entries (gr568354) exclude — every positive tag must
+    # be present and no negated one, the same polarity split
+    # ``build_tag_filter`` applies on the SQL search paths.
+    wanted_pos, wanted_neg = split_tag_polarity(wanted)
+    tag_map = store.ref_tags_bulk(sorted({p.ref_id for p in proposals}))
+    scoped: list[tuple[MemorySmell, set[str]]] = []
+    for p in proposals:
+        tag_strings = {
+            value if namespace in ("OPEN", "FLAG") else f"{namespace}:{value}"
+            for namespace, value in tag_map.get(p.ref_id, [])
+        }
+        if not all(tag in tag_strings for tag in wanted_pos) or any(
+            tag in tag_strings for tag in wanted_neg
+        ):
+            continue
+        scoped.append((p, tag_strings))
+    return scoped
+
+
+def count_smell_nodes(
+    store: Store,
+    *,
+    include_ref_ids: list[int] | None = None,
+    exclude_ref_ids: list[int] | None = None,
+    tags: list[str] | None = None,
+) -> int:
+    """Distinct memories with proposals in scope — the domain-footer's
+    before/after counter (a memory with no proposals is not a smells
+    entry at all)."""
+    return len(
+        {
+            p.ref_id
+            for p, _tags in _scoped_proposals(
+                store,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                tags=tags,
+            )
+        }
+    )
+
+
 def render_smell_rollup(
     store: Store,
     *,
@@ -86,26 +143,14 @@ def render_smell_rollup(
             "under= reached the handler without resolved members",
             next="use search(kind='memory', view='smells', args={'under': 'me<hub>'})",
         )
-    proposals = memory_smells(
-        store, include_ref_ids=include_ref_ids, exclude_ref_ids=exclude_ref_ids
+    proposals = _scoped_proposals(
+        store,
+        include_ref_ids=include_ref_ids,
+        exclude_ref_ids=exclude_ref_ids,
+        tags=tags,
     )
-    tag_map = store.ref_tags_bulk(sorted({p.ref_id for p in proposals}))
-    wanted: list[str] = Tag.normalize_filter(tags, kind="memory") or []
-    # ``'!<tag>'`` entries (gr568354) exclude — every positive tag must
-    # be present and no negated one, the same polarity split
-    # ``build_tag_filter`` applies on the SQL search paths.
-    wanted_pos, wanted_neg = split_tag_polarity(wanted)
     groups: dict[tuple[str, str], list[MemorySmell]] = defaultdict(list)
-    for p in proposals:
-        node_tags: list[tuple[str, str]] = tag_map.get(p.ref_id, [])
-        tag_strings = {
-            value if namespace in ("OPEN", "FLAG") else f"{namespace}:{value}"
-            for namespace, value in node_tags
-        }
-        if not all(tag in tag_strings for tag in wanted_pos) or any(
-            tag in tag_strings for tag in wanted_neg
-        ):
-            continue
+    for p, tag_strings in proposals:
         types = sorted(t for t in tag_strings if t.startswith("section:"))
         groups[(p.detector, ",".join(types) or "(untyped)")].append(p)
     rows: list[dict[str, Any]] = []

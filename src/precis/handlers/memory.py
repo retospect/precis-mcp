@@ -152,7 +152,11 @@ from precis.handlers._memory_link_receipt import (
     preview_link_effects,
 )
 from precis.handlers._memory_shape import ShapeAudit, audit_shape
-from precis.handlers._memory_smells import render_memory_smells, render_smell_rollup
+from precis.handlers._memory_smells import (
+    count_smell_nodes,
+    render_memory_smells,
+    render_smell_rollup,
+)
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
@@ -199,6 +203,7 @@ from precis.utils.memory_rulings import (
 )
 from precis.utils.memory_rulings import (
     RULING_TAG,
+    count_rulings,
     drop_legacy_status_tags,
     hidden_ids,
     render_rulings,
@@ -3577,7 +3582,7 @@ class MemoryHandler(NumericRefHandler):
                     else sorted(space_ids)
                 )
         if view == "reads":
-            from precis.handlers._memory_reads import render_reads
+            from precis.handlers._memory_reads import count_reads, render_reads
 
             unapplied = {
                 "q": fold_match_all_q(q),
@@ -3616,6 +3621,15 @@ class MemoryHandler(NumericRefHandler):
                 exclude_ref_ids=exclude_ref_ids,
                 before=(caller_tags, caller_include),
                 after=(tags, include_ref_ids),
+                count=lambda scope_tags, scope_ids: count_reads(
+                    self.store,
+                    space=space,
+                    min_chars=min_chars,
+                    min_reads=min_reads,
+                    tags=scope_tags,
+                    include_ref_ids=scope_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                ),
             )
         if any(value is not None for value in (space, min_chars, min_reads)):
             raise BadInput(
@@ -3643,6 +3657,12 @@ class MemoryHandler(NumericRefHandler):
                 exclude_ref_ids=exclude_ref_ids,
                 before=(caller_tags, caller_include),
                 after=(tags, include_ref_ids),
+                count=lambda scope_tags, scope_ids: count_smell_nodes(
+                    self.store,
+                    include_ref_ids=scope_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    tags=scope_tags,
+                ),
             )
         if view == "rulings":
             return self._domain_space_footer(
@@ -3661,6 +3681,13 @@ class MemoryHandler(NumericRefHandler):
                 exclude_ref_ids=exclude_ref_ids,
                 before=(caller_tags, caller_include),
                 after=(tags, include_ref_ids),
+                count=lambda scope_tags, scope_ids: count_rulings(
+                    self.store,
+                    status=status,
+                    tags=scope_tags,
+                    include_ref_ids=scope_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                ),
             )
         if status is not None:
             kw["status"] = status
@@ -3748,18 +3775,26 @@ class MemoryHandler(NumericRefHandler):
         exclude_ref_ids: list[int] | None,
         before: tuple[list[str] | None, list[int] | None],
         after: tuple[list[str] | None, list[int] | None],
+        count: Callable[[list[str] | None, list[int] | None], int] | None = None,
     ) -> Response:
         """Append the gr572723 footer: name the door when the domain's
         default ``SPACE:`` filter dropped hits. ``before``/``after`` are
         the ``(tags, include_ref_ids)`` scope without and with the
-        default. Fail-soft — a counting error never breaks the search."""
+        default. ``count`` sizes the view's corpus under one scope —
+        each specialized view passes a counter carrying its own
+        predicates (reads' min_chars/min_reads, rulings' implied ruling
+        tag + status, smells' proposal-backed nodes) so a hit the view
+        never had is never reported hidden. Fail-soft — a counting
+        error never breaks the search."""
         if domain is None or not domain.spaces:
             return resp
         before_tags, before_ids = before
         after_tags, after_ids = after
         try:
-            folded = fold_match_all_q(q)
-            if folded and folded.strip():
+            if count is not None:
+                total = count(before_tags, before_ids)
+                kept = count(after_tags, after_ids)
+            elif (folded := fold_match_all_q(q)) and folded.strip():
                 total = self.store.chunks.count_chunks_lexical(
                     q=folded,
                     kind=self.kind,
