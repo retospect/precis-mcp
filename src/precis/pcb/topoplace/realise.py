@@ -4599,9 +4599,13 @@ def _emit_escapes(
     on their own layer — signals never see their copper as frozen
     zones, so the signal mesh is exactly the pre-G2d one.
 
-    The branch runs on the mesh the signals used (``d_sig`` carries the
-    fanout zones; ``mesh`` reuses the route pass's build when given), to
-    the nearest point the same ``_ViaPlanter`` admits. Routed copper is
+    The branch runs on a mesh over ``d_sig`` (which carries the fanout
+    zones), to the nearest point the same ``_ViaPlanter`` admits.
+    ``mesh`` reuses a caller-supplied build when given — it must be a
+    ``d_sig`` mesh built at THIS pass's rules: build_mesh prices grown
+    pads and zones by trace_mm/2 + clearance_mm, so a mesh built at
+    other rules (the rule ladder's near-zero head, td569571) searches
+    corridors the planter and step checks do not price. Routed copper is
     real geometry the corridor must keep off: track legs cover their
     edge stretches and veto a leg of the escape's triangles
     (``step_ok``), via barrels and the board outline's margin join that
@@ -5868,8 +5872,6 @@ def _route_design_once(
         zones=tuple(d.zones) + tuple(_copper_zones(fan, d, ir, pose_a)),
         plane_layers=tuple(sorted(set(planes.values()))),
     )
-    mesh_sink: list[Any] = []
-    kw["mesh_sink"] = mesh_sink
     plan, rres = _route_signals(d_sig, ir, **kw)
     bad_fanouts = _guard_fanouts(d, ir, pose_a, frules, rres, f_tracks, f_vias)
     if bad_fanouts:
@@ -5888,11 +5890,16 @@ def _route_design_once(
         fell_back = [kp for kp in fell_back if kp not in rejected]
         f_tracks = [t for i, t in enumerate(f_tracks) if i not in bad_fanouts]
         f_vias = [v for i, v in enumerate(f_vias) if i not in bad_fanouts]
-    # G2d: the deferred pads wire out on the mesh the signals used —
-    # their stubs were never frozen copper, so the signal route is the
-    # pre-G2d one bit for bit. An escape counts only when its via lands
-    # on pour copper already joined to the net (round 6): the pre-
-    # escape pour's wired pieces gate the site.
+    # G2d: the deferred pads wire out on ``d_sig``'s geometry — their
+    # stubs were never frozen copper, so the signal route is the
+    # pre-G2d one bit for bit. ``_emit_escapes`` builds its own mesh:
+    # the route's is the rule ladder's near-zero-rules build
+    # (td569571), and build_mesh grows pads and zones by
+    # trace_mm/2 + clearance_mm — reusing it searches corridors priced
+    # at rules the escape's planter and step checks do not share.
+    # An escape counts only when its via lands on pour copper already
+    # joined to the net (round 6): the pre-escape pour's wired pieces
+    # gate the site.
     joined: dict[int, list[tuple[int, Any]]] | None = None
     pours_pre: list[dict[str, Any]] | None = None
     if deferred and footprints is not None:
@@ -5947,7 +5954,6 @@ def _route_design_once(
         int(ir.n_layers),
         min_via_dia=min_via_dia,
         min_via_drill=min_via_drill,
-        mesh=mesh_sink[0] if mesh_sink else None,
         joined_pours=joined,
         fixed_copper=fixed_copper,
     )
