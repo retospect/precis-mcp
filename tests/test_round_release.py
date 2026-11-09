@@ -3254,7 +3254,8 @@ def test_a_skipped_verdict_soak_means_no_soak_ran(
     rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A skipped `verdict-soak` (the job did not run — a shape without the
-    soak matrix) is neither a refusal nor a clear: 'none'."""
+    soak matrix) is neither a refusal nor a clear: 'skipped', told apart
+    from 'none' (no soak rows at all)."""
     prod = _Prod(row=_soak_row(rig.shas["c2"]))
     mod = _published(rig, monkeypatch, prod)
     monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
@@ -3263,7 +3264,68 @@ def test_a_skipped_verdict_soak_means_no_soak_ran(
         encoding="utf-8",
     )
     assert mod._soak_debt_check(rig.root) == ""
-    assert "no soak legs" in capsys.readouterr().out
+    assert "soak skipped" in capsys.readouterr().out
+    assert prod.row is not None
+    assert ["settings", "clear"] not in [c[:2] for c in prod.calls]
+
+
+#: The one check-run a soak matrix skipped before expansion reports: the
+#: job's ``name:`` template, unrendered (gr586293, run 42425741923).
+_UNEXPANDED_SOAK = (
+    "${{ (((needs.plan.outputs.full == 'true') && 'test-linux') || 'soak') }}"
+    " (${{ matrix.python-version }}, ${{ matrix.shard }})"
+)
+
+
+def test_an_unexpanded_soak_matrix_reads_skipped_not_absent(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The skipped matrix's placeholder row is a soak row: `latest` keeps
+    it, `classify` says 'skipped' (not 'none'), and the debt row survives
+    — a soak that never ran clears nothing."""
+    prod = _Prod(row=_soak_row(rig.shas["c2"]))
+    mod = _published(rig, monkeypatch, prod)
+    sv = mod._soak()
+    rows = [
+        [
+            _UNEXPANDED_SOAK,
+            "completed",
+            "skipped",
+            "https://github.com/o/r/actions/runs/7/job/1",
+        ],
+        [
+            "verdict-soak",
+            "completed",
+            "skipped",
+            "https://github.com/o/r/actions/runs/7/job/2",
+        ],
+        [
+            "gate-fast (3.13, 1)",
+            "completed",
+            "success",
+            "https://github.com/o/r/actions/runs/7/job/3",
+        ],
+    ]
+    assert sv["is_placeholder"](_UNEXPANDED_SOAK)
+    assert not sv["is_placeholder"]("soak (3.13, 1)")
+    assert sorted(r[0] for r in sv["latest"](rows)) == sorted(
+        [_UNEXPANDED_SOAK, "verdict-soak"]
+    )
+    assert sv["classify"](rows) == "skipped"
+    assert sv["classify"]([]) == "none"
+    # Legs that ran beside a skipped verdict-soak still decide.
+    ran = rows + [["soak (3.13, 1)", "completed", "success", rows[0][3]]]
+    assert sv["classify"](ran) == "green"
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(
+            (_UNEXPANDED_SOAK, "completed", "skipped"),
+            ("verdict-soak", "completed", "skipped"),
+        ),
+        encoding="utf-8",
+    )
+    assert mod._soak_debt_check(rig.root) == ""
+    assert "soak skipped" in capsys.readouterr().out
     assert prod.row is not None
     assert ["settings", "clear"] not in [c[:2] for c in prod.calls]
 

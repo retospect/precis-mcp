@@ -14,6 +14,14 @@ Rows are ``[name, status, conclusion, html_url]`` parsed from the
 ``--jq @tsv`` output; the run id comes out of html_url's
 ``/actions/runs/<id>`` tail so a re-run leg supersedes its earlier
 attempt (check-runs list every attempt).
+
+A soak matrix skipped before expansion is ONE check-run whose name is the
+unrendered ``name:`` expression of check.yml's test-linux job (``${{ ...
+'soak') }} (${{ matrix.python-version }}, ...)`` — gr586293, run
+42425741923). :func:`is_placeholder` recognises it; :func:`latest` keeps it
+so :func:`classify` can answer ``skipped`` (the soak was planned and did
+not run) rather than ``none`` (no soak rows at all). Callers treat both as
+"no verdict" — never a veto, never a clear of ``release.soak_red``.
 """
 
 from __future__ import annotations
@@ -76,12 +84,25 @@ def _run_id(row: list[str]) -> int:
     return int(m.group(1)) if m else 0
 
 
+def is_placeholder(name: str) -> bool:
+    """True for the unexpanded soak matrix's single check-run: the job
+    ``name:`` template left unrendered because the matrix was skipped
+    before expansion (gr586293). Only a ``${{``-led name mentioning
+    ``soak`` qualifies — a rendered ``soak (3.13, K)`` leg never does."""
+    return name.startswith("${{") and "soak" in name
+
+
+def _is_soak_row(name: str) -> bool:
+    return name.startswith("soak") or name == VERDICT_JOB or is_placeholder(name)
+
+
 def latest(rows: list[list[str]]) -> list[list[str]]:
-    """The newest row per soak leg name — the `soak (PY, K)` matrix legs
-    plus ``VERDICT_JOB`` (by run id; ties keep the last)."""
+    """The newest row per soak leg name — the `soak (PY, K)` matrix legs,
+    ``VERDICT_JOB`` and the unexpanded-matrix placeholder (by run id; ties
+    keep the last)."""
     out: dict[str, list[str]] = {}
     for row in rows:
-        if not (row[0].startswith("soak") or row[0] == VERDICT_JOB):
+        if not _is_soak_row(row[0]):
             continue
         prev = out.get(row[0])
         if prev is None or _run_id(row) >= _run_id(prev):
@@ -91,12 +112,19 @@ def latest(rows: list[list[str]]) -> list[list[str]]:
 
 def classify(rows: list[list[str]]) -> str:
     """``red`` a latest leg completed non-OK; ``pending`` none red but some
-    leg not completed; ``green`` every latest leg completed OK; ``none``
-    no soak rows at all. A skipped ``VERDICT_JOB`` leg is dropped first:
-    the job skipped means the soak never ran, so it is no verdict."""
-    legs = [r for r in latest(rows) if not (r[0] == VERDICT_JOB and r[2] == "skipped")]
+    leg not completed; ``green`` every latest leg completed OK; ``skipped``
+    every latest leg completed skipped (the soak was planned and never ran
+    — a skipped ``VERDICT_JOB``, the unexpanded-matrix placeholder, or
+    legs skipped one by one); ``none`` no soak rows at all. ``skipped`` and
+    ``none`` are both "no verdict" to callers: neither vetoes nor clears."""
+    legs = latest(rows)
     if not legs:
         return "none"
+    if all(r[1] == "completed" and r[2] == "skipped" for r in legs):
+        return "skipped"
+    # A skipped VERDICT_JOB next to legs that did run carries no verdict of
+    # its own; the legs decide.
+    legs = [r for r in legs if not (r[0] == VERDICT_JOB and r[2] == "skipped")]
     for r in legs:
         if r[1] == "completed" and r[2] in _BAD:
             return "red"

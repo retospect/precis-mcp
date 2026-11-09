@@ -582,6 +582,11 @@ def _soak_debt_check(root: Path) -> str:
     if verdict == "none":
         print(f"scripts/round: no soak legs on {sha[:9]} — proceeding")
         return ""
+    if verdict == "skipped":
+        # Planned and never ran (verdict-soak skipped, or the matrix left
+        # unexpanded — gr586293): no verdict, so neither a veto nor a clear.
+        print(f"scripts/round: soak skipped on {sha[:9]} — no verdict, not a veto")
+        return ""
     if verdict == "pending":
         print(f"scripts/round: soak still running on {sha[:9]} — not a veto")
         return ""
