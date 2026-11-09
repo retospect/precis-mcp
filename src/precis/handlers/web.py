@@ -145,16 +145,20 @@ class WebHandler(CacheBackedHandler):
         Repo URLs: ``slug_from_url`` ignores the query, so a
         ``?ref=<x>`` pin would share the bare repo's slug and the
         fetch would overwrite that snapshot in place. Any repo URL
-        carrying a query gets a suffix — ``-ref-<ref>`` for the
+        carrying a query gets a suffix — ``-ref-<ref>-<hash>`` for the
         documented pin, a short query hash for anything else — so
-        distinct pins keep distinct rows.
+        distinct pins keep distinct rows. The pin hash covers the full
+        unsanitised ref because the readable form collapses (``v1.0``
+        and ``v1-0`` both slug to ``v1-0``): without it the second pin
+        would still land on the first snapshot's row.
         """
         slug = slug_from_url(key)
         target = parse_repo_url(key)
         if target is not None and urlsplit(key).query:
             if target.ref is not None:
                 ref_slug = _SLUG_STRIP_RE.sub("-", target.ref.lower()).strip("-")
-                suffix = f"ref-{ref_slug[:24] or 'x'}"
+                digest = hashlib.sha256(target.ref.encode("utf-8")).hexdigest()[:8]
+                suffix = f"ref-{ref_slug[:24] or 'x'}-{digest}"
             else:
                 digest = hashlib.sha256(
                     urlsplit(key).query.encode("utf-8")
@@ -171,6 +175,34 @@ class WebHandler(CacheBackedHandler):
         web bookmarks). (gripe:3681 phase 4.)
         """
         return (cache.meta or {}).get("url")
+
+    def _guard_slug_collision(self, key, ref, cache):
+        """Refuse to overwrite a row whose stored URL is a different URL.
+
+        Same failure shape perplexity guards (gr517283): the request
+        hash missed but the derived slug matched a live row, and the
+        base ``get`` would refresh that row in place — silently
+        replacing one snapshot's body with another's. The
+        ``-ref-<x>-<hash>`` tail separates ``?ref=`` pins, so a slug
+        match on a different canonical URL is a genuine collision
+        (60-char slug truncation, a hash-tail match) rather than the
+        routine case. Entries written before ``url`` was tracked in
+        meta cannot be compared and keep the in-place refresh.
+        """
+        stored = (cache.meta or {}).get("url")
+        if not stored or stored == key:
+            return
+        raise BadInput(
+            f"{self.spec.kind}: {key!r} slugs to {ref.slug!r}, which "
+            f"already holds {stored!r} (ref {ref.id}). Refusing to "
+            "overwrite it.",
+            next=(
+                f"get(kind={self.spec.kind!r}, id={ref.slug!r}, "
+                "view='body') reads the existing snapshot; "
+                f"get(kind={self.spec.kind!r}, id={ref.slug!r}, "
+                "mode='refresh') re-fetches that URL in place",
+            ),
+        )
 
     # ── verb override: view='tree' ────────────────────────────────────
 

@@ -16,6 +16,7 @@ the not-a-repo fallback tests.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import tarfile
 from typing import Any
@@ -274,7 +275,43 @@ def test_view_tree_missing_is_notfound(handler: WebHandler) -> None:
 def test_ref_pin_caches_separately(handler: WebHandler) -> None:
     handler.get(id="https://github.com/testorg/testrepo?ref=v1.0")
     ref, cache = _cache_row(handler, "https://github.com/testorg/testrepo?ref=v1.0")
-    assert ref.slug == "github-com-testorg-testrepo-ref-v1-0"
+    digest = hashlib.sha256(b"v1.0").hexdigest()[:8]
+    assert ref.slug == f"github-com-testorg-testrepo-ref-v1-0-{digest}"
+    assert "ref 'v1.0'" in cache.meta["ref"]
+
+
+def test_ref_pins_colliding_readable_slug_keep_separate_rows(
+    handler: WebHandler,
+) -> None:
+    """``v1.0`` and ``v1-0`` sanitise to the same readable slug.
+
+    The ref-hash tail keeps them on distinct rows — without it the
+    second fetch would overwrite the first snapshot's body in place.
+    """
+    handler.get(id="https://github.com/testorg/testrepo?ref=v1.0")
+    handler.get(id="https://github.com/testorg/testrepo?ref=v1-0")
+    ref_dot, cache_dot = _cache_row(
+        handler, "https://github.com/testorg/testrepo?ref=v1.0"
+    )
+    ref_dash, cache_dash = _cache_row(
+        handler, "https://github.com/testorg/testrepo?ref=v1-0"
+    )
+    assert ref_dot.id != ref_dash.id
+    assert ref_dot.slug != ref_dash.slug
+    assert ref_dot.slug.startswith("github-com-testorg-testrepo-ref-v1-0-")
+    assert ref_dash.slug.startswith("github-com-testorg-testrepo-ref-v1-0-")
+    assert "ref 'v1.0'" in cache_dot.meta["ref"]
+    assert "ref 'v1-0'" in cache_dash.meta["ref"]
+
+
+def test_same_slug_different_url_refuses_overwrite(handler: WebHandler) -> None:
+    """A second URL deriving an already-taken slug refuses rather than
+    refresh that row in place — the residual collision class the
+    ref-hash tail cannot separate (here: a kept extra query param)."""
+    handler.get(id="https://github.com/testorg/testrepo?ref=v1.0")
+    with pytest.raises(BadInput, match="Refusing to overwrite"):
+        handler.get(id="https://github.com/testorg/testrepo?ref=v1.0&extra=1")
+    ref, cache = _cache_row(handler, "https://github.com/testorg/testrepo?ref=v1.0")
     assert "ref 'v1.0'" in cache.meta["ref"]
 
 

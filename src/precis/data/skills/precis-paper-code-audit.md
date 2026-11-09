@@ -39,9 +39,17 @@ A GitHub/GitLab repo URL fetches the source archive: LICENSE, README,
 packaging/environment manifests and CITATION.cff land as chunks, plus
 a full file listing — `web:<id>~<path>` reads one held file,
 `view='tree'` lists every path with sizes. Cite the chunk handles in
-findings. A repo source that still isn't held (a file outside the
-kept set) is read via the tree listing first — mark the check
-`blocked` only when the path genuinely isn't in the snapshot.
+findings. The listing is paths and sizes only — a file outside the
+held set has no stored body, so fetch its raw URL as a page before
+auditing its contents:
+
+```python
+get(kind="web", id="https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>")
+# GitLab: https://gitlab.com/<group>/<repo>/-/raw/<ref>/<path>
+```
+
+Mark the check `blocked` only when the path genuinely isn't in the
+snapshot.
 
 ## Compare, claim by claim
 
