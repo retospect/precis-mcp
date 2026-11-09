@@ -1802,6 +1802,11 @@ def put(
     # the verb level (the gr262482 pattern) so strict-schema MCP clients
     # don't strip it — args={'until': …} remains the documented channel.
     until: dict[str, Any] | str | None = None,
+    # memory task-scratch pair (see precis-memory-help, gr605669):
+    # put(kind='memory', text='…', scratch_for='td<N>') stamps SPACE:scratch
+    # plus scratch-for:<owner>. Declared at the verb level (the gr262482
+    # pattern) so strict-schema MCP clients don't strip it.
+    scratch_for: str | None = None,
     # draft term batch (chunk_kind='term'): put(kind='draft', id=<slug>,
     # chunk_kind='term', terms=[{'text': '<definition>', 'meta': {'short':
     # '<ABBR>'}}, ...]) files many registry term leaves in one transaction
@@ -2114,6 +2119,7 @@ def put(
                 "at": at,
                 "project": project,
                 "until": until,
+                "scratch_for": scratch_for,
                 "terms": terms,
                 "table": table,
                 "caption": caption,

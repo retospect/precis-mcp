@@ -426,7 +426,11 @@ class WebHandler(CacheBackedHandler):
 
         import os
 
-        from precis.utils.http import VendorError, polite_user_agent
+        from precis.utils.http import (
+            VendorError,
+            call_with_backoff,
+            polite_user_agent,
+        )
         from precis.utils.rate_limit import RateLimited
         from precis.utils.safe_fetch import SsrfBlocked
 
@@ -444,7 +448,13 @@ class WebHandler(CacheBackedHandler):
                 resolved = resolve_commit(client, target)
                 if resolved is None:
                     return None
-                tarball = download_archive(client, resolved.archive_url)
+                # resolve_commit's API reads are polite (polite_safe_get);
+                # the archive stream takes its own limiter token + backoff.
+                tarball = call_with_backoff(
+                    lambda: download_archive(client, resolved.archive_url),
+                    service="web-fetch",
+                    url=resolved.archive_url,
+                )
         except SsrfBlocked as exc:
             raise Upstream(
                 f"fetch refused for {key}: {exc}",

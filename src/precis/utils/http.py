@@ -522,6 +522,14 @@ POLICIES: dict[str, Policy] = {
     # operator-configured endpoints: one retry on a short cap so a probe
     # fails fast (<~2 s of backoff) yet rides over a single blip.
     "doctor-probe": Policy(attempts=2, base=0.5, cap=2.0, label="doctor health probe"),
+    # The release confirm job's probe of the operator-set release.health_url
+    # (workers/job_types/release_confirm.py): our own web server, one GET per
+    # confirm tick. No limiter row (no url= passed — the URL stays out of
+    # error text) and no breaker: the tick is the cadence, and a tripped
+    # breaker would blur "the web is down" into "we stopped asking".
+    "release-health": Policy(
+        attempts=2, base=1.0, cap=5.0, breaker_threshold=0, label="release health probe"
+    ),
 }
 
 

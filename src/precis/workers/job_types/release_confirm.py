@@ -183,22 +183,33 @@ class Evidence:
 
 def _http_get(url: str) -> Any:
     """Seam: one GET of the health URL — a plain bounded ``httpx`` GET
-    (10 s, no redirects). ``release.health_url`` is an operator setting,
-    not an agent-supplied URL, so ``safe_fetch``'s SSRF guard is the
-    wrong gate and refused the fleet's own address (gr607271);
-    ``http_client`` pins every connection through that guard's
-    transport, so this builds a bare client. The response; a raise is a
-    failed probe — the caller reports the exception class only (httpx
-    messages carry the URL)."""
-    from precis.utils.http import DEFAULT_USER_AGENT, require_httpx
+    (10 s, no redirects) under the politeness core (``release-health``
+    policy: a short retry over a transport blip or 429/5xx raise, no
+    shared limiter row, no breaker — the confirm tick is the cadence).
+    ``release.health_url`` is an operator setting, not an
+    agent-supplied URL, so ``safe_fetch``'s SSRF guard is the wrong gate
+    and refused the fleet's own address (gr607271); ``http_client`` pins
+    every connection through that guard's transport, so this builds a
+    bare client. The response (a non-200 comes back as a response, not a
+    raise); a raise is a failed probe — the caller reports the exception
+    class only (httpx messages carry the URL)."""
+    from precis.utils.http import (
+        DEFAULT_USER_AGENT,
+        call_with_backoff,
+        require_httpx,
+    )
 
     httpx = require_httpx()
-    with httpx.Client(
-        timeout=10,
-        follow_redirects=False,
-        headers={"User-Agent": DEFAULT_USER_AGENT},
-    ) as client:
-        return client.get(url)
+
+    def _send() -> Any:
+        with httpx.Client(
+            timeout=10,
+            follow_redirects=False,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        ) as client:
+            return client.get(url)
+
+    return call_with_backoff(_send, service="release-health")
 
 
 def _parse_ts(value: Any) -> datetime | None:
