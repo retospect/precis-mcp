@@ -972,9 +972,12 @@ def _close_settled_tick_children_conn(store: Store, conn: Any, rec_id: int) -> i
     return len(rows)
 
 
-#: Bound on stale instances the hygiene sweep inspects per pass —
-#: settled-tick rows are few once the per-recurring close lands, so
-#: this is a belt, not the mover.
+#: Page size for the hygiene sweep's keyset scan — bounds one page's
+#: rows, not the pass's: cadence eligibility lives in Python below the
+#: query, so a ``LIMIT`` on the whole scan would re-head every pass on
+#: the first page of unclosable rows and starve every eligible
+#: instance behind them (td602154). Settled-tick rows are few once the
+#: per-recurring close lands, so this stays a belt, not the mover.
 _SWEEP_LIMIT = 200
 
 
@@ -991,54 +994,68 @@ def sweep_settled_tick_instances(store: Store, *, now: datetime) -> int:
     (:func:`tick_gap_before`) — sits at-or-before ``now``. A recurring
     with a sparser-than-monthly cadence yields no gap and is left to
     the nursery's ``stalled-recurring`` alert rather than guessed at.
+
+    The scan pages on a ``c.ref_id`` keyset so skipped rows — an
+    unresolvable cadence, an unparseable stamp, a still-young tick —
+    are left behind by the cursor instead of re-heading the next pass.
+    One transaction per page caps the row-lock footprint; the
+    ``FOR UPDATE OF c SKIP LOCKED`` multi-host serialization with the
+    per-recurring close and auto_check is unchanged.
     """
     n = 0
     periods: dict[str, timedelta | None] = {}
-    with store.tx() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT c.ref_id, c.meta->>'spawned_for_tick' AS stamp,
-                   p.ref_id AS rec_id, p.meta->'schedule'->>'cron' AS cron,
-                   {_TICK_HAD_SUCCESS_SQL} AS succeeded
-              FROM refs c JOIN refs p ON p.ref_id = c.parent_id
-             WHERE c.kind = 'todo' AND c.retired_at IS NULL
-               AND p.kind = 'todo'
-               AND p.meta->'schedule' ? 'cron'
+    cursor = 0
+    while True:
+        with store.tx() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.ref_id, c.meta->>'spawned_for_tick' AS stamp,
+                       p.ref_id AS rec_id,
+                       p.meta->'schedule'->>'cron' AS cron,
+                       {_TICK_HAD_SUCCESS_SQL} AS succeeded
+                  FROM refs c JOIN refs p ON p.ref_id = c.parent_id
+                 WHERE c.ref_id > %s
+                   AND c.kind = 'todo' AND c.retired_at IS NULL
+                   AND p.kind = 'todo'
+                   AND p.meta->'schedule' ? 'cron'
 {_TICK_SETTLED_CHILD_SQL}
-             ORDER BY c.ref_id
-             LIMIT %s
-             FOR UPDATE OF c SKIP LOCKED
-            """,
-            (sorted(_TICK_SETTLED_JOB_STATUSES), _SWEEP_LIMIT),
-        ).fetchall()
-        for child_id, stamp, rec_id, cron, succeeded in rows:
-            if not isinstance(cron, str) or not isinstance(stamp, str):
-                continue
-            if cron not in periods:
+                 ORDER BY c.ref_id
+                 LIMIT %s
+                 FOR UPDATE OF c SKIP LOCKED
+                """,
+                (cursor, sorted(_TICK_SETTLED_JOB_STATUSES), _SWEEP_LIMIT),
+            ).fetchall()
+            if not rows:
+                break
+            cursor = int(rows[-1][0])
+            for child_id, stamp, rec_id, cron, succeeded in rows:
+                if not isinstance(cron, str) or not isinstance(stamp, str):
+                    continue
+                if cron not in periods:
+                    try:
+                        periods[cron] = tick_gap_before(cron, before=now)
+                    except BadInput:
+                        periods[cron] = None
+                period = periods[cron]
+                if period is None:
+                    continue
+                # ``<tick>~retry<n>`` stamps (deliverable retries) age
+                # by the base tick they retry.
                 try:
-                    periods[cron] = tick_gap_before(cron, before=now)
-                except BadInput:
-                    periods[cron] = None
-            period = periods[cron]
-            if period is None:
-                continue
-            # ``<tick>~retry<n>`` stamps (deliverable retries) age by
-            # the base tick they retry.
-            try:
-                tick_dt = _parse_iso(stamp.split("~", 1)[0])
-            except ValueError:
-                continue
-            if tick_dt + period > now:
-                continue
-            _close_tick_child_conn(
-                store,
-                conn,
-                rec_id=int(rec_id),
-                child_id=int(child_id),
-                stamp=stamp,
-                status="done" if succeeded else "won't-do",
-            )
-            n += 1
+                    tick_dt = _parse_iso(stamp.split("~", 1)[0])
+                except ValueError:
+                    continue
+                if tick_dt + period > now:
+                    continue
+                _close_tick_child_conn(
+                    store,
+                    conn,
+                    rec_id=int(rec_id),
+                    child_id=int(child_id),
+                    stamp=stamp,
+                    status="done" if succeeded else "won't-do",
+                )
+                n += 1
     return n
 
 

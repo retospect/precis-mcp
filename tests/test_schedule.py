@@ -37,7 +37,10 @@ from precis.workers.schedule import (
     validate_schedule,
 )
 from precis.workers.schedule.parse import every_to_cron, parse_cron
-from precis.workers.schedule.worker import _has_open_previous_tick_conn
+from precis.workers.schedule.worker import (
+    _has_open_previous_tick_conn,
+    sweep_settled_tick_instances,
+)
 
 
 @pytest.fixture
@@ -1117,6 +1120,56 @@ def test_sweep_closes_settled_instance_under_paused_recurring(
         "a settled instance younger than one cadence is left for a later pass"
     )
     assert result.extra["ticks_closed"] == 1
+
+
+def test_sweep_pages_past_unclosable_instances(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression td602154: the sweep applied ``LIMIT`` *before* the
+    cadence-eligibility check, so a full page of unclosable rows — here
+    a yearly cadence ``tick_gap_before`` can't resolve inside its bound
+    — re-headed every pass and starved the eligible instance behind
+    them. The keyset scan must advance past skipped rows."""
+    monkeypatch.setattr("precis.workers.schedule.worker._SWEEP_LIMIT", 3)
+    resp = handler.put(
+        text="Yearly",
+        meta={"schedule": {"cron": "0 0 1 1 *"}},
+    )
+    yearly_id = _id_of(resp.body)
+    stuck_ids = [
+        _spawn_open_child(
+            store,
+            yearly_id,
+            status="open",
+            created_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        for _ in range(3)
+    ]
+    for cid in stuck_ids:
+        _mint_job_under_child(store, cid, status="succeeded")
+
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    eligible_id = _spawn_open_child(
+        store,
+        rid,
+        status="open",
+        created_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    _mint_job_under_child(store, eligible_id, status="succeeded")
+
+    closed = sweep_settled_tick_instances(store, now=datetime.now(UTC))
+    assert closed == 1, (
+        "the eligible instance behind a full page of unclosable rows must still close"
+    )
+    assert _status_of(store, eligible_id) == "done"
+    for cid in stuck_ids:
+        assert _status_of(store, cid) == "open", (
+            "an unresolvable cadence stays open for the stalled-recurring alert"
+        )
 
 
 def test_schedule_pass_skips_folder_umbrella(store: Store) -> None:
