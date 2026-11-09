@@ -242,7 +242,9 @@ Items 1 and 2 ship independently (static defaults for the cap).
 - **Footprint rows.** Peak RSS, peak VRAM, CPU-seconds and wall per run,
   keyed on (job_type, size parameter). A derived (type, size) table holds a
   high percentile plus margin for noisy types, or a regression on the size
-  parameter.
+  parameter. Run-side stamps live on `meta.footprint` (gr595536); the
+  rollup is `Store.job_footprint_summary` — p50/p95 RSS + CPU per
+  `(job_type, meta.size)` — surfaced by `precis stats --job-footprints`.
 - **Admission on the pull.** GPU (science lane only; LLM serving stays
   persistent with class lanes, `llm-lane-scheduler.md`): free VRAM − margin ≥
   the model's footprint (weights + KV for the context length; learnable from

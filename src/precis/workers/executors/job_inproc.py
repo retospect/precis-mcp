@@ -50,6 +50,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from precis.utils import job_footprint
 from precis.workers.executors._common import (
     _ERROR_META_CAP,
     claim_executor_jobs,
@@ -308,7 +309,13 @@ def _run_one(ctx: DispatchContext) -> None:
     stamping :data:`_LEASE_LOST_META_KEY`) is visible here regardless of
     which name reads it back."""
     started = time.monotonic()
-    outcome, result = _dispatch_one(ctx)
+    # gr595536: bind this pass thread to the job so the footprint segment
+    # baselines here and children this dispatch reaps attribute to it.
+    job_footprint.bind(ctx.ref_id)
+    try:
+        outcome, result = _dispatch_one(ctx)
+    finally:
+        job_footprint.unbind()
     _log_done(ctx.meta.get("job_type"), ctx.ref_id, outcome, started, result)
 
 

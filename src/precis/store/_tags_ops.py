@@ -134,10 +134,12 @@ def _stamp_job_completion(conn: Connection, ref_id: int) -> None:
     ``meta.footprint`` (gr595536) mirrors the same ``wall_s`` and adds the
     per-run measurements the footprint-admission table derives from —
     ``ru_maxrss_mb``/``cpu_s`` out of :mod:`precis.utils.job_footprint`'s
-    process-local rusage registry. They stay ``null`` for a job this
-    process never claimed (a swept orphan from a dead worker, a queued
-    row cancelled before it ran); on a re-terminalisation a previously
-    measured field is kept rather than overwritten with ``null``.
+    execution-scoped registry (the job's dispatch thread plus the
+    children it reaped, never a worker-wide delta). They stay ``null``
+    for a job this process never claimed (a swept orphan from a dead
+    worker, a queued row cancelled before it ran) or never bound (a
+    detached lane); on a re-terminalisation a previously measured field
+    is kept rather than overwritten with ``null``.
     """
     row = conn.execute(
         "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'job'", (ref_id,)

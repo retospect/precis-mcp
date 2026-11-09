@@ -16,6 +16,7 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._review_ops.ReviewsMixin`           — ``reviews`` ledger + ``revisions`` log
 * :class:`precis.store._measures_ops.MeasuresMixin`         — ``measures`` (sourced numbers, append-only runs; migration 0187)
 * :class:`precis.store._venue_ops.VenueMixin`               — ``venue_metrics`` (per-ISSN SJR + OpenAlex venue stats; migration 0293)
+* :class:`precis.store._jobs_ops.JobsMixin`                 — job observability (per-(job_type,size) ``meta.footprint`` rollup)
 
 ``drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the first
 domain carved *out* of the mixin stack into a composed sub-store —
@@ -72,6 +73,7 @@ from precis.store._grounding_ops import GroundingsMixin
 from precis.store._heartbeat_ops import HeartbeatMixin
 from precis.store._identifiers_ops import IdentifiersMixin
 from precis.store._integration_ops import IntegrationLedgerMixin
+from precis.store._jobs_ops import JobsMixin
 from precis.store._kinds_ops import KindsMixin
 from precis.store._links_ops import LinksMixin
 from precis.store._mappers import (
@@ -148,6 +150,7 @@ class Store(
     KindsMixin,
     PdfMixin,
     VenueMixin,
+    JobsMixin,
 ):
     """High-level handle. Owns the psycopg connection pool (via
     :class:`~precis.store.core.StoreCore`, see ``self.core``).

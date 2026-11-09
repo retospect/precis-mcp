@@ -1584,8 +1584,9 @@ def claim_executor_jobs(
         meta["lease_host"] = lease_host
         meta["lease_code"] = fields["lease_code"]
         meta["started_at"] = fields["started_at"]
-        # gr595536: open this process's rusage segment for the run — the
-        # terminal STATUS stamp reads it into ``meta.footprint``.
+        # gr595536: open the run's footprint segment — the dispatch
+        # thread re-baselines it at bind() and the terminal STATUS stamp
+        # reads it into ``meta.footprint``.
         job_footprint.begin(ref_id)
 
     def _finish_claim(

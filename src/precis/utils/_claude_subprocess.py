@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from precis.utils.claude_oauth import ensure_oauth_token
+from precis.utils.job_footprint import MeasuredPopen
 
 log = logging.getLogger(__name__)
 
@@ -392,7 +393,9 @@ def run_claude(
     if stdin_data is not None and stdin_devnull:
         raise ValueError("run_claude: stdin_data and stdin_devnull are exclusive")
     try:
-        proc = subprocess.Popen(
+        # MeasuredPopen: the reap captures this child's own rusage and
+        # attributes it to the job bound on this thread (gr595536).
+        proc = MeasuredPopen(
             argv,
             stdin=(
                 subprocess.PIPE
@@ -646,7 +649,8 @@ def run_claude_gated(
         ensure_oauth_token(env)
     poll = MCP_GATE_POLL_S if poll_s is None else poll_s
     try:
-        proc = subprocess.Popen(
+        # MeasuredPopen, as in run_claude: per-child rusage at reap.
+        proc = MeasuredPopen(
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

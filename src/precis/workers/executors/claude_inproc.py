@@ -40,6 +40,7 @@ from psycopg.errors import UniqueViolation
 
 from precis.liveness import drain_requested
 from precis.quest import review_guard
+from precis.utils import job_footprint
 from precis.utils.env import env_float
 from precis.workers.executors import EXECUTOR_PROVIDES
 from precis.workers.executors._common import (
@@ -236,6 +237,10 @@ def _run_job_safe(ctx: DispatchContext) -> bool:
     threading the raw ``(store, ref_id, title, meta)`` cluster through here
     and :func:`_run_one` separately."""
     store, ref_id = ctx.store, ctx.ref_id
+    # gr595536: bind this pool thread to the job so the footprint segment
+    # re-baselines here (claim ran on the pass thread) and children this
+    # dispatch reaps (claude -p via MeasuredPopen) attribute to this job.
+    job_footprint.bind(ref_id)
     try:
         _run_one(ctx)
         return True
@@ -262,6 +267,8 @@ def _run_job_safe(ctx: DispatchContext) -> bool:
         except Exception:  # pragma: no cover
             log.warning("claude_inproc: failed to record failure", exc_info=True)
         return False
+    finally:
+        job_footprint.unbind()
 
 
 def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:

@@ -23,6 +23,10 @@ Summaries, picked via flags:
   ``host_heartbeat_log`` (migration 0113), per-hour LLM duty cycle from
   ``llm_call_log`` (busy % of wall-clock; >100 means concurrent
   calls), and any LLM silence longer than five minutes.
+* ``--job-footprints`` — the per-(``job_type``, ``meta.size``) p50/p95
+  rollup of measured ``meta.footprint`` values over ``--days``
+  (default 30; 0 = all history): the derived table footprint admission
+  reads (gr595536, cluster-scheduling.md Pillar 3b).
 
 Flags can be combined to print several sections; default (no flags)
 prints all of them.
@@ -72,6 +76,16 @@ _CPU_UTILIZATION_SCHEMA: list[str] = [
 ]
 _LLM_UTILIZATION_SCHEMA: list[str] = ["hr", "calls", "busy_pct", "cost_usd", "errors"]
 _LLM_GAPS_SCHEMA: list[str] = ["gap_ended_at", "gap_minutes"]
+_JOB_FOOTPRINTS_SCHEMA: list[str] = [
+    "job_type",
+    "size_name",
+    "size_value",
+    "n",
+    "rss_p50_mb",
+    "rss_p95_mb",
+    "cpu_p50_s",
+    "cpu_p95_s",
+]
 
 #: An LLM silence shorter than this is normal scheduling jitter, not idleness.
 _LLM_GAP_MINUTES = 5.0
@@ -88,8 +102,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "stub paper backlog (PDFs the chase worker wants but "
             "doesn't have yet). ``--argument`` shows the argument graph "
             "argument-graph corpus report (retracted-source ripple, "
-            "unaddressed caveats, open contradictions). Default: print "
-            "all sections."
+            "unaddressed caveats, open contradictions). "
+            "``--job-footprints`` shows the per-(job_type, size) "
+            "footprint p50/p95 rollup. Default: print all sections."
         ),
     )
     p.add_argument(
@@ -115,10 +130,22 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "utilization and LLM idle gaps.",
     )
     p.add_argument(
+        "--job-footprints",
+        action="store_true",
+        help="Show the per-(job_type, meta.size) footprint p50/p95 "
+        "rollup the admission table derives from (gr595536).",
+    )
+    p.add_argument(
         "--hours",
         type=float,
         default=24.0,
         help="Trailing window for --utilization (default 24).",
+    )
+    p.add_argument(
+        "--days",
+        type=float,
+        default=30.0,
+        help="Sample window for --job-footprints (default 30; 0 = all history).",
     )
     p.add_argument(
         "--database-url",
@@ -132,11 +159,18 @@ def run(args: argparse.Namespace) -> None:
     # No flags = print everything. A flag toggles inclusion of just
     # that section so the operator can pipe one summary to a
     # downstream filter without the others muddying it up.
-    any_flag = args.findings or args.stubs or args.argument or args.utilization
+    any_flag = (
+        args.findings
+        or args.stubs
+        or args.argument
+        or args.utilization
+        or args.job_footprints
+    )
     show_findings = args.findings or not any_flag
     show_stubs = args.stubs or not any_flag
     show_argument = args.argument or not any_flag
     show_utilization = args.utilization or not any_flag
+    show_job_footprints = args.job_footprints or not any_flag
 
     dsn = resolve_dsn(args.database_url)
     fmt = resolve_format(args)
@@ -190,6 +224,14 @@ def run(args: argparse.Namespace) -> None:
             )
             sections.append(
                 ("llm-gaps", _LLM_GAPS_SCHEMA, _query_llm_gaps(store, args.hours))
+            )
+        if show_job_footprints:
+            sections.append(
+                (
+                    "job-footprints",
+                    _JOB_FOOTPRINTS_SCHEMA,
+                    _query_job_footprints(store, args.days),
+                )
             )
     finally:
         store.close()
@@ -443,6 +485,22 @@ def _query_llm_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def _query_job_footprints(store: Store, days: float) -> list[dict[str, Any]]:
+    """The per-(job_type, ``meta.size``) measured-footprint rollup.
+
+    Empty until jobs have terminalised under gr595536's footprint stamp;
+    ``meta.size`` buckets read ``(none)`` until gr595539's mint-time stamp
+    lands.
+    """
+    rows = store.job_footprint_summary(days=days if days > 0 else None)
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r["size_name"] is None:
+            r["size_name"] = "(none)"
+        out.append(r)
+    return out
 
 
 def _query_llm_gaps(store: Store, hours: float) -> list[dict[str, Any]]:

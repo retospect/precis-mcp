@@ -55,7 +55,10 @@ _IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 # every handler link carries. Then 157 -> 142 and tests 244 -> 240: shapely
 # joined pyproject's mypy ignore_missing_imports overrides, retiring every
 # per-import `import-untyped` ignore on it.
-CEILINGS = {"src": 142, "tests": 214}
+# 2026-11-09 src 142 -> 141: MeasuredPopen's private-subprocess accesses
+# (`subprocess._active`, `Popen._try_wait`) went through getattr/cast
+# instead of new ignores (td611679).
+CEILINGS = {"src": 141, "tests": 214}
 
 
 def _count(tree: str) -> Counter[str]:

@@ -88,6 +88,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.utils import job_footprint
 from precis.workers.executors._common import (
     _ERROR_META_CAP,
     MAX_ATTEMPTS,
@@ -1483,10 +1484,16 @@ def _dispatch_bounded(ctx: DispatchContext, spec: Any) -> bool:
     )
 
     def _target() -> None:
+        # gr595536: bind the dispatch thread — the footprint segment
+        # baselines on the thread running the job (this lane's
+        # submit/poll arm stays unbound: the compute is remote).
+        job_footprint.bind(ctx.ref_id)
         try:
             spec.dispatch(gctx, spec)
         except BaseException as exc:  # re-raised in the caller below
             outcome["exc"] = exc
+        finally:
+            job_footprint.unbind()
 
     worker = threading.Thread(
         target=_target, name=f"ssh_node-dispatch-{ctx.ref_id}", daemon=True

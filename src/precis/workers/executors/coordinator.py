@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.utils import job_footprint
 from precis.utils.env import env_float
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
@@ -468,7 +469,13 @@ def run_coordinator_pass(
             # slice, not just its first _LEASE_MINUTES — see
             # _LeaseKeepalive's docstring.
             with _LeaseKeepalive(store, ref_id, meta):
-                _run_one(ctx)
+                # gr595536: bind this pass thread so the footprint
+                # segment baselines on the thread running the job.
+                job_footprint.bind(ref_id)
+                try:
+                    _run_one(ctx)
+                finally:
+                    job_footprint.unbind()
             ok += 1
         except Exception as exc:  # pragma: no cover — defensive
             failed += 1

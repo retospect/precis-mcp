@@ -95,6 +95,7 @@ from precis.utils._claude_subprocess import (
     to_str,
 )
 from precis.utils.claude_p import _parse_last_json_block
+from precis.utils.job_footprint import MeasuredPopen
 
 log = logging.getLogger(__name__)
 
@@ -362,7 +363,9 @@ def _run_codex(
     → error carrying the exit detail. Raises :class:`CodexExecError`.
     """
     try:
-        proc = subprocess.Popen(
+        # MeasuredPopen: the reap captures this child's own rusage and
+        # attributes it to the job bound on this thread (gr595536).
+        proc = MeasuredPopen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
