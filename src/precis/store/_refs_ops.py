@@ -4308,6 +4308,7 @@ class RefsMixin:
         q: str,
         limit: int = 20,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> list[int]:
         """Paper-level title lookup — ``search(kind='paper', title=…)``.
         Fuses two matchers so an exact/near-exact or partial title lands
@@ -4318,7 +4319,10 @@ class RefsMixin:
         (partial title; both legs read the plain view — ``_TITLE_PLAIN_SQL``,
         gr515227). Papers with a body (:func:`has_body_sql` — text
         an agent can read, not merely a held PDF; gr453860) sort first,
-        then by similarity. Returns ``ref_id`` in rank order."""
+        then by similarity. ``include_ref_ids`` is the inclusion cohort
+        (``min_quartile``'s venue set, td609081): ``None`` is no
+        restriction, an empty list restricts to zero refs — applied in
+        SQL so paging stays honest. Returns ``ref_id`` in rank order."""
         clauses = [
             "r.retired_at IS NULL",
             # Defensive: a superseded ref is normally soft-deleted (caught
@@ -4332,11 +4336,14 @@ class RefsMixin:
             "OR to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq)",
         ]
         # %s appear in SQL-text order: tsquery (FROM), kind (WHERE),
-        # sim-in-WHERE, [exclude], sim-in-ORDER-BY, limit.
+        # sim-in-WHERE, [exclude], [include], sim-in-ORDER-BY, limit.
         params: list[Any] = [q, kind, q]
         if exclude_ref_ids:
             clauses.append("r.ref_id <> ALL(%s)")
             params.append(list(exclude_ref_ids))
+        if include_ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(include_ref_ids))
         params.extend([q, limit])
         sql = (
             "SELECT r.ref_id "
@@ -4357,6 +4364,7 @@ class RefsMixin:
         q: str,
         limit: int = 20,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> list[int]:
         """Paper-level author lookup — ``search(kind='paper', author=…)``.
 
@@ -4373,7 +4381,9 @@ class RefsMixin:
         ranks a paper first within its body/no-body bucket, ahead of a
         merely-fuzzy hit; papers with a body (:func:`has_body_sql`, not
         merely a held PDF — gr453860) sort before the rest regardless.
-        Returns ``ref_id`` in rank order."""
+        ``include_ref_ids`` is the inclusion cohort, same contract as
+        :meth:`find_papers_by_title`. Returns ``ref_id`` in rank
+        order."""
         fullname = "pa.full_name"
         rev = "concat_ws(', ', pa.family, pa.given)"
         clauses = [
@@ -4394,11 +4404,14 @@ class RefsMixin:
         ]
         # %s order: sim-in-SELECT (exact-family, fullname, rev, name_raw),
         # kind, exact-family, ILIKE-fullname, sim-fullname, ILIKE-rev,
-        # sim-rev, ILIKE-name_raw, sim-name_raw, [exclude], limit.
+        # sim-rev, ILIKE-name_raw, sim-name_raw, [exclude], [include], limit.
         params: list[Any] = [q, q, q, q, kind, q, q, q, q, q, q, q]
         if exclude_ref_ids:
             clauses.append("r.ref_id <> ALL(%s)")
             params.append(list(exclude_ref_ids))
+        if include_ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(include_ref_ids))
         params.append(limit)
         sql = (
             "SELECT r.ref_id, "

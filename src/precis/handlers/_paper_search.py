@@ -416,20 +416,34 @@ class BylineSearch:
     store: Store
 
     def run(
-        self, *, field: str, q: str, page: int, page_size: int, kind: str
+        self,
+        *,
+        field: str,
+        q: str,
+        page: int,
+        page_size: int,
+        kind: str,
+        include_ref_ids: list[int] | None = None,
+        min_quartile: str | None = None,
     ) -> Response:
         offset = max(0, (int(page) - 1) * int(page_size))
         # Probe one past the page so the has-more trailer is exact.
         want = offset + page_size + 1
         if field == "title":
-            ids = self.store.find_papers_by_title(kind=kind, q=q, limit=want)
+            ids = self.store.find_papers_by_title(
+                kind=kind, q=q, limit=want, include_ref_ids=include_ref_ids
+            )
         else:
-            ids = self.store.find_papers_by_author(kind=kind, q=q, limit=want)
+            ids = self.store.find_papers_by_author(
+                kind=kind, q=q, limit=want, include_ref_ids=include_ref_ids
+            )
         has_more = len(ids) > offset + page_size
         page_ids = ids[offset : offset + page_size]
 
         if not page_ids:
             body = f"no paper matches {field}={q!r}"
+            if min_quartile:
+                body += f" in the min_quartile={min_quartile} venue cohort"
             fallback: list[tuple[str, str]] = [
                 (
                     f"search(kind='paper', q={q!r})",
@@ -490,9 +504,13 @@ class BylineSearch:
             ),
         ]
         if has_more:
+            # Echo the cohort arg into the continuation — a page-2
+            # follow-up that dropped min_quartile would silently widen.
+            quartile_arg = f", 'min_quartile': {min_quartile!r}" if min_quartile else ""
             nav.append(
                 (
-                    f"search(kind='paper', args={{{field!r}: {q!r}}}, page={int(page) + 1})",
+                    f"search(kind='paper', args={{{field!r}: {q!r}"
+                    f"{quartile_arg}}}, page={int(page) + 1})",
                     "see more matching papers",
                 )
             )

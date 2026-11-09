@@ -285,6 +285,105 @@ def test_min_quartile_composes_with_tags(papers: PaperHandler, store: Store) -> 
     assert handle_registry.format_handle("paper", q3) not in body
 
 
+def test_min_quartile_null_latest_vintage_drops(
+    papers: PaperHandler, store: Store
+) -> None:
+    """td609081: a venue whose NEWEST SJR vintage carries no quartile
+    keeps no older ranking — the cohort picks the latest SJR vintage
+    first, then checks its quartile; a NULL there attests "unranked
+    now", not "no data"."""
+    rid, cid = _paper_with_issn(store, title="lapsed venue", issn=CEJ, body=QUERY)
+    store.upsert_venue_metrics(
+        [
+            {"issn": CEJ_NORM, "year": 2023, "sjr": 2.0, "sjr_quartile": "Q1"},
+            {"issn": CEJ_NORM, "year": 2024, "sjr": 0.4, "sjr_quartile": None},
+        ]
+    )
+    assert papers._resolve_quartile_scope("Q4") == set()
+    body = papers.search(q=QUERY, min_quartile="Q4").body
+    assert f"pc{cid}" not in body
+    assert handle_registry.format_handle("paper", rid) not in body
+
+
+def test_min_quartile_oa_snapshot_is_not_a_vintage(
+    papers: PaperHandler, store: Store
+) -> None:
+    """An OpenAlex-only snapshot row newer than the SJR feed is not a
+    new SJR vintage — it must not shadow the venue's latest quartile
+    (the SJR-vintage pick requires SJR data on the row)."""
+    rid, _c = _paper_with_issn(store, title="oa-covered venue", issn=CEJ, body=QUERY)
+    store.upsert_venue_metrics(
+        [
+            {"issn": CEJ_NORM, "year": 2023, "sjr": 2.0, "sjr_quartile": "Q2"},
+            {
+                "issn": CEJ_NORM,
+                "year": 2026,
+                "openalex_source_id": "S4210173458",
+                "openalex_h_index": 9,
+            },
+        ]
+    )
+    assert papers._resolve_quartile_scope("Q2") == {rid}
+    assert papers._resolve_quartile_scope("Q1") == set()
+
+
+def _byline_paper(
+    store: Store, *, slug: str, title: str, authors: list[str], issn: str
+) -> int:
+    """A paper findable by ``title=`` / ``author=`` carrying
+    ``meta.issn`` — the venue-cohort join key."""
+    ref = store.insert_ref(
+        kind="paper",
+        slug=slug,
+        title=title,
+        authors=[{"name": a} for a in authors],
+        meta={"issn": issn},
+    )
+    return ref.id
+
+
+def test_min_quartile_applies_to_byline_lookup(
+    papers: PaperHandler, store: Store
+) -> None:
+    """td609081: ``title=``/``author=`` record lookups honour the
+    cohort — they used to return before the filter was resolved,
+    silently dropping it."""
+    q1 = _byline_paper(
+        store,
+        slug="q1-venues",
+        title="Venue quartiles survey",
+        authors=["Ada One"],
+        issn=CEJ,
+    )
+    q3 = _byline_paper(
+        store,
+        slug="q3-venues",
+        title="Venue quartiles survey",
+        authors=["Bob Two"],
+        issn=OTHER,
+    )
+    store.upsert_venue_metrics(_sjr_rows())
+
+    body = papers.search(title="venue quartiles survey", min_quartile="Q1").body
+    assert f"pa{q1}" in body
+    assert f"pa{q3}" not in body
+
+    # author= rides the same include channel.
+    body = papers.search(author="Ada One", min_quartile="Q1").body
+    assert f"pa{q1}" in body
+    body = papers.search(author="Bob Two", min_quartile="Q1").body
+    assert f"pa{q3}" not in body
+    assert "min_quartile" in body  # the empty page names the filter
+
+
+def test_min_quartile_good_refuses(papers: PaperHandler) -> None:
+    """``good=True`` mints an async campaign with no venue cohort —
+    the combination refuses rather than submitting an unfiltered
+    deep search (td609081)."""
+    with pytest.raises(BadInput, match="min_quartile"):
+        papers.search(q=QUERY, good=True, min_quartile="Q1")
+
+
 # ── cross-kind fan-out (search_hits) ────────────────────────────────
 
 

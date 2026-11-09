@@ -2720,9 +2720,12 @@ class PaperHandler(Handler):
         # at least that good (``'Q2'`` keeps Q1 and Q2 venues), read off
         # the ``venue_metrics`` table ``precis venue-metrics`` loads.
         # Rides the include channel like ``serves=`` — it composes into
-        # the stamp/link/tags listings the same way, and alone (no
-        # ``q=``/``tags=``/listing filter) refuses rather than silently
-        # widening to the whole corpus.
+        # the stamp/link/tags listings and the ``title=``/``author=``
+        # byline lookup the same way, and alone (no ``q=``/``tags=``/
+        # listing filter/byline lookup) refuses rather than silently
+        # widening to the whole corpus. ``good=True`` has no venue
+        # cohort — the combination refuses rather than submitting an
+        # unfiltered campaign (td609081).
         min_quartile: str | None = None,
         **_kw: Any,
     ) -> Response:
@@ -2950,7 +2953,10 @@ class PaperHandler(Handler):
         # Field-scoped byline lookup — ``title=`` / ``author=`` return
         # paper *records* (handle + citation), the targeted alternative to
         # the block-hit path when you know the title or an author. Routed
-        # first: it needs no q= and ignores the block-search filters.
+        # first: it needs no q= and ignores the block-search filters —
+        # except ``min_quartile``, which narrows the record listing the
+        # same way it narrows a hit set (td609081: returning before the
+        # resolution below silently dropped it).
         title_q = title.strip() if isinstance(title, str) and title.strip() else None
         author_q = (
             author.strip() if isinstance(author, str) and author.strip() else None
@@ -2968,6 +2974,9 @@ class PaperHandler(Handler):
                 )
             q_byline = title_q or author_q
             assert q_byline is not None  # exactly one is set (guarded above)
+            byline_include: list[int] | None = None
+            if quartile_norm is not None:
+                byline_include = sorted(self._resolve_quartile_scope(quartile_norm))
             return BylineSearch(store=self.store).run(
                 field="title" if title_q else "author",
                 q=q_byline,
@@ -2977,6 +2986,8 @@ class PaperHandler(Handler):
                 # apply here, so an unset page_size keeps the old 10.
                 page_size=page_size if page_size is not None else 10,
                 kind=kind,
+                include_ref_ids=byline_include,
+                min_quartile=quartile_norm,
             )
 
         # ``args={'min_quartile': 'Qn'}`` (gr606422) — the venue-quartile
@@ -3211,6 +3222,17 @@ class PaperHandler(Handler):
                     f"good=True is a paper-only deep search (kind={kind!r})",
                     next="search(kind='paper', q='…', good=True)",
                 )
+            # The campaign has no venue cohort: submitting now would run
+            # an unfiltered deep search the caller never asked for
+            # (td609081 — the resolved filter used to drop silently).
+            if quartile_norm is not None:
+                raise BadInput(
+                    "good=True mints an async deep-search campaign — "
+                    "args={'min_quartile': …} applies to the inline "
+                    "search only",
+                    next=f"search(kind='{kind}', q='…', "
+                    f"args={{'min_quartile': {quartile_norm!r}}})",
+                )
             from precis.handlers._good_search import submit_good_search
 
             # self.hub is set at registration; a hand-constructed handler
@@ -3368,10 +3390,15 @@ class PaperHandler(Handler):
         """``args={'min_quartile': 'Q1'}`` → the live refs of this kind
         whose venue's LATEST Scimago SJR quartile is at least that good
         (``'Q2'`` keeps Q1 and Q2 venues; gr606422). Joins the paper's
-        normalized ``meta.issn`` to the newest ``venue_metrics`` row per
-        ISSN — the table ``precis venue-metrics`` loads. A venue absent
-        from the feed (or never quartiled) drops out, honestly: the
-        filter can only keep what the data attests."""
+        normalized ``meta.issn`` to the newest *SJR vintage* per ISSN —
+        the newest ``venue_metrics`` row carrying SJR data
+        (``sjr``/``sjr_quartile`` non-NULL, the same predicate the
+        overview's SJR leg uses) so an OpenAlex-only snapshot row never
+        shadows a real vintage — then checks THAT row's quartile.
+        td609081: filtering NULL quartiles before the vintage pick let a
+        venue whose newer SJR row is unquartiled keep its older ranking;
+        a NULL latest quartile fails the ``<=`` and the venue drops out,
+        honestly — the filter can only keep what the data attests."""
         norm = ISSN_NORMALISE_SQL % "r.meta->>'issn'"
         with self.store.pool.connection() as conn:
             rows = conn.execute(
@@ -3379,7 +3406,8 @@ class PaperHandler(Handler):
                 "AND r.retired_at IS NULL AND EXISTS ("
                 "  SELECT 1 FROM ("
                 "    SELECT DISTINCT ON (issn) issn, sjr_quartile "
-                "    FROM venue_metrics WHERE sjr_quartile IS NOT NULL "
+                "    FROM venue_metrics "
+                "    WHERE sjr IS NOT NULL OR sjr_quartile IS NOT NULL "
                 "    ORDER BY issn, year DESC"
                 f"  ) v WHERE v.issn = {norm} AND v.sjr_quartile <= %s"
                 ")",
