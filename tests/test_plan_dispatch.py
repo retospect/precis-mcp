@@ -3925,10 +3925,12 @@ def test_human_only_hit_verdict_never_closes(store: Store) -> None:
     ``handoff:`` — ``attempt FAILED, touched deny_write_paths: …`` over
     the session's own ``moot:`` line — and the log tail carries the
     verdict too. Neither may close the node while the job is stamped
-    ``human_only_hit``: the ask owns that ruling."""
+    ``human_only_hit``: the ask owns that ruling — the pass after the
+    ask files (its mint hides the denied job from ``_attempt_jobs``,
+    td604695), and after the answer re-arms the node."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
-    _failed_job(
+    denied = _failed_job(
         store,
         task,
         "run_slice: session for td0 touched deny_write_paths: "
@@ -3955,6 +3957,21 @@ def test_human_only_hit_verdict_never_closes(store: Store) -> None:
     assert "deploy/inventory/x.yml" in _body_text(store, ask)
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    # The ask's mint bounded ``_attempt_jobs`` at it, hiding the denied
+    # job — the task must stay unfinished and untagged while the ask
+    # stands unanswered (td604695).
+    assert _status(store, task) != "done"
+    assert "verdict:moot" not in _open_tags(store, task)
+    assert _status(store, mint.root_id) != "won't-do"
+    # Answered, the stale verdict still cannot close: the re-armed task
+    # retries on a fresh budget instead of dropping on the denied run's
+    # ``moot:``.
+    _answer_ask(store, ask, "a human made the edit")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _status(store, task) != "done"
+    assert "verdict:moot" not in _open_tags(store, task)
+    assert _meta(store, task)["rearmed_after_job"] == denied
 
 
 def test_unverified_moot_writes_the_verdict_to_the_gripe(

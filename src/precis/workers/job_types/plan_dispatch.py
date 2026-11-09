@@ -91,9 +91,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``verdict:moot`` so the moot close drops its chain this pass; a
    ``moot:`` pinned to a ``gr<N>`` other than the plan's gripe is never
    this plan's verdict, and nodes under a ``release-pass`` root keep
-   the fix loop's own rulings. A newest attempt stamped
+   the fix loop's own rulings. A job stamped
    ``human_only_hit`` keeps its ask — no verdict closes ahead of the
-   human-only ruling (td604234). An unverified or hand-posted moot has
+   human-only ruling, before or after the ask mints (td604234,
+   td604695). An unverified or hand-posted moot has
    no sha for a ``resolved:`` — the plan's gripe gets
    ``<verdict> — plan dropped`` instead, so the record of why the plan
    went away survives.
@@ -2029,12 +2030,15 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     also tagged ``verdict:moot`` for ``_step_moot``'s plan drop. A live
     job defers to the next tick; a node under a ``release-pass`` root
     keeps the fix loop's own rulings; a ``moot:`` pinned to another
-    gripe is never this plan's. A newest attempt stamped
-    ``human_only_hit`` keeps its ask (td604234): the denied run's
-    ``handoff:`` still posts the session's result — ``attempt FAILED,
-    touched deny_write_paths: …`` over a ``moot:`` line — and its log
-    tail carries it too, but no verdict closes ahead of the human-only
-    ruling."""
+    gripe is never this plan's. A job stamped ``human_only_hit`` keeps
+    its ask (td604234): the denied run's ``handoff:`` still posts the
+    session's result — ``attempt FAILED, touched deny_write_paths: …``
+    over a ``moot:`` line — and its log tail carries it too, but no
+    verdict closes ahead of the human-only ruling. The ask minted ON
+    the hit must not disarm the guard: it bounds ``_attempt_jobs`` at
+    its mint, hiding the denied job from ``_human_hit`` the pass after
+    it files, so the stamp is read off the job the verdict would come
+    from — until a newer job exists (td604695)."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
             continue
@@ -2043,10 +2047,15 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
         root = plan.nodes.get(n.root)
         if root is not None and "release-pass" in root.open_tags:
             continue
-        if _human_hit(plan, n):
-            continue
         ended = _attempt_jobs(plan, n)
         last = ended[-1] if ended else (plan.jobs(n)[-1] if plan.jobs(n) else None)
+        # The stamp bars the verdict read on the job the verdict would
+        # come from (td604234): the ask minted ON the hit bounds
+        # ``_attempt_jobs`` at its mint, so ``_human_hit`` goes blind to
+        # the denied job the pass after the ask files — and stays blind
+        # after the answer re-arms, until a newer job runs (td604695).
+        if last is not None and last.meta.get(HUMAN_ONLY_KEY):
+            continue
         verdict = _verdict_comment(
             store, n.id, since=last.created_at if last is not None else None
         )
