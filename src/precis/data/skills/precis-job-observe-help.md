@@ -265,10 +265,14 @@ to their code defaults: `claim.max_running.<job_type>` (per-host
 running cap, `0` suspends the type; code default
 `_MAX_RUNNING_DEFAULTS`, absent = uncapped),
 `claim.slicing.<executor>` (per-lane slicing flip — default off
-unless `PRECIS_JOB_SLICING`) and `claim.slice_s.<executor>` (per-claim
-wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`).
-Writes go through `put(kind='job', mode='setting', …)` — see
-[[precis-job-help]].
+unless `PRECIS_JOB_SLICING`), `claim.slice_s.<executor>` (per-claim
+wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`),
+`claim.executor_cap.<executor>` (per-host executor running cap —
+`ssh_node` defaults to 8, gr603792) and `claim.reserve.<executor>`
+(JSON `{<job_type>: <slots>}` held back inside the cap for those
+types). The view also shows live per-`job_type` occupancy for the
+capped executors. Writes go through
+`put(kind='job', mode='setting', …)` — see [[precis-job-help]].
 
 ## How healthy is the secrets vault? — /secrets
 

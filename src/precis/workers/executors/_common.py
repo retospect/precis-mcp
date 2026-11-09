@@ -182,6 +182,32 @@ _BASE_CLASS_RANK = {"human": 0, "agent": 1, "recurring": 2, "background": 3}
 _MAX_RUNNING_DEFAULTS: dict[str, int] = {"derived_drain": 2}
 _MAX_RUNNING_KEY_PREFIX = "claim.max_running."
 
+# ── Executor lane cap + per-class slot reservation (gr603792) ──────────
+#: Code-shipped per-host running caps by ``executor``: the total rows of
+#: one executor that may hold ``STATUS:running`` with this host's
+#: ``meta.lease_host``. ``ssh_node`` gets 8 — the shape that produced the
+#: gripe (seven autocatpath seeds left one slot for the whole factory
+#: lane); every other executor stays uncapped. An operator overrides per
+#: ``app_state`` ``claim.executor_cap.<executor>`` (an int; ``0``
+#: suspends the executor's claims on the host entirely; absent = code
+#: default, which for a non-listed executor is uncapped).
+_EXECUTOR_CAP_DEFAULTS: dict[str, int] = {"ssh_node": 8}
+_EXECUTOR_CAP_KEY_PREFIX = "claim.executor_cap."
+
+#: Slots inside the executor cap held back for named job types
+#: (gr603792): ``ssh_node`` keeps one slot for ``run_slice`` and one for
+#: ``land_slice``, so a gripe build or a land never waits behind a deep
+#: science queue — a compute may not take the last reserved slots. An
+#: operator replaces the whole map via ``app_state``
+#: ``claim.reserve.<executor>`` (a JSON ``{"<job_type>": <slots>}``).
+#: The reservation is static, not demand-driven: the reserved slots are
+#: always held back, so a waiting factory job finds them already free
+#: instead of needing a compute to finish first.
+_EXECUTOR_RESERVE_DEFAULTS: dict[str, dict[str, int]] = {
+    "ssh_node": {"run_slice": 1, "land_slice": 1}
+}
+_RESERVE_KEY_PREFIX = "claim.reserve."
+
 # ── Job slicing (docs/backlog/relax-slices.md) ────────────────────────
 #: Feature flag — OFF by default until r91 shows a real checkpoint
 #: resume on prod. Enabled per lane by env OR ``app_state``
@@ -439,6 +465,52 @@ def job_type_running_caps(conn: Connection) -> dict[str, int]:
         except ValueError:
             log.warning("claim: %s=%r is not an int; ignored", key, value)
     return caps
+
+
+def executor_lane_limits(
+    conn: Connection, executor: str
+) -> tuple[int | None, dict[str, int]]:
+    """``(running cap, {job_type: reserved slots})`` for ``executor``
+    on this host (gr603792).
+
+    The cap is the code-shipped :data:`_EXECUTOR_CAP_DEFAULTS` entry
+    overlaid with ``app_state`` ``claim.executor_cap.<executor>``; the
+    reserve map is :data:`_EXECUTOR_RESERVE_DEFAULTS` REPLACED wholesale
+    by ``app_state`` ``claim.reserve.<executor>`` (a JSON
+    ``{"<job_type>": <slots>}``). ``cap=None`` means uncapped — the
+    reserve map is then inert (an unbounded pool has no slots to hold
+    back). Read live per claim pass, same as
+    :func:`job_type_running_caps`.
+    """
+    cap: int | None = _EXECUTOR_CAP_DEFAULTS.get(executor)
+    reserve = dict(_EXECUTOR_RESERVE_DEFAULTS.get(executor, {}))
+    keys = [
+        f"{_EXECUTOR_CAP_KEY_PREFIX}{executor}",
+        f"{_RESERVE_KEY_PREFIX}{executor}",
+    ]
+    rows: dict[str, str] = dict(
+        conn.execute(
+            "SELECT key, value FROM app_state WHERE key = ANY(%s)", (keys,)
+        ).fetchall()
+    )
+    raw_cap = rows.get(keys[0])
+    if raw_cap is not None:
+        try:
+            cap = max(0, int(str(raw_cap)))
+        except ValueError:
+            log.warning("claim: %s=%r is not an int; ignored", keys[0], raw_cap)
+    raw_reserve = rows.get(keys[1])
+    if raw_reserve is not None:
+        try:
+            parsed = json.loads(str(raw_reserve))
+            reserve = {str(k): max(0, int(v)) for k, v in dict(parsed).items()}
+        except (ValueError, TypeError, AttributeError):
+            log.warning(
+                "claim: %s=%r is not a {job_type: slots} map; ignored",
+                keys[1],
+                raw_reserve,
+            )
+    return cap, reserve
 
 
 def _share_key_of(job_type: str, params_pass: Any) -> str:
@@ -1321,6 +1393,22 @@ def claim_executor_jobs(
     (``run_slice``, ``land_slice``, ``release_*``) reach a host with the
     repo checkout, ``claude`` and ``git``.
 
+    **Executor lane cap + class reservation (gr603792).** When
+    :func:`executor_lane_limits` resolves a running cap for this executor
+    (``ssh_node`` only, code default 8; ``claim.executor_cap.<executor>``
+    overrides), the fresh-work pick loop counts every
+    ``STATUS:running`` row stamped with this ``lease_host`` and admits a
+    candidate of type ``jt`` only while
+    ``running_total < cap - (reserve_total - reserve[jt])`` —
+    a non-reserved type stops at ``cap - reserve_total``, a reserved type
+    may also fill its own allotment (``claim.reserve.<executor>``, a JSON
+    ``{job_type: slots}`` map, code default
+    ``{"run_slice": 1, "land_slice": 1}`` on ``ssh_node``). A deep science
+    queue therefore can never hold every executor slot against a factory
+    op, and the factory allotment is small enough that the science class
+    keeps its band. Reclaims of already-running rows are unaffected —
+    they continue a running row, they don't take a fresh slot.
+
     **Node gate (the structure atomistic IR #3).** A job may pin itself to a node via
     ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
     relax is claimed by the node that ssh+stages it, keeping the NFS
@@ -1770,8 +1858,14 @@ def claim_executor_jobs(
     running_by_type: dict[str, int] = {}
     running_by_share: dict[str, int] = {}
     claim_host = default_host
+    executor_cap: int | None = None
+    executor_reserve: dict[str, int] = {}
+    reserve_total = 0
+    running_total = 0
     if claim_host is not None:
         caps = job_type_running_caps(conn)
+        executor_cap, executor_reserve = executor_lane_limits(conn, executor)
+        reserve_total = sum(executor_reserve.values())
         contested: set[str] = set()
         for jt in sorted(caps):
             held = conn.execute(
@@ -1799,6 +1893,7 @@ def claim_executor_jobs(
             jt_s = str(jt)
             running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
             running_by_share[_share_key_of(jt_s, ps)] = int(cnt)
+        running_total = sum(running_by_type.values())
         at_cap = sorted(
             jt
             for jt, cap in caps.items()
@@ -2044,11 +2139,29 @@ def claim_executor_jobs(
         cap = caps.get(job_type)
         if cap is not None and running_by_type.get(job_type, 0) >= cap:
             continue  # hit the cap mid-claim — the SQL exclusion only sees the count at query time
+        if executor_cap is not None:
+            # Per-class slot reservation (gr603792). ``jt`` claims into
+            # the shared band while ``running_total < cap - (reserve_total
+            # - reserve[jt])`` — a non-reserved type stops at
+            # ``cap - reserve_total``, so the last slots stay free — and
+            # into its OWN reserved allotment while ``running[jt] <
+            # reserve[jt]`` (a peer's reserved slot is never borrowable:
+            # once another reserved class holds its slot the pool counts
+            # it, and ``jt`` must still reach its own). The hard ceiling
+            # ``running_total >= cap`` binds every type — cap 0 suspends
+            # the lane entirely.
+            own = executor_reserve.get(job_type, 0)
+            allowed = executor_cap - (reserve_total - own)
+            if running_total >= executor_cap or (
+                running_total >= allowed and running_by_type.get(job_type, 0) >= own
+            ):
+                continue  # only slots reserved for other types remain
         claim = _finish_claim(ref_id, title, meta, QUEUED, r[4])
         if claim is None:
             continue
         claimed.append(claim)
         fresh_claimed += 1
+        running_total += 1
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
         share_key = _share_key(meta)
         running_by_share[share_key] = running_by_share.get(share_key, 0) + 1

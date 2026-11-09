@@ -72,9 +72,13 @@ from precis.workers.executors._common import (
     _BASE_CLASS_RANK,
     _CLASS_RANK_CASE,
     _DEFAULT_JOB_PRIO,
+    _EXECUTOR_CAP_DEFAULTS,
+    _EXECUTOR_CAP_KEY_PREFIX,
+    _EXECUTOR_RESERVE_DEFAULTS,
     _MAX_RUNNING_DEFAULTS,
     _MAX_RUNNING_KEY_PREFIX,
     _RELEASE_LEG_RANK,
+    _RESERVE_KEY_PREFIX,
     _SLICE_S_KEY_PREFIX,
     _SLICING_KEY_PREFIX,
     CLAIMABLE,
@@ -460,7 +464,8 @@ _CLAIM_SETTING_SOURCES: frozenset[str] = frozenset({"cli"})
 _CLAIM_SETTING_NEXT = (
     "put(kind='job', mode='setting', args={'key': "
     "'claim.max_running.<job_type>' | 'claim.slicing.<executor>' | "
-    "'claim.slice_s.<executor>', 'value': <v>, 'reason': '<why>'}; "
+    "'claim.slice_s.<executor>' | 'claim.executor_cap.<executor>' | "
+    "'claim.reserve.<executor>', 'value': <v>, 'reason': '<why>'}; "
     "clear with args={'key': ..., 'unset': true, 'reason': ...})"
 )
 
@@ -473,6 +478,8 @@ def _claim_setting_leaf(key: str) -> str:
         (_MAX_RUNNING_KEY_PREFIX, "job_type"),
         (_SLICING_KEY_PREFIX, "executor"),
         (_SLICE_S_KEY_PREFIX, "executor"),
+        (_EXECUTOR_CAP_KEY_PREFIX, "executor"),
+        (_RESERVE_KEY_PREFIX, "executor"),
     ):
         if key.startswith(prefix):
             leaf = key[len(prefix) :]
@@ -494,6 +501,8 @@ def _claim_setting_leaf(key: str) -> str:
             f"{_MAX_RUNNING_KEY_PREFIX}<job_type>",
             f"{_SLICING_KEY_PREFIX}<executor>",
             f"{_SLICE_S_KEY_PREFIX}<executor>",
+            f"{_EXECUTOR_CAP_KEY_PREFIX}<executor>",
+            f"{_RESERVE_KEY_PREFIX}<executor>",
         ],
         next=_CLAIM_SETTING_NEXT,
     )
@@ -502,7 +511,9 @@ def _claim_setting_leaf(key: str) -> str:
 def _claim_setting_value(key: str, value: Any) -> str:
     """The canonical ``app_state`` string for ``key``'s typed value, or
     BadInput naming the accepted shape."""
-    if key.startswith(_MAX_RUNNING_KEY_PREFIX):
+    if key.startswith(_MAX_RUNNING_KEY_PREFIX) or key.startswith(
+        _EXECUTOR_CAP_KEY_PREFIX
+    ):
         if isinstance(value, float) and value.is_integer():
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
@@ -517,6 +528,38 @@ def _claim_setting_value(key: str, value: Any) -> str:
                 next=_CLAIM_SETTING_NEXT,
             )
         return str(value)
+    if key.startswith(_RESERVE_KEY_PREFIX):
+        if not isinstance(value, dict):
+            raise BadInput(
+                f"{key!r} takes a map {{'<job_type>': <slots>}} of "
+                f"per-type reserved slots, got {value!r}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        known = set(known_job_types()) | set(_MAX_RUNNING_DEFAULTS)
+        cleaned: dict[str, int] = {}
+        for name, slots in value.items():
+            name = str(name)
+            if name not in known:
+                raise BadInput(
+                    f"{key!r}: unknown job_type {name!r} in the reserve map",
+                    options=sorted(known),
+                    next=_CLAIM_SETTING_NEXT,
+                )
+            if isinstance(slots, float) and slots.is_integer():
+                slots = int(slots)
+            if (
+                isinstance(slots, bool)
+                or not isinstance(slots, int)
+                or not 0 <= slots <= _CLAIM_MAX_RUNNING_MAX
+            ):
+                raise BadInput(
+                    f"{key!r}[{name!r}] takes an int 0.."
+                    f"{_CLAIM_MAX_RUNNING_MAX}, got {slots!r}",
+                    next=_CLAIM_SETTING_NEXT,
+                )
+            if slots:
+                cleaned[name] = slots
+        return json.dumps(cleaned, sort_keys=True)
     if key.startswith(_SLICING_KEY_PREFIX):
         if not isinstance(value, bool):
             raise BadInput(
@@ -1899,11 +1942,19 @@ class JobHandler(NumericRefHandler):
         caps = leaves(_MAX_RUNNING_KEY_PREFIX)
         flags = leaves(_SLICING_KEY_PREFIX)
         budgets = leaves(_SLICE_S_KEY_PREFIX)
+        lane_caps = leaves(_EXECUTOR_CAP_KEY_PREFIX)
+        reserves = leaves(_RESERVE_KEY_PREFIX)
         other = sorted(
             k
             for k in stored
             if not k.startswith(
-                (_MAX_RUNNING_KEY_PREFIX, _SLICING_KEY_PREFIX, _SLICE_S_KEY_PREFIX)
+                (
+                    _MAX_RUNNING_KEY_PREFIX,
+                    _SLICING_KEY_PREFIX,
+                    _SLICE_S_KEY_PREFIX,
+                    _EXECUTOR_CAP_KEY_PREFIX,
+                    _RESERVE_KEY_PREFIX,
+                )
             )
         )
 
@@ -1990,6 +2041,72 @@ class JobHandler(NumericRefHandler):
                 schema=["executor", "override", "default", "effective", "updated"],
             )
         )
+        lines += [
+            "",
+            "## claim.executor_cap.<executor> / claim.reserve.<executor>",
+            "",
+            "executor_cap: per-host running cap for the whole executor "
+            "(absent = code default, 'uncapped' = no lane cap). reserve: "
+            "JSON {<job_type>: <slots>} held back inside the cap for "
+            "those types (a non-reserved type stops at cap - "
+            "reserve_total).",
+        ]
+        lane_rows = []
+        for ex in sorted(
+            set(EXECUTOR_PROVIDES) | set(_EXECUTOR_CAP_DEFAULTS) | set(lane_caps)
+        ):
+            code_cap = _EXECUTOR_CAP_DEFAULTS.get(ex)
+            ov_cap, cap_ts = lane_caps.get(ex, (None, None))
+            code_res = _EXECUTOR_RESERVE_DEFAULTS.get(ex, {})
+            ov_res, res_ts = reserves.get(ex, (None, None))
+            lane_rows.append(
+                {
+                    "executor": ex,
+                    "cap": (
+                        ov_cap
+                        if ov_cap is not None
+                        else (str(code_cap) if code_cap is not None else "uncapped")
+                    ),
+                    "reserve": (
+                        ov_res
+                        if ov_res is not None
+                        else (json.dumps(code_res, sort_keys=True) if code_res else "-")
+                    ),
+                    "updated": _limits_ts(cap_ts or res_ts)
+                    if cap_ts or res_ts
+                    else "-",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                lane_rows, schema=["executor", "cap", "reserve", "updated"]
+            )
+        )
+        # Per-class occupancy (gr603792): running rows per executor ×
+        # job_type across hosts, for the executors that carry a cap or a
+        # reservation — the numbers the bands above gate.
+        with self.store.pool.connection() as conn:
+            occ_rows = conn.execute(
+                "SELECT r.meta->>'executor', r.meta->>'job_type', count(*) "
+                "FROM refs r "
+                "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+                "USING (tag_id) WHERE rt.ref_id = r.ref_id "
+                "AND t.namespace = %s AND t.value = %s) "
+                "GROUP BY 1, 2 ORDER BY 1, 3 DESC, 2",
+                (STATUS_NAMESPACE, RUNNING),
+            ).fetchall()
+        capped = set(_EXECUTOR_CAP_DEFAULTS) | set(lane_caps) | set(reserves)
+        occ = [
+            {"executor": str(ex), "job_type": str(jt), "running": int(n)}
+            for ex, jt, n in occ_rows
+            if str(ex) in capped
+        ]
+        if occ:
+            lines += ["", "### live occupancy (running, all hosts)"]
+            lines.append(
+                render_agent_table(occ, schema=["executor", "job_type", "running"])
+            )
         if other:
             lines += [
                 "",
@@ -1998,7 +2115,10 @@ class JobHandler(NumericRefHandler):
             ]
         return Response(
             body="\n".join(lines),
-            result_count=len(cap_rows) + len(flag_rows) + len(budget_rows),
+            result_count=len(cap_rows)
+            + len(flag_rows)
+            + len(budget_rows)
+            + len(lane_rows),
         )
 
     def _render_throughput_view(self, query_string: str) -> Response:

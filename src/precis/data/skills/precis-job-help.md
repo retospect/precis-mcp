@@ -614,8 +614,14 @@ the actor land in a `job-retarget` event on the job.
 
 The claim substrate reads `claim.*` `app_state` keys live:
 `claim.max_running.<job_type>` (per-host running cap, int 0..64 — `0`
-suspends the type), `claim.slicing.<executor>` (bool) and
-`claim.slice_s.<executor>` (positive seconds). Set or clear them with
+suspends the type), `claim.slicing.<executor>` (bool),
+`claim.slice_s.<executor>` (positive seconds),
+`claim.executor_cap.<executor>` (per-host running cap for the whole
+executor — `ssh_node` defaults to 8, absent = uncapped) and
+`claim.reserve.<executor>` (JSON `{"<job_type>": <slots>}` of slots
+inside the cap held back for those job types — a compute may not take
+the last reserved slots; `ssh_node` defaults to
+`{"run_slice": 1, "land_slice": 1}`, gr603792). Set or clear them with
 the audited setter — `reason=` is required and the change (who, old →
 new, why) lands in `worker_logs`:
 
