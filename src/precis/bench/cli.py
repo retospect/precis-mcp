@@ -30,6 +30,23 @@ def _parser() -> argparse.ArgumentParser:
     man.add_argument("--manifest", type=Path, default=None)
     man.add_argument("--cache", type=Path, default=None)
 
+    tsk = sub.add_parser(
+        "tasks", help="extract the QASPER span-gold task set (bench/tasks/)"
+    )
+    tsk.add_argument(
+        "--set", dest="set_name", choices=sorted(corpus.SET_SIZES), required=True
+    )
+    tsk.add_argument("--manifest", type=Path, default=None)
+    tsk.add_argument("--cache", type=Path, default=None)
+    tsk.add_argument(
+        "--out", type=Path, default=None, help="default bench/tasks/qasper-<set>.jsonl"
+    )
+    tsk.add_argument(
+        "--check",
+        action="store_true",
+        help="verify the file on disk equals a fresh extraction instead of writing",
+    )
+
     sub.add_parser("run", help="not built yet")
     sub.add_parser("report", help="not built yet")
     return ap
@@ -79,12 +96,43 @@ def _manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tasks(args: argparse.Namespace) -> int:
+    from precis.bench import qasper_tasks
+
+    man = corpus.load_manifest(args.manifest)
+    records = man[args.set_name]
+    if corpus.corpus_sha256(records) != man["corpus_sha256"][args.set_name]:
+        raise corpus.BenchCorpusError(
+            f"manifest {args.set_name!r} does not match its corpus_sha256"
+        )
+    archive = corpus.fetch_archive(
+        args.cache, sha256=man["dataset"]["archive"]["sha256"]
+    )
+    rows, report = qasper_tasks.build_tasks(records, corpus.load_archive(archive))
+    text = qasper_tasks.tasks_text(rows)
+    path = args.out or qasper_tasks.default_tasks_path(args.set_name)
+    print(report.table())
+    if args.check:
+        have = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if have != text:
+            print(f"{path} differs from a fresh extraction", file=sys.stderr)
+            return 1
+        print(f"{path} matches ({len(rows)} rows)")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    print(f"wrote {path} ({len(rows)} rows, {len(text.encode('utf-8'))} bytes)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.cmd in ("run", "report"):
         print(NOT_BUILT)
         return 2
     try:
+        if args.cmd == "tasks":
+            return _tasks(args)
         return _ingest(args) if args.cmd == "ingest" else _manifest(args)
     except corpus.BenchCorpusError as exc:
         print(f"error: {exc}", file=sys.stderr)

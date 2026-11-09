@@ -4,6 +4,8 @@
 # Usage:
 #   scripts/bench ingest --set quick|full   # fetch (pinned) + ingest the QASPER fixture into the DEV db
 #   scripts/bench manifest [--check]        # maintainers: rebuild/verify bench/corpus/manifest.json
+#   scripts/bench tasks --set quick|full    # extract the QASPER span-gold tasks -> bench/tasks/qasper-<set>.jsonl
+#                                           # (+ yield table; --check verifies the file on disk; full is gitignored)
 #   scripts/bench run | report              # not built yet (stubs)
 #
 # Everything runs inside the precis-dev container via scripts/dev, which points

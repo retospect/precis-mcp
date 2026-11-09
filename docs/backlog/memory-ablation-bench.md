@@ -282,7 +282,15 @@ curve per arm.
    paragraph/document char offsets for span gold (see the corpus.py
    docstring). Not done: loading committed `derived/` (keywords, summaries,
    tags, embeddings) instead of running workers; LitSearch second corpus.
-4. Task set + gold, Reto-reviewed.
+4. Task set + gold, Reto-reviewed. Landed (td604845): one span-gold schema
+   (`src/precis/bench/gold.py`: `evidence: [{doc, unit, span, doc_span}]`,
+   no chunk ids; `spans_overlap_chunk`; `from_planted` adapter) shared by
+   QASPER tasks (`qasper_tasks.py`, `scripts/bench tasks --set quick|full`,
+   `bench/tasks/qasper-quick.jsonl` committed, `qasper-full.jsonl` generated
+   on demand and gitignored) and the planted generator (`planted.py`).
+   Cross-paper/stance/memory tasks come from `planted.py`, not from added
+   hand-written QASPER tasks. Still open: Reto's review of model-labelled
+   rows (none exist yet).
 5. Harness + results schema + report script (tables, figures).
 6. CI nightly + Zenodo bundle.
 7. Paper draft (precis `draft`, serves qu604835): related work from the

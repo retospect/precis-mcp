@@ -214,3 +214,7 @@ scratch/*
 
 # local CFD scratch repo (own git), never tracked here
 cfdtest/
+
+# Memory-ablation bench: the full QASPER task set (~2.1 MB) is generated on
+# demand by scripts/bench tasks --set full; only the quick set is committed.
+bench/tasks/qasper-full.jsonl
