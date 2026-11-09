@@ -14,7 +14,11 @@ detached submit/poll pair under ``ssh_node``:
   fully-reviewed head for a release-fix re-cut, the tip for a pass
   minted without a target — ``--sha`` is passed only in the first two.
   A land cleared on a corrective commit also holds the cut while that
-  commit sits outside the selected sha (td601005).
+  commit sits outside the selected sha (td601005). A re-cut only ever
+  launches at origin/main (``scripts/round``'s pipelined-cut rule):
+  a cleared head below it refuses ``holding: <why>`` and the next tick
+  retries (gr611217); the hold is recorded on the plan root
+  (``release_poll.note_cut_hold``) so the poll asks after an hour.
 * :func:`poll` waits for the exit file; on exit 0 with a
   ``RELEASE_CUT: r<N> <sha>`` line it records the cut on the plan
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
@@ -84,6 +88,11 @@ NAME = "release_cut"
 
 _DEFAULT_WALL_S = 30 * 60
 _TAIL_CAP = 2000
+
+#: The refusal prefix of a re-cut held below origin/main (gr611217) —
+#: a wait, not a failure: ``validate_submit`` refuses it before any job
+#: mints, and a ``submit`` that races into it fails attempt-free.
+HOLD_PREFIX = "holding: "
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -363,7 +372,10 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     recorded ``meta.release_target`` — only the lands inside its
     ``upto`` window may hold it, a newer land's open review does not;
     a pass without a recorded target (a hand mint, or pre-gr592271)
-    keeps the whole-gate tip rule."""
+    keeps the whole-gate tip rule. A re-cut whose cleared head sits
+    below the pinned origin/main refuses with a :data:`HOLD_PREFIX`
+    line naming the holding units (gr611217): the open round's
+    pipelined cut must be at origin/main, so the launch would die."""
     rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
     if rel is not None:
         repo = pr_class.resolve_repo(store, None)
@@ -378,6 +390,17 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
             return None, f"GitHub unreadable ({exc}); next: the next tick retries"
         if sha is None:
             return None, "; ".join(blockers)
+        # The poll's liveness clock: a hold past an hour files one ask.
+        _rp.note_cut_hold(store, todo_id, blockers)
+        if blockers:
+            # gr611217: a re-cut runs while r<N> is open, and
+            # ``scripts/round`` cuts that pipelined release only at
+            # origin/main — a cleared sha below the head is a doomed
+            # launch, so the cut holds until the gate clears the tip.
+            return None, (
+                f"{HOLD_PREFIX}cut {sha[:12]} sits below origin/main: "
+                f"{'; '.join(blockers)}; next tick retries"
+            )
         return sha, None
     target = (
         _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
@@ -444,6 +467,10 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     sha, refusal = _cut_target(ctx.store, params.get("todo_id"))
     if refusal is not None:
+        if refusal.startswith(HOLD_PREFIX):
+            # gr611217: the gate moved between validate and submit — a
+            # wait on the review gate burns no plan attempt.
+            ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: "cut-hold"})
         ctx.record_failure(f"{NAME}: {refusal}")
         return None
     argv = ["--cut-only"] + (["--sha", sha] if sha else [])

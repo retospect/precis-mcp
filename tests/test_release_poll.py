@@ -3330,3 +3330,309 @@ def test_a_sha_reviewers_revert_closes_and_the_revert_task_gates(
     )
     poll = rp.run_pass(store, repo=REPO, now=NOW)
     assert poll.minted is not None
+
+
+# ── gr611217: reviewers while a pass is open; FIX correctives clear ──
+#
+# r261: with pass td610703 open the poll returned before the gate, so
+# hand lands never got a reviewer; and the FIX's own fix land read as a
+# fresh uncleared unit whose span chained with the FIX span, so the
+# re-cut recomputed a sha hours below origin/main with no blocker line.
+
+
+def _reviewer_keys(store: Store) -> list[str]:
+    return sorted(
+        str((m.get("generate") or {}).get("from")) for _r, m in rp._reviewer_rows(store)
+    )
+
+
+def test_an_open_pass_still_mints_engine_reviewers(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The open pass still blocks the cut — no GitHub read, no mint —
+    but the hand land on main gets its sha-keyed reviewer this tick,
+    once: the next tick finds it covering and mints nothing more."""
+    mint = T.mint_release_pass(store)
+    calls = _fake_github(monkeypatch)
+    _hand_land("d5225e775" + "0" * 31, "fix(poll): gate", ["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == f"release-pass td{mint.root_id} is open"
+    assert res.minted is None and calls == []
+    assert _reviewer_keys(store) == ["sha:d5225e775000"]
+    assert any("minted reviewer" in n for n in res.notes)
+    again = rp.run_pass(store, repo=REPO, now=NOW)
+    assert again.blocker == f"release-pass td{mint.root_id} is open"
+    assert _reviewer_keys(store) == ["sha:d5225e775000"]
+
+
+def test_the_no_release_window_still_mints_engine_reviewers(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside the window no pass mints and GitHub is not read, but the
+    unreviewed hand land gets its reviewer now — paid before the window
+    opens."""
+    calls = _fake_github(monkeypatch)
+    _hand_land("3919bddf6" + "0" * 31, "fix(skills): cap", ["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=_at(4, 0))  # the default window
+    assert res.blocker == "inside the no-release window 03:00-04:20Z"
+    assert res.minted is None and calls == []
+    assert _reviewer_keys(store) == ["sha:3919bddf6000"]
+    assert not rp._release_pass_ids(store)
+
+
+def test_an_open_pass_dry_run_mints_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    T.mint_release_pass(store)
+    _fake_github(monkeypatch)
+    _hand_land("d5225e775" + "0" * 31, "fix(poll): gate", ["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=NOW, dry_run=True)
+    assert res.blocker is not None and "is open" in res.blocker
+    assert rp._reviewer_rows(store) == []
+    assert any("would mint" in n for n in res.notes)
+
+
+def _fix_chain(
+    store: Store, a: str, b: str, *, a_on_window: bool = True
+) -> tuple[int, int]:
+    """[A FIX] whose fix todo landed B — B is itself an engine land
+    linked to the fix todo (the 519c3d44f / 261aa5f34 shape). Returns
+    ``(fix id, FIX reviewer id)``."""
+    if a_on_window:
+        _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha=b)
+    rid = _reviewer(
+        store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
+    )
+    _engine_land(store, int(fix.id), paths=["src/precis/plans/lanes.py"], sha=b)
+    return int(fix.id), rid
+
+
+def test_a_fix_chain_with_its_corrective_cuts_at_the_tip(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[A FIX, B = A's corrective, C LAND, D LAND] — B rides A's
+    chain: no reviewer minted for it, nothing holds, the cut is D."""
+    a, b, c, d = "a" * 40, "b" * 40, "c" * 40, "e" * 40
+    _GIT_PIN[0] = d
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 4,
+            "behind_by": 0,
+            "commits": [{"sha": s} for s in (a, b, c, d)],
+        },
+    )
+    _fix_chain(store, a, b)
+    _engine_land(store, 44, paths=["scripts/ship"], sha=c)
+    _reviewer(store, 44, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 45, paths=["scripts/ship"], sha=d)
+    _reviewer(store, 45, status="done", review={"verdict": "LAND"})
+    before = _reviewer_keys(store)
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    assert head == d and lines == []
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    target = R.release_target_of(store, res.minted)
+    assert target is not None and target["sha"] == d
+    assert _reviewer_keys(store) == before  # no reviewer minted for B
+
+
+def test_a_corrective_whose_fixed_land_is_on_prod_still_clears(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A already shipped; only its fix B sits ahead of prod — the FIX
+    reviewer naming B's todo as its task clears B (no in-window A)."""
+    b, c = "b" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": b}, {"sha": c}],
+        },
+    )
+    _fix_chain(store, "a" * 40, b, a_on_window=False)
+    _engine_land(store, 44, paths=["scripts/ship"], sha=c)
+    _reviewer(store, 44, status="done", review={"verdict": "LAND"})
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    assert head == c and lines == []
+
+
+def test_a_correctives_own_verdict_wins(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B has its own reviewer with a FIX verdict whose fix has not
+    landed — that verdict, not A's chain, judges B: it holds."""
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
+        },
+    )
+    fix, _rid = _fix_chain(store, a, b)
+    fix2 = store.insert_ref(kind="todo", slug=None, title="fix of fix", meta=None)
+    own = _reviewer(
+        store, fix, status="done", review={"verdict": "FIX", "task": int(fix2.id)}
+    )
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    # A's span [A, B-1] chains into B's [B, end]: nothing clears.
+    assert head is None
+    assert any(f"td{own}" in ln for ln in lines)
+
+
+def test_a_cut_below_the_head_names_what_holds_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[X LAND, A FIX, U pending, C = A's fix] — the cut is X, and the
+    lines name both U's pending review and A's corrective span (the
+    chained hold that used to come back with no line at all)."""
+    x, a, u, c = "1" * 40, "a" * 40, "b" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 4,
+            "behind_by": 0,
+            "commits": [{"sha": s} for s in (x, a, u, c)],
+        },
+    )
+    _engine_land(store, 41, paths=["scripts/ship"], sha=x)
+    _reviewer(store, 41, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _landed_comment(store, int(fix.id), sha=c)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=u)
+    pending = _reviewer(store, 43)
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    assert head == x
+    assert any(f"td{pending}" in ln and "td43" in ln for ln in lines)
+    assert any("td42" in ln and "corrective commit" in ln for ln in lines)
+
+
+def test_a_corrective_clears_only_its_fix_todos_unit(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B's subject links ``(td<fix>, td<other>)``: B is A's recorded fix,
+    but td<other> is an unreviewed engine change riding the same
+    commit — the (B, td<fix>) unit clears on A's chain, (B, td<other>)
+    does not, and it holds the cut."""
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    fix = int(store.insert_ref(kind="todo", slug=None, title="fix", meta=None).id)
+    other = int(store.insert_ref(kind="todo", slug=None, title="other", meta=None).id)
+    _landed_comment(store, fix, sha=b)
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": fix})
+    _hand_land(b, f"fix(plan): both (td{fix}, td{other})", ["scripts/ship"])
+    verdicts, _n, fatal, _pin, _scanned = rp._engine_verdicts(store, now=NOW)
+    assert fatal is None and verdicts is not None
+    by_todo = {v.unit.todo_id: v.cleared for v in verdicts if v.unit.sha12 == b[:12]}
+    assert by_todo == {fix: True, other: False}
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    assert head is None
+    assert any(f"td{other}" in ln for ln in lines)
+
+
+def test_a_running_reviewer_on_the_corrective_holds_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reviewer still running on B (no verdict yet) judges B itself:
+    a late FIX/REVERT must not land after the cut shipped. Once that
+    reviewer is cancelled the chain clears B again."""
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _GIT_PIN[0] = c
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
+        },
+    )
+    fix, _rid = _fix_chain(store, a, b)
+    running = _reviewer(store, fix)  # open, no verdict
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    assert head is None
+    assert any(f"td{running}" in ln for ln in lines)
+    store.add_tag(
+        running, Tag.closed("STATUS", "cancelled"), set_by="agent", replace_prefix=True
+    )
+    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
+    assert head == c and lines == []
+
+
+def test_an_open_round_still_mints_engine_reviewers(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_github(monkeypatch)
+    psettings.set_setting("release.round", _round_row("fixing"), store=store)
+    _hand_land("0e5fde093" + "0" * 31, "fix(x): y", ["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == "release round r5 in flight (fixing)"
+    assert calls == [] and res.minted is None
+    assert _reviewer_keys(store) == ["sha:0e5fde093000"]
+
+
+def _stuck_ask_ids(store: Store, tag: str) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = %s
+            """,
+            (tag,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def test_a_recut_hold_past_an_hour_files_one_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-cut's hold is stamped on the plan root; under an hour the
+    poll asks nothing, past it one ``release-stuck:r7:recut-hold`` ask
+    names the holding unit, and a re-tick files no second one. A
+    cleared hold drops the stamp."""
+    _fake_github(monkeypatch)
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "p..c", repo=REPO)
+    hold = ["engine land td43 has no reviewer; the release waits"]
+    rp.note_cut_hold(store, mint.ids["cut"], hold, now=NOW - timedelta(minutes=30))
+    rp.run_pass(store, repo=REPO, now=NOW)
+    tag = "release-stuck:r7:recut-hold"
+    assert _stuck_ask_ids(store, tag) == []
+    # The same hold, still in place 31 min later: ``since`` is kept.
+    rp.note_cut_hold(store, mint.ids["cut"], hold, now=NOW)
+    res = rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=31))
+    [ask] = _stuck_ask_ids(store, tag)
+    assert any(f"td{ask}" in n for n in res.notes)
+    assert "td43" in _todo_text(store, ask)
+    rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=45))
+    assert _stuck_ask_ids(store, tag) == [ask]
+    rp.note_cut_hold(store, mint.ids["cut"], None)
+    ref = store.get_ref(kind="todo", id=mint.root_id)
+    assert ref is not None and not (ref.meta or {}).get("cut_hold")

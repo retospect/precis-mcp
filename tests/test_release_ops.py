@@ -3201,3 +3201,81 @@ def test_the_recut_orders_on_the_scan_when_the_compare_list_is_empty(
     assert checkout["argv"] == [
         [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", c]
     ]
+
+
+# ── gr611217: a re-cut never launches below origin/main ────────────
+#
+# A re-cut runs while r<N> is open, and ``scripts/round`` refuses a
+# pipelined cut anywhere but origin/main — the r261 re-cut pinned
+# 5a1ab3326 three hours below main and burned the retry cap twice.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_recut_below_the_head_holds_and_names_the_unit(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[B LAND, C pending] — the cleared head is B, below the pinned
+    head: validate refuses ``holding:`` naming C's review (a refusal
+    mints no job, so no attempt), and a submit racing into it fails
+    attempt-free without launching."""
+    mint = _cut(store)
+    b, c = "b" * 40, "c" * 40
+    _fake_gh_api(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": b}, {"sha": c}],
+        },
+    )
+    _engine_land(store, 42, ["scripts/ship"], sha=b)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, ["scripts/ship"], sha=c)
+    rid = _reviewer(store, 43)
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None
+    assert refusal.startswith(f"release_cut: {rc.HOLD_PREFIX}cut {b[:12]}")
+    assert f"td{rid}" in refusal and "td43" in refusal
+    assert refusal.endswith("next tick retries")
+    # The poll's liveness clock: the hold sits on the plan root.
+    hold = _meta(store, mint.root_id)["cut_hold"]
+    assert hold["since"] and any("td43" in ln for ln in hold["lines"])
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert checkout["argv"] == []
+    assert ctx.failures and rc.HOLD_PREFIX in ctx.failures[0]
+    assert ctx.stamped.get("attempt_free") == "cut-hold"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_recut_over_a_fix_and_its_corrective_cuts_the_tip(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[A FIX, B = A's fix land, C LAND] — B rides A's chain, so the
+    re-cut launches at C, the tip."""
+    mint = _cut(store)
+    a, b, c = "a" * 40, "b" * 40, "c" * 40
+    _fake_gh_api(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
+        },
+    )
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    _comment(store, int(fix.id), f"landed: {b} — fix")
+    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    _engine_land(store, int(fix.id), ["src/precis/plans/lanes.py"], sha=b)
+    _engine_land(store, 44, ["scripts/ship"], sha=c)
+    _reviewer(store, 44, status="done", review={"verdict": "LAND"})
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == [] and handle is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", c]
+    ]
