@@ -161,12 +161,13 @@ class Config:
         # config.yaml's DSN wins over an inherited PRECIS_DATABASE_URL: a stale
         # launchd/plist value (agent_rw) must not shadow the precis_system DSN
         # the vault's infra class requires. The env var is only a fallback for
-        # a config that names none.
+        # a config that names none. Same precedence for the LISTEN/NOTIFY DSN
+        # (gr605686).
         db_url = os.environ.get("PRECIS_DATABASE_URL")
         if db_url and not (data.get("precis") or {}).get("database_url"):
             data.setdefault("precis", {})["database_url"] = db_url
         notify_url = os.environ.get("PRECIS_NOTIFY_DATABASE_URL")
-        if notify_url:
+        if notify_url and not (data.get("precis") or {}).get("notify_database_url"):
             data.setdefault("precis", {})["notify_database_url"] = notify_url
 
         def _merge(cls_: type, key: str) -> Any:

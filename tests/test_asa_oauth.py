@@ -149,6 +149,27 @@ def test_config_load_env_dsn_is_the_fallback(tmp_path, monkeypatch):
     assert Config.load(str(cfg_file)).precis.database_url == _STALE_ENV_DSN
 
 
+def test_config_load_yaml_notify_dsn_beats_stale_env(tmp_path, monkeypatch):
+    """gr605686: notify_database_url follows the same config-wins rule."""
+    from asa_bot.config import Config
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        f'precis:\n  notify_database_url: "{_CONFIG_DSN}"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("PRECIS_NOTIFY_DATABASE_URL", _STALE_ENV_DSN)
+    assert Config.load(str(cfg_file)).precis.notify_database_url == _CONFIG_DSN
+
+
+def test_config_load_env_notify_dsn_is_the_fallback(tmp_path, monkeypatch):
+    from asa_bot.config import Config
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("precis: {}\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_NOTIFY_DATABASE_URL", _STALE_ENV_DSN)
+    assert Config.load(str(cfg_file)).precis.notify_database_url == _STALE_ENV_DSN
+
+
 def test_precis_child_env_gets_config_dsn_not_stale_env(monkeypatch):
     import asyncio
 

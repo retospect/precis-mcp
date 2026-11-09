@@ -352,7 +352,7 @@ def test_asa_invoke_mints_one_log_per_turn(
     opened: list[tuple[str, ...]] = []
     closed: list[int] = []
 
-    def fake_open(model: str, slug: str, msg: str) -> int:
+    def fake_open(model: str, slug: str, msg: str, dsn: str | None = None) -> int:
         opened.append((model, slug, msg))
         return 55
 
@@ -505,6 +505,72 @@ def test_attribution_store_backs_off_after_connect_failure(
     assert attempts == 1
     assert seen["open_timeout"] == ci._RUN_STORE_CONNECT_S
     assert seen["kwargs"]["connect_timeout"] == int(ci._RUN_STORE_CONNECT_S)
+
+
+def _record_pool_dsn(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stub ``create_pool`` + ``Store`` so the recorded DSN is the one the
+    attribution pool would dial."""
+    import precis.store.pool as pool_mod
+
+    seen: list[str] = []
+
+    def fake_create_pool(dsn: str, **kwargs: Any) -> Any:
+        seen.append(dsn)
+        return object()
+
+    monkeypatch.setattr(pool_mod, "create_pool", fake_create_pool)
+    monkeypatch.setattr("precis.store.Store", lambda *a, **kw: object())
+    return seen
+
+
+def test_attribution_store_passed_dsn_beats_stale_env(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """gr605686: config wins — the DSN the turn threads in reaches the
+    pool; an inherited ``PRECIS_DATABASE_URL`` must not shadow it."""
+    ci = _run_store_state
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://agent_rw@stale/x")
+    seen = _record_pool_dsn(monkeypatch)
+
+    ci._attribution_store("postgresql://precis_system@cfg/x")
+
+    assert seen == ["postgresql://precis_system@cfg/x"]
+
+
+def test_attribution_store_env_dsn_is_the_fallback(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """No threaded DSN → ``PRECIS_DATABASE_URL`` still feeds the pool."""
+    ci = _run_store_state
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://env-dsn/x")
+    seen = _record_pool_dsn(monkeypatch)
+
+    ci._attribution_store()
+
+    assert seen == ["postgresql://env-dsn/x"]
+
+
+def test_open_turn_log_threads_the_config_dsn(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """gr605686: ``open_turn_log(dsn=…)`` reaches ``_attribution_store`` —
+    bot.py's ``cfg.precis.database_url`` drives the pool, not the env."""
+    ci = _run_store_state
+    from precis import agentlog
+
+    seen: list[Any] = []
+
+    def fake_store(dsn: Any = None) -> Any:
+        seen.append(dsn)
+        return object()
+
+    monkeypatch.setattr(ci, "_attribution_store", fake_store)
+    monkeypatch.setattr(agentlog, "open_run", lambda *a, **kw: 1)
+
+    from asa_bot.config import LLMConfig
+
+    assert ci.open_turn_log(LLMConfig(), "c", "u", dsn="postgresql://cfg/x") == 1
+    assert seen == ["postgresql://cfg/x"]
 
 
 def test_open_turn_log_stores_fingerprint_not_prompt(

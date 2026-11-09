@@ -284,8 +284,10 @@ def _turn_overlay(
 
 
 # asa binds no Store in-process (it talks to precis over a subprocess MCP
-# server), so run attribution opens its own small pool on asa's
-# ``PRECIS_DATABASE_URL`` the first time a turn needs it.
+# server), so run attribution opens its own small pool the first time a
+# turn needs it — on the config.yaml DSN threaded in per turn (config
+# wins, gr605686); ``PRECIS_DATABASE_URL`` is only the fallback when no
+# caller passes one.
 _run_store: Any = None
 _run_store_lock = threading.Lock()
 #: ``time.monotonic()`` of the last failed connect; a down DB is retried only
@@ -299,14 +301,16 @@ _RUN_STORE_RETRY_S = 60.0
 _RUN_STORE_CONNECT_S = 3.0
 
 
-def _attribution_store() -> Any:
+def _attribution_store(dsn: str | None = None) -> Any:
     """asa's process-wide Store for agentlog writes, or ``None`` without a DSN
-    or inside the retry back-off after a failed connect."""
+    or inside the retry back-off after a failed connect. ``dsn`` is the
+    config.yaml ``precis.database_url`` the turn threads in; the env var is
+    only the fallback when none is given (gr605686)."""
     global _run_store, _run_store_failed_at
     with _run_store_lock:
         if _run_store is not None:
             return _run_store
-        dsn = os.environ.get("PRECIS_DATABASE_URL")
+        dsn = dsn or os.environ.get("PRECIS_DATABASE_URL")
         if not dsn:
             return None
         now = time.monotonic()
@@ -356,21 +360,34 @@ def shutdown_attribution_store() -> None:
             log.warning("asa agentlog: store close failed", exc_info=True)
 
 
-def open_turn_log(cfg: LLMConfig, conv_slug: str, user_message: str) -> int | None:
+def open_turn_log(
+    cfg: LLMConfig,
+    conv_slug: str,
+    user_message: str,
+    *,
+    dsn: str | None = None,
+) -> int | None:
     """Mint a turn's agentlog for a caller that needs the id BEFORE
     ``invoke`` runs — bot.py binds it on the daemon's own MCP calls
     (user-turn capture, preamble reads) so the whole turn attributes to
     the one run (gr540852). ``invoke(agentlog_id=…)`` closes it exactly
-    like a self-minted log. Blocking; run off the event loop."""
+    like a self-minted log. ``dsn`` is ``cfg.precis.database_url`` — the
+    pool's connect DSN (config wins over an inherited
+    ``PRECIS_DATABASE_URL``). Blocking; run off the event loop."""
     model = _flag_value(cfg.command, "--model", resolve_model(Tier.FRONTIER))
-    return _open_turn_log(model, conv_slug, user_message)
+    return _open_turn_log(model, conv_slug, user_message, dsn)
 
 
-def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | None:
+def _open_turn_log(
+    turn_model: str,
+    conv_slug: str,
+    user_message: str,
+    dsn: str | None = None,
+) -> int | None:
     """Open this turn's agentlog (gr540852). ``None`` on any failure — a
     Discord reply never waits on attribution. Blocking; run off the loop."""
     try:
-        store = _attribution_store()
+        store = _attribution_store(dsn)
     except Exception:
         log.warning("asa agentlog: attribution store unavailable", exc_info=True)
         return None
@@ -395,7 +412,10 @@ def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | 
 
 
 async def _open_turn_log_async(
-    turn_model: str, conv_slug: str, user_message: str
+    turn_model: str,
+    conv_slug: str,
+    user_message: str,
+    dsn: str | None = None,
 ) -> int | None:
     """:func:`_open_turn_log` off the loop, cancel-safe.
 
@@ -405,7 +425,7 @@ async def _open_turn_log_async(
     to completion, its id stamped ``cancelled``, then the cancel re-raised.
     """
     opening = asyncio.ensure_future(
-        asyncio.to_thread(_open_turn_log, turn_model, conv_slug, user_message)
+        asyncio.to_thread(_open_turn_log, turn_model, conv_slug, user_message, dsn)
     )
     try:
         return await asyncio.shield(opening)
@@ -487,7 +507,8 @@ async def invoke(
     message (don't spam new posts).
 
     ``dsn`` is ``cfg.precis.database_url`` from config.yaml (precis_system):
-    the connection the OAuth token is revealed over. It beats an inherited
+    the connection the OAuth token is revealed over and the agentlog
+    attribution pool opens on. It beats an inherited
     ``PRECIS_DATABASE_URL`` (see :mod:`asa_bot.secrets`).
 
     A turn whose tier pauses at the budget breaker degrades down the ladder
@@ -537,7 +558,7 @@ async def invoke(
     log_id = agentlog_id
     if log_id is None:
         try:
-            log_id = await _open_turn_log_async(model, conv_slug, user_message)
+            log_id = await _open_turn_log_async(model, conv_slug, user_message, dsn)
         except Exception:
             log.warning("asa agentlog: open failed", exc_info=True)
             log_id = None

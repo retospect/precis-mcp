@@ -287,7 +287,13 @@ class AsaBot(discord.Client):
         # (gr540852). This worker task owns the binding until the next
         # turn rebinds.
         llm_cfg = _llm_with_override(self._cfg.llm, self._runtime.model_override)
-        log_id = await asyncio.to_thread(open_turn_log, llm_cfg, slug, message.content)
+        log_id = await asyncio.to_thread(
+            open_turn_log,
+            llm_cfg,
+            slug,
+            message.content,
+            dsn=self._cfg.precis.database_url or None,
+        )
         bind_run(agentlog_id=log_id)
         reached_invoke = False
         try:
@@ -558,7 +564,11 @@ class AsaBot(discord.Client):
         # Same up-front mint + bind as _handle_one: the synth capture and
         # preamble reads attribute to the cron turn's run (gr540852).
         log_id = await asyncio.to_thread(
-            open_turn_log, self._cfg.llm, conv_slug, payload
+            open_turn_log,
+            self._cfg.llm,
+            conv_slug,
+            payload,
+            dsn=self._cfg.precis.database_url or None,
         )
         bind_run(agentlog_id=log_id)
         reached_invoke = False
