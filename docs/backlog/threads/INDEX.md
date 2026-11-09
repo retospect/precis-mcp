@@ -179,9 +179,15 @@ Waits:
 
 Threads: `knowledge-mesh.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
 `claims-and-evidence.md` · `graph-memory-consumers.md` ·
-`draft-authoring.md`
+`draft-authoring.md` · `task-scratch-memory.md`
 
 Seams:
+- `workers/memory_thread_sweep.py` — task-scratch-memory Do-next 1 adds the
+  owner-keyed expiry rule; the memory-gardener cluster (gr560759, ranked in
+  knowledge-mesh) touches the same candidate query — land the expiry rule
+  first or rebase onto it. `utils/eye_render.py::RingFilter` — task-scratch
+  Do-next 2 adds a `tags` dimension; graph-memory-consumers owns the ring
+  and unfiltered renders must not change.
 - `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
   (meta.supply widened to measures) consumes it.
 - `backlog/knowledge-mesh.md` — knowledge-mesh Horizon 3; roadmap Horizon 4 is
