@@ -193,9 +193,9 @@ class _PutState:
     #: announces it so the arming is never silent.
     stamped_default_tier: bool = False
     #: ``waiting-for:mint`` stamped because the put landed inside a live
-    #: plan with no caller-owned session signal covering it — the ack
-    #: says so, since the hold keeps the child out of dispatch until
-    #: released.
+    #: plan with no session signal verifiably the caller's own covering
+    #: it — the ack says so, since the hold keeps the child out of
+    #: dispatch until released.
     mint_hold: bool = False
 
 
@@ -1120,13 +1120,16 @@ class TodoHandler(NumericRefHandler):
 
             validate_auto_check_spec(meta["auto_check"])
         # A put landing inside a live plan subtree mints the child held
-        # (``waiting-for:mint``) when no caller-owned session signal —
-        # an in-flight job or ``claimed-by:`` lease on the mint's own
-        # ancestor chain — covers it: the row commits open and linkless
-        # and the ``blocked-by`` links land in later calls, so an
-        # unsigned session's mint must not dispatch in the gap, and a
-        # sibling's signal is another session's, not the caller's
-        # (gr590954 review, td601078; td601628). The minter removes the
+        # (``waiting-for:mint``) when no session signal verifiably the
+        # caller's own covers it — a live signal on the ``slice:``
+        # grant's own todo, or a ``claimed-by:`` lease the caller's
+        # write principal stamped, on the ancestor chain or a
+        # mint-capable todo of the plan: the row commits open and
+        # linkless and the ``blocked-by`` links land in later calls, so
+        # an unsigned session's mint must not dispatch in the gap, and
+        # a foreign session's signal — even on the parent itself —
+        # ends on that session's clock, not the caller's (gr590954
+        # review, td601078; td601628; td602774). The minter removes the
         # tag once its links are settled — the mint-held runbook
         # contract (me570515) enforced; plan_dispatch hygiene releases
         # a settled mint's hold past ``MINT_STALE`` and asks on an
@@ -2734,8 +2737,9 @@ class TodoHandler(NumericRefHandler):
         if state.mint_hold:
             body += (
                 f" minted held ({plan_nodes.MINT_HOLD_TAG}) — inside a live "
-                "plan and no session signal on its ancestor chain covers "
-                "it; remove the tag once its blocked-by links are settled."
+                "plan and no session signal verifiably the caller's own "
+                "covers it; remove the tag once its blocked-by links are "
+                "settled."
             )
         ask_blocks = guards.check_ask_meta(state.meta)
         if ask_blocks is not None:
