@@ -661,16 +661,52 @@ def _signal_rows(store: Store, ids: list[int]) -> dict[int, tuple[Any, ...]]:
     return {int(r[0]): tuple(r[1:]) for r in rows}
 
 
+def _unblocked_at(store: Store, plan: Any, n: Any) -> datetime | None:
+    """When the node's newest ``blocked-by`` predecessor went terminal.
+
+    A node blocked on its build is not dispatchable until the build is
+    done, so its idle clock cannot start before that moment (gr586180:
+    a reviewer that sat blocked for 2 h was "146 min idle" 25 s after
+    the build landed). Covers the node's own ``blocked-by`` targets and
+    its ancestors' — the same set ``_Plan.blocked`` waits on — and only
+    targets already terminal; the STATUS tag stamp is the done time."""
+    done_ids = [
+        b.id
+        for node in (n, *plan.ancestors(n))
+        for b in plan.blockers.get(node.id, [])
+        if plan.status_of(b) in BLOCKER_TERMINAL_STATUSES
+    ]
+    if not done_ids:
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT max(rt.created_at) FROM ref_tags rt
+              JOIN tags t USING (tag_id)
+             WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS'
+            """,
+            (done_ids,),
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
 def _node_signals(
-    n: Any, jobs: list[Any], rows: dict[int, tuple[Any, ...]]
+    n: Any,
+    jobs: list[Any],
+    rows: dict[int, tuple[Any, ...]],
+    unblocked_at: datetime | None = None,
 ) -> tuple[datetime, str, list[str]]:
     """``(newest ts, its label, the log lines)`` — the newest signal of a
     node is the latest of its created_at, its tag set times, its newest
-    comment chunk, its newest event, and per child job its created_at,
-    STATUS stamp and newest chunk."""
+    comment chunk, its newest event, per child job its created_at,
+    STATUS stamp and newest chunk, and ``unblocked_at`` — when its
+    newest ``blocked-by`` predecessor finished (the idle clock starts
+    when the node became dispatchable, not when it was created)."""
     signals: list[tuple[str, datetime]] = []
     created, tag_set, chunk_at, event_at = rows.get(n.id, (n.created_at,) + (None,) * 3)
     signals.append(("todo created", created))
+    if unblocked_at is not None:
+        signals.append(("blocked-by predecessor done", unblocked_at))
     if tag_set is not None:
         signals.append(("tag set", tag_set))
     if chunk_at is not None:
@@ -918,7 +954,9 @@ def _judge_node(
         return
     jobs = plan.jobs(n)
     ids = [n.id] + [x.id for x in jobs]
-    newest, label, lines = _node_signals(n, jobs, _signal_rows(store, ids))
+    newest, label, lines = _node_signals(
+        n, jobs, _signal_rows(store, ids), _unblocked_at(store, plan, n)
+    )
     deadline = STAGE_DEADLINES[stage]
     if now - newest <= deadline:
         return

@@ -446,6 +446,52 @@ def test_blocked_by_live_node_is_exempt(store: Store) -> None:
     assert _rescue_tags(store, task) == []
 
 
+def test_idle_clock_starts_when_the_blocker_finishes(store: Store) -> None:
+    """gr586180: a node blocked 2 h whose predecessor went done seconds ago
+    is not 120 min idle — it only just became dispatchable."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    task = _node(store, root, title="review")
+    store.add_link(
+        src_ref_id=task, dst_ref_id=build, relation="blocked-by", set_by="system"
+    )
+    _age(store, task, timedelta(minutes=120))
+    # ``build`` keeps its database-stamped "done" time: just now.
+
+    res = fr.run_stall_pass(store, NOW + timedelta(seconds=25))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert _sig_gripes(store) == []
+
+    # The same node, once the deadline runs from the unblock, is rescued.
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+    assert res.rescued == [(task, "stalled", "idle")]
+
+
+def test_silent_node_past_the_deadline_since_unblock_is_rescued(
+    store: Store,
+) -> None:
+    """A real stall: the blocker finished long ago and the node is still
+    silent, so the unblock time does not mask it."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    task = _node(store, root, title="review")
+    store.add_link(
+        src_ref_id=task, dst_ref_id=build, relation="blocked-by", set_by="system"
+    )
+    _age(store, task, timedelta(minutes=120))
+    _age(store, build, timedelta(minutes=45))
+
+    res = fr.run_stall_pass(store, NOW)
+
+    assert res.rescued == [(task, "stalled", "idle")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+    (comment,) = _comments(store, task)
+    assert "newest signal blocked-by predecessor done" in comment
+    assert "44 min ago" in comment or "45 min ago" in comment
+
+
 # ── dry run, kill switch, dedupe, evidence ────────────────────────
 
 
