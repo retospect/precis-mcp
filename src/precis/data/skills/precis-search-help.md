@@ -226,8 +226,9 @@ Rules of thumb:
   any search (a `'lexical'` broad search fuses only the text legs).
 - `queries=`/`answers=`/`exclude=`/`page=` also compose with the
   `sort=`/`since=`/`until=` source-search primitive (gr608576): a dated
-  search keeps the broad legs and exclusion filter, and `page=2` walks
-  the fused per-ref list — repeat the same knobs on every page.
+  search keeps the broad legs and exclusion filter, and
+  `args={'page': 2}` walks the fused per-ref list — repeat the same
+  knobs on every page.
 - **Refine rather than continuing** — add distinctive terms or narrow
   `scope=` when the fused list is too broad. There is no page 2 on the
   default paper path (the dated source search above is the exception).
@@ -357,6 +358,12 @@ distinctive terms, narrow `scope=`, or use
 still read as `page_size=` on an `interpreted:` line; `offset=0` is a
 no-op, `offset>0` and `page=` refuse with a canonical next call —
 there is no page 2.
+
+The one exception is the `sort=`/`since=`/`until=` source search:
+its pages continue via `args={'page': N}` — the truncated page's own
+`next:` call spells the resume (`page_size=<rows shown>`), and a page
+that fits but has more hits names `args={'page': 2}` in its Next:
+block.
 
 `skill` searches trim the default menu when one hit clearly outscores the
 tail. An explicit `page_size=` shows the full bounded set; `mode='verbatim'`

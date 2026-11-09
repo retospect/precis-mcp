@@ -172,7 +172,8 @@ def test_since_knobs_work_nested_in_args(runtime_with_store: PrecisRuntime) -> N
 
 def test_source_search_pages(runtime_with_store: PrecisRuntime) -> None:
     """gr608576: ``page=`` walks the fused per-ref list and the response
-    advertises the working ``page=N+1`` continuation."""
+    advertises the working ``args={'page': N+1}`` continuation
+    (gr608577 — the spelling that survives the MCP boundary)."""
     rt = runtime_with_store
     for i in range(3):
         _seed(rt, "paper", f"pg-{i}", f"Page study {i}", "spintronic magnon paging")
@@ -187,7 +188,7 @@ def test_source_search_pages(runtime_with_store: PrecisRuntime) -> None:
         },
     )
     assert "Page study" in out
-    assert "page=2" in out
+    assert "args={'page': 2}" in out
 
     page2 = rt.dispatch(
         "search",

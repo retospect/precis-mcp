@@ -166,11 +166,16 @@ def _removed_search_arg_error(
         # search and every other kind still refuse.
         # view='count' pages its facet groups the same way (gr592971) —
         # the other:-tail next: call is issued with the same filters
-        # plus args={'page': N+1} (td595880).
+        # plus args={'page': N+1} (td595880). The sort=/since=/until=
+        # source-search primitive pages the same way (gr608577).
         count_view = str(kwargs.get("view") or args.get("view") or "").strip() == (
             "count"
         )
-        if count_view or _memory_listing_call(kind, kwargs, args):
+        if (
+            count_view
+            or _memory_listing_call(kind, kwargs, args)
+            or _source_search_call(kwargs, args)
+        ):
             if "page" in kwargs:
                 args["page"] = kwargs.pop("page")
         else:
@@ -208,6 +213,26 @@ def _memory_listing_call(
         return False
     q = kwargs.get("q") or args.get("q")
     return not (isinstance(q, str) and q.strip() and q.strip() != "*")
+
+
+def _source_search_call(kwargs: dict[str, Any], args: dict[str, Any]) -> bool:
+    """True when the call routes to the sort=/since=/until= primitive.
+
+    Source search takes ``args={'page': N}`` (gr608577) — mirrors
+    :meth:`SearchMixin._is_source_search_request` minus the per-kind
+    carve-outs, which keep their own doors anyway.
+    """
+
+    def _v(key: str) -> Any:
+        v = kwargs.get(key)
+        return v if v is not None else args.get(key)
+
+    sort = str(_v("sort") or "").strip().lower()
+    return (
+        sort in ("relevance", "recency")
+        or _v("since") is not None
+        or _v("until") is not None
+    )
 
 
 def _handler_top_level(verb: str, kind: Any) -> frozenset[str] | None:

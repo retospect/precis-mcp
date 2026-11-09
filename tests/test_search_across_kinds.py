@@ -10,8 +10,11 @@ the date window, and the recency sort — all with the deterministic
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
+
+import pytest
 
 from precis.embedder import MockEmbedder
 from precis.runtime import PrecisRuntime
@@ -544,3 +547,89 @@ def test_draft_search_hits_capped_at_page_size(store: Store) -> None:
     handler = DraftHandler(hub=Hub(store=store, embedder=emb))
     hits = handler.search_hits(q=marker, page_size=2, mode="lexical")
     assert len(hits) == 2
+
+
+# ── gr608577: source search pages via args={'page': N} ──────────────
+
+
+def _seed_paper_window(store: Store, n: int, emb: MockEmbedder) -> list[int]:
+    return [
+        _seed(
+            store,
+            "paper",
+            f"pw-{i}-{uuid4().hex[:6]}",
+            [f"zephyr tide gauge reading {i}"],
+            emb,
+        )
+        for i in range(n)
+    ]
+
+
+def test_source_search_args_page_walks_the_window(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``args={'page': N}`` pages the since=/sort= source search —
+    disjoint windows, no gap (gr608577)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    _seed_paper_window(store, 5, emb)
+    base = {
+        "kind": "paper",
+        "q": "zephyr tide gauge",
+        "since": "2000-01-01",
+        "page_size": 2,
+    }
+    p1 = runtime_with_store.dispatch("search", base)
+    assert "[error:" not in p1
+    assert "'page': 2" in p1  # the continuation names args={'page': 2}
+
+    p2 = runtime_with_store.dispatch("search", {**base, "__extras__": {"page": 2}})
+    assert "[error:" not in p2
+    p3 = runtime_with_store.dispatch("search", {**base, "__extras__": {"page": 3}})
+    assert "[error:" not in p3
+
+    def shown_ids(body: str) -> set[int]:
+        return {int(i) for i in re.findall(r"pw-(\d+)-", body)}
+
+    g1, g2, g3 = (shown_ids(p) for p in (p1, p2, p3))
+    assert [len(g) for g in (g1, g2, g3)] == [2, 2, 1]
+    assert g1.isdisjoint(g2) and g1.isdisjoint(g3) and g2.isdisjoint(g3)
+    assert g1 | g2 | g3 == {0, 1, 2, 3, 4}
+
+
+def test_source_search_page_validation(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    emb = MockEmbedder(dim=store.embedding_dim())
+    _seed_paper_window(store, 1, emb)
+    base = {"kind": "paper", "q": "zephyr tide", "since": "2000-01-01"}
+    out = runtime_with_store.dispatch("search", {**base, "__extras__": {"page": "two"}})
+    assert "[error:BadInput]" in out
+    assert "page" in out
+
+
+def test_source_search_fit_names_exact_resume(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An over-cap page cuts at a row boundary and names the resume call
+    that continues the same ordering — ``page_size=<shown>`` +
+    ``args={'page': N}`` (gr608577)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    _seed_paper_window(store, 30, emb)
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1200")
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "zephyr tide gauge",
+            "since": "2000-01-01",
+            "page_size": 30,
+        },
+    )
+    assert is_error is False
+    assert "… truncated: showing" in body
+    assert "next: search(" in body
+    assert "args={'page': 2}" in body
+    m = re.search(r"page_size=(\d+)", body)
+    assert m is not None
+    resume_size = int(m.group(1))
+    assert 0 < resume_size < 30

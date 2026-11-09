@@ -23,14 +23,23 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from precis.errors import BadInput, Internal, NotFound, Unsupported, Upstream
+from precis.errors import (
+    BadInput,
+    Internal,
+    NotFound,
+    ResultBudgetExceeded,
+    Unsupported,
+    Upstream,
+)
 from precis.protocol import Handler
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
@@ -99,9 +108,9 @@ _SOURCE_SEARCH_CONSUMED: frozenset[str] = frozenset(
         "tags",
         "status",
         "mode",
+        "page",
         "page_size",
         "top_k",
-        "page",
         "exclude",
         "queries",
         "answers",
@@ -303,6 +312,32 @@ def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) ->
         if kept:
             parts.append(f"args={kept!r}")
     return f"search({', '.join(parts)})"
+
+
+#: A hit row on the markdown render starts ``\n## <rank>. `` — the
+#: row-granular boundary a source-search ``budget_fit`` cuts on.
+_HIT_ROW_RE = re.compile(r"\n## (\d+)\.\s")
+
+
+def _hit_row_bounds(body: str) -> tuple[str, list[str]] | None:
+    """Split a rendered hit page into ``(head, row blocks)``.
+
+    ``head`` is everything before the first ``## 1.`` mark (headline plus
+    any note/marker lines); each row block runs to the next sequential
+    ``## <rank+1>.`` mark — the rank check keeps a ``## `` line inside a
+    hit's own preview from splitting mid-row. ``None`` when the body has
+    no numbered hit rows at all.
+    """
+    marks = list(_HIT_ROW_RE.finditer(body))
+    bounds: list[tuple[int, int]] = []
+    for i, m in enumerate(marks):
+        if int(m.group(1)) != i + 1:
+            break
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(body)
+        bounds.append((m.start(), end))
+    if not bounds:
+        return None
+    return body[: bounds[0][0]], [body[s:e] for s, e in bounds]
 
 
 def _stub_state_line(row: dict[str, Any]) -> str:
@@ -1175,7 +1210,10 @@ class SearchMixin(RuntimeShape):
         # ``args={…}`` extras: hoist the keys this path consumes (plus the
         # no-op spellings it tolerates) to top level — paper search takes
         # the same knobs nested, so callers reuse that spelling here
-        # (gr608576). Anything left in extras is still refused below.
+        # (gr608576). ``args={'page': N}`` rides the same hoist — the
+        # paging spelling on this path (gr608577); the verb wrapper's own
+        # ``page=1`` default must not shadow it. Anything left in extras
+        # is still refused below.
         extras = args.get("__extras__")
         if isinstance(extras, dict):
             hoistable = _SOURCE_SEARCH_CONSUMED - {
@@ -1220,20 +1258,17 @@ class SearchMixin(RuntimeShape):
         since = self._parse_search_date(args.get("since"), "since")
         until = self._parse_search_date(args.get("until"), "until")
         sort = str(args.get("sort") or "relevance").strip().lower() or "relevance"
-        top_k = int(args.get("page_size") or args.get("top_k") or 10)
         page_raw = args.get("page")
         try:
             page = int(page_raw) if page_raw is not None else 1
         except (TypeError, ValueError):
+            page = 0
+        if page < 1 or isinstance(page_raw, bool):
             raise BadInput(
-                f"page= must be an integer, got {page_raw!r}",
-                next="page=1 is the first page; page_size= sizes it",
-            ) from None
-        if page < 1:
-            raise BadInput(
-                f"page= must be >= 1, got {page!r}",
-                next="page=1 is the first page; page_size= sizes it",
+                f"page= must be a positive integer, got {page_raw!r}",
+                next=self._source_search_page_call(kind, args, page_size=None, page=1),
             )
+        top_k = int(args.get("page_size") or args.get("top_k") or 10)
         # Broad-retrieval legs (gr608576): ``queries=`` are extra
         # reformulations, ``answers=`` hypothetical-answer passages (HyDE)
         # — each fuses its own leg via search_chunks_multi, same as the
@@ -1325,8 +1360,9 @@ class SearchMixin(RuntimeShape):
                     f"{'s' if n_dead != 1 else ''} "
                     f"not found, so not excluded: {listed}"
                 )
-        # Probe one row past the page so a ``page=N+1`` continuation hint
-        # is exact; ``offset`` pages the one fused, per-ref-collapsed list.
+        # Probe one row past the page so the continuation hint is exact
+        # — the same trick the byline/stamp listings run; ``offset``
+        # pages the one fused, per-ref-collapsed list.
         offset = (page - 1) * top_k
         results = store.chunks.search_chunks_across_kinds(
             kinds=kinds,
@@ -1348,6 +1384,8 @@ class SearchMixin(RuntimeShape):
         has_more = len(results) > top_k
         results = results[:top_k]
         hits: list[SearchHit] = []
+        # The pinned identity card is a page-1 construct — it opens the
+        # ranking, so a deeper page neither repeats it nor reserves a row.
         handle_hit = (
             self._handle_query_hit(
                 q,
@@ -1396,7 +1434,10 @@ class SearchMixin(RuntimeShape):
             empty_body = f"no matches across {', '.join(kinds)} for {q!r}{date_suffix}"
         response = merge_and_render(
             [hits],
-            page_size=top_k,
+            # The pinned card sits *beside* the page, not inside it —
+            # letting it eat a row slot would leave a one-hit gap
+            # between this page's render and the next page's offset.
+            page_size=top_k + (1 if handle_hit is not None else 0),
             query=q,
             header_noun="match",
             mode="rrf",
@@ -1442,35 +1483,139 @@ class SearchMixin(RuntimeShape):
                     cost=response.cost,
                     result_count=response.result_count,
                 )
+        response = _stamp_non_production_embedder(response, embedder)
+        # gr608577: a page that fits still names its continuation, and a
+        # page larger than the result budget gets a ``budget_fit`` whose
+        # trailer names the exact resume call — every row stays reachable.
+        split = _hit_row_bounds(response.body)
+        body = response.body
         if has_more:
-            # Re-render the call verbatim with page=N+1 — dropping
+            # Re-render the call verbatim — dropping
             # queries=/answers=/exclude=/since= would silently change the
             # ordering and window (same contract as the paper broad path's
-            # continuation hint).
+            # continuation hint). ``args={'page': N}`` is the paging
+            # spelling on this path: it survives the MCP boundary, where
+            # ``page`` is not an advertised param.
             from precis.utils.next_block import render_next_section
 
-            next_args = dict(args)
-            next_args["page"] = page + 1
-            response = Response(
-                body=response.body
-                + render_next_section(
-                    [
-                        (
-                            _search_call_text(kind, next_args, set()),
-                            f"see the next {top_k} matches (page {page + 1})",
-                        )
-                    ]
-                ),
-                cost=response.cost,
-                result_count=response.result_count,
+            body += render_next_section(
+                [
+                    (
+                        self._source_search_page_call(
+                            kind, args, page_size=top_k, page=page + 1
+                        ),
+                        f"see the next {top_k} matches (page {page + 1})",
+                    )
+                ]
             )
-        if exclude_notice:
-            response = Response(
-                body=response.body + exclude_notice,
-                cost=response.cost,
-                result_count=response.result_count,
+        body += exclude_notice
+        return replace(
+            response,
+            body=body,
+            budget_fit=(
+                self._source_search_fit(
+                    kind,
+                    args,
+                    body=body,
+                    head=split[0],
+                    rows=split[1],
+                    offset=offset,
+                    page=page,
+                    page_size=top_k,
+                    has_more=has_more,
+                )
+                if split is not None
+                else None
+            ),
+        )
+
+    def _source_search_page_call(
+        self,
+        kind: str | None,
+        args: dict[str, Any],
+        *,
+        page_size: int | None,
+        page: int,
+    ) -> str:
+        """The ``args={'page': N}`` continuation spelling (gr608577).
+
+        Replays every caller arg verbatim via ``_search_call_text`` (the
+        resolved ``uncited=``/``hubbed=`` facets re-render in their own
+        spelling); ``page`` rides inside ``args={}`` — the shape that
+        survives the MCP boundary — and ``page_size`` overrides so a
+        resume call names the size that actually fit.
+        """
+        replay = dict(args)
+        replay["page"] = None
+        if page_size is not None:
+            replay["page_size"] = page_size
+        extras = dict(replay.get("__extras__") or {})
+        if page > 1:
+            extras["page"] = page
+        else:
+            extras.pop("page", None)
+        replay["__extras__"] = extras
+        return _search_call_text(kind, replay, set())
+
+    def _source_search_fit(
+        self,
+        kind: str | None,
+        args: dict[str, Any],
+        *,
+        body: str,
+        head: str,
+        rows: list[str],
+        offset: int,
+        page: int,
+        page_size: int,
+        has_more: bool,
+    ) -> Callable[[int], str]:
+        """The ``budget_fit`` for an over-cap source-search page.
+
+        Cuts at whole hit rows; the trailer names the resume call that
+        continues the same ordering where the cut fell — a mid-page cut
+        resumes at ``offset + shown`` via ``page_size=<shown>`` and the
+        ``args={'page': N}`` spelling, never past it (gr608577: the
+        generic line-fit left the unshown rows unreachable).
+        """
+        from precis._result_budget import body_bytes
+
+        total = body_bytes(body)
+
+        def tail(k: int) -> str:
+            if k >= len(rows):
+                if not has_more:
+                    return ""
+                resume_size, resume_page = page_size, page + 1
+            else:
+                resume_size, resume_page = k, (offset + k) // k + 1
+            shown = body_bytes(head + "".join(rows[:k]))
+            return (
+                f"\n\n… truncated: showing {shown} of {total} bytes\nnext: "
+                + self._source_search_page_call(
+                    kind, args, page_size=resume_size, page=resume_page
+                )
             )
-        return _stamp_non_production_embedder(response, embedder)
+
+        def fit(cap: int) -> str:
+            if total <= cap:
+                return body
+            lo, hi = 0, len(rows)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if body_bytes(head + "".join(rows[:mid]) + tail(mid)) <= cap:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            if lo == 0:
+                raise ResultBudgetExceeded(
+                    f"search: result is {total} bytes and even one hit row "
+                    f"does not fit under the {cap}-byte result budget",
+                    next=self._source_search_page_call(kind, args, page_size=5, page=1),
+                )
+            return head + "".join(rows[:lo]) + tail(lo)
+
+        return fit
 
     @staticmethod
     def _str_list(value: Any) -> list[str]:
