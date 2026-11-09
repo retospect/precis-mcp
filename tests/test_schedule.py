@@ -934,6 +934,191 @@ def test_schedule_pass_cancelled_job_on_open_tick_still_skips(
     assert int(row[0]) == 0, "no fresh tick may mint over the pending re-mint"
 
 
+# ── settled-tick close (gr601246) ──────────────────────────────────
+
+
+def _status_of(store: Store, ref_id: int) -> str:
+    """The ref's current ``STATUS:<value>`` (default ``open``)."""
+    return next(
+        (str(t.value) for t in store.tags_for(ref_id) if t.prefix == "STATUS"),
+        "open",
+    )
+
+
+def test_schedule_pass_closes_settled_tick_when_minting_successor(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr601246: a spawned tick whose job settled flips ``STATUS:done``
+    on the pass that mints its successor — the auto_check flip is a
+    sampled sweep that can lag for hours, leaving every tick instance
+    open (6/h on release_poll)."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    old_created = datetime.now(UTC) - timedelta(minutes=15)
+    child_id = _spawn_open_child(store, rid, status="open", created_at=old_created)
+    _mint_job_under_child(store, child_id, status="succeeded")
+
+    _set_last_tick(store, rid, old_created)
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 1, "a settled prior tick must not block the next one"
+    assert _status_of(store, child_id) == "done"
+    assert result.extra["ticks_closed"] >= 1
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id = %s "
+            "AND source = 'schedule' AND event = 'close'",
+            (rid,),
+        ).fetchone()
+    assert row is not None
+    assert int(row[0]) == 1, "the close must land a schedule:close audit event"
+
+
+def test_schedule_pass_failed_job_tick_closes_wont_do(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr601246: a tick whose job *failed* (``child-failed`` bubble and
+    all) closes ``won't-do``, not ``done``."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    old_created = datetime.now(UTC) - timedelta(minutes=15)
+    child_id = _spawn_open_child(store, rid, status="open", created_at=old_created)
+    _mint_job_under_child(store, child_id, status="failed")
+    store.add_tag(child_id, Tag.open("child-failed:999"), set_by="system")
+
+    _set_last_tick(store, rid, old_created)
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 1, "a failed tick is terminal-for-scheduling — next tick mints"
+    assert _status_of(store, child_id) == "won't-do"
+
+
+def test_schedule_pass_settled_tick_closes_even_without_due_tick(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The per-recurring close runs on every claim, not only when a
+    tick is due: a settled instance must not wait for the next
+    cadence boundary to leave the open queue."""
+    resp = handler.put(
+        text="Daily",
+        meta={"schedule": {"cron": "0 0 * * *"}},
+    )
+    rid = _id_of(resp.body)
+    old_created = datetime.now(UTC) - timedelta(hours=3)
+    child_id = _spawn_open_child(store, rid, status="open", created_at=old_created)
+    _mint_job_under_child(store, child_id, status="succeeded")
+
+    # Last spawn was minutes ago — nothing is due this pass.
+    _set_last_tick(store, rid, datetime.now(UTC) - timedelta(minutes=5))
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 0, "no tick is due yet"
+    assert _status_of(store, child_id) == "done"
+
+
+def test_schedule_pass_running_job_tick_stays_open(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A tick whose job is still running is genuinely in flight: it
+    stays ``STATUS:open`` and still blocks the next tick — only a
+    *terminal* job settles the instance."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    child_id = _spawn_open_child(store, rid, status="open", created_at=recent_created)
+    _mint_job_under_child(store, child_id, status="running")
+
+    _set_last_tick(store, rid, recent_created)
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 0, "an in-flight tick still blocks the next tick"
+    assert _status_of(store, child_id) == "open"
+
+
+def test_schedule_pass_cancelled_job_tick_stays_open(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``cancelled`` job is owed work (dispatch re-mints under the
+    same tick), not a settlement — the close must not retire the tick
+    out from under the pending re-mint."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    child_id = _spawn_open_child(store, rid, status="open", created_at=recent_created)
+    _mint_job_under_child(store, child_id, status="cancelled")
+
+    _set_last_tick(store, rid, recent_created)
+    run_schedule_pass(store, limit=50)
+    assert _status_of(store, child_id) == "open"
+
+
+def test_schedule_pass_jobless_tick_stays_open(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A spawned tick with no job under it has work that was never
+    dispatched (plain agentic tick, or dispatch pending) — nothing is
+    terminal, so hygiene must not close it."""
+    resp = handler.put(
+        text="Daily",
+        meta={"schedule": {"cron": "0 0 * * *"}},
+    )
+    rid = _id_of(resp.body)
+    child_id = _spawn_open_child(
+        store, rid, status="open", created_at=datetime.now(UTC) - timedelta(hours=3)
+    )
+
+    _set_last_tick(store, rid, datetime.now(UTC) - timedelta(minutes=5))
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok == 0
+    assert _status_of(store, child_id) == "open"
+    assert result.extra["ticks_closed"] == 0
+
+
+def test_sweep_closes_settled_instance_under_paused_recurring(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Hygiene backstop: the per-recurring close only runs for claimed
+    recurrings, so a paused recurring's settled instance — older than
+    one cadence — is closed by the global sweep; a settled instance
+    *younger* than one cadence is left for a later pass."""
+    resp = handler.put(
+        text="Every-10-min poll",
+        meta={"schedule": {"cron": "*/10 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    stale_id = _spawn_open_child(
+        store, rid, status="open", created_at=datetime.now(UTC) - timedelta(hours=1)
+    )
+    fresh_id = _spawn_open_child(
+        store, rid, status="open", created_at=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    _mint_job_under_child(store, stale_id, status="succeeded")
+    _mint_job_under_child(store, fresh_id, status="succeeded")
+    store.add_tag(
+        rid,
+        Tag.closed("STATUS", "paused"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+
+    result = run_schedule_pass(store, limit=50)
+    assert _status_of(store, stale_id) == "done", (
+        "settled instance older than one cadence closes under a paused recurring"
+    )
+    assert _status_of(store, fresh_id) == "open", (
+        "a settled instance younger than one cadence is left for a later pass"
+    )
+    assert result.extra["ticks_closed"] == 1
+
+
 def test_schedule_pass_skips_folder_umbrella(store: Store) -> None:
     # Watches root has schedule=None; sweep should walk past it.
     umbrella = ensure_watches_root(store)

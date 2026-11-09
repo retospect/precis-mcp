@@ -149,6 +149,17 @@ the recurring root per due tick. Three guards in order:
    queue doesn't pile up; the nursery sweep surfaces the stuck leaf.
 3. **Backfill** — see `backfill_missed` above.
 
+A spawned tick instance **closes itself once its work settles**: when
+every job dispatched under it is terminal (`succeeded`/`failed`) the
+schedule pass flips the instance `STATUS:done` (`won't-do` on
+failure) — the auto_check evaluator that used to own the flip is a
+sampled sweep and could lag for hours, leaving settled ticks counted
+as live work (gr601246). A hygiene sweep in the same pass closes
+settled instances older than one cadence under recurrings the pass
+didn't claim (paused, lock-held, past the pass limit). Only
+`STATUS:open` instances close — an operator's `doing`/`blocked`/
+`paused` mark, `halt`, or `ask-user` tag wins over hygiene.
+
 **Delivery-mode** (`meta.deliver` set) fires the push notify directly
 — no child, so no collision-skip guard (nothing to collide with).
 Idempotency lives on a
@@ -166,7 +177,9 @@ node that retires itself after its one tick.
   schedule-spawned?" (queue-mode only — delivery-mode has no child).
 * `ref_events.source='schedule'`, `event='spawn'` (queue-mode) or
   `event='deliver'` (delivery-mode / one-shot resolution) answers
-  "when did this recurring last tick, and how?"
+  "when did this recurring last tick, and how?"; `event='close'`
+  records a settled tick instance's terminal STATUS flip (with the
+  `tick` stamp, `child_id` and `status` in the payload).
 
 No new tag invented. The dashboard pulls "last tick" from the
 event log directly (both event kinds).

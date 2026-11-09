@@ -57,6 +57,30 @@ Guards (in order, per the plan):
    missed ticks for weather / news are dropped. ``True`` walks every
    missed tick since the last spawn, so birthdays catch up.
 
+Settled-tick close (gr601246)
+==============================
+
+A spawned child whose minted jobs all went terminal
+(``succeeded``/``failed``) with no live ``kind='todo'`` child is
+*settled*, not in flight — the same judgement collision-skip already
+makes to keep the cadence moving (gr592215). The ``STATUS`` flip that
+was supposed to land on such a tick is the auto_check pass's
+``child_job_succeeded`` evaluator — a *sampled* sweep whose latency is
+unbounded, so every settled tick lingered ``STATUS:open`` (6/h on
+``release_poll`` alone) and ``view='doable'``, loop-completion and the
+ask/rescue counters all read it as live work. Two closers now own it:
+
+* :func:`_close_settled_tick_children_conn` runs inside the
+  per-recurring claim, before the tick loop — a settled instance
+  flips ``STATUS:done`` (``won't-do`` when no job succeeded) on the
+  same pass that mints its successor, or sooner.
+* :func:`sweep_settled_tick_instances` is the global backstop: it
+  closes settled instances older than one cadence under recurrings the
+  pass didn't claim (paused, lock-held, past ``limit``).
+
+Only ``STATUS:open`` children are ever closed — an operator's own
+``doing``/``blocked``/``paused`` mark wins over hygiene.
+
 The worker is sql + python only — no LLM calls — and stays in the
 default ``precis worker`` rotation alongside ``auto_check``.
 
@@ -82,9 +106,10 @@ reaper, no stale-row sweeper. Same property the ingest claim
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis.errors import BadInput
 from precis.store import Store
 from precis.workers._mint import JOB_TERMINAL_STATUSES
 from precis.workers.runner import BatchResult
@@ -92,6 +117,7 @@ from precis.workers.schedule.parse import (
     Schedule,
     one_shot_action,
     parse_schedule,
+    tick_gap_before,
     ticks_since,
 )
 from precis.workers.schedule.seed import (
@@ -133,6 +159,9 @@ def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
     * ``ok`` = number of subtasks minted (one per due tick)
     * ``failed`` = number of ticks **skipped** (collision-skip, or
       stamps that already existed)
+    * ``extra['ticks_closed']`` = settled tick instances flipped to a
+      terminal ``STATUS`` this pass (the per-recurring close +
+      :func:`sweep_settled_tick_instances`; gr601246)
 
     The naming follows the shared ``BatchResult`` shape; ``failed``
     here is not a software failure but the "didn't spawn this tick"
@@ -154,17 +183,30 @@ def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
     except Exception:
         log.exception("schedule: deliverable retry sweep failed")
         n_retried = 0
+    try:
+        n_closed = sweep_settled_tick_instances(store, now=now)
+    except Exception:
+        log.exception("schedule: settled-tick sweep failed")
+        n_closed = 0
 
     candidate_ids = _candidate_recurring_ids(store, limit=limit)
     if not candidate_ids:
-        return BatchResult(handler="schedule", claimed=0, ok=n_retried, failed=0)
+        return BatchResult(
+            handler="schedule",
+            claimed=0,
+            ok=n_retried,
+            failed=0,
+            extra={"ticks_closed": n_closed},
+        )
 
     n_claimed = 0
     n_spawned = n_retried
     n_skipped = 0
     for rec_id in candidate_ids:
         try:
-            claimed, spawned, skipped = _claim_and_process(store, rec_id, now=now)
+            claimed, spawned, skipped, closed = _claim_and_process(
+                store, rec_id, now=now
+            )
         except Exception:
             # Bad schedule shape, missing index, etc. — log and
             # continue. The handler boundary validates at write time,
@@ -176,12 +218,14 @@ def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
         n_claimed += claimed
         n_spawned += spawned
         n_skipped += skipped
+        n_closed += closed
 
     return BatchResult(
         handler="schedule",
         claimed=n_claimed,
         ok=n_spawned,
         failed=n_skipped,
+        extra={"ticks_closed": n_closed},
     )
 
 
@@ -320,10 +364,10 @@ def _claim_and_process(
     rec_id: int,
     *,
     now: datetime,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """Lock one recurring's refs row, compute ticks, mint children.
 
-    Returns ``(claimed, spawned, skipped)``:
+    Returns ``(claimed, spawned, skipped, closed)``:
 
     * ``claimed`` = 1 if we successfully acquired the row lock, 0 if
       another worker already holds it.
@@ -331,6 +375,10 @@ def _claim_and_process(
     * ``skipped`` = number of ticks the spawner refused to mint
       (stamp-collision idempotency, or collision-skip when previous
       tick still open).
+    * ``closed`` = number of settled spawned children flipped to a
+      terminal ``STATUS`` (:func:`_close_settled_tick_children_conn`;
+      gr601246 — a settled tick closes on this pass whether or not a
+      new tick was due).
 
     The lock spans the entire claim-check-spawn sequence including
     the spawned-child insert + the ``schedule:spawn`` event append,
@@ -382,7 +430,7 @@ def _claim_and_process(
             # Either another worker holds the row, or the row was
             # paused / deleted / resolved between the enumeration
             # pass and now. Both cases: do nothing, return clean.
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
         rec: dict[str, Any] = {
             "id": int(row[0]),
@@ -394,8 +442,11 @@ def _claim_and_process(
             "deliver": dict(row[6]) if row[6] else None,
             "last_tick": row[7],
         }
+        # Close settled tick children before minting: the flip belongs
+        # to this pass whether or not a new tick is due (gr601246).
+        closed = _close_settled_tick_children_conn(store, conn, rec["id"])
         spawned, skipped = _spawn_due_ticks(store, rec, now=now, conn=conn)
-        return (1, spawned, skipped)
+        return (1, spawned, skipped, closed)
 
 
 def _spawn_due_ticks(
@@ -764,6 +815,233 @@ def _has_open_previous_tick_conn(
     return row is not None
 
 
+# ── settled-tick close (gr601246) ─────────────────────────────────
+
+#: The "tick instance settled and closeable" WHERE clauses, over a
+#: spawned child aliased ``c`` — the same judgement
+#: :func:`_has_open_previous_tick_conn` makes for collision-skip,
+#: inverted into a row filter: only the minted ``open`` STATUS is a
+#: close candidate (an operator's ``doing``/``blocked``/``paused`` —
+#: or an already-terminal tag — wins over hygiene); ≥1 ``kind='job'``
+#: was minted under it; every minted job is settled
+#: (:data:`_TICK_SETTLED_JOB_STATUSES` — ``cancelled`` keeps the work
+#: owed since dispatch re-mints it); and no ``kind='todo'`` child of
+#: the tick is still live (the ``child_job_succeeded`` completion
+#: guard). Carries one ``<> ALL(%s)`` placeholder for the settled
+#: status list.
+_TICK_SETTLED_CHILD_SQL = """
+           AND c.meta ? 'spawned_for_tick'
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                   WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                 'open'
+               ) = 'open'
+           -- Owner signals on the tick itself also win over hygiene:
+           -- an ``ask-user``/``halt`` open tag keeps the instance
+           -- operator-owned. (``child-failed:`` is deliberately NOT
+           -- here — a failed tick closes ``won't-do``; the attention
+           -- view already hides terminal parents.)
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                  WHERE rt.ref_id = c.ref_id
+                    AND t.namespace = 'OPEN'
+                    AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%'
+                         OR t.value = 'halt' OR t.value LIKE 'halt:%%')
+               )
+           AND EXISTS (
+                 SELECT 1 FROM refs j
+                  WHERE j.parent_id = c.ref_id
+                    AND j.kind = 'job'
+                    AND j.retired_at IS NULL
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM refs j
+                  WHERE j.parent_id = c.ref_id
+                    AND j.kind = 'job'
+                    AND j.retired_at IS NULL
+                    AND COALESCE(
+                          (SELECT t.value
+                             FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = j.ref_id
+                              AND t.namespace = 'STATUS' LIMIT 1),
+                          'open'
+                        ) <> ALL(%s)
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM refs ct
+                  WHERE ct.parent_id = c.ref_id
+                    AND ct.kind = 'todo'
+                    AND ct.retired_at IS NULL
+                    AND COALESCE(
+                          (SELECT t.value
+                             FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = ct.ref_id
+                              AND t.namespace = 'STATUS' LIMIT 1),
+                          'open'
+                        ) NOT IN ('done', 'won''t-do')
+               )
+"""
+
+#: The ``succeeded``-or-not column both close queries share: whether
+#: any job under the tick went ``STATUS:succeeded`` — ``True`` closes
+#: the tick ``done``, ``False`` (all jobs failed) closes it
+#: ``won't-do``.
+_TICK_HAD_SUCCESS_SQL = """
+               EXISTS (
+                     SELECT 1 FROM refs j
+                       JOIN ref_tags rt ON rt.ref_id = j.ref_id
+                       JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE j.parent_id = c.ref_id AND j.kind = 'job'
+                        AND j.retired_at IS NULL
+                        AND t.namespace = 'STATUS' AND t.value = 'succeeded'
+                   )
+"""
+
+
+def _close_tick_child_conn(
+    store: Store,
+    conn: Any,
+    *,
+    rec_id: int,
+    child_id: int,
+    stamp: str,
+    status: str,
+) -> None:
+    """Write the terminal STATUS on one settled tick child + audit event.
+
+    The ``schedule:close`` event lands on the recurring (like
+    ``schedule:spawn``) so the instance's whole lifecycle — minted,
+    settled, closed — reads off one row's event log.
+    """
+    from precis.store.types import Tag
+
+    store.add_tag(
+        child_id,
+        Tag.closed("STATUS", status),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    store.append_event(
+        rec_id,
+        source="schedule",
+        event="close",
+        payload={"tick": stamp, "child_id": child_id, "status": status},
+        conn=conn,
+    )
+    log.info(
+        "schedule: rec id=%d closed settled tick child id=%d → %s",
+        rec_id,
+        child_id,
+        status,
+    )
+
+
+def _close_settled_tick_children_conn(store: Store, conn: Any, rec_id: int) -> int:
+    """Close this recurring's spawned tick children whose work settled.
+
+    Runs inside the per-recurring claim, before the tick loop — the
+    flip lands on the same pass that mints the successor, or sooner.
+    ``FOR UPDATE OF c SKIP LOCKED`` serializes with the hygiene sweep
+    (and auto_check) on multi-host: whoever holds the child row does
+    the close, the other skips a row that's about to be terminal
+    anyway.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT c.ref_id, c.meta->>'spawned_for_tick' AS stamp,
+               {_TICK_HAD_SUCCESS_SQL} AS succeeded
+          FROM refs c
+         WHERE c.parent_id = %s
+           AND c.kind = 'todo' AND c.retired_at IS NULL
+{_TICK_SETTLED_CHILD_SQL}
+         ORDER BY c.ref_id
+         FOR UPDATE OF c SKIP LOCKED
+        """,
+        (rec_id, sorted(_TICK_SETTLED_JOB_STATUSES)),
+    ).fetchall()
+    for child_id, stamp, succeeded in rows:
+        _close_tick_child_conn(
+            store,
+            conn,
+            rec_id=rec_id,
+            child_id=int(child_id),
+            stamp=str(stamp or ""),
+            status="done" if succeeded else "won't-do",
+        )
+    return len(rows)
+
+
+#: Bound on stale instances the hygiene sweep inspects per pass —
+#: settled-tick rows are few once the per-recurring close lands, so
+#: this is a belt, not the mover.
+_SWEEP_LIMIT = 200
+
+
+def sweep_settled_tick_instances(store: Store, *, now: datetime) -> int:
+    """Close settled tick instances older than one cadence — the
+    stragglers the per-recurring close can't reach (gr601246).
+
+    :func:`_close_settled_tick_children_conn` only runs for recurrings
+    the pass claims; a paused recurring, one locked by another worker,
+    or one past the pass ``limit`` keeps leaving settled instances
+    ``STATUS:open``. A spawned child counts as older than one cadence
+    when its ``spawned_for_tick`` stamp plus the parent's cron gap —
+    the two most recent ticks at-or-before ``now``
+    (:func:`tick_gap_before`) — sits at-or-before ``now``. A recurring
+    with a sparser-than-monthly cadence yields no gap and is left to
+    the nursery's ``stalled-recurring`` alert rather than guessed at.
+    """
+    n = 0
+    periods: dict[str, timedelta | None] = {}
+    with store.tx() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT c.ref_id, c.meta->>'spawned_for_tick' AS stamp,
+                   p.ref_id AS rec_id, p.meta->'schedule'->>'cron' AS cron,
+                   {_TICK_HAD_SUCCESS_SQL} AS succeeded
+              FROM refs c JOIN refs p ON p.ref_id = c.parent_id
+             WHERE c.kind = 'todo' AND c.retired_at IS NULL
+               AND p.kind = 'todo'
+               AND p.meta->'schedule' ? 'cron'
+{_TICK_SETTLED_CHILD_SQL}
+             ORDER BY c.ref_id
+             LIMIT %s
+             FOR UPDATE OF c SKIP LOCKED
+            """,
+            (sorted(_TICK_SETTLED_JOB_STATUSES), _SWEEP_LIMIT),
+        ).fetchall()
+        for child_id, stamp, rec_id, cron, succeeded in rows:
+            if not isinstance(cron, str) or not isinstance(stamp, str):
+                continue
+            if cron not in periods:
+                try:
+                    periods[cron] = tick_gap_before(cron, before=now)
+                except BadInput:
+                    periods[cron] = None
+            period = periods[cron]
+            if period is None:
+                continue
+            # ``<tick>~retry<n>`` stamps (deliverable retries) age by
+            # the base tick they retry.
+            try:
+                tick_dt = _parse_iso(stamp.split("~", 1)[0])
+            except ValueError:
+                continue
+            if tick_dt + period > now:
+                continue
+            _close_tick_child_conn(
+                store,
+                conn,
+                rec_id=int(rec_id),
+                child_id=int(child_id),
+                stamp=stamp,
+                status="done" if succeeded else "won't-do",
+            )
+            n += 1
+    return n
+
+
 def _mint_child_conn(
     store: Store,
     conn: Any,
@@ -854,4 +1132,9 @@ def _render_child_title(rec: dict[str, Any], tick: datetime) -> str:
     return f"{base} {tick.date().isoformat()}"
 
 
-__all__ = ["DELIVERABLE_RETRY_AT", "mint_deliverable_retries", "run_schedule_pass"]
+__all__ = [
+    "DELIVERABLE_RETRY_AT",
+    "mint_deliverable_retries",
+    "run_schedule_pass",
+    "sweep_settled_tick_instances",
+]

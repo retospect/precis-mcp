@@ -421,6 +421,32 @@ def ticks_since(
     return [matches[-1]]
 
 
+def tick_gap_before(
+    cron: str, *, before: datetime, max_minutes: int = 95000
+) -> timedelta | None:
+    """The gap between the two most recent ``cron`` ticks at-or-before
+    ``before`` — one cadence of the schedule.
+
+    Walks backwards minute-by-minute from ``before``, capped at
+    ``max_minutes`` (the ~66-day default always finds two monthly-cron
+    ticks). ``None`` when two ticks can't be found inside the bound —
+    a sparser-than-monthly cadence the caller should treat as
+    "one cadence not established" rather than a free pass.
+    """
+    fields = parse_cron(cron)
+    if before.tzinfo is None:
+        before = before.replace(tzinfo=UTC)
+    cursor = before.replace(second=0, microsecond=0)
+    newest: datetime | None = None
+    for _ in range(max_minutes):
+        if _cron_matches(cursor, fields):
+            if newest is not None:
+                return newest - cursor
+            newest = cursor
+        cursor -= timedelta(minutes=1)
+    return None
+
+
 def _cron_matches(ts: datetime, fields: tuple[frozenset[int], ...]) -> bool:
     """True iff ``ts`` minute satisfies the 5-field cron mask."""
     minute_ok = ts.minute in fields[0]
@@ -440,6 +466,7 @@ __all__ = [
     "one_shot_action",
     "parse_cron",
     "parse_schedule",
+    "tick_gap_before",
     "ticks_since",
     "validate_schedule",
 ]
