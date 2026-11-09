@@ -11,6 +11,7 @@ resolved-comment + tag path.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,6 +29,18 @@ TEST_SPEED_TEXT = (
     "scripts/test tests/test_no_db.py still queues — and starts Postgres, "
     "named-file runs wait ~25s on container bring-up"
 )
+
+#: The gr599069 filing shape: a pcb router review whose body mentions
+#: 'messaging' + 'coordinator' (router-speak) — one devin-messaging
+#: pattern hit, none of them inside the title line.
+WEAK_DEVIN_TEXT = (
+    "topo-negotiate wires.py design review\n"
+    "the router passes messaging between the coordinator and its builders"
+)
+
+#: One inflight-slow pattern hit — inside the title line, so strong
+#: enough to mint a keeper.
+TITLE_HIT_TEXT = "inflight takes >10s before first output"
 
 #: Real title + first body line per seeded example gripe (prod, fetched
 #: 2026-10-24). Every example must hit exactly its own slug — a second
@@ -227,6 +240,93 @@ def test_new_and_observation_are_create_only(gripe: GripeHandler) -> None:
     for kw in kws:
         with pytest.raises(BadInput):
             gripe.put(id=gid, text="a comment", **kw)
+
+
+# ── the gr599069 guards: mint bar + thread scope ────────────────────
+
+
+def test_single_body_hit_does_not_mint_a_keeper(gripe: GripeHandler) -> None:
+    """gr599069: one incidental pattern hit tags no keeper — the filing
+    lands standalone, unthemed."""
+    assert match_themes(WEAK_DEVIN_TEXT) == ["devin-messaging"]
+    out = gripe.put(text=WEAK_DEVIN_TEXT)
+    gid = next(iter(_ids(gripe)))
+    assert "theme:devin-messaging" not in _tags(gripe, gid)
+    assert "theme keeper" not in out.body
+    assert "filed separately" in out.body
+
+
+def test_title_hit_mints_a_keeper(gripe: GripeHandler) -> None:
+    out = gripe.put(text=TITLE_HIT_TEXT)
+    gid = next(iter(_ids(gripe)))
+    assert "theme:inflight-slow" in _tags(gripe, gid)
+    assert "theme keeper" in out.body
+
+
+def test_weak_match_still_merges_into_a_live_keeper(gripe: GripeHandler) -> None:
+    """The mint bar doesn't apply to a '+1' — the theme is established
+    by its live keeper."""
+    keeper = _keeper(gripe, "devin-messaging")
+    out = gripe.put(text=WEAK_DEVIN_TEXT)
+    assert f"merged into gr{keeper} (theme devin-messaging)" in out.body
+    assert _comments(gripe, keeper)[-1].startswith("+1 (")
+
+
+@pytest.fixture
+def threads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The thread files ``thread:<slug>`` validates against."""
+    d = tmp_path / "threads"
+    d.mkdir()
+    for name in ("pcb-platform", "ship-gate-ci", "README", "INDEX", "PRIORITIES"):
+        (d / f"{name}.md").write_text("# x\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_THREADS_DIR", str(d))
+    return d
+
+
+def test_thread_filing_never_mints_a_keeper(gripe: GripeHandler, threads: Path) -> None:
+    """gr599069: even a strong match mints nothing on a thread-tagged
+    filing — the theme has no keeper inside that thread."""
+    out = gripe.put(text=TEST_SPEED_TEXT, tags=["thread:pcb-platform"])
+    gid = next(iter(_ids(gripe)))
+    assert "theme:test-speed" not in _tags(gripe, gid)
+    assert "no live keeper in thread:pcb-platform" in out.body
+
+
+def test_thread_filing_does_not_join_an_untheaded_keeper(
+    gripe: GripeHandler, threads: Path
+) -> None:
+    keeper = _keeper(gripe)
+    out = gripe.put(text=TEST_SPEED_TEXT, tags=["thread:pcb-platform"])
+    assert "merged" not in out.body
+    assert not _comments(gripe, keeper)
+    new = next(i for i in _ids(gripe) if i != keeper)
+    assert "theme:test-speed" not in _tags(gripe, new)
+
+
+def test_thread_filing_does_not_join_a_foreign_thread_keeper(
+    gripe: GripeHandler, threads: Path
+) -> None:
+    gripe.put(
+        text="Synthetic keeper gripe",
+        tags=["theme:test-speed", "thread:ship-gate-ci"],
+    )
+    keeper = max(_ids(gripe))
+    out = gripe.put(text=TEST_SPEED_TEXT, tags=["thread:pcb-platform"])
+    assert "merged" not in out.body
+    assert not _comments(gripe, keeper)
+
+
+def test_thread_filing_merges_into_a_same_thread_keeper(
+    gripe: GripeHandler, threads: Path
+) -> None:
+    gripe.put(
+        text="Synthetic keeper gripe",
+        tags=["theme:test-speed", "thread:pcb-platform"],
+    )
+    keeper = max(_ids(gripe))
+    out = gripe.put(text=TEST_SPEED_TEXT, tags=["thread:pcb-platform"])
+    assert f"merged into gr{keeper} (theme test-speed)" in out.body
+    assert _comments(gripe, keeper)[-1] == f"+1: {TEST_SPEED_TEXT}"
 
 
 # ── observation ───────────────────────────────────────────────────────

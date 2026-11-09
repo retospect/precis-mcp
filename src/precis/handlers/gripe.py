@@ -13,6 +13,9 @@ Surface (see ``precis-gripe-help``):
   matching exactly one theme folds into that theme's live
   ``theme:<slug>`` keeper as a ``+1`` comment — or becomes the keeper
   itself when none exists — so filers never have to dedup first.
+  Minting a keeper takes a stronger match than merging, and a
+  ``thread:<slug>`` filing themes only within its own thread
+  (gr599069).
   ``args={'new': True}`` bypasses matching; several matches file
   normally (the ack lists them). ``args={'observation': True}`` files
   the gripe already closed (``STATUS:done`` + ``observation`` tag) via
@@ -100,7 +103,11 @@ import psycopg.errors
 from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported, Upstream
 from precis.handlers import _comment_timeline as tl
 from precis.handlers import _gripe_fix as gf
-from precis.handlers._gripe_themes import THEME_TAG_PREFIX, match_themes
+from precis.handlers._gripe_themes import (
+    THEME_TAG_PREFIX,
+    keeper_mint_match,
+    match_themes,
+)
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
@@ -1009,12 +1016,23 @@ class GripeHandler(NumericRefHandler):
         # A read-only filing skips the merge entirely: the '+1' would be a
         # comment INSERT on someone else's ref — exactly the write
         # ``agent_ro`` lacks (gr516603; filers file, triage dedups).
+        # gr599069 guards: minting a keeper takes a stronger match than
+        # merging (``keeper_mint_match``), and a ``thread:<slug>`` filing
+        # only ever joins a keeper inside that same thread — a weak or
+        # cross-thread match files standalone, untagged.
         matched: list[str] = [] if (new or self._is_ro()) else match_themes(text or "")
         note = ""
         if len(matched) == 1:
             slug = matched[0]
+            from precis.utils.thread_files import THREAD_TAG_PREFIX
+
+            threads = sorted(
+                t for t in tags or () if t.lower().startswith(THREAD_TAG_PREFIX)
+            )
             keeper = self._theme_keeper(
-                slug, memory=self.kind == "gripe" and "project:memory" in (tags or ())
+                slug,
+                memory=self.kind == "gripe" and "project:memory" in (tags or ()),
+                threads=threads,
             )
             if keeper is not None:
                 with _PUT_UNTIL.bind(until), _translate_status_check():
@@ -1030,12 +1048,25 @@ class GripeHandler(NumericRefHandler):
                         untags=untags,
                     )
                 return interpreted(resp, readings)
-            tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
-            note = (
-                f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper existed, "
-                "so this gripe is now the theme keeper; later matching "
-                "filings merge into it as '+1' comments"
-            )
+            if threads:
+                # The theme never took root in this thread — neither
+                # merge nor mint (gr599069).
+                note = (
+                    f"matched theme {slug} but it has no live keeper in "
+                    f"{', '.join(threads)} — filed separately (no theme tag)"
+                )
+            elif keeper_mint_match(text or "", slug):
+                tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
+                note = (
+                    f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper existed, "
+                    "so this gripe is now the theme keeper; later matching "
+                    "filings merge into it as '+1' comments"
+                )
+            else:
+                note = (
+                    f"matched theme {slug} — filed separately: one "
+                    "incidental hit doesn't mint a keeper"
+                )
         elif len(matched) > 1:
             note = f"matched themes: {', '.join(matched)} — filed separately (no merge)"
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
@@ -1064,13 +1095,23 @@ class GripeHandler(NumericRefHandler):
             resp = replace(resp, body=f"{resp.body}\n{note}")
         return interpreted(resp, readings)
 
-    def _theme_keeper(self, slug: str, *, memory: bool = False) -> int | None:
+    def _theme_keeper(
+        self,
+        slug: str,
+        *,
+        memory: bool = False,
+        threads: list[str] | None = None,
+    ) -> int | None:
         """The oldest live gripe tagged ``theme:<slug>``, or ``None``.
 
         "Live" = not carrying a terminal STATUS — a triaged/in-review
         keeper still collects ``+1``s; once it closes, the next matching
         filing becomes the new keeper. Memory complaints have separate
         keepers so merging cannot hide a code bug from coder intake.
+        ``threads`` scopes the search to refs also carrying one of the
+        filing's ``thread:<slug>`` tags (gr599069): a theme belongs to a
+        thread only while a live keeper already carries that thread's
+        tag, so a thread-tagged filing never joins a foreign keeper.
         """
         tags = [f"{THEME_TAG_PREFIX}{slug}"]
         exclude_tags = sorted(_OPEN_EXCLUDED_TAGS)
@@ -1079,14 +1120,19 @@ class GripeHandler(NumericRefHandler):
                 tags.append("project:memory")
             else:
                 exclude_tags.append("project:memory")
-        refs = self.store.list_refs(
-            kind=self.kind,
-            tags=tags,
-            exclude_tags=exclude_tags,
-            order_by="created_asc",
-            limit=1,
-        )
-        return refs[0].id if refs else None
+        candidates: list[int] = []
+        scopes: list[str | None] = [*threads] if threads else [None]
+        for scope in scopes:
+            want = tags if scope is None else [*tags, scope]
+            refs = self.store.list_refs(
+                kind=self.kind,
+                tags=want,
+                exclude_tags=exclude_tags,
+                order_by="created_asc",
+                limit=1,
+            )
+            candidates.extend(r.id for r in refs)
+        return min(candidates) if candidates else None
 
     @staticmethod
     def _merge_comment(text: str | None) -> str:

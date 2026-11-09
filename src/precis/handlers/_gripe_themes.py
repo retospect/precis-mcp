@@ -9,6 +9,18 @@ keeper; several matches (or none, or ``args={'new': True}``) file
 normally. Filers never search first — the matching lives here, not in
 the filing agent.
 
+Two guards keep a weak or off-scope match from poisoning a theme
+(gr599069: a pcb router review's body words — 'messaging',
+'coordinator' — minted a ``theme:devin-messaging`` keeper that would
+then have absorbed unrelated '+1's). Minting a keeper needs
+:func:`keeper_mint_match` — :data:`KEEPER_MINT_MIN_HITS` distinct
+pattern hits, or one hit inside the title line, since the title is the
+claim; a lone incidental hit can still merge into a *live* keeper. And
+a filing already carrying ``thread:<slug>`` only ever joins a keeper
+inside that same thread — the keeper lookup is scoped to refs carrying
+the thread tag, so a foreign-thread theme can neither absorb the
+filing nor tag it.
+
 Seeded 2026-10-24 from the gripe-ux friction batch (Reto's "1,2,3 OK"
 on filing staying trivial). Each pattern set is anchored to the listed
 example gripes; :mod:`tests.test_gripe_themes` pins that each slug
@@ -118,9 +130,41 @@ THEMES: Final[dict[str, tuple[re.Pattern[str], ...]]] = {
     for slug, pats in _PATTERNS.items()
 }
 
+#: Distinct-pattern hits that mint a keeper on their own. One
+#: incidental hit (gr599069) never tags a keeper.
+KEEPER_MINT_MIN_HITS: Final = 2
+
+
+def theme_hits(text: str) -> dict[str, int]:
+    """Theme slug -> number of its patterns matching ``text``."""
+    hits: dict[str, int] = {}
+    for slug, pats in THEMES.items():
+        n = sum(1 for p in pats if p.search(text))
+        if n:
+            hits[slug] = n
+    return hits
+
 
 def match_themes(text: str) -> list[str]:
     """Sorted theme slugs whose patterns hit ``text`` (title + body)."""
-    return sorted(
-        slug for slug, pats in THEMES.items() if any(p.search(text) for p in pats)
-    )
+    return sorted(theme_hits(text))
+
+
+def keeper_mint_match(text: str, slug: str) -> bool:
+    """Whether a lone ``slug`` match is strong enough to mint a keeper.
+
+    The lexical bar (gr599069): :data:`KEEPER_MINT_MIN_HITS` distinct
+    pattern hits on the whole text, or one hit inside the title line —
+    a body-only single hit is an incidental word collision, not a
+    theme. A ``slug`` outside :data:`THEMES` means the matcher was
+    substituted (tests monkeypatch ``match_themes``); the bar applies
+    to the built-in registry, so a foreign slug mints.
+    """
+    pats = THEMES.get(slug)
+    if pats is None:
+        return True
+    if sum(1 for p in pats if p.search(text)) >= KEEPER_MINT_MIN_HITS:
+        return True
+    from precis.handlers._gripe_title import first_line
+
+    return any(p.search(first_line(text)) for p in pats)

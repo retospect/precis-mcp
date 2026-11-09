@@ -134,9 +134,12 @@ a `+1 (<first line>): <text>` comment; the ack says so.
 <!-- write -->
 It names `args={'new': True}` as the bypass if you meant a standalone
 gripe. One match with no live keeper tags the new gripe `theme:<slug>`,
-making it the keeper. Several matches file normally — the ack lists
-them (add the one you meant as `theme:<slug>` yourself if you want it
-on a keeper). Comments (`put(id=N, …)`) never match.
+making it the keeper — but minting takes a stronger match than merging
+(two pattern hits or a title hit; one incidental body hit files
+standalone), and a filing carrying `thread:<slug>` only ever joins a
+keeper inside that same thread. Several matches file normally — the ack
+lists them (add the one you meant as `theme:<slug>` yourself if you want
+it on a keeper). Comments (`put(id=N, …)`) never match.
 <!-- /write -->
 
 ```python
