@@ -72,6 +72,25 @@ by the ack's `next:` call are one read-only mining pass — the
 observational baseline the `desc-*` and `no-hints` arms are judged
 against.
 
+## Model × surface matrix (Reto, 2026-11-09, third ask)
+
+Question: when a weaker model drives the tools, is the fix a simpler
+API or just simpler skills? Cross the model ladder with four surfaces:
+
+| | full API | reduced API (facade) |
+|---|---|---|
+| **full skills** | today's product | same verbs collapsed to `find(text)` / `read(handle)` / `more(handle)` with fixed defaults, mapped onto get/search in `agent.py`; no server change |
+| **simplified skills** | skill cards only (summary + `answers:`), no bodies; or a one-path rewrite per task type | both |
+
+Model ladder: a frontier Claude, a mid Claude, Haiku, and two open
+models (a Qwen tier and gpt-oss-120b or a DeepSeek flash tier), routed
+as `scripts/llm_eval/run_matrix.py` already does through the router
+switch. Metrics as above plus cost per correct answer. Read it as a
+heat map: where error rate and calls-to-answer fall when the API is
+reduced but not when skills are simplified, the API is the problem;
+the reverse says documentation is. The scripted caller is again the
+control.
+
 ## Agent under test, two tiers
 
 1. **Scripted caller** — a deterministic verb sequence per task type
@@ -135,6 +154,12 @@ curve per arm.
    index row representation, truncatable titles); depends on slice 5.
 9. Observational baseline: mine prod tool-call WARNING lines for error
    rate per verb × kind and `next:` uptake; read-only, no dependency.
+10. Model × surface arms: reduced-API facade and simplified-skills set
+    in `agent.py`, model ladder through the existing router; depends on
+    slice 5.
+0. Feasibility: import closure of the memory subsystem decides whether
+   the public artifact is a small demo clone (extracted at a pinned sha,
+   contract-tested against main) or the full image (td605609).
 
 ## Explicitly NOT in scope
 
