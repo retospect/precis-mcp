@@ -1313,7 +1313,7 @@ def _run_manifest(run: Any) -> dict[str, Any] | None:
     """The run object's own manifest when it carries one — a
     :class:`TopoRun` keeps the parsed ``files["manifest.json"]`` dict; a
     rehydrated document (JSON text, or a ``.manifest`` attribute)
-    parses the same way. Both a ``/6`` and a ``/7`` manifest return
+    parses the same way. ``/6`` through ``/8`` manifests all return
     here — the reference path reads only keys it needs (``run_hash``,
     ``job``, ``label``), and :func:`manifest_run_hash` hashes old and
     new by the same rule. ``None`` for a manifest-less stand-in (a bare
@@ -1341,8 +1341,9 @@ def _objective_ref(objective: Any) -> Any:
     from a ``/6`` manifest that carries none; a manifest-less run
     object identifies by a hash of its ``ref_values``, the only run
     content it can name), ``job`` the ``jo<N>`` handle the run records
-    (``None`` for a DB-free laptop run), ``label`` its label when it
-    has one — cosmetic, never compared."""
+    (``None`` for a DB-free laptop run — a ``pcb_place`` run's own
+    manifest stamps it top-level, gr599356), ``label`` its label when
+    it has one — cosmetic, never compared."""
     from precis.pcb.topoplace import runstore as _runstore
 
     ref = getattr(objective, "ref", "seed")

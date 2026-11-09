@@ -524,6 +524,11 @@ def _topo_run(
             board_hash=board_hash,
             parts=_runstore.manifest_parts(td, graph),
             footprints=_runstore.footprint_shas(footprints or {}),
+            # gr599356: a job run records its own jo<N> handle and slug —
+            # the manifest fields a later ref=<this run> resolves
+            # ``result.ref.job``/``label`` from.
+            job=ctx.ref_id,
+            label=slug,
         ),
     )
     files["label_spots.json"] = dict(sorted(label_spots.items()))

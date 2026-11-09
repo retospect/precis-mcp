@@ -233,6 +233,50 @@ def test_manifest_run_hash_reads_a_6_manifest() -> None:
     assert runstore.manifest_run_hash(v6) == m["run_hash"]
 
 
+def test_manifest_stamps_the_producing_job() -> None:
+    """gr599356: a ``pcb_place`` run's manifest carries the job's
+    ``jo<N>`` handle and slug at top level (/8) — the fields
+    ``pcb.local._objective_ref`` reads so a later ``ref=<run>`` resolves
+    ``result.ref.job`` to the handle instead of null. A laptop run
+    passes neither and the keys stay absent. ``run_hash`` ignores both:
+    who ran it is not what it is."""
+    d, _inst, _nets = synth_design(seed=0, n_parts=4, n_nets=4, n_multinet=0)
+    result = TopoPlaceResult(
+        best_pose=np.zeros((len(d.parts), 4)),
+        best_cost=0.0,
+        crossings=0,
+        length=0.0,
+        evals=0,
+        restarts=0,
+        seed=_SEED,
+        elites=(),
+        ladder_scores=(),
+    )
+    job_run = runstore.manifest(
+        d,
+        result,
+        objective=W,
+        effort=_EFFORT,
+        board_hash="0" * 16,
+        parts=[],
+        footprints={},
+        job=42,
+        label="nightly",
+    )
+    assert job_run["job"] == "jo42" and job_run["label"] == "nightly"
+    laptop = runstore.manifest(
+        d,
+        result,
+        objective=W,
+        effort=_EFFORT,
+        board_hash="0" * 16,
+        parts=[],
+        footprints={},
+    )
+    assert "job" not in laptop and "label" not in laptop
+    assert job_run["run_hash"] == laptop["run_hash"]
+
+
 def test_objective_terms_match_shares() -> None:
     """gr549293: the manifest's objective dict records EVERY
     ``ObjectiveShares`` term — the keys are the dataclass's own field

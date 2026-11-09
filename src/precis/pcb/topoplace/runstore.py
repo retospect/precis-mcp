@@ -2,7 +2,8 @@
 
 ``manifest.json`` — schema, wheel version, code version, seed, effort,
     objective shares, board content hash, the parts/footprints read (R-e),
-    and the result row the drill-down diff reads;
+    the result row the drill-down diff reads, and the producing job's
+    ``jo<N>`` handle when a ``pcb_place`` job ran the solve;
 ``elites.json`` — the archive (the placer's canonical bytes);
 ``pairs.json`` — the pairwise part map;
 ``pins.json`` — the ``pins.lock.json`` payload (Decision 24);
@@ -42,8 +43,10 @@ from precis.pcb.topoplace.writeback import lock_payload
 #: objective's ``ref=`` argument, ``"seed"`` or the referenced run's
 #: ``out`` directory, pcb-intent-api §Recording — at /6; ``run_hash``
 #: and ``result.ref``'s ``{"run","job","label"}`` identity dict,
-#: pcb-intent-api round 2 — at /7).
-RUN_SCHEMA = "precis.topo-run/7"
+#: pcb-intent-api round 2 — at /7; top-level ``job``/``label`` — the
+#: producing ``pcb_place`` job's ``jo<N>`` handle and slug, what a later
+#: run's ``result.ref`` resolves (gr599356) — at /8).
+RUN_SCHEMA = "precis.topo-run/8"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -96,8 +99,10 @@ def manifest_run_hash(m: Mapping[str, Any]) -> str:
     minus ``ref`` — truncated to 16 hex. Excluded by design: the
     ``schema`` tag, the ``code_version``/``wheel_version`` provenance
     stamps, ``run_hash`` itself and ``result.ref`` (what this run
-    referenced, not what it is); a manifest carries no timestamp, out
-    path, hostname, job handle or label for the hash to skip. Equal
+    referenced, not what it is) — the hash reads only the named fields,
+    so /8's top-level ``job``/``label`` (who ran it, not what it is)
+    skip themselves; a manifest carries no timestamp, out path or
+    hostname for the hash to skip. Equal
     inputs and results are therefore the same run on any machine —
     which is exactly what ``result.ref.run`` needs when a later run
     references this one. A ``/6`` manifest carries no ``run_hash`` key
@@ -123,6 +128,8 @@ def manifest(
     board_hash: str,
     parts: list[dict[str, Any]],
     footprints: dict[str, Any],
+    job: str | int | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
     """The ``manifest.json`` payload. ``parts`` is the 0c provenance
     list (one ``{"refdes", "lcsc", "source"}`` row per design part, in
@@ -134,7 +141,14 @@ def manifest(
     ``{"run": <manifest_run_hash>, "job": "jo<N>" | None,
     "label": <optional>}`` — machine-portable where /6's
     ``"run:<out dir>"`` was not. ``run_hash`` is this manifest's own
-    identity, :func:`manifest_run_hash` over the payload below."""
+    identity, :func:`manifest_run_hash` over the payload below.
+    ``job`` is this run's OWN producing handle — the ``pcb_place``
+    worker passes its ref id, recorded top-level as ``jo<N>``
+    (gr599356: the field a later ``ref=<this run>`` resolves
+    ``result.ref.job`` through ``pcb.local._objective_ref``); a laptop
+    run passes ``None`` and the key stays absent. ``label`` likewise
+    records the run's slug. Both are provenance like ``schema`` — who
+    ran it is not what it is, so ``run_hash`` never reads them."""
     payload = {
         "schema": RUN_SCHEMA,
         "code_version": CODE_VERSION,
@@ -201,6 +215,10 @@ def manifest(
             ),
         },
     }
+    if job is not None:
+        payload["job"] = f"jo{job}" if isinstance(job, int) else str(job)
+    if label:
+        payload["label"] = str(label)
     payload["run_hash"] = manifest_run_hash(payload)
     return payload
 

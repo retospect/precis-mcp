@@ -322,6 +322,27 @@ def test_objective_ref_records_seed_or_the_referenced_run() -> None:
 
     assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_JobIdRun()))["job"] == "jo7"
 
+    class _ManifestJobRun:
+        """A ``pcb_place``-produced run reached only by its stored
+        manifest (gr599356): the ``jo<N>``/``label`` the /8 manifest
+        itself stamps resolve where no ``.job``/``.slug`` attribute
+        exists."""
+
+        ref_values = {"ratsnest": 1.0}
+        files = {
+            "manifest.json": {
+                "run_hash": "b" * 16,
+                "job": "jo9",
+                "label": "night",
+            }
+        }
+
+    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_ManifestJobRun())) == {
+        "run": "b" * 16,
+        "job": "jo9",
+        "label": "night",
+    }
+
     class _BareRun:
         """A manifest-less stand-in (the /6 ``run:<TypeName>`` fallback):
         identifies by the only content it carries — ``ref_values``."""
