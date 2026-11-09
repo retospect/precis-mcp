@@ -92,6 +92,9 @@ _GND_MISSING = {
 #: rest are no-via branches and unresolved crossings. A row that starts
 #: passing must lose its entry (and a board's ``_GND_MISSING`` its pads).
 _FAILING: dict[tuple[str, str], tuple[list[str], str]] = {
+    # TAZ rows last measured on main at fe360ca4c; round 3 (pass 0 ==
+    # main, emit >= pass 0) was not re-measured (exports absent); a row
+    # that now XPASSes on a fixture machine should be deleted.
     ("local-66", "prod"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
         "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",

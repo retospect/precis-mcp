@@ -30,10 +30,11 @@ from tests.test_pcb_topoplace_walls import _board, _rect
 _TRACE, _CLEAR = 0.15, 0.15
 
 
-def _route(d, *, via_dia: float = 0.6, n_nets: int = 2):
+def _route(d, *, via_dia: float = 0.6, n_nets: int = 2, negotiate=None):
     mesh = build_mesh(d, d.pose0)
     rule = (_TRACE, _CLEAR, via_dia)
-    w = build_wires(mesh, d, 4, (rule,) * n_nets, pose=d.pose0)
+    kw = {} if negotiate is None else {"negotiate": negotiate}
+    w = build_wires(mesh, d, 4, (rule,) * n_nets, pose=d.pose0, **kw)
     by_net = {b.net: b for b in w.branches}
     return mesh, w, by_net
 
@@ -154,7 +155,7 @@ def test_build_records_the_layers_the_dp_gave_each_branch() -> None:
 
 def test_a_crossing_in_open_space_takes_vias_not_the_same_layer() -> None:
     d = _cross_board()
-    mesh, w, by_net = _route(d)
+    mesh, w, by_net = _route(d, negotiate=1)
     a, b = by_net[0], by_net[1]
     assert _crosses(a, b)  # the taut wires do cross
     assert set(a.layers) == {0}
@@ -168,7 +169,7 @@ def test_a_crossing_in_open_space_takes_vias_not_the_same_layer() -> None:
 def test_with_no_via_to_take_it_goes_round() -> None:
     d = _cross_board()
     # a via wider than the board fits nowhere: net 1 cannot change layer
-    mesh, w, by_net = _route(d, via_dia=50.0)
+    mesh, w, by_net = _route(d, via_dia=50.0, negotiate=1)
     a, b = by_net[0], by_net[1]
     assert not _crosses(a, b)
     assert set(b.layers) == {0}
@@ -254,7 +255,13 @@ def test_topological_negotiation_detours_the_earlier_net(monkeypatch) -> None:
     d = _chord_blocked_named_keepout_design()
     mesh = build_mesh(d, d.pose0)
     w = build_wires(
-        mesh, d, 4, ((_TRACE, _CLEAR, 50.0),) * 2, pose=d.pose0, shove=False
+        mesh,
+        d,
+        4,
+        ((_TRACE, _CLEAR, 50.0),) * 2,
+        pose=d.pose0,
+        shove=False,
+        negotiate=1,
     )
     by_net = {b.net: b for b in w.branches}
     a, b = by_net[0], by_net[1]
@@ -275,7 +282,9 @@ def test_named_keepouts_do_not_exempt_the_negotiated_copper(monkeypatch) -> None
         return bad
 
     monkeypatch.setattr(wires_mod._Shove, "_guarded", record)
-    _mesh, w, by_net = _route(_chord_blocked_named_keepout_design(), via_dia=50.0)
+    _mesh, w, by_net = _route(
+        _chord_blocked_named_keepout_design(), via_dia=50.0, negotiate=1
+    )
     assert w.negotiated == ((1, 0, False),)
     assert set(by_net) == {0}
     assert w.unreachable and {u.net for u in w.unreachable} == {1}
@@ -289,12 +298,12 @@ def test_the_chord_split_is_what_takes_the_net_round(monkeypatch) -> None:
     """
     view0 = wires_mod._Occupancy.view
 
-    def blind(self, k):
-        return dataclasses.replace(view0(self, k), chords=None, splits=None)
+    def blind(self, k, neg=None):
+        return dataclasses.replace(view0(self, k, neg=neg), chords=None, splits=None)
 
     monkeypatch.setattr(wires_mod._Occupancy, "view", blind)
     d = _cross_board()
-    mesh, w, by_net = _route(d, via_dia=50.0)
+    mesh, w, by_net = _route(d, via_dia=50.0, negotiate=1)
     # Blinding the construction view still leaves the straight crossing.
     # Real-plan selection keeps it because the layer planner can rethread
     # the pair; stripping would turn that recovery into an actual failure.
@@ -439,7 +448,7 @@ def test_a_closure_blocked_net_gets_one_earlier_net_to_yield() -> None:
         ),
     )
     d = _two_gap_channel_board(side=0, zones=zones)
-    mesh, w, by_net = _route(d, via_dia=50.0, n_nets=3)
+    mesh, w, by_net = _route(d, via_dia=50.0, n_nets=3, negotiate=1)
     # the canonical mesh sends the loop's one-shot negotiation home
     # rolled back; the shove phase retries the same pair and keeps it —
     # the geometric outcome below is unchanged (gr591020)
@@ -458,7 +467,7 @@ def test_a_closure_blocked_net_is_named_after_one_negotiation() -> None:
     variant). The negotiation asks net 0 to yield; it cannot — the cut
     is its only way too — so net 1 is named, blocked by net 0."""
     d = _channel_board(side=0)
-    _mesh, w, by_net = _route(d, via_dia=50.0, n_nets=3)
+    _mesh, w, by_net = _route(d, via_dia=50.0, n_nets=3, negotiate=1)
     assert w.negotiated == ((1, 0, False),)
     assert 1 not in by_net
     assert w.unreachable[0].blocked_by == (0,)

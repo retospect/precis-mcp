@@ -196,6 +196,7 @@ def test_a_colliding_hop_resites_along_its_own_edge() -> None:
         (e,),
         [],
         [(x, y, r_site)],
+        False,  # the base replant path — pass 0 has no hole-to-hole wall
     )
     assert got is not None
     rebuilt, _edges = got
@@ -261,6 +262,7 @@ def test_a_colliding_hop_resites_at_real_reach() -> None:
         (e,),
         [],
         [(x, y, r_site)],
+        False,  # the base replant path — pass 0 has no hole-to-hole wall
     )
     assert got is not None
     rebuilt, _edges = got

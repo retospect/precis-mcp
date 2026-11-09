@@ -711,7 +711,7 @@ def test_the_shove_refuses_partners_that_fail_the_final_guard(monkeypatch) -> No
     )
     d = _board(pins, n_nets=3)
     mesh = build_mesh(d, d.pose0)
-    w = build_wires(mesh, d, 4, (_NOVIA,) * 3, pose=d.pose0)
+    w = build_wires(mesh, d, 4, (_NOVIA,) * 3, negotiate=1, pose=d.pose0)
     assert w.negotiated[0] == (1, 0, False), "the loop's negotiation was refused"
     assert w.shove_grows > 0, "the phase tried the blocking partners"
     assert not any(a for start in w.shove_rounds for a in start), (
@@ -774,7 +774,7 @@ def test_the_accept_rule_refuses_a_swap_that_just_moves_the_failure() -> None:
     )
     d = _board(pins, n_nets=3)
     mesh = build_mesh(d, d.pose0)
-    w = build_wires(mesh, d, 4, (_NOVIA,) * 3, pose=d.pose0)
+    w = build_wires(mesh, d, 4, (_NOVIA,) * 3, negotiate=1, pose=d.pose0)
     assert w.shove_grows > 0, "the phase tried"
     assert not any(a for start in w.shove_rounds for a in start), "no swap accepted"
     assert w.negotiated == ((1, 0, False),)
@@ -903,7 +903,7 @@ def test_a_probe_with_an_unrepairable_bigon_is_not_adopted(
 
     monkeypatch.setattr(wm, "_net_order", lambda *_args: [0, 1])
     monkeypatch.setattr(wm, "_grow_net", grow)
-    w = build_wires(mesh, d, 4, (_RULE, _RULE), pose=d.pose0)
+    w = build_wires(mesh, d, 4, (_RULE, _RULE), negotiate=1, pose=d.pose0)
     assert saw_cancelled
     assert {b.net for b in w.branches} == {0}
     (unreachable,) = w.unreachable
