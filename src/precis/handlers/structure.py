@@ -2477,10 +2477,10 @@ class StructureHandler(Handler):
         )
         hit = self.store.struct_md_cached(cache_key)
         if hit is not None:
-            return self._md_cached_response(hit, slug)
+            return self._md_cached_response(hit)
         inflight = self.store.struct_md_inflight(cache_key)
         if inflight is not None:
-            return self._md_inflight_response(inflight, slug)
+            return self._md_inflight_response(inflight)
 
         requester_id = _as_int_or_none(a.get("requested_by", a.get("parent_id")))
         if requester_id is not None:
@@ -2542,6 +2542,7 @@ class StructureHandler(Handler):
         hub = self.hub if self.hub is not None else Hub(store=self.store)
         job_resp: Response | None = None
         existing_run_id: int | None = None
+        owner_ref_id: int | None = None
         with self.store.atomic() as conn:
             conn.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
@@ -2549,10 +2550,10 @@ class StructureHandler(Handler):
             )
             hit = self.store.struct_md_cached(cache_key, conn=conn)
             if hit is not None:
-                return self._md_cached_response(hit, slug)
+                return self._md_cached_response(hit)
             inflight = self.store.struct_md_inflight(cache_key, conn=conn)
             if inflight is not None:
-                return self._md_inflight_response(inflight, slug)
+                return self._md_inflight_response(inflight)
             self.store.struct_md_reap_dead(cache_key, conn=conn)
             # The mint lock is per-request, so daily mints serialize on
             # this fixed key for the count + insert.
@@ -2618,6 +2619,11 @@ class StructureHandler(Handler):
                     if jparams.get("md_run_id") is not None
                     else None
                 )
+                owner_ref_id = (
+                    int(jparams["structure_ref_id"])
+                    if jparams.get("structure_ref_id") is not None
+                    else None
+                )
                 self.store.struct_md_update_run(
                     run_id,
                     status="failed",
@@ -2655,11 +2661,17 @@ class StructureHandler(Handler):
                 else None
             )
             if existing is not None and existing["status"] == "succeeded":
-                return self._md_cached_response(existing, slug)
+                return self._md_cached_response(existing)
             run_txt = (
                 f"run {existing_run_id}" if existing_run_id is not None else "its run"
             )
             status_txt = f" ({existing['status']})" if existing is not None else ""
+            owner_id = (
+                int(existing["structure_ref_id"])
+                if existing is not None
+                else owner_ref_id
+            )
+            poll = self._md_owner_handle(owner_id) if owner_id is not None else slug
             return Response(
                 body=(
                     f"# struct_md {run_txt} already owned by jo"
@@ -2667,7 +2679,7 @@ class StructureHandler(Handler):
                     f"({slug}){note}\n\n"
                     "An identical request is owned by that job — this call "
                     "collapsed onto it instead of minting a duplicate.\n\n"
-                    f"Poll: get(kind='structure', id={slug!r}, view='md')."
+                    f"Poll: get(kind='structure', id={poll!r}, view='md')."
                 )
             )
         return Response(
@@ -2682,37 +2694,50 @@ class StructureHandler(Handler):
             )
         )
 
-    def _md_cached_response(self, hit: Mapping[str, Any], slug: str) -> Response:
+    def _md_owner_handle(self, structure_ref_id: Any) -> str:
+        """The handle a run actually renders under — its OWNING design,
+        not the requester's. A same-geometry design's identical request
+        collapses onto the owner's row (the cache key is content, not
+        ref), and ``view='md'`` only renders runs the asked ref owns, so
+        a pointer naming the requester dead-ends in "doesn't belong"."""
+        owner = self.store.get_ref(kind="structure", id=int(structure_ref_id))
+        if owner is not None and owner.slug:
+            return str(owner.slug)
+        return f"st{structure_ref_id}"
+
+    def _md_cached_response(self, hit: Mapping[str, Any]) -> Response:
         """The zero-compute ack for an identical re-request: report the
         stored run, mint nothing."""
         msd = hit.get("msd") or {}
         final = msd.get("final_A2")
         msd_txt = f"{final:.3f} Å²" if final is not None else "n/a"
+        handle = self._md_owner_handle(hit["structure_ref_id"])
         return Response(
             body=(
                 f"# cached struct_md run {hit['id']} — st"
-                f"{hit['structure_ref_id']} ({slug})\n\n"
+                f"{hit['structure_ref_id']} ({handle})\n\n"
                 f"{hit['fidelity']}/{hit['model']} · "
                 f"{hit['n_steps']} steps @ {hit['temperature_k']} K · "
                 f"{hit['n_frames']} frames · MSD(final) {msd_txt}\n\n"
                 "An identical request (same geometry, params and code "
                 "version) already ran this trajectory — no job minted.\n\n"
-                f"Summary + trajectory: get(kind='structure', id={slug!r}, "
+                f"Summary + trajectory: get(kind='structure', id={handle!r}, "
                 f"view='md', args={{'run': {hit['id']}}})."
             )
         )
 
-    def _md_inflight_response(self, row: Mapping[str, Any], slug: str) -> Response:
+    def _md_inflight_response(self, row: Mapping[str, Any]) -> Response:
         """An identical request is already queued/running — collapse onto
         it, mint nothing."""
+        handle = self._md_owner_handle(row["structure_ref_id"])
         return Response(
             body=(
                 f"# struct_md run {row['id']} already in flight — st"
-                f"{row['structure_ref_id']} ({slug}) · status "
+                f"{row['structure_ref_id']} ({handle}) · status "
                 f"{row['status']}\n\n"
                 "An identical request is owned by that run — this call "
                 "collapsed onto it instead of minting a duplicate.\n\n"
-                f"Poll: get(kind='structure', id={slug!r}, view='md')."
+                f"Poll: get(kind='structure', id={handle!r}, view='md')."
             )
         )
 

@@ -45,7 +45,10 @@ from .scene import Scene
 #: Bump when the MD call changes such that a cached trajectory would
 #: differ from a fresh run (a changed default, a changed write-back
 #: contract) — same contract as :data:`neb.NEB_CODE_VERSION`.
-MD_CODE_VERSION = "1"
+#: 2: the COM pin is mobile-only and the extXYZ serializes the sampled
+#: positions verbatim (td607072 — the global FixCom ratcheted held
+#: atoms, and constrained frame copies rewrote their coordinates).
+MD_CODE_VERSION = "2"
 
 #: The engine knob set + defaults (gr606465): a 300 K Langevin NVT run of
 #: 1000 × 1 fs steps — the proposal's "1 ps NVT" — friction 0.02/fs, a
@@ -266,6 +269,35 @@ def rdf_summary(
     return {"rmax": float(rmax), "nbins": int(nbins), "pairs": pairs}
 
 
+def _fix_mobile_com(mobile: list[int]) -> Any:
+    """A COM pin scoped to the free atoms.
+
+    ASE's global ``FixCom`` corrects the COM by shifting EVERY atom
+    (``new += diff``) — appended after ``FixAtoms`` it repositions
+    pinned atoms every step, and ``FixAtoms`` re-pins to the *current*
+    (already-shifted) positions, so a held slab ratchets. Scoping both
+    the COM and the correction to the mobile set still pins the
+    whole-cell COM — held atoms never move — while leaving pinned
+    coordinates exact. The inherited ``adjust_momenta``/
+    ``adjust_forces`` already act on ``self.index`` alone."""
+    from ase.constraints import FixCom
+
+    class _FixMobileCom(FixCom):
+        index: Any = slice(None)
+
+        def __init__(self, index: np.ndarray) -> None:
+            super().__init__()
+            self.index = index
+
+        def adjust_positions(self, atoms: Any, new: Any) -> None:
+            masses = atoms.get_masses()[self.index]
+            old_cm = atoms.get_center_of_mass(indices=self.index)
+            new_cm = masses @ new[self.index] / masses.sum()
+            new[self.index] += old_cm - new_cm
+
+    return _FixMobileCom(np.asarray(mobile, dtype=int))
+
+
 def run_nvt(
     atoms: Any, params: Mapping[str, Any], *, timeout_s: float
 ) -> dict[str, Any]:
@@ -299,6 +331,9 @@ def run_nvt(
     friction = float(params["friction_per_fs"]) / units.fs
     seed = int(params["seed"])
 
+    held = _held_indices(atoms)
+    mobile = [i for i in range(len(atoms)) if i not in held]
+
     t0 = time.monotonic()
     deadline = t0 + float(timeout_s)
     MaxwellBoltzmannDistribution(
@@ -306,12 +341,13 @@ def run_nvt(
     )
     # Held-slab MD wants no COM drift: Stationary rescales the free
     # momenta once (preserve_temperature keeps the MB temperature), and a
-    # FixCom pins the centre of mass for the run — ASE ≥3.28 deprecated
-    # Langevin's own fixcm because it doesn't sample NVT correctly.
+    # COM pin holds it for the run — ASE ≥3.28 deprecated Langevin's own
+    # fixcm because it doesn't sample NVT correctly. The pin is scoped
+    # to the mobile set: the global FixCom's uniform correction moves
+    # pinned atoms every step (see _fix_mobile_com).
     Stationary(atoms)
-    from ase.constraints import FixCom
-
-    atoms.set_constraint([*atoms.constraints, FixCom()])
+    if mobile:
+        atoms.set_constraint([*atoms.constraints, _fix_mobile_com(mobile)])
     dyn = Langevin(
         atoms,
         dt_fs * units.fs,
@@ -348,8 +384,6 @@ def run_nvt(
         _sample()
     t_ps = [s * dt_fs / 1000.0 for s in sample_steps]
 
-    held = _held_indices(atoms)
-    mobile = [i for i in range(len(atoms)) if i not in held]
     symbols = [str(s) for s in atoms.get_chemical_symbols()]
     cell = np.asarray(atoms.cell, dtype=float)
     pbc: tuple[bool, bool, bool] = (
@@ -372,7 +406,11 @@ def run_nvt(
     frames = []
     for k, pos in enumerate(positions):
         f = atoms.copy()
-        f.set_positions(pos)
+        # The frame carries the SAMPLED positions verbatim: applying the
+        # constraints here would rewrite them — FixAtoms re-pins held
+        # atoms to the post-run positions and the COM pin shifts every
+        # frame's mobile set onto the final COM.
+        f.set_positions(pos, apply_constraint=False)
         f.calc = None
         f.info = {"time_ps": round(t_ps[k], 6), "e_pot_ev": round(e_pot[k], 6)}
         frames.append(f)

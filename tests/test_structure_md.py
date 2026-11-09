@@ -35,7 +35,7 @@ from precis.workers.job_types import get_job_type, struct_md
 from tests.test_structure_endpoints import _endpoint_is
 from tests.test_structure_handler import _child_jobs2
 from tests.test_structure_neb_store import _job as _status_job
-from tests.test_structure_pair_check import _put_is_fs
+from tests.test_structure_pair_check import _IS_PAYLOAD, _put_is_fs
 
 
 def _slab(element: str = "Cu"):
@@ -118,7 +118,7 @@ def test_cache_key_is_deterministic_and_param_sensitive() -> None:
     )
     assert (
         md_cache_key(
-            scene, fidelity="ml", model="mace_mp", params=base, code_version="2"
+            scene, fidelity="ml", model="mace_mp", params=base, code_version="999"
         )
         != k1
     )
@@ -133,7 +133,7 @@ def test_cache_key_ignores_request_stamps() -> None:
 
 
 def test_code_version_constant_is_stamped() -> None:
-    assert MD_CODE_VERSION == "1"
+    assert MD_CODE_VERSION == "2"
 
 
 # -- the mobile-atom set ------------------------------------------------------
@@ -192,6 +192,41 @@ def test_run_nvt_emt_1ps_on_held_slab() -> None:
     # leaks in (every stored pair touches a mobile atom by construction).
     pairs = outcome["rdf"]["pairs"]
     assert "Cu-O" in pairs and "C-Cu" in pairs and "Cu-Cu" in pairs
+
+
+def test_run_nvt_held_atoms_stay_pinned_and_frames_keep_sampled_positions() -> None:
+    """Regression (td607072): the COM pin must be scoped to the mobile
+    set and the extXYZ must serialize the sampled positions verbatim —
+    a global ``FixCom`` ratchets held atoms by the per-step COM
+    correction, and constrained frame copies collapse held coordinates
+    onto the post-run positions."""
+    import io
+
+    from ase.calculators.emt import EMT
+    from ase.io import read as ase_read
+
+    scene = _slab()
+    atoms, order, _n_slab = _md_atoms(scene)
+    atoms.calc = EMT()
+    initial = atoms.get_positions().copy()
+    held = sorted(i for i, la in enumerate(order) if scene.atoms[la].fixed)
+    assert held  # the fixture IS the held slab
+
+    params = normalize_md_params({"steps": 300, "timestep_fs": 1.0, "traj_every": 50})
+    outcome = run_nvt(atoms, params, timeout_s=300.0)
+
+    # Held coordinates are bit-exact across the whole run — the global
+    # FixCom's uniform shift used to drift them every step.
+    np.testing.assert_array_equal(atoms.get_positions()[held], initial[held])
+
+    frames = ase_read(io.StringIO(outcome["extxyz"]), index=":", format="extxyz")
+    assert isinstance(frames, list)
+    # Frame 0 is the initial geometry verbatim — a constrained copy
+    # rewrote held atoms to the post-run positions and shifted every
+    # frame's mobile set onto the final COM.
+    np.testing.assert_allclose(frames[0].get_positions(), initial, atol=1e-9)
+    for f in frames[1:]:
+        np.testing.assert_allclose(f.get_positions()[held], initial[held], atol=1e-9)
 
 
 def test_msd_and_rdf_on_a_static_frame_set() -> None:
@@ -648,6 +683,58 @@ def test_put_md_identical_request_is_a_cache_hit(
     resp = _md(structure)
     assert "cached struct_md run" in resp.body
     assert len(_child_jobs2(store, _slug_ref(store, "ch_is").id)) == 1
+
+
+def test_put_md_cache_hit_from_an_identical_design_names_the_owner(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (td607072): a same-geometry design's identical request
+    collapses onto the original run — the advertised handle must be the
+    run's OWNER, not the requester (``view='md'`` only renders runs the
+    asked ref owns, so a requester handle dead-ends in
+    "doesn't belong")."""
+    structure.put(id="ch_is", text=_IS_PAYLOAD)
+    structure.put(id="ch_twin", args={"derive_from": "ch_is", "ops": []})
+    _pin_nodes(monkeypatch)
+    _md(structure)
+    run = _only_md_run(store, _slug_ref(store, "ch_is").id)
+    store.struct_md_update_run(
+        run["id"],
+        status="succeeded",
+        n_steps=1000,
+        n_frames=11,
+        temperature_k=300.0,
+        temp_mean_k=300.0,
+        e_pot_mean_ev=-1.0,
+        e_pot_std_ev=0.1,
+        msd={"final_A2": 0.5},
+        trajectory="x",
+    )
+    resp = structure.put(id="ch_twin", mode="md", args={"fidelity": "emt"})
+    assert "cached struct_md run" in resp.body
+    assert f"st{run['structure_ref_id']} (ch_is)" in resp.body
+    assert "id='ch_is'" in resp.body
+    assert "id='ch_twin'" not in resp.body
+    # The advertised pointer actually renders the run.
+    got = structure.get(id="ch_is", view="md", args={"run": run["id"]})
+    assert f"md run {run['id']}" in got.body
+
+
+def test_put_md_inflight_from_an_identical_design_polls_the_owner(
+    structure: Any, store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-flight collapse's poll hint names the owner too — a
+    requester slug's ``view='md'`` list is empty while the run is the
+    original design's."""
+    structure.put(id="ch_is", text=_IS_PAYLOAD)
+    structure.put(id="ch_twin", args={"derive_from": "ch_is", "ops": []})
+    _pin_nodes(monkeypatch)
+    _md(structure)
+    resp = structure.put(id="ch_twin", mode="md", args={"fidelity": "emt"})
+    assert "already in flight" in resp.body
+    assert "id='ch_is'" in resp.body
+    assert "id='ch_twin'" not in resp.body
+    assert store.struct_md_runs_for(_slug_ref(store, "ch_twin").id) == []
 
 
 def test_put_md_fully_fixed_refuses(
