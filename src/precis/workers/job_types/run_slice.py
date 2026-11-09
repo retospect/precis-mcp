@@ -2390,15 +2390,17 @@ _SUBJECT_CAP = 120
 def cap_subject_chars(text: str, cap: int = _SUBJECT_CAP) -> str:
     """``text`` shortened to ``cap`` characters at the last word boundary
     inside the cut — never inside a word (gr574383: a mid-word cut turned
-    "not" into "n" and the subject stopped saying what changed). The
-    boundary right after the first token — the ``type(scope):`` prefix —
-    does not count: that cut would drop the whole "what changed" clause,
-    so a text with no later boundary takes the hard character cut —
-    ship's lint counts characters, and the limit still has to hold."""
+    "not" into "n" and the subject stopped saying what changed). A cut
+    already landing on a boundary — the next character a space — keeps
+    its complete final word. Only a text with no boundary inside the cap
+    at all takes the hard character cut: ship's lint counts characters,
+    and the limit still has to hold (td599723: exempting the boundary
+    after the ``type(scope):`` prefix still cut a long first word)."""
     cut = text[: max(cap, 0)]
-    boundary = cut.rfind(" ")
-    if boundary > 0 and boundary != text.find(" "):
-        cut = cut[:boundary]
+    if cap < len(text) and text[cap] != " ":
+        boundary = cut.rfind(" ")
+        if boundary > 0:
+            cut = cut[:boundary]
     return cut.rstrip()
 
 

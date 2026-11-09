@@ -3089,16 +3089,39 @@ def test_commit_message_demotes_a_bare_subject(tmp_path: Path) -> None:
     assert out is not None
     head = out.splitlines()[0]
     assert len(head) <= 120 and head.split()[-1] == "alpha"
-    # one giant word: no boundary after the prefix, so a hard character
-    # cut keeps the clause's start
+    # a cut landing exactly on a boundary keeps its complete final word
+    # (td599723: the boundary search used to drop it for the space before)
+    msg.write_text("feat(x): alpha " + "b" * 105 + " tail\n", encoding="utf-8")
+    out = run_slice._commit_message(tmp_path, 42)
+    assert out is not None
+    assert out.splitlines()[0] == "feat(x): alpha " + "b" * 105
+    # one giant word: the only boundary inside the cap sits after the
+    # prefix, so the cut lands there — never inside a word (td599723)
     msg.write_text("feat(x): " + "y" * 200 + "\n", encoding="utf-8")
     out = run_slice._commit_message(tmp_path, 42)
     assert out is not None
-    assert len(out.splitlines()[0]) <= 120
-    assert out.startswith("feat(x): yyy")
+    assert out.splitlines()[0] == "feat(x):"
     msg.write_text("\n\n", encoding="utf-8")
     assert run_slice._commit_message(tmp_path, 42) is None
     assert run_slice._commit_message(tmp_path / "missing", 42) is None
+
+
+def test_cap_subject_chars_cuts_on_word_boundaries() -> None:
+    cap = run_slice.cap_subject_chars
+    # mid-word: back off to the last boundary inside the cut — even the
+    # one after the `type(scope):` prefix (td599723: exempting it still
+    # cut inside a long first description word)
+    assert cap("feat(x): " + "y" * 200) == "feat(x):"
+    # a cut landing exactly on a boundary keeps its complete final word
+    # (td599723: it used to be dropped for the boundary before it)
+    assert cap("fix: alpha beta gamma", 15) == "fix: alpha beta"
+    assert cap("fix: alpha beta", 15) == "fix: alpha beta"
+    # no boundary inside the cap at all: the hard character cut stands —
+    # ship's lint counts characters and the limit has to hold
+    assert cap("y" * 200, 120) == "y" * 120
+    # inside the cap: the text rides through whole
+    assert cap("fix: alpha beta", 120) == "fix: alpha beta"
+    assert cap("fix: alpha", 0) == ""
 
 
 def test_poll_task_validated_verdict_closes_it_as_done(seams: dict[str, Any]) -> None:

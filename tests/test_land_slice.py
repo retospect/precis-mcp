@@ -334,8 +334,10 @@ def test_validate_submit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_squash_subject_picks_the_slice_commit() -> None:
+    # the LAST non-test commit labels the squash — an early commit naming
+    # the handle no longer beats the fix-ups that came after it (td599723)
     subjects = ["wip: scratch", "feat(a): the thing (td42)", "fix(a): lint (td42)"]
-    assert land_slice.squash_subject(subjects, 42) == "feat(a): the thing (td42)"
+    assert land_slice.squash_subject(subjects, 42) == "fix(a): lint (td42)"
     # no commit names the slice: the LAST non-test commit, never the first
     # commit blindly (gr574383)
     assert land_slice.squash_subject(["feat(a): b", "fix: c"], 42) == ("fix: c (td42)")
@@ -440,9 +442,9 @@ def test_with_handle_merges_and_caps() -> None:
     assert capped.endswith(" (td42)")
     head = capped[: -len(" (td42)")]
     assert head.split()[-1] == "alpha"
-    # one giant word: no boundary after the prefix, so a hard character
-    # cut keeps the start of the clause rather than dropping it all
-    assert land_slice.with_handle("fix: " + "x" * 200, 42).startswith("fix: x")
+    # one giant word: the only boundary inside the cap sits after the
+    # prefix, so the cut lands there — never inside a word (td599723)
+    assert land_slice.with_handle("fix: " + "x" * 200, 42) == "fix: (td42)"
     long = "feat(scope): " + "é " * 80 + "(td42)"
     capped = land_slice.with_handle(long, 42)
     assert len(capped) <= land_slice.SUBJECT_CAP

@@ -13,7 +13,6 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 * :func:`submit` reads the squash subject (:func:`squash_subject`): the
   brief's stated ``subject:`` line (:func:`_node_subject` — the todo body,
   then the newest ``brief:``/``handoff:`` comment) when present, else the
-  oldest non-test/wip commit subject naming ``td<todo_id>``, else the
   last non-test/wip commit; its trailing handle list is made to carry
   ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves the todo, the
   whole capped at :data:`SUBJECT_CAP` characters cut at a word boundary
@@ -622,10 +621,11 @@ def squash_subject(
 ) -> str | None:
     """The squash subject: ``node`` — the brief's stated ``subject:`` line
     (:func:`_node_subject`) — when given; else from the branch's commit
-    subjects (oldest first), the oldest non-test/wip naming ``td<todo_id>``
-    in its handle list, else the LAST non-test/wip commit — never the
-    first commit blindly (gr574383: a red-test-first commit used to win,
-    and the slice landed under its test subject). Through
+    subjects (oldest first), the LAST non-test/wip commit — never the
+    first commit blindly and never an early commit just for naming
+    ``td<todo_id>`` (gr574383: a red-test-first commit used to win, and
+    the slice landed under its test subject; the td599723 review: an
+    early ``feat`` still beat the fix-ups that came after it). Through
     :func:`with_handle`. ``None`` for no commits."""
     subjects = [s.strip() for s in subjects if s.strip()]
     if not subjects:
@@ -637,11 +637,6 @@ def squash_subject(
         # Every commit is a test/wip: the last stands in — a test subject
         # still lands, and the newest is still not the first blindly.
         return with_handle(subjects[-1], todo_id)
-    handle = f"td{todo_id}"
-    for s in pool:
-        m = _HANDLES_RE.search(s)
-        if m and handle in re.findall(_HANDLE, m.group(1)):
-            return with_handle(s, todo_id)
     return with_handle(pool[-1], todo_id)
 
 
