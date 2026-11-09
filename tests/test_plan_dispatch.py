@@ -4535,6 +4535,54 @@ def test_dead_root_takes_a_nested_plan_with_it(store: Store) -> None:
             assert _status(store, tid) == "won't-do", f"outer {key}"
 
 
+def test_dead_root_sweep_closes_the_loaded_nodes_too(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td612465: the sweep's victims under a nested live plan sit in
+    ``plan.nodes`` — closing them through a stand-in ``_Node`` left the
+    loaded copies open and the same tick's later steps re-judged them:
+    a gate's ``done`` overwrote the won't-do, a finished loop re-minted
+    its body, a leaf task dispatched a job. The close must land on the
+    loaded nodes so every step after the sweep sees the subtree dead."""
+    use_lanes(monkeypatch)
+    monkeypatch.setitem(T.BODIES, "test-body", _dogfood_body)
+    outer = _review_plan(store)
+
+    def build_(m: T._Minter) -> None:
+        m.node("root", "Inner plan", {"auto_close": True})
+        # ``ci_verdict_poll`` carries no ``validate_submit`` todo gate —
+        # without the snapshot close this leaf mints a real job.
+        m.node("leaf", "Leaf task", {"op": "ci_verdict_poll"}, body="Do it.")
+        m.node("gate", "A gate that would open", {"gate": PAST})
+        m.node(
+            "loop",
+            "A spent-children loop",
+            {"loop": {"max": 3, "until": FUTURE, "body": "test-body"}},
+        )
+        phase = m.node("phase", "A finished phase", {"auto_close": True})
+        m.node("kid", "Closed child", {"op": "run_slice"}, parent=phase)
+
+    inner = T._run(store, outer.root_id, build_)
+    _mark_done(store, inner.ids["kid"])
+    store.add_tag(
+        outer.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    res = pd.run_pass(store)
+    # Step 0 closed the whole nested plan; no later step may act under
+    # it this tick — no gate verdict, no re-minted body, no job.
+    assert (res.dispatched, res.gates_opened, res.loops_minted) == (0, 0, 0)
+    for key, tid in inner.ids.items():
+        assert _status(store, tid) == ("done" if key == "kid" else "won't-do"), key
+        assert _jobs_under(store, tid) == [], f"inner {key}"
+    assert "gate_result" not in _meta(store, inner.ids["gate"])
+    assert not _meta(store, inner.ids["loop"])["loop"].get("count")
+    assert _children(store, inner.ids["loop"]) == []
+
+
 def test_dead_phase_inside_a_live_plan_is_not_swept(store: Store) -> None:
     """A dead rootlike nested in a LIVE plan is the live plan's business:
     a phase closed won't-do under an open root does not orphan its

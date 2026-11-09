@@ -8,10 +8,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    drops out of ``_candidate_roots``' set with its whole subtree
    invisible to the tick — its open children would sit frozen forever:
    asks still offered, gates never judged (gr612091). The sweep closes
-   every open descendant ``won't-do``, stopping at a nested LIVE root
-   (its subtree is its own plan — ``_plan_root_of``'s highest-live-
-   ancestor rule) and deferring a node with a live job to the next
-   tick, the moot close's rule.
+   every open descendant ``won't-do`` — a plan nested inside the dead
+   subtree dies with it (self-rooted is not live-owned) — mirroring
+   each close onto the loaded ``_Plan`` nodes so no later step this
+   tick re-judges a node it just closed (td612465), and deferring a
+   node with a live job to the next tick, the moot close's rule.
 1. **gates** — every live, unblocked gate todo is evaluated
    (:func:`precis.plans.gates.evaluate`); the verdict lands on
    ``meta.gate_result = {open, why, at}`` (written when it changes) and an
@@ -949,28 +950,36 @@ def _step_dead_roots(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> No
     children stay open forever — a release pass's approval ask still
     offered ``deploy r<N>`` after the pass died. A node with a live job
     defers to the next tick (the moot close's rule); dry_run counts and
-    writes nothing."""
+    writes nothing. A victim that is also a loaded node — a plan nested
+    inside the dead subtree dies with it, and its nodes sit in
+    ``plan.nodes`` — is closed through that ``_Node``, not a stand-in:
+    the loaded copy must carry the close or the tick's later steps
+    re-judge it (a gate's ``done`` overwriting the won't-do, a loop
+    re-minting, a leaf dispatching; td612465)."""
     victims = _dead_root_orphans(store, set(plan.nodes))
     if not victims:
         return
     busy = _live_job_parents(store, [v[0] for v in victims])
     closed = 0
+    closed_ids: set[int] = set()
     for rid, root, status in victims:
         if rid in busy:
             res.notes.append(f"td{rid} has a live job; dead-root close deferred")
             continue
-        n = _Node(
-            id=rid,
-            kind="todo",
-            parent_id=None,
-            title="",
-            meta={},
-            status=status,
-            created_at=datetime.now(UTC),
-            prio=None,
-            depth=0,
-            root=root,
-        )
+        n = plan.nodes.get(rid)
+        if n is None:
+            n = _Node(
+                id=rid,
+                kind="todo",
+                parent_id=None,
+                title="",
+                meta={},
+                status=status,
+                created_at=datetime.now(UTC),
+                prio=None,
+                depth=0,
+                root=root,
+            )
         w.comment(
             n,
             f"plan_dispatch: plan closed — root td{root} is closed; "
@@ -978,8 +987,17 @@ def _step_dead_roots(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> No
         )
         w.set_status(n, "won't-do")
         closed += 1
+        closed_ids.add(rid)
         res.notes.append(f"td{rid}: closed won't-do — plan root td{root} is closed")
     res.phases_closed += closed
+    # A closed victim riding a live node's ``blocked-by`` list as an
+    # unloaded target would read open to ``status_of`` for the rest of
+    # the tick (the loaded-node case is mirrored by ``set_status``
+    # above) — keep the snapshot truthful.
+    for targets in plan.blockers.values():
+        for b in targets:
+            if b.id in closed_ids:
+                b.status = "won't-do"
 
 
 def _candidate_roots(conn: Any) -> list[int]:
