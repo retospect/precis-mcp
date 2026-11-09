@@ -1,13 +1,22 @@
 """``web`` kind — fetch and cache the readable content of a URL.
 
-Phase 4 ships **page-fetch mode only**: ``get(kind='web', id=URL)``
-fetches the URL, extracts the main content with `trafilatura`, and
-caches the markdown text. An ``application/pdf`` response (or a body
-with ``%PDF`` magic) takes the fitz text path the ingest pipeline's
-fallback uses instead (gr510701) — reports published as PDFs land
-their text rather than the "no readable content" stub. Bookmark mode
-(durable, user-curated refs) and Wayback-archive integration are
-deferred to phase 4b — they need `put` support (phase 5+) and a richer
+``get(kind='web', id=URL)`` fetches the URL, extracts the main
+content with `trafilatura`, and caches the markdown text. An
+``application/pdf`` response (or a body with ``%PDF`` magic) takes
+the fitz text path the ingest pipeline's fallback uses instead
+(gr510701) — reports published as PDFs land their text rather than
+the "no readable content" stub.
+
+A GitHub/GitLab **repo-root URL** takes the archive path instead of
+the page path (gr608719): :mod:`precis.handlers._web_repo` resolves
+the head commit through the forge API, streams the ``.tar.gz``
+through ``safe_stream`` under a size cap, and holds the
+audit-relevant files (licences, READMEs, packaging manifests,
+``CITATION.cff``) as one chunk each — ``get(id='web:<id>~<path>')``
+reads one file — plus a ``~tree`` chunk and ``view='tree'`` listing
+every path. The resolved commit sha is recorded in cache meta.
+Bookmark mode (durable, user-curated refs) and Wayback-archive
+integration remain deferred — they need `put` support and a richer
 ref schema.
 
 Cache key: the canonical URL. Different URL forms of the same page
@@ -22,16 +31,31 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import ClassVar
+import re
+from dataclasses import replace
+from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
-from precis.errors import BadInput, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers._cache_base import (
     CacheBackedHandler,
     FetchResult,
     _format_cache_footer,
 )
+from precis.handlers._web_repo import (
+    REPO_BLOCK_META,
+    RepoTarget,
+    build_repo_blocks,
+    download_archive,
+    parse_repo_url,
+    resolve_commit,
+)
+from precis.handlers._web_repo import (
+    content_sha256 as _repo_sha256,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.store.types import ChunkInsert
 from precis.utils.http import http_client, require_httpx
 from precis.utils.optional_deps import require_optional
 from precis.utils.url import canonical_url, host_of, is_http_url, slug_from_url
@@ -44,6 +68,10 @@ _WEB_BASE_ATTRIBUTION = (
     "with trafilatura (HTML) or PyMuPDF (PDF). Verify quotes against "
     "the original; quote sparingly."
 )
+
+#: Same non-alnum collapse ``slug_from_url`` applies — reused here for
+#: the ``?ref=`` suffix on repo snapshot slugs.
+_SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 
 
 # Honest UA (``polite_user_agent``); an operator can override via the
@@ -58,11 +86,15 @@ class WebHandler(CacheBackedHandler):
         title="Web (page fetch)",
         description=(
             "Fetch a web page and return its readable content as markdown. "
-            "Cached for 7 days; tracking params and fragments collapse "
-            "onto a single cache row. Fetched pages are block-parsed and "
-            "embedded so search(kind='web', q=...) lands hits inside "
-            "page content. Tag to bookmark (e.g. add=['bookmark']) and "
-            "link to memory / paper refs for cross-referencing."
+            "A GitHub/GitLab repo-root URL instead snapshots the source "
+            "archive: LICENSE/README/packaging files land as chunks "
+            "(get(id='web:<id>~<path>') reads one file, view='tree' lists "
+            "every path) with the resolved commit sha in meta. Cached for "
+            "7 days; tracking params and fragments collapse onto a single "
+            "cache row. Fetched pages are block-parsed and embedded so "
+            "search(kind='web', q=...) lands hits inside page content. "
+            "Tag to bookmark (e.g. add=['bookmark']) and link to memory / "
+            "paper refs for cross-referencing."
         ),
         supports_get=True,
         supports_search=True,
@@ -109,8 +141,26 @@ class WebHandler(CacheBackedHandler):
         most cases. Truncated to 60 chars; collisions (rare for typical
         bookmarks) cascade-replace the older entry per
         ``put_cache_entry``'s upsert behaviour.
+
+        Repo URLs: ``slug_from_url`` ignores the query, so a
+        ``?ref=<x>`` pin would share the bare repo's slug and the
+        fetch would overwrite that snapshot in place. Any repo URL
+        carrying a query gets a suffix — ``-ref-<ref>`` for the
+        documented pin, a short query hash for anything else — so
+        distinct pins keep distinct rows.
         """
         slug = slug_from_url(key)
+        target = parse_repo_url(key)
+        if target is not None and urlsplit(key).query:
+            if target.ref is not None:
+                ref_slug = _SLUG_STRIP_RE.sub("-", target.ref.lower()).strip("-")
+                suffix = f"ref-{ref_slug[:24] or 'x'}"
+            else:
+                digest = hashlib.sha256(
+                    urlsplit(key).query.encode("utf-8")
+                ).hexdigest()[:8]
+                suffix = f"q-{digest}"
+            slug = f"{slug}-{suffix}"
         return slug or "web-fetch"
 
     def _recover_key(self, ref, cache):
@@ -122,9 +172,57 @@ class WebHandler(CacheBackedHandler):
         """
         return (cache.meta or {}).get("url")
 
+    # ── verb override: view='tree' ────────────────────────────────────
+
+    def get(
+        self,
+        *,
+        id: str | int | None = None,
+        q: str | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        mode: str | None = None,
+        ttl_days: int | None = None,
+        refresh: bool = False,
+        no_fetch: bool = False,
+        literal: bool = False,
+        **kw: Any,
+    ) -> Response:
+        """``view='tree'`` — the file listing of a cached repo snapshot.
+
+        Read-only like ``view='body'``: it never fetches — a repo that
+        isn't cached yet gets a NotFound naming the fetch call. Every
+        other spelling routes to the cache-backed base get.
+        """
+        if view == "tree":
+            return self._repo_tree_view(id=id, q=q, tags=tags, untags=untags)
+        return super().get(
+            id=id,
+            q=q,
+            view=view,
+            tags=tags,
+            untags=untags,
+            mode=mode,
+            ttl_days=ttl_days,
+            refresh=refresh,
+            no_fetch=no_fetch,
+            literal=literal,
+            **kw,
+        )
+
     # ── upstream fetch + extract ──────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
+        target = parse_repo_url(key)
+        if target is not None:
+            repo = self._fetch_repo(key, target)
+            if repo is not None:
+                return repo
+            # The forge API 404'd the project lookup: not a repo (or a
+            # private one) — the ordinary page fetch gets its honest
+            # shot at the URL (a GitLab group page, a forge 404 page).
+
         httpx = require_httpx()
 
         import os
@@ -280,6 +378,202 @@ class WebHandler(CacheBackedHandler):
                 "extractor": "pymupdf",
                 "extracted_chars": len(body_text),
             },
+        )
+
+    # ── forge repo snapshots (gr608719) ───────────────────────────────
+
+    def _fetch_repo(self, key: str, target: RepoTarget) -> FetchResult | None:
+        """Archive-snapshot path for a forge repo-root URL.
+
+        ``None`` when the project lookup 404s — the caller then runs
+        the ordinary page fetch, which is the honest outcome for a URL
+        that is not actually a public repository (a GitLab group page,
+        a forge's own 404).
+        """
+        httpx = require_httpx()
+
+        import os
+
+        from precis.utils.http import VendorError, polite_user_agent
+        from precis.utils.rate_limit import RateLimited
+        from precis.utils.safe_fetch import SsrfBlocked
+
+        ua = os.environ.get("WEB_USER_AGENT") or polite_user_agent()
+        try:
+            # Same redirect discipline as the page path: the client
+            # defaults to follow_redirects=False and safe_stream /
+            # polite_safe_get revalidate every hop. The archive can be
+            # tens of MB, so the timeout is looser than the page's.
+            with http_client(
+                timeout=60.0,
+                headers={"Accept": "application/json,*/*;q=0.8"},
+                user_agent=ua,
+            ) as client:
+                resolved = resolve_commit(client, target)
+                if resolved is None:
+                    return None
+                tarball = download_archive(client, resolved.archive_url)
+        except SsrfBlocked as exc:
+            raise Upstream(
+                f"fetch refused for {key}: {exc}",
+                next=(
+                    "the URL (or a redirect target) resolves to a "
+                    "non-public address; use a public-internet URL"
+                ),
+            ) from exc
+        except (httpx.HTTPError, VendorError, RateLimited) as exc:
+            raise Upstream(
+                f"fetch failed for {key}: {exc}",
+                next="check the URL is reachable; retry later",
+            ) from exc
+
+        blocks, listing, held_paths = build_repo_blocks(tarball, embedder=self.embedder)
+        held_lines = "\n".join(f"  ~{p}" for p in held_paths) or "  (none)"
+        summary = (
+            f"Source repository snapshot — {target.forge} {target.project}\n"
+            f"{resolved.ref_label} · commit {resolved.sha}\n"
+            f"{len(listing)} files · {len(held_paths)} held as chunks · "
+            f"archive {len(tarball)} bytes\n\n"
+            "Held files — read one with get(kind='web', "
+            "id='web:<id>~<path>'):\n"
+            f"{held_lines}\n\n"
+            "Every path + size: get(kind='web', id='web:<id>', view='tree') "
+            "or id='web:<id>~tree'"
+        )
+        blocks.insert(0, ChunkInsert(ord=0, text=summary, meta={REPO_BLOCK_META: True}))
+
+        return FetchResult(
+            title=f"{target.project} @ {resolved.sha[:12]}",
+            body_blocks=blocks,
+            cost_usd=None,  # bandwidth only
+            content_sha256=_repo_sha256(tarball),
+            meta={
+                "url": key,
+                "host": host_of(key),
+                "extractor": "repo-tarball",
+                "forge": target.forge,
+                "repo": target.project,
+                "ref": resolved.ref_label,
+                "commit_sha": resolved.sha,
+                "archive_url": resolved.archive_url,
+                "archive_bytes": len(tarball),
+                "files_total": len(listing),
+                "files_held": held_paths,
+                "extracted_chars": sum(len(b.text or "") for b in blocks),
+            },
+        )
+
+    def _resolve_repo_entry(
+        self, id: str | int | None, q: str | None
+    ) -> tuple[Any, Any] | None:
+        """``(Ref, CacheEntry)`` for a ``view='tree'`` address.
+
+        Same spellings a section read takes: the URL (canonicalised to
+        a request hash), the advertised slug, or the bare numeric ref
+        id. No network — this is a cache lookup only.
+        """
+        ident = id if isinstance(id, str) and id.strip() else q
+        if isinstance(id, int) and not isinstance(id, bool):
+            return self.store.get_cache_entry_by_ref_id(kind=self.spec.kind, ref_id=id)
+        if not isinstance(ident, str) or not ident.strip():
+            return None
+        ident = ident.strip()
+        try:
+            key = self._canonical_key(ident)
+        except BadInput:
+            key = None
+        if key is not None:
+            entry = self.store.get_cache_entry(
+                provider=self.provider, request_hash=self._hash(key)
+            )
+            if entry is not None:
+                return entry
+        entry = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=ident)
+        if entry is not None:
+            return entry
+        if ident.isdigit():
+            return self.store.get_cache_entry_by_ref_id(
+                kind=self.spec.kind, ref_id=int(ident)
+            )
+        return None
+
+    def _repo_tree_view(
+        self,
+        *,
+        id: str | int | None,
+        q: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> Response:
+        """``view='tree'`` — render the ``~tree`` chunk of a repo snapshot."""
+        entry = self._resolve_repo_entry(id, q)
+        if entry is None:
+            raise NotFound(
+                f"web {(id if isinstance(id, str) else q)!r} is not cached yet",
+                next=(
+                    "get(kind='web', id=<repo-url>) fetches the snapshot "
+                    "first, then view='tree' lists it"
+                ),
+            )
+        ref, cache = entry
+        if (cache.meta or {}).get("extractor") != "repo-tarball":
+            raise BadInput(
+                f"view='tree' applies to a fetched repository snapshot — "
+                f"{ref.slug!r} is a page fetch",
+                next="get(kind='web', id=<github-or-gitlab repo url>)",
+            )
+        self._apply_tag_ops_if_any(ref.id, tags, untags)
+        return self._render_named_section(
+            ref, ref.slug or str(ref.id), "tree", tags=None, untags=None, view=None
+        )
+
+    # ── block layout overrides for repo snapshots ─────────────────────
+
+    def _split_body_blocks(self, blocks: list[Any]) -> list[Any]:
+        """Keep repo-snapshot chunks whole (gr608719).
+
+        A ``~<path>`` section read resolves against ONE chunk — letting
+        the base splitter dice a 200 KB LICENSE into 800-char slices
+        would make the read return only the first slice. Blocks the
+        repo fetch marked ``repo_block`` pass through with their ord
+        rewritten to position; ordinary page bodies keep the base
+        split-for-embedding behaviour.
+        """
+        if any((b.meta or {}).get(REPO_BLOCK_META) for b in blocks):
+            return [replace(b, ord=i) for i, b in enumerate(blocks)]
+        return super()._split_body_blocks(blocks)
+
+    def _render_named_section(
+        self,
+        ref: Any,
+        slug: str,
+        section: str,
+        *,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        view: str | None,
+    ) -> Response:
+        """``~<path>`` — exact slug first, then a case-folded match.
+
+        Repo file chunks carry their real path as the slug
+        (``LICENSE``, ``README.md``); an agent asking for ``~license``
+        or ``~License`` should land the same file. The folded pass
+        only runs when the exact lookup misses, then the base's
+        handles-listing refusal covers everything else.
+        """
+        block = self.store.chunks.get_chunk(ref.id, slug=section) if section else None
+        if block is None and section:
+            folded = section.strip().lower()
+            for b in self.store.chunks.list_chunks_for_ref(ref.id):
+                if (b.slug or "").lower() == folded:
+                    block = b
+                    break
+        if block is not None:
+            return self._render_chunk_selector(
+                slug, block.ord, block.ord, tags=tags, untags=untags, view=view
+            )
+        return super()._render_named_section(
+            ref, slug, section, tags=tags, untags=untags, view=view
         )
 
     # ── render: append source URL + fetched-at line ───────────────────

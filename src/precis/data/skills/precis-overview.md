@@ -164,7 +164,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | `time` | Local clock: now in UTC + server local + epoch; parse ISO/RFC 2822/epoch/`in 3 hours`/`next monday`; `args={'to': 'Asia/Tokyo'}` converts, `args={'format': ...}` renders. See `precis-time-help`. | `in 3 hours` · `1791556200` | free |
 | `math` | Wolfram Alpha: facts, world data | `population of Ireland` | paid |
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
-| `web` | Fetch + extract a URL | `https://example.com/page` | free |
+| `web` | Fetch + extract a URL; GitHub/GitLab repo roots snapshot source (LICENSE/manifests/tree) | `https://example.com/page` | free |
 | `wikipedia` | Resolve + fetch one Wikipedia article (on-demand; fenced from default search via `ORIGIN:wikipedia`) | `CRISPR gene editing` | free |
 | `chem` | Chemical name / CAS / abbreviation → canonical SMILES + InChIKey, source named; ambiguous names refused with candidates. See `precis-chem-help`. | `aspirin` · `50-78-2` · `DCM` | free |
 | `semanticscholar` | Semantic Scholar Graph API — paper search by `id='<query>'`, or a known paper's citation graph via `id='refs:<s2-id>'` / `id='cites:<s2-id>'` (every row carries a DOI / arXiv id for a `put(kind='paper', doi=…)` stub). | `MoS2 band gap` | free |

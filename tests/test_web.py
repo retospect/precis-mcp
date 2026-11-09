@@ -35,6 +35,38 @@ class _StubResp:
         self.status_code = status_code
         self.headers = headers or {"content-type": "text/html"}
 
+    def json(self) -> Any:
+        # Forge-API calls (repo snapshot mode): one payload serves both
+        # the project-info lookup and the commit lookup.
+        return {"default_branch": "main", "sha": "0" * 40}
+
+    def iter_bytes(self, chunk_size: int = 65536) -> Any:
+        # The archive download in repo snapshot mode.
+        yield _repo_tarball()
+
+    def close(self) -> None:
+        pass
+
+
+_REPO_TARBALL: bytes | None = None
+
+
+def _repo_tarball() -> bytes:
+    """A minimal valid .tar.gz, built once — the repo-mode archive."""
+    global _REPO_TARBALL
+    if _REPO_TARBALL is None:
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            data = b"MIT License\n"
+            info = tarfile.TarInfo(name="repo-0000000/LICENSE")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        _REPO_TARBALL = buf.getvalue()
+    return _REPO_TARBALL
+
 
 class _StubClient:
     """Drop-in for `httpx.Client(...)` context manager.

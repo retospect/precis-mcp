@@ -498,11 +498,18 @@ class CacheBackedHandler(Handler):
                     if prefix
                     else None
                 )
+                if entry is None and prefix.isdigit():
+                    # ``web:608520~LICENSE`` — a numeric prefix is the
+                    # ref id (the ``kind:<id>~<section>`` cite form),
+                    # not a slug.
+                    entry = self.store.get_cache_entry_by_ref_id(
+                        kind=self.spec.kind, ref_id=int(prefix)
+                    )
                 if entry is not None:
                     ref, _cache = entry
                     return self._render_named_section(
                         ref,
-                        prefix,
+                        ref.slug or prefix,
                         section,
                         tags=tags,
                         untags=untags,

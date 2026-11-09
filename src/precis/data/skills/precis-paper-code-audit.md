@@ -29,13 +29,19 @@ get(kind="paper", id="<slug>~lo..hi")  # methods, defaults, reported metrics
 ## Read the code the paper points at
 
 ```python
-get(kind="web", id="<repo-file-url>")
+get(kind="web", id="<repo-url>")                  # GitHub/GitLab repo root
+get(kind="web", id="<repo-url>", view="tree")     # every path + size
+get(kind="web", id="web:<id>~LICENSE")            # one held file
 search(kind="web", q="<repo> config default")
 ```
 
-A repo that needs cloning to inspect is outside the seven verbs'
-reach — mark the check `blocked` rather than guess what the code
-does.
+A GitHub/GitLab repo URL fetches the source archive: LICENSE, README,
+packaging/environment manifests and CITATION.cff land as chunks, plus
+a full file listing — `web:<id>~<path>` reads one held file,
+`view='tree'` lists every path with sizes. Cite the chunk handles in
+findings. A repo source that still isn't held (a file outside the
+kept set) is read via the tree listing first — mark the check
+`blocked` only when the path genuinely isn't in the snapshot.
 
 ## Compare, claim by claim
 

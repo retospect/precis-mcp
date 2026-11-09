@@ -70,6 +70,31 @@ PyMuPDF is a `paper` extra; on a deployment without it the call
 fails `[error:Unsupported]` with a
 `pip install 'precis-mcp[paper]'` next.
 
+## The URL is a source repository
+## Fetch a GitHub or GitLab repo
+## How do I read a repo's LICENSE or pyproject?
+
+```python
+get(kind="web", id="https://github.com/ur-whitelab/MDCrow")
+get(kind="web", id="https://github.com/ur-whitelab/MDCrow", view="tree")
+get(kind="web", id="web:<id>~LICENSE")       # one file
+get(kind="web", id="<slug>~pyproject.toml")  # same, addressed by slug
+```
+
+A repo-root URL takes the archive path, not the page path: precis
+resolves the head commit through the forge API, streams the
+`.tar.gz` (bounded — over ~25 MiB compressed refuses rather than
+holding a truncated tree), and holds the audit files as chunks:
+licences, READMEs, packaging/environment manifests (`pyproject.toml`,
+`setup.*`, `requirements*.txt`, `environment*.yml`, `package.json`,
+`Cargo.toml`, `go.mod`, …) and `CITATION.cff`. `view='tree'` lists
+every path with its size; `web:<id>~<path>` reads one held file
+(case-insensitive). The resolved commit sha is in the ref title and
+cache meta (`commit_sha`). Pin a revision with
+`id="<repo-url>?ref=<sha|branch|tag>"` — each pin caches separately.
+
+Archive over the cap? Fetch single files by their raw URLs instead.
+
 ## What does a web id look like?
 ## URL canonicalisation rules
 ## How are URLs normalised before caching?
