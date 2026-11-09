@@ -5766,6 +5766,43 @@ def test_dispatch_orders_by_prio_across_roots(store: Store) -> None:
     assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
 
 
+def _file_plan(store: Store, body: str) -> T.PlanMint:
+    """One-task plan whose build brief names files (the td603849 overlap
+    check reads them)."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice"}, body=body)
+
+    return T._run(store, None, build)
+
+
+def test_dispatch_orders_by_stamped_score_across_roots(store: Store) -> None:
+    """gr604593: ``meta.dispatch_score`` (machine-owned) is the queue
+    order — a stamped root beats an unstamped one regardless of age."""
+    older = _one_task_plan(store)
+    newer = _one_task_plan(store)
+    store.stamp_ref_meta(newer.root_id, {"dispatch_score": 50.0})
+    res = pd.run_pass(store, dry_run=True)
+    order = [n.split(":")[0] for n in res.notes if "would dispatch" in n]
+    assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
+
+
+def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
+    """td603849: a run_slice whose brief names the same file an
+    in-flight land's brief names is held until that land finishes."""
+    landing = _file_plan(store, "Rebuilt src/precis/workers/plan_dispatch.py")
+    _slice_job(store, landing.ids["task"], "land_slice", "running")
+    conflict = _file_plan(store, "Fix src/precis/workers/plan_dispatch.py too")
+    clean = _file_plan(store, "Fix tests/test_something_else.py")
+    res = pd.run_pass(store, dry_run=True)
+    notes = "\n".join(res.notes)
+    assert f"td{conflict.ids['task']}: file-overlap hold" in notes
+    assert res.dispatched == 1
+    dispatched = [n for n in res.notes if "would dispatch" in n]
+    assert any(f"td{clean.ids['task']}" in n for n in dispatched)
+
+
 def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the table to the seed's codex and claude-sub lanes, the two
     vendors the review-vendor tests below were written against (the seed

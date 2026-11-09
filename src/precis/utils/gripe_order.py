@@ -3,8 +3,9 @@
 One ``sort=`` vocabulary, two surfaces: the ``/gripes`` web list and the
 MCP gripe browse (``get(kind='gripe', id='/open')`` /
 ``search(kind='gripe', sort=…)``). Ruling 2026-11-08: the queue drains —
-the default order on both surfaces is ``drain``: explicit prio first
-where set (lower = hotter), then size ascending (``size:s`` <
+the default order on both surfaces is ``drain``: the machine
+``dispatch_score`` first (higher = hotter, gr604593; a set ``prio`` is a
+multiplier on it, never the key), then size ascending (``size:s`` <
 ``size:m`` < ``size:l`` < unsized), then oldest first within a size.
 The alternate sorts re-group the same queue, oldest first inside each
 grouping:
@@ -27,6 +28,8 @@ SQL is static, never built from caller text.
 """
 
 from __future__ import annotations
+
+from precis.utils.dispatch_score import score_sql as _score_sql
 
 #: The ``sort=`` values both surfaces accept, drain first (the default).
 SORT_VALUES: tuple[str, ...] = (
@@ -120,7 +123,7 @@ _SOURCE_RANK_SQL = (
 _OLDEST_FIRST = "r.created_at ASC, r.ref_id ASC"
 
 _ORDER_BY: dict[str, str] = {
-    "drain": f"r.prio ASC NULLS LAST, {_SIZE_RANK_SQL} ASC, {_OLDEST_FIRST}",
+    "drain": f"{_score_sql()} DESC, {_SIZE_RANK_SQL} ASC, {_OLDEST_FIRST}",
     "oldest": _OLDEST_FIRST,
     "newest": "r.created_at DESC, r.ref_id DESC",
     "size": f"{_SIZE_RANK_SQL} ASC, {_OLDEST_FIRST}",

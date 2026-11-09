@@ -3,10 +3,12 @@
 A worker that files a gripe for a condition it can observe owns two ends of
 that gripe's life:
 
-- **Filing prio.** :data:`AUTO_PRIO` (7) sinks auto-filed gripes below the
-  unset default (5), so the open view (PRIO, then oldest) puts human-filed
-  gripes first. A critical-severity condition files at :data:`CRIT_PRIO`
-  (4). Coordinator ruling 2026-10-18 (gripe system batch F).
+- **Filing score.** :data:`AUTO_SCORE` (2.0) sinks auto-filed gripes to
+  just above the unjudged floor (``dispatch_score``, machine-owned —
+  gr604593; it was ``prio`` 7 before the column went human-only), so the
+  drain order puts judged gripes first. A critical-severity condition
+  files at :data:`CRIT_SCORE` (16). Coordinator ruling 2026-10-18 (gripe
+  system batch F).
 - **Closing when the condition clears.** :func:`close_auto_gripe` writes a
   normal close: a ``resolved: auto-closed: …`` comment, then
   ``STATUS:done``. It never soft-deletes: the 2026-10-18 audit found 621
@@ -27,10 +29,12 @@ from precis.store import Store
 
 log = logging.getLogger(__name__)
 
-#: Filing prio for a system-filed gripe (unset counts as 5 in the sort).
-AUTO_PRIO = 7
-#: Filing prio for a critical-severity condition.
-CRIT_PRIO = 4
+#: Filing ``meta.dispatch_score`` for a system-filed gripe — machine
+#: sequencing, so it lives on the score, never the human ``prio``
+#: column (gr604593). Just above the unjudged base (1.0).
+AUTO_SCORE = 2.0
+#: Filing ``meta.dispatch_score`` for a critical-severity condition.
+CRIT_SCORE = 16.0
 
 
 def close_auto_gripe(

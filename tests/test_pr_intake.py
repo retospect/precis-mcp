@@ -191,12 +191,12 @@ def test_majors_among_the_open_dependabot_titles() -> None:
 
 def test_priority_security_and_ask_kind() -> None:
     f = _facts()
-    assert not P.is_security(f) and P.prio_of(P.DEPENDABOT, f) == 6
+    assert not P.is_security(f) and P.score_of(P.DEPENDABOT, f) == 4
     sec = _facts(labels=[{"name": "security"}])
-    assert P.prio_of(P.DEPENDABOT, sec) == 2
+    assert P.score_of(P.DEPENDABOT, sec) == 24
     cve = _facts(body="Fixes CVE-2026-12345 in lxml")
     assert P.is_security(cve)
-    assert P.prio_of(P.EXTERNAL, f) == 8 and P.prio_of(P.FACTORY, f) == 4
+    assert P.score_of(P.EXTERNAL, f) == 2 and P.score_of(P.FACTORY, f) == 10
     assert P.ask_kind(_facts(title="feat: a new kind")) == "design-verdict"
     assert P.ask_kind(_facts(title="Fix typo", labels=[{"name": "enhancement"}])) == (
         "design-verdict"
@@ -305,6 +305,18 @@ def _prio(store: Store, ref_id: int) -> int | None:
     return row[0]
 
 
+def _score(store: Store, ref_id: int) -> float | None:
+    """``meta.dispatch_score`` — the class score the intake stamps
+    (gr604593: the old root ``prio`` moved off the human column)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT (meta->>'dispatch_score')::float FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    assert row is not None
+    return float(row[0]) if row[0] is not None else None
+
+
 def _jobs_under(store: Store, todo_id: int) -> list[tuple[int, dict[str, Any]]]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -351,7 +363,7 @@ def test_dependabot_major_shape(store: Store) -> None:
     }
     root = _meta(store, ids["root"])
     assert root["pr"]["class"] == P.DEPENDABOT and root["pr"]["bump"]["major"]
-    assert "pr:73" in _tags(store, ids["root"]) and _prio(store, ids["root"]) == 6
+    assert "pr:73" in _tags(store, ids["root"]) and _score(store, ids["root"]) == 4
     assert _meta(store, ids["check"])["op"] == "dep_check"
     assert _meta(store, ids["act"])["op"] == "pr_action"
     ask = _meta(store, ids["decision"])["ask"]
@@ -380,10 +392,10 @@ def test_dependabot_minor_has_no_ask(store: Store) -> None:
 
 
 @pytest_db
-def test_security_bump_is_prio_two(store: Store) -> None:
+def test_security_bump_scores_hottest(store: Store) -> None:
     f = _facts(number=63, title=OPEN_TITLES[63], labels=[{"name": "security"}])
     mint = T.mint_pr_intake(store, pr="#63", facts=f)
-    assert _prio(store, mint.root_id) == 2
+    assert _score(store, mint.root_id) == 24
 
 
 @pytest_db
@@ -397,7 +409,7 @@ def test_factory_harness_external_shapes(store: Store) -> None:
         ),
     )
     assert set(fac.ids) == {"root", "land", "review"}
-    assert _prio(store, fac.root_id) == 4
+    assert _score(store, fac.root_id) == 10
 
     har = T.mint_pr_intake(
         store, pr=81, facts=_facts(number=81, files=[".github/workflows/check.yml"])
@@ -430,7 +442,7 @@ def test_factory_harness_external_shapes(store: Store) -> None:
     assert "scripts/ship" in body  # the deny list is in the node body
     ask = _meta(store, ext.ids["decision"])["ask"]
     assert ask["kind"] == "design-verdict" and ask["options"] == T.EXTERNAL_OPTIONS
-    assert _prio(store, ext.root_id) == 8
+    assert _score(store, ext.root_id) == 2
 
 
 # ── pr_poll ────────────────────────────────────────────────────────

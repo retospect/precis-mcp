@@ -48,8 +48,8 @@ Each fire:
   only the ``job_inproc`` tick's own bound source
   (``executors/job_inproc.py`` sets ``tick_context(source = spec.name)``)
   lands :data:`precis.workers.job_types.ci_watch.WORKER_PRINCIPAL`, the
-  one constant both sides name. Order: ``PRIO`` (lower is hotter) then
-  oldest.
+  one constant both sides name. Order: ``dispatch_score`` (higher is
+  hotter, :mod:`precis.utils.dispatch_score`, gr604593) then oldest.
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
   (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
@@ -72,6 +72,7 @@ from precis.plans.templates import mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.todo import TERMINAL_TODO_STATUSES
+from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
@@ -148,7 +149,7 @@ def gripe_dispatch_enabled(
 class DispatchPick:
     gripe_id: int
     title: str
-    prio: int | None
+    score: float
 
 
 def lane_capacity(
@@ -211,11 +212,11 @@ def open_chain_count(store: Store) -> int:
 
 
 def candidates(store: Store, limit: int) -> list[DispatchPick]:
-    """The next ``limit`` dispatchable gripes, hottest PRIO then oldest."""
+    """The next ``limit`` dispatchable gripes, hottest score then oldest."""
     if limit <= 0:
         return []
-    sql = """
-        SELECT r.ref_id, r.title, r.prio
+    sql = f"""
+        SELECT r.ref_id, r.title, {_dscore.score_sql()} AS score
           FROM refs r
           JOIN ref_tags st ON st.ref_id = r.ref_id
           JOIN tags s ON s.tag_id = st.tag_id
@@ -235,7 +236,7 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
            AND NOT EXISTS (SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id
                             WHERE l.dst_ref_id = r.ref_id AND l.relation = 'related-to'
                               AND t.kind = 'todo' AND t.retired_at IS NULL)
-         ORDER BY r.prio NULLS LAST, r.created_at, r.ref_id
+         ORDER BY {_dscore.score_sql()} DESC, r.created_at, r.ref_id
          LIMIT %s
     """
     with store.pool.connection() as conn:
@@ -251,7 +252,7 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
                 limit,
             ),
         ).fetchall()
-    return [DispatchPick(int(r[0]), str(r[1] or ""), r[2]) for r in rows]
+    return [DispatchPick(int(r[0]), str(r[1] or ""), float(r[2])) for r in rows]
 
 
 def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchResult:

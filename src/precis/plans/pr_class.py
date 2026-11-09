@@ -22,9 +22,11 @@ gives the PR. No prompt decides the class:
   lander plus reviewer, no analysis.
 - ``external`` — everything else: read-only analysis, then a human answer.
 
-Priority is the plan root's ``prio`` (spec: 2 security bump, 4 feature
-slice, 6 routine bump, 8 PR analysis): ``dependabot`` 2 when security-linked
-(:func:`is_security`) else 6, ``factory`` 4, ``harness`` 5, ``external`` 8.
+Sequencing is the plan root's ``meta.dispatch_score`` (gr604593 — the
+old spec's ``prio`` numbers moved to the machine score when the column
+went human-only; higher = hotter): ``dependabot`` 24 when
+security-linked (:func:`is_security`) else 4, ``factory`` 10,
+``harness`` 8, ``external`` 2.
 
 GitHub reads go through :func:`precis.utils.safe_fetch.safe_get` (the public
 API; ``GH_TOKEN`` from the env is sent when set). The repo is the
@@ -67,8 +69,11 @@ HARNESS_PATTERNS: tuple[str, ...] = (
 DEFAULT_BUILDERS: frozenset[str] = frozenset({"devin-ai-integration[bot]"})
 BUILDERS_SETTING = "pr.factory_builders"
 
-PRIO: dict[str, int] = {DEPENDABOT: 6, FACTORY: 4, HARNESS: 5, EXTERNAL: 8}
-SECURITY_PRIO = 2
+#: ``meta.dispatch_score`` stamped on the intake plan root per class —
+#: the spec's old ``prio`` ladder (2/4/5/6/8) re-scaled so hotter reads
+#: higher on the severity-scale score (gr604593).
+SCORE: dict[str, float] = {DEPENDABOT: 4.0, FACTORY: 10.0, HARNESS: 8.0, EXTERNAL: 2.0}
+SECURITY_SCORE = 24.0
 
 _API = "https://api.github.com/repos/{repo}"
 _TIMEOUT_S = 20.0
@@ -293,10 +298,10 @@ def is_security(f: PrFacts) -> bool:
     return bool(_SECURITY_RE.search(f.body or ""))
 
 
-def prio_of(cls: str, f: PrFacts) -> int:
+def score_of(cls: str, f: PrFacts) -> float:
     if cls == DEPENDABOT and is_security(f):
-        return SECURITY_PRIO
-    return PRIO[cls]
+        return SECURITY_SCORE
+    return SCORE[cls]
 
 
 def ask_kind(f: PrFacts) -> str:
@@ -525,6 +530,8 @@ __all__ = [
     "HARNESS",
     "HARNESS_PATTERNS",
     "HEAD_TAG_PREFIX",
+    "SCORE",
+    "SECURITY_SCORE",
     "SHA40_RE",
     "Bump",
     "GitHubUnreadable",
@@ -546,6 +553,6 @@ __all__ = [
     "land_subject",
     "needs_intake",
     "pr_of",
-    "prio_of",
     "resolve_repo",
+    "score_of",
 ]

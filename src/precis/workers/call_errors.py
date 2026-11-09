@@ -481,14 +481,19 @@ def _file_gripe(
     ``_file_router_gripe`` precedent; this pass is write-capable, so the
     ``file_gripe_readonly`` carve-out does not apply)."""
     from precis.store.types import ChunkInsert, Tag
-    from precis.workers.auto_gripe import AUTO_PRIO
+    from precis.utils.dispatch_score import SCORE_META_KEY
+    from precis.workers.auto_gripe import AUTO_SCORE
 
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="gripe",
             slug=None,
             title=_gripe_title(cl, cls),
-            meta={META_CLUSTER: cl.fingerprint, META_CLUSTER_CLASS: cls},
+            meta={
+                META_CLUSTER: cl.fingerprint,
+                META_CLUSTER_CLASS: cls,
+                SCORE_META_KEY: AUTO_SCORE,
+            },
             conn=conn,
         )
         store.chunks.insert_chunks(
@@ -511,7 +516,6 @@ def _file_gripe(
         )
         store.add_tag(ref.id, Tag.open(f"{FP_PREFIX}{cls}"), set_by="system", conn=conn)
         store.add_tag(ref.id, Tag.open(ORIGIN_TAG), set_by="system", conn=conn)
-        store.set_prio(ref.id, AUTO_PRIO, conn=conn)
     return int(ref.id)
 
 

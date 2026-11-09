@@ -134,10 +134,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    up to :data:`LAND_AGAIN_CAP` consecutive infra lands, then the hygiene
    ask offers ``land again (no builder)``. **Order:** candidates from
    every plan root are
-   taken together, sorted by (prio ascending, todo id ascending); a node
-   with no ``prio`` takes its nearest ancestor's, else 5. So a prio-1
-   release fixer is minted (and reaches the lanes) before a prio-5 gripe
-   build, whichever root is older. A reviewer's ``run_slice`` is pinned to
+   taken together, sorted by (``dispatch_score`` descending, todo id
+   ascending; gr604593); a node with no stamped score takes its nearest
+   ancestor's, else :data:`DEFAULT_SCORE`, and a human-set ``prio``
+   multiplies it (never the key). So a release-pass root stamped
+   ``RELEASE_SCORE`` mints (and reaches the lanes) before a default
+   gripe build, whichever root is older. A run_slice whose brief file
+   set overlaps an in-flight land's is held until that land finishes
+   (td603849 — the ``_inflight_land_ids``/``_brief_file_sets`` check).
+   A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
    builder's lane and the action note says so. **Mint barrier**
@@ -296,6 +301,7 @@ from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta, release_claims
 from precis.todo.views import _fetch_subtree
+from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types import JobTypeSpec, get_job_type
 
 log = logging.getLogger(__name__)
@@ -525,8 +531,9 @@ SPEND_KEY = "spend"
 #: per ACU (~$2 on the metered plans, gr599486).
 DEFAULT_ACU_USD = 2.0
 
-#: Dispatch prio of a node with no prio on it or any ancestor.
-DEFAULT_PRIO = 5
+#: Dispatch score of a node with no stamped score on it or any ancestor
+#: (:mod:`precis.utils.dispatch_score`, gr604593).
+DEFAULT_SCORE = _dscore.DEFAULT_SCORE
 
 #: A reviewer's verdict comment (module docstring, step 2a).
 _VERDICT_RE = re.compile(
@@ -615,7 +622,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
 DESCRIPTION: str = (
     "Dark-factory plan tick: evaluate gates, advance loops, act on reviewer "
     "verdicts (LAND/FIX/REVERT), close finished phases, mint one job per "
-    "doable plan task in (prio, id) order (run_slice by default), "
+    "doable plan task in (dispatch_score desc, id) order (run_slice by default), "
     "release stale claims, enter rescue once a lane-run task's retry "
     "ladder is spent, and file an ask-user for a human-only hit or a "
     "missing lane. Read-only while PRECIS_FACTORY=off or service_config "
@@ -3367,12 +3374,42 @@ def _mint_job(
     return job_id
 
 
-def _effective_prio(plan: _Plan, n: _Node) -> int:
-    """``n``'s prio, else its nearest ancestor's, else :data:`DEFAULT_PRIO`."""
+def _stamped_score(node: _Node) -> float | None:
+    """``meta.dispatch_score`` on one node, or ``None``."""
+    raw = node.meta.get(_dscore.SCORE_META_KEY)
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _effective_score(plan: _Plan, n: _Node) -> float:
+    """``n``'s dispatch score — the machine queue order (gr604593).
+
+    The nearest ancestor-chain ``meta.dispatch_score`` (the plan root's
+    stamp — inherited from the gripe, the PR class or the release class
+    at mint — wins over a child's), else :data:`DEFAULT_SCORE`, times
+    :func:`~precis.utils.dispatch_score.prio_multiplier` of the nearest
+    human-set ``prio`` up the chain (a judgement multiplies the score;
+    it is never the key), times the ``showstopper`` lift when the node
+    or an ancestor carries the tag. Holds (``blocked-by``,
+    ``waiting-for:``, exclusion tags) still gate dispatch outright —
+    the score orders only what they let through."""
+    base = DEFAULT_SCORE
+    stamped = False
+    prio: int | None = None
+    show = False
     for node in (n, *plan.ancestors(n)):
-        if node.prio is not None:
-            return node.prio
-    return DEFAULT_PRIO
+        if prio is None and node.prio is not None:
+            prio = node.prio
+        if "showstopper" in node.open_tags:
+            show = True
+        if not stamped and (s := _stamped_score(node)) is not None:
+            base, stamped = s, True
+    score = base * _dscore.prio_multiplier(prio)
+    return score * _dscore.SHOWSTOPPER_MULT if show else score
 
 
 def _review_lane(
@@ -3880,6 +3917,43 @@ def _step_brief_holds(
             )
 
 
+def _inflight_land_ids(plan: _Plan) -> list[int]:
+    """Todo ids with a live ``land_slice`` job — the slices currently
+    landing (td603849)."""
+    return [
+        n.id
+        for n in plan.todos()
+        if any(
+            j.status not in _JOB_TERMINAL and j.meta.get("job_type") == "land_slice"
+            for j in plan.jobs(n)
+        )
+    ]
+
+
+def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
+    """``{todo id: file keys}`` from each todo's body chunks plus its
+    ``brief:``/``handoff:`` comments — one query for the handful of ids
+    the overlap check needs."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id, text FROM chunks
+             WHERE ref_id = ANY(%s)
+               AND (chunk_kind = %s
+                    OR (chunk_kind = %s
+                        AND (starts_with(lower(ltrim(text)), 'brief:')
+                             OR starts_with(lower(ltrim(text)), 'handoff:'))))
+            """,
+            (ids, TODO_BODY_KIND, _COMMENT_KIND),
+        ).fetchall()
+    texts: dict[int, list[str]] = {}
+    for ref_id, text in rows:
+        texts.setdefault(int(ref_id), []).append(str(text or ""))
+    return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -3887,10 +3961,43 @@ def _step_dispatch(
     lane_table: tuple[_lanes.Lane, ...],
     rules: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    for n in sorted(plan.todos(), key=lambda x: (_effective_prio(plan, x), x.id)):
-        if not _dispatchable(plan, n) or n.status != "open":
-            continue
+    held_ids = _inflight_land_ids(plan)
+    candidates = [
+        n
+        for n in sorted(plan.todos(), key=lambda x: (-_effective_score(plan, x), x.id))
+        if _dispatchable(plan, n) and n.status == "open"
+    ]
+    # td603849 file-overlap hold: a run_slice whose brief file set
+    # overlaps an in-flight land's scores below it until that land
+    # finishes — i.e. held this pass, never outranking the land (two
+    # slices rebuilding the same file re-conflicted at the mint-barrier
+    # land). The held land's own todo is never a candidate (it has a
+    # live job).
+    overlap_files = (
+        _brief_file_sets(w.store, held_ids + [n.id for n in candidates])
+        if held_ids
+        else {}
+    )
+    held: dict[int, int] = {}
+    if held_ids:
+        held_sets = {i: overlap_files.get(i) or frozenset() for i in held_ids}
+        for n in candidates:
+            if _resolve_op(n)[0] != DEFAULT_OP:
+                continue
+            mine = overlap_files.get(n.id) or frozenset()
+            for hid, hfiles in held_sets.items():
+                if hid != n.id and mine and mine & hfiles:
+                    held[n.id] = hid
+                    break
+    for n in candidates:
         if _excluded(n) or _claims(n) or plan.live_job(n):
+            continue
+        if n.id in held:
+            res.notes.append(
+                f"td{n.id}: file-overlap hold — brief names files in "
+                f"td{held[n.id]}'s in-flight land; scored below it until "
+                "that land finishes"
+            )
             continue
         job_type, params = _resolve_op(n)
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()

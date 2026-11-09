@@ -15,7 +15,8 @@ def run_recipe_gap(store: Store) -> int:
     write share a transaction. Closed gripes suppress repeats only on filing day.
     """
     from precis.store.types import ChunkInsert, Tag
-    from precis.workers.auto_gripe import AUTO_PRIO
+    from precis.utils.dispatch_score import SCORE_META_KEY
+    from precis.workers.auto_gripe import AUTO_SCORE
 
     with store.pool.connection() as conn:
         sources = conn.execute(
@@ -47,7 +48,7 @@ def run_recipe_gap(store: Store) -> int:
                 kind="gripe",
                 slug=None,
                 title=f"Missing task recipe: {source or '(empty)'}",
-                meta={"fingerprint": fingerprint},
+                meta={"fingerprint": fingerprint, SCORE_META_KEY: AUTO_SCORE},
                 conn=conn,
             )
             store.chunks.insert_chunks(
@@ -71,6 +72,5 @@ def run_recipe_gap(store: Store) -> int:
                 replace_prefix=True,
                 conn=conn,
             )
-            store.set_prio(ref.id, AUTO_PRIO, conn=conn)
             filed += 1
     return filed

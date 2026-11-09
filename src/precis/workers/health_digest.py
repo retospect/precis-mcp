@@ -2870,17 +2870,19 @@ def _file_router_gripe(
     detail: str,
     created_at: datetime,
     budget_hours: float,
-    prio: int | None = None,
+    score: float | None = None,
 ) -> int:
     """Insert one condition-linked gripe (marker-line protocol — module
     docstring's Piece 1 template). Direct store insert-ref + body chunk +
     ``STATUS:open`` tag, mirroring ``workers/backlog_groom.py``'s
     worker-side ref-creation pattern (not ``file_gripe_readonly`` — that
     SQL function exists so an ``agent_ro`` connection can still file a
-    gripe; this background pass already runs write-capable). ``prio``
-    defaults to :data:`~precis.workers.auto_gripe.AUTO_PRIO`."""
+    gripe; this background pass already runs write-capable). ``score``
+    is the filing ``dispatch_score`` (gr604593); defaults to
+    :data:`~precis.workers.auto_gripe.AUTO_SCORE`."""
     from precis.store.types import ChunkInsert, Tag
-    from precis.workers.auto_gripe import AUTO_PRIO
+    from precis.utils.dispatch_score import SCORE_META_KEY
+    from precis.workers.auto_gripe import AUTO_SCORE
 
     cls = _router_class(group)
     nudge = _router_nudge(store, cls, fingerprint)
@@ -2896,9 +2898,14 @@ def _file_router_gripe(
     gripe_title = f"[{tag}] {source}/{fingerprint}: {title}"
     if len(gripe_title) > 200:
         gripe_title = gripe_title[:197].rstrip() + "…"
+    score = AUTO_SCORE if score is None else float(score)
     with store.tx() as conn:
         ref = store.insert_ref(
-            kind="gripe", slug=None, title=gripe_title, meta={}, conn=conn
+            kind="gripe",
+            slug=None,
+            title=gripe_title,
+            meta={SCORE_META_KEY: score},
+            conn=conn,
         )
         store.chunks.insert_chunks(
             ref.id,
@@ -2915,7 +2922,6 @@ def _file_router_gripe(
         store.add_tag(
             ref.id, Tag.open("origin:health-digest-router"), set_by="system", conn=conn
         )
-        store.set_prio(ref.id, AUTO_PRIO if prio is None else prio, conn=conn)
     log.info(
         "health_digest: router filed gripe id=%d for %s/%s (age > %.0fh budget)",
         ref.id,
@@ -2926,12 +2932,12 @@ def _file_router_gripe(
     return int(ref.id)
 
 
-def _router_prio(severity: str | None) -> int:
-    """Filing prio: critical conditions at CRIT_PRIO, the rest at AUTO_PRIO
-    (precis.workers.auto_gripe; ruling 2026-10-18)."""
-    from precis.workers.auto_gripe import AUTO_PRIO, CRIT_PRIO
+def _router_prio(severity: str | None) -> float:
+    """Filing score: critical conditions at CRIT_SCORE, the rest at
+    AUTO_SCORE (precis.workers.auto_gripe; ruling 2026-10-18)."""
+    from precis.workers.auto_gripe import AUTO_SCORE, CRIT_SCORE
 
-    return CRIT_PRIO if severity == "critical" else AUTO_PRIO
+    return CRIT_SCORE if severity == "critical" else AUTO_SCORE
 
 
 def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
@@ -3091,7 +3097,7 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
                 detail=detail or "",
                 created_at=created_at,
                 budget_hours=budget,
-                prio=_router_prio(severity),
+                score=_router_prio(severity),
             )
         except Exception:
             log.exception(

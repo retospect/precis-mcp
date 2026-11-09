@@ -17,9 +17,12 @@ from the clone (:func:`collect_fix_evidence`), runs ONE Sonnet-class
 batch call through the LLM router (``source='gripe_triage:tick'``, model
 overridable via :data:`_MODEL_ENV`), schema-validates the reply against
 the claimed set, and writes per gripe: ``fix:<type>``,
-``cluster:<slug>``, ``size:S|M|L``, a computed ``PRIO`` (severity ×
-(1 + parked dups) × (1 + age_days/7), bucketed to 1..10 by
-:func:`prio_for` — age alone may lift at most one band) and a STATUS
+``cluster:<slug>``, ``size:S|M|L``, the score inputs
+(``meta.dispatch.severity`` — the live ``dispatch_score`` recomputes
+severity × (1 + parked dups) × capped age over it, machine-owned, so a
+re-triage never touches the human ``prio`` column; gr604593) plus, on an
+un-prio'd gripe whose score clears a rung floor, a
+``recommend: PRIO:<rung>`` comment — and a STATUS
 verdict: ``triaged`` normally; ``done`` (``resolved: <sha> <subject>``)
 when the ``fixed`` verdict's cited commit is provably deployed;
 ``verify`` when it is on main but not yet deployed; ``wontfix`` on
@@ -35,7 +38,8 @@ across the model call): the claim is one short transaction stamping
 ``meta.pipeline.claimed_at`` via the same conditional ``jsonb_set``
 pattern ``gripe_parents`` uses; the LLM call runs with **no open
 transaction**; a short write transaction per gripe then replaces the
-tags/PRIO, stamps ``pipeline.triaged_at`` and clears ``claimed_at``.
+tags, stamps the score inputs and ``pipeline.triaged_at``, and clears
+``claimed_at``.
 Crashed claims age out after :data:`_CLAIM_MINUTES`; every write is a
 replace, so a doubled tick converges.
 
@@ -105,6 +109,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg.types.json import Jsonb
 
 from precis.corpus_layout import host_name
+from precis.utils import dispatch_score as _dscore
 from precis.utils.env import env_float, env_int
 from precis.utils.llm.json_reply import extract_json_object
 from precis.workers.runner import BatchResult
@@ -187,18 +192,10 @@ _FLOOD_ALARM_KEY = "gripe_flood:global_alarm"
 #: A ``reopened``-tagged gripe is a failed fix — it claims ahead of age.
 _REOPENED_TAG = "reopened"
 
-#: ``severity × (1 + dups) × (1 + age_days/7)`` → PRIO bands: the first
-#: ``(min_score, prio)`` pair whose floor the score meets wins; lower
-#: scores get :data:`_PRIO_DEFAULT`. ``PRECIS_TRIAGE_PRIO_BANDS``
-#: overrides as ``"16:1,8:2,4:4,2:6"`` (min_score:prio, any order).
-_PRIO_BANDS_ENV = "PRECIS_TRIAGE_PRIO_BANDS"
-_PRIO_BANDS_DEFAULT: tuple[tuple[float, int], ...] = (
-    (16.0, 1),
-    (8.0, 2),
-    (4.0, 4),
-    (2.0, 6),
-)
-_PRIO_DEFAULT = 8
+#: Severity (1..5) is the verdict input the live ``dispatch_score``
+#: recomputes over (:mod:`precis.utils.dispatch_score`, gr604593) — the
+#: tick stamps it under ``meta.dispatch``; it never writes ``refs.prio``
+#: (a human's column now) and never overwrites one already set.
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MISS_RE = re.compile(r"^\d+$")
@@ -1480,53 +1477,15 @@ def parse_verdicts(
     return verdicts, sorted(set(claimed) - set(verdicts))
 
 
-# ── PRIO ──────────────────────────────────────────────────────────────────
+# ── dispatch score (gr604593) ────────────────────────────────────────────
 
 
-def _prio_bands() -> tuple[tuple[float, int], ...]:
-    """The ``(min_score, prio)`` ladder — ``_PRIO_BANDS_ENV`` as
-    ``"<score>:<prio>,..."`` or the compiled default. Malformed env text
-    falls back whole (the env_float/env_int convention)."""
-    raw = os.environ.get(_PRIO_BANDS_ENV)
-    if raw:
-        try:
-            bands = sorted(
-                (
-                    (float(part.split(":")[0]), int(part.split(":")[1]))
-                    for part in raw.split(",")
-                ),
-                reverse=True,
-            )
-            if bands and all(1 <= p <= 10 for _s, p in bands):
-                return tuple(bands)
-        except (ValueError, IndexError):
-            pass
-        log.warning("gripe_triage: bad %s=%r — using defaults", _PRIO_BANDS_ENV, raw)
-    return _PRIO_BANDS_DEFAULT
-
-
-def _band_for(score: float, bands: tuple[tuple[float, int], ...]) -> int:
-    """Index of the first band whose floor ``score`` meets, else
-    ``len(bands)`` (the :data:`_PRIO_DEFAULT` slot below the ladder)."""
-    for i, (floor, _prio) in enumerate(bands):
-        if score >= floor:
-            return i
-    return len(bands)
-
-
-def prio_for(severity: int, dups: int, age_days: float) -> int:
-    """``severity × (1 + dups) × (1 + age_days/7)`` bucketed to PRIO
-    1..10 (lower is hotter) by the configured band ladder. Age alone may
-    raise the verdict at most ONE band past what severity and parked
-    dups give (dry-run ruling 2026-10-25: an old papercut must not climb
-    to PRIO 2 on age alone)."""
-    bands = _prio_bands()
-    base = _band_for(severity * (1 + max(0, dups)), bands)
-    aged = _band_for(
-        severity * (1 + max(0, dups)) * (1 + max(0.0, age_days) / 7.0), bands
-    )
-    i = max(base - 1, aged)
-    return bands[i][1] if i < len(bands) else _PRIO_DEFAULT
+def _score_of(v: Verdict, g: ClaimedGripe, when: datetime) -> float:
+    """This tick's score for ``g`` — the same formula the live
+    ``dispatch_score`` SQL recomputes from the stamped inputs
+    (:func:`precis.utils.dispatch_score.gripe_score`), evaluated at the
+    write moment for the recommend-nudge below."""
+    return _dscore.gripe_score(v.severity, g.dup_count, g.age_days(when), prio=None)
 
 
 # ── write-back ────────────────────────────────────────────────────────────
@@ -1598,7 +1557,7 @@ def _write_verdict(
     store: Store,
     g: ClaimedGripe,
     v: Verdict,
-    prio: int,
+    score: float,
     when: datetime,
     *,
     reto: bool,
@@ -1607,7 +1566,9 @@ def _write_verdict(
     evidence: FixEvidence | None = None,
 ) -> str | None:
     """The per-gripe write tx (spec: "the write tx replaces tags/PRIO,
-    stamps ``triaged_at``, clears ``claimed_at``"). Every write is a
+    stamps ``triaged_at``, clears ``claimed_at``" — the PRIO half is now
+    the score-input stamp and a ``recommend:`` comment; the column
+    itself is human-only, gr604593). Every write is a
     replace, so a doubled tick — or a re-claim after a crashed write —
     converges to the same state. ``reto`` is the caller's capped
     ``reto:ask`` decision — a verdict past :data:`_RETO_CAP` takes
@@ -1639,7 +1600,7 @@ def _write_verdict(
     with store.tx() as conn:
         row = conn.execute(
             """
-            SELECT r.meta FROM refs r
+            SELECT r.meta, r.prio FROM refs r
              WHERE r.ref_id = %s AND r.retired_at IS NULL
                AND r.meta->'pipeline'->>'claimed_at' = %s
                AND EXISTS (SELECT 1 FROM ref_tags rt
@@ -1654,6 +1615,7 @@ def _write_verdict(
         if row is None:
             return None
         meta = _drop_lease(dict(row[0] or {}))
+        prio_is_set = row[1] is not None
         pipeline = meta.get("pipeline")
         meta["pipeline"] = {
             **(pipeline if isinstance(pipeline, dict) else {}),
@@ -1771,7 +1733,18 @@ def _write_verdict(
                 f"{_TRIAGE_PREFIX}{v.verdict.replace('-', ' ')} - "
                 f"{v.reason or '(no reason given)'}"
             )
-        store.set_prio(g.ref_id, prio, conn=conn)
+        # gr604593: machine sequencing lives in ``dispatch_score``, never
+        # the human ``prio`` column — stamp the verdict's severity (the
+        # live score recomputes over it) and, on an un-prio'd gripe whose
+        # score clears a rung floor, nudge a rung via comment. A set prio
+        # is a human's: never written, never overwritten.
+        dispatch = meta.get(_dscore.DISPATCH_META_KEY)
+        meta[_dscore.DISPATCH_META_KEY] = {
+            **(dispatch if isinstance(dispatch, dict) else {}),
+            "severity": v.severity,
+        }
+        if not prio_is_set and (rung := _dscore.recommended_rung(score)):
+            comments.append(f"{_RECOMMEND_PREFIX}PRIO:{rung}")
         # A doubled write (claim re-won after a crashed first write)
         # must not re-post comments already on the gripe — but the
         # close lines append unconditionally: a `resolved:` re-close
@@ -2285,7 +2258,7 @@ def run_gripe_triage_pass(
                 store,
                 g,
                 v,
-                prio_for(v.severity, g.dup_count, g.age_days(when)),
+                _score_of(v, g, when),
                 when,
                 reto=ask,
                 reto_overflow=wants_reto and not ask,

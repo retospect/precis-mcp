@@ -68,8 +68,8 @@ tick dark; escapes are stripped in Python on that path.
 
 Filed gripes carry ``fix:code`` (``fix:infra`` for the infra signature),
 ``project:precis``, ``ci:nightly``/``ci:soak``, ``thread:factory``,
-``size:s``, ``origin:ci-watch``, PRIO ``auto_gripe.AUTO_PRIO`` and
-``meta.ci = {sig, wf}``. The ``meta.ci.sig`` + worker-stamped
+``size:s``, ``origin:ci-watch``, ``meta.dispatch_score``
+``auto_gripe.AUTO_SCORE`` and ``meta.ci = {sig, wf}``. The ``meta.ci.sig`` + worker-stamped
 ``filed_by.principal = worker:ci_watch`` pair is the ``gripe_dispatch``
 door: a ci_watch gripe is machine-filed from the repo's own test output
 about its own code — not reader intake — so the untrusted-text
@@ -771,16 +771,17 @@ def _body_text(
 
 
 def _insert_gripe(store: Any, conn: Any, title: str, sig: str, wf: str) -> int:
-    """The ref, tags and prio of a signature gripe (the
-    ``factory_rescue._file_sig_gripe`` shape) — the body chunk is written
-    separately once the run's sibling set is known."""
-    from precis.workers.auto_gripe import AUTO_PRIO
+    """The ref, tags and filing ``dispatch_score`` of a signature gripe
+    (the ``factory_rescue._file_sig_gripe`` shape) — the body chunk is
+    written separately once the run's sibling set is known."""
+    from precis.utils.dispatch_score import SCORE_META_KEY
+    from precis.workers.auto_gripe import AUTO_SCORE
 
     ref = store.insert_ref(
         kind="gripe",
         slug=None,
         title=title,
-        meta={"ci": {"sig": sig, "wf": wf}},
+        meta={"ci": {"sig": sig, "wf": wf}, SCORE_META_KEY: AUTO_SCORE},
         conn=conn,
     )
     store.add_tag(
@@ -800,7 +801,6 @@ def _insert_gripe(store: Any, conn: Any, title: str, sig: str, wf: str) -> int:
         "origin:ci-watch",
     ):
         store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
-    store.set_prio(ref.id, AUTO_PRIO, conn=conn)
     return int(ref.id)
 
 

@@ -27,9 +27,10 @@ import yaml
 
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.utils.dispatch_score import gripe_score, recommended_rung
 from precis.utils.llm.router import LlmResult, Tier
 from precis.workers import gripe_triage
-from precis.workers.gripe_triage import Thread, ThreadIndex, prio_for
+from precis.workers.gripe_triage import Thread, ThreadIndex
 from tests._refs import insert_gripe
 
 pytestmark = pytest.mark.db
@@ -402,9 +403,13 @@ class TestTick:
         opens = _open_tag_values(store, gid)
         assert {"fix:code", "cluster:pcb-router", "size:s"} <= opens
         assert _status(store, gid) == "triaged"
-        # severity 4 × (1 + 0 dups) × (1 + 7/7) = 8 → PRIO 2.
-        assert _prio(store, gid) == 2
+        # gr604593: triage stamps the score inputs, never the human
+        # prio column; a hot score nudges via a recommend: comment.
+        assert _prio(store, gid) is None
         meta = _meta(store, gid)
+        assert meta["dispatch"]["severity"] == 4
+        # severity 4 × (1 + 0 dups) × (1 + 7/7) = 8 → recommend PRIO:high.
+        assert "recommend: PRIO:high" in _comments(store, gid)
         assert meta["pipeline"]["triaged_at"].endswith("Z")
         assert "claimed_at" not in meta["pipeline"]
 
@@ -1408,41 +1413,57 @@ class TestRetoBatch:
         assert _digest_todos(store) == []
 
 
-# ── PRIO ladder ───────────────────────────────────────────────────────────
+# ── dispatch score (gr604593) ────────────────────────────────────────────
 
 
-class TestPrio:
-    def test_bands(self) -> None:
-        # severity × (1+dups) × (1+age/7)
-        assert prio_for(1, 0, 0) == 8  # wish, fresh
-        assert prio_for(2, 0, 0) == 6  # papercut
-        assert prio_for(4, 0, 0) == 4  # blocked
-        assert prio_for(5, 0, 0) == 4  # wrong result, fresh → score 5
-        assert prio_for(5, 1, 0) == 2  # ×2 dups → 10
-        assert prio_for(5, 1, 21) == 1  # ×2 ×4 = 40 → PRIO 1
+class TestScore:
+    def test_formula(self) -> None:
+        # severity × (1+dups) × min(1+age/7, 4)
+        assert gripe_score(1, 0, 0) == 1
+        assert gripe_score(4, 0, 0) == 4
+        assert gripe_score(5, 1, 0) == 10
+        assert gripe_score(5, 1, 21) == 40  # age factor saturates at 4
+        assert gripe_score(2, 0, 14) == 6
+        # Age alone may multiply at most ×4 (the band-era cap, ported):
+        # a year-old papercut never reaches the severity-5 zone.
+        assert gripe_score(2, 0, 365) == 8
+        assert gripe_score(1, 0, 365) == 4
 
-    def test_age_raises_at_most_one_band(self) -> None:
-        """Dry-run ruling (gr514124): a papercut that aged for months
-        may climb ONE band past what severity × dups alone give — never
-        more. Bands 1/2/4/6 below the 8 default."""
-        # sev 2 → base band 6; 14 days ⇒ score 6 → one band up (4), the cap.
-        assert prio_for(2, 0, 14) == 4
-        # Same gripe a year old: score ~106 would hit band 1 — capped at 4.
-        assert prio_for(2, 0, 365) == 4
-        # sev 1 below the ladder (default 8): even ancient age reaches
-        # only the LAST band (6), one step above the default slot.
-        assert prio_for(1, 0, 365) == 6
-        # Severity and dups already at band 1: age has nothing to add.
-        assert prio_for(5, 3, 400) == 1
+    def test_prio_is_a_multiplier_never_the_key(self) -> None:
+        assert gripe_score(4, 0, 0, prio=1) == pytest.approx(16.0)
+        assert gripe_score(4, 0, 0, prio=5) == pytest.approx(4.0)
+        assert gripe_score(4, 0, 0, prio=8) == pytest.approx(4.0 * 0.3535, abs=0.01)
+        # Unscored base × multiplier: a human PRIO:urgent still heats an
+        # untriaged gripe.
+        assert gripe_score(None, 0, 0, prio=1) == pytest.approx(4.0)
+        assert gripe_score(None, 0, 0) == 1.0
 
-    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PRECIS_TRIAGE_PRIO_BANDS", "100:1,0:9")
-        assert prio_for(5, 1, 21) == 9
-        assert prio_for(5, 9, 400) == 1
+    def test_stamped_fallback_and_showstopper(self) -> None:
+        assert gripe_score(None, 0, 0, stamped=7.5) == 7.5
+        assert gripe_score(4, 0, 0, stamped=99.0) == 4.0  # severity wins
+        assert gripe_score(4, 0, 0, showstopper=True) == 8.0
 
-    def test_malformed_env_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PRECIS_TRIAGE_PRIO_BANDS", "junk")
-        assert prio_for(4, 0, 0) == 4
+    def test_recommended_rung(self) -> None:
+        assert recommended_rung(40.0) == "urgent"
+        assert recommended_rung(16.0) == "urgent"
+        assert recommended_rung(8.0) == "high"
+        assert recommended_rung(7.9) is None
+        assert recommended_rung(1.0) is None
+
+
+class TestPrioSplit:
+    def test_triage_never_writes_or_overrides_the_column(self, store: Store) -> None:
+        """gr604593: a hand-set prio survives a triage write — a
+        re-triage may not silently move a human judgement."""
+        gid = _gripe(store, "hand-set")
+        store.set_prio(gid, 3)
+        _light(store)
+        r = _run(store, llm=_llm({"verdicts": [_verdict(gid, severity=5)]}))
+        assert r.ok == 1
+        assert _prio(store, gid) == 3  # untouched
+        assert _meta(store, gid)["dispatch"]["severity"] == 5
+        # a set prio means no recommend nudge either
+        assert not any(c.startswith("recommend: PRIO:") for c in _comments(store, gid))
 
 
 # ── verdict parsing edge cases ────────────────────────────────────────────

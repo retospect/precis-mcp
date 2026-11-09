@@ -14,6 +14,7 @@
           </div>
           <div class="text-[12px] text-fg-faint mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
             {% if gr.prio %}<span class="font-mono">PRIO:{{ gr.prio }}</span>{% endif %}
+            {% if gr.score is not none %}<span class="font-mono" title="dispatch score — the machine queue order">score:{{ gr.score }}</span>{% endif %}
             {% if gr.size %}<span class="font-mono">size:{{ gr.size }}</span>{% endif %}
             {% if gr.project and gr.project != 'project:precis' %}<span class="font-mono">{{ gr.project }}</span>{% endif %}
             {% if gr.source and gr.source != 'agent' %}<span class="font-mono">{{ gr.source }}</span>{% endif %}

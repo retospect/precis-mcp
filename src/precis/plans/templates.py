@@ -39,6 +39,7 @@ from precis.plans.nodes import finish_mint, validate_plan_meta
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo.guards import check_ask_meta
+from precis.utils import dispatch_score as _dscore
 from precis.utils import handle_registry
 
 #: ``meta.gate.args.sha`` of a ``sha-in-prod`` gate minted before the build
@@ -500,8 +501,21 @@ def mint_gripe_fix(
     def build(m: _Minter) -> None:
         if direct:
             _build_direct(m)
-            return
-        _build_staged(m)
+        else:
+            _build_staged(m)
+        # gr604593: the chain root inherits the gripe's live dispatch
+        # score (severity × dups × capped age × a human-prio multiplier
+        # — the score, not a pseudo-prio).
+        row = m.conn.execute(
+            f"SELECT {_dscore.score_sql()} FROM refs r WHERE r.ref_id = %s",
+            (gid,),
+        ).fetchone()
+        if row and row[0] is not None:
+            m.store.stamp_ref_meta(
+                m.ids["root"],
+                {_dscore.SCORE_META_KEY: float(row[0])},
+                conn=m.conn,
+            )
 
     def _build_direct(m: _Minter) -> None:
         m.node("root", f"Fix {label}", _phase())
@@ -723,6 +737,10 @@ def mint_release_pass(
     def build(m: _Minter) -> None:
         root = m.node("root", "Release pass", _phase())
         _tag(m, root, "release-pass")
+        # The release-fixer class outranks routine builds (gr604593).
+        m.store.stamp_ref_meta(
+            root, {_dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE}, conn=m.conn
+        )
         stamped = release_main_tag(main_sha)
         if stamped is not None:
             _tag(m, root, stamped)
@@ -1026,7 +1044,11 @@ def mint_pr_intake(
         head = pr_class.head_tag(f.head_sha)
         if head:
             _tag(m, root, head)
-        m.store.set_prio(root, pr_class.prio_of(cls, f), conn=m.conn)
+        m.store.stamp_ref_meta(
+            root,
+            {_dscore.SCORE_META_KEY: pr_class.score_of(cls, f)},
+            conn=m.conn,
+        )
         if cls == pr_class.DEPENDABOT:
             m.node(
                 "check",

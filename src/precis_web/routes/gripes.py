@@ -73,6 +73,7 @@ from precis.errors import NotFound
 from precis.filing_origin import agentlog_model
 from precis.handlers._gripe_title import first_line
 from precis.runtime.trust_verb import trust_footer
+from precis.utils import dispatch_score as _dscore
 from precis.utils.gripe_order import (
     DEFAULT_SORT,
     SORT_VALUES,
@@ -205,8 +206,9 @@ _STATUS_TOOLTIPS: dict[str, str] = {
 #: order means, in the same row-of-links style as the status filters.
 _SORT_TOOLTIPS: dict[str, str] = {
     "drain": (
-        "the drain order — explicit PRIO first (lower = hotter), then "
-        "size s < m < l < unsized, oldest first within a size"
+        "the drain order — dispatch score first (higher = hotter; a set "
+        "PRIO multiplies it), then size s < m < l < unsized, oldest first "
+        "within a size"
     ),
     "oldest": "oldest filed first",
     "newest": "newest filed first",
@@ -400,7 +402,8 @@ def _rows(
                    AND pj.value LIKE 'project:%%'
                  ORDER BY pj.value LIMIT 1) AS project,
                {size_letter_sql()} AS size,
-               {source_label_sql()} AS source
+               {source_label_sql()} AS source,
+               round(({_dscore.score_sql()})::numeric, 2) AS score
           FROM refs r
           LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
                AND rt.tag_id IN (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
@@ -424,6 +427,7 @@ def _rows(
                 "project": r[6],
                 "size": r[7],
                 "source": r[8],
+                "score": float(r[9]) if r[9] is not None else None,
             }
         )
     return out
@@ -811,6 +815,15 @@ async def detail(request: Request, id: int) -> HTMLResponse:
     except Exception:
         log.debug("gripe trust stamp unavailable", exc_info=True)
         footer = None
+    score: float | None = None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"SELECT round(({_dscore.score_sql()})::numeric, 2) "
+            "FROM refs r WHERE r.ref_id = %s",
+            (id,),
+        ).fetchone()
+        if row and row[0] is not None:
+            score = float(row[0])
 
     return templates.TemplateResponse(
         request,
@@ -831,6 +844,7 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "status_badge": _status_badge(status),
             "retired": getattr(ref, "retired_at", None) is not None,
             "prio": _prio_of(tags),
+            "score": score,
             "project": _project_of(tags),
         },
     )
