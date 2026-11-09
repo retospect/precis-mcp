@@ -105,8 +105,12 @@ class Config:
                 data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
                 break
 
+        # config.yaml's DSN wins over an inherited PRECIS_DATABASE_URL: a stale
+        # launchd/plist value (agent_rw) must not shadow the precis_system DSN
+        # the vault's infra class requires. The env var is only a fallback for
+        # a config that names none.
         db_url = os.environ.get("PRECIS_DATABASE_URL")
-        if db_url:
+        if db_url and not (data.get("precis") or {}).get("database_url"):
             data.setdefault("precis", {})["database_url"] = db_url
         notify_url = os.environ.get("PRECIS_NOTIFY_DATABASE_URL")
         if notify_url:
@@ -130,19 +134,44 @@ class Config:
         )
 
 
-def load_slack_tokens(cfg: SlackConfig) -> tuple[str, str]:
-    """Resolve ``(bot_token, app_token)``, each independently: env → vault → file."""
+def pin_process_dsn(dsn: str | None) -> None:
+    """Point this process's ``PRECIS_DATABASE_URL`` at the config.yaml DSN.
+
+    Everything asa-slack resolves *in-process* reads the env var, not
+    ``cfg.precis``: ``reveal_secret``'s fallback, the store ``warm_runtime``
+    binds via ``build_runtime`` → ``load_config`` on the first turn, and the
+    ``precis.utils.claude_oauth.ensure_oauth_token`` → ``get_secret`` /
+    ``reveal_unbound`` lookups run for the spawned ``claude -p`` env. A stale
+    plist ``agent_rw`` value must not outrank the ``precis_system`` DSN —
+    ``CLAUDE_CODE_OAUTH_TOKEN`` is vault class infra (``vault._class_check``,
+    migration 0285), an ``agent_rw`` reveal is denied, and the turn's
+    ``claude -p`` answers "Not logged in" (gr605685; the sibling of what
+    ca980886c fixed on the Discord bridge). ``adopt_process_store`` scrubs
+    the var from the env subprocesses inherit, so the DSN does not leak
+    onward. No-op when the config names no DSN — the env var is then the
+    fallback ``Config.load`` resolved.
+    """
+    if dsn:
+        os.environ["PRECIS_DATABASE_URL"] = dsn
+
+
+def load_slack_tokens(cfg: SlackConfig, *, dsn: str | None = None) -> tuple[str, str]:
+    """Resolve ``(bot_token, app_token)``, each independently: env → vault → file.
+
+    ``dsn`` is ``cfg.precis.database_url`` (precis_system); see
+    :mod:`asa_bot.secrets`.
+    """
     return (
-        _load_token(cfg.bot_token_env, cfg.bot_token_file),
-        _load_token(cfg.app_token_env, cfg.app_token_file),
+        _load_token(cfg.bot_token_env, cfg.bot_token_file, dsn=dsn),
+        _load_token(cfg.app_token_env, cfg.app_token_file, dsn=dsn),
     )
 
 
-def _load_token(env_name: str, file_path: str) -> str:
+def _load_token(env_name: str, file_path: str, *, dsn: str | None = None) -> str:
     env_val = os.environ.get(env_name)
     if env_val:
         return env_val.strip()
-    vault_val = reveal_secret(env_name)
+    vault_val = reveal_secret(env_name, dsn=dsn)
     if vault_val:
         return vault_val.strip()
     p = Path(file_path)

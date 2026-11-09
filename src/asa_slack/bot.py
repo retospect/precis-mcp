@@ -61,7 +61,7 @@ from asa_bot import preamble
 from asa_bot.llm_runtime import warm_runtime
 from asa_bot.precis_client import PrecisClient, health_loop
 from asa_slack import identity as identity_check
-from asa_slack.config import Config, load_slack_tokens
+from asa_slack.config import Config, load_slack_tokens, pin_process_dsn
 from asa_slack.conv_slug import compute_slug
 from asa_slack.kind_policy import slack_kinds_disabled
 from precis.utils.llm.router import LlmRequest, LlmResult, Tier, route
@@ -476,7 +476,12 @@ def _read_or_empty(path: str) -> str:
 
 async def run(cfg: Config) -> None:
     """Bring up the bridge end-to-end. Blocks until Socket Mode disconnects."""
-    bot_token, app_token = load_slack_tokens(cfg.slack)
+    # config.yaml's DSN beats an inherited (stale agent_rw) PRECIS_DATABASE_URL
+    # for every in-process consumer — vault reveals included (gr605685).
+    pin_process_dsn(cfg.precis.database_url)
+    bot_token, app_token = load_slack_tokens(
+        cfg.slack, dsn=cfg.precis.database_url or None
+    )
     app = AsyncApp(token=bot_token)
     precis = PrecisClient(cfg.precis)
     await precis.start()

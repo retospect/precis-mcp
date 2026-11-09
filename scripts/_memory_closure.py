@@ -40,15 +40,46 @@ ENTRY_NAMES = [
 ]
 # Resolved by name: (label, predicate on module name)
 ENTRY_PATTERNS = [
-    ("ingest chunker", lambda m: m.startswith("precis.ingest.") and "chunk" in m.rsplit(".", 1)[-1]),
-    ("worker chunk_keywords", lambda m: m.startswith("precis.workers.") and m.rsplit(".", 1)[-1] == "chunk_keywords"),
-    ("worker summar*", lambda m: m.startswith("precis.workers.") and m.rsplit(".", 1)[-1].startswith("summar")),
-    ("worker categor*", lambda m: m.startswith("precis.workers.") and m.rsplit(".", 1)[-1].startswith("categor")),
+    (
+        "ingest chunker",
+        lambda m: m.startswith("precis.ingest.") and "chunk" in m.rsplit(".", 1)[-1],
+    ),
+    (
+        "worker chunk_keywords",
+        lambda m: (
+            m.startswith("precis.workers.") and m.rsplit(".", 1)[-1] == "chunk_keywords"
+        ),
+    ),
+    (
+        "worker summar*",
+        lambda m: (
+            m.startswith("precis.workers.")
+            and m.rsplit(".", 1)[-1].startswith("summar")
+        ),
+    ),
+    (
+        "worker categor*",
+        lambda m: (
+            m.startswith("precis.workers.")
+            and m.rsplit(".", 1)[-1].startswith("categor")
+        ),
+    ),
 ]
 
 HEAVY = [
-    "rdkit", "numba", "shapely", "ase", "spglib", "manifold3d", "mermaidx",
-    "nanopub", "matplotlib", "torch", "cadquery", "scipy", "sympy",
+    "rdkit",
+    "numba",
+    "shapely",
+    "ase",
+    "spglib",
+    "manifold3d",
+    "mermaidx",
+    "nanopub",
+    "matplotlib",
+    "torch",
+    "cadquery",
+    "scipy",
+    "sympy",
 ]
 
 
@@ -179,7 +210,9 @@ def build_graph(mods: dict[str, Path]):
     return edges_all, edges_eager, third, parse_errors
 
 
-def shortest_path(entries: set[str], edges: dict[str, set[str]], targets: set[str]) -> list[str]:
+def shortest_path(
+    entries: set[str], edges: dict[str, set[str]], targets: set[str]
+) -> list[str]:
     """Shortest entry -> target-member import chain (BFS), [] if unreachable."""
     parent: dict[str, str | None] = {e: None for e in sorted(entries)}
     queue = list(parent)
@@ -196,7 +229,9 @@ def shortest_path(entries: set[str], edges: dict[str, set[str]], targets: set[st
     return []
 
 
-def closure(entries: set[str], edges: dict[str, set[str]], removed: str | None = None) -> set[str]:
+def closure(
+    entries: set[str], edges: dict[str, set[str]], removed: str | None = None
+) -> set[str]:
     seen = set(e for e in entries if e != removed)
     stack = list(seen)
     while stack:
@@ -219,7 +254,9 @@ def group_of(mod: str, mods: dict[str, Path]) -> str:
     return sub
 
 
-def third_in(mod_set: set[str], third: dict[str, dict[str, bool]]) -> dict[str, set[str]]:
+def third_in(
+    mod_set: set[str], third: dict[str, dict[str, bool]]
+) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for top, importers in third.items():
         hit = {m for m in importers if m in mod_set}
@@ -252,7 +289,9 @@ def main() -> int:
     if "worker categor*" in unresolved and "precis.categorizers" in mods:
         # no categor* module under workers/; the pass lives at precis/categorizers.py
         unresolved.remove("worker categor*")
-        entries["categorizers (fallback: precis.categorizers)"] = ["precis.categorizers"]
+        entries["categorizers (fallback: precis.categorizers)"] = [
+            "precis.categorizers"
+        ]
     entry_set = {m for v in entries.values() for m in v}
 
     total = len(mods)
@@ -263,7 +302,9 @@ def main() -> int:
 
     # third party
     tp = third_in(cl, third)
-    tp_eager = third_in(cl_eager, {t: {m: e for m, e in imp.items() if e} for t, imp in third.items()})
+    tp_eager = third_in(
+        cl_eager, {t: {m: e for m, e in imp.items() if e} for t, imp in third.items()}
+    )
     heavy_hit = {h: tp[h] for h in HEAVY if h in tp}
     heavy_hit_eager = {h: tp_eager[h] for h in HEAVY if h in tp_eager}
 
@@ -295,7 +336,9 @@ def main() -> int:
     # --- report
     L: list[str] = []
     L.append("# Memory subsystem import closure (td605609)\n")
-    L.append(f"Source: `{SRC / PKG}`; {total} modules parsed with `ast` (nothing executed).\n")
+    L.append(
+        f"Source: `{SRC / PKG}`; {total} modules parsed with `ast` (nothing executed).\n"
+    )
     L.append("## Entries\n")
     for label, ms in entries.items():
         L.append(f"- {label}: {', '.join(ms)}")
@@ -303,8 +346,12 @@ def main() -> int:
     L.append(f"Unresolved entries: {', '.join(unresolved) if unresolved else 'none'}\n")
     L.append("## Closure\n")
     L.append(f"- total modules in src/precis: {total}")
-    L.append(f"- closure (all imports, incl. lazy/TYPE_CHECKING): {len(cl)} = {share:.1f}%")
-    L.append(f"- closure (eager module-level imports only): {len(cl_eager)} = {share_eager:.1f}%")
+    L.append(
+        f"- closure (all imports, incl. lazy/TYPE_CHECKING): {len(cl)} = {share:.1f}%"
+    )
+    L.append(
+        f"- closure (eager module-level imports only): {len(cl_eager)} = {share_eager:.1f}%"
+    )
     L.append(f"- entry modules: {len(entry_set)}")
     if parse_errors:
         L.append(f"- parse errors: {len(parse_errors)}: " + "; ".join(parse_errors[:5]))
@@ -315,14 +362,22 @@ def main() -> int:
     if heavy_hit:
         for h, imp in heavy_hit.items():
             kind = "eager" if h in heavy_hit_eager else "lazy only"
-            L.append(f"- **{h}** ({kind}): " + ", ".join(sorted(imp)[:12]) + (" ..." if len(imp) > 12 else ""))
+            L.append(
+                f"- **{h}** ({kind}): "
+                + ", ".join(sorted(imp)[:12])
+                + (" ..." if len(imp) > 12 else "")
+            )
     else:
         L.append("- none")
     L.append("")
     L.append("### Shortest import chain to a module importing each heavy dep\n")
-    L.append("(eager = module reachable via import-time edges; the heavy import itself may still be lazy, see above)\n")
+    L.append(
+        "(eager = module reachable via import-time edges; the heavy import itself may still be lazy, see above)\n"
+    )
     for h, imp in heavy_hit.items():
-        chain = shortest_path(entry_set, edges_eager, set(imp)) or shortest_path(entry_set, edges_all, set(imp))
+        chain = shortest_path(entry_set, edges_eager, set(imp)) or shortest_path(
+            entry_set, edges_all, set(imp)
+        )
         tag = "eager" if shortest_path(entry_set, edges_eager, set(imp)) else "via lazy"
         L.append(f"- {h} ({tag}): " + " -> ".join(chain))
     L.append("")
@@ -334,8 +389,10 @@ def main() -> int:
         L.append(f"- {t}: {len(tp[t])}")
     L.append("")
     L.append("## Top 20 bridge modules\n")
-    L.append("shrink = modules dropped from the closure if this module (and edges through it) is removed; "
-             "heavy = heavy deps whose every closure importer is dropped with it.\n")
+    L.append(
+        "shrink = modules dropped from the closure if this module (and edges through it) is removed; "
+        "heavy = heavy deps whose every closure importer is dropped with it.\n"
+    )
     L.append("| # | module | shrink | heavy dropped |")
     L.append("|---|--------|--------|---------------|")
     for i, (shrink, m, lh, _) in enumerate(top_bridges, 1):
@@ -351,7 +408,9 @@ def main() -> int:
     L.append("| group | in closure | total | share |")
     L.append("|-------|-----------:|------:|------:|")
     for g in groups:
-        L.append(f"| {g} | {cl_by_g[g]} | {tot_by_g[g]} | {100 * cl_by_g[g] / tot_by_g[g]:.0f}% |")
+        L.append(
+            f"| {g} | {cl_by_g[g]} | {tot_by_g[g]} | {100 * cl_by_g[g] / tot_by_g[g]:.0f}% |"
+        )
     L.append("")
     L.append("## Closure members\n")
     for m in sorted(cl):
@@ -361,16 +420,33 @@ def main() -> int:
 
     # --- 15-line summary
     S: list[str] = []
-    S.append(f"modules: {total} total; closure {len(cl)} = {share:.1f}% (eager-only {len(cl_eager)} = {share_eager:.1f}%)")
-    S.append(f"entries resolved: {len(entry_set)} modules; unresolved: {', '.join(unresolved) or 'none'}")
+    S.append(
+        f"modules: {total} total; closure {len(cl)} = {share:.1f}% (eager-only {len(cl_eager)} = {share_eager:.1f}%)"
+    )
+    S.append(
+        f"entries resolved: {len(entry_set)} modules; unresolved: {', '.join(unresolved) or 'none'}"
+    )
     S.append(f"third-party top-level names reached: {len(tp)}")
-    S.append("heavy deps reached: " + (", ".join(f"{h}({'eager' if h in heavy_hit_eager else 'lazy'})" for h in heavy_hit) or "none"))
+    S.append(
+        "heavy deps reached: "
+        + (
+            ", ".join(
+                f"{h}({'eager' if h in heavy_hit_eager else 'lazy'})" for h in heavy_hit
+            )
+            or "none"
+        )
+    )
     S.append("top 5 bridges (shrink; heavy dropped):")
     for shrink, m, lh, _ in top_bridges[:5]:
         S.append(f"  {m}  {shrink}  {','.join(lh) or '-'}")
-    S.append("fattest subpackages in closure: " + ", ".join(f"{g} {cl_by_g[g]}/{tot_by_g[g]}" for g in groups[:5]))
+    S.append(
+        "fattest subpackages in closure: "
+        + ", ".join(f"{g} {cl_by_g[g]}/{tot_by_g[g]}" for g in groups[:5])
+    )
     verdict_ok = share < 35 and not heavy_hit
-    S.append(f"rule (<35% and no heavy dep): {'demo clone viable' if verdict_ok else 'NOT met -> full image'}")
+    S.append(
+        f"rule (<35% and no heavy dep): {'demo clone viable' if verdict_ok else 'NOT met -> full image'}"
+    )
     S.append(f"full report: {args.out}")
     print("\n".join(S))
     return 0
