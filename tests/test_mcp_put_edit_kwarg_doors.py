@@ -479,11 +479,11 @@ def test_tag_gripe_and_quest_prio_kwarg_over_the_mcp_door(
     exact bug class the verb declaration exists to prevent."""
     tools_core.put(kind="gripe", text="doable view drops claimed leaves")
     gripe = store.list_refs(kind="gripe", limit=1)[0]
-    out = tools_core.tag(kind="gripe", id=gripe.id, prio=2)
+    out = tools_core.tag(kind="gripe", id=gripe.id, prio=3)
     assert not _is_error(out), _body(out)
     live = store.get_ref(kind="gripe", id=gripe.id)
     assert live is not None
-    assert live.prio == 2
+    assert live.prio == 3
 
     tools_core.put(kind="quest", text="ship a self-continuing todo tree")
     quest = store.list_refs(kind="quest", limit=1)[0]

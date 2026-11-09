@@ -76,6 +76,7 @@ from psycopg import Connection
 from precis import design_tree
 from precis.cli._common import resolve_dsn
 from precis.store import ChunkInsert, Store, Tag
+from precis.store._links_ops import _EDGE_VALIDITY_META_KEYS
 
 SOURCE = "conventions-import"
 _CONVENTIONS_SPACE = "repo-dev"
@@ -570,9 +571,13 @@ def _converge(
                 )
                 report.edges_removed += 1
                 report.lines.append(f"edge-removed me{src} -{rel}-> me{dst}")
-            elif {k: v for k, v in (meta or {}).items() if k != "source"} != (
-                want_meta
-            ):
+            elif {
+                k: v
+                for k, v in (meta or {}).items()
+                # ``source`` is ours; the validity keys are store-stamped on
+                # memory links (td610267) and never part of the manifest.
+                if k != "source" and k not in _EDGE_VALIDITY_META_KEYS
+            } != (want_meta):
                 # same triple, changed link meta ({as: ...}) — replace it
                 store.remove_link(
                     src_ref_id=src, dst_ref_id=dst, relation=rel, conn=conn

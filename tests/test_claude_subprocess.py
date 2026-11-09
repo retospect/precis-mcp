@@ -753,16 +753,17 @@ def test_run_claude_timeout_drain_is_bounded(tmp_path: Path, monkeypatch) -> Non
 
 
 def _popen_spy(monkeypatch) -> list[dict[str, object]]:
-    """Record the kwargs of every ``subprocess.Popen`` the code under test
-    makes (delegating to the real one)."""
+    """Record the kwargs of every child the code under test spawns —
+    ``MeasuredPopen`` (the runners' ``Popen`` since the rusage capture),
+    delegating to the real one."""
     seen: list[dict[str, object]] = []
-    real = subprocess.Popen
+    real = _sub.MeasuredPopen
 
     def spy(*args, **kwargs):
         seen.append(kwargs)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(_sub.subprocess, "Popen", spy)
+    monkeypatch.setattr(_sub, "MeasuredPopen", spy)
     return seen
 
 

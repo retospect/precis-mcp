@@ -91,9 +91,10 @@ verdict after `deploy` exited non-zero; `fail` writes it). `cut` refuses
 while an open release is
 recorded — except a red one whose head is an ancestor of origin/main, or one
 whose branch is already gone from origin (a pass abandoned elsewhere), which
-it marks superseded, then cuts r<N+1> at main and prints
+it marks superseded (abandoned when it never deployed, so r<N+1> cuts like
+a first cut), then cuts r<N+1> at main and prints
 "r<N> superseded by r<N+1> (red, contained in main)" or
-"superseded r<N>: branch gone". With no open release at all, a newest record
+"superseded r<N>: branch gone" ("abandoned r<N>: ..." when never deployed). With no open release at all, a newest record
 marked `failed` supersedes the same way ("superseded r<N>: state failed").
 A green or still-gating
 release keeps the refusal (`--supersede` retires it by operator call,
@@ -2413,6 +2414,8 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     dead_why = ""
     dead_state = ""
     dead_state_at: Any = None
+    # What an open record is recorded as once this cut retires it.
+    open_final = "superseded"
     if open_rel is not None:
         rel = open_rel
         if rel.get("cut_pending"):
@@ -2456,8 +2459,13 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         elif not head and not args.supersede:
             # gr593418: the branch is gone from origin (the pass was
             # abandoned elsewhere) — the open record is already dead and
-            # supersedes itself; the next cut proceeds at origin/main.
+            # supersedes itself; the next cut proceeds at origin/main. One
+            # that never deployed never shipped, so it is abandoned, not
+            # superseded: the pipelined "N+1 only at origin/main" rule
+            # exists because N may still deploy (gr611217).
             dead_rel, dead_why = open_rel, "branch gone"
+            if not (open_rel.get("deployment") or open_rel.get("deploy")):
+                open_final = "abandoned"
         else:
             why = _supersede_check(root, open_rel)
         if not args.supersede and not why and dead_rel is None:
@@ -2476,7 +2484,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             return _cut_refuse(why)
         # In memory only: the cut record's write below persists it, so a
         # refused or dry-run cut leaves the open release open.
-        _set_state(open_rel, "superseded")
+        _set_state(open_rel, open_final)
         open_rel.pop("cut_pending", None)
         if auto_superseded:
             open_rel["superseded_why"] = "red, contained in main"
@@ -2522,8 +2530,11 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     # or a second clone's stale record blocks every cut.
     n_new = max(n_new, origin_max + 1)
     if dead_rel is not None:
-        dead_rel["superseded_by"] = n_new
-        dead_rel["superseded_why"] = dead_why
+        if dead_rel["state"] == "abandoned":
+            dead_rel["abandoned_why"] = dead_why
+        else:
+            dead_rel["superseded_by"] = n_new
+            dead_rel["superseded_why"] = dead_why
     if open_rel is not None and open_rel["state"] == "superseded":
         open_rel["superseded_by"] = n_new
     branch = f"release/r{n_new}"
@@ -2626,7 +2637,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         if open_rel is not None and open_rel["state"] == "superseded":
             print(f"dry-run: would mark {open_rel['branch']} superseded")
         elif dead_rel is not None:
-            print(f"dry-run: would mark {dead_rel['branch']} superseded")
+            print(f"dry-run: would mark {dead_rel['branch']} {dead_rel['state']}")
         print(f"dry-run: would push {sha[:9]} to origin as {branch}")
         return 0
     rel = {
@@ -2661,7 +2672,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             # "exists on origin" wording maps to -1 (retry) in
             # scripts/release's cut_and_finish.
             cur["releases"].remove(rel)
-            if open_rel is not None and open_rel["state"] == "superseded":
+            if open_rel is not None and open_rel["state"] == open_final:
                 open_rel["state"] = open_state
                 if open_state_at is None:
                     open_rel.pop("state_at", None)
@@ -2669,6 +2680,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
                     open_rel["state_at"] = open_state_at
                 open_rel.pop("superseded_by", None)
                 open_rel.pop("superseded_why", None)
+                open_rel.pop("abandoned_why", None)
             if dead_rel is not None and dead_rel is not open_rel:
                 dead_rel["state"] = dead_state
                 if dead_state_at is None:
@@ -2689,7 +2701,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     del rel["cut_pending"]
     _write(state / "round.json", cur)
     if dead_rel is not None:
-        print(f"superseded r{dead_rel['n']}: {dead_why}")
+        print(f"{dead_rel['state']} r{dead_rel['n']}: {dead_why}")
     if auto_superseded:
         print(f"r{open_rel['n']} superseded by r{n_new} (red, contained in main)")
     # gr585785: a leftover release/r<N> reads in flight to release_poll and

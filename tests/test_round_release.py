@@ -1921,24 +1921,59 @@ def test_cut_keeps_refusing_a_green_or_gating_release(
     assert _rel(_round_json(rig), 1)["state"] == "cut"
 
 
-def test_cut_supersedes_an_open_release_whose_branch_left_origin(rig: Rig) -> None:
-    """gr593418: the record says open but release/r<N> is gone from origin
-    (the pass was abandoned elsewhere) — the dead record is superseded and
-    the next cut proceeds at origin/main."""
+def test_cut_abandons_a_never_deployed_release_whose_branch_left_origin(
+    rig: Rig,
+) -> None:
+    """gr593418, gr611217: the record says open but release/r<N> is gone from
+    origin (the pass was abandoned elsewhere). It never deployed, so it never
+    shipped: recorded abandoned, and the next cut proceeds at origin/main."""
     _cut(rig)
     _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
-    out = rig.round("cut")
+    out = rig.round("cut", **_fresh(rig, "c3"))
     assert out.returncode == 0, out.stderr
-    assert "superseded r1: branch gone" in out.stdout
+    assert "abandoned r1: branch gone" in out.stdout
     assert "deleted release/r1" not in out.stdout
     assert "kept release/r1" not in out.stdout
     old = _rel(_round_json(rig), 1)
-    assert old["state"] == "superseded"
-    assert old["superseded_by"] == 2
-    assert old["superseded_why"] == "branch gone"
+    assert old["state"] == "abandoned"
+    assert str(old["state_at"]).endswith("Z")
+    assert old["abandoned_why"] == "branch gone"
+    assert "superseded_by" not in old
     assert _rel(_round_json(rig), 2)["state"] == "cut"
     assert rig.origin_ref("release/r1") == ""
     assert rig.origin_ref("release/r2") == rig.shas["c3"]
+
+
+def test_cut_after_a_dead_never_deployed_release_takes_an_older_main_sha(
+    rig: Rig,
+) -> None:
+    """gr611217: an abandoned N never shipped, so the next cut is a first
+    cut: `--sha` may name any commit on main's first-parent line, not only
+    origin/main's tip."""
+    _cut(rig)
+    _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
+    older = rig.shas["c1"]
+    assert rig.origin_ref("main") == rig.shas["c3"]
+    out = rig.round("cut", "--sha", older)
+    assert out.returncode == 0, out.stderr
+    assert "cuts at origin/main" not in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "abandoned"
+    assert _rel(_round_json(rig), 2)["base"] == older
+    assert rig.origin_ref("release/r2") == older
+
+
+def test_cut_after_a_deploying_release_with_a_gone_branch_keeps_the_tip_rule(
+    rig: Rig,
+) -> None:
+    """gr611217: a record with a deployment may still ship, so the pipelined
+    rule (N+1 only at origin/main) holds even once its branch is gone."""
+    _deploying(rig)
+    _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
+    out = rig.round("cut", "--sha", rig.shas["c1"])
+    assert out.returncode == 1
+    assert f"cuts at origin/main ({rig.shas['c3'][:9]})" in out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "deploying"
+    assert rig.origin_ref("release/r2") == ""
 
 
 def test_cut_supersedes_a_failed_release_record(rig: Rig) -> None:

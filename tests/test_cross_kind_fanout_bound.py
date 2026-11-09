@@ -52,6 +52,7 @@ def test_fan_out_shares_the_dispatch_query_embedding(
     from precis.embedder import MockEmbedder
 
     rt = runtime_with_store
+    query = "zebra quoll sensor"
 
     class _CountingEmbedder(MockEmbedder):
         def __init__(self, dim: int) -> None:
@@ -59,14 +60,18 @@ def test_fan_out_shares_the_dispatch_query_embedding(
             self.calls = 0
 
         def embed_one(self, text: str) -> list[float]:
-            self.calls += 1
+            # Only the query string counts: the skill index (in the fan-out
+            # since td610272) warms its corpus through this embedder on a
+            # background thread, and those chunk embeds are not re-embeds.
+            if text == query:
+                self.calls += 1
             return super().embed_one(text)
 
     store = rt.hub.store
     assert store is not None
     emb = _CountingEmbedder(dim=store.embedding_dim())
     monkeypatch.setattr(rt.hub, "embedder", emb)
-    rt._dispatch_cross_kind("*", {"q": "zebra quoll sensor"})
+    rt._dispatch_cross_kind("*", {"q": query})
     assert emb.calls == 1
 
 

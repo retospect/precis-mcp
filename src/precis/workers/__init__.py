@@ -1,9 +1,5 @@
 """Background work: worker passes, scheduler cadences, and job executors.
 
-Elsevier acquisition requires a structured XML body (an abstract preview is
-an entitlement miss, not success); repair job:
-:mod:`.job_types.elsevier_abstract_backfill`.
-
 Derived-queue core
 -----------------------------
 Derived artifact tables are the queue: a chunk missing a ``bge-m3`` row in
@@ -42,13 +38,8 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
 Adding a claiming ref-pass: follow the recipe in :mod:`.ref_lease`, not
 hand-rolled ``claimed_by`` UPDATEs.
 
-``gripe_dispatch`` admits only projects its factory can land (currently
-``precis``, also the default for untagged gripes). Unsupported projects get
-one skip comment and never consume build slots, so unrelated repositories
-cannot starve the factory's own work.
-Its 15-minute grace period starts at the latest ``STATUS:triaged`` or
-``fix:code`` attachment (filing time only if neither is known), giving
-operators time to retract a new triage even on an old report.
+``gripe_dispatch`` admission (landable projects, the 15-minute triage grace
+period): skill ``precis-work-help``.
 
 ``run_loop`` is serial round-robin, so one slow handler starves other passes.
 This motivates scheduler leases, the separate GPU lane (``deploy/README.md``),

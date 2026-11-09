@@ -84,7 +84,10 @@ def test_edit_advertisement_allows_body_only_todo_update(
     [
         ({"view": "active", "under": 1}, "requires view"),
         ({"view": "doable", "under": 1, "args": {"under": 2}}, "disagree"),
-        ({"view": "doable", "under": "invalid"}, "must be an integer"),
+        (
+            {"view": "doable", "under": "invalid"},
+            "must be a todo id or a memory handle",
+        ),
     ],
 )
 def test_subtree_scope_rejects_invalid_or_conflicting_arguments(hub, kwargs, message):

@@ -144,7 +144,7 @@ and the skills that link to it (`see-also-by`), derived live from the
 skill graph — no stored edges, so the pointers can't drift from the
 files. `fisheye+2hop` counts what those neighbours link to in the same
 shape (`N skill via see-also`); `q='see-also'` expands one first-hop
-group, `q='skill:see-also'` a second-hop one.
+group, `q='<kind>:see-also'` (`<kind>` = skill) a second-hop one.
 
 ## The link neighborhood — one heading per ring, one line per neighbour
 

@@ -143,7 +143,10 @@ def test_semantic_mode_runs(draft: DraftHandler, hub: Hub) -> None:
     assert isinstance(hub.embedder, MockEmbedder)
     _seed_draft(draft, hub, slug="d1")
     _embed_draft(hub.live_store, "d1")
-    out = draft.search(q="carbon dioxide uptake", mode="semantic").body
+    # MockEmbedder vectors are hash-derived, so only an identical string sits
+    # inside SEMANTIC_DISTANCE_FLOOR (gr568412) — query a seeded paragraph.
+    q = "Amine functionalization improves carbon dioxide uptake."
+    out = draft.search(q=q, mode="semantic").body
     assert "draft:d1" in out  # returns ranked matches over embedded chunks
 
 

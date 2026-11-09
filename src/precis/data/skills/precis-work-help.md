@@ -83,16 +83,15 @@ A job resolves to a quest two ways: its `parent_id` chain walks up
 through live todos to the nearest ancestor that `serves` one, else its
 own meta answers (`params.quest_id`, `coordinator_state.quest_id`, or
 its structure's `quest:<id>` tag). A job that resolves to a quest but
-sits outside its served trees still joins that quest's job lines;
-platform-upkeep types with no todo parent file under qu540835 instead
-of the unassigned bucket. A todo that serves a quest directly and also
-sits inside another served root renders once, inside the larger tree.
+sits outside its served trees still joins that quest's job lines. A todo
+that serves a quest directly and also sits inside another served root
+renders once, inside the larger tree.
 
 Blocked-only quests leave the idle group and sort by who can unblock
 them (gr573557): a quest whose live leaf rows are all blocked lands in
-`needs you (N)` at the top (expanded, its line naming the unblocking
-items) when Reto can unblock at least one leaf, else in `blocked by
-other work (N)` at the bottom. Reto can unblock a leaf that carries
+`needs you (N)` at the top (its line naming the unblocking items) when
+Reto can unblock at least one leaf, else in `blocked by other work (N)`
+at the bottom. Reto can unblock a leaf that carries
 `waiting-for:reto`, is `blocked-by` an open `ask-user` todo, or is
 itself an open ask; anything else (another open todo,
 `waiting-for:fleet`, a closed gate, STATUS `blocked`) is other work.
@@ -126,7 +125,7 @@ get(kind="todo", id=540836, view="tree")  # one root in full
 ```
 
 The web `/work` page renders the same board, one collapsed line per
-quest, each row linking to `/eye/<handle>`. A signed-in caller also sees
+quest. A signed-in caller also sees
 a **Pause**/**Resume** button on each slice row and quest line: the
 twin of `tag(kind="todo", ..., add=["STATUS:paused"])` and
 `edit(kind="quest", ..., mode="pause"|"resume")`
@@ -150,8 +149,7 @@ search(kind="todo", view="asks")
 ```
 
 The web `/asks` page shows only the showstoppers and the `ask-user` /
-`needs:ruling` decisions; a bare `waiting-for:reto` row and the
-discussion rows sit behind `/asks?all=1`.
+`needs:ruling` decisions; the rest sit behind `/asks?all=1`.
 
 Argument on a row is comments on that ref. One source at a time:
 
@@ -291,14 +289,12 @@ the gripe text verbatim and picks its lane at dispatch (cheapest fit,
 free before paid; codex, which cannot reach the test gate's docker, is
 never offered `code`); the land writes `resolved: <sha>` on the gripe.
 It picks the hottest `prio` then the oldest among gripes that are `open`
-or `triaged`, tagged `fix:code`, at least 15 minutes past the latest
-`STATUS:triaged` or `fix:code` tag attachment (filing time if neither
-attachment time is known), with no live todo
-`related-to` them, and filed by a Claude Code session or a human account
+or `triaged`, tagged `fix:code`, 15+ minutes past the latest `STATUS:triaged` or `fix:code` tag
+(filing time if neither is known), with no live todo `related-to` them, and filed by a Claude Code session or a human account
 (`meta.filed_by`). Reader-intake and worker-filed gripes never enter a
 lane this way, nor does a never-close gripe (`hold:no-autoclose`: a land
 would write `resolved:` on it). Keep a gripe out with any of `fix:reto`,
-`reto:ask`, `disagreement`, `flood`, or:
+`reto:ask`, `disagreement`, `flood`, or
 
 ```python
 tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
@@ -306,9 +302,8 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 
 A hand-minted chain also counts (the `related-to` link is the marker).
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
-Every `project:` tag must name a project the factory can land (currently
-`precis`); no project tag means `precis`. Other projects get one
-`dispatch: skipped unsupported project:` comment and consume no build slot.
+A `project:` tag must name a landable project (`precis`, the default);
+others get a `dispatch: skipped unsupported project:` comment, no slot.
 
 ## What does a rescue:<class> tag mean?
 ## How do I read the rescue queue?
@@ -327,11 +322,10 @@ tags the gripe `rescue-sig:<hash>`, and each rescued todo links
 `related-to` it. An engine-class signature gripe also carries
 `cluster:dark-factory` (a plain cluster label since gr591017) but no
 `fix:code` and no agent/human `filed_by`, so it never re-enters a build
-lane by the intake door. A rescued gripe (three failed mints →
-`rescue:intake`) is its own signature gripe. The failure's evidence (job,
-step, branch, head sha, log tail, diff stat) sits as a comment on the
-rescued node; later nodes on one signature leave a line each on the
-shared gripe.
+lane. A rescued gripe (three failed mints → `rescue:intake`) is its own
+signature gripe. The failure's evidence (job, step, branch, head sha,
+log tail, diff stat) sits as a comment on the rescued node; later nodes
+on one signature leave a line each on the shared gripe.
 
 ```python
 search(kind="todo", view="rescue")
@@ -352,9 +346,8 @@ rescued node as a showstopper with `rescue:<class>` as its reason.
 Rescue is a machine verdict, not a human hold: a node parked on a human
 (`waiting-for:`, an open blocking `ask-user`, `halt`, `STATUS:paused`,
 `won't-do`) is not in rescue, and a `rescue-sig:<hash>` tag marks a
-signature gripe, never a rescued node (the colon matters). A node in
-rescue keeps its worktree and branch; the branch commit is what is being
-rescued, named on the evidence comment.
+signature gripe, never a rescued node. A node in rescue keeps its
+worktree and branch, named on the evidence comment.
 
 ## What happens to a node in rescue?
 
@@ -390,9 +383,8 @@ root, and one task node pinned to lane `claude-sub` whose brief lists the
 chain's job handles, the reading rule (read the job cards; an unreachable
 transcript is one gripe and a stop) and the bar for a gripe: a blatant
 skill- or MCP-rooted waste of five or more calls or two identical
-retries, at most three per audit, checked against open gripes first. The
-pass calls no model. The chain root gets one `audit: td<root> samples
-this chain's transcripts` comment and is never sampled twice.
+retries, at most three per audit. The pass calls no model; the chain
+root is never sampled twice.
 
 ## Can a review or a validate run on a lane without the precis MCP?
 ## Which plan nodes still need a Claude lane?
@@ -407,16 +399,14 @@ all it needs. A validate's
 `validated: <why>` first line closes it the same way; a gripe chain's
 validate body carries the gripe report verbatim. Devin fits `code`,
 `review` and `validate`; codex takes `review` and `validate` only
-(gr573563), and the review is still picked off the builder's vendor.
+(gr573563); the review is picked off the builder's vendor.
 Nodes that mint or post through the MCP stay on a Claude lane: a triage
-or slicer, a brief writer (posts `brief:`), a pcb fix. `run_slice`
-refuses a child-minting generator on an MCP-less lane before the claim.
+or slicer, a brief writer (posts `brief:`), a pcb fix; `run_slice`
+refuses a child-minting generator on an MCP-less lane.
 
-If no enabled lane offers a task's class, dispatch blocks that node on one
-`ask-coordinator` ask: "no enabled lane for class <c>; next: enable a lane
-or retarget the class". Enable an offering lane or retarget `meta.task_class`,
-then close the ask to release the node. Full lanes and temporary lane holds
-keep waiting; they do not mean the class is missing from the configuration.
+If no enabled lane offers a task's class, dispatch blocks the node on one
+`ask-coordinator` ask. Enable an offering lane or retarget
+`meta.task_class`, then close the ask. Full lanes just wait.
 
 ## What may a dispatched slice write over the MCP?
 

@@ -140,8 +140,9 @@ def test_prio_medium_on_comment_put_is_named_once(hub: Hub) -> None:
 
 
 def test_numeric_prio_tag_writes_the_column(hub: Hub) -> None:
-    """gr592664: one axis, two spellings — the tag form carries the 1..10
-    column number (``PRIO:3`` is ``prio=3``, ``PRIO:2`` needs no name)."""
+    """gr592664: one axis, two spellings — the tag form carries the column
+    number (``PRIO:3`` is ``prio=3``, ``PRIO:8`` needs no name). A gripe
+    takes only the named rungs 1/3/5/8 (td610982)."""
     h = GripeHandler(hub=hub)
     h.put(text="Synthetic numeric prio gripe", tags=["PRIO:3"])
     ref = next(
@@ -152,13 +153,13 @@ def test_numeric_prio_tag_writes_the_column(hub: Hub) -> None:
     assert ref.prio == 3
     assert "PRIO:3" not in {str(t) for t in h.store.tags_for(ref.id)}
 
-    h.put(text="Synthetic numeric prio next", tags=["PRIO:2"])
+    h.put(text="Synthetic numeric prio next", tags=["PRIO:8"])
     ref2 = next(
         r
         for r in h.store.list_refs(kind="gripe")
         if r.title == "Synthetic numeric prio next"
     )
-    assert ref2.prio == 2
+    assert ref2.prio == 8
 
 
 def test_numeric_prio_tag_on_tag_verb_writes_and_clears(hub: Hub) -> None:

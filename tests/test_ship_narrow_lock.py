@@ -862,13 +862,14 @@ def test_migrations_are_numbered_per_plugin_dir(rig: Rig) -> None:
 def test_stale_migration_mint_dies_naming_the_next_free_number(rig: Rig) -> None:
     """gr489414: the 0216 double-mint. The sibling's 0002 lands BEFORE our
     ship runs — by sync time the collision is inside our merge-base, outside
-    the in-lock guard's window; the stale-mint check must refuse and name
+    the in-lock guard's window; with the auto-renumber off
+    (PRECIS_SHIP_RENUMBER=0) the stale-mint check refuses and names
     origin/main's next free number."""
     wt = rig.worktree(
         "m", {"src/precis/migrations/0002_ours.sql": "select 2;\n", "m.txt": "m\n"}
     )
     racer_sha = rig.race({"src/precis/migrations/0002_theirs.sql": "select 3;\n"})
-    p, log = rig.ship(wt, "--quick", sleep=1)
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_SHIP_RENUMBER="0")
     rc = p.wait(timeout=120)
     out = log.read_text(encoding="utf-8")
     assert rc != 0, out
@@ -879,17 +880,106 @@ def test_stale_migration_mint_dies_naming_the_next_free_number(rig: Rig) -> None
     assert not rig.lockdir().exists()
 
 
-def test_migration_number_above_next_free_dies(rig: Rig) -> None:
+def test_stale_migration_mint_is_renumbered_at_land(rig: Rig) -> None:
+    """gr609593: the same double-mint, default settings. The sibling took 0002
+    first; our added 0002_ours.sql is git-mv-ed to main's next free 0003, the
+    file stem is rewritten wherever this branch names it (its own header, a
+    docstring), a renumber commit is made, and the ship lands."""
+    wt = rig.worktree(
+        "m",
+        {
+            "src/precis/migrations/0002_ours.sql": "-- 0002_ours.sql\nselect 2;\n"
+            "-- End of 0002_ours.sql\n",
+            "src/precis/ops.py": '"""Migration ``0002_ours.sql`` adds it."""\n',
+        },
+    )
+    rig.race({"src/precis/migrations/0002_theirs.sql": "select 3;\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    out = _finish(p, log)
+    assert "renumbered stale migration mint at land: 0002→0003" in out, out
+    files = _tree_files(rig)
+    assert "src/precis/migrations/0003_ours.sql" in files
+    assert "src/precis/migrations/0002_ours.sql" not in files
+    assert "src/precis/migrations/0002_theirs.sql" in files  # main's untouched
+    sql = rig.g(rig.primary, "show", "origin/main:src/precis/migrations/0003_ours.sql")
+    assert sql == "-- 0003_ours.sql\nselect 2;\n-- End of 0003_ours.sql"
+    ops = rig.g(rig.primary, "show", "origin/main:src/precis/ops.py")
+    assert "``0003_ours.sql``" in ops and "0002_ours" not in ops
+    # the renumber commit itself is squashed into the landed commit
+
+
+def test_two_stale_migration_mints_renumber_in_order(rig: Rig) -> None:
+    """Both adds shift by one, ascending, with no chaining of the stem
+    rewrite (0003_b -> 0004_b must not be hit by 0002_a -> 0003_a)."""
+    wt = rig.worktree(
+        "m",
+        {
+            "src/precis/migrations/0002_a.sql": "select 2;\n",
+            "src/precis/migrations/0003_b.sql": "select 3;\n",
+            "notes.txt": "0002_a then 0003_b\n",
+        },
+    )
+    rig.race({"src/precis/migrations/0002_theirs.sql": "select 9;\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    _finish(p, log)
+    assert {
+        "src/precis/migrations/0003_a.sql",
+        "src/precis/migrations/0004_b.sql",
+    } <= _tree_files(rig)
+    notes = rig.g(rig.primary, "show", "origin/main:notes.txt")
+    assert notes == "0003_a then 0004_b"
+
+
+def test_migration_number_above_next_free_is_renumbered(rig: Rig) -> None:
     """A gap mint is the same stale-base tell: 0003 against main's 0001 means
     the branch minted off a tree that predates main's current tip — or typed
-    a number by hand. Either way it renumbers to 0002 before it ships."""
+    a number by hand. It lands as 0002."""
     wt = rig.worktree("m", {"src/precis/migrations/0003_gap.sql": "select 2;\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    _finish(p, log)
+    files = _tree_files(rig)
+    assert "src/precis/migrations/0002_gap.sql" in files
+    assert "src/precis/migrations/0003_gap.sql" not in files
+
+
+def test_gap_mint_with_a_sealed_migration_edit_still_refuses(rig: Rig) -> None:
+    """Ambiguous: the branch also edits a migration already on main. That is
+    not ours to renumber around — refuse exactly as before, nothing moved."""
+    wt = rig.worktree(
+        "m",
+        {
+            "src/precis/migrations/0003_gap.sql": "select 2;\n",
+            "src/precis/migrations/0001_init.sql": "select 1; -- edited\n",
+        },
+    )
     p, log = rig.ship(wt, "--quick", sleep=1)
     rc = p.wait(timeout=120)
     out = log.read_text(encoding="utf-8")
     assert rc != 0, out
     assert "next free number" in out and "0002" in out, out
+    assert "not auto-renumbered" in out and "0001_init.sql" in out, out
     assert "0003_gap.sql" not in _tree_files(rig)  # never landed
+    assert (wt / "src/precis/migrations/0003_gap.sql").exists()  # not moved
+
+
+def test_stale_mint_with_duplicate_numbers_still_refuses(rig: Rig) -> None:
+    """Ambiguous: two of our adds share a number — which is the 'real' one is
+    the author's call. Refuse; the files stay where they are."""
+    wt = rig.worktree(
+        "m",
+        {
+            "src/precis/migrations/0003_a.sql": "select 2;\n",
+            "src/precis/migrations/0003_b.sql": "select 3;\n",
+        },
+    )
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "next free number" in out, out
+    assert "not auto-renumbered" not in out  # refused before the renumber path
+    assert (wt / "src/precis/migrations/0003_a.sql").exists()
+    assert (wt / "src/precis/migrations/0003_b.sql").exists()
 
 
 def test_contiguous_migrations_at_next_free_land(rig: Rig) -> None:

@@ -1860,7 +1860,7 @@ def _mint_fix_chain_ask(
         "builder gets one brief.\n\n"
         f"Chain, oldest first:\n{items or '- (chain unreadable)'}\n\n"
         f"Newest findings (review td{n.id} of {handle}):\n{findings}\n\n"
-        "Next: mint one builder carrying the design call as its `brief:`, "
+        "To resolve: mint one builder carrying the design call as its `brief:`, "
         "remove `waiting-for:coordinator` when the plan may proceed, and "
         "close this ask `acknowledged`."
     )

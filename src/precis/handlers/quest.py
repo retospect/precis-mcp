@@ -883,6 +883,10 @@ class QuestHandler(NumericRefHandler):
                 "page_size",
                 "offset",
                 "format",
+                # view='replay' baseline knobs (td610893)
+                "trials",
+                "seed",
+                "top_frac",
             }
         ),
     }

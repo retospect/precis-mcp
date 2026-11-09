@@ -581,8 +581,9 @@ def test_cut_only_supersedes_an_open_record_whose_branch_left_origin(
     rig: Rig, owned: bool
 ) -> None:
     """gr593418: an open record whose release/r<N> is gone from origin is
-    dead, not in flight — --cut-only lets `round cut` supersede it and
-    cuts the next release at origin/main, owned marker or not."""
+    dead, not in flight — --cut-only lets `round cut` retire it and cuts
+    the next release at origin/main, owned marker or not. It never
+    deployed, so it is recorded abandoned, not superseded (gr611217)."""
     c2 = rig.shas["c2"]
     assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
     if not owned:
@@ -590,11 +591,11 @@ def test_cut_only_supersedes_an_open_record_whose_branch_left_origin(
     _git(rig.origin, "update-ref", "-d", "refs/heads/release/r1")
     out = _release(rig, "--cut-only", *FAST)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert "superseded r1: branch gone" in out.stdout
+    assert "abandoned r1: branch gone" in out.stdout
     rel = _rel(_round_json(rig), 1)
-    assert rel["state"] == "superseded"
-    assert rel["superseded_by"] == 2
-    assert rel["superseded_why"] == "branch gone"
+    assert rel["state"] == "abandoned"
+    assert rel["abandoned_why"] == "branch gone"
+    assert "superseded_by" not in rel
     c3 = rig.shas["c3"]
     assert f"RELEASE_CUT: r2 {c3}" in out.stdout.splitlines()
     assert rig.origin_ref("release/r1") == ""

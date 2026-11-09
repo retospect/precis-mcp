@@ -13,6 +13,7 @@ import pytest
 
 from precis import route_log
 from precis.store import Store
+from precis.utils.dispatch_score import SCORE_META_KEY
 from precis.utils.llm import recipes
 from precis.utils.llm.operations import LLM_OPERATIONS
 from precis.utils.llm.recipes import Recipe
@@ -23,6 +24,7 @@ from precis.utils.llm.router import (
     _route_features,
     _serialize_request,
 )
+from precis.workers.auto_gripe import AUTO_SCORE
 from precis.workers.recipe_gap import run_recipe_gap
 
 
@@ -257,7 +259,8 @@ def test_recipe_gap(existing: tuple[int] | None, expected: int) -> None:
     assert store.insert_ref.call_count == expected
     if expected:
         assert store.insert_ref.call_args.kwargs["meta"] == {
-            "fingerprint": "recipe-gap:missing"
+            "fingerprint": "recipe-gap:missing",
+            SCORE_META_KEY: AUTO_SCORE,
         }
 
 

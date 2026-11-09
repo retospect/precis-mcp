@@ -134,7 +134,7 @@ def test_gripe_put_prio_request_isolation(hub, monkeypatch):
         handler,
         "_create",
         "request-a",
-        lambda: handler.put(text="request-a", prio=2),
+        lambda: handler.put(text="request-a", prio=3),
         lambda: handler.put(text="request-b", prio=8),
     )
     # The gripe create ack carries the id in its body ("created gripe id=N").
@@ -142,7 +142,7 @@ def test_gripe_put_prio_request_isolation(hub, monkeypatch):
     ids = [int(m.group(1)) for m in matches if m is not None]
     assert len(ids) == 2
     refs = [handler.store.get_ref(kind="gripe", id=i) for i in ids]
-    assert [r.prio for r in refs if r is not None] == [2, 8]
+    assert [r.prio for r in refs if r is not None] == [3, 8]
 
 
 def _s2_handler(hub, store, monkeypatch, *, papers=None):

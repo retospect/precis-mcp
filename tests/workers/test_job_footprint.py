@@ -15,6 +15,7 @@ fixes ``TestIsolation`` pins.
 
 from __future__ import annotations
 
+import resource
 import subprocess
 import sys
 import threading
@@ -25,6 +26,11 @@ import pytest
 from precis.store.store import Store
 from precis.utils import job_footprint
 from precis.workers.executors import _common
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only resource.getrusage peak RSS",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -60,8 +66,23 @@ def _footprint(store: Store, ref_id: int) -> dict:
 #: A child that burns real CPU (~1s of utime on a typical host).
 _BURN_CHILD = "s = 0\nfor i in range(30_000_000):\n    s += i\n"
 
-#: A child whose peak RSS dwarfs a trivial python -c (~400 MiB payload).
-_FAT_CHILD = "import time\nb = bytearray(400 << 20)\ntime.sleep(0.3)\n"
+
+def _fat_child_above_parent_peak() -> str:
+    """A child whose peak RSS dwarfs a trivial ``python -c`` (>=400 MiB
+    payload), sized past this process's own RSS high-water.
+
+    Linux ``exec`` folds the *parent's* mm high-water into the child's
+    ``ru_maxrss`` (the child shares the parent's mm until exec under
+    ``vfork``), so a trivial child spawned from a heavy pytest worker
+    reads as big as the worker. The isolation under test is "B does not
+    inherit A's peak", which only shows when A's payload clears that
+    parent floor by more than the 200 MiB the assertion demands.
+    """
+    parent_mb = job_footprint.ru_maxrss_mb(
+        float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    )
+    payload_mb = max(400, int(parent_mb) + 300)
+    return f"import time\nb = bytearray({payload_mb} << 20)\ntime.sleep(0.3)\n"
 
 
 def _measured_child(code: str = "pass") -> None:
@@ -216,7 +237,7 @@ class TestIsolation:
         for B."""
         job_footprint.begin(1)
         job_footprint.bind(1)
-        _measured_child(_FAT_CHILD)
+        _measured_child(_fat_child_above_parent_peak())
         a = job_footprint.take(1)
         job_footprint.unbind()
 
