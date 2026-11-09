@@ -1833,13 +1833,13 @@ def test_no_enabled_lane_still_asks(
     assert "rescue:builder" not in _open_tags(store, task)
 
 
-def test_no_commit_failure_goes_straight_to_rescue(
+def test_no_commit_moot_log_tail_drops_the_plan(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1a F4: a clean-exit failure that left no commit on the
-    branch (``meta.no_commit``) is the LAST attempt — no ladder rung can
-    teach a session to write what it chose not to — so the node enters
-    rescue after one attempt, its ``moot:`` line in the evidence."""
+    """gr602896: a failed no-commit job whose log tail carries a
+    ``moot:`` line is a dropped plan, not a rescue — the verdict step
+    closes the node done tagged ``verdict:moot`` and the moot close
+    takes the root won't-do; no gripe, no ask, no retry, once."""
     use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -1854,24 +1854,48 @@ def test_no_commit_failure_goes_straight_to_rescue(
         meta={"no_commit": True},
     )
     res = pd.run_pass(store)
-    # One attempt spent the whole road: rescue, never a climb or an ask.
-    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
-    assert "rescue:builder" in _open_tags(store, task)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    assert _status(store, task) == "done"
+    assert _status(store, mint.root_id) == "won't-do"
     assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
-    # The session's verdict line reaches the evidence on the node.
+    # The verdict close is recorded on the node.
     assert any(
-        "moot: gr123 already fixed on main" in c for c in _todo_comments(store, task)
+        "closed on verdict `moot: gr123 already fixed on main`" in c
+        for c in _todo_comments(store, task)
     )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
 
 
-def test_no_commit_lane_gap_ask_carries_the_verdict_line(
+def test_no_commit_failure_without_a_verdict_still_rescues(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1a F4: a no-commit failure that goes to the ask instead
-    (no enabled lane — rescue needs a lane to diagnose on) carries the
-    session's first ``moot:``/``no-op:`` line in the ask body."""
+    """td584381 S1a F4 unchanged: a clean-exit failure with no verdict
+    anywhere is still the LAST attempt — straight to rescue."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit on slice/td0 ahead of "
+        "origin/main (nothing to land)\n--- log tail ---\nexit 0\n",
+        lane="devin",
+        model="swe-2-high",
+        meta={"no_commit": True},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+
+
+def test_no_commit_noop_log_tail_closes_the_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr602896: a failed no-commit job whose log tail carries a
+    ``no-op:`` line closes the node done untagged — the plan goes on —
+    no ask even where no lane could retry."""
     dead = L.Lane(
         name="devin",
         adapter="devin_tree",
@@ -1897,9 +1921,10 @@ def test_no_commit_lane_gap_ask_carries_the_verdict_line(
         meta={"no_commit": True},
     )
     res = pd.run_pass(store)
-    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
-    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
-    assert "no-op: docs already match the code" in _body_text(store, ask)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert _status(store, task) == "done"
+    assert _status(store, mint.root_id) == "done"
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
 def test_retry_cap_mints_exactly_one_ask(
@@ -3878,18 +3903,17 @@ class _PollCtx:
         self.status = "failed"
 
 
-def test_no_commit_rescue_reads_the_verdict_from_the_handoff(
+def test_no_commit_handoff_moot_drops_the_plan(
     store: Store,
 ) -> None:
-    """td584381 S1d: a JSON-log adapter parses the session's result out
-    of the raw log, so the job's event text can miss the ``moot:`` line —
-    the posted ``handoff:`` comment still carries it and the rescue
-    evidence shows it (the log tail keeps precedence when it has one)."""
+    """gr602896: a JSON-log adapter parses the session's result out of
+    the raw log, so the job's event text can miss the ``moot:`` line —
+    the posted ``handoff:`` comment still carries it and the tick drops
+    the plan on it (the incident's exact shape)."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     # The job's event text carries NO ``moot:`` substring — the verdict
-    # lives only in the handoff, so ``_handoff_verdict`` stubbed out
-    # fails this test for real (review round 2).
+    # lives only in the handoff.
     _failed_job(
         store,
         task,
@@ -3902,26 +3926,82 @@ def test_no_commit_rescue_reads_the_verdict_from_the_handoff(
         "handoff: moot: gr1 already fixed by f628e681f\n\nChecked origin/main.",
     )
     res = pd.run_pass(store)
-    assert res.rescued == 1 and res.asks == 0
-    assert "rescue:builder" in _open_tags(store, task)
-    # The verdict must land in the rescue evidence's ``step:`` line —
-    # the log tail has no ``moot:`` to give a false pass.
-    evidence = [c for c in _todo_comments(store, task) if c.startswith("rescue:")]
-    assert evidence, "no rescue evidence comment"
-    steps = [ln for c in evidence for ln in c.splitlines() if ln.startswith("step: ")]
-    assert steps, "no step: line in the rescue evidence"
-    assert any(
-        "the session's verdict: moot: gr1 already fixed by f628e681f" in ln
-        for ln in steps
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    assert _status(store, task) == "done"
+    assert _status(store, mint.root_id) == "won't-do"
+
+
+def test_no_commit_hand_posted_moot_drops_the_plan(
+    store: Store,
+) -> None:
+    """gr602896 (the incident's comment 5): a ``moot:`` posted by hand
+    as a bare comment after the failed job counts — the next tick drops
+    the plan even though the job was recorded failed."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit\n--- log tail ---\nexit 0",
+        meta={"no_commit": True},
+    )
+    _todo_comment(store, task, "moot: gr1 already fixed by b258df7ae")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    assert _status(store, task) == "done"
+    assert _status(store, mint.root_id) == "won't-do"
+
+
+def test_unverified_moot_writes_the_verdict_to_the_gripe(
+    store: Store,
+) -> None:
+    """gr602896: a moot close with no verified sha leaves its record on
+    the plan's gripe — ``<verdict line> — plan dropped`` — instead of
+    the ``resolved:`` a verified sha would earn."""
+    from precis.plans.nodes import MOOT_TAG
+
+    gid = int(insert_gripe(store, "the flaky gate", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build = mint.ids["build"]
+    _todo_comment(store, build, f"moot: gr{gid} already fixed by b258df7ae")
+    _mark_done(store, build)
+    store.add_tag(build, Tag.open(MOOT_TAG), set_by="system")
+
+    res = pd.run_pass(store)
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert _status(store, mint.root_id) == "won't-do"
+    # No ``resolved:`` — the verdict line is the record, once.
+    texts = [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert texts == [
+        f"moot: gr{gid} already fixed by b258df7ae — plan dropped (td{build})"
+    ]
+    res2 = pd.run_pass(store)
+    assert (res2.asks, res2.dispatched) == (0, 0)
+    assert (
+        len(
+            [
+                c
+                for c in store.chunks.list_chunks_for_ref(gid)
+                if c.chunk_kind == "gripe_comment"
+            ]
+        )
+        == 1
     )
 
 
-def test_no_commit_ask_reads_the_handoff_verdict(
+def test_no_commit_handoff_moot_never_asks(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1d review round 1: the cap ask's body carries the
-    ``moot:`` line the log tail missed — read off the newest
-    ``handoff:`` comment (the ``_mint_ask`` path)."""
+    """gr602896: where the old code minted a cap ask carrying the
+    ``moot:`` line, the verdict now drops the node — no ask even when
+    no lane could retry."""
     dead = L.Lane(
         name="devin",
         adapter="devin_tree",
@@ -3949,9 +4029,10 @@ def test_no_commit_ask_reads_the_handoff_verdict(
         "handoff: moot: gr1 already fixed by f628e681f\n\nChecked origin/main.",
     )
     res = pd.run_pass(store)
-    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
-    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
-    assert "moot: gr1 already fixed by f628e681f" in _body_text(store, ask)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
+    assert _status(store, task) == "done"
+    assert _status(store, mint.root_id) == "won't-do"
+    assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
 def test_handoff_verdict_scopes_to_the_newest_attempt(

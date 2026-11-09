@@ -70,6 +70,18 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    descendants (the prod gate, the validate — the same close a task
    moot runs, re-swept each pass while a straggler's live job defers
    it), so the root settles and no ask files (gr575912).
+   **Verdicts** — a node carrying a ``no-op:``/``moot:``/``validated:``
+   line on its newest ``handoff:``, posted by hand as a comment, or in
+   its newest failed job's event text is dropped before the moot close
+   (gr602896): a job recorded ``failed`` is no bar — the verdict IS the
+   result. The node closes done, a ``moot:`` also tagged
+   ``verdict:moot`` so the moot close drops its chain this pass; a
+   ``moot:`` pinned to a ``gr<N>`` other than the plan's gripe is never
+   this plan's verdict, and nodes under a ``release-pass`` root keep
+   the fix loop's own rulings. An unverified or hand-posted moot has
+   no sha for a ``resolved:`` — the plan's gripe gets
+   ``<verdict> — plan dropped`` instead, so the record of why the plan
+   went away survives.
 3. **phases** — first reopens a generator that is ``STATUS:done`` while a
    child is still open (a generator's session mints children, it does not
    close the node; counted as ``reopened``). Then closes every node whose work
@@ -249,7 +261,7 @@ from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans import templates as _templates
 from precis.plans.logbook import log_plan_event
-from precis.plans.nodes import MINT_HOLD_TAG, MOOT_TAG, node_kind
+from precis.plans.nodes import MINT_HOLD_TAG, MOOT_TAG, any_verdict, node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -443,6 +455,10 @@ _MD_MARKERS = " \t-*#>"
 _LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 _TD_FROM_RE = re.compile(r"\s*td(\d+)\s*")
 _SHA_FROM_RE = re.compile(r"\s*sha:([0-9a-f]{7,40})\s*", re.IGNORECASE)
+#: A ``gr<N>`` token a ``moot:`` verdict pins its claim to (gr602896:
+#: one naming a gripe other than the plan's is never this plan's
+#: verdict — the S1d rejection, kept for the trusted close).
+_GRIPE_TOKEN_RE = re.compile(r"\bgr(\d+)\b", re.IGNORECASE)
 
 #: Doable exclusions the tick honours: the shared registry minus
 #: ``child-failed:`` — plan retries are the tick's, not the bubble's —
@@ -817,6 +833,12 @@ class _Writer:
             n.open_tags.pop(value, None)
             if not self.dry_run:
                 self.store.remove_tag(n.id, Tag.open(value))
+
+    def add_tags(self, n: _Node, values: list[str]) -> None:
+        for value in values:
+            n.open_tags.setdefault(value, datetime.now(UTC))
+            if not self.dry_run:
+                self.store.add_tag(n.id, Tag.open(value), set_by="system")
 
     def comment(self, n: _Node, text: str) -> None:
         if self.dry_run:
@@ -1743,6 +1765,93 @@ def _moot_descendants(plan: _Plan, n: _Node) -> list[_Node]:
     return sorted(out, key=lambda m: m.id)
 
 
+def _verdict_comment(
+    store: Any, todo_id: int, *, since: datetime | None = None
+) -> tuple[str, str] | None:
+    """``(kind, why)`` of the verdict the todo's comments carry
+    (gr602896): the newest ``handoff:`` — prefix stripped first, the
+    line read by :func:`precis.plans.nodes.any_verdict` — or a
+    ``no-op:``/``moot:``/``validated:`` line posted by hand as a bare
+    comment. Comments older than ``since`` (the newest attempt job's
+    ``created_at``) never count — an earlier attempt's verdict is not
+    this one's; a comment whose ``created_at`` cannot be read fails
+    closed like :func:`_handoff_verdict`. Newest first, first hit wins."""
+    for c in _comments(store, todo_id):
+        created = getattr(c, "created_at", None)
+        if since is not None and (not isinstance(created, datetime) or created < since):
+            continue
+        body = str(c.text).strip()
+        if body.lower().startswith("handoff:"):
+            body = body[len("handoff:") :]
+        hit = any_verdict(body)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _foreign_verdict(store: Any, n: _Node, verdict: tuple[str, str]) -> bool:
+    """The ``moot:`` verdict pins its claim to a ``gr<N>`` that is NOT
+    the plan's gripe (gr602896): it is another plan's statement, never
+    this one's — the drop must not read it."""
+    kind_, why = verdict
+    if kind_ != "moot":
+        return False
+    named = _GRIPE_TOKEN_RE.search(why)
+    if named is None:
+        return False
+    from precis.workers.job_types import land_slice as _land_slice
+
+    try:
+        gid = _land_slice._plan_gripe(store, f"plan:{n.root}")
+    except Exception:  # an unresolvable gripe proves no conflict
+        log.warning("plan_dispatch: plan gripe lookup for td%s raised", n.root)
+        return False
+    return gid is not None and int(named.group(1)) != gid
+
+
+def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """A node carrying a verdict is dropped here, ahead of the moot
+    close (gr602896): a ``no-op:``/``moot:``/``validated:`` line on the
+    newest ``handoff:``, posted by hand as a comment, or in the newest
+    failed job's event text — a job recorded ``failed`` is no bar, the
+    run_slice that read the verdict as a failure was the bug (jo602411:
+    four escalation artefacts for a plan that should have dropped).
+    The node closes done — its verdict IS the result — a ``moot:``
+    also tagged ``verdict:moot`` for ``_step_moot``'s plan drop. A live
+    job defers to the next tick; a node under a ``release-pass`` root
+    keeps the fix loop's own rulings; a ``moot:`` pinned to another
+    gripe is never this plan's."""
+    for n in plan.todos():
+        if _closed(n) or n.id == n.root or _is_ask_node(n):
+            continue
+        if plan.live_job(n):
+            continue
+        root = plan.nodes.get(n.root)
+        if root is not None and "release-pass" in root.open_tags:
+            continue
+        ended = _attempt_jobs(plan, n)
+        last = ended[-1] if ended else (plan.jobs(n)[-1] if plan.jobs(n) else None)
+        verdict = _verdict_comment(
+            store, n.id, since=last.created_at if last is not None else None
+        )
+        if verdict is None and last is not None and last.status == "failed":
+            verdict = any_verdict(_job_event_text(store, last.id))
+        if verdict is None or _foreign_verdict(store, n, verdict):
+            continue
+        kind_, why = verdict
+        w.set_status(n, "done")
+        if kind_ == "moot":
+            w.add_tags(n, [MOOT_TAG])
+        w.comment(
+            n,
+            f"plan_dispatch: closed on verdict `{kind_}: {why[:300]}`",
+        )
+        res.notes.append(
+            f"td{n.id}: verdict `{kind_}: {why[:200]}` — closed done"
+            + (", tagged for the moot close" if kind_ == "moot" else "")
+        )
+
+
 def _is_ask_node(m: _Node) -> bool:
     """An ask todo (``meta.ask`` or the ``ask-user`` tag): a question to a
     human, not build work the moot close waits on."""
@@ -1757,6 +1866,50 @@ def _informational_ask(m: _Node) -> bool:
     (gr589823). An ask that names a todo handle in ``blocks`` still does."""
     ask = m.meta.get("ask")
     return isinstance(ask, dict) and ask.get("blocks") == "nothing"
+
+
+def _gripe_verdict_note(store: Any, gid: int, n: _Node, mv_line: Any) -> str | None:
+    """gr602896: an unverified or hand-posted ``moot:`` carries no sha a
+    ``resolved:`` could land on — the gripe gets the verdict line and
+    ``— plan dropped`` instead, the record of why its plan went away.
+    Written once (a newest comment already carrying the note means the
+    last tick wrote it): the close's own order — note before the tag
+    drops — makes a mid-write raise safe to retry. Returns the note for
+    ``res.notes``, ``None`` when already written."""
+    comments = [
+        c
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment" and c.text
+    ]
+    newest_text = (
+        str(max(comments, key=lambda c: (int(c.ord), int(c.id))).text)
+        if comments
+        else ""
+    )
+    if "plan dropped" in newest_text:
+        return None
+    verdict = _verdict_comment(store, n.id)
+    line = str(mv_line or "") or (
+        f"{verdict[0]}: {verdict[1]}" if verdict else f"td{n.id} reported `moot:`"
+    )
+    ord_ = (
+        max(
+            (int(c.ord) for c in store.chunks.list_chunks_for_ref(gid)),
+            default=0,
+        )
+        + 1
+    )
+    store.chunks.insert_chunks(
+        gid,
+        [
+            ChunkInsert(
+                ord=ord_,
+                text=f"{line[:300]} — plan dropped (td{n.id})",
+                meta={"chunk_kind": "gripe_comment"},
+            )
+        ],
+    )
+    return f"gripe gr{gid}: verdict noted — {line[:120]}"
 
 
 def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
@@ -1850,6 +2003,8 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                     res.notes.append(
                         f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}"
                     )
+                elif gid is not None:
+                    res.notes.append(f"would note the moot verdict on gr{gid}")
                 continue
             if sha is not None and gid is not None:
                 # The verified moot IS the fix's land — resolve the
@@ -1911,6 +2066,16 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                             f"running — asked in td{ask_id}"
                         )
                     continue
+            elif gid is not None:
+                # gr602896: no verified sha — the gripe still gets the
+                # record (``<verdict> — plan dropped``). Best-effort:
+                # a note that cannot write must not hold the drop.
+                try:
+                    note = _gripe_verdict_note(store, gid, n, mv_line)
+                    if note:
+                        res.notes.append(note)
+                except Exception as exc:
+                    res.notes.append(f"td{n.id}: gripe verdict note failed ({exc})")
             if root is not None and not _closed(root):
                 w.comment(root, f"plan_dispatch: plan closed — {why}")
                 w.set_status(root, "won't-do")
@@ -1924,6 +2089,8 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                 res.notes.append(
                     f"would resolve gripe gr{gid} on verified moot sha {sha[:9]}"
                 )
+            elif gid is not None:
+                res.notes.append(f"would note the moot verdict on gr{gid}")
             continue
         if not stamped and sha is not None and gid is not None:
             # Generator path: the close ran above, so a raise here is
@@ -1940,6 +2107,16 @@ def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
                     f"td{n.id}: gripe stamp failed ({exc}); moot close deferred"
                 )
                 continue
+        elif gid is not None and sha is None:
+            # gr602896: no verified sha — the gripe still gets the
+            # record (``<verdict> — plan dropped``). Best-effort: a note
+            # that cannot write must not hold the drop.
+            try:
+                note = _gripe_verdict_note(store, gid, n, mv_line)
+                if note:
+                    res.notes.append(note)
+            except Exception as exc:
+                res.notes.append(f"td{n.id}: gripe verdict note failed ({exc})")
         w.remove_tags(n, [MOOT_TAG])
         root = plan.nodes.get(n.root)
         raise_alert(
@@ -4270,6 +4447,7 @@ def run_pass(
         _step_reviews(store, plan, w, res, now, lane_table, rules)
         _step_reopen(plan, w, res)
         _step_rearm(plan, w, res)
+        _step_verdicts(store, plan, w, res)
         _step_moot(store, plan, w, res)
         _step_phases(plan, w, res)
         _step_ci_rerun(store, plan, w, res, now)

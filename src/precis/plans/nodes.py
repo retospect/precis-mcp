@@ -346,3 +346,15 @@ def generator_verdict(result: str | None) -> tuple[str, str] | None:
             m = _VERDICT_RE.match(line)
             return (m.group(1).lower(), m.group(2)) if m else None
     return None
+
+
+def any_verdict(text: str | None) -> tuple[str, str] | None:
+    """``(kind, why)`` of the first line in ``text`` carrying a
+    :data:`GENERATOR_VERDICTS` verdict — :func:`generator_verdict`
+    without the first-line rule (gr602896): the verdict in a ``handoff:``
+    comment or a job's log tail may sit under prose."""
+    for line in (text or "").splitlines():
+        m = _VERDICT_RE.match(line)
+        if m:
+            return (m.group(1).lower(), m.group(2))
+    return None

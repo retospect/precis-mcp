@@ -91,8 +91,18 @@ that holds the lane's credentials with ``params.target_node``):
   gripe's text names must exist on main.
   Verified, the todo closes done tagged ``verdict:moot`` and the job
   carries ``meta.moot_verified = {sha, line}`` so the tick resolves the
-  plan's gripe on that sha exactly as a land does; unverified, the
-  no-commit exit is the failure below. The release-fix loop's fix
+  plan's gripe on that sha exactly as a land does. Unverified, the
+  verdict still closes — the gates above only decide whether the gripe
+  may be stamped ``resolved:`` (gr602896: a cross-plan fix names its
+  own plan's td, never this one's gripe, so a true claim can never
+  pass — jo602411's ``moot:`` read as a builder failure and escalated
+  four artefacts): any ``no-op:``/``moot:``/``validated:`` line in the
+  result or the newest comments closes the todo done, a ``moot:``
+  tagged ``verdict:moot`` so the tick drops the plan and notes the
+  verdict on the gripe — except a ``moot:`` pinned to a different
+  ``gr<N>`` than the plan's, which is never this plan's verdict. Only
+  a no-commit exit carrying no verdict anywhere is the failure below.
+  The release-fix loop's fix
   node (``blocked-by`` a live ``ci_red_digest`` under a
   ``release-pass`` root) gets a weaker ruling INSTEAD
   (:func:`_fix_moot`, gr597599 — the r256 stall: the fix already on
@@ -173,7 +183,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
-from precis.plans.nodes import MOOT_TAG, generator_verdict, node_kind
+from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types._slice_adapters import (
@@ -2782,6 +2792,58 @@ def _verified_moot(
     return {"sha": sha, "line": line[:300]}
 
 
+def _posted_verdict(store: Any, todo_id: int) -> tuple[str, str] | None:
+    """``(kind, why)`` of the verdict in the todo's newest comments
+    (gr602896): the ``handoff:`` comment the poll just posted (the
+    session's own final text) or a verdict line posted by hand,
+    whichever is newest. Comments are read newest-first; the scan stops
+    at the SECOND ``handoff:``/``brief:`` marker (the previous attempt's
+    boundary) — a bare verdict comment between the two markers is a
+    ruling on this attempt, anything older is not."""
+    chunks = sorted(
+        (
+            c
+            for c in _todo_chunks(store, todo_id)
+            if c.chunk_kind == _COMMENT_KIND and c.text
+        ),
+        key=lambda c: (int(c.ord), int(getattr(c, "id", 0))),
+        reverse=True,
+    )
+    boundary_seen = False
+    for c in chunks:
+        body = str(c.text).strip()
+        lowered = body.lower()
+        handoff = lowered.startswith("handoff:")
+        if handoff or lowered.startswith("brief:") or body == _HANDOFF_WITHHELD:
+            if boundary_seen:
+                break
+            boundary_seen = True
+        hit = any_verdict(body[len("handoff:") :] if handoff else body)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _foreign_moot(store: Any, todo_id: int, line: str) -> bool:
+    """The ``moot:`` line pins the verdict to a ``gr<N>`` that is NOT the
+    plan's gripe — it is another plan's statement, never this one's
+    (gr602896: the S1d rejection, kept for the trusted close)."""
+    named = _MOOT_GRIPE_RE.search(line)
+    if named is None:
+        return False
+    root = _plan_root(store, todo_id)
+    if root is None:
+        return False
+    from precis.workers.job_types import land_slice as _land_slice
+
+    try:
+        gid = _land_slice._plan_gripe(store, f"plan:{root}")
+    except Exception:  # an unresolvable gripe proves no conflict
+        log.warning("run_slice: plan gripe lookup for td%s raised", todo_id)
+        return False
+    return gid is not None and int(named.group(1)) != gid
+
+
 def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
     """``{"kind", "line"}`` (plus ``"sha"`` on a moot) when the
     release-fix loop's marker lets the fix node close with no commit
@@ -3512,6 +3574,24 @@ def poll(ctx: Any, handle: Any) -> bool:
             if verdict is not None and verdict[0] == "validated" and no_commit is None
             else None
         )
+        # gr602896: the fallback verdict read — anywhere in the result
+        # (a lane may put prose over the line) or the newest comments
+        # (a verdict posted by hand). The release-fix node is out: its
+        # ``_fix_moot``/``norepro`` rulings own the verdict there — a
+        # ``verdict:moot`` tag would kill the release plan it is fixing.
+        found = (
+            None
+            if fix_node
+            else any_verdict(result) or _posted_verdict(ctx.store, todo_id)
+        )
+        if (
+            found is not None
+            and found[0] == "moot"
+            and no_commit is None
+            and _foreign_moot(ctx.store, todo_id, f"{found[0]}: {found[1]}")
+        ):
+            # A ``moot:`` pinned to another gripe is not this plan's.
+            found = None
         if verified is not None:
             # td584381 S1d (td584601): the session found the fix already
             # on main and named a sha the worker could verify. That is a
@@ -3594,6 +3674,28 @@ def poll(ctx: Any, handle: Any) -> bool:
             # ``moot:`` is no verdict any more — it needs the verified sha
             # above (S1d); a document node keeps its trust.
             kind_, why = verdict
+            moot = kind_ == "moot"
+            land = False
+            close_todo(
+                ctx.store,
+                todo_id,
+                str(lane) if lane else None,
+                tags=(MOOT_TAG,) if moot else (),
+            )
+            summary.append(
+                f"Land: none, by verdict "
+                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                f"td{todo_id} "
+                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+            )
+        elif found is not None:
+            # gr602896: a verdict anywhere — a ``moot:`` the sha gates
+            # could not verify (a cross-plan fix names its own plan's td,
+            # never this one's gripe — jo602411), a verdict line under
+            # prose, or one posted into the comments — still closes the
+            # node. The S1d gates only decide whether the gripe may be
+            # stamped ``resolved:`` on a sha; the verdict itself counts.
+            kind_, why = found
             moot = kind_ == "moot"
             land = False
             close_todo(

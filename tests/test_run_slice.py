@@ -3740,8 +3740,8 @@ def test_poll_no_commit_exit_stamps_the_job(seams: dict[str, Any]) -> None:
     stamps ``meta.no_commit`` on the failed job — the durable mark the
     tick reads to send the node straight to rescue; a ``no-op:``/
     ``validated:`` verdict exit and an ordinary red exit stamp nothing
-    (since S1d a ``moot:`` claim on a code node must verify first — an
-    unverified one stamps ``no_commit`` like any uncommitted exit)."""
+    (gr602896: a ``moot:`` claim closes too — only a no-commit exit
+    carrying no verdict anywhere is a failure)."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -3852,28 +3852,39 @@ def test_poll_verified_moot_closes_and_stamps_the_sha(
     [
         # The sha's message names a ``td`` of the plan's chain instead of
         # the gripe handle — the factory's subjects carry ``(td<build>)``.
-        ("moot: already fixed by f628e681f", "fix(x): y (td42)", 0, 0, True),
-        ("moot: already fixed by f628e681f", "fix(x): y (td50)", 0, 0, True),
-        ("moot: already fixed by f628e681f", "fix(x): y (td43)", 0, 0, True),
+        ("moot: already fixed by f628e681f", "fix(x): y (td42)", 0, 0, "verified"),
+        ("moot: already fixed by f628e681f", "fix(x): y (td50)", 0, 0, "verified"),
+        ("moot: already fixed by f628e681f", "fix(x): y (td43)", 0, 0, "verified"),
         # A 7-char sha verifies.
-        ("moot: gr7 already fixed by abc1234", "fix(x): y (gr7)", 0, 0, True),
-        # An ancestor sha whose message names neither handle — verified
-        # before review round 1, unverified now.
-        ("moot: gr7 already fixed by f628e681f", "fix(x): y (td999)", 0, 0, False),
+        ("moot: gr7 already fixed by abc1234", "fix(x): y (gr7)", 0, 0, "verified"),
+        # An ancestor sha whose message names neither handle — the
+        # gr602896 incident shape: the claim is true but unprovable,
+        # the verdict still closes (no ``resolved:`` stamp).
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (td999)", 0, 0, "trusted"),
         # A moot line pinned to a DIFFERENT gripe is rejected even when
-        # the sha's message names the plan gripe.
-        ("moot: gr99 already fixed by f628e681f", "fix(x): y (gr7)", 0, 0, False),
-        # The moot line names no sha at all.
-        ("moot: gr7 looks already fixed", "fix(x): y (gr7)", 0, 0, False),
-        # An uppercase sha is no candidate — fails closed.
-        ("moot: gr7 already fixed by F628E681F", "fix(x): y (gr7)", 0, 0, False),
-        # The named sha is no ancestor of origin/main.
-        ("moot: gr7 already fixed by f628e681f", "fix(x): y (gr7)", 1, 0, False),
-        # The named test file is missing on main (extra gate).
-        ("moot: gr7 already fixed by f628e681f", "fix(x): y (gr7)", 0, 1, False),
+        # the sha's message names the plan gripe — never this plan's
+        # verdict, so the no-commit failure stands.
+        ("moot: gr99 already fixed by f628e681f", "fix(x): y (gr7)", 0, 0, "failed"),
+        # The moot line names no sha at all — nothing to verify, the
+        # verdict still closes.
+        ("moot: gr7 looks already fixed", "fix(x): y (gr7)", 0, 0, "trusted"),
+        # An uppercase sha is no candidate — the verdict still closes.
+        ("moot: gr7 already fixed by F628E681F", "fix(x): y (gr7)", 0, 0, "trusted"),
+        # The named sha is no ancestor of origin/main — the verdict
+        # still closes.
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (gr7)", 1, 0, "trusted"),
+        # The named test file is missing on main — the verdict still
+        # closes.
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (gr7)", 0, 1, "trusted"),
         # ``gr`` inside another word is no gripe token — the line names
         # no ``gr<N>``, so the message check alone verifies.
-        ("moot: group7 already fixed by f628e681f", "fix(x): y (gr7)", 0, 0, True),
+        (
+            "moot: group7 already fixed by f628e681f",
+            "fix(x): y (gr7)",
+            0,
+            0,
+            "verified",
+        ),
     ],
     ids=[
         "td-build",
@@ -3896,12 +3907,16 @@ def test_poll_moot_verifies_on_ancestor_and_own_message(
     show_msg: str,
     ancestor_rc: int,
     cat_rc: int,
-    want: bool,
+    want: str,
 ) -> None:
-    """td584381 S1d review round 1: verification is ancestor AND the
-    sha's own message naming the plan's gripe (its ``gr`` or a chain
-    ``td``); everything else is the ordinary no-commit failure
-    (``meta.no_commit``, ``attempt:1``, straight to rescue)."""
+    """td584381 S1d review round 1 + gr602896: a ``moot:`` names a sha —
+    ``verified`` is ancestor AND the sha's own message naming the plan's
+    gripe (its ``gr`` or a chain ``td``), which earns the
+    ``meta.moot_verified`` stamp the tick resolves the gripe on. An
+    unverifiable verdict still closes trusted — ``MOOT_TAG`` with no
+    stamp — the gates only decide whether ``resolved:`` may be written.
+    Only a ``moot:`` pinned to a different gripe is the ordinary
+    no-commit failure (``meta.no_commit``, ``attempt:1``)."""
     _pin_plan_gripe(monkeypatch)
     store = _mooted_store()
     seams["show_msg"] = show_msg + "\n"
@@ -3911,10 +3926,16 @@ def test_poll_moot_verifies_on_ancestor_and_own_message(
     _finish(handle, 0, json.dumps({"is_error": False, "result": result}) + "\n")
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    if want:
+    if want == "verified":
         assert pctx.status == "succeeded"
         assert run_slice.MOOT_VERIFIED_KEY in pctx.meta_set
         assert "verdict:moot" in store.tag_strings(42)
+    elif want == "trusted":
+        assert pctx.status == "succeeded"
+        assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+        assert "verdict:moot" in store.tag_strings(42)
+        assert "STATUS:done" in store.tag_strings(42)
+        assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
     else:
         assert pctx.status == "failed"
         assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
@@ -3946,11 +3967,13 @@ def test_poll_verified_moot_survives_a_failed_fetch(
     assert pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]["sha"] == "f628e681f"
 
 
-def test_poll_moot_fails_closed_on_git_error(
+def test_poll_moot_unverifiable_git_still_closes_trusted(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1d review round 1: a git error on the ancestor or the
-    message check is unverified — the no-commit exit, never a close."""
+    """gr602896: a git error on the ancestor or the message check means
+    the sha cannot VERIFY — no ``meta.moot_verified`` stamp — but the
+    ``moot:`` verdict itself still closes the node tagged, never a
+    crash out of poll and never the no-commit failure."""
     _pin_plan_gripe(monkeypatch)
     store = _mooted_store()
     seams["show_rc"] = 1
@@ -3958,11 +3981,12 @@ def test_poll_moot_fails_closed_on_git_error(
     _finish(handle, 0, _moot_result())
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
-    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
-    assert "verdict:moot" not in store.tag_strings(42)
+    assert pctx.status == "succeeded"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert "verdict:moot" in store.tag_strings(42)
 
-    # A ``git`` call that raises is likewise no verification.
+    # A ``git`` call that raises is likewise no verification — and
+    # still no bar to the verdict's close.
     _pin_plan_gripe(monkeypatch)
     store = _mooted_store()
     seams["show_rc"] = 0
@@ -3972,16 +3996,17 @@ def test_poll_moot_fails_closed_on_git_error(
     _finish(handle, 0, _moot_result())
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
-    assert "verdict:moot" not in store.tag_strings(42)
+    assert pctx.status == "succeeded"
+    assert "verdict:moot" in store.tag_strings(42)
 
 
-def test_poll_moot_cat_file_raise_fails_closed(
+def test_poll_moot_cat_file_raise_still_closes_trusted(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1d review round 2: a ``cat-file -e`` that raises
+    """gr602896: a ``cat-file -e`` that raises
     (``TimeoutExpired``/``OSError``) on the named-test gate is
-    UNVERIFIED — the S1a no-commit path — never a crash out of poll."""
+    UNVERIFIED — but the ``moot:`` verdict still closes, never a
+    crash out of poll."""
     _pin_plan_gripe(monkeypatch)
     store = _mooted_store()
     seams["show_msg"] = "fix(x): y (gr7)\n"
@@ -3990,18 +4015,17 @@ def test_poll_moot_cat_file_raise_fails_closed(
     seams["raise_prefix"] = ["cat-file", "-e"]
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
-    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert pctx.status == "succeeded"
     assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
-    assert "verdict:moot" not in store.tag_strings(42)
+    assert "verdict:moot" in store.tag_strings(42)
 
 
-def test_poll_moot_plan_gripe_raise_fails_closed(
+def test_poll_moot_plan_gripe_raise_still_closes_trusted(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1d review round 2: a raise out of
-    ``land_slice._plan_gripe`` (the DB read) is UNVERIFIED — the
-    no-commit path — never a crash out of poll."""
+    """gr602896: a raise out of ``land_slice._plan_gripe`` (the DB read)
+    is UNVERIFIED and proves no foreign-gripe conflict either — the
+    ``moot:`` verdict still closes, never a crash out of poll."""
     from precis.workers.job_types import land_slice
 
     def boom(_s: Any, _t: str) -> int:
@@ -4014,17 +4038,16 @@ def test_poll_moot_plan_gripe_raise_fails_closed(
     _finish(handle, 0, _moot_result())
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
-    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
-    assert "verdict:moot" not in store.tag_strings(42)
+    assert pctx.status == "succeeded"
+    assert "verdict:moot" in store.tag_strings(42)
 
 
-def test_poll_moot_without_a_plan_fails_closed(
+def test_poll_moot_without_a_plan_still_closes_trusted(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1d review round 1: no ``plan:`` tag (a standalone code
-    todo) or no plan gripe means no handle to verify against — the
-    no-commit exit, never a close."""
+    """gr602896: no ``plan:`` tag (a standalone code todo) or no plan
+    gripe means no handle to verify against — and no foreign gripe to
+    conflict with — so the ``moot:`` verdict closes trusted."""
     _pin_plan_gripe(monkeypatch)
     store = _Store()
     store.add_todo(42, "Fix gr7")
@@ -4033,8 +4056,8 @@ def test_poll_moot_without_a_plan_fails_closed(
     _finish(handle, 0, _moot_result())
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
-    assert "verdict:moot" not in store.tag_strings(42)
+    assert pctx.status == "succeeded"
+    assert "verdict:moot" in store.tag_strings(42)
 
     from precis.workers.job_types import land_slice
 
@@ -4044,7 +4067,63 @@ def test_poll_moot_without_a_plan_fails_closed(
     _finish(handle, 0, _moot_result())
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
+    assert pctx.status == "succeeded"
+    assert "verdict:moot" in store.tag_strings(42)
+
+
+def test_poll_no_commit_verdict_in_comments_closes(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr602896: the node's newest comments count too — a ``moot:``
+    posted by hand on the todo (nothing in the session's own result)
+    closes the node tagged, no attempt burned."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Read it."}) + "\n")
+    # A hand-posted verdict arriving before the poll runs counts.
+    store.chunks.insert_chunks(
+        42,
+        [
+            ChunkInsert(
+                ord=9,
+                text="moot: gr7 already fixed by b258df7ae",
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert "verdict:moot" in store.tag_strings(42)
+    assert "STATUS:done" in store.tag_strings(42)
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_no_commit_verdict_under_prose_closes(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr602896: the verdict need not be the first line — a ``no-op:``
+    under prose in the session's final text still closes the node
+    (untagged: the plan goes on), no attempt burned."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Read everything twice.\nno-op: docs already match",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert "STATUS:done" in store.tag_strings(42)
     assert "verdict:moot" not in store.tag_strings(42)
 
 

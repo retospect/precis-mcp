@@ -47,7 +47,7 @@ from psycopg import Connection
 
 from precis.errors import BadInput, NotFound
 from precis.plans.logbook import log_plan_event
-from precis.plans.nodes import node_kind, validate_plan_meta
+from precis.plans.nodes import any_verdict, node_kind, validate_plan_meta
 from precis.plans.templates import PENDING_SHA, REVIEW_TASK_CLASS
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
@@ -320,6 +320,9 @@ def enter_rescue(
     gripe — nothing is filed and no self-link is attempted. The tag
     check runs twice: once unlocked as a fast path, then again under
     the advisory lock so two racing calls on one node cannot both tag.
+    A ``no-op:``/``moot:``/``validated:`` verdict line in the evidence's
+    ``log_tail`` skips the whole rescue — a dropped-plan ruling is not
+    a failure signature, no gripe is filed, no tag is set (gr602896).
     """
     from precis.workers.job_types.plan_dispatch import read_only_reason
 
@@ -350,6 +353,15 @@ def enter_rescue(
         raise BadInput(
             f"unknown rescue class {cls!r}",
             options=sorted(BOUNDS),
+        )
+
+    verdict = any_verdict(evidence.log_tail)
+    if verdict is not None:
+        # gr602896: a verdict line in the failure's log tail is a
+        # dropped-plan ruling, not a failure signature — no gripe, no
+        # tag; the tick's verdict step owns the close.
+        return RescueResult(
+            skipped=f"log tail carries a verdict ({verdict[0]}: {verdict[1][:120]})"
         )
 
     key, sig = _sig_key(cls, evidence)
