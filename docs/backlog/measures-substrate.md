@@ -1102,12 +1102,22 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   since a `material` *is* a ref, every relation in the registry already
   reaches it, and `measures.subject_ref_id` already accepts it. Prefer (c)
   over minting an enum column: it is how `concept` already works.
-- **[decided 2026-09-30, product-plan review]** Reto's design notes'
+- **[decided 2026-09-30, product-plan review — origin fold SUPERSEDED
+  2026-11-09, Reto ruling on gr606464]** Reto's design notes'
   `origin` axis maps onto `tier`, no new values: `reported` → `measured`,
   `refit` → `computed` with `derived_from` = the curve row
   (`class-lattice-similarity-spaces-and-laws.md` §4), `derived` → `derived`,
   `imputed` → `derived` with the generator in the structured writer
-  provenance (gap 2 above). Their `measurement_arg` (position, entity) is
+  provenance (gap 2 above).
+  **Superseded:** the 2026-11-09 ALCHEM Lab (Hanyang ERICA) gap analysis
+  showed the fold leaves no bucket for a value an ML model predicted or a
+  paper quoted from another paper — `ml_prediction` read as `computed`,
+  ranking beside experimental numbers. `origin` now ships as its own axis:
+  `measures.origin` (`experiment | computation | ml_prediction |
+  literature`, migration 0291; NULL = not recorded), and `best_measure`
+  excludes `origin='ml_prediction'` by default
+  (`include_ml_predictions=True` lifts it). The `tier`/`direction`/`role`
+  axes are unchanged. Their `measurement_arg` (position, entity) is
   the `subject_selector text` column that `pocket-from-molecule.md` (region property layer, folded)
   adds so a design's *region* can be a subject; decide the grammar when
   this item ships (open question there). Participant roles are a separate

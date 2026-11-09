@@ -664,11 +664,21 @@ def test_money_tables_before_0253_falls_back_to_empty_and_is_not_cached(
             parent=start,
         )
         paper = seed_ref(s, title="p", kind="paper")
-        measure = _put(
-            s, {"cost": cost, "paper": paper}, "cost", "1300", unit="USD2019/t"
-        ).output_id
     finally:
         s.close()
+    # Seed at this schema's shape: insert_measure names head-schema columns
+    # (0291's origin), so a mid-chain row is written by hand — the write path
+    # was never the mid-chain contract, only reads are.
+    with psycopg.connect(fresh_db, autocommit=True) as conn:
+        measure = _one(
+            conn,
+            "INSERT INTO measures (subject_ref_id, measurand_ref_id, literal, "
+            "reported_unit, currency, price_year, value_num, value_form, "
+            "run_key, actor) "
+            "VALUES (%s, %s, '1300', 'USD2019/t', 'USD', 2019, 1300, 'point', "
+            "'run:mid-chain', 'reader') RETURNING id",
+            (paper, cost),
+        )
 
     s = Store.connect(fresh_db)
     try:

@@ -26,6 +26,14 @@ own edge and are listed in ``meta.extra_anchors`` as
 anchored span (a mismatch flags the row, never rejects it) and ``unverified``
 without an anchor.
 
+**Origin (gr606464).** ``spec.origin`` records where the number itself was
+produced — ``experiment | computation | ml_prediction | literature``, the
+ALCHEM ``PropertyValue.origin`` axis — a different question from ``tier``
+(how a row ranks and what evidence it needs) and ``method`` (the legacy
+free-text tag). NULL means not recorded. :meth:`best_measure` drops
+``ml_prediction`` rows by default (``include_ml_predictions=True`` lifts
+it); search and detail reads keep every live row.
+
 **Flags, not refusals.** A missing required condition, or a mass-rate yield
 whose product has no formula, lands in ``meta.escalation`` (a list of
 ``{"rule": ..., ...}``); ``best_measure`` excludes flagged rows. Two sanity
@@ -159,6 +167,12 @@ def reset_money_tables_cache() -> None:
 
 
 TIERS = ("measured", "computed", "derived", "asserted")
+#: Where the number itself was produced (migration 0291, the ALCHEM
+#: ``PropertyValue.origin`` axis — gr606464): a different question from
+#: ``tier`` (how the row ranks / what evidence it needs) and ``method``
+#: (the legacy free-text tag). ``ml_prediction`` rows rank only on an
+#: explicit opt-in to :meth:`best_measure`.
+ORIGINS = ("experiment", "computation", "ml_prediction", "literature")
 ATTRIBUTIONS = ("own_work", "cited_work", "not_established")
 MEASURAND_STATUSES = ("explicit", "interpreted", "ambiguous")
 NORMALIZATION_STATUSES = ("explicit", "inferred", "unresolved")
@@ -220,6 +234,7 @@ class MeasureSpec:
     value_form: str | None = None
     reference: str | None = None
     tier: str | None = None
+    origin: str | None = None
     source_attribution: str | None = None
     measurand_status: str | None = None
     normalization: str | None = None
@@ -1018,6 +1033,7 @@ class MeasuresMixin:
         product: str | None,
     ) -> int:
         _check_enum("tier", spec.tier, TIERS)
+        _check_enum("origin", spec.origin, ORIGINS)
         _check_enum("source_attribution", spec.source_attribution, ATTRIBUTIONS)
         _check_enum("measurand_status", spec.measurand_status, MEASURAND_STATUSES)
         _check_enum(
@@ -1310,14 +1326,14 @@ class MeasuresMixin:
                 "(subject_ref_id, measurand_ref_id, literal, reported_unit, "
                 " currency, price_year, "
                 " value_num, value_low, value_high, value_text, value_bool, "
-                " value_err, value_form, reference, tier, extraction_status, "
+                " value_err, value_form, reference, tier, origin, extraction_status, "
                 " normalization, normalization_status, source_attribution, "
                 " measurand_status, direction, role, run_key, subject, "
                 " subject_group, derived_from, primary_link_id, anchor_scheme, span, "
                 " supersedes, source_ref_id, actor, model, meta, conditions, maturity, "
                 " method, source_chunk, source_url, as_of, notes) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-                "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
                 "        coalesce(%s, '{}'::jsonb), coalesce(%s, 'lab'), %s, %s, %s, %s, %s) "
                 "RETURNING id",
                 (
@@ -1336,6 +1352,7 @@ class MeasuresMixin:
                     form,
                     spec.reference,
                     spec.tier,
+                    spec.origin,
                     status,
                     normalization,
                     normalization_status,
@@ -1756,6 +1773,7 @@ class MeasuresMixin:
         sense: str | None = None,
         reference: str | None = None,
         accepted_only: bool = False,
+        include_ml_predictions: bool = False,
     ) -> list[dict[str, Any]]:
         """The best live value per comparable group over everything serving
         the quest ``serving``.
@@ -1766,8 +1784,12 @@ class MeasuresMixin:
         is None). Left out: ``measurand_status='ambiguous'``, a row flagged in
         ``meta.escalation`` (a missing required condition, no molar mass), an
         anchor-lost ``measured`` row, ``trusted = false``, a newest current
-        review of ``rejected``, and anything without a single numeric reading
-        (an interval, a bound, a category). The anchor filter stops at
+        review of ``rejected``, anything without a single numeric reading
+        (an interval, a bound, a category), and — the gr606464 ruling — an
+        ``origin='ml_prediction'`` row, since a predicted value must never
+        outrank an experimental one; ``include_ml_predictions=True`` lifts
+        the last exclusion (the row still carries its ``origin``). The anchor
+        filter stops at
         ``measured`` on purpose: there the anchor IS the claim, while an
         asserted/computed/derived row keeps its claim when the link dies —
         it stays ranked, marked ``anchor_lost``, and its anchor-covered
@@ -1837,6 +1859,9 @@ class MeasuresMixin:
             r
             for r in self._measure_rows(" AND ".join(where), params, with_review=True)
             if r["review_state"] != "rejected"
+            # origin sits outside the SQL: a mid-chain schema (pre-0291) has no
+            # column to test, and r.get() reads it like currency before it
+            and (include_ml_predictions or r.get("origin") != "ml_prediction")
         ]
         if accepted_only:
             verdicts = self.accepted_runs(

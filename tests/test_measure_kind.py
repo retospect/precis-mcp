@@ -650,6 +650,54 @@ class TestBestMeasure:
             store.best_measure(w["fe"], serving=w["paper"])
 
 
+class TestOrigin:
+    """gr606464: the ALCHEM ``origin`` axis — where the number itself was
+    produced — and its default ranking exclusion for ``ml_prediction``."""
+
+    def test_origin_is_stored_and_shown(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        run = _put(store, w, "u_l", "-0.5", unit="V", origin="computation")
+        assert store.measure_detail(run.output_id)["origin"] == "computation"
+        assert "origin: computation" in h.get(id=run.output_id).body
+
+    def test_a_bad_origin_is_refused_by_name(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        with pytest.raises(BadInput, match="origin 'guess' is not one of"):
+            _put(store, w, "u_l", "-0.5", unit="V", origin="guess")
+
+    def test_best_measure_excludes_ml_prediction_by_default(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        experimental = _put(store, w, "u_l", "-0.40", unit="V", origin="experiment")
+        predicted = _put(store, w, "u_l", "-0.90", unit="V", origin="ml_prediction")
+        (g,) = store.best_measure(w["u_l"], serving=w["quest"])
+        # lower is better, yet the (better-scoring) prediction is left out
+        assert g["n"] == 1 and g["best"]["id"] == experimental.output_id
+        (g,) = store.best_measure(
+            w["u_l"], serving=w["quest"], include_ml_predictions=True
+        )
+        assert g["n"] == 2 and g["best"]["id"] == predicted.output_id
+        assert g["best"]["origin"] == "ml_prediction"
+
+    def test_an_ml_prediction_row_stays_searchable(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        run = _put(store, w, "u_l", "-0.5", unit="V", origin="ml_prediction")
+        (row,) = store.search_measures(w["u_l"]).rows
+        assert row["id"] == run.output_id and row["origin"] == "ml_prediction"
+
+    def test_put_carries_origin_and_refuses_a_bad_one(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        body = h.put(text="95", meta=TestPutRun._meta(w, origin="literature")).body
+        (mid,) = [int(m) for m in re.findall(r"^mx(\d+) ", body, re.M)]
+        assert store.measure_detail(mid)["origin"] == "literature"
+        with pytest.raises(BadInput, match="origin 'computed' is not one of"):
+            h.put(text="95", meta=TestPutRun._meta(w, origin="computed"))
+
+
 class TestCensus:
     def test_counts_by_tier_reference_and_normalization(
         self, store: Store, w: dict[str, Any]
@@ -1237,7 +1285,7 @@ class TestGetRow:
         assert f"subject: pa{w['paper']} Deep paper" in out
         assert "subject label: Cu NWA" in out and f"run: {run.run_key}" in out
         assert "  - product=NH3" in out and "potential=-0.5 V vs RHE" in out
-        assert "tier: measured · attribution: own_work" in out
+        assert "tier: measured · origin: — · attribution: own_work" in out
         assert "extraction: anchor_matched" in out
         assert (
             f"anchor: pa{w['paper']} Deep paper · pc{w['chunk']} · sentence: s1" in out

@@ -1848,7 +1848,8 @@ class QuestHandler(NumericRefHandler):
                 f"# measures — quest {ref.id}: {head}\n\n"
                 "no live measures from anything serving this quest yet "
                 "(rows are left out when ambiguous, escalated, anchor-lost, "
-                "distrusted or rejected by their newest current review; "
+                "distrusted, ML-predicted (origin=ml_prediction) or rejected "
+                "by their newest current review; "
                 "search(kind='measure', status='all', ...) shows them)"
             )
         lines = [

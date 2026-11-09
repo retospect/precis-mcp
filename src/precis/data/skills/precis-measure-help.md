@@ -53,7 +53,7 @@ get(kind="quest", id=7, view="measures")  # best live value per measurand, one l
 value in the display unit with the SI value beside it, the measurand (taxon
 handle, name and path), the subject (ref handle and title), its label and run
 key, the run's **conditions** (its input rows, each in its own display unit),
-tier / attribution / measurand status / extraction status, the **anchor** (paper
+tier / origin / attribution / measurand status / extraction status, the **anchor** (paper
 handle, chunk handle, scheme and span), the ledger **reviews** newest first
 (each `current`, or `STALE` when a fixed field changed since the review) and
 the supersession chain. The fisheye ladder is `Unsupported`: a measure is a row,
@@ -104,7 +104,10 @@ no best. Per-area and per-mass yields, RHE and SHE potentials, or EUR and USD
 costs, are separate
 lines: groups are never compared. Left out of every ranking: ambiguous
 measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
-`trusted = false`, rows whose newest current review is `rejected`, and anything
+`trusted = false`, rows whose newest current review is `rejected`,
+`origin='ml_prediction'` rows (a predicted value never outranks an
+experimental one — `Store.best_measure(..., include_ml_predictions=True)`
+opts them back in), and anything
 that is not a single number (an interval, a bound, a category).
 A potential stated against SHE does not stand in for an RHE
 one: conversion between references is not built.
@@ -164,6 +167,7 @@ assumption). Only `context` rows satisfy a measurand's required conditions.
 | `normalization` | the basis (per catalyst mass, per geometric area, per ECSA); never compare across different bases |
 | `subject` / `subject_group` | the paper-local sample label ("Cu NWA") and its group (the claim handle) |
 | `tier` | `measured`, `computed`, `derived`, `asserted`; NULL means it could not be established |
+| `origin` | `experiment`, `computation`, `ml_prediction`, `literature` — where the number itself was produced (the ALCHEM `PropertyValue.origin` axis); NULL means not recorded. Rankings exclude `ml_prediction` by default |
 | `source_attribution` | `own_work`, `cited_work`, `not_established` |
 | `measurand_status` | `explicit`, `interpreted`, `ambiguous` |
 | `extraction_status` | `unverified`, `anchor_matched`, `anchor_mismatch`, `human_checked`; computed when written |
@@ -276,7 +280,8 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
   is priced at, when the unit token does not say it), `value_num` /
   `value_low` / `value_high` /
   `value_err` / `value_text` / `value_bool` / `value_form`, `reference`,
-  `normalization`, `normalization_status`, `tier`, `source_attribution`,
+  `normalization`, `normalization_status`, `tier`, `origin`,
+  `source_attribution`,
   `measurand_status`, `anchor`, `extra_anchors`, `supersedes` (a measure id or
   `mx` handle), `derived_from` (a list of them), `note` (free text, at most 500 characters;
   stored in `measures.meta`, shown by `get`, fixed once written), `run_key`

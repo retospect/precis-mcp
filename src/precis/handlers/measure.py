@@ -291,7 +291,8 @@ class MeasureHandler(Handler):
             out.append("  (none)")
 
         out.append(
-            f"tier: {r['tier'] or 'unknown'} · attribution: "
+            f"tier: {r['tier'] or 'unknown'} · origin: {r.get('origin') or '—'} · "
+            f"attribution: "
             f"{r['source_attribution'] or '—'} · measurand status: "
             f"{r['measurand_status'] or '—'} · extraction: {r['extraction_status']}"
             f" · trusted: {'unassessed' if r['trusted'] is None else r['trusted']}"

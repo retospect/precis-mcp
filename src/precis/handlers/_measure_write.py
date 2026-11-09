@@ -19,7 +19,9 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
   ``value_high`` / ``value_err`` (in the REPORTED unit, the unit of
   ``reported_unit`` and the literal; put converts them to the canonical unit) /
   ``value_text`` / ``value_bool`` / ``value_form``, ``reference``, ``normalization``, ``normalization_status``,
-  ``tier``, ``source_attribution``, ``measurand_status``, ``role``,
+  ``tier``, ``origin`` (``experiment`` | ``computation`` | ``ml_prediction``
+  | ``literature`` — where the number itself was produced, gr606464),
+  ``source_attribution``, ``measurand_status``, ``role``,
   ``direction`` (inputs: ``input`` | ``covariate``), ``condition`` (an input's
   label, as ``meta.condition``), ``note`` (free text, <= 500 characters, as
   ``meta.note``; written at insert only, since ``meta`` is frozen after);
@@ -61,6 +63,7 @@ _ROW_FIELDS = frozenset(
         "normalization",
         "normalization_status",
         "tier",
+        "origin",
         "source_attribution",
         "measurand_status",
         "role",
@@ -85,6 +88,7 @@ _STRINGS = (
     "normalization",
     "normalization_status",
     "tier",
+    "origin",
     "source_attribution",
     "measurand_status",
     "role",
@@ -326,6 +330,7 @@ class RunParser:
             value_form=raw.get("value_form"),
             reference=raw.get("reference"),
             tier=raw.get("tier"),
+            origin=raw.get("origin"),
             source_attribution=raw.get("source_attribution"),
             measurand_status=raw.get("measurand_status"),
             normalization=raw.get("normalization"),

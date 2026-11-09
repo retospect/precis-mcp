@@ -286,7 +286,8 @@ def result_line(
         + (f" vs {row['reference']}" if row.get("reference") else "")
         + (f" [{row['normalization']}]" if row.get("normalization") else ""),
         conditions_text(row.get("conditions") or [], money=money),
-        str(row.get("tier") or "tier unknown"),
+        str(row.get("tier") or "tier unknown")
+        + (f" · {row['origin']}" if row.get("origin") else ""),
         paper_handle(row),
     ]
     line = " | ".join(parts)
