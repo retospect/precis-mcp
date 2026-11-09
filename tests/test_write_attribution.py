@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from precis import agentlog, serve_ledger
-from precis.filing_origin import writer_label
+from precis.filing_origin import WRITER_MODEL_ENV_VAR, writer_label
 from precis.runtime import PrecisRuntime
 from precis.runtime.trust_verb import WRITER_NUDGE
 from precis.store import Store
@@ -30,6 +30,7 @@ class _Session:
 def _clean_run(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.delenv(agentlog.ENV_VAR, raising=False)
     monkeypatch.delenv(agentlog.SOURCE_ENV_VAR, raising=False)
+    monkeypatch.delenv(WRITER_MODEL_ENV_VAR, raising=False)
     with tick_context(TickContext()), serve_ledger.session_scope(None):
         yield
 
@@ -99,6 +100,48 @@ def test_declared_model_beats_a_claim(runtime_with_store: PrecisRuntime) -> None
     (writer,) = _writers(store, ref_id)
     assert writer is not None
     assert (writer["model"], writer["model_source"]) == ("declared-model", "declared")
+
+
+def test_env_model_is_the_lowest_precedence_source(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scripted write with no session or claim stamps its model from
+    ``PRECIS_WRITER_MODEL`` (gr572670); a per-call claim or a client's
+    declaration still wins over the ambient var."""
+    monkeypatch.setenv(WRITER_MODEL_ENV_VAR, "script-model")
+    store = runtime_with_store.store
+    assert store is not None
+    ref_id, _ = _put(runtime_with_store)
+    (writer,) = _writers(store, ref_id)
+    assert writer is not None
+    assert (writer["model"], writer["model_source"]) == ("script-model", "env")
+    ref = store.get_ref(kind="memory", id=ref_id)
+    assert ref is not None
+    assert ref.meta["filed_by"]["model"] == "script-model"
+
+    ref_id, _ = _put(runtime_with_store, **_claim(model="claimed-model"))
+    (writer,) = _writers(store, ref_id)
+    assert writer is not None
+    assert (writer["model"], writer["model_source"]) == ("claimed-model", "self")
+
+    with serve_ledger.session_scope(_Session(model="declared-model")):
+        ref_id, _ = _put(runtime_with_store)
+    (writer,) = _writers(store, ref_id)
+    assert writer is not None
+    assert (writer["model"], writer["model_source"]) == ("declared-model", "declared")
+
+
+def test_a_blank_env_model_stamps_nothing(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``scripts/prod-precis`` exports the var unconditionally, so blank or
+    whitespace must not stamp."""
+    monkeypatch.setenv(WRITER_MODEL_ENV_VAR, "  ")
+    ref_id, _ = _put(runtime_with_store)
+    store = runtime_with_store.store
+    assert store is not None
+    (writer,) = _writers(store, ref_id)
+    assert writer is not None and "model" not in writer
 
 
 def test_a_claim_does_not_reach_the_machine_edge_context(
@@ -262,6 +305,7 @@ def test_get_shows_first_and_last_writer(runtime_with_store: PrecisRuntime) -> N
     ("writer", "label"),
     [
         ({"model": "m", "model_source": "self"}, "m (self)"),
+        ({"model": "m", "model_source": "env"}, "m (env)"),
         ({"model": "m", "model_source": "agentlog", "source": "dream"}, "m, dream"),
         ({"actor": "agent", "client": "claude-code/2.1"}, "agent, claude-code"),
         (

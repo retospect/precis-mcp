@@ -246,6 +246,11 @@ Both are labelled claims (`model_source='self'`), not proof. A model the
 run or client already records wins over yours. `written:` above the trust
 line on a bare `get` shows the first and last writer.
 
+Scripted writes that cannot pass `args=` — a bulk-edit loop through
+`scripts/prod-precis tools …` — name their model in the environment:
+`PRECIS_WRITER_MODEL=<model id>` stamps `model_source='env'`, the lowest
+precedence, so a session, agentlog or per-call claim still wins.
+
 ## Edit a memory in place
 ## Rewrite a memory body without losing its id or links
 

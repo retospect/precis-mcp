@@ -94,6 +94,11 @@ export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
 # Names the process on tool_calls.source and revisions.writer: CLI writes have
 # no MCP session, so they were untraceable. A caller may set its own label.
 export PRECIS_CURRENT_SOURCE="${PRECIS_CURRENT_SOURCE:-prod-precis:${1:-}}"
+# A calling agent names its model on every revision this run writes:
+# PRECIS_WRITER_MODEL=<model id> stamps writer.model_source='env' — the
+# lowest precedence, below agentlog, client-declared and args.writer
+# claims (gr572670). No default; blank reads as unset.
+export PRECIS_WRITER_MODEL="${PRECIS_WRITER_MODEL:-}"
 cd "$root"
 # --extra paper: a plain `uv sync` worktree lacks the [paper] extra
 # (rapidfuzz/marker/fitz), so every ingest-side subcommand

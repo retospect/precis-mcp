@@ -6,11 +6,16 @@ recorded value. Reads are independent and best-effort, with a savepoint for
 the optional agentlog lookup so a failed query cannot poison the filing.
 Caller metadata cannot supply this stamp. The read-only gripe definer cannot
 persist it without a migration, so that path retains its existing tags.
+
+A scripted caller with no session or agentlog (a bulk-edit loop through
+``scripts/prod-precis``) names its model through ``PRECIS_WRITER_MODEL`` —
+``revisions.writer``'s lowest-precedence model source (gr572670).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
@@ -27,6 +32,13 @@ log = logging.getLogger(__name__)
 # Omit oversized identities rather than truncating them into different ones.
 _MAX_VALUE_LENGTH = 512
 _MAX_INTEGER = 10**_MAX_VALUE_LENGTH
+
+#: Env var a scripted caller exports to name its model on
+#: ``revisions.writer`` — a CLI write has no MCP session or agentlog to
+#: carry one, so this is the lowest-precedence model source
+#: (``model_source='env'``, gr572670). A labelled claim like
+#: ``args.writer``, never proof.
+WRITER_MODEL_ENV_VAR = "PRECIS_WRITER_MODEL"
 
 
 def _actor() -> str | None:
@@ -121,13 +133,21 @@ def writer_stamp(
     """The ``revisions.writer`` stamp for one verb write.
 
     A model the caller states is a claim (``model_source='self'``), used only
-    when nothing better is known. ``direct_human`` is the authenticated person
-    at a human ingress; a ``human`` in the payload is an agent saying the
-    content is that person's direct input."""
+    when nothing better is known; below that, ``PRECIS_WRITER_MODEL``
+    (``model_source='env'``) covers a scripted write that can state nothing
+    per call. ``direct_human`` is the authenticated person at a human
+    ingress; a ``human`` in the payload is an agent saying the content is
+    that person's direct input."""
     origin = current_filed_by(pool, actor=actor)
     claim = payload or {}
     if claim.get("model") and "model" not in origin:
         origin.update(model=claim["model"], model_source="self")
+    if "model" not in origin:
+        env_model = _read(
+            lambda: (os.environ.get(WRITER_MODEL_ENV_VAR) or "").strip() or None
+        )
+        if env_model:
+            origin.update(model=env_model, model_source="env")
     if direct_human:
         origin.update(human=direct_human, human_via="direct")
     elif claim.get("human"):
@@ -139,8 +159,9 @@ def writer_label(writer: dict[str, Any]) -> str:
     """One stamp as a reader sees it: ``claude-opus-5-5 (self), gardener`` or
     ``human reto via claude-opus-5-5 (self)``."""
     who = str(writer.get("model") or writer.get("actor") or "unknown")
-    if writer.get("model") and writer.get("model_source") == "self":
-        who += " (self)"
+    model_source = writer.get("model_source")
+    if writer.get("model") and model_source in ("self", "env"):
+        who += f" ({model_source})"
     human = writer.get("human")
     if human:
         if writer.get("human_via") == "direct":

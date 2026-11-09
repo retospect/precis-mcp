@@ -55,7 +55,9 @@ Values that change per request / per subprocess and are passed as env
 `PRECIS_CURRENT_TODO`, `PRECIS_WORKSPACE`, `PRECIS_CURRENT_AGENTLOG`,
 `PRECIS_CURRENT_MODEL`, `PRECIS_CURRENT_SOURCE` (the producing job, e.g.
 `dream` — what `tool_calls.source` records; the router sets it from
-`LlmRequest.source`), `PRECIS_SOURCE`, `PRECIS_PROCESS`,
+`LlmRequest.source`), `PRECIS_WRITER_MODEL` (a scripted caller's model
+label → `revisions.writer` `model_source='env'`; read by
+`filing_origin.writer_stamp`), `PRECIS_SOURCE`, `PRECIS_PROCESS`,
 `PRECIS_CONV_READ_SCOPE` (a scoped-surface bridge binds the run's own
 conv slug — `precis.handlers.conversation` enforces reads for that
 conversation only and refuses conv writes).

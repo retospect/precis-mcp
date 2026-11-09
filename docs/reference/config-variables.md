@@ -310,7 +310,10 @@ restores the old per-kind floors for one release (exactly `1` enables).
   "configure" these): `PRECIS_CURRENT_TODO`, `PRECIS_WORKSPACE`,
   `PRECIS_CURRENT_MODEL`, `PRECIS_CURRENT_AGENTLOG`,
   `PRECIS_CURRENT_SOURCE` (producing job → `tool_calls.source`;
-  see `docs/conventions/env-vars.md` for the container allowlist), `PRECIS_SOURCE`
+  see `docs/conventions/env-vars.md` for the container allowlist),
+  `PRECIS_WRITER_MODEL` (calling agent's model label →
+  `revisions.writer` `model_source='env'`, lowest precedence;
+  `filing_origin.writer_stamp`), `PRECIS_SOURCE`
   (`precis-worker`/`web:reto`/…), `PRECIS_PROCESS`, `PRECIS_HOST_NAME`,
   `PRECIS_CONV_READ_SCOPE` (scoped-surface bridge → bound conv slug;
   read-scope for `kind='conv'`, enforced by `handlers/conversation.py`).

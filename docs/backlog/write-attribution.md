@@ -76,8 +76,9 @@ Migration 0279, `RevisionContext.writer`, `filing_origin.writer_stamp`, the
 
 - [ ] Local rung: agentlog `meta.model='local'` has no `model_actual`, so a
       local run records the alias, not the served model.
-- [ ] Scripted bulk edits get `source` but no model. A script run by an agent
-      could pass one through an env var if the gap stays large.
+- [ ] Scripted bulk edits: `PRECIS_WRITER_MODEL` now labels the calling
+      agent's model (`model_source='env'`, lowest precedence — gr572670).
+      Measure the remaining no-model share of CLI writes after deploy.
 - [ ] 835 memory revisions came from context-less writers (`agent_rw`,
       `(unrecorded)`, mostly retires). They get no stamp until wrapped; the
       `unrecorded_revisions` cadence names them.
