@@ -22,3 +22,110 @@ cases:
         get(kind='quest', id='qu164903', view='tree') is the rollup —
         servers + deed ledger + health + gaps. 'status' and 'rubric' are
         not quest views.
+
+  # ── executed-task family (gr608716): graded `subtasks:` depth ─────
+  - id: mint-striving
+    subtasks: 1
+    prompt: |
+      Mint a quest for the striving "a room-temperature ammonia catalyst
+      with no external energy", rubric: selectivity, yield, stability.
+    expect:
+      calls:
+        - {verb: put, kind: quest, args: {text: 're:(?i).*ammonia.*'}}
+      record: {kind: quest}
+    forbid:
+      calls:
+        - {verb: put, kind: todo}     # a striving is a quest, never a completable todo
+    fake:
+      calls:
+        - {verb: put, kind: quest, args: {text: "A room-temperature ammonia catalyst with no external energy\n\nRubric: selectivity · yield · stability"}}
+      record: {kind: quest}
+      answer: >
+        put(kind='quest', text=…) mints the striving — first line is the
+        statement, the rest is rubric; it comes up STATUS:active.
+
+  - id: log-milestone
+    subtasks: 2
+    prompt: |
+      Mint a quest "a self-assembling molecular computer", then log a
+      milestone entry on it: "first NAND gate assembled".
+    expect:
+      calls:
+        - {verb: put, kind: quest, args: {text: 're:(?i).*molecular computer.*'}}
+        - {verb: put, kind: quest, args: {entry: milestone}}
+      record: {kind: quest}
+    fake:
+      calls:
+        - {verb: put, kind: quest, args: {text: "A self-assembling molecular computer"}}
+        - {verb: put, kind: quest, args: {id: 7, text: "first NAND gate assembled", entry: milestone}}
+      record: {kind: quest}
+      answer: >
+        put(kind='quest', id=<qu>, text=…, entry='milestone') appends the
+        deed to the WORM logbook — a milestone is a deed.
+
+  - id: pause-quest
+    subtasks: 2
+    prompt: |
+      Mint a quest "heal the perovskite stability problem", then pause it
+      — the quest and every live strategic root serving it.
+    expect:
+      calls:
+        - {verb: put, kind: quest, args: {text: 're:(?i).*perovskite.*'}}
+        - {verb: edit, kind: quest, args: {mode: pause}}
+      record: {kind: quest}
+    forbid:
+      calls:
+        - {verb: edit, kind: quest, args: {mode: resume}}
+    fake:
+      calls:
+        - {verb: put, kind: quest, args: {text: "heal the perovskite stability problem"}}
+        - {verb: edit, kind: quest, args: {id: 7, mode: pause}}
+      record: {kind: quest}
+      answer: >
+        edit(kind='quest', id=<qu>, mode='pause') parks the quest
+        (STATUS:dormant) and its live strategic roots — a bare tag only
+        sets the quest aside.
+
+  - id: serve-link
+    subtasks: 3
+    prompt: |
+      Mint a quest "nitrate reduction to ammonia", mint a todo "screen
+      Cu–Pd dual-atom sites", and mark the todo as serving the quest.
+    expect:
+      calls:
+        - {verb: put, kind: quest}
+        - {verb: put, kind: todo}
+        - {verb: link, args: {rel: serves, target: 're:quest:.*'}}
+      record: {kind: quest}
+    forbid:
+      calls:
+        - {verb: link, args: {rel: 're:serves.*', target: 're:todo:.*'}}  # link from the server's side
+    fake:
+      calls:
+        - {verb: put, kind: quest, args: {text: "nitrate reduction to ammonia"}}
+        - {verb: put, kind: todo, args: {text: "screen Cu–Pd dual-atom sites"}}
+        - {verb: link, kind: todo, args: {id: 42, target: "quest:7", rel: serves}}
+      record: {kind: quest}
+      answer: >
+        link(kind='todo', id=<todo>, target='quest:<qu>', rel='serves')
+        marks the todo serving the quest — the link is always made from
+        the server's side.
+
+  - id: mint-and-rollup
+    subtasks: 2
+    prompt: |
+      Mint a quest "a zinc-air battery that survives 10k cycles" and give
+      me its overall rollup — servers, deeds, health, gaps.
+    expect:
+      calls:
+        - {verb: put, kind: quest}
+        - {verb: get, kind: quest, args: {view: tree}}
+      record: {kind: quest}
+    fake:
+      calls:
+        - {verb: put, kind: quest, args: {text: "a zinc-air battery that survives 10k cycles"}}
+        - {verb: get, kind: quest, args: {id: 7, view: tree}}
+      record: {kind: quest}
+      answer: >
+        get(kind='quest', id=<qu>, view='tree') is the one rollup —
+        serves-graph + deed ledger + health + open gaps.

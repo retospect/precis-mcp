@@ -1,0 +1,148 @@
+# Eval cases for precis-structure-help (schema: precis.skill_eval.cases).
+# MDCrow-family translations (gr608716): MD → put(kind='structure',
+# mode='md'), RMSD → get(view='diff') — graded `subtasks:` depth feeds
+# the executed runner's accuracy-by-depth.
+skill: precis-structure-help
+cases:
+  - id: build-slab-read
+    subtasks: 2
+    prompt: |
+      Build a structure 'eval-slab': a 2×2×2 Pt(111) slab with a 10 Å
+      vacuum gap using the slab op. Then read it back and tell me how
+      many atoms it holds.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-slab, text: 're:.*slab.*'}}
+        - {verb: get, kind: structure, args: {id: eval-slab}}
+      record: {kind: structure, id: eval-slab}
+    fake:
+      calls:
+        - verb: put
+          kind: structure
+          args:
+            id: eval-slab
+            text: '{"ops": [{"op": "slab", "element": "Pt", "size": [2, 2, 2], "vacuum": 10}]}'
+        - {verb: get, kind: structure, args: {id: eval-slab}}
+      record: {kind: structure, id: eval-slab}
+      answer: >
+        put(kind='structure', id='eval-slab', text=<cell+slab op JSON>)
+        builds the slab and echoes the TOC — 8 Pt atoms.
+
+  - id: md-run-poll
+    subtasks: 3
+    prompt: |
+      Build structure 'eval-md' as a 2-layer 2×2 Pt(111) slab (slab op,
+      10 Å vacuum), then start a 200-step EMT NVT run at 300 K on it and
+      show me the run's status.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-md, text: 're:.*slab.*'}}
+        - verb: put
+          kind: structure
+          args:
+            id: eval-md
+            mode: md
+            args: {fidelity: emt, steps: 200, temperature_k: 300}
+        - {verb: get, kind: structure, args: {id: eval-md, view: md}}
+    forbid:
+      calls:
+        - {verb: edit, kind: structure, args: {mode: md}}  # an MD run is a put, never an edit
+        - {verb: put, kind: job}
+    fake:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-md, text: '{"ops": [{"op": "slab", "element": "Pt", "size": [2, 2, 2], "vacuum": 10}]}'}}
+        - {verb: put, kind: structure, args: {id: eval-md, mode: md, args: {fidelity: emt, steps: 200, temperature_k: 300}}}
+        - {verb: get, kind: structure, args: {id: eval-md, view: md}}
+      record: null
+      answer: >
+        put(kind='structure', id='eval-md', mode='md', args={fidelity:
+        'emt', steps: 200, temperature_k: 300}) mints the struct_md_runs
+        row + job and returns; get(view='md') polls it.
+
+  - id: relax-then-diff
+    subtasks: 4
+    prompt: |
+      Build the same 2×2×2 Pt(111) slab twice — 'eval-r0' and 'eval-r1'
+      (slab op, 10 Å vacuum). Relax 'eval-r1' at the clean fidelity,
+      then diff 'eval-r1' against 'eval-r0' and report the RMSD.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-r0}}
+        - {verb: put, kind: structure, args: {id: eval-r1}}
+        - {verb: edit, kind: structure, args: {id: eval-r1, ops: 're:.*relax.*'}}
+        - {verb: get, kind: structure, args: {id: eval-r1, view: diff, args: {other: eval-r0}}}
+    forbid:
+      calls:
+        - {verb: edit, kind: structure, args: {id: eval-r0}}  # the reference stays unrelaxed
+    fake:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-r0, text: '{"ops": [{"op": "slab", "element": "Pt", "size": [2, 2, 2], "vacuum": 10}]}'}}
+        - {verb: put, kind: structure, args: {id: eval-r1, text: '{"ops": [{"op": "slab", "element": "Pt", "size": [2, 2, 2], "vacuum": 10}]}'}}
+        - {verb: edit, kind: structure, args: {id: eval-r1, ops: [{op: relax, fidelity: clean}]}}
+        - {verb: get, kind: structure, args: {id: eval-r1, view: diff, args: {other: eval-r0}}}
+      record: null
+      answer: >
+        get(view='diff', args={other: 'eval-r0'}) reports RMSD, per-atom
+        move and bonds broken/formed between the relaxed copy and the
+        reference.
+
+  - id: adsorbate-then-probe
+    subtasks: 4
+    prompt: |
+      Build 'eval-ads' as a 2-layer 2×2 Pt(111) slab (10 Å vacuum), put
+      an O adsorbate on a top site of the slab, relax it at the clean
+      fidelity, then report the O atom's point-of-view neighbourhood.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-ads, text: 're:.*add_adsorbate.*'}}
+        - {verb: edit, kind: structure, args: {id: eval-ads, ops: 're:.*relax.*'}}
+        - {verb: get, kind: structure, args: {id: eval-ads, view: pov}}
+      record: {kind: structure, id: eval-ads}
+    fake:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-ads, text: '{"ops": [{"op": "slab", "element": "Pt", "size": [2, 2, 2], "vacuum": 10}, {"op": "add_adsorbate", "species": "O", "site": {"type": "top"}}]}'}}
+        - {verb: edit, kind: structure, args: {id: eval-ads, ops: [{op: relax, fidelity: clean}]}}
+        - {verb: get, kind: structure, args: {id: eval-ads, view: pov, args: {support: aO1, reach: 3.0}}}
+      record: {kind: structure, id: eval-ads}
+      answer: >
+        view='pov' on the O label returns i_am / i_include / i_touch —
+        the adsorbate's local neighbourhood, nearest-first.
+
+  - id: export-poscar
+    subtasks: 2
+    prompt: |
+      Build 'eval-export' as a 2×2×1 Cu(111) slab (slab op, 10 Å vacuum)
+      and export it as a POSCAR.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-export}}
+        - {verb: get, kind: structure, args: {id: eval-export, view: poscar}}
+    forbid:
+      text: ["VESTA", "pymatgen"]   # the export view writes it; no external tooling
+    fake:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-export, text: '{"ops": [{"op": "slab", "element": "Cu", "size": [2, 2, 1], "vacuum": 10}]}'}}
+        - {verb: get, kind: structure, args: {id: eval-export, view: poscar}}
+      record: null
+      answer: >
+        get(kind='structure', id='eval-export', view='poscar') emits the
+        VASP POSCAR text directly.
+
+  - id: md-trajectory-read
+    subtasks: 3
+    prompt: |
+      Start a 100-step EMT NVT run at 300 K on 'eval-md' (it exists: a
+      Pt slab), list the runs on it, then pull run 1's trajectory frames.
+    expect:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-md, mode: md}}
+        - {verb: get, kind: structure, args: {id: eval-md, view: md, args: {trajectory: true}}}
+    fake:
+      calls:
+        - {verb: put, kind: structure, args: {id: eval-md, mode: md, args: {fidelity: emt, steps: 100, temperature_k: 300}}}
+        - {verb: get, kind: structure, args: {id: eval-md, view: md}}
+        - {verb: get, kind: structure, args: {id: eval-md, view: md, args: {run: 1, trajectory: true}}}
+      record: null
+      answer: >
+        get(view='md', args={run: 1, trajectory: true}) returns the
+        run's extXYZ frames.

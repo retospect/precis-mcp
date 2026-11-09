@@ -15,6 +15,9 @@ One file per skill, ``src/precis/data/skill-evals/<skill>.yaml``::
         forbid:
           calls: [{verb: search, kind: web}]
           text: ["SELECT "]                # answer substrings that mark a detour
+        subtasks: 2                        # optional task depth (default 1);
+                                           # the executed runner buckets
+                                           # accuracy by it (gr608716)
         fake:                              # what FakeRunner replays
           calls: [{verb: get, kind: paper, args: {id: "10.1038/nature10352"}}]
           record: null
@@ -126,6 +129,10 @@ class EvalCase:
     prompt: str
     criterion: Criterion
     fake: Transcript
+    #: Declared task depth — the number of subtasks the prompt bundles
+    #: (MDCrow-style graded difficulty). ``1`` when the case doesn't
+    #: declare it; the executed runner's report buckets accuracy by it.
+    subtasks: int = 1
 
 
 def default_cases_dir() -> Path:
@@ -227,6 +234,9 @@ def _load_case(
         raise _bad(where, "'expect' needs at least one of 'calls' or 'record'")
     if "fake" not in raw:
         raise _bad(where, "'fake' transcript is required (the corpus self-check)")
+    subtasks = raw.get("subtasks", 1)
+    if not isinstance(subtasks, int) or isinstance(subtasks, bool) or subtasks < 1:
+        raise _bad(where, "'subtasks' must be an integer >= 1")
     return EvalCase(
         case_id=where,
         skill=skill,
@@ -234,6 +244,7 @@ def _load_case(
         prompt=prompt.strip(),
         criterion=criterion,
         fake=_load_transcript(raw["fake"], f"{where}.fake"),
+        subtasks=subtasks,
     )
 
 

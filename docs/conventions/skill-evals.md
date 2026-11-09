@@ -28,16 +28,38 @@ prompt plus a criterion over the calls the agent makes:
 |--------|-----------|-------|------|
 | `fake` (default) | replays `fake:`; records the prompt | anywhere, CI | 0 |
 | `live` | tool-free `claude -p` reads the injected skill(s) + task and declares the calls it would make as JSON | host only | capped |
+| `executed` | `claude -p` with a precis MCP bound to a scratch DSN; the transcript is reconstructed from stream-json `tool_use` events and `expect.record` is judged on the row that landed | host + test stack | capped |
 
 The live runner is a planned-call dry run: nothing executes, no database
 is touched, so a write-path criterion is judged on the declared record.
-Caps: `--case-usd` (default 0.25, becomes `--max-budget-usd`), `--run-usd`
-(default 2.00; remaining cases are `SKIP`ped once the next case would
-exceed it), `--timeout-s` (180). Env equivalents
-`PRECIS_SKILL_EVAL_{CASE_USD,RUN_USD,TIMEOUT_S,MODEL}`. A missing or
-logged-out `claude` makes the whole run `skipped`, exit 0 — the container
-`claude` is unauthenticated and exits 0 with a banner, which must never
-read as a pass.
+The executed runner is the MDCrow-style suite (gr608716): the model
+*actually calls* the tools against a test stack, so a skill that misleads
+at execution time (right plan, wrong kwargs under a real tool surface, a
+record that never lands) goes red here where live stays green. `--execute`
+is a shortcut for `--runner executed`.
+
+Executed-run specifics:
+
+- **DSN**: `--dsn` / `PRECIS_SKILL_EVAL_DSN`; default is `scripts/dev`'s
+  `postgresql://postgres@precis-test-db:5432/precis_dev`. Nothing in the
+  spawn path resolves prod coordinates — the ambient `PRECIS_DATABASE_URL`
+  never reaches the spawned `precis serve` (the `--mcp-config` `env` block
+  pins the eval DSN). Records the run mints carry a
+  `eval-run-<run_id>` default tag so they can't masquerade as real data on
+  the shared dev DB.
+- **Serve**: `--serve-cmd` / `PRECIS_SKILL_EVAL_SERVE_CMD` (default
+  `precis serve`, i.e. inside the dev container); `PRECIS_MCP_PROFILE` is
+  pinned `typed` and `PRECIS_BIO_ENABLED=1` for the protein corpus.
+- **Models**: repeat `--model` — one corpus pass per model; the report's
+  *accuracy by subtask count* table and `accuracy_by_depth` JSON block
+  split by model (the llm-scorecard shape). A case declares its depth via
+  `subtasks: N` (default 1).
+- **Caps**: same flags/env as live — `--case-usd`/`--run-usd`/`--timeout-s`
+  (defaults 1.00 / 10.00 / 600 s; an executed case is a multi-turn tool
+  session, not a one-shot reply) plus `--max-turns` (30;
+  `PRECIS_SKILL_EVAL_MAX_TURNS`). The MCP gate (`require_mcp`) means a
+  test stack that can't serve marks the run `skipped`, exit 0 — same
+  standing as a missing/unauthenticated `claude`.
 
 ## Running it
 

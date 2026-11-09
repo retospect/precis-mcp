@@ -8,6 +8,9 @@
 #   scripts/skill-eval --runner live        # host claude -p dry run, budgeted
 #   scripts/skill-eval --runner live --diff # only skills HEAD changed
 #   scripts/skill-eval --skill precis-paper-help --out /tmp/r.json
+#   scripts/skill-eval --execute --model a --model b --dsn <test dsn>
+#                                         # executed: claude -p + precis MCP on
+#                                         # a test stack; accuracy by subtasks
 #
 # Live runs skip (exit 0, status "skipped") when claude is missing or not
 # logged in — the container claude is unauthenticated and would fake a pass.

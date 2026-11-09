@@ -1,0 +1,122 @@
+# Eval cases for precis-protein-help (schema: precis.skill_eval.cases).
+# MDCrow-family translations (gr608716): fold → put(kind='protein') —
+# graded `subtasks:` depth feeds the executed runner's accuracy-by-depth.
+skill: precis-protein-help
+cases:
+  - id: fold-and-read
+    subtasks: 2
+    prompt: |
+      Fold the insulin A-chain sequence GIVEQCCTSICSLYQLENYCN with the
+      stub engine under slug 'eval-insulin-a', then read it back and tell
+      me the mean pLDDT.
+    expect:
+      calls:
+        - verb: put
+          kind: protein
+          args:
+            id: eval-insulin-a
+            sequence: GIVEQCCTSICSLYQLENYCN
+            engine: stub
+        - {verb: get, kind: protein, args: {id: eval-insulin-a}}
+      record: {kind: protein, id: eval-insulin-a}
+    forbid:
+      calls:
+        - {verb: put, kind: job}      # put(kind='protein') mints the fold; no ad-hoc job
+    fake:
+      calls:
+        - verb: put
+          kind: protein
+          args: {id: eval-insulin-a, sequence: GIVEQCCTSICSLYQLENYCN, engine: stub}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a}}
+      record: {kind: protein, id: eval-insulin-a}
+      answer: >
+        put(kind='protein', id='eval-insulin-a', sequence=…, engine='stub')
+        folded inline; get read it back — the stub reports a constant
+        placeholder pLDDT.
+
+  - id: fold-two-compare
+    subtasks: 3
+    prompt: |
+      Fold two sequences with the stub engine — GIVEQCCTSICSLYQLENYCN as
+      'eval-insulin-a' and FVNQHLCGSHLVEALYLVCG as 'eval-insulin-b' — then
+      compare their confidence scores and tell me which fold to trust.
+    expect:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a, sequence: GIVEQCCTSICSLYQLENYCN}}
+        - {verb: put, kind: protein, args: {id: eval-insulin-b, sequence: FVNQHLCGSHLVEALYLVCG}}
+        - {verb: get, kind: protein, args: {id: 're:eval-insulin-[ab]'}}
+      record: {kind: protein, id: eval-insulin-b}
+    fake:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a, sequence: GIVEQCCTSICSLYQLENYCN, engine: stub}}
+        - {verb: put, kind: protein, args: {id: eval-insulin-b, sequence: FVNQHLCGSHLVEALYLVCG, engine: stub}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-b}}
+      record: {kind: protein, id: eval-insulin-b}
+      answer: >
+        Both folded; the stub reports the same constant pLDDT for both,
+        so neither is to be trusted over the other — the stub is a
+        substrate check, not a real predictor.
+
+  - id: fold-pull-cif
+    subtasks: 2
+    prompt: |
+      Fold GIVEQCCTSICSLYQLENYCN as 'eval-insulin-a' (stub engine) and
+      pull the raw mmCIF structure for it.
+    expect:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a, view: cif}}
+    fake:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a, sequence: GIVEQCCTSICSLYQLENYCN, engine: stub}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a, view: cif}}
+      record: null
+      answer: >
+        view='cif' on the protein returns the predicted structure as
+        mmCIF text, per-atom pLDDT in the B-factor column.
+
+  - id: fold-project-viewer
+    subtasks: 3
+    prompt: |
+      Fold GIVEQCCTSICSLYQLENYCN as 'eval-insulin-a' (stub engine),
+      project the fold into the shared 3D structure viewer, and give me
+      the structure handle it landed on.
+    expect:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a, view: structure}}
+    forbid:
+      calls:
+        - {verb: put, kind: structure}  # projection is a get view, not a hand-built design
+    fake:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a, sequence: GIVEQCCTSICSLYQLENYCN, engine: stub}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a, view: structure}}
+      record: null
+      answer: >
+        view='structure' projects the fold into a structure ref named
+        eval-insulin-a-fold, linked back via has-fold-structure —
+        idempotent on a second call.
+
+  - id: fold-tag-find
+    subtasks: 3
+    prompt: |
+      Fold GIVEQCCTSICSLYQLENYCN as 'eval-insulin-a' (stub engine), tag
+      it 'eval-fold' so the run is findable, then read the protein back
+      to confirm the tag stuck.
+    expect:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a}}
+        - {verb: tag, kind: protein, args: {id: eval-insulin-a, add: 're:.*eval-fold.*'}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a}}
+      record: {kind: protein, id: eval-insulin-a}
+    fake:
+      calls:
+        - {verb: put, kind: protein, args: {id: eval-insulin-a, sequence: GIVEQCCTSICSLYQLENYCN, engine: stub}}
+        - {verb: tag, kind: protein, args: {id: eval-insulin-a, add: [eval-fold]}}
+        - {verb: get, kind: protein, args: {id: eval-insulin-a}}
+      record: {kind: protein, id: eval-insulin-a}
+      answer: >
+        Folded, tagged eval-fold, and read back — the tag is on the
+        protein.
