@@ -158,6 +158,7 @@ from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
     BATCH_VIEW_PAGE_CHARS,
     NumericRefHandler,
+    _tag_names_axis,
 )
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
@@ -204,6 +205,7 @@ from precis.utils.memory_rulings import (
     validate_ruling_meta,
 )
 from precis.utils.next_block import render_next_section
+from precis.utils.search_merge import SearchHit
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.timeutil import as_utc
 
@@ -3544,12 +3546,36 @@ class MemoryHandler(NumericRefHandler):
         status (:func:`~precis.utils.memory_rulings.render_rulings`);
         ``status=`` (``args={'status': '*'}``) widens it past in-force. The
         default and ``view='index'`` renders leave absorbed, archived and
-        retired rulings out of recall."""
+        retired rulings out of recall.
+
+        A domain-bound connection defaults to the domain's ``SPACE:``
+        set when ``tags=`` names no ``SPACE:`` axis (gr572723); a
+        caller-supplied ``SPACE:`` tag wins, and the footer names the
+        door when the default dropped hits."""
         if group_by is not None and view != "count":
             raise BadInput(
                 "group_by= only applies to view='count'",
                 next="search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})",
             )
+        # gr572723 (C4): a domain-bound connection defaults memory search
+        # to the domain's SPACE: set — never by section:/topic:, so
+        # rulings, gotchas and runbooks stay reachable for every role in
+        # the space. A caller-supplied SPACE: tag (either polarity) or
+        # the reads view's space= wins. Fisheye and get by handle are
+        # untouched.
+        domain = self._domain_space_default(tags, space)
+        caller_tags = list(tags or [])
+        caller_include = include_ref_ids
+        if domain is not None and domain.spaces:
+            if len(domain.spaces) == 1:
+                tags = [*caller_tags, f"SPACE:{next(iter(domain.spaces))}"]
+            else:
+                space_ids = self._memory_ids_in_spaces(domain.spaces)
+                include_ref_ids = (
+                    sorted(space_ids & set(caller_include))
+                    if caller_include is not None
+                    else sorted(space_ids)
+                )
         if view == "reads":
             from precis.handlers._memory_reads import render_reads
 
@@ -3572,17 +3598,24 @@ class MemoryHandler(NumericRefHandler):
                     f"{', '.join(rejected)}= is not applied by view='reads'",
                     next="search(kind='memory', view='reads', args={'space': 'repo-dev'})",
                 )
-            return render_reads(
-                self.store,
-                sort=sort,
-                space=space,
-                min_chars=min_chars,
-                min_reads=min_reads,
-                page=page,
-                page_size=page_size,
-                tags=tags,
-                include_ref_ids=include_ref_ids,
+            return self._domain_space_footer(
+                render_reads(
+                    self.store,
+                    sort=sort,
+                    space=space,
+                    min_chars=min_chars,
+                    min_reads=min_reads,
+                    page=page,
+                    page_size=page_size,
+                    tags=tags,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                ),
+                domain=domain,
+                q=None,
                 exclude_ref_ids=exclude_ref_ids,
+                before=(caller_tags, caller_include),
+                after=(tags, include_ref_ids),
             )
         if any(value is not None for value in (space, min_chars, min_reads)):
             raise BadInput(
@@ -3592,28 +3625,42 @@ class MemoryHandler(NumericRefHandler):
         if sort is not None:
             kw["sort"] = sort
         if view == "smells":
-            return render_smell_rollup(
-                self.store,
-                include_ref_ids=include_ref_ids,
+            return self._domain_space_footer(
+                render_smell_rollup(
+                    self.store,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    tags=tags,
+                    under=under,
+                    q=q,
+                    page=page,
+                    mode=mode,
+                    scope=scope,
+                    status=status,
+                ),
+                domain=domain,
+                q=None,
                 exclude_ref_ids=exclude_ref_ids,
-                tags=tags,
-                under=under,
-                q=q,
-                page=page,
-                mode=mode,
-                scope=scope,
-                status=status,
+                before=(caller_tags, caller_include),
+                after=(tags, include_ref_ids),
             )
         if view == "rulings":
-            return self._rulings_view(
-                q=q,
-                tags=tags,
-                page=page,
-                mode=mode,
-                scope=scope,
-                status=status,
-                include_ref_ids=include_ref_ids,
+            return self._domain_space_footer(
+                self._rulings_view(
+                    q=q,
+                    tags=tags,
+                    page=page,
+                    mode=mode,
+                    scope=scope,
+                    status=status,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                ),
+                domain=domain,
+                q=None,
                 exclude_ref_ids=exclude_ref_ids,
+                before=(caller_tags, caller_include),
+                after=(tags, include_ref_ids),
             )
         if status is not None:
             kw["status"] = status
@@ -3634,19 +3681,131 @@ class MemoryHandler(NumericRefHandler):
             depth=depth,
             **kw,
         )
-        if not (q and q.strip()):
+        if q and q.strip():
+            try:
+                ids = [
+                    int(m)
+                    for m in re.findall(r"(?:^## memory |\bme)(\d+)\b", resp.body, re.M)
+                ]
+                hints = narrowing_hints(self.store, ids, q)
+            except Exception:
+                hints = []
+            if hints:
+                resp = replace(
+                    resp, body=resp.body.rstrip() + "\n\n" + "\n".join(hints)
+                )
+        return self._domain_space_footer(
+            resp,
+            domain=domain,
+            q=q,
+            exclude_ref_ids=exclude_ref_ids,
+            before=(caller_tags, caller_include),
+            after=(tags, include_ref_ids),
+        )
+
+    def _domain_space_default(
+        self, tags: list[str] | None, space: str | None
+    ) -> Any | None:
+        """The connection's :class:`~precis.runtime.scope.Domain` when a
+        default ``SPACE:`` filter applies, else ``None`` (gr572723 C4).
+
+        ``None`` when the connection's domain leaves the ``spaces`` axis
+        open (``'all'``), when the caller already named ``SPACE:`` in
+        ``tags=`` — a caller-supplied ``SPACE:`` tag wins, either
+        polarity — or when the reads view's ``space=`` named one.
+        """
+        from precis.runtime.scope import current_domain
+
+        domain = current_domain()
+        if domain.spaces is None or space is not None:
+            return None
+        if any(_tag_names_axis(str(t), "SPACE") for t in tags or []):
+            return None
+        return domain
+
+    def _memory_ids_in_spaces(self, spaces: frozenset[str]) -> set[int]:
+        """Live ref_ids carrying a ``SPACE:`` value in ``spaces`` — the
+        axis is a partition, so membership is the OR a tag-AND filter
+        cannot spell for a multi-space domain."""
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT rt.ref_id FROM ref_tags rt"
+                " JOIN tags t ON t.tag_id = rt.tag_id"
+                " JOIN refs r ON r.ref_id = rt.ref_id"
+                " WHERE r.kind = %s AND r.retired_at IS NULL"
+                " AND t.namespace = 'SPACE' AND t.value = ANY(%s)"
+                " AND (rt.expires_at IS NULL OR rt.expires_at > now())",
+                (self.kind, sorted(spaces)),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def _domain_space_footer(
+        self,
+        resp: Response,
+        *,
+        domain: Any | None,
+        q: str | None,
+        exclude_ref_ids: list[int] | None,
+        before: tuple[list[str] | None, list[int] | None],
+        after: tuple[list[str] | None, list[int] | None],
+    ) -> Response:
+        """Append the gr572723 footer: name the door when the domain's
+        default ``SPACE:`` filter dropped hits. ``before``/``after`` are
+        the ``(tags, include_ref_ids)`` scope without and with the
+        default. Fail-soft — a counting error never breaks the search."""
+        if domain is None or not domain.spaces:
             return resp
+        before_tags, before_ids = before
+        after_tags, after_ids = after
         try:
-            ids = [
-                int(m)
-                for m in re.findall(r"(?:^## memory |\bme)(\d+)\b", resp.body, re.M)
-            ]
-            hints = narrowing_hints(self.store, ids, q)
+            folded = fold_match_all_q(q)
+            if folded and folded.strip():
+                total = self.store.chunks.count_chunks_lexical(
+                    q=folded,
+                    kind=self.kind,
+                    tags=Tag.normalize_filter(before_tags, kind=self.kind),
+                    include_ref_ids=before_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    distinct_refs=True,
+                )
+                kept = self.store.chunks.count_chunks_lexical(
+                    q=folded,
+                    kind=self.kind,
+                    tags=Tag.normalize_filter(after_tags, kind=self.kind),
+                    include_ref_ids=after_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    distinct_refs=True,
+                )
+            else:
+                total = self.store.count_refs(
+                    kind=self.kind,
+                    tags=Tag.normalize_filter(before_tags, kind=self.kind),
+                    include_ref_ids=before_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                )
+                kept = self.store.count_refs(
+                    kind=self.kind,
+                    tags=Tag.normalize_filter(after_tags, kind=self.kind),
+                    include_ref_ids=after_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                )
         except Exception:
+            log.debug("domain space footer skipped", exc_info=True)
             return resp
-        if not hints:
+        dropped = total - kept
+        if dropped <= 0:
             return resp
-        return replace(resp, body=resp.body.rstrip() + "\n\n" + "\n".join(hints))
+        space_list = ", ".join(f"SPACE:{s}" for s in sorted(domain.spaces))
+        return replace(
+            resp,
+            body=(
+                resp.body.rstrip()
+                + f"\n── domain={domain.name}: {dropped} {self._sense()} "
+                f"entr{'y' if dropped == 1 else 'ies'} outside {space_list} "
+                "hidden — the door: name a space (a caller SPACE: tag "
+                "wins), e.g. tags=['SPACE:research'] ──"
+            ),
+        )
 
     def _rulings_view(
         self,
@@ -3827,6 +3986,39 @@ class MemoryHandler(NumericRefHandler):
                 )
             )
         return Response(body="\n".join(lines))
+
+    def _body_search_hits(
+        self,
+        *,
+        q: str,
+        tags: list[str] | None,
+        page_size: int,
+        mode: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        query_vec: list[float] | None = None,
+    ) -> list[SearchHit]:
+        """Cross-kind stream: the same domain ``SPACE:`` default as
+        ``search`` (gr572723) — a domain-bound connection's wildcard
+        fan-out stays inside the domain's spaces. Machine path, no
+        footer."""
+        domain = self._domain_space_default(tags, None)
+        if domain is not None and domain.spaces:
+            space_ids = self._memory_ids_in_spaces(domain.spaces)
+            include_ref_ids = (
+                sorted(space_ids & set(include_ref_ids))
+                if include_ref_ids is not None
+                else sorted(space_ids)
+            )
+        return super()._body_search_hits(
+            q=q,
+            tags=tags,
+            page_size=page_size,
+            mode=mode,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+            query_vec=query_vec,
+        )
 
     def _rerank_fused(
         self,

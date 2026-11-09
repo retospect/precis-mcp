@@ -59,11 +59,14 @@ operators need to edit it). :func:`current_domain` resolves, beside
 ``'all'`` leaves every axis ``None`` (unrestricted), which is
 byte-identical to today: the slice ships the model and resolution dark,
 and nothing consumes a domain's axes until the fencing slices that
-follow. An env value naming no registry entry raises — a typo must fail
-loud, never silently widen to ``'all'``. A ``Domain`` naming an unknown
-kind / family / space raises ``ValueError`` from ``__post_init__``, so a
-bad registry entry fails at *import* (the constant build), not at
-serve — the lint is the construction itself.
+follow — the fan-out kinds fence first (gr572720), then the ``spaces``
+axis (gr572723): ``search(kind='memory')`` on a bounded domain defaults
+to the domain's ``SPACE:`` set, and a caller's ``SPACE:`` tag wins. An
+env value naming no registry entry raises — a typo must fail loud,
+never silently widen to ``'all'``. A ``Domain`` naming an unknown kind /
+family / space raises ``ValueError`` from ``__post_init__``, so a bad
+registry entry fails at *import* (the constant build), not at serve —
+the lint is the construction itself.
 """
 
 from __future__ import annotations
@@ -299,6 +302,10 @@ DOMAINS: dict[str, Domain] = {
         ),
         families=frozenset({"pcb"}),
     ),
+    # gr572723: the repo-dev lane. Only the memory SPACE: axis fences
+    # today — kinds/families stay open until their own slices declare
+    # them.
+    "repo-dev": Domain(name="repo-dev", spaces=frozenset({"repo-dev"})),
 }
 
 #: The connection token's bound domain (fencing slice 4): the shared
