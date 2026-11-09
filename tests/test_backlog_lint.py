@@ -18,16 +18,23 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "backlog-lint"
 
 
-def _lint(d: Path, env: dict[str, str] | None = None) -> str:
-    out = subprocess.run(
+def _lint_result(
+    d: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["bash", str(SCRIPT), str(d)],
         capture_output=True,
         text=True,
         encoding="utf-8",
-        check=True,
+        check=False,
         env=env,
     )
-    return out.stdout
+
+
+def _lint(d: Path, env: dict[str, str] | None = None) -> str:
+    cp = _lint_result(d, env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    return cp.stdout
 
 
 def _fm(status: str) -> str:
@@ -148,25 +155,29 @@ def test_prior_art_resolving_handles_are_quiet(tmp_path: Path) -> None:
     assert "prior-art" not in out
 
 
-def test_prior_art_dead_handle_is_loud(tmp_path: Path) -> None:
+def test_prior_art_dead_handle_fails(tmp_path: Path) -> None:
+    """A resolver-verified dead handle is a broken cite — the lint must go
+    red, not just print (td611601 finding: it used to exit 0)."""
     (tmp_path / "x.md").write_text(
         _steal_file(fm="prior-art: pa99999\n"), encoding="utf-8"
     )
     env = _resolver(
         tmp_path, 'for h in "$@"; do printf "%s\\tmissing\\tno live row\\n" "$h"; done'
     )
-    out = _lint(tmp_path, env=env)
-    assert "1 prior-art handle(s) do not resolve" in out
-    assert "pa99999" in out
+    cp = _lint_result(tmp_path, env=env)
+    assert cp.returncode != 0
+    assert "1 prior-art handle(s) do not resolve" in cp.stdout
+    assert "pa99999" in cp.stdout
 
 
-def test_prior_art_malformed_entry_is_loud(tmp_path: Path) -> None:
+def test_prior_art_malformed_entry_fails(tmp_path: Path) -> None:
     (tmp_path / "x.md").write_text(
         _steal_file(fm="prior-art: not-a-handle\n"), encoding="utf-8"
     )
-    out = _lint(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
-    assert "malformed prior-art" in out
-    assert "not-a-handle" in out
+    cp = _lint_result(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
+    assert cp.returncode != 0
+    assert "malformed prior-art" in cp.stdout
+    assert "not-a-handle" in cp.stdout
 
 
 def test_steal_sentence_without_prior_art_warns(tmp_path: Path) -> None:
@@ -229,7 +240,20 @@ def test_prior_art_resolution_off_via_env(tmp_path: Path) -> None:
     assert "do not resolve" not in out
 
 
-def test_prior_art_handle_with_no_verdict_is_loud(tmp_path: Path) -> None:
+def test_prior_art_resolution_on_under_ci(tmp_path: Path) -> None:
+    """CI is the acceptance path — resolution must not default off there
+    (td611601 finding). No PRECIS_BACKLOG_RESOLVER under CI=1 runs the
+    default resolver; the old 'off under CI' skip must be gone."""
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: pa2708\n"), encoding="utf-8"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "PRECIS_BACKLOG_RESOLVER"}
+    env["CI"] = "1"
+    out = _lint_result(tmp_path, env=env).stdout
+    assert "resolution off" not in out
+
+
+def test_prior_art_handle_with_no_verdict_fails(tmp_path: Path) -> None:
     (tmp_path / "x.md").write_text(
         _steal_file(fm="prior-art: pa2708, pa4715\n"), encoding="utf-8"
     )
@@ -240,6 +264,7 @@ def test_prior_art_handle_with_no_verdict_is_loud(tmp_path: Path) -> None:
         'for h in "$@"; do [ "$h" = pa2708 ] && printf "%s\\tresolved\\n" "$h"; '
         "done; exit 0",
     )
-    out = _lint(tmp_path, env=env)
-    assert "1 prior-art handle(s) do not resolve" in out
-    assert "pa4715" in out
+    cp = _lint_result(tmp_path, env=env)
+    assert cp.returncode != 0
+    assert "1 prior-art handle(s) do not resolve" in cp.stdout
+    assert "pa4715" in cp.stdout

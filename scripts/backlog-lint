@@ -6,7 +6,9 @@
 # items say "SHIPPED" but keep an open remainder), so this only SURFACES
 # candidates — a file whose title/headings carry an explicit done-marker —
 # it never deletes. Prune on completion; this catches the stragglers. Advisory
-# (exit 0), like docs-orphans / memory-lint. Bunched into /whatneedsdoing.
+# (exit 0) like docs-orphans / memory-lint — except the prior-art section:
+# a resolver-verified or malformed handle there exits nonzero (gr610793).
+# Bunched into /whatneedsdoing.
 set -euo pipefail
 # An explicit relative arg is relative to the CALLER's cwd: this script can
 # be reached through another checkout's scripts/ on PATH, and a path that
@@ -123,9 +125,10 @@ fi
 # Existence resolution goes through scripts/backlog-handles — one prod read
 # via scripts/prod-psql --ro, best-effort like docs-index's gripe read.
 # PRECIS_BACKLOG_RESOLVER overrides the resolver command (tests inject a stub),
-# `off`/`0` skips; default-off under CI. A resolver-verified dead or mistyped
-# handle is LOUD; an unreachable resolver is a quiet note — the lint itself
-# stays advisory (exit 0) like every other section.
+# `off`/`0` skips; resolution is on by default, CI included — a skipped check
+# is how broken handles stayed green. A resolver-verified dead or mistyped
+# handle, a malformed entry, or a handle the resolver gave no verdict for
+# FAILS the lint (exit 1); an unreachable resolver is a quiet note (exit 0).
 pa_handles=''
 pa_cites=''
 pa_malformed=''
@@ -181,8 +184,6 @@ RESOLVER="${PRECIS_BACKLOG_RESOLVER:-scripts/backlog-handles}"
 if [[ -n "$pa_handles" ]]; then
     if [[ "$RESOLVER" == off || "$RESOLVER" == 0 ]]; then
         pa_note="prior-art resolution off (PRECIS_BACKLOG_RESOLVER=$RESOLVER)"
-    elif [[ -z "${PRECIS_BACKLOG_RESOLVER:-}" && -n "${CI:-}" ]]; then
-        pa_note="prior-art resolution off under CI"
     else
         hs=()
         while IFS= read -r h; do
@@ -258,4 +259,9 @@ if [[ -n "$crowd" ]]; then
     echo "backlog-lint: crowded prefixes — candidates for one umbrella item (grew past lint-baseline.txt):"
     printf '%s\n' "$crowd"
 fi
+
+# Prior-art is the one non-advisory section: a verified-dead or malformed
+# handle is a broken cite, and a lint that cannot go red on it is no check
+# at all (gr610793). Everything else above stays advisory.
+[[ -n "$pa_missing$pa_malformed" ]] && exit 1
 exit 0

@@ -39,7 +39,7 @@ past the recorded count.
 **`prior-art:` is the optional source field.** An item taken from a paper,
 repo or memory names it as decimal handles — `prior-art: pa57193,
 web:608520` — which `scripts/backlog-lint` resolves against prod (a dead or
-mistyped handle is loud; prod unreachable is a quiet note). An umbrella
+mistyped handle fails the lint; prod unreachable is a quiet note). An umbrella
 item carries a `prior-art:` line inside each `##` section instead of one
 file-level field. A `Steal identified` / `Adapted from` sentence covered
 by neither warns: prose-only sources rot silently (gr610793).
