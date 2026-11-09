@@ -218,6 +218,34 @@ _COMBINED = re.compile(
     + r")"
 )
 
+#: LaTeX-only grammar: ``_COMBINED`` plus a ``rawcite`` alternative — a pasted
+#: "raw citation" line: a bare paper/patent handle copied from search/get
+#: output into the body, followed on the same line by its verbatim citation
+#: text (``pa57151 Kwangsoo Kim et al., Chem. Eng. J. 2026. …``). The whole
+#: line resolves to a real ``\cite`` so the PDF shows the bibliography mark,
+#: not the raw handle and text (gr606570). The match is line-anchored
+#: (chunk start or after ``\n``, an optional list/quote marker allowed) and
+#: the tail — the pasted citation text, detected by an ``et al.`` or a year
+#: — is MANDATORY, so mid-prose bare handles stay in ``_BARE_HANDLE``'s
+#: domain (td607054): they cite but keep their following sentence. A ``[``
+#: ends the swallow so a bracketed ref inside the line survives. Kept out
+#: of ``_COMBINED`` (docx shares it) — the docx reader keeps bare handles
+#: literal by contract. The ``rawcite`` alternative LEADS the alternation:
+#: at a line-start pasted citation the bare-handle ``bcite`` arm inside
+#: ``_COMBINED`` would otherwise match just the handle (alternation is
+#: ordered) and leave the citation text in prose.
+_COMBINED_BODY = re.compile(
+    r"(?:\A|(?<=\n))[ \t]*(?:(?:[-*+]|\d{1,3}[.)])[ \t]+|>[ \t]*)?"
+    + r"(?P<rawcite>(?:pa|pc|pk|pt)\d+(?:~\d+(?:\.\.\d+)?)?"
+    + r"[ \t]+[^\n\[]*?(?:et al\.|\b(?:19|20)\d{2}\b)[^\n\[]*)"
+    + "|"
+    + _COMBINED.pattern
+)
+
+#: The leading handle inside a ``rawcite`` match — the part that resolves to
+#: a cite key; the rest is the pasted citation text being superseded.
+_RAWCITE_HANDLE = re.compile(r"(?:pa|pc|pk|pt)\d+(?:~\d+(?:\.\.\d+)?)?")
+
 #: LaTeX special characters → their escaped forms (text mode). Applied to
 #: plain prose only — never to math (``$…$``), code, or the markup we
 #: emit ourselves.
@@ -1124,6 +1152,14 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
         if parsed is not None and (parsed[0] == "finding" or _handle_cite(tgt, ctx)[0]):
             return _render_target(tgt, None, ctx)
         return _encode_unicode(_latex_escape(tgt))
+    if m.group("rawcite") is not None:
+        hm = _RAWCITE_HANDLE.match(m.group("rawcite"))
+        rendered = _render_target(hm.group(0), None, ctx) if hm else ""
+        if rendered:
+            return rendered
+        # Unresolvable handle — keep the pasted line rather than dropping it.
+        ctx.dropped_cite = False
+        return _encode_unicode(_latex_escape(m.group(0)))
     return ""
 
 
@@ -2340,18 +2376,26 @@ def _verbatim_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _iter_refs(text: str) -> Iterator[re.Match[str]]:
+def _iter_refs(
+    text: str, pattern: re.Pattern[str] = _COMBINED
+) -> Iterator[re.Match[str]]:
     """``_COMBINED`` matches restricted to prose: a bare ``pa<id>``-class
     token (the ``bcite`` arm) inside a verbatim span is code/math content,
     not a citation — matching it split `` `pa57151` `` at the handle,
     losing the ``\\texttt``/math render and minting a cite out of code
-    (td607394). The bracket/sigil arms stay live everywhere — the same
-    guard the web reader puts on its own bare-handle arm
-    (``precis_web.linkify``). Shared with the docx exporter's inline
-    walk."""
+    (td607394). The ``rawcite`` arm (LaTeX-only, via ``_COMBINED_BODY``)
+    gets the same guard: a pasted citation line inside a multi-line inline
+    code span is code, not a cite. The bracket/sigil arms stay live
+    everywhere — the same guard the web reader puts on its own bare-handle
+    arm (``precis_web.linkify``). Shared with the docx exporter's inline
+    walk, which passes no ``pattern`` and so keeps ``_COMBINED`` semantics
+    (no ``rawcite`` arm)."""
     spans: list[tuple[int, int]] | None = None
-    for m in _COMBINED.finditer(text):
-        if m.group("bcite") is not None:
+    for m in pattern.finditer(text):
+        bare = m.group("bcite") is not None
+        if not bare and "rawcite" in m.re.groupindex:
+            bare = m.group("rawcite") is not None
+        if bare:
             if spans is None:
                 spans = _verbatim_spans(text)
             if any(s <= m.start() < e for s, e in spans):
@@ -2377,7 +2421,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     repeat = walker.RepeatGuard()  # last emitted cite mark, while only it separates us
     dropped_at: int | None = None  # out index of the gap before a dropped cite
     plain = ""  # source so far, a display link as its surface text
-    for m in _iter_refs(text):
+    for m in _iter_refs(text, _COMBINED_BODY):
         gap = text[last : m.start()]
         if dropped_at is not None and gap[:1] in walker.CLOSING_PUNCT:
             out[dropped_at] = walker.trim_before_dropped(out[dropped_at])

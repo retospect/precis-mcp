@@ -745,6 +745,61 @@ def test_bare_handle_guards_prose_tokens() -> None:
     assert r"\texttt{pa57151}" in out
 
 
+def test_pasted_raw_citation_line_renders_cite() -> None:
+    """gr606570: a body line pasted as ``pa<id> <raw citation>`` — handle +
+    verbatim citation text, as an agent copies from search/bib output —
+    resolves to a real ``\\cite``; the pasted text is superseded by the
+    bibliography entry, so neither the raw handle nor the raw line prints."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kim2026") if h == "pa57151" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(
+        "References\n"
+        "pa57151 Kwangsoo Kim et al., Chem. Eng. J. 2026. "
+        "Active-learning multi-objective design of high-entropy alloy "
+        "catalysts for syngas conversion.",
+        ctx,
+    )
+    assert r"\cite{kim2026}" in out
+    assert "pa57151" not in out
+    assert "Kwangsoo" not in out
+    assert ctx.cited == ["kim2026"]
+
+
+def test_bare_handle_mid_prose_keeps_year_tail() -> None:
+    """Mid-prose a ``pa<id>`` cites but keeps its following sentence — the
+    raw-citation tail swallow is line-anchored, so a clause that happens
+    to carry a year is not eaten (the ``_BARE_HANDLE`` domain, td607054)."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kim26") if h == "pa57151" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline("see pa57151 for the 2026 dataset.", ctx)
+    assert r"\cite{kim26}" in out
+    assert "for the 2026 dataset." in out
+
+
+def test_unresolved_raw_citation_line_keeps_literal_text() -> None:
+    """A ``pa<id> <citation>`` line whose handle resolves to nothing keeps
+    the literal text — never silently dropped."""
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=_PaperStore())
+    out = latex._render_inline(
+        "pa9999 Unknown Author et al., Some Journal 2020. A title.", ctx
+    )
+    assert "pa9999" in out
+    assert r"\cite" not in out
+    assert ctx.cited == []
+
+
 def test_handle_patent_pk_renders_cite() -> None:
     """[pk<id>] (a patent chunk) resolves to the patent's cite_key -> \\cite."""
     import types
