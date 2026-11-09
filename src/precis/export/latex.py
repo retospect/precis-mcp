@@ -34,7 +34,7 @@ import html
 import json
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -2326,6 +2326,39 @@ def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
     return "".join(out)
 
 
+def _verbatim_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` offsets of the spans :func:`_render_gap` treats as
+    verbatim — inline code, and math passing the same
+    :func:`_math_braces_balanced` / :func:`_math_plausible` gate — so the
+    reference scan can leave their interiors alone."""
+    spans = [
+        (m.start(), m.end())
+        for m in _MATH.finditer(text)
+        if _math_braces_balanced(m.group(0)) and _math_plausible(m.group(0))
+    ]
+    spans += [(m.start(), m.end()) for m in _MD_CODE.finditer(text)]
+    return spans
+
+
+def _iter_refs(text: str) -> Iterator[re.Match[str]]:
+    """``_COMBINED`` matches restricted to prose: a bare ``pa<id>``-class
+    token (the ``bcite`` arm) inside a verbatim span is code/math content,
+    not a citation — matching it split `` `pa57151` `` at the handle,
+    losing the ``\\texttt``/math render and minting a cite out of code
+    (td607394). The bracket/sigil arms stay live everywhere — the same
+    guard the web reader puts on its own bare-handle arm
+    (``precis_web.linkify``). Shared with the docx exporter's inline
+    walk."""
+    spans: list[tuple[int, int]] | None = None
+    for m in _COMBINED.finditer(text):
+        if m.group("bcite") is not None:
+            if spans is None:
+                spans = _verbatim_spans(text)
+            if any(s <= m.start() < e for s, e in spans):
+                continue
+        yield m
+
+
 def _render_inline(text: str, ctx: _Ctx) -> str:
     """Render a chunk's text: walk references (rendered as LaTeX markup),
     LaTeX-escape + markdownify the gaps between them. Single pass, mirrors
@@ -2344,7 +2377,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     repeat = walker.RepeatGuard()  # last emitted cite mark, while only it separates us
     dropped_at: int | None = None  # out index of the gap before a dropped cite
     plain = ""  # source so far, a display link as its surface text
-    for m in _COMBINED.finditer(text):
+    for m in _iter_refs(text):
         gap = text[last : m.start()]
         if dropped_at is not None and gap[:1] in walker.CLOSING_PUNCT:
             out[dropped_at] = walker.trim_before_dropped(out[dropped_at])

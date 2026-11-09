@@ -826,6 +826,29 @@ def test_bare_citable_handle_unresolved_stays_literal() -> None:
     assert ctx.cited == []
 
 
+def test_bare_citable_handle_in_code_and_math_stays_verbatim() -> None:
+    """td607394: a ``pa<id>`` inside `` `code` `` or ``$math$`` is span
+    content, not a citation — the ``_COMBINED`` scan must not split the
+    span at the handle (the code span kept its ``\\texttt`` render, the
+    math span stays verbatim, no ``\\cite`` is minted). Only a real prose
+    occurrence cites."""
+    import types
+
+    store = types.SimpleNamespace(
+        resolve_handle=lambda h: (
+            types.SimpleNamespace(public_id="kim26") if h == "pa57151" else None
+        )
+    )
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(
+        "handle `pa57151` and term $x_{pa57151}$ stay put; pa57151 cites.", ctx
+    )
+    assert r"\texttt{pa57151}" in out  # code span kept, literal interior
+    assert "$x_{pa57151}$" in out  # math span verbatim
+    assert out.count(r"\cite{kim26}") == 1  # only the prose occurrence
+    assert ctx.cited == ["kim26"]
+
+
 # ── Taproot claim-hub finding handle (Phase 1 — living citations reach
 # draft export): a [fi<id>] finding handle that resolves to a
 # TAPROOT:claim hub cites its *derived* establishes originator(s)

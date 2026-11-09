@@ -77,12 +77,12 @@ from precis.export._trust_marks import (
 )
 from precis.export.latex import (
     _CITE_ENTRY_TYPES,
-    _COMBINED,
     _MATH,
     _NAME_UNISPACE,
     _NAME_ZEROWIDTH,
     _PATENT_DOC_TYPE,
     _conjunct_cite_keys,
+    _iter_refs,
     _math_braces_balanced,
     _math_plausible,
     _standalone_equation,
@@ -754,7 +754,7 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     ctx.cite_run.interrupt()
     last = 0
     dropped = False  # the previous reference was a cite dropped for no source
-    for m in _COMBINED.finditer(text):
+    for m in _iter_refs(text):
         gap = text[last : m.start()]
         if dropped and gap[:1] in _CLOSING_PUNCT:
             _rstrip_last_run(paragraph)

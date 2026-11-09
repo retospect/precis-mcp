@@ -2688,6 +2688,39 @@ def test_bare_handles_in_prose_are_replaced() -> None:
     assert any("td459589" in w for w in ctx.warnings)
 
 
+def test_bare_citable_handle_in_code_and_math_not_cited() -> None:
+    """td607394: a ``pa<id>`` inside a code or math span is span content,
+    not a citation — matching it split `` `pa57151` `` at the handle,
+    minting a ``[n]`` cite out of code. Only the prose occurrence cites."""
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    store = SimpleNamespace(
+        resolve_handle=lambda h: (
+            SimpleNamespace(public_id="kim26") if h == "pa57151" else None
+        )
+    )
+    ctx = dx._Ctx(
+        store=store,
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    para = docx.Document().add_paragraph()
+    dx._render_inline(
+        "handle `pa57151` and term $x_{pa57151}$ stay put; pa57151 cites.",
+        ctx,
+        para,
+    )
+    assert ctx.cited == ["kim26"]  # only the prose occurrence cites
+    assert "[1]" in para.text
+    code_runs = [r for r in para.runs if r.font.name == "Consolas"]
+    assert any(r.text == "pa57151" for r in code_runs)
+
+
 def _back_matter_headings(draft: DraftHandler, hub: Hub, tmp_path: Path) -> list[str]:
     _seed_paper(hub.live_store, "bm1", "Back matter paper", 2020)
     pid = _new_draft_project(hub)
