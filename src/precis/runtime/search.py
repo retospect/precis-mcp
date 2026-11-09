@@ -109,6 +109,7 @@ _SOURCE_SEARCH_CONSUMED: frozenset[str] = frozenset(
         "status",
         "mode",
         "page",
+        "offset",
         "page_size",
         "top_k",
         "exclude",
@@ -1201,10 +1202,12 @@ class SearchMixin(RuntimeShape):
         ``exclude=`` resolves slug/handle/container entries per kind into
         the same channel (gr608576); ``queries=``/``answers=`` add
         broad-retrieval legs fused with ``q`` (same shape as the paper
-        handler's broad path); ``page=`` pages the fused per-ref list with
-        a one-row probe for the continuation hint. A pinned identity card
-        counts as a page row — it fills row 1 of page 1 and shifts every
-        later page's fused offset back one.
+        handler's broad path); ``page=``/``args={'offset': N}`` page the
+        fused per-ref list with a one-row probe for the continuation
+        hint — ``offset`` is the exact primitive a truncated page's
+        ``next:`` call names (td610130). A pinned identity card counts
+        as a page row — it fills row 1 of the head window and shifts
+        every later window's fused offset back one.
         """
         store = self.hub.store
         if store is None:
@@ -1269,6 +1272,31 @@ class SearchMixin(RuntimeShape):
             raise BadInput(
                 f"page= must be a positive integer, got {page_raw!r}",
                 next=self._source_search_page_call(kind, args, page_size=None, page=1),
+            )
+        # ``args={'offset': N}`` (td610130): the exact resume primitive a
+        # truncated page's ``next:`` call names — ``page`` can only place
+        # a window at a multiple of ``page_size``, so a mid-page cut
+        # needs the absolute row offset to avoid a gap/overlap.
+        offset_raw = args.get("offset")
+        try:
+            resume_offset = int(offset_raw) if offset_raw is not None else None
+        except (TypeError, ValueError):
+            resume_offset = -1
+        if isinstance(offset_raw, bool) or (
+            resume_offset is not None and resume_offset < 0
+        ):
+            raise BadInput(
+                f"offset= must be a non-negative integer, got {offset_raw!r}",
+                next=self._source_search_page_call(
+                    kind, args, page_size=None, offset=0
+                ),
+            )
+        if resume_offset is not None and page > 1:
+            raise BadInput(
+                "page= and offset= both place the window — pass one",
+                next=self._source_search_page_call(
+                    kind, args, page_size=None, offset=resume_offset
+                ),
             )
         top_k = int(args.get("page_size") or args.get("top_k") or 10)
         # Broad-retrieval legs (gr608576): ``queries=`` are extra
@@ -1364,12 +1392,13 @@ class SearchMixin(RuntimeShape):
                 )
         # The pinned identity card (a handle/identifier ``q``) is part of
         # the paginated stream, not decoration on top of it: it occupies
-        # row 1 of page 1, so every deeper page's fused offset shifts
-        # back one row — otherwise the fetched row it displaces is
-        # render-dropped on page 1 while page 2 skips past it for good
-        # (td609888). It resolves on every page, not just page 1, so that
-        # accounting stays consistent; its ref leaves the store query so
-        # no page can render it twice (the pin *is* that ref's row).
+        # row 1 of the head window, so every deeper window's fused offset
+        # shifts back one row — otherwise the fetched row it displaces is
+        # render-dropped at the head while the next window skips past it
+        # for good (td609888). It resolves on every window, not just the
+        # head, so that accounting stays consistent; its ref leaves the
+        # store query so no window can render it twice (the pin *is* that
+        # ref's row).
         handle_hit = self._handle_query_hit(
             q,
             kinds=(None if expanded.strip().lower() in _CROSS_KIND_ALIASES else kinds),
@@ -1384,9 +1413,18 @@ class SearchMixin(RuntimeShape):
             )
         # Probe one row past the page so the continuation hint is exact
         # — the same trick the byline/stamp listings run; ``offset``
-        # pages the one fused, per-ref-collapsed list.
-        page_rows = top_k - pin_rows if page == 1 else top_k
-        offset = max(0, (page - 1) * top_k - pin_rows)
+        # pages the one fused, per-ref-collapsed list. An explicit
+        # ``args={'offset': N}`` places the window at an exact result
+        # offset (td610130); ``page`` is sugar for the ``top_k``
+        # multiples, shifted back one when the pin fills the head
+        # window's row 1.
+        offset = (
+            resume_offset
+            if resume_offset is not None
+            else max(0, (page - 1) * top_k - pin_rows)
+        )
+        at_head = resume_offset == 0 if resume_offset is not None else page == 1
+        page_rows = top_k - pin_rows if at_head else top_k
         results = store.chunks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
@@ -1407,10 +1445,19 @@ class SearchMixin(RuntimeShape):
         has_more = len(results) > page_rows
         results = results[:page_rows]
         hits: list[SearchHit] = []
-        if page == 1 and handle_hit is not None:
+        # The pinned card fills row 1 of the head window only — a deeper
+        # window neither repeats it nor reserves a row for it.
+        if at_head and handle_hit is not None:
             hits.append(handle_hit)
         seen_parents: set[int] = set()
-        for block, ref, score in results:
+        # Indices into ``results`` that produced no rendered row (a
+        # parent-handle collapse, an empty chunk render). The
+        # budget_fit's resume offset must count them as consumed — the
+        # rendered row count alone would restart mid-span and re-show a
+        # result (td610130).
+        dropped: list[int] = []
+        for idx, (block, ref, score) in enumerate(results):
+            before = len(hits)
             for hit in block_hits_to_search_hits([(block, ref, score)], kind=ref.kind):
                 # gr495382: gripe/todo/quest comments are chunks, but the
                 # thing to act on is the parent (gr123), not the chunk handle
@@ -1425,6 +1472,8 @@ class SearchMixin(RuntimeShape):
                             hit, uhandle=parent, dedupe_key=f"{ref.kind}:{ref.id}"
                         )
                 hits.append(hit)
+            if len(hits) == before:
+                dropped.append(idx)
 
         date_suffix = " in the given date window" if (since or until) else ""
         if semantic_degraded:
@@ -1496,18 +1545,32 @@ class SearchMixin(RuntimeShape):
             # Re-render the call verbatim — dropping
             # queries=/answers=/exclude=/since= would silently change the
             # ordering and window (same contract as the paper broad path's
-            # continuation hint). ``args={'page': N}`` is the paging
-            # spelling on this path: it survives the MCP boundary, where
-            # ``page`` is not an advertised param.
+            # continuation hint). The continuation keeps the caller's own
+            # window spelling: ``args={'page': N+1}`` for a page window,
+            # ``args={'offset': M}`` for an offset window — both survive
+            # the MCP boundary inside ``args={}`` (gr608577, td610130).
             from precis.utils.next_block import render_next_section
 
+            cont_label = (
+                f"see the next {top_k} matches (offset {offset + page_rows})"
+                if resume_offset is not None
+                else f"see the next {top_k} matches (page {page + 1})"
+            )
             body += render_next_section(
                 [
                     (
                         self._source_search_page_call(
-                            kind, args, page_size=top_k, page=page + 1
+                            kind,
+                            args,
+                            page_size=top_k,
+                            page=None if resume_offset is not None else page + 1,
+                            offset=(
+                                offset + page_rows
+                                if resume_offset is not None
+                                else None
+                            ),
                         ),
-                        f"see the next {top_k} matches (page {page + 1})",
+                        cont_label,
                     )
                 ]
             )
@@ -1523,9 +1586,10 @@ class SearchMixin(RuntimeShape):
                     head=split[0],
                     rows=split[1],
                     offset=offset,
-                    page=page,
                     page_size=top_k,
                     has_more=has_more,
+                    pinned=at_head and handle_hit is not None,
+                    dropped=dropped,
                 )
                 if split is not None
                 else None
@@ -1538,25 +1602,35 @@ class SearchMixin(RuntimeShape):
         args: dict[str, Any],
         *,
         page_size: int | None,
-        page: int,
+        page: int | None = None,
+        offset: int | None = None,
     ) -> str:
-        """The ``args={'page': N}`` continuation spelling (gr608577).
+        """The ``args={'page': N}``/``args={'offset': N}`` continuation
+        spelling (gr608577, td610130).
 
         Replays every caller arg verbatim via ``_search_call_text`` (the
         resolved ``uncited=``/``hubbed=`` facets re-render in their own
-        spelling); ``page`` rides inside ``args={}`` — the shape that
-        survives the MCP boundary — and ``page_size`` overrides so a
-        resume call names the size that actually fit.
+        spelling); the window rides inside ``args={}`` — the shape that
+        survives the MCP boundary, where ``page``/``offset`` are not
+        advertised params — and ``page_size`` overrides so a resume call
+        names the size that actually fit. ``offset`` is the exact
+        primitive: it places the window at any result-row boundary,
+        which a mid-page cut needs and ``page`` cannot express. A
+        first-window continuation (``offset=0``/``page=1``) renders no
+        window arg at all — both are the wrapper's own defaults.
         """
         replay = dict(args)
         replay["page"] = None
+        replay["offset"] = None
         if page_size is not None:
             replay["page_size"] = page_size
         extras = dict(replay.get("__extras__") or {})
-        if page > 1:
+        extras.pop("page", None)
+        extras.pop("offset", None)
+        if offset:
+            extras["offset"] = offset
+        elif page and page > 1:
             extras["page"] = page
-        else:
-            extras.pop("page", None)
         replay["__extras__"] = extras
         return _search_call_text(kind, replay, set())
 
@@ -1569,34 +1643,56 @@ class SearchMixin(RuntimeShape):
         head: str,
         rows: list[str],
         offset: int,
-        page: int,
         page_size: int,
         has_more: bool,
+        pinned: bool,
+        dropped: list[int],
     ) -> Callable[[int], str]:
         """The ``budget_fit`` for an over-cap source-search page.
 
         Cuts at whole hit rows; the trailer names the resume call that
-        continues the same ordering where the cut fell — a mid-page cut
-        resumes at ``offset + shown`` via ``page_size=<shown>`` and the
-        ``args={'page': N}`` spelling, never past it (gr608577: the
-        generic line-fit left the unshown rows unreachable).
+        continues the same ordering where the cut fell — ``args=
+        {'offset': <M>}`` places the window at the exact underlying
+        result offset, ``page_size`` keeps the caller's own (gr608577:
+        the generic line-fit left the unshown rows unreachable;
+        td610130: the page*size arithmetic could not express a mid-page
+        offset at all). ``offset`` counts consumed *results*, not
+        rendered rows — the pinned identity card is a rendered
+        head-window row but consumes no result slot (its ref never
+        reaches ``results``), while a result whose row was suppressed
+        (a parent-handle collapse — the ``dropped`` indices) still
+        consumes its slot: a resume that re-fetched it would re-show
+        the last displayed row.
         """
         from precis._result_budget import body_bytes
 
         total = body_bytes(body)
+        pin_rows = 1 if pinned else 0
+
+        def consumed(k: int) -> int:
+            # ``results`` entries the first ``k`` rendered rows account
+            # for: the shown result rows, plus every suppressed index
+            # interleaved inside that span (fixpoint — each drop inside
+            # the span pulls it one wider).
+            shown_results = max(0, k - pin_rows)
+            m = shown_results
+            while True:
+                wider = shown_results + sum(1 for j in dropped if j < m)
+                if wider == m:
+                    return m
+                m = wider
 
         def tail(k: int) -> str:
-            if k >= len(rows):
-                if not has_more:
-                    return ""
-                resume_size, resume_page = page_size, page + 1
-            else:
-                resume_size, resume_page = k, (offset + k) // k + 1
+            if k >= len(rows) and not has_more:
+                return ""
             shown = body_bytes(head + "".join(rows[:k]))
             return (
                 f"\n\n… truncated: showing {shown} of {total} bytes\nnext: "
                 + self._source_search_page_call(
-                    kind, args, page_size=resume_size, page=resume_page
+                    kind,
+                    args,
+                    page_size=page_size,
+                    offset=offset + consumed(k),
                 )
             )
 
@@ -1614,7 +1710,9 @@ class SearchMixin(RuntimeShape):
                 raise ResultBudgetExceeded(
                     f"search: result is {total} bytes and even one hit row "
                     f"does not fit under the {cap}-byte result budget",
-                    next=self._source_search_page_call(kind, args, page_size=5, page=1),
+                    next=self._source_search_page_call(
+                        kind, args, page_size=5, offset=offset
+                    ),
                 )
             return head + "".join(rows[:lo]) + tail(lo)
 

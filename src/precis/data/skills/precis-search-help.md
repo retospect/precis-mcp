@@ -360,10 +360,10 @@ no-op, `offset>0` and `page=` refuse with a canonical next call —
 there is no page 2.
 
 The one exception is the `sort=`/`since=`/`until=` source search:
-its pages continue via `args={'page': N}` — the truncated page's own
-`next:` call spells the resume (`page_size=<rows shown>`), and a page
-that fits but has more hits names `args={'page': 2}` in its Next:
-block.
+its pages continue via `args={'page': N}` — a page that fits but has
+more hits names `args={'page': 2}` in its Next: block, and a truncated
+page's own `next:` call spells the exact resume
+(`args={'offset': M}`).
 
 `skill` searches trim the default menu when one hit clearly outscores the
 tail. An explicit `page_size=` shows the full bounded set; `mode='verbatim'`

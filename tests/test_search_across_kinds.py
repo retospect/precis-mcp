@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -607,29 +608,119 @@ def test_source_search_page_validation(
     assert "page" in out
 
 
+def _source_window_ids(body: str) -> set[int]:
+    return {int(i) for i in re.findall(r"pw-(\d+)-", body)}
+
+
+def _advertised_window(body: str) -> tuple[str, int] | None:
+    """The first ``args={'page'|'offset': N}`` a body names, else None."""
+    m = re.search(r"args=\{[^}]*'(page|offset)': (\d+)", body)
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def test_source_search_offset_window_and_validation(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``args={'offset': N}`` places the same window ``page`` would at a
+    multiple of ``page_size`` — and refuses a bad value or a ``page=``
+    conflict (td610130)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    _seed_paper_window(store, 5, emb)
+    base = {
+        "kind": "paper",
+        "q": "zephyr tide gauge",
+        "since": "2000-01-01",
+        "page_size": 2,
+    }
+    by_page = runtime_with_store.dispatch("search", {**base, "__extras__": {"page": 2}})
+    by_offset = runtime_with_store.dispatch(
+        "search", {**base, "__extras__": {"offset": 2}}
+    )
+    assert _source_window_ids(by_offset) == _source_window_ids(by_page)
+    # An offset window continues by offset, not page.
+    assert "'offset': 4" in by_offset
+
+    out = runtime_with_store.dispatch("search", {**base, "__extras__": {"offset": -1}})
+    assert "[error:BadInput]" in out
+    assert "offset" in out
+    out = runtime_with_store.dispatch(
+        "search", {**base, "page": 2, "__extras__": {"offset": 2}}
+    )
+    assert "[error:BadInput]" in out
+
+
 def test_source_search_fit_names_exact_resume(
     runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An over-cap page cuts at a row boundary and names the resume call
-    that continues the same ordering — ``page_size=<shown>`` +
-    ``args={'page': N}`` (gr608577)."""
+    that continues the same ordering — ``args={'offset': M}`` at the
+    exact underlying result offset (gr608577; td610130 — page*size
+    arithmetic could not express a mid-page cut)."""
     emb = MockEmbedder(dim=store.embedding_dim())
     _seed_paper_window(store, 30, emb)
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1200")
-    body, is_error = runtime_with_store.dispatch_with_status(
-        "search",
-        {
-            "kind": "paper",
-            "q": "zephyr tide gauge",
-            "since": "2000-01-01",
-            "page_size": 30,
-        },
-    )
-    assert is_error is False
-    assert "… truncated: showing" in body
-    assert "next: search(" in body
-    assert "args={'page': 2}" in body
-    m = re.search(r"page_size=(\d+)", body)
-    assert m is not None
-    resume_size = int(m.group(1))
-    assert 0 < resume_size < 30
+    call: dict[str, Any] = {
+        "kind": "paper",
+        "q": "zephyr tide gauge",
+        "since": "2000-01-01",
+        "page_size": 30,
+    }
+    seen: set[int] = set()
+    for _ in range(8):
+        body, is_error = runtime_with_store.dispatch_with_status("search", call)
+        assert is_error is False, body
+        ids = _source_window_ids(body)
+        assert ids.isdisjoint(seen), f"rows shown twice: {sorted(ids & seen)}"
+        seen |= ids
+        window = _advertised_window(body)
+        if window is None:
+            break
+        call = {**call, "__extras__": {window[0]: window[1]}}
+    assert seen == set(range(30))
+
+
+def test_source_search_fit_pinned_card_not_a_result(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pinned identity card fills row 1 of the head window but
+    consumes no *result* slot — a budget cut resumes at the first
+    unshown result, not one row later (td610130: counting the card as
+    a consumed result skipped an unseen row)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    ref_ids = _seed_paper_window(store, 30, emb)
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1200")
+    call: dict[str, Any] = {
+        "kind": "paper",
+        # ``q`` naming the record handle pins its card — its ref leaves
+        # the store query (the pin *is* its row, td609888), so no window
+        # can render it twice. The ``queries=`` leg supplies the results
+        # the page renders beside it.
+        "q": f"pa{ref_ids[0]}",
+        "queries": ["zephyr tide gauge"],
+        "since": "2000-01-01",
+        "sort": "oldest",
+        "page_size": 30,
+    }
+    seen: set[int] = set()
+    first = True
+    for _ in range(8):
+        body, is_error = runtime_with_store.dispatch_with_status("search", call)
+        assert is_error is False, body
+        ids = _source_window_ids(body)
+        assert ids.isdisjoint(seen), f"rows shown twice: {sorted(ids & seen)}"
+        seen |= ids
+        if first:
+            first = False
+            assert "… truncated: showing" in body
+            # The pinned card renders as row 1 but consumes no result
+            # slot: with the pin row the page shows n_rows rendered rows
+            # for n_rows-1 consumed results, so the resume lands at
+            # n_rows-1 — not n_rows (a skip) nor n_rows-2 (a re-show).
+            n_rows = len(re.findall(r"\n## \d+\.", body))
+            window = _advertised_window(body)
+            assert window == ("offset", n_rows - 1)
+        window = _advertised_window(body)
+        if window is None:
+            break
+        call = {**call, "__extras__": {window[0]: window[1]}}
+    assert seen == set(range(30))
