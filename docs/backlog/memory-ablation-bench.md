@@ -348,6 +348,11 @@ curve per arm.
    index row representation, truncatable titles); depends on slice 5.
 9. Observational baseline: mine prod tool-call WARNING lines for error
    rate per verb × kind and `next:` uptake; read-only, no dependency.
+   Done 2026-11-09 (td605104): `bench/observational/2026-11-09-prod-tool-errors/`
+   (report + re-runnable SQL). Agent clients 5.2 % call error rate,
+   75 % of error episodes recover; next-call hint uptake 10 %, and 129 of
+   130 sampled hints are the generic skill pointer — so `no-hints` today
+   ablates skill pointers, not actionable hints.
 10. Model × surface arms: reduced-API facade and simplified-skills set
     in `agent.py`, model ladder through the existing router; depends on
     slice 5.
