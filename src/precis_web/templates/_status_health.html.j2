@@ -22,6 +22,61 @@
   </div>
 </div>
 
+{# Release pass (gr606988): the auto cut → CI gate → fix loop → deploy
+   pass, one row per ``release-pass`` plan root. A re-cut keeps the pass
+   but takes a new release number, shown as the renumbering
+   ``r259 → r260`` on the one row. The steps strip marks each pipeline
+   node done / active (unblocked) / pending; the CI cell links the
+   recorded check.yml run; the prod chip answers "is prod serving it". #}
+<section class="mb-6" data-kind="release-pass">
+  <h2 class="text-sm font-semibold mb-2">Release pass
+    <span class="font-normal text-xs text-fg-faint">
+      auto cut → gate → fix loop → deploy{% if release_passes.prod_head %}
+      · prod serves <code class="font-mono">{{ release_passes.prod_head.sha[:12] }}</code>{{ ' ' }}{{ release_passes.prod_head.ago }}{% endif %}{% if release_passes.round %}
+      · round r{{ release_passes.round.n }} {{ release_passes.round.state }}{% endif %}
+    </span>
+  </h2>
+  <div class="rounded-lg border border-line bg-surface overflow-hidden">
+    <table class="w-full text-xs">
+      <tbody class="divide-y divide-line-subtle">
+        {% for p in release_passes.passes %}
+        <tr class="hover:bg-surface-subtle {% if not p.open %}text-fg-faint{% endif %}" data-handle="{{ p.handle }}">
+          <td class="px-3 py-2 font-mono whitespace-nowrap">
+            <a class="text-fg-secondary hover:underline" href="/eye/{{ p.handle }}">{{ p.handle }}</a>
+            <span class="text-fg-faint">{{ p.status }}</span>
+          </td>
+          <td class="px-3 py-2 font-mono whitespace-nowrap">{{ p.rns }}</td>
+          <td class="px-3 py-2 font-mono text-fg-subtle max-w-40 truncate" title="{{ p.range }}{% if p.cut_at %} · cut {{ p.cut_at }}{% endif %}">{{ p.range or '—' }}</td>
+          <td class="px-3 py-2 whitespace-nowrap">
+            {% if p.gate.verdict == 'none' %}<span class="text-fg-faint">—</span>
+            {% elif p.gate.verdict == 'pending' %}<span class="text-warning">CI pending</span>
+            {% elif p.gate.verdict == 'green' %}<span class="text-success-strong font-medium">CI green</span>
+            {% else %}<span class="text-danger-strong font-medium">CI red</span>{% endif %}
+            {% if p.gate.run_url %}<a class="text-info hover:underline" href="{{ p.gate.run_url }}">run {{ p.gate.run_id }}</a>{% elif p.gate.run_id %}<span class="text-fg-subtle">run {{ p.gate.run_id }}</span>{% endif %}
+            <span class="text-fg-faint">{{ p.gate.ago }}</span>
+          </td>
+          <td class="px-3 py-2 font-mono text-fg-subtle whitespace-nowrap">{{ p.loop or '—' }}</td>
+          <td class="px-3 py-2">
+            <span class="text-fg-secondary">{{ p.step }}</span>
+            <span class="text-fg-faint">
+              {% for s in p.steps %}<a class="hover:underline {% if s.state == 'done' %}text-success-strong{% elif s.state == 'active' %}text-warning font-medium{% else %}text-fg-faint{% endif %}" href="/eye/{{ s.handle }}" title="{{ s.label }} — {{ s.state }}">{{ s.label }}</a>{{ ' · ' if not loop.last }}{% endfor %}
+            </span>
+          </td>
+          <td class="px-3 py-2 whitespace-nowrap">
+            {% if p.served %}<span class="text-success-strong font-medium">served</span>
+            {% elif p.served == False and p.open %}<span class="text-fg-faint">not in prod</span>{% endif %}
+            {% if p.round %}<span class="text-fg-subtle font-mono">{{ p.round }}</span>{% endif %}
+          </td>
+          <td class="px-3 py-2 text-right text-fg-faint whitespace-nowrap" title="{{ p.at }}">{{ p.age }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="px-4 py-2 text-sm text-fg-subtle">no release pass on record</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <!-- Claude usage rolled up from ref_events.cost_usd. -->
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Claude usage</h2>

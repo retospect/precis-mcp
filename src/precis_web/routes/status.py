@@ -1195,6 +1195,19 @@ def _no_quest_jobs(store: Store) -> dict[str, Any]:
     }
 
 
+def _release_passes(store: Store) -> dict[str, Any]:
+    """The Health tab's Release-pass panel (gr606988): one row per
+    ``release-pass`` plan root — the auto cut → gate → fix loop → deploy
+    pass with its r<N> renumbering, CI run + verdict, loop count, current
+    step and prod served sha. The model lives in
+    :mod:`precis_web.release_passes`; this wrapper rides the request's
+    shared connection like every other section."""
+    from precis_web.release_passes import release_passes
+
+    with _connect(store) as conn:
+        return release_passes(store, conn=conn)
+
+
 def _app_version() -> str:
     """Installed ``precis-mcp`` version, for stale-server detection."""
     from importlib.metadata import PackageNotFoundError, version
@@ -1338,6 +1351,8 @@ def _health_fast_ctx(store: Store) -> dict[str, Any]:
         "usage": _safe(lambda: _claude_usage(store)) or {},
         "no_quest_jobs": _safe(lambda: _no_quest_jobs(store))
         or {"count": 0, "top": []},
+        "release_passes": _safe(lambda: _release_passes(store))
+        or {"passes": [], "prod_head": None, "round": None},
     }
 
 
