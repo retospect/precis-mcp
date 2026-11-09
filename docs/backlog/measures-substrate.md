@@ -1115,3 +1115,11 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   (`class-lattice-…` §3). The one-paper ownership rule for `experiment`
   is widened for first-party runs by `first-party-experiment-records.md`
   (a run owned by a job / quest tick / se design), not here.
+- **[decided, Reto 2026-11-09] External comparison set (gr606461).**
+  The ALCHEM Lab (Hanyang ERICA) graph — 11,314 property values over 76
+  papers, CC BY 4.0 TriG — is the adopted comparison set for `measures`
+  extraction. `src/precis/extract/alchem.py` + `scripts/alchem-diff`
+  run the re-runnable per-paper agreement diff (match / value≠ / unit≠
+  / ours-only / theirs-only on the 12 held full-text papers); because
+  the gold set is itself one unreviewed model pass, the report is
+  agreement, not precision/recall.

@@ -18,6 +18,9 @@ samples the batch at a 5% error bar — no per-value human sign-off.
 * :mod:`precis.extract.tables` — the deterministic pipe-table grid
   parse (header, rows, exact-offset cells, footnote/citation markers,
   caption lookup); the one definition of a table line and separator.
+* :mod:`precis.extract.alchem` — the ALCHEM knowledge graph as an
+  external comparison set: TriG parse, ALCHEM unit normalisation and
+  the per-paper agreement diff (gr606461).
 
 Pure functions only: the DB and LLM glue lives in
 ``precis.workers.job_types.survey_extract``.

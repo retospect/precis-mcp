@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scripts/alchem-diff — agreement diff of precis measures vs the ALCHEM
+# knowledge graph (gr606461). READ-ONLY: every statement is a SELECT.
+#
+# Usage:
+#   scripts/alchem-diff --fetch                  # download data.trig once
+#   scripts/alchem-diff                          # the 12 held papers, dev DB
+#   scripts/_prod-run scripts/alchem-diff        # against PROD
+#   scripts/alchem-diff --papers pa57151,pa605992 --details 10
+#   scripts/alchem-diff --all-alchem --json scratch/diff.json
+#
+# Database: PRECIS_DATABASE_URL (dev DB by default; scripts/_prod-run
+# exports prod's). Never a literal in the repo.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec uv run python scripts/_alchem_diff.py "$@"
