@@ -153,6 +153,24 @@ class ClaudePUnparseableError(ClaudePError):
         self.subtype = subtype
 
 
+class ClaudePEnvelopeError(ClaudePUnparseableError):
+    """The subprocess ran fine but the ``type: "result"`` envelope itself
+    declared the turn failed — ``is_error: true`` (an API/account-level
+    refusal) or a non-``success`` ``subtype`` (``error_max_budget_usd``,
+    ``error_during_execution``, ``error_max_turns``).
+
+    Distinct from a plain format flake: the CLI says no completed answer
+    exists even when its ``result`` happens to carry parseable JSON — a
+    structured-output echo or a partial answer cut by the spend cap. Raised
+    instead of returning a :class:`ClaudePResult` so the router's
+    ``_error_result`` keeps its ``transport`` / ``budget`` / ``quota``
+    classification (a dict ``result`` on an error envelope would otherwise
+    land as a clean parse, gr570522). A subclass of
+    :class:`ClaudePUnparseableError`, so ``except`` clauses and the
+    router's envelope-telemetry branch need no new case.
+    """
+
+
 @dataclass(frozen=True)
 class ClaudePResult:
     """Parsed result of a successful :func:`call_claude_p` invocation.
@@ -293,7 +311,10 @@ def call_claude_p(
 
     Raises:
         ClaudePError: when the subprocess exits non-zero, times out,
-            or returns no parseable JSON block.
+            the result envelope declares failure (``is_error`` or a
+            non-``success`` ``subtype`` —
+            :class:`ClaudePEnvelopeError`), or the reply contains no
+            parseable JSON block (:class:`ClaudePUnparseableError`).
     """
     binary = resolve_binary()
     model = model or os.environ.get("PRECIS_CLAUDE_MODEL", _DEFAULT_MODEL)
@@ -403,7 +424,44 @@ def call_claude_p(
         **stdin_kwargs,
     )
 
-    payload, cost, usage, is_error = unwrap_envelope(res.stdout or "")
+    # Parse the envelope once — the subtype rides alongside
+    # ``unwrap_envelope``'s four outputs so the failure gate and a failed
+    # parse both see it without a second decode.
+    env = _envelope_dict(res.stdout or "")
+    if env is None:
+        payload, cost, usage, is_error = (
+            res.stdout or "",
+            None,
+            dict(_EMPTY_USAGE),
+            False,
+        )
+    else:
+        payload, cost, usage, is_error = _unwrap_envelope(env)
+    subtype = _subtype_of(env)
+
+    if is_error or (subtype is not None and subtype != "success"):
+        # The CLI's own verdict beats a parseable ``result``: an
+        # ``is_error``/``error_*`` envelope reports an API/account-level
+        # refusal or a spend-cap stop — its ``result`` is the refusal text
+        # or a partial answer, never a completed one. A dict ``result``
+        # (a structured-output echo) or a lucky string fragment would
+        # otherwise land here as a successful parse (gr570522). Route it
+        # through the failure path so ``_error_result`` keeps the
+        # transport/budget/quota classification.
+        if cost is None:
+            cost = extract_cost_usd(res.stderr or "")
+        raise ClaudePEnvelopeError(
+            "claude -p turn failed: the result envelope declared "
+            f"is_error={is_error} subtype={subtype}",
+            stdout=res.stdout,
+            stderr=res.stderr,
+            reply=payload,
+            cost_usd=cost,
+            usage=usage,
+            is_error=is_error,
+            subtype=subtype,
+        )
+
     data = _parse_last_json_block(payload)
     if data is None:
         if cost is None:
@@ -420,7 +478,7 @@ def call_claude_p(
             cost_usd=cost,
             usage=usage,
             is_error=is_error,
-            subtype=_envelope_subtype(res.stdout or ""),
+            subtype=subtype,
         )
 
     if cost is None:
@@ -538,6 +596,15 @@ def unwrap_envelope(
     env = _envelope_dict(stdout.strip())
     if env is None:
         return stdout, None, dict(_EMPTY_USAGE), False
+    return _unwrap_envelope(env)
+
+
+def _unwrap_envelope(
+    env: dict[str, Any],
+) -> tuple[str, float | None, dict[str, int | None], bool]:
+    """``(payload, cost, usage, is_error)`` off an already-parsed envelope —
+    the tail of :func:`unwrap_envelope`, factored so a caller that also
+    needs the envelope's ``subtype`` never parses the text twice."""
     raw_cost = env.get("total_cost_usd")
     cost = float(raw_cost) if isinstance(raw_cost, int | float) else None
     result = env.get("result")
@@ -550,16 +617,21 @@ def unwrap_envelope(
     return payload, cost, _extract_usage(env), env.get("is_error") is True
 
 
+def _subtype_of(env: dict[str, Any] | None) -> str | None:
+    """The envelope's ``subtype`` string, or ``None`` (no envelope /
+    non-string subtype)."""
+    if env is None:
+        return None
+    subtype = env.get("subtype")
+    return subtype if isinstance(subtype, str) else None
+
+
 def _envelope_subtype(stdout: str) -> str | None:
     """The ``type: "result"`` envelope's ``subtype`` (``success``,
     ``error_max_budget_usd``, ``error_during_execution``, …) — read on the
     failure path only, so the normal one pays no second parse. ``None``
     when stdout isn't a recognizable envelope (stub binary, bare text)."""
-    env = _envelope_dict(stdout.strip())
-    if env is None:
-        return None
-    subtype = env.get("subtype")
-    return subtype if isinstance(subtype, str) else None
+    return _subtype_of(_envelope_dict(stdout.strip()))
 
 
 def _extract_usage(env: dict[str, Any]) -> dict[str, int | None]:

@@ -461,3 +461,107 @@ def test_claude_p_bare_type_result_answer_is_not_an_envelope(
     res = claude_p.call_claude_p("reply JSON {}")
 
     assert res.data == {"type": "result", "result": None, "verdict": "yes"}
+
+
+def test_claude_p_is_error_dict_result_fails_not_succeeds(
+    monkeypatch: Any,
+) -> None:
+    """gr570522 review (td609157): an ``is_error`` envelope whose ``result``
+    is a dict must NOT return a :class:`ClaudePResult` — a structured-output
+    echo would otherwise land as a clean parse of a call the CLI declared
+    failed. Raises :class:`ClaudePEnvelopeError`, which the router's
+    ``is_error`` branch still classes ``transport``."""
+    import json as _json
+
+    import pytest
+
+    from precis.utils.llm.router import _error_result
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": {"error": "API Error: 529 Overloaded"},
+            "total_cost_usd": 0.02,
+            "num_turns": 1,
+            "duration_ms": 9,
+            "usage": {"input_tokens": 5, "output_tokens": 0},
+        }
+    )
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
+
+    with pytest.raises(claude_p.ClaudePEnvelopeError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    exc = ei.value
+    assert isinstance(exc, claude_p.ClaudePUnparseableError)
+    assert exc.is_error is True
+    assert exc.subtype == "error_during_execution"
+    assert exc.cost_usd == 0.02
+    assert exc.reply is not None
+    assert _json.loads(exc.reply) == {"error": "API Error: 529 Overloaded"}
+    res = _error_result(exc, model="claude-sonnet-5", tier=Tier.BIG)
+    assert res.reason_class == "transport"
+
+
+def test_claude_p_error_max_budget_usd_parseable_result_fails(
+    monkeypatch: Any,
+) -> None:
+    """``error_max_budget_usd`` — a spend-cap stop whose partial ``result``
+    happens to carry a complete JSON block — raises and classifies
+    ``budget``, not a clean success (td609157)."""
+    import json as _json
+
+    import pytest
+
+    from precis.utils.llm.router import _error_result
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_budget_usd",
+            "is_error": True,
+            "result": '{"verdict": "partial"}',
+            "total_cost_usd": 0.10,
+            "num_turns": 1,
+        }
+    )
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
+
+    with pytest.raises(claude_p.ClaudePEnvelopeError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    assert ei.value.subtype == "error_max_budget_usd"
+    res = _error_result(ei.value, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+    assert res.reason_class == "budget"
+    assert res.cost_usd == 0.10
+
+
+def test_claude_p_error_subtype_without_is_error_still_fails(
+    monkeypatch: Any,
+) -> None:
+    """The gate keys on the CLI's verdict, not only the boolean: a
+    non-``success`` ``subtype`` with ``is_error`` unset still fails — the
+    subtype alone says the turn ended badly."""
+    import json as _json
+
+    import pytest
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "is_error": False,
+            "result": '{"partial": true}',
+            "total_cost_usd": 0.04,
+            "num_turns": 30,
+        }
+    )
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
+
+    with pytest.raises(claude_p.ClaudePEnvelopeError):
+        claude_p.call_claude_p("reply JSON {}")
