@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,13 +18,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "backlog-lint"
 
 
-def _lint(d: Path) -> str:
+def _lint(d: Path, env: dict[str, str] | None = None) -> str:
     out = subprocess.run(
         ["bash", str(SCRIPT), str(d)],
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=True,
+        env=env,
     )
     return out.stdout
 
@@ -108,3 +110,136 @@ def test_relative_arg_resolves_against_caller_cwd(tmp_path: Path) -> None:
         check=True,
     ).stdout
     assert "mybacklog/x.md:3" in out
+
+
+# --- prior-art (gr610793) ----------------------------------------------------
+# Existence resolution is prod-backed and best-effort: PRECIS_BACKLOG_RESOLVER
+# swaps the resolver command so tests inject a stub — the same contract
+# scripts/backlog-handles honours (argv = handles, one
+# "<handle>\t<verdict>[\t<detail>]" line each, verdict resolved|missing;
+# nonzero exit = unavailable).
+
+
+def _resolver(
+    tmp_path: Path, body: str, *, name: str = "resolver.sh"
+) -> dict[str, str]:
+    """A fake resolver + the env pointing the lint at it."""
+    stub = tmp_path / name
+    stub.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+    stub.chmod(0o755)
+    return {**os.environ, "PRECIS_BACKLOG_RESOLVER": str(stub)}
+
+
+ALL_RESOLVE = 'for h in "$@"; do printf "%s\\tresolved\\n" "$h"; done'
+
+
+def _steal_file(fm: str = "", body: str = "") -> str:
+    front = (
+        _fm("draft") if not fm else f"---\nstatus: draft\npillar: platform\n{fm}---\n"
+    )
+    return front + "# Spec\n\n" + body
+
+
+def test_prior_art_resolving_handles_are_quiet(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: pa57193, web:608520\n"), encoding="utf-8"
+    )
+    out = _lint(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
+    assert "prior-art" not in out
+
+
+def test_prior_art_dead_handle_is_loud(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: pa99999\n"), encoding="utf-8"
+    )
+    env = _resolver(
+        tmp_path, 'for h in "$@"; do printf "%s\\tmissing\\tno live row\\n" "$h"; done'
+    )
+    out = _lint(tmp_path, env=env)
+    assert "1 prior-art handle(s) do not resolve" in out
+    assert "pa99999" in out
+
+
+def test_prior_art_malformed_entry_is_loud(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: not-a-handle\n"), encoding="utf-8"
+    )
+    out = _lint(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
+    assert "malformed prior-art" in out
+    assert "not-a-handle" in out
+
+
+def test_steal_sentence_without_prior_art_warns(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(body="Steal identified by the landscape comparison.\n"),
+        encoding="utf-8",
+    )
+    out = _lint(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
+    assert "name a source in prose only" in out
+
+
+def test_steal_section_needs_its_own_prior_art_line(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(
+            body=(
+                "## One\n\nSteal identified by the landscape comparison.\n\n"
+                "## Two\n\nprior-art: pa2708\n\nSteal identified by it too.\n"
+            )
+        ),
+        encoding="utf-8",
+    )
+    out = _lint(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
+    assert "1 place(s) name a source in prose only" in out
+    assert "## One" in out
+    assert "## Two" not in out
+
+
+def test_front_matter_prior_art_covers_section_steals(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(
+            fm="prior-art: pa2708\n",
+            body="## One\n\nAdapted from the cited method.\n",
+        ),
+        encoding="utf-8",
+    )
+    out = _lint(tmp_path, env=_resolver(tmp_path, ALL_RESOLVE))
+    assert "prose only" not in out
+    assert "prior-art" not in out
+
+
+def test_prior_art_resolver_unavailable_is_a_note_not_findings(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: pa2708\n"), encoding="utf-8"
+    )
+    env = _resolver(tmp_path, 'echo "no prod route" >&2; exit 3')
+    out = _lint(tmp_path, env=env)
+    assert "do not resolve" not in out
+    assert "resolution unavailable" in out
+
+
+def test_prior_art_resolution_off_via_env(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: pa2708\n"), encoding="utf-8"
+    )
+    env = {**os.environ, "PRECIS_BACKLOG_RESOLVER": "off"}
+    out = _lint(tmp_path, env=env)
+    assert "resolution off" in out
+    assert "do not resolve" not in out
+
+
+def test_prior_art_handle_with_no_verdict_is_loud(tmp_path: Path) -> None:
+    (tmp_path / "x.md").write_text(
+        _steal_file(fm="prior-art: pa2708, pa4715\n"), encoding="utf-8"
+    )
+    # Stub answers only pa2708; pa4715 must not silently pass. The trailing
+    # `exit 0` matters — an unanswered-handle stub is not an outage.
+    env = _resolver(
+        tmp_path,
+        'for h in "$@"; do [ "$h" = pa2708 ] && printf "%s\\tresolved\\n" "$h"; '
+        "done; exit 0",
+    )
+    out = _lint(tmp_path, env=env)
+    assert "1 prior-art handle(s) do not resolve" in out
+    assert "pa4715" in out

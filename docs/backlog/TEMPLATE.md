@@ -7,6 +7,11 @@ prio: <optional — high | normal | low; unset ⇒ normal. Sorts the INDEX and
 model: <optional — sonnet | opus | haiku; unset ⇒ fixer default (claude-sonnet-5)>
 blocked-by: <optional — slug of a backlog item that must ship first>
 snooze-until: <optional — YYYY-MM-DD; skipped by triage until then>
+prior-art: <optional — comma-separated decimal handles (pa57193, me563920,
+  web:608520) naming the external source(s) this item was taken from.
+  scripts/backlog-lint resolves each against prod. An umbrella item puts a
+  `prior-art:` line inside each `##` section instead; a 'Steal identified'
+  or 'Adapted from' sentence covered by neither form warns.>
 ---
 
 # <one-line intent>

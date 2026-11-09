@@ -5,11 +5,12 @@ pillar: memory-graph
 
 # Capability landscape steals
 
-Grouped 2026-09-26 from 5 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
+Grouped 2026-09-26 from 5 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history); later steals append as their own sections. Each section names its source in a `prior-art:` line, checked by `scripts/backlog-lint`. Split a section back out only when it becomes independently shippable.
 
 ## ChemBench in the golden-eval harness
 
 _Grouped 2026-09-26; was `chembench-model-eval`, status idea._
+prior-art: pa2708
 
 Steal identified by the capability-landscape comparison (draft
 `capability-landscape`, 2026-08): ChemBench (Nature Chemistry 2025, corpus
@@ -29,6 +30,7 @@ only, no commitment.
 ## Categorizer rule distillation
 
 _Grouped 2026-09-26; was `categorizer-rule-distillation`, status idea._
+prior-art: pa53956
 
 Steal identified by the capability-landscape comparison (draft
 `capability-landscape`, 2026-08): Schwaller's ReactionClassifier
@@ -49,6 +51,7 @@ classifier cost and reclassification speed when an axis version bumps.
 ## Strategy conditioning (steal from STEER/SynthEx)
 
 _Grouped 2026-09-26; was `steer-strategy-conditioning`, status idea._
+prior-art: pa4715, pa259454
 
 Steal identified by the capability-landscape comparison (draft
 `capability-landscape`, 2026-08): Schwaller's STEER (Matter 2026, corpus
@@ -69,6 +72,7 @@ ASKCOS output instead of raw route scores.
 ## Tier-ladder promotion policy vs MFBO best practices
 
 _Grouped 2026-09-26; was `tier-ladder-mfbo-policy`, status idea._
+prior-art: pa259461
 
 Steal identified by the capability-landscape comparison (draft
 `capability-landscape`, 2026-08): "Best practices for multi-fidelity
@@ -89,6 +93,7 @@ vs ours).
 ## BEAST DB import adapter
 
 _Grouped 2026-09-26; was `beast-db-import-adapter`, status idea._
+prior-art: pa254046
 
 Steal identified by the capability-landscape comparison (draft
 `capability-landscape`, 2026-08): BEAST DB (beast-echem.org/beastdb,
@@ -107,3 +112,50 @@ ExternalRun, ExternalId)`), same rules as Catalysis-Hub — external runs
 never serve compute cache hits, external designs refuse edit. Open
 questions: bulk download format/licence (JPCC SI vs site API), and whether
 per-potential rows map onto one ExternalRun or a family.
+
+## GOLLuM — a calibrated surrogate for the quest proposer
+
+_Added 2026-11-09; named by the GOLLuM/MDCrow gap analysis (draft
+`gollum-mdcrow-gap-analysis`, td608523)._
+prior-art: pa57193, web:608520
+
+Steal identified by the 2026-11-09 GOLLuM/MDCrow gap analysis (draft
+`gollum-mdcrow-gap-analysis`, td608523): GOLLuM (Ranković, Griffiths &
+Schwaller, Nature Machine Intelligence 2026, corpus pa57193; code
+web:608520) trains an LLM through Bayesian objectives so the model itself
+becomes an uncertainty-calibrated surrogate — ranking first on average
+across 23 experimental-discovery tasks and matching traditional Bayesian
+optimization with ~40% fewer experiments.
+
+Of the two gaps the analysis named here, one landed already: replaying
+quest history as an optimisation benchmark (gr608711) shipped as
+`scripts/quest-replay` (on main, release pending). The open half is the
+surrogate itself — the quest tick proposer has no calibrated surrogate
+(gr608714, triaged): promotion is capped-count and code-driven, so the
+candidate ranking's uncertainty is vibes, and now that replay exists
+there is a benchmark to measure a surrogate's regret on our own tasks.
+A GOLLuM-shaped slice: fine-tune a small model on the quest ledger's
+(candidate → outcome) pairs under a Bayesian objective, score it with
+quest-replay, and wire the calibrated ranking into the tier-ladder
+promotion policy above.
+
+## MDCrow — an executed agent task suite and the protein fetch gap
+
+_Added 2026-11-09; named by the GOLLuM/MDCrow gap analysis (draft
+`gollum-mdcrow-gap-analysis`, td608523)._
+prior-art: pa259365, web:608521
+
+Steal identified by the 2026-11-09 GOLLuM/MDCrow gap analysis (draft
+`gollum-mdcrow-gap-analysis`, td608523): MDCrow (Campbell et al., corpus
+pa259365; code web:608521) is an agentic LLM assistant for molecular-
+dynamics workflows — chain-of-thought over ~40 expert-designed tools for
+file handling, simulation setup and analysis — evaluated on an executed
+multi-step task suite with pass/fail grading, not model judgment.
+
+Of the two gaps the analysis named here, the executed-task-suite half
+landed: gr608716 shipped as `scripts/skill-eval`'s executed runner (on
+main, release pending). The open half is the protein kind's missing fetch
+(gr608717, needs_spec): MDCrow's tool inventory (name/PDB id → fetched,
+prepared structure) is the requirements checklist a `protein` ref kind's
+fetch adapter needs — and its trace-graded task suite is the shape that
+fetch's own eval should take.

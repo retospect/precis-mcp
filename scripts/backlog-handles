@@ -1,0 +1,147 @@
+#!/usr/bin/env -S uv run python
+"""scripts/backlog-handles — batch handle resolver for scripts/backlog-lint.
+
+    scripts/backlog-handles pa57193 web:608520 …
+
+Each argv handle is a decimal precis handle — a record code (``pa57193``)
+or a chunk code (``pc10``) — or a ``kind:<id>`` record address for a
+codeless kind (``web:608520``). One stdout line per input handle:
+``<handle>\tresolved`` or ``<handle>\tmissing\t<why>``. Exit 3 (with the
+reason on stderr) when the prod read cannot run — the caller prints
+"unavailable" rather than treating every handle as missing.
+
+The read-side resolution rule is ``mentions.resolve_handle_tokens``' —
+live row plus kind match, honouring the ``meta.converted_from_kind``
+redirect — over one UNION query through ``scripts/prod-psql --ro`` (the
+same prod read ``scripts/docs-index`` makes). A merged-away tombstone is
+MISSING on purpose: prior art citing a deduped or retired ref should be
+repointed at the survivor, not followed silently (gr610793).
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import NoReturn
+
+from precis.utils import handle_registry
+
+ROOT = Path(__file__).resolve().parent.parent
+
+#: The prod read never holds the lint longer than this.
+TIMEOUT_S = 10
+
+#: ``kind:<digits>`` — the address form codeless kinds use (``web:608520``).
+KIND_ID_RE = re.compile(r"^([a-z][a-z0-9-]*):(\d+)$")
+
+_SQL_TEMPLATE = (
+    "SELECT FALSE AS is_chunk, r.ref_id AS pk, r.kind, "
+    "r.meta->>'converted_from_kind' AS conv "
+    "FROM refs r WHERE r.ref_id = ANY(ARRAY[%s]::bigint[]) "
+    "AND r.retired_at IS NULL "
+    "UNION ALL "
+    "SELECT TRUE, c.chunk_id, r2.kind, "
+    "r2.meta->>'converted_from_kind' "
+    "FROM chunks c JOIN refs r2 ON r2.ref_id = c.ref_id "
+    "WHERE c.chunk_id = ANY(ARRAY[%s]::bigint[]) "
+    "AND c.retired_at IS NULL AND r2.retired_at IS NULL"
+)
+
+
+def _fail(reason: str) -> NoReturn:
+    print(f"backlog-handles: {reason}", file=sys.stderr)
+    sys.exit(3)
+
+
+def _live_rows(
+    rec_pks: list[int], chk_pks: list[int]
+) -> dict[tuple[bool, int], tuple[str, str]]:
+    """One UNION query over prod → ``{(is_chunk, pk): (kind, conv)}``."""
+    rec_list = ",".join(str(pk) for pk in rec_pks) or "NULL"
+    chk_list = ",".join(str(pk) for pk in chk_pks) or "NULL"
+    sql = _SQL_TEMPLATE % (rec_list, chk_list)
+    env = {**os.environ, "PRECIS_PROD_PSQL_OPTS": "-At"}
+    try:
+        cp = subprocess.run(
+            [str(ROOT / "scripts/prod-psql"), "--ro", sql],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=TIMEOUT_S,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(f"prod read timed out after {TIMEOUT_S}s")
+    except OSError as exc:
+        _fail(f"{exc.__class__.__name__}: {exc}")
+    if cp.returncode != 0:
+        tail = (cp.stderr.strip().splitlines() or ["no stderr"])[-1][:160]
+        _fail(f"prod-psql exit {cp.returncode}: {tail}")
+    rows: dict[tuple[bool, int], tuple[str, str]] = {}
+    for line in cp.stdout.splitlines():
+        parts = line.split("|")
+        if len(parts) != 4 or parts[0] not in ("t", "f"):
+            continue
+        is_chunk = parts[0] == "t"
+        rows[(is_chunk, int(parts[1]))] = (parts[2], parts[3] or "")
+    return rows
+
+
+def main(handles: list[str]) -> int:
+    rec: dict[int, list[tuple[str, str]]] = {}
+    chk: dict[int, list[tuple[str, str]]] = {}
+    verdicts: dict[str, tuple[str, str]] = {}
+
+    for raw in handles:
+        h = raw.strip()
+        if not h:
+            continue
+        m = KIND_ID_RE.match(h)
+        if m is not None:
+            kind, pk = m.group(1), int(m.group(2))
+            if not handle_registry.is_known_kind(kind):
+                verdicts[h] = ("missing", f"unknown kind {kind!r}")
+                continue
+            rec.setdefault(pk, []).append((h, kind))
+            continue
+        parsed = handle_registry.parse(h)
+        if parsed is None:
+            verdicts[h] = ("missing", "unknown handle code")
+            continue
+        kind, is_chunk, pk = parsed
+        (chk if is_chunk else rec).setdefault(pk, []).append((h, kind))
+
+    rows = _live_rows(sorted(rec), sorted(chk)) if rec or chk else {}
+
+    for is_chunk, table in ((False, rec), (True, chk)):
+        for pk, owners in table.items():
+            found = rows.get((is_chunk, pk))
+            for h, want in owners:
+                if found is None:
+                    verdicts[h] = (
+                        "missing",
+                        f"no live {'chunk' if is_chunk else 'ref'} row for pk {pk}",
+                    )
+                elif want not in found:
+                    verdicts[h] = (
+                        "missing",
+                        f"kind mismatch — row is {found[0]!r}, not {want!r}",
+                    )
+                else:
+                    verdicts[h] = ("resolved", "")
+
+    for raw in handles:
+        h = raw.strip()
+        if not h:
+            continue
+        verdict, detail = verdicts.get(h, ("missing", "unhandled input"))
+        print(f"{h}\t{verdict}" + (f"\t{detail}" if detail else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

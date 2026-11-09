@@ -36,6 +36,14 @@ with N sections) — reviewed families are baselined in
 [`lint-baseline.txt`](./lint-baseline.txt) and re-warn only when they grow
 past the recorded count.
 
+**`prior-art:` is the optional source field.** An item taken from a paper,
+repo or memory names it as decimal handles — `prior-art: pa57193,
+web:608520` — which `scripts/backlog-lint` resolves against prod (a dead or
+mistyped handle is loud; prod unreachable is a quiet note). An umbrella
+item carries a `prior-art:` line inside each `##` section instead of one
+file-level field. A `Steal identified` / `Adapted from` sentence covered
+by neither warns: prose-only sources rot silently (gr610793).
+
 **Pillars:** [`docs/roadmap.md`](../roadmap.md) — what each pillar is for,
 which threads are active, and the retirement rules.
 
