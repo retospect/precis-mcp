@@ -2977,6 +2977,81 @@ def test_poll_checked_red_main_red_full_selection_lands_quick(
     assert any("red on origin/main too" in e and "excluded" in e for e in events)
 
 
+def _refuse_exclusion_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_rs._append_comment`` raises on the main-red exclusion note —
+    the write ``--quick`` must not relaunch without (td602837) — and
+    passes every other comment through."""
+    real_append = land_slice._rs._append_comment
+
+    def fail_exclusion(store: Any, todo_id: int, text: str) -> None:
+        if "red on origin/main too" in text:
+            raise OSError("store write refused")
+        real_append(store, todo_id, text)
+
+    monkeypatch.setattr(land_slice._rs, "_append_comment", fail_exclusion)
+
+
+def test_poll_checked_red_main_red_full_selection_note_failure_is_ordinary(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td602837: the exclusion note IS the record ``--quick`` stands on
+    (the land log dies with the worktree) — a failed write does not
+    relaunch; the ordinary red takes it, attempt burned."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: True)
+    _refuse_exclusion_note(monkeypatch)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # main probe
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    # ship ran once (--checked) and the two probes ran; --quick never
+    # relaunched and no deselect gate was cut for a FULL selection
+    assert all("--quick" not in call[0] for call in seams["launch"])
+    assert all("--deselect" not in call[0] for call in seams["launch"])
+    assert "verify" not in handle and handle.get("verify_done") is True
+    assert "attempt:1" in store.tag_strings(42)
+    notes = store.comments(42)
+    assert all("red on origin/main too" not in n for n in notes)
+    assert any(n.startswith("handoff: land FAILED on slice/42:") for n in notes)
+
+
+def test_poll_checked_red_main_red_deselect_note_failure_is_ordinary(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td602837: same guard on the deselect path — a green minus-ids
+    gate does not earn ``--quick`` when the exclusion note could not be
+    written; the ordinary red burns the attempt."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    _refuse_exclusion_note(monkeypatch)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # main probe
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # deselect gate launched
+    assert handle["verify"]["phase"] == "deselect"
+    _verify_finish(handle, 0)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert all("--quick" not in call[0] for call in seams["launch"])
+    assert "verify" not in handle and handle.get("verify_done") is True
+    assert "attempt:1" in store.tag_strings(42)
+    assert all("red on origin/main too" not in n for n in store.comments(42))
+
+
 def test_poll_checked_red_outside_alone_red_main_green_is_ordinary(
     seams: dict[str, Any],
 ) -> None:

@@ -123,8 +123,8 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   runs at all (td602151 removed the 3 h full-gate budget: no land runs
   the suite); the ids are recorded as excluded on the todo and ship
   relaunches ``--quick`` on the 1 h wall the same way. Only a
-  main-green red burns an attempt; any launch or probe failure falls
-  back to the ordinary red.
+  main-green red burns an attempt; any launch, probe or
+  exclusion-record failure falls back to the ordinary red.
 * :func:`kill` SIGTERMs the live phase's process group (a running
   verify's during verify, ship's otherwise) and drops the main probe's
   worktree and stack.
@@ -2290,8 +2290,10 @@ def _land_without_main_reds(
     because the checked selection IS the suite (td602151: no land runs
     the suite). The todo gets a ``handoff:`` note naming them FIRST —
     the land log dies with the worktree — then the same 1 h relaunch
-    the FULL-selector fallback uses; no attempt is charged. ``why``
-    completes "the ids are not this branch's — {why}"."""
+    the FULL-selector fallback uses; no attempt is charged. A failed
+    write is the ordinary red: ``--quick`` may not land with the
+    exclusion unrecorded (td602837). ``why`` completes "the ids are
+    not this branch's — {why}"."""
     todo_id = int(params.get("todo_id") or 0)
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     subject = str(handle.get("subject") or "")
@@ -2302,8 +2304,13 @@ def _land_without_main_reds(
             f"handoff: {', '.join(ids)} are red on origin/main too — "
             f"not this branch's; {why}. The reds are main's to fix.",
         )
-    except Exception:  # pragma: no cover — the land still goes on
-        log.warning("land_slice: main-red note on td%d failed", todo_id)
+    except Exception:
+        log.warning(
+            "land_slice: main-red note on td%d failed — --quick not relaunched",
+            todo_id,
+            exc_info=True,
+        )
+        return _ordinary_ship_red(ctx, handle)
     ctx.append_chunk(
         "job_event",
         f"land_slice: {', '.join(ids)} red on origin/main too — {why}; "
