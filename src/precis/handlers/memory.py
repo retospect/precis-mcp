@@ -360,6 +360,17 @@ _EXPIRES_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "week
 _SCRATCH_OWNER_RE = re.compile(r"^(?:scratch-for:)?([a-z]{2}\d+)$")
 
 
+def _stored_tag_form(tag: Any) -> str:
+    """The canonical string ``Tag.parse_strict`` stores for ``tag`` — the
+    ``OPEN:`` display sentinel stripped, open tags case-folded — or the
+    raw spelling when it won't parse (the downstream yield redirect may
+    still rewrite it, and the same ``BadInput`` surfaces there)."""
+    try:
+        return str(Tag.parse_strict(tag, kind="memory"))
+    except BadInput:
+        return tag if isinstance(tag, str) else str(tag)
+
+
 def _scratch_for_tags(
     tags: list[str] | None,
     untags: list[str] | None,
@@ -369,7 +380,10 @@ def _scratch_for_tags(
     ``SPACE:scratch`` and ``scratch-for:<owner>`` — deduped. The pair is
     one partition: a supplied ``SPACE:`` other than scratch, a different
     ``scratch-for:`` owner, or an ``untags`` touching either contradicts
-    it and is refused."""
+    it and is refused. The checks compare each tag's *stored* form, not
+    its raw spelling — ``OPEN:scratch-for:<other>`` or
+    ``Scratch-For:<other>`` would otherwise slip a second owner past a
+    raw-string test and land it beside ``scratch_for``'s (td607021)."""
     m = _SCRATCH_OWNER_RE.match(str(scratch_for).strip().lower())
     if m is None:
         raise BadInput(
@@ -379,7 +393,10 @@ def _scratch_for_tags(
         )
     owner = m.group(1)
     out = list(tags or [])
-    foreign_space = [t for t in out if t.startswith("SPACE:") and t != "SPACE:scratch"]
+    stored = [_stored_tag_form(t) for t in out]
+    foreign_space = [
+        s for s in stored if s.startswith("SPACE:") and s != "SPACE:scratch"
+    ]
     if foreign_space:
         raise BadInput(
             f"args['scratch_for'] sets SPACE:scratch — it can't combine "
@@ -388,7 +405,9 @@ def _scratch_for_tags(
             "or pass tags=[...] without scratch_for",
         )
     other_owner = [
-        t for t in out if t.startswith("scratch-for:") and t != f"scratch-for:{owner}"
+        s
+        for s in stored
+        if s.startswith("scratch-for:") and s != f"scratch-for:{owner}"
     ]
     if other_owner:
         raise BadInput(
@@ -397,8 +416,11 @@ def _scratch_for_tags(
             next="drop the conflicting scratch-for tag, or drop scratch_for",
         )
     if untags:
+        stored_untags = [_stored_tag_form(t) for t in untags]
         clash = [
-            t for t in untags if t == "SPACE:scratch" or t.startswith("scratch-for:")
+            s
+            for s in stored_untags
+            if s == "SPACE:scratch" or s.startswith("scratch-for:")
         ]
         if clash:
             raise BadInput(
@@ -407,8 +429,9 @@ def _scratch_for_tags(
                 next="drop scratch_for, or drop the clashing untags",
             )
     for tag in ("SPACE:scratch", f"scratch-for:{owner}"):
-        if tag not in out:
+        if tag not in stored:
             out.append(tag)
+            stored.append(tag)
     return out
 
 

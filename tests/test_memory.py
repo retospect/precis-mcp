@@ -983,6 +983,59 @@ def test_put_scratch_for_refuses_an_untags_clash(handler: MemoryHandler) -> None
         handler.put(text="x", untags=["SPACE:scratch"], scratch_for="td575121")
 
 
+# Conflict checks compare the *stored* tag form (td607021):
+# ``Tag.parse_strict`` strips the ``OPEN:`` display sentinel and folds
+# open-tag case, so a raw-spelling check would let a second owner or a
+# foreign space land beside the pair ``scratch_for`` stamps.
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ["OPEN:scratch-for:td606761", "Scratch-For:td606761", "scratch-for:TD606761"],
+)
+def test_put_scratch_for_refuses_a_stored_second_owner(
+    handler: MemoryHandler, tag: str
+) -> None:
+    with pytest.raises(BadInput, match="one task owns"):
+        handler.put(text="x", tags=[tag], scratch_for="td575121")
+
+
+def test_put_scratch_for_refuses_a_stored_foreign_space(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput, match="SPACE"):
+        handler.put(text="x", tags=["OPEN:SPACE:repo-dev"], scratch_for="td575121")
+
+
+def test_put_scratch_for_refuses_an_untags_clash_stored(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput, match="untags"):
+        handler.put(
+            text="x",
+            untags=["OPEN:scratch-for:td575121"],
+            scratch_for="td575121",
+        )
+
+
+def test_put_scratch_for_idempotent_with_stored_pair_spellings(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The same owner under another spelling — ``OPEN:`` sentinel or a
+    case-folded open tag — dedupes to the pair, never a refusal or a
+    second stored owner."""
+    mid = id_of(
+        handler.put(
+            text="x",
+            tags=["OPEN:SPACE:scratch", "scratch-for:TD575121"],
+            scratch_for="td575121",
+        ).body
+    )
+    tags = _space_and_owner_tags(store, mid)
+    assert tags.count("SPACE:scratch") == 1
+    assert tags.count("scratch-for:td575121") == 1
+
+
 @pytest.mark.parametrize("owner", ["575121", "not-an-owner", "td", "td1 extra"])
 def test_put_scratch_for_refuses_a_bad_owner(
     handler: MemoryHandler, owner: str
