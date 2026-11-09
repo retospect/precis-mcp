@@ -18,7 +18,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    the body is re-minted under it (:func:`precis.plans.templates.mint_body`)
    and the count bumped. An open informational ask (``meta.ask.blocks ==
    'nothing'``) counts as closed here and in step 3: it is a record for the
-   human, not a child still at work (gr589823). A body with no minter
+   human, not a child still at work (gr589823). A ``waiting-for:`` tag on
+   the loop itself parks it outright — no re-mint, no close (td610546).
+   A body with no minter
    closes the loop with a comment naming the gap. A ``release-fix`` loop's automatic cap is
    :data:`_RELEASE_FIX_AUTO_CAP` regardless of its stamped ``max``: the
    second red iteration files a ruling ask (naming the round, the head
@@ -66,9 +68,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    :data:`FIX_ESCALATE_DEPTH` is born model-pinned to the ladder's top
    rung with an ``escalated: round <depth> of td<root>`` comment — no
    second design-call window; and at :data:`FIX_CHAIN_CAP` no fix mints
-   at all: the root parks ``waiting-for:coordinator`` and an
-   ``ask-coordinator`` ask collects the chain's findings and landed
-   shas for one briefed builder. ``REVERT`` mints one ``run_slice`` task ``Revert
+   at all: the root parks ``waiting-for:coordinator`` — a hold step 3
+   honours and whose ``waiting-for:`` prefix keeps every descendant out
+   of dispatch — and one ``ask-coordinator`` ask (``blocks:`` the root,
+   so it counts as open work, not a record) collects the chain's
+   complete findings and landed shas for one briefed builder. ``REVERT``
+   mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
    does) under the root, reopens each reviewed node ``blocked-by`` that
@@ -112,7 +117,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    close the node; counted as ``reopened``). Then closes every node whose work
    is finished: a phase
    (``meta.auto_close``) or a generator with children, once every child is
-   closed; an ``analyst`` generator once its newest job succeeded and an
+   closed — unless the node itself carries a ``waiting-for:`` tag, a park
+   that outranks its children's state (the FIX-chain cap's
+   ``waiting-for:coordinator`` on the root, an unsettled mint); an
+   ``analyst`` generator once its newest job succeeded and an
    ``analysis:`` comment was posted since (td543749); a mechanical task (``meta.op`` other than ``run_slice``) whose
    newest job succeeded; a ``run_slice`` task whose newest job is a
    succeeded ``land_slice`` (a succeeded build alone never closes it, and
@@ -121,7 +129,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
 4. **dispatch** — each doable task (``node_kind`` task, a generator with no
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
    ``blocked-by`` target on it or an ancestor, no doable-exclusion tag other
-   than ``child-failed:``, no paused ancestor, no live child job, no
+   than ``child-failed:`` on it or an ancestor, no paused ancestor, no live
+   child job, no
    ``claimed-by:`` tag, no mint pass still in flight, under its retry cap)
    gets one job parented to it:
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
@@ -1037,6 +1046,11 @@ def _step_loops(
             continue
         if plan.blocked(n):
             continue
+        # A ``waiting-for:`` tag parks the loop itself — neither re-mint
+        # nor close while it waits (the reach the phases step gives the
+        # same tag on a phase or generator, td610546).
+        if any(t.startswith("waiting-for:") for t in n.open_tags):
+            continue
         # An informational ask (``blocks: "nothing"``) is a record, not a
         # gate: it does not hold the loop open (gr589823).
         if not all(_closed(c) or _informational_ask(c) for c in plan.child_todos(n)):
@@ -1512,20 +1526,29 @@ def _mint_brief_ask(store: Any, n: _Node, depth: int, lineage: str) -> int:
 
 
 def _chain_item(store: Any, plan: _Plan, todo_id: int) -> str:
-    """One ``- td<id> <title> — landed: <sha>; findings: <head>`` line of
-    the cap ask's collected chain: each item's own ``landed:`` sha and
-    the findings that minted it (the body's first paragraph)."""
+    """One ``- td<id> <title> — landed: <sha>`` item of the cap ask's
+    collected chain, followed by the item's COMPLETE text — a review
+    fix's body is ``<findings>`` plus the "Findings of the review …"
+    trailer, and the coordinator's one brief needs every finding, not a
+    120-char head (td610546); a node carrying no ``meta.fix_depth`` was
+    never minted a review fix, so its body shows as the brief."""
     node = plan.nodes.get(todo_id)
     title = node.title.splitlines()[0][:80] if node is not None and node.title else ""
-    head = ""
+    findings = ""
     for c in store.chunks.list_chunks_for_ref(todo_id):
         if c.chunk_kind == TODO_BODY_KIND and str(c.text or "").strip():
-            head = _first_line(str(c.text).strip().split("\n\n", 1)[0])
+            findings = str(c.text).strip().rsplit("\n\nFindings of the review td", 1)[0]
             break
     sha = _landed_sha(store, todo_id)
     out = f"- td{todo_id} {title}".rstrip()
     out += f" — landed: {sha}" if sha else ""
-    out += f"; findings: {head}" if head else ""
+    if findings:
+        label = (
+            "findings" if node is not None and node.meta.get(FIX_DEPTH_KEY) else "brief"
+        )
+        out += f"\n  {label}:\n" + "\n".join(
+            f"  {line}" for line in findings.splitlines()
+        )
     return out
 
 
@@ -1537,13 +1560,18 @@ def _mint_coordinator_ask(
     findings: str,
     depth: int,
     lineage: list[int],
+    now: datetime,
 ) -> int:
     """The ``ask-coordinator`` ask a FIX-chain cap files under the plan
     root (gr604629): the fourth-round fix is never minted — the ask
     collects the chain's findings and landed shas so one briefed builder
-    gets one brief. It blocks nothing: the root's
-    ``waiting-for:coordinator`` tag is the park, and the ask only routes
-    the record. Insert shape of :func:`_mint_brief_ask`."""
+    gets one brief. ``blocks`` names the plan root, not ``"nothing"`` —
+    an informational ask is a closed child to the phases step
+    (gr589823), and this ask must hold the root open beside the
+    ``waiting-for:coordinator`` tag until the coordinator answers; it
+    also joins the in-memory plan like :func:`_mint_task`'s mints, or
+    the same pass's phases step would close the root over a child it
+    cannot see (td610546). Insert shape of :func:`_mint_brief_ask`."""
     context = (
         f"review-FIX chain capped at depth {depth} on plan td{n.root} "
         f"(review td{n.id} of {handle}); the chain is parked for a "
@@ -1553,7 +1581,7 @@ def _mint_coordinator_ask(
         "ask": {
             "kind": "ruling",
             "options": list(_COORDINATOR_ASK_OPTIONS),
-            "blocks": "nothing",
+            "blocks": f"td{n.root}",
             "context": context[:_ASK_CONTEXT_CAP],
         }
     }
@@ -1603,7 +1631,32 @@ def _mint_coordinator_ask(
             conn=conn,
         )
         finish_mint(store, ref.id, conn=conn)
-    return int(ref.id)
+    ask_id = int(ref.id)
+    parent = plan.nodes.get(n.root)
+    plan.nodes[ask_id] = _Node(
+        id=ask_id,
+        kind="todo",
+        parent_id=n.root,
+        title=title,
+        meta=meta,
+        status="open",
+        created_at=now,
+        prio=None,
+        depth=(parent.depth + 1) if parent is not None else 1,
+        root=n.root,
+        open_tags={
+            v: now
+            for v in (
+                COORDINATOR_ASK_TAG,
+                "ask-user",
+                "showstopper",
+                f"plan:{n.root}",
+            )
+        },
+    )
+    if parent is not None:
+        parent.children.append(ask_id)
+    return ask_id
 
 
 def _review_fix(
@@ -1632,7 +1685,9 @@ def _review_fix(
         ask_id = (
             None
             if w.dry_run
-            else _mint_coordinator_ask(store, plan, n, handle, findings, depth, lineage)
+            else _mint_coordinator_ask(
+                store, plan, n, handle, findings, depth, lineage, now
+            )
         )
         root = plan.nodes.get(n.root)
         if root is not None:
@@ -2634,6 +2689,13 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
         if kind in ("phase", "generator"):
             if kind == "generator" and plan.live_job(n):
                 continue
+            # A ``waiting-for:`` tag parks the node itself whatever its
+            # children's state — the FIX-chain cap's
+            # :data:`COORDINATOR_HOLD_TAG` waits on the coordinator, an
+            # unsettled mint on its minter — so "every child closed"
+            # never means finished while it waits (td610546).
+            if any(t.startswith("waiting-for:") for t in n.open_tags):
+                continue
             # An informational ask (``blocks: "nothing"``) is a record, not
             # a gate: it stays open for the human and does not hold the
             # phase (gr589823).
@@ -2689,11 +2751,17 @@ def _dispatchable(plan: _Plan, n: _Node) -> bool:
     return kind is None and not kids and n.id not in plan.roots
 
 
-def _excluded(n: _Node) -> bool:
-    for value in n.open_tags:
-        for t in _EXCLUSIONS:
-            if (t.endswith(":") and value.startswith(t)) or value == t:
-                return True
+def _excluded(plan: _Plan, n: _Node) -> bool:
+    """A doable-exclusion tag on ``n`` or any ancestor: a park rides the
+    whole subtree — the root's ``waiting-for:coordinator`` holds every
+    descendant out of dispatch, not just its own (td610546) — the same
+    reach :meth:`_Plan.paused` and :meth:`_Plan.blocked` already give a
+    ``STATUS:paused`` or a ``blocked-by`` target."""
+    for node in (n, *plan.ancestors(n)):
+        for value in node.open_tags:
+            for t in _EXCLUSIONS:
+                if (t.endswith(":") and value.startswith(t)) or value == t:
+                    return True
     return False
 
 
@@ -3990,7 +4058,7 @@ def _step_dispatch(
                     held[n.id] = hid
                     break
     for n in candidates:
-        if _excluded(n) or _claims(n) or plan.live_job(n):
+        if _excluded(plan, n) or _claims(n) or plan.live_job(n):
             continue
         if n.id in held:
             res.notes.append(

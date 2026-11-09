@@ -5278,7 +5278,9 @@ def test_fix_chain_caps_at_round_four(
     assert _meta(store, r4)["review"]["cap_ask"] == ask
     am = _meta(store, ask)["ask"]
     assert am["kind"] == "ruling"
-    assert am["blocks"] == "nothing"
+    # td610546: the ask blocks the root — ``blocks: "nothing"`` counted
+    # it closed and let the phase close over it on later passes.
+    assert am["blocks"] == f"td{root}"
     assert {"ask-user", "showstopper", f"plan:{root}"} <= _open_tags(store, ask)
     body = "\n".join(
         str(c.text)
@@ -5288,10 +5290,113 @@ def test_fix_chain_caps_at_round_four(
     # The chain's findings and landed shas, collected for one brief.
     for sha in ("abc1234", "def2222", "abc3333", "ddd4444"):
         assert f"landed: {sha}" in body
-    assert "hole four" in body
+    for findings in ("hole one", "hole two", "hole three", "hole four"):
+        assert findings in body
+    # The hold holds: the root stays open — ``waiting-for:coordinator``
+    # keeps _step_phases from closing it this pass.
+    assert _status(store, root) == "open"
     # Nothing dispatches — the chain is parked; the pass is idempotent.
     assert res.dispatched == 0
-    assert pd.run_pass(store).reviews == 0
+    res2 = pd.run_pass(store)
+    assert res2.reviews == 0
+    assert res2.dispatched == 0
+    assert _status(store, root) == "open"
+    assert _status(store, ask) == "open"
+
+
+def test_coordinator_cap_parks_the_subtree_until_the_ask_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td610546 review: the round-four park must actually park — a task
+    minted under the held root never dispatches (the ``waiting-for:``
+    tag rides the whole subtree, not just the tagged node), removing the
+    tag alone frees dispatch but the open ask still holds the root open
+    (it ``blocks:`` the root, so it is work, not a record), and only the
+    settled ask plus finished work lets the plan close."""
+    use_lanes(monkeypatch)
+    mint, f3 = _depth3_fix(store)
+    _land(store, f3, "ddd4444")
+    r4 = T.mint_reviewer(store, mint.root_id, f3)
+    _job(store, r4, lane="claude-sub")
+    _todo_comment(store, r4, "review: FIX — hole four")
+    pd.run_pass(store)
+    root = mint.root_id
+    (ask,) = [
+        c for c in _children(store, root) if "ask-coordinator" in _open_tags(store, c)
+    ]
+    # A task under the parked root does not dispatch — the ancestor's
+    # hold reaches descendants, not just the tagged node.
+    task = T.mint_plan_task(store, root, "The briefed builder", "Build it.")
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, task) == []
+    assert _status(store, root) == "open"
+    # The coordinator's path: remove the tag — the task dispatches.
+    store.remove_tag(root, Tag.open("waiting-for:coordinator"))
+    res = pd.run_pass(store)
+    assert len(_jobs_under(store, task)) == 1
+    # Task landed: with every other child closed the still-open ask —
+    # ``blocks: td<root>``, not a ``"nothing"`` record — alone holds the
+    # root open.
+    _land(store, task, "eee5555")
+    pd.run_pass(store)
+    assert _status(store, root) == "open"
+    # Ask acknowledged: the plan settles.
+    _todo_comment(store, ask, "answer: acknowledged")
+    _mark_done(store, ask)
+    pd.run_pass(store)
+    assert _status(store, root) == "done"
+
+
+def test_a_waiting_for_tag_on_an_ancestor_parks_the_subtree(store: Store) -> None:
+    """td610546: ``_excluded`` read only the node's own tags, so a root
+    parked ``waiting-for:coordinator`` still let open descendants
+    dispatch. A ``waiting-for:`` on any ancestor now parks the subtree
+    the way ``STATUS:paused`` already did; removing it dispatches."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        a = m.node("phase", "Phase A", {"auto_close": True})
+        m.node("task", "Task", {"op": "run_slice"}, parent=a, body="Do it.")
+
+    mint = T._run(store, None, build)
+    root, task = mint.root_id, mint.ids["task"]
+    store.add_tag(root, Tag.open("waiting-for:coordinator"), set_by="system")
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, task) == []
+    store.remove_tag(root, Tag.open("waiting-for:coordinator"))
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, task)) == 1
+
+
+def test_chain_item_collects_the_complete_findings(store: Store) -> None:
+    """td610546: the cap ask's chain items carried a one-line,
+    120-char-capped head of each fix's findings — the coordinator's
+    brief needs the whole list. The item keeps the full findings block
+    and drops the fix-body trailer."""
+    mint = _review_plan(store)
+    findings = (
+        "first finding — the diff drops the rollback path entirely, long "
+        "enough on its own to run well past the old 120-char head cap\n"
+        "- second finding, a bullet line\n"
+        "- third finding with trailing detail"
+    )
+    task = T.mint_plan_task(
+        store,
+        mint.root_id,
+        "Fix review findings for td1",
+        findings + "\n\nFindings of the review td999 of td1's land on main. Fix "
+        "them on a fresh slice and land it; td1's brief is the intent.",
+    )
+    store.stamp_ref_meta(task, {"fix_depth": 1})
+    plan = pd._load(store)
+    item = pd._chain_item(store, plan, task)
+    assert f"- td{task} Fix review findings for td1" in item
+    for line in findings.splitlines():
+        assert f"  {line}" in item
+    assert "Findings of the review td999" not in item
 
 
 def test_review_revert_mints_a_revert_and_requeues_the_build(store: Store) -> None:
