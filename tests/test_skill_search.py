@@ -226,14 +226,15 @@ def test_search_gap_cut_title_pin_never_cuts(
     """A page led at or above ``_TITLE_MATCH_SCORE`` never cuts: the
     pin already declared the intent match, and the skill-eval probe
     corpus showed the tail below a pin still carries the named answer
-    (recall@cut = 100 % bar)."""
+    (recall@cut = 100 % bar). Tail rows sit above the semantic floor —
+    sub-floor hits drop in ``_ranked_rows`` before the merge."""
     _stub_hits(
         skill,
         monkeypatch,
         [
             ("precis-get-help", 1.62),
-            ("precis-put-help", 0.28),
-            ("precis-link-help", 0.22),
+            ("precis-put-help", 0.45),
+            ("precis-link-help", 0.40),
         ],
     )
     out = skill.search(q=_GAP_QUERY)
@@ -519,6 +520,29 @@ def test_search_hits_floors_semantic_leg(skill: SkillHandler, monkeypatch) -> No
     assert [h.slug for h in out] == ["precis-overview"]
     assert all(h.kind == "skill" for h in out)
     assert all(h.dedupe_key == f"skill:{h.slug}" for h in out)
+
+
+def test_search_hits_floor_runs_before_slug_merge(
+    skill: SkillHandler, monkeypatch
+) -> None:
+    """Both legs hit the same slug with the semantic score under the
+    floor: the cut must run before the per-slug merge, else the 0.30
+    semantic row evicts the lexical row in ``merged`` and the
+    post-merge floor drops the slug entirely (review td610273)."""
+    monkeypatch.setattr(
+        skill,
+        "_semantic_hits",
+        lambda q, *, page_size: _sem_hits(("precis-pcb-help", 0.30)),
+    )
+    monkeypatch.setattr(
+        skill,
+        "_lexical_hits",
+        lambda q: [("precis-pcb-help", 2, "five verbs", False, 0)],
+    )
+    out = skill.search_hits(q="zzqxy-nonsense")
+    assert [h.slug for h in out] == ["precis-pcb-help"]
+    # The lexical row survived — never floored (word overlap, 2 words).
+    assert out[0].score == pytest.approx(0.14)
 
 
 def test_search_hits_lexical_and_exclude(skill: SkillHandler, monkeypatch) -> None:

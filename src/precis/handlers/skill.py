@@ -629,8 +629,11 @@ _LEXICAL_SCORE_CAP = 0.49
 #: ``1 - SEMANTIC_DISTANCE_FLOOR`` (the corpus 0.65 distance cut every
 #: chunk-level ``search_hits`` already applies, gr568412). The skill
 #: index's ``score`` is a similarity in ``[-1, 1]``, so the same cut
-#: reads "keep ``score >= 0.35``" here. Lexical/title/slug-pin rows
-#: carry their own match evidence and are never floored.
+#: reads "keep ``score >= 0.35``" here. Applied in
+#: :meth:`SkillHandler._ranked_rows` *before* the per-slug merge — a
+#: sub-floor row must drop before it can evict a valid lexical row for
+#: the same slug. Lexical/title/slug-pin rows carry their own match
+#: evidence and are never floored.
 _SKILL_SEMANTIC_FLOOR = 1.0 - SEMANTIC_DISTANCE_FLOOR
 
 
@@ -1766,17 +1769,6 @@ class SkillHandler(Handler):
         rows, _per_slug, _hidden = self._ranked_rows(
             q, mode_norm=mode_norm, page_size=page_size
         )
-        # gr568412: the cross-kind merge counts what a kind returns —
-        # drop semantic-leg rows under the corpus floor the same way
-        # every chunk-level ``search_hits`` does via ``max_distance``
-        # (a row's ``score`` is a similarity, so the cut reads >= 0.35).
-        # Lexical/title/slug-pin rows carry their own match evidence
-        # and are never floored.
-        rows = [
-            r
-            for r in rows
-            if r.source != "semantic" or r.score >= _SKILL_SEMANTIC_FLOOR
-        ]
         if current_scope() == "read":
             rows = [r for r in rows if not _skill_is_write_only(r.slug)]
         dropped = set(exclude or [])
@@ -1808,9 +1800,10 @@ class SkillHandler(Handler):
         """Merged + score-sorted skill rows — the ranking core shared by
         :meth:`search` and :meth:`search_hits`.
 
-        Runs the two retrieval streams — the semantic index and the
-        substring / word-overlap lexical leg — merges per slug, applies
-        the title/slug identity pins, and sorts deterministically.
+        Runs the two retrieval streams — the semantic index (floored at
+        ``_SKILL_SEMANTIC_FLOOR``) and the substring / word-overlap
+        lexical leg — merges per slug, applies the title/slug identity
+        pins, and sorts deterministically.
         Read-scope hit fencing runs here and its hidden-slug set comes
         back with the rows; the axis (``tag``/``kinds``/``family``) and
         write-only row filters stay with the caller. Returns
@@ -1868,6 +1861,14 @@ class SkillHandler(Handler):
             if mode_norm in ("lexical", "verbatim")
             else self._semantic_hits(q, page_size=over_fetch)
         )
+        # gr568412: floor the semantic leg BEFORE the per-slug merge —
+        # the cut used to run downstream in ``search_hits``, where a
+        # sub-floor row had already evicted a valid lexical row for the
+        # same slug in ``merged``, so its drop lost the lexical match
+        # entirely (review td610273). Flooring here also keeps weak
+        # cosine noise out of ``sem_hits_per_slug`` and the read-scope
+        # hidden count.
+        semantic_hits = [h for h in semantic_hits if h.score >= _SKILL_SEMANTIC_FLOOR]
         lexical_hits = [] if mode_norm == "semantic" else self._lexical_hits(q)
         if mode_norm == "verbatim":
             lexical_hits = [h for h in lexical_hits if h[3]]
