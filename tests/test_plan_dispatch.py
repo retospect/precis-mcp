@@ -529,6 +529,61 @@ def test_a_leased_sessions_mint_is_born_open(store: Store, hub: Any) -> None:
     assert len(_jobs_under(store, kid)) == 1
 
 
+@pytest.mark.parametrize("signal", ["job", "lease"])
+def test_an_unsigned_mint_holds_past_an_unrelated_sessions_signal(
+    store: Store, hub: Any, signal: str
+) -> None:
+    """td601628 review of td601078: the signal that frees a mint to be
+    born open must be the minter's own — an unsigned session's ``put``
+    under the plan root while an *unrelated* sibling's signal (an
+    in-flight job or a ``claimed-by:`` lease) is live is born held
+    anyway: that signal ends on the sibling's clock, and its end must
+    not free the linkless child before the minter's ``blocked-by``
+    links land."""
+    from precis.handlers.todo import TodoHandler
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "A sibling's task", {"op": "run_slice"}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    job = None
+    if signal == "job":
+        job = _slice_job(store, task, "run_slice", "running")
+    else:
+        store.add_tag(task, Tag.open("claimed-by:interactive"), set_by="agent")
+        store.add_tag(
+            task, Tag.closed("STATUS", "doing"), set_by="agent", replace_prefix=True
+        )
+
+    # A signal is live on the sibling — but the minting caller is
+    # unsigned, so its put is born held, not open.
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+        body="Do it.",
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+
+    # The sibling's signal ends before the minter's links land: the
+    # hold — not the dead signal — keeps the child parked.
+    if job is not None:
+        _set_job_status(store, job, "succeeded")
+    else:
+        store.remove_tag(task, Tag.open("claimed-by:interactive"))
+    pd.run_pass(store)
+    assert not _jobs_under(store, kid)
+
+    # The minter releases once its links are settled — it goes.
+    store.remove_tag(kid, Tag.open("waiting-for:mint"))
+    pd.run_pass(store)
+    assert len(_jobs_under(store, kid)) == 1
+
+
 def _failed_job(
     store: Store,
     task: int,

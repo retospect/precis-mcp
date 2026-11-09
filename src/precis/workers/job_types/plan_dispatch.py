@@ -116,8 +116,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    one, which mints no job — so an unsigned session's mint is born
    held instead: ``put`` stamps ``waiting-for:mint``
    (:data:`precis.plans.nodes.MINT_HOLD_TAG`) on a child landing
-   inside a live plan no signal covers (:func:`mint_needs_hold`), and
-   the minter removes the tag once its ``blocked-by`` links are
+   inside a live plan whose own ancestor chain carries no signal
+   (:func:`mint_needs_hold`) — only a signal on the put's parent line
+   can be the minter's own (a ``put``'s ``parent_id`` default is the
+   session's todo); a sibling's job or lease is another session's,
+   and its end would free the linkless child early (td601628). The
+   minter removes the tag once its ``blocked-by`` links are
    settled — the runbook contract (me570515) enforced.
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
@@ -2053,6 +2057,22 @@ def _job_in_flight(j: _Node) -> bool:
     return j.status != "queued" and j.status not in _JOB_TERMINAL
 
 
+def _mint_signal(plan: _Plan, n: _Node, owner: _Node) -> bool:
+    """``owner`` carries a live session signal older than ``n``: an
+    in-flight job — a dispatched session's mark — or a live
+    ``claimed-by:`` lease — an interactive session's mark (it mints no
+    job; a closed todo's lingering tag is dead: the tick's closes do
+    not strip claims and hygiene skips them). A signal younger than
+    ``n`` cannot be the pass that minted it."""
+    if any(_job_in_flight(j) and j.created_at < n.created_at for j in plan.jobs(owner)):
+        return True
+    return not _closed(owner) and any(
+        set_at < n.created_at
+        for value, set_at in owner.open_tags.items()
+        if value.startswith("claimed-by:")
+    )
+
+
 def _mint_in_flight(plan: _Plan, n: _Node) -> bool:
     """A mint pass on ``n``'s plan may still be running (gr590954):
     the links of a node minted mid-session are settled only once the
@@ -2065,25 +2085,10 @@ def _mint_in_flight(plan: _Plan, n: _Node) -> bool:
     live ``claimed-by:`` lease for an interactive one, which mints no
     job. A node older than the signal cannot be that session's write —
     its links are already settled."""
-
-    def suspect(owner: _Node) -> bool:
-        if any(
-            _job_in_flight(j) and j.created_at < n.created_at for j in plan.jobs(owner)
-        ):
-            return True
-        # A live ``claimed-by:`` lease — an interactive session's mark
-        # (it mints no job). A closed todo's lingering tag is dead: the
-        # tick's closes do not strip claims and hygiene skips them.
-        return not _closed(owner) and any(
-            set_at < n.created_at
-            for value, set_at in owner.open_tags.items()
-            if value.startswith("claimed-by:")
-        )
-
-    if any(suspect(a) for a in plan.ancestors(n)):
+    if any(_mint_signal(plan, n, a) for a in plan.ancestors(n)):
         return True
     return any(
-        g.id != n.id and g.root == n.root and _may_mint(g) and suspect(g)
+        g.id != n.id and g.root == n.root and _may_mint(g) and _mint_signal(plan, n, g)
         for g in plan.todos()
     )
 
@@ -2137,13 +2142,18 @@ def _plan_root_of(store: Any, ref_id: int) -> int | None:
 def mint_needs_hold(store: Any, parent_id: int) -> bool:
     """Whether a ``put`` minting a todo under ``parent_id`` must mint it
     held (``waiting-for:mint``): the put lands inside a live plan
-    subtree and no session signal covers the mint — the put commits the
-    row open and linkless and the ``blocked-by`` links land in later
-    calls, so only :func:`_mint_in_flight`'s in-flight job or
-    ``claimed-by:`` lease keeps the tick from dispatching it mid-mint,
-    and an unsigned session (an interactive one without a lease) has
-    neither (td601078, review of gr590954). With a signal live the mint
-    is born open and that hold does the rest."""
+    subtree and no caller-owned session signal covers the mint — the
+    put commits the row open and linkless and the ``blocked-by`` links
+    land in later calls, so only a live signal keeps the tick from
+    dispatching it mid-mint, and an unsigned session (an interactive
+    one without a lease) has none (td601078, review of gr590954). The
+    only signal verifiably the minter's own is one on the mint's
+    ancestor chain — the ``put``'s ``parent_id`` default is the
+    session's own todo: a job or lease on an unrelated mint-capable
+    todo of the plan is another session's, it does not cover this
+    mint, and its end would free the linkless child before its links
+    settle (td601628). With a covering signal the mint is born open
+    and :func:`_mint_in_flight`'s plan-wide hold does the rest."""
     root = _plan_root_of(store, parent_id)
     if root is None:
         return False
@@ -2160,7 +2170,7 @@ def mint_needs_hold(store: Any, parent_id: int) -> bool:
         depth=0,
         root=root,
     )
-    return not _mint_in_flight(plan, n)
+    return not any(_mint_signal(plan, n, a) for a in plan.ancestors(n))
 
 
 def _attempt_tag(n: _Node) -> int:

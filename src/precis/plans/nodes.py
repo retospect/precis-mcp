@@ -322,9 +322,10 @@ GENERATOR_VERDICTS: tuple[str, ...] = ("no-op", "moot", "validated")
 MOOT_TAG = "verdict:moot"
 
 #: Open tag ``TodoHandler.put`` stamps on a todo created inside a live
-#: plan subtree while no session signal covers the mint
-#: (:func:`precis.workers.job_types.plan_dispatch.mint_needs_hold`) —
-#: the enforced half of the "mint it held" contract (me570515): the
+#: plan subtree while no caller-owned session signal covers the mint —
+#: an in-flight job or ``claimed-by:`` lease on the mint's own ancestor
+#: chain (:func:`precis.workers.job_types.plan_dispatch.mint_needs_hold`)
+#: — the enforced half of the "mint it held" contract (me570515): the
 #: ``waiting-for:`` prefix keeps the linkless child out of dispatch and
 #: the minter removes it once its ``blocked-by`` links are settled.
 MINT_HOLD_TAG = "waiting-for:mint"
