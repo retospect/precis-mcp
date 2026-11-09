@@ -211,7 +211,10 @@ def devin_atif_usage(path: Path | None) -> dict[str, Any] | None:
     reports cost — ``total_cost_usd``, per-step ``metrics.cost_usd``,
     ``committed_acu_cost``/``committed_credit_cost``, and
     ``extra.response_dimensions`` acu/credit/usd entries. ``None`` when
-    no ATIF document reads — the spend cap then sees zero, as before."""
+    no ATIF document reads. The paid plan's export carries token totals
+    only, which is why a ``budget_usd`` launch is refused on this
+    adapter rather than watched — the bound would read zero while real
+    spend accrued (td601426)."""
     if path is None:
         return None
     try:
@@ -363,11 +366,17 @@ class Adapter:
     ``mcp`` means write-capable precis MCP (it gates generators and the
     reviewer wording); ``read_mcp`` means the lane can take a scoped
     grant (reader/triage, gr574082) — reads plus the triage write set —
-    when ``PRECIS_SLICE_READ_MCP`` names a scope."""
+    when ``PRECIS_SLICE_READ_MCP`` names a scope. ``budget_capable``
+    means the vendor enforces ``params.budget_usd`` itself — claude's
+    ``--max-budget-usd``. Every other adapter is ``False`` (devin's paid
+    ATIF carries tokens only, codex/kimi report no spend) and run_slice
+    refuses a capped launch there rather than run one unbounded
+    (td601426)."""
 
     name: str
     mcp: bool
     read_mcp: bool = False
+    budget_capable: bool = False
 
     def argv(
         self,
@@ -382,6 +391,7 @@ class Adapter:
         writable_roots: tuple[Path, ...] = (),
         read_mcp_url: str | None = None,
         export_path: Path | None = None,
+        budget_usd: float | None = None,
     ) -> list[str]:
         """Build argv; effort remains the worker's exported metadata.
         ``writable_roots`` are the sandbox's ``--add-dir`` grants (codex
@@ -391,7 +401,10 @@ class Adapter:
         mcp_servers.<name>.url=…``); devin's server entry lives in the
         per-tree config file ``run_slice._devin_mcp_config`` writes, not
         argv. ``export_path`` is the ATIF file ``devin --export`` keeps
-        refreshed each turn — the poll reads ``meta.usage`` from it."""
+        refreshed each turn — the poll reads ``meta.usage`` from it.
+        ``budget_usd`` is the node's remaining allowance; only
+        :attr:`budget_capable` adapters receive it (claude's
+        ``--max-budget-usd``), run_slice having refused the rest."""
         if self.name == "claude_p":
             argv = [
                 claude_bin(),
@@ -403,6 +416,8 @@ class Adapter:
             ]
             if model is not None:
                 argv += ["--model", model]
+            if budget_usd is not None:
+                argv += ["--max-budget-usd", str(budget_usd)]
             return argv + [
                 "--permission-mode",
                 PERMISSION_MODE,
@@ -529,7 +544,7 @@ class Adapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
-    "claude_p": Adapter("claude_p", mcp=True),
+    "claude_p": Adapter("claude_p", mcp=True, budget_capable=True),
     "codex_exec": Adapter("codex_exec", mcp=False, read_mcp=True),
     "devin_tree": Adapter("devin_tree", mcp=False, read_mcp=True),
     "kimi_tree": Adapter("kimi_tree", mcp=False),

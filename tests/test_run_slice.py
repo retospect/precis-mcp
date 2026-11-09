@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import types
@@ -258,7 +259,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         run_slice, "_darwin_process_identity", lambda pid: calls["ps_identity"]
     )
     monkeypatch.setattr(
-        run_slice, "_signal_group", lambda pgid, sig: calls["signals"].append(pgid)
+        run_slice,
+        "_signal_group",
+        lambda pgid, sig: calls["signals"].append((pgid, sig)),
     )
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: calls.get("live", {}))
     # Host-refusal backoffs (gr571395): a test sets seams["backoff"] =
@@ -1696,7 +1699,7 @@ def test_kill_revokes_the_slice_grant(
     grant_file = registry / "td42j900"
     assert grant_file.exists()
     run_slice.kill(ctx, handle)
-    assert seams["signals"] == [4242]
+    assert seams["signals"] == [(4242, signal.SIGTERM)]
     assert not grant_file.exists()
 
 
@@ -4226,9 +4229,9 @@ def test_exit_zero_with_is_error_fails(seams: dict[str, Any]) -> None:
 
 def test_kill_sigterms_the_group(seams: dict[str, Any]) -> None:
     run_slice.kill(None, {"pid": 4242, "pgid": 4242})
-    assert seams["signals"] == [4242]
+    assert seams["signals"] == [(4242, signal.SIGTERM)]
     run_slice.kill(None, {"pid": 1})
-    assert seams["signals"] == [4242]
+    assert seams["signals"] == [(4242, signal.SIGTERM)]
 
 
 def test_parse_result_takes_last_result_object() -> None:
@@ -6060,13 +6063,16 @@ def test_watch_budget_kills_over_allowance(
     path fails the attempt naming the bound."""
     store = _Store()
     store.add_todo(42, "Build")
-    ctx, handle = _devin_lane_submit(store, seams, monkeypatch, budget_usd=5.0)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
     assert handle is not None
     _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25, "total_steps": 3})
     pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
     assert run_slice.poll(pctx, handle) is False
-    assert seams["signals"] == [handle["pgid"]]
-    assert handle["budget_kill"] == {"budget_usd": 5.0, "usd": 6.25}
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    kill = handle["budget_kill"]
+    assert kill["budget_usd"] == 5.0 and kill["usd"] == 6.25
+    assert kill["sig"] == "term" and kill["at"].endswith("Z")
     # The dead-process path then fails the attempt naming the bound.
     seams["alive"] = False
     _finish(handle, 143, "transcript tail\n")
@@ -6085,10 +6091,11 @@ def test_watch_budget_ignores_under_allowance_and_unreported(
     fields — never kills; the allowance is a bound, not a tripwire."""
     store = _Store()
     store.add_todo(42, "Build")
-    ctx, handle = _devin_lane_submit(store, seams, monkeypatch, budget_usd=5.0)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
     assert handle is not None
     _atif(Path(handle["atif"]), final={"total_cost_usd": 4.0, "total_steps": 2})
     pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
     assert run_slice.poll(pctx, handle) is False
     assert seams["signals"] == [] and "budget_kill" not in handle
     # Tokens only — no spend field means the bound cannot trip.
@@ -6100,6 +6107,126 @@ def test_watch_budget_ignores_under_allowance_and_unreported(
     )
     assert run_slice.poll(pctx, handle) is False
     assert seams["signals"] == [] and "budget_kill" not in handle
+
+
+def test_capped_launch_refused_on_an_adapter_without_spend(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601426: devin's paid ATIF carries tokens only, so a
+    ``budget_usd`` launch there could never see its bound — submit
+    refuses it (nothing launched, the todo never claimed, the failure
+    counting as an attempt so the climb moves on)."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch, budget_usd=5.0)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "budget_usd" in ctx.failure and "devin_tree" in ctx.failure
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_capped_claude_launch_passes_max_budget_usd(
+    seams: dict[str, Any],
+) -> None:
+    """td601426: claude_p is ``budget_capable`` — its argv carries
+    ``--max-budget-usd`` so the vendor itself enforces the bound."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, budget_usd=7.5)
+    assert handle is not None and ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    i = argv.index("--max-budget-usd")
+    assert argv[i + 1] == "7.5"
+
+
+def test_watch_budget_sigkills_a_sigterm_survivor(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601426: a TERM'ed session still answering liveness past the
+    grace gets SIGKILL — the bound ends the session; one signal attempt
+    is not the enforcement."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25})
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    # Inside the grace the watch waits; past it, SIGKILL — every live pass.
+    handle["budget_kill"]["at"] = "2000-01-01T00:00:00Z"
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    assert handle["budget_kill"]["sig"] == "kill"
+    pctx3 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx3, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    kinds = [k for k, _t in pctx2.chunks]
+    assert "job_event" in kinds
+
+
+def test_watch_budget_sigkills_when_the_term_never_landed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601426: a TERM that raises never lands — the next live pass
+    escalates to SIGKILL without waiting out the grace, and keeps
+    retrying until the group stops answering."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25})
+    sig_calls: list[int] = []
+
+    def flaky(pgid: int, sig: int) -> None:
+        sig_calls.append(sig)
+        if sig == signal.SIGTERM:
+            raise OSError("killpg failed")
+
+    monkeypatch.setattr(run_slice, "_signal_group", flaky)
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert sig_calls == [signal.SIGTERM]
+    assert handle["budget_kill"]["sig"] == "none"
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is False
+    assert sig_calls == [signal.SIGTERM, signal.SIGKILL]
+    assert handle["budget_kill"]["sig"] == "kill"
+
+
+def test_budget_kill_fails_the_attempt_even_on_a_clean_exit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td601426: a budget-stopped session exiting 0 mints no land and
+    burns the attempt — the bound's stop is failure handling, never a
+    success that ships the branch."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25})
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert handle["budget_kill"]["sig"] == "term"
+    # The session dies to the signal but leaves a clean exit record and
+    # commits on the branch — the land still must not be minted.
+    seams["alive"] = False
+    seams["ahead"] = "abc1234 the slice's commit\n"
+    _finish(handle, 0, "all done, shipped it\n")
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is True
+    assert pctx2.status == "failed"
+    assert pctx2.failure is not None and "remaining budget" in pctx2.failure
+    assert seams["lands"] == []
+    assert "attempt:1" in store.tag_strings(42)
+    assert store.comments(42)[0].startswith(
+        "handoff: attempt FAILED, crossed its remaining budget"
+    )
 
 
 def test_poll_claude_stamps_envelope_usage(

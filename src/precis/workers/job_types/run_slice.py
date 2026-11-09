@@ -51,10 +51,18 @@ that holds the lane's credentials with ``params.target_node``):
   against the lane's ``deny_write_paths`` (:func:`deny_violations`),
   stamps the vendor's reported usage on ``meta.usage`` each pass —
   devin's ATIF ``--export`` file, live per turn; claude's result
-  envelope; codex's ``turn.completed`` — and, for a job minted with
+  envelope; codex's ``turn.completed``. A job minted with
   ``params.budget_usd`` (the rung's remaining allowance,
-  ``plan_dispatch._escalate``), SIGTERMs the group once live usage
-  meets the bound (td601015);
+  ``plan_dispatch._escalate``) is bound two ways (td601015, td601426):
+  a :attr:`Adapter.budget_capable` lane — claude's
+  ``--max-budget-usd`` — is enforced vendor-side at submit, a launch on
+  any other adapter is refused outright (devin's paid ATIF carries
+  tokens only, codex/kimi report no spend — the bound would read zero
+  while real spend accrued), and the poll's watch SIGTERMs the group
+  once live usage meets the bound, escalating to SIGKILL while a
+  survivor still answers liveness past the grace. A budget stop is
+  always a failed attempt — even on a clean exit, it never mints a
+  land;
   posts the session's last message as a ``handoff:`` comment on the todo,
   records the branch state (dirty count, commits ahead of
   ``origin/main``) in the job summary. On a clean exit (0, no claude
@@ -335,8 +343,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "head_sha": {"type": "string"},
         # The node's remaining USD allowance — plan_dispatch._escalate
         # stamps cap minus recorded spend when climbing onto a rung_caps
-        # rung; the poll kills the session once its live usage meets it
-        # (td601015).
+        # rung; the launch is refused on an adapter with no spend
+        # accounting, else the vendor/the poll kills the session once
+        # its usage meets the bound (td601015, td601426).
         "budget_usd": {"type": "number"},
         # Shared job budget key; sizes the lease and the kill deadline.
         "resources": {
@@ -2154,6 +2163,28 @@ def submit(ctx: Any, spec: Any) -> Any:
     )
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     ctx.set_meta(lane=lane.name, adapter=adapter.name, model=model, effort=effort)
+    budget = params.get("budget_usd")
+    budget_usd = (
+        float(budget)
+        if isinstance(budget, (int, float))
+        and not isinstance(budget, bool)
+        and math.isfinite(float(budget))
+        and float(budget) > 0
+        else None
+    )
+    if budget_usd is not None and not adapter.budget_capable:
+        # A bound the lane cannot account is a refused launch, not a
+        # session that runs unbounded (td601426 review): devin's paid
+        # ATIF carries tokens only, codex/kimi report no spend. The
+        # failure counts as an attempt, so the climb never re-picks the
+        # same unenforceable rung; the todo was never claimed.
+        ctx.record_failure(
+            f"run_slice: params.budget_usd ${budget_usd:.2f} is not "
+            f"enforceable on lane {lane.name!r} — adapter {adapter.name} "
+            "reports no spend the bound can ride; cap only a lane whose "
+            "adapter enforces a budget"
+        )
+        return None
     _claim_todo(store, todo_id, lane.name)
 
     body, latest = _brief_parts(store, todo_id)
@@ -2252,6 +2283,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             ),
             read_mcp_url=read_url if grant else None,
             export_path=atif_path,
+            budget_usd=budget_usd,
         )
         env = slice_env(
             todo_id,
@@ -3089,16 +3121,28 @@ def _adapter_usage(
     return None
 
 
+#: Grace a SIGTERM'ed capped session gets before the watch escalates to
+#: SIGKILL (td601426): a TERM the group ignored — or a signal that never
+#: landed — ends the wait, never the enforcement.
+_BUDGET_TERM_GRACE_S = 30.0
+
+#: The ``started_at``/``budget_kill.at`` timestamp shape.
+_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
 def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     """The remaining-allowance bound (td601015): ``params.budget_usd``
     is the node's allowance ``plan_dispatch._escalate`` left after
     recorded spend — SIGTERM the session once its live usage meets it,
     so a job minted under the cap cannot run past it. The kill rides
     the handle as ``budget_kill``; the dead-process path then fails the
-    attempt naming the bound. No live usage channel (a vendor reporting
-    no spend, or none yet) means the bound simply cannot trip."""
-    if handle.get("budget_kill"):
-        return
+    attempt naming the bound — and even a clean exit after it is a
+    failure, never a land (td601426). A survivor still answering
+    liveness past :data:`_BUDGET_TERM_GRACE_S` — or a TERM that raised
+    — escalates to SIGKILL, retried on every live pass: one signal is
+    not the enforcement, termination is. No live usage channel (a
+    vendor reporting no spend, or none yet) means the bound simply
+    cannot trip."""
     params = (ctx.meta or {}).get("params") or {}
     raw = params.get("budget_usd")
     if not isinstance(raw, (int, float)) or isinstance(raw, bool):
@@ -3106,17 +3150,57 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     budget = float(raw)
     if not math.isfinite(budget) or budget <= 0:
         return
+    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
+    kill = handle.get("budget_kill")
+    if isinstance(kill, dict):
+        try:
+            sent = datetime.strptime(str(kill.get("at") or ""), _TS_FMT).replace(
+                tzinfo=UTC
+            )
+        except ValueError:
+            sent = None
+        if (
+            kill.get("sig") == "term"
+            and sent is not None
+            and (datetime.now(UTC) - sent).total_seconds() < _BUDGET_TERM_GRACE_S
+        ):
+            return
+        # The grace expired (or the TERM never landed): SIGKILL —
+        # retried every live pass while the group keeps answering.
+        if pgid > 1:
+            try:
+                _signal_group(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass  # gone, or undelivered — retried on the next live pass
+            else:
+                if kill.get("sig") != "kill":
+                    ctx.append_chunk(
+                        "job_event",
+                        "run_slice: capped session outlived SIGTERM "
+                        f"(grace {_BUDGET_TERM_GRACE_S:.0f}s); SIGKILL "
+                        "to the group",
+                    )
+                kill["sig"] = "kill"
+                ctx.set_meta(compute_handle=handle)
+        return
     usage = _adapter_usage(ctx, handle)
     usd = _usage_usd(usage, ctx.store, (ctx.meta or {}).get("lane"))
     if usd < budget:
         return
-    pgid = int(handle.get("pgid") or handle.get("pid") or 0)
+    kill = {
+        "budget_usd": budget,
+        "usd": round(usd, 4),
+        "at": datetime.now(UTC).strftime(_TS_FMT),
+        "sig": "none",
+    }
     if pgid > 1:
         try:
             _signal_group(pgid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
-            pass
-    handle["budget_kill"] = {"budget_usd": budget, "usd": round(usd, 4)}
+            pass  # gone is fine; undelivered escalates on the next pass
+        else:
+            kill["sig"] = "term"
+    handle["budget_kill"] = kill
     ctx.set_meta(compute_handle=handle)
     ctx.append_chunk(
         "job_event",
@@ -3210,7 +3294,20 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
     result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
     _adapter_usage(ctx, handle, log_text)
-    if is_error and not vanished:
+    # A session the budget watch stopped (td601426): whatever its exit
+    # code reads, the bound's stop is a failed attempt — no outage park
+    # on its error text, no worker commit, no land mint.
+    budget_kill = handle.get("budget_kill")
+    budget_note = (
+        (
+            "crossed its remaining budget "
+            f"(usage ${float(budget_kill.get('usd') or 0):.2f} ≥ "
+            f"${float(budget_kill.get('budget_usd') or 0):.2f})"
+        )
+        if isinstance(budget_kill, dict)
+        else None
+    )
+    if is_error and not vanished and budget_note is None:
         outage = _lane_outage(
             result, log_text, adapter=adapter.name, exit_code=exit_code
         )
@@ -3253,6 +3350,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     handoff = (result or "").strip()
     if denied:
         handoff = f"attempt FAILED, {denied}.\n\n{handoff}".strip()
+    elif budget_note is not None:
+        handoff = f"attempt FAILED, {budget_note}.\n\n{handoff}".strip()
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review
@@ -3274,7 +3373,13 @@ def poll(ctx: Any, handle: Any) -> bool:
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
 
     committed = None
-    if exit_code == 0 and not is_error and not denied and not vanished:
+    if (
+        exit_code == 0
+        and not is_error
+        and not denied
+        and not vanished
+        and budget_note is None
+    ):
         if not _is_generator(ctx.store, todo_id):
             committed = _commit_for_session(tree, todo_id)
     if committed:
@@ -3302,9 +3407,11 @@ def poll(ctx: Any, handle: Any) -> bool:
     ]
     if denied:
         summary.append(f"Deny check: {denied}.")
+    if budget_note is not None:
+        summary.append(f"Budget: {budget_note}.")
     if committed:
         summary.append(f"Commit: {committed}.")
-    clean = exit_code == 0 and not is_error and not denied
+    clean = exit_code == 0 and not is_error and not denied and budget_note is None
     # A clean task run hands its branch to the lander; a generator's work is
     # its child todos, so it has nothing to land.
     land = clean and not _is_generator(ctx.store, todo_id)
@@ -3529,19 +3636,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         gone = f"worktree {tree} vanished while the session ran (reaped?)"
     else:
         gone = None
-    budget_kill = handle.get("budget_kill")
-    what = (
-        (
-            "crossed its remaining budget "
-            f"(usage ${budget_kill['usd']:.2f} ≥ ${budget_kill['budget_usd']:.2f})"
-            if isinstance(budget_kill, dict)
-            else None
-        )
-        or denied
-        or nothing
-        or gone
-        or f"failed (exit {exit_code})"
-    )
+    what = budget_note or denied or nothing or gone or f"failed (exit {exit_code})"
     reason = (
         f"run_slice: session for td{todo_id} {what}; todo back to open, "
         f"attempt:{attempt}"
