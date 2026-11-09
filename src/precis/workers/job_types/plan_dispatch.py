@@ -122,12 +122,17 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    session's todo); a sibling's job or lease is another session's,
    and its end would free the linkless child early (td601628). The
    minter removes the tag once its ``blocked-by`` links are
-   settled — the runbook contract (me570515) enforced.
+   settled — the runbook contract (me570515) enforced. A minter that
+   dies or forgets leaves the hold to hygiene (step 5, gr574881).
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
    gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
    it; ``release_claims``, back to ``STATUS:triaged`` with a comment — unless
    its newest comment is ``resolved:``, then only the lease goes; gr542086);
+   a ``waiting-for:mint`` tag older than :data:`MINT_STALE` on a mint whose
+   links or body settled is released — a dead minter cannot strand the child
+   (gr574881) — while an orphan mint (no ``blocked-by``/``part-of`` edge, no
+   body) is not released and files one ask on the plan root instead;
    a task whose newest job ended
    (failed, or succeeded without closing it) with attempts at its retry
    cap is parked. The cap is an explicit ``meta.retries`` pin, else the
@@ -236,7 +241,7 @@ from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans import templates as _templates
 from precis.plans.logbook import log_plan_event
-from precis.plans.nodes import MOOT_TAG, node_kind
+from precis.plans.nodes import MINT_HOLD_TAG, MOOT_TAG, node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -270,6 +275,14 @@ CLAIM_STALE = timedelta(hours=4)
 #: A plan job queued longer than this with no host advertising its placement
 #: capabilities gets a pass note (td543917).
 QUEUED_NOTE_AFTER = timedelta(minutes=10)
+
+#: A ``waiting-for:mint`` tag older than this is stale — the minter died,
+#: errored or forgot between the ``put`` and its link-settling calls
+#: (gr574881; the me570515 contract leaves removal to the minter, and the
+#: rescue reads the held child as a quiet node, not a stall). A stale hold
+#: on a settled mint — a ``blocked-by``/``part-of`` edge or a non-empty
+#: body — is released; an unsettled orphan files an ask on its plan root.
+MINT_STALE = timedelta(minutes=10)
 
 #: Default ``meta.retries`` of a task.
 DEFAULT_RETRIES = 2
@@ -359,6 +372,13 @@ RERUN_WAIT_CAP = timedelta(hours=2)
 #: without it), so the one option is the acknowledgement.
 _RERUN_ASK_OPTIONS: list[str] = [
     "acknowledged",
+]
+
+#: Options of the ask an orphan mint files (gr574881) — nothing
+#: automated answers it; the body carries the mechanics.
+_ORPHAN_MINT_ASK_OPTIONS: list[str] = [
+    "release the hold anyway",
+    "won't do",
 ]
 
 #: Consecutive infra-red lands (:func:`_infra_red_lands`) before the tick
@@ -3647,6 +3667,71 @@ def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
     return int(ref.id)
 
 
+def _mint_orphan_ask(store: Any, n: _Node, minutes: int) -> int:
+    """The ONE ask an orphan mint files on its plan root (gr574881): the
+    ``waiting-for:mint`` hold outlived :data:`MINT_STALE` and the mint
+    never settled — no ``blocked-by``/``part-of`` edge, no body — so its
+    minter died, errored or forgot between the ``put`` and the link
+    calls. The hold stays (an empty task released would dispatch into
+    the void); the ask parks it for a human. Insert shape of
+    :func:`_mint_ask`; the ``blocked-by`` edge lands on the orphan so
+    :func:`_step_mint_holds` never asks twice."""
+    context = (
+        f"waiting-for:mint held {minutes}m with no links and no body — "
+        f"orphan mint td{n.id} under plan td{n.root}"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_ORPHAN_MINT_ASK_OPTIONS),
+            "blocks": f"td{n.id}",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = (
+        f"td{n.id}: orphan mint held {minutes}m — settle it, release it, or drop it?"
+    )
+    body = (
+        f"td{n.id} ({n.title.splitlines()[0] if n.title else ''}) was minted "
+        f"inside plan td{n.root} with waiting-for:mint and its minter never "
+        f"settled it — {minutes} min silent, no blocked-by/part-of link, no "
+        "body. The tick keeps the hold: released as-is the empty task would "
+        "dispatch into the void. To keep the mint, settle it — once a link "
+        "or a body lands the tick releases the hold itself. To dispatch it "
+        "as-is ('release the hold anyway'), remove the waiting-for:mint tag "
+        f"and close this todo. Pick 'won't do' by closing td{n.id} "
+        "STATUS:won't-do."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", "showstopper", f"plan:{n.root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        store.add_link(
+            src_ref_id=n.id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
+        )
+    return int(ref.id)
+
+
 def _stale_gripe_claims(
     conn: Any, now: datetime, *, gripe_id: int | None = None
 ) -> dict[int, list[str]]:
@@ -3792,6 +3877,66 @@ def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> N
         )
 
 
+def _mint_settled(store: Any, ref_id: int) -> bool:
+    """Whether a held mint's put→link session settled: a ``blocked-by``
+    or ``part-of`` edge touches it, or it carries a non-empty body — the
+    hold is then a leftover, not a guard (gr574881)."""
+    with store.pool.connection() as conn:
+        linked = conn.execute(
+            "SELECT 1 FROM links WHERE relation IN ('blocked-by', 'part-of') "
+            "AND (src_ref_id = %s OR dst_ref_id = %s) LIMIT 1",
+            (ref_id, ref_id),
+        ).fetchone()
+    if linked is not None:
+        return True
+    return any(
+        c.chunk_kind == TODO_BODY_KIND and str(c.text or "").strip()
+        for c in store.chunks.list_chunks_for_ref(ref_id)
+    )
+
+
+def _step_mint_holds(
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    """gr574881: a ``waiting-for:mint`` hold past :data:`MINT_STALE` on a
+    mint whose links or body settled (:func:`_mint_settled`) is released —
+    the me570515 contract leaves removal to the minter, and a minter that
+    died, errored or forgot would hold the child forever. An unsettled
+    orphan mints one ask on its plan root instead (:func:`_mint_orphan_ask`);
+    the ask's ``blocked-by`` edge dedupes the step, open or answered."""
+    for n in plan.todos():
+        if _closed(n):
+            continue
+        stamped = n.open_tags.get(MINT_HOLD_TAG)
+        if stamped is None or now - stamped <= MINT_STALE:
+            continue
+        if any(b.is_ask for b in plan.blockers.get(n.id, [])):
+            continue  # the orphan ask is already filed
+        minutes = int((now - stamped).total_seconds() // 60)
+        if _mint_settled(store, n.id):
+            w.remove_tags(n, [MINT_HOLD_TAG])
+            res.released += 1
+            res.notes.append(f"mint hold released: td{n.id} (minter silent {minutes}m)")
+            continue
+        if w.dry_run:
+            res.asks += 1
+            res.notes.append(
+                f"td{n.id}: would ask — orphan mint (minter silent {minutes}m)"
+            )
+            continue
+        ask_id = _mint_orphan_ask(store, n, minutes)
+        res.asks += 1
+        res.notes.append(
+            f"td{n.id}: orphan mint (minter silent {minutes}m), asked in td{ask_id}"
+        )
+        log_plan_event(
+            w.store,
+            n.id,
+            f"ask td{ask_id} raised (orphan mint td{n.id}; minter silent {minutes}m)",
+            root=n.root,
+        )
+
+
 def _in_rescue(n: _Node) -> bool:
     """An open ``rescue:<cls>`` tag — the rescue pass owns the node."""
     return any(v.startswith("rescue:") for v in n.open_tags)
@@ -3897,6 +4042,7 @@ def _step_hygiene(
 ) -> None:
     _step_gripe_leases(w.store, w, res, now)
     _step_unplaced(w.store, plan, res, now)
+    _step_mint_holds(w.store, plan, w, res, now)
     for n in plan.todos():
         if _closed(n):
             continue
@@ -4095,6 +4241,7 @@ def load() -> JobTypeSpec:
 __all__ = [
     "CLAIM_STALE",
     "DEFAULT_RETRIES",
+    "MINT_STALE",
     "NAME",
     "PARAMS_SCHEMA",
     "QUEUED_NOTE_AFTER",

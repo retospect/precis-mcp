@@ -584,6 +584,134 @@ def test_an_unsigned_mint_holds_past_an_unrelated_sessions_signal(
     assert len(_jobs_under(store, kid)) == 1
 
 
+def _age_tag(store: Store, ref_id: int, value: str, interval: str) -> None:
+    """Backdate a tag's ``ref_tags.created_at`` — the staleness clocks
+    (:data:`pd.CLAIM_STALE`, :data:`pd.MINT_STALE`) read it."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - %s::interval "
+            "WHERE ref_id = %s AND tag_id IN (SELECT tag_id FROM tags "
+            "WHERE value = %s)",
+            (interval, ref_id, value),
+        )
+
+
+def test_a_stale_mint_hold_releases_once_settled(store: Store, hub: Any) -> None:
+    """gr574881: the me570515 contract leaves ``waiting-for:mint`` removal
+    to the minter, so a minter that dies after settling the mint's links
+    holds the child forever. Past :data:`pd.MINT_STALE` hygiene releases
+    the hold itself; the settled links then govern dispatch."""
+    from precis.handlers.todo import TodoHandler
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice"}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+
+    # The minter's links land — then it dies before removing the hold.
+    store.add_link(src_ref_id=kid, dst_ref_id=task, relation="blocked-by")
+    _age_tag(store, kid, "waiting-for:mint", "11 minutes")
+
+    res = pd.run_pass(store)
+    assert res.released == 1
+    assert any(
+        n.startswith(f"mint hold released: td{kid} (minter silent") for n in res.notes
+    )
+    assert "waiting-for:mint" not in _open_tags(store, kid)
+
+    # Its own blocker, not the hold, keeps it parked now; with the
+    # blocker closed it dispatches.
+    assert not _jobs_under(store, kid)
+    store.add_tag(
+        task, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, kid)) == 1
+
+
+def test_an_orphan_mint_files_an_ask_not_a_release(store: Store, hub: Any) -> None:
+    """gr574881: a ``waiting-for:mint`` past :data:`pd.MINT_STALE` with no
+    links and no body — the minter died before settling anything — is
+    NOT released (an empty task would dispatch into the void): the tick
+    files one ruling ask on the plan root and keeps the hold."""
+    from precis.handlers.todo import TodoHandler
+
+    mint = _one_task_plan(store)
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+    _age_tag(store, kid, "waiting-for:mint", "11 minutes")
+
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert res.released == 0
+    assert "waiting-for:mint" in _open_tags(store, kid)
+    assert not _jobs_under(store, kid)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    meta = _meta(store, ask)["ask"]
+    assert meta["kind"] == "ruling"
+    assert meta["blocks"] == f"td{kid}"
+    assert "orphan mint" in meta["context"]
+    assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= _open_tags(store, ask)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'blocked-by'",
+            (kid, ask),
+        ).fetchone()
+    assert row is not None and row[0] == 1
+
+    # One ask ever: no second mint while it is open, and none once it is
+    # answered and closed — the human's answer is the resolution.
+    assert pd.run_pass(store).asks == 0
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert "waiting-for:mint" in _open_tags(store, kid)
+    assert not _jobs_under(store, kid)
+
+
+def test_a_fresh_mint_hold_is_untouched(store: Store, hub: Any) -> None:
+    """gr574881: a hold younger than :data:`pd.MINT_STALE` is the contract
+    working — the minter's links are still landing — so hygiene leaves
+    even a linkless mint alone."""
+    from precis.handlers.todo import TodoHandler
+
+    mint = _one_task_plan(store)
+    resp = TodoHandler(hub=hub).put(
+        text="Minted mid-session",
+        parent_id=mint.root_id,
+        meta={"op": "run_slice"},
+    )
+    kid = resp.ref_id
+    assert kid is not None
+    assert "waiting-for:mint" in _open_tags(store, kid)
+
+    res = pd.run_pass(store)
+    assert res.released == 0
+    assert res.asks == 0
+    assert "waiting-for:mint" in _open_tags(store, kid)
+    assert not _jobs_under(store, kid)
+
+
 def _failed_job(
     store: Store,
     task: int,

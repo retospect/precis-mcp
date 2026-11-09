@@ -1128,8 +1128,9 @@ class TodoHandler(NumericRefHandler):
         # sibling's signal is another session's, not the caller's
         # (gr590954 review, td601078; td601628). The minter removes the
         # tag once its links are settled — the mint-held runbook
-        # contract (me570515) enforced. A caller-supplied hold is
-        # already held.
+        # contract (me570515) enforced; plan_dispatch hygiene releases
+        # a settled mint's hold past ``MINT_STALE`` and asks on an
+        # orphan (gr574881). A caller-supplied hold is already held.
         mint_hold = False
         if parent_int is not None and not _mint_held(tags):
             from precis.workers.job_types import plan_dispatch as _pd

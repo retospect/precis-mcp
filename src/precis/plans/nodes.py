@@ -327,7 +327,10 @@ MOOT_TAG = "verdict:moot"
 #: chain (:func:`precis.workers.job_types.plan_dispatch.mint_needs_hold`)
 #: — the enforced half of the "mint it held" contract (me570515): the
 #: ``waiting-for:`` prefix keeps the linkless child out of dispatch and
-#: the minter removes it once its ``blocked-by`` links are settled.
+#: the minter removes it once its ``blocked-by`` links are settled. A
+#: minter that never comes back leaves it to plan_dispatch hygiene:
+#: past ``MINT_STALE`` a settled mint's hold is released and an orphan
+#: mint (no links, no body) files an ask on the plan root (gr574881).
 MINT_HOLD_TAG = "waiting-for:mint"
 
 _VERDICT_RE = re.compile(r"^\s*(no-op|moot|validated):\s*(\S.*?)\s*$", re.IGNORECASE)
