@@ -47,7 +47,30 @@ def _gripe(
                 ref.id,
             ),
         )
+    _age_dispatch_tags(store, int(ref.id), age_minutes)
     return int(ref.id)
+
+
+def _age_dispatch_tags(store: Store, ref_id: int, minutes: float) -> None:
+    """Model tags attached when the fixture gripe became dispatchable."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - make_interval(secs => %s) "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND ((t.namespace IN ('OPEN', 'FLAG') AND t.value = 'fix:code') "
+            "OR (t.namespace = 'STATUS' AND t.value = 'triaged'))",
+            (minutes * 60, ref_id),
+        )
+
+
+def _tag_age(store: Store, ref_id: int, value: str, minutes: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - make_interval(secs => %s) "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.value = %s",
+            (minutes * 60, ref_id, value),
+        )
 
 
 def _light(store: Store, prio: int = 1, host: str = "*") -> None:
@@ -162,6 +185,114 @@ def test_pass_mints_within_free_slots_and_is_idempotent(
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
     assert len(_roots_for(store, a)) == 1  # never doubled
+
+
+@pytest.mark.parametrize("namespace", ["open", "flag"])
+def test_unsupported_project_is_skipped_with_one_comment(
+    store: Store, two_lanes: Any, namespace: str
+) -> None:
+    """gr611473: the precis factory cannot land a catpath change."""
+    _light(store)
+    gid = _gripe(store, "catpath code bug")
+    project = (
+        Tag.open("project:catpath")
+        if namespace == "open"
+        else Tag.flag("project:catpath")
+    )
+    store.add_tag(gid, project, set_by="agent")
+    for _ in range(2):
+        res = gd.run_gripe_dispatch_pass(store, host="h1")
+        assert (res.ok, res.failed) == (0, 0)
+        assert _roots_for(store, gid) == []
+        [note] = _comments(store, gid)
+        assert "dispatch:" in note and "skip" in note.lower()
+        assert "project" in note.lower() and "precis" in note.lower()
+    assert gd.open_chain_count(store) == 0
+
+
+@pytest.mark.parametrize("project_tags", [(), ("project:precis",)])
+def test_supported_or_default_project_dispatches(
+    store: Store, two_lanes: Any, project_tags: tuple[str, ...]
+) -> None:
+    _light(store)
+    gid = _gripe(store, "precis code bug", tags=("fix:code", *project_tags))
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    assert len(_roots_for(store, gid)) == 1
+
+
+def test_supported_project_does_not_override_an_unsupported_project(
+    store: Store, two_lanes: Any
+) -> None:
+    _light(store)
+    gid = _gripe(
+        store,
+        "cross-project bug",
+        tags=("fix:code", "project:precis", "project:catpath"),
+    )
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0
+    assert _roots_for(store, gid) == []
+    assert len(_comments(store, gid)) == 1
+
+
+def test_unsupported_projects_do_not_use_free_build_slots(
+    store: Store, two_lanes: Any
+) -> None:
+    _light(store)
+    blocked = [
+        _gripe(store, f"catpath {i}", tags=("fix:code", "project:catpath"), prio=1)
+        for i in range(4)
+    ]
+    supported = [_gripe(store, f"precis {i}", prio=5) for i in range(3)]
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.ok, res.failed) == (3, 0)
+    assert all(_roots_for(store, gid) == [] for gid in blocked)
+    assert all(len(_roots_for(store, gid)) == 1 for gid in supported)
+
+
+@pytest.mark.parametrize("fix_age, expected", [(5, 0), (20, 1)])
+def test_dispatch_age_starts_when_fix_code_is_attached(
+    store: Store, two_lanes: Any, fix_age: int, expected: int
+) -> None:
+    """gr611300: a long-filed gripe still gets a triage grace period."""
+    _light(store)
+    gid = _gripe(store, "old report newly marked code", age_minutes=1440)
+    _tag_age(store, gid, "fix:code", fix_age)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.ok, res.failed) == (expected, 0)
+    assert len(_roots_for(store, gid)) == expected
+
+
+@pytest.mark.parametrize(
+    "triaged_age, fix_age, expected",
+    [(5, 20, 0), (20, 5, 0), (20, 30, 1), (30, 20, 1)],
+)
+def test_dispatch_age_uses_latest_triage_or_fix_code_attachment(
+    store: Store,
+    two_lanes: Any,
+    triaged_age: int,
+    fix_age: int,
+    expected: int,
+) -> None:
+    _light(store)
+    gid = _gripe(store, "triaged old report", status="triaged", age_minutes=1440)
+    _tag_age(store, gid, "triaged", triaged_age)
+    _tag_age(store, gid, "fix:code", fix_age)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.ok, res.failed) == (expected, 0)
+    assert len(_roots_for(store, gid)) == expected
+
+
+def test_recent_open_status_does_not_reset_dispatch_age(
+    store: Store, two_lanes: Any
+) -> None:
+    _light(store)
+    gid = _gripe(store, "code gripe with recent open status", age_minutes=1440)
+    _tag_age(store, gid, "fix:code", 20)
+    _tag_age(store, gid, "open", 5)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.ok, res.failed) == (1, 0)
+    assert len(_roots_for(store, gid)) == 1
 
 
 def test_one_tick_fills_every_free_build_slot(
@@ -470,6 +601,7 @@ def _age(store: Store, ref_id: int, minutes: float = 120.0) -> int:
             "WHERE ref_id = %s",
             (minutes * 60, ref_id),
         )
+    _age_dispatch_tags(store, ref_id, minutes)
     return ref_id
 
 

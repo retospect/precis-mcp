@@ -33,4 +33,10 @@ Modules (each lands as its own slice under td540836):
 The dispatcher tick lives with the other job types
 (``precis.workers.job_types``), not here: this package holds the plan
 model and its pure evaluators, the worker side holds the pass.
+
+A task class without an enabled lane is a configuration gap, not capacity
+pressure: dispatch blocks the node on one coordinator ask before minting a
+slice. Submit checks again for configuration changes after minting. Full
+lanes, health parks and host backoffs retain the transient wait path; a
+coordinator repairs the class offering and closes the ask to release it.
 """

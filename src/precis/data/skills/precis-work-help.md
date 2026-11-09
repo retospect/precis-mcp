@@ -291,7 +291,9 @@ the gripe text verbatim and picks its lane at dispatch (cheapest fit,
 free before paid; codex, which cannot reach the test gate's docker, is
 never offered `code`); the land writes `resolved: <sha>` on the gripe.
 It picks the hottest `prio` then the oldest among gripes that are `open`
-or `triaged`, tagged `fix:code`, older than an hour, with no live todo
+or `triaged`, tagged `fix:code`, at least 15 minutes past the latest
+`STATUS:triaged` or `fix:code` tag attachment (filing time if neither
+attachment time is known), with no live todo
 `related-to` them, and filed by a Claude Code session or a human account
 (`meta.filed_by`). Reader-intake and worker-filed gripes never enter a
 lane this way, nor does a never-close gripe (`hold:no-autoclose`: a land
@@ -304,6 +306,9 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 
 A hand-minted chain also counts (the `related-to` link is the marker).
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
+Every `project:` tag must name a project the factory can land (currently
+`precis`); no project tag means `precis`. Other projects get one
+`dispatch: skipped unsupported project:` comment and consume no build slot.
 
 ## What does a rescue:<class> tag mean?
 ## How do I read the rescue queue?
@@ -406,6 +411,12 @@ validate body carries the gripe report verbatim. Devin fits `code`,
 Nodes that mint or post through the MCP stay on a Claude lane: a triage
 or slicer, a brief writer (posts `brief:`), a pcb fix. `run_slice`
 refuses a child-minting generator on an MCP-less lane before the claim.
+
+If no enabled lane offers a task's class, dispatch blocks that node on one
+`ask-coordinator` ask: "no enabled lane for class <c>; next: enable a lane
+or retarget the class". Enable an offering lane or retarget `meta.task_class`,
+then close the ask to release the node. Full lanes and temporary lane holds
+keep waiting; they do not mean the class is missing from the configuration.
 
 ## What may a dispatched slice write over the MCP?
 

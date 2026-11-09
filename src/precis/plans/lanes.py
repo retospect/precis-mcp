@@ -562,6 +562,20 @@ def lane_backoffs(store: Any, now: datetime | None = None) -> dict[str, datetime
     return out
 
 
+def missing_class_reason(lanes: Iterable[Lane], task_class: str) -> str | None:
+    """A configuration gap, independent of capacity and temporary holds.
+
+    A health-parked or backed-off lane still offers its configured classes;
+    only an absent or disabled offering needs a coordinator to change it.
+    """
+    if any(lane.enabled and lane.fits(task_class) for lane in lanes):
+        return None
+    return (
+        f"no enabled lane for class {task_class}; "
+        "next: enable a lane or retarget the class"
+    )
+
+
 def pick_lane(
     store: Any,
     task_class: str,
@@ -777,6 +791,7 @@ __all__ = [
     "lane_backoffs",
     "live_lane_counts",
     "load_lanes",
+    "missing_class_reason",
     "park_lane",
     "pick_lane",
     "record_lane_health",

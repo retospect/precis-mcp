@@ -135,6 +135,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    gets one job parented to it:
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
+   A ``run_slice`` class with no enabled offering is blocked on one
+   coordinator ask before any job is minted (gr611305). Capacity and
+   temporary lane holds still wait in ``run_slice``; answering the ask
+   after enabling a lane or retargeting the class releases the node.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
    the failure bubble left. **Re-land** (gr570187): a task whose newest
    job is a failed ``land_slice`` carrying ``attempt_free == "infra-land"``
@@ -1552,7 +1556,7 @@ def _chain_item(store: Any, plan: _Plan, todo_id: int) -> str:
     return out
 
 
-def _mint_coordinator_ask(
+def _mint_fix_chain_ask(
     store: Any,
     plan: _Plan,
     n: _Node,
@@ -1577,15 +1581,6 @@ def _mint_coordinator_ask(
         f"(review td{n.id} of {handle}); the chain is parked for a "
         "coordinator call"
     )
-    meta: dict[str, Any] = {
-        "ask": {
-            "kind": "ruling",
-            "options": list(_COORDINATOR_ASK_OPTIONS),
-            "blocks": f"td{n.root}",
-            "context": context[:_ASK_CONTEXT_CAP],
-        }
-    }
-    check_ask_meta(meta)
     title = f"td{n.root}: review-FIX chain capped at depth {depth} — a coordinator call"
     items = "\n".join(_chain_item(store, plan, i) for i in lineage)
     body = (
@@ -1602,13 +1597,47 @@ def _mint_coordinator_ask(
         "remove `waiting-for:coordinator` when the plan may proceed, and "
         "close this ask `acknowledged`."
     )
+    return _mint_coordinator_ask(
+        store, plan, n, title=title, body=body, context=context, now=now
+    )
+
+
+def _mint_coordinator_ask(
+    store: Any,
+    plan: _Plan,
+    n: _Node,
+    *,
+    title: str,
+    body: str,
+    context: str,
+    now: datetime,
+    block_node: bool = False,
+) -> int:
+    """Insert a coordinator ask and expose it to later steps this pass.
+
+    A task configuration ask also links the node ``blocked-by`` the ask.
+    The dispatch tick's lock and that edge dedupe subsequent passes.
+    FIX-chain asks retain the root-wide coordinator tag as their hold.
+    """
+    # A root task/generator must stay childless so it can dispatch after
+    # repair; its ask sits alongside it, still linked as its blocker.
+    parent_id = n.parent_id if block_node and n.id == n.root else n.root
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_COORDINATOR_ASK_OPTIONS),
+            "blocks": f"td{n.id if block_node else n.root}",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="todo",
             slug=None,
             title=title,
             meta=meta,
-            parent_id=n.root,
+            parent_id=parent_id,
             conn=conn,
         )
         store.add_tag(
@@ -1630,13 +1659,17 @@ def _mint_coordinator_ask(
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
             conn=conn,
         )
+        if block_node:
+            store.add_link(
+                src_ref_id=n.id, dst_ref_id=ref.id, relation="blocked-by", conn=conn
+            )
         finish_mint(store, ref.id, conn=conn)
     ask_id = int(ref.id)
-    parent = plan.nodes.get(n.root)
+    parent = plan.nodes.get(parent_id) if parent_id is not None else None
     plan.nodes[ask_id] = _Node(
         id=ask_id,
         kind="todo",
-        parent_id=n.root,
+        parent_id=parent_id,
         title=title,
         meta=meta,
         status="open",
@@ -1656,6 +1689,10 @@ def _mint_coordinator_ask(
     )
     if parent is not None:
         parent.children.append(ask_id)
+    if block_node:
+        plan.blockers.setdefault(n.id, []).append(
+            _Blocker(id=ask_id, status="open", is_ask=True, created_at=now)
+        )
     return ask_id
 
 
@@ -1685,7 +1722,7 @@ def _review_fix(
         ask_id = (
             None
             if w.dry_run
-            else _mint_coordinator_ask(
+            else _mint_fix_chain_ask(
                 store, plan, n, handle, findings, depth, lineage, now
             )
         )
@@ -4022,6 +4059,37 @@ def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
     return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
 
 
+def _block_lane_gap(
+    plan: _Plan, w: _Writer, res: PassResult, n: _Node, why: str
+) -> None:
+    """Hold one task on a coordinator ask; its edge prevents re-minting."""
+    now = datetime.now(UTC)
+    if w.dry_run:
+        # Mirror the hold so hygiene cannot report a second ask this pass.
+        plan.blockers.setdefault(n.id, []).append(
+            _Blocker(id=-n.id, status="open", is_ask=True, created_at=now)
+        )
+        res.notes.append(f"td{n.id}: would block and ask coordinator — {why}")
+    else:
+        ask_id = _mint_coordinator_ask(
+            w.store,
+            plan,
+            n,
+            title=f"td{n.id}: {why}",
+            body=(
+                f"Task td{n.id} is blocked: {why}. No slice job is minted. "
+                "Repair the lane configuration or the task's class, then close "
+                "this ask `acknowledged` to release the task."
+            ),
+            context=why,
+            now=now,
+            block_node=True,
+        )
+        w.comment(n, f"plan_dispatch: blocked — {why}; ask td{ask_id}")
+        res.notes.append(f"td{n.id}: blocked — {why}; asked in td{ask_id}")
+    res.asks += 1
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -4068,6 +4136,15 @@ def _step_dispatch(
             )
             continue
         job_type, params = _resolve_op(n)
+        if plan.blocked(n) or plan.paused(n):
+            continue
+        reland = _reland_params(plan, n, w.store)
+        if job_type == DEFAULT_OP and reland is None:
+            task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+            gap = _lanes.missing_class_reason(lane_table, task_class)
+            if gap is not None:
+                _block_lane_gap(plan, w, res, n, gap)
+                continue
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
         cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
         spend_hit = _spend_hit(plan, n, rungs, rules) if rules else None
@@ -4083,11 +4160,7 @@ def _step_dispatch(
                     }
                 },
             )
-        if (
-            plan.blocked(n)
-            or plan.paused(n)
-            or _capped(plan, n, cap, spend_capped=spend_hit is not None)
-        ):
+        if _capped(plan, n, cap, spend_capped=spend_hit is not None):
             continue
         jobs = plan.jobs(n)
         newest = jobs[-1] if jobs else None
@@ -4117,7 +4190,6 @@ def _step_dispatch(
         free_reason = newest.meta.get(ATTEMPT_FREE_KEY) if newest else None
         if free_reason:
             res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
-        reland = _reland_params(plan, n, w.store)
         if reland is not None:
             # An infra-red land re-runs ship on the same branch with the
             # failed job's own params — no builder, no escalate, no review

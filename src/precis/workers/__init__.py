@@ -42,6 +42,14 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
 Adding a claiming ref-pass: follow the recipe in :mod:`.ref_lease`, not
 hand-rolled ``claimed_by`` UPDATEs.
 
+``gripe_dispatch`` admits only projects its factory can land (currently
+``precis``, also the default for untagged gripes). Unsupported projects get
+one skip comment and never consume build slots, so unrelated repositories
+cannot starve the factory's own work.
+Its 15-minute grace period starts at the latest ``STATUS:triaged`` or
+``fix:code`` attachment (filing time only if neither is known), giving
+operators time to retract a new triage even on an old report.
+
 ``run_loop`` is serial round-robin, so one slow handler starves other passes.
 This motivates scheduler leases, the separate GPU lane (``deploy/README.md``),
 and the heartbeat daemon thread: a wedged rotation must not trigger a false

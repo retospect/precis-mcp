@@ -1256,10 +1256,17 @@ def test_attempt_free_jobs_are_no_attempt(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
-def test_infra_red_land_relands_without_a_builder(store: Store) -> None:
+@pytest.mark.parametrize("no_lanes", [False, True])
+def test_infra_red_land_relands_without_a_builder(
+    store: Store, monkeypatch: pytest.MonkeyPatch, no_lanes: bool
+) -> None:
     """gr570187: a land the gate infrastructure killed burns no attempt and
     needs no builder — the tick re-mints ``land_slice`` with the failed
     job's own params (idem ``land_slice:td<id>``)."""
+    if no_lanes:
+        from precis.utils.llm import accounts
+
+        monkeypatch.setattr(accounts, "list_accounts", lambda store: [])
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     _slice_job(store, task, "run_slice", "succeeded")
@@ -2005,6 +2012,204 @@ def test_no_enabled_lane_still_asks(
     assert "rescue:builder" not in _open_tags(store, task)
 
 
+@pytest.mark.parametrize("configuration", ["empty", "disabled", "other-class"])
+@pytest.mark.parametrize("previous_wait", [False, True])
+def test_missing_task_class_blocks_once_without_minting(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: str,
+    previous_wait: bool,
+) -> None:
+    """gr611305: a missing class cannot recover through lane-wait remints."""
+    from dataclasses import replace
+
+    from precis.utils.llm import accounts
+
+    if configuration == "empty":
+        monkeypatch.setattr(accounts, "list_accounts", lambda store: [])
+    else:
+        use_lanes(
+            monkeypatch,
+            replace(
+                seed_lane("devin"),
+                enabled=configuration != "disabled",
+                task_classes=frozenset(
+                    {"slicer"} if configuration == "disabled" else {"code"}
+                ),
+            ),
+        )
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"task_class": "slicer"})
+    if previous_wait:
+        _failed_job(
+            store,
+            task,
+            "no lane slot for 360 min",
+            meta={"attempt_free": "lane-wait"},
+        )
+    jobs_before = _jobs_under(store, task)
+    reason = (
+        "no enabled lane for class slicer; next: enable a lane or retarget the class"
+    )
+
+    result = pd.run_pass(store)
+
+    assert (result.dispatched, result.asks, result.rescued) == (0, 1, 0)
+    assert _jobs_under(store, task) == jobs_before
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert _meta(store, ask)["ask"]["blocks"] == f"td{task}"
+    assert reason in _meta(store, ask)["ask"]["context"]
+    assert reason in _body_text(store, ask)
+    assert _blocked_by_ids(store, task) == [ask]
+    assert _status(store, task) == "open"
+    assert _status(store, mint.root_id) == "open"
+
+    for _ in range(2):
+        later = pd.run_pass(store)
+        assert (later.dispatched, later.asks, later.rescued) == (0, 0, 0)
+        assert _jobs_under(store, task) == jobs_before
+        assert [
+            c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)
+        ] == [ask]
+
+
+@pytest.mark.parametrize("repair", ["enable-lane", "retarget-class"])
+def test_missing_task_class_resumes_after_coordinator_repairs_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch, repair: str
+) -> None:
+    from dataclasses import replace
+
+    use_lanes(monkeypatch, seed_lane("devin"))
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"task_class": "slicer"})
+    assert pd.run_pass(store).asks == 1
+    (ask,) = _blocked_by_ids(store, task)
+    if repair == "enable-lane":
+        use_lanes(
+            monkeypatch,
+            replace(seed_lane("devin"), task_classes=frozenset({"slicer"})),
+        )
+    else:
+        store.stamp_ref_meta(task, {"task_class": "code"})
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+    result = pd.run_pass(store)
+
+    assert (result.dispatched, result.asks) == (1, 0)
+    assert len(_jobs_under(store, task)) == 1
+
+
+def test_missing_task_class_dry_run_does_not_write(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch, seed_lane("devin"))
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"task_class": "slicer"})
+    before = _meta(store, task)
+
+    result = pd.run_pass(store, dry_run=True)
+
+    assert (result.dispatched, result.asks) == (0, 1)
+    assert _children(store, mint.root_id) == [task]
+    assert _meta(store, task) == before
+    assert _blocked_by_ids(store, task) == []
+    assert _jobs_under(store, task) == []
+
+
+@pytest.mark.parametrize("root_kind", ["generator", "task"])
+def test_missing_class_ask_does_not_turn_a_dispatchable_root_into_a_container(
+    store: Store, monkeypatch: pytest.MonkeyPatch, root_kind: str
+) -> None:
+    """gr611305: an ask must not become a runnable root's generated child."""
+    from dataclasses import replace
+
+    use_lanes(monkeypatch, seed_lane("devin"))
+
+    def build(m: T._Minter) -> None:
+        meta: dict[str, Any] = {"task_class": "slicer"}
+        if root_kind == "generator":
+            meta["generate"] = {"role": "slicer", "from": "x.md~H"}
+        else:
+            meta["op"] = "run_slice"
+        m.node("root", "Slice it", meta, body="Produce the work described here.")
+
+    mint = T._run(store, None, build)
+    root = mint.root_id
+    assert f"plan:{root}" in _open_tags(store, root)
+
+    result = pd.run_pass(store)
+
+    assert (result.dispatched, result.asks) == (0, 1)
+    (ask,) = _blocked_by_ids(store, root)
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None and ask_ref.parent_id is None
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert f"plan:{root}" in _open_tags(store, ask)
+    assert _meta(store, ask)["ask"]["blocks"] == f"td{root}"
+    assert _children(store, root) == []
+
+    for _ in range(2):
+        later = pd.run_pass(store)
+        assert (later.dispatched, later.asks) == (0, 0)
+        assert _blocked_by_ids(store, root) == [ask]
+        assert _jobs_under(store, root) == []
+        assert _status(store, root) == "open"
+    with store.pool.connection() as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'todo' AND meta ? 'ask'"
+        ).fetchone()
+    assert count is not None and count[0] == 1
+
+    use_lanes(
+        monkeypatch,
+        replace(seed_lane("devin"), task_classes=frozenset({"slicer"})),
+    )
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+    repaired = pd.run_pass(store)
+
+    assert (repaired.dispatched, repaired.asks, repaired.phases_closed) == (1, 0, 0)
+    ((_job, meta),) = _jobs_under(store, root)
+    assert meta["job_type"] == "run_slice"
+    assert meta["params"]["todo_id"] == root
+    assert _status(store, root) == "open"
+    assert _children(store, root) == []
+
+
+@pytest.mark.parametrize("unavailable", ["full", "health-parked", "backed-off"])
+def test_configured_wildcard_lane_does_not_block_for_missing_class(
+    store: Store, monkeypatch: pytest.MonkeyPatch, unavailable: str
+) -> None:
+    from dataclasses import replace
+
+    lane = seed_lane("claude-sub")
+    if unavailable == "health-parked":
+        lane = replace(lane, parked_reason="outage:timeout")
+    use_lanes(monkeypatch, lane)
+    if unavailable == "full":
+        monkeypatch.setattr(L, "live_lane_counts", lambda store: {lane.name: lane.cap})
+    elif unavailable == "backed-off":
+        until = datetime.now(UTC) + timedelta(hours=1)
+        monkeypatch.setattr(L, "lane_backoffs", lambda store: {lane.name: until})
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"task_class": "slicer"})
+
+    result = pd.run_pass(store)
+
+    assert (result.dispatched, result.asks) == (1, 0)
+    assert len(_jobs_under(store, task)) == 1
+    assert _blocked_by_ids(store, task) == []
+
+
 def test_no_commit_moot_log_tail_drops_the_plan(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2103,15 +2308,18 @@ def test_retry_cap_mints_exactly_one_ask(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td584381 S1a: the end of the road mints ONE ask per node — here
-    the road is the no-lane gap (the cap stays ``DEFAULT_RETRIES``);
-    closing the ask re-arms the task."""
+    the road is a health-parked lane (an empty ladder: the cap stays
+    ``DEFAULT_RETRIES``; a parked lane still offers the class, so the
+    dispatcher does not block on a configuration gap); closing the ask
+    re-arms the task."""
     dead = L.Lane(
         name="devin",
         adapter="devin_tree",
         credential_pool="free-promo",
         cap=3,
         task_classes=frozenset({"code", "review", "validate"}),
-        enabled=False,
+        enabled=True,
+        parked_reason="outage:timeout",
         vendor="cognition",
         models=("swe-2-medium", "swe-2-high", "swe-2-max"),
         default_model="swe-2-high",
@@ -3346,7 +3554,15 @@ def test_pcb_pipeline_until_is_a_live_drc_clean_gate(store: Store) -> None:
     assert verdict.why == f"no DRC run yet on pb{pcb}"
 
 
-def test_mechanical_task_closes_when_its_job_succeeds(store: Store) -> None:
+@pytest.mark.parametrize("no_lanes", [False, True])
+def test_mechanical_task_closes_when_its_job_succeeds(
+    store: Store, monkeypatch: pytest.MonkeyPatch, no_lanes: bool
+) -> None:
+    if no_lanes:
+        from precis.utils.llm import accounts
+
+        monkeypatch.setattr(accounts, "list_accounts", lambda store: [])
+
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
         m.node("check", "Check", {"op": {"type": "secret_status", "params": {}}})

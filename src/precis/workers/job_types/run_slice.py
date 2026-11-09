@@ -2222,6 +2222,13 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
             return None
     else:
+        gap = _lanes.missing_class_reason(lane_table, task_class)
+        if gap is not None:
+            # Configuration may change after dispatch. End this job without
+            # parking; the next plan tick blocks the node on a coordinator
+            # ask. A live pin above bypasses class fit, so it is not gated.
+            ctx.record_failure(f"run_slice: {gap}")
+            return None
         # A triage-pinned model narrows the pick to lanes that run it
         # (``Lane.accepts_model``): before this a build carrying a claude id
         # (td543634) was codex-fit and would have launched with a model the

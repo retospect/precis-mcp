@@ -157,6 +157,12 @@ def test_plan_root_is_tagged_but_not_linked(store: Store) -> None:
             "UPDATE refs SET created_at = now() - interval '2 hours' WHERE ref_id = %s",
             (res.gripe_id,),
         )
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - interval '2 hours' "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'OPEN' AND t.value = 'fix:code'",
+            (res.gripe_id,),
+        )
     assert res.gripe_id not in {c.gripe_id for c in gd.candidates(store, 50)}
 
 

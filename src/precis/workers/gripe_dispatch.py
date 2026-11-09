@@ -25,8 +25,9 @@ Each fire:
   minus held slots — one tick may fill every free build slot, and a
   chain whose build never lands holds its slot.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
-  ``triaged``, tagged ``fix:code``, older than :data:`_MIN_AGE_MINUTES`
-  (the dedup and triage passes get their turn first), with no live todo
+  ``triaged``, tagged ``fix:code``, waiting :data:`_MIN_AGE_MINUTES`
+  since the latest ``STATUS:triaged`` or ``fix:code`` attachment (filing
+  time only if neither timestamp is known), with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists — a
   linked todo carrying a terminal STATUS is closed work and no longer
   holds the gripe out, gr609044), none
@@ -52,6 +53,9 @@ Each fire:
   lands :data:`precis.workers.job_types.ci_watch.WORKER_PRINCIPAL`, the
   one constant both sides name. Order: ``dispatch_score`` (higher is
   hotter, :mod:`precis.utils.dispatch_score`, gr604593) then oldest.
+  Every ``project:`` tag must name a project in :data:`_LANDABLE_PROJECTS`;
+  no project tag means ``precis``. Unsupported projects receive one skip
+  comment and consume no build slots: the factory cannot land their code.
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
   (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
@@ -82,9 +86,12 @@ from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 log = logging.getLogger(__name__)
 
 SERVICE_NAME = "gripe_dispatch"
-#: A gripe younger than this waits: the dedup pass and the triage tick
-#: get their turn, and a filer can still retract a mistaken report.
-_MIN_AGE_MINUTES = 60
+#: Wait after triage, not filing: an old report may only just have been
+#: classified as code work, and the filer needs time to retract that decision.
+_MIN_AGE_MINUTES = 15
+#: Repositories the factory can land; untagged gripes belong to precis.
+_LANDABLE_PROJECTS: frozenset[str] = frozenset({"precis"})
+_PROJECT_SKIP_PREFIX = "dispatch: skipped unsupported project:"
 #: Task class the chain's build carries (templates leave it unset → code).
 _BUILD_TASK_CLASS = "code"
 #: ``meta.op`` types whose live node holds a build slot — the slice run
@@ -215,6 +222,13 @@ def open_chain_count(store: Store) -> int:
 
 def candidates(store: Store, limit: int) -> list[DispatchPick]:
     """The next ``limit`` dispatchable gripes, hottest score then oldest."""
+    return _candidate_picks(store, limit, supported_projects=True)
+
+
+def _candidate_picks(
+    store: Store, limit: int, *, supported_projects: bool
+) -> list[DispatchPick]:
+    """Select supported gripes or unsupported ones still needing a note."""
     if limit <= 0:
         return []
     sql = f"""
@@ -224,7 +238,13 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
           JOIN tags s ON s.tag_id = st.tag_id
                      AND s.namespace = 'STATUS' AND s.value = ANY(%s)
          WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-           AND r.created_at < now() - %s * interval '1 minute'
+           AND COALESCE((SELECT max(tt.created_at)
+                           FROM ref_tags tt JOIN tags t ON t.tag_id = tt.tag_id
+                          WHERE tt.ref_id = r.ref_id
+                            AND ((t.namespace = 'STATUS' AND t.value = 'triaged')
+                                 OR (t.namespace IN ('OPEN', 'FLAG')
+                                     AND t.value = 'fix:code'))),
+                        r.created_at) < now() - %s * interval '1 minute'
            AND (r.meta->'filed_by'->>'client' LIKE %s
                 OR r.meta->'filed_by'->>'actor' LIKE %s
                 OR (r.meta->'ci'->>'sig' IS NOT NULL
@@ -232,6 +252,13 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
            AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags f ON f.tag_id = ft.tag_id
                         WHERE ft.ref_id = r.ref_id AND f.namespace IN ('OPEN', 'FLAG')
                           AND f.value = 'fix:code')
+           AND COALESCE((SELECT bool_and(substr(p.value, 9) = ANY(%s))
+                           FROM ref_tags pt JOIN tags p ON p.tag_id = pt.tag_id
+                          WHERE pt.ref_id = r.ref_id AND p.namespace IN ('OPEN', 'FLAG')
+                            AND p.value LIKE 'project:%%'), %s) = %s
+           AND (%s OR NOT EXISTS (
+                SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id
+                  AND c.chunk_kind = 'gripe_comment' AND c.text LIKE %s))
            AND NOT EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
                             WHERE ht.ref_id = r.ref_id AND h.namespace IN ('OPEN', 'FLAG')
                               AND h.value = ANY(%s))
@@ -255,6 +282,11 @@ def candidates(store: Store, limit: int) -> list[DispatchPick]:
                 _AGENT_CLIENT_PREFIX + "%",
                 _HUMAN_ACTOR_PREFIX + "%",
                 _CI_WATCH_PRINCIPAL,
+                sorted(_LANDABLE_PROJECTS),
+                "precis" in _LANDABLE_PROJECTS,
+                supported_projects,
+                supported_projects,
+                _PROJECT_SKIP_PREFIX + "%",
                 list(HOLD_TAGS),
                 sorted(TERMINAL_TODO_STATUSES),
                 limit,
@@ -284,6 +316,7 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     capacity = lane_capacity(store)
     open_chains = open_chain_count(store)
     slots = max(capacity - open_chains, 0)
+    _note_unsupported_projects(store)
     picks = candidates(store, slots)
     extra: dict[str, Any] = {
         "lane_capacity": capacity,
@@ -340,10 +373,43 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     )
 
 
-def _append_comment(store: Store, gripe_id: int, text: str) -> None:
+def _note_unsupported_projects(store: Store) -> None:
+    """Bound skip-note work per tick; noted gripes leave this queue."""
+    allowed = ", ".join(f"project:{p}" for p in sorted(_LANDABLE_PROJECTS)) or "none"
+    for pick in _candidate_picks(store, 100, supported_projects=False):
+        try:
+            _append_comment(
+                store,
+                pick.gripe_id,
+                f"{_PROJECT_SKIP_PREFIX} factory can only land {allowed}; "
+                "this gripe's project is outside that allowlist. No chain minted.",
+                once_prefix=_PROJECT_SKIP_PREFIX,
+            )
+        except Exception:
+            log.warning(
+                "gripe_dispatch: project skip note on gr%d failed",
+                pick.gripe_id,
+                exc_info=True,
+            )
+
+
+def _append_comment(
+    store: Store, gripe_id: int, text: str, *, once_prefix: str | None = None
+) -> None:
     from precis.store.types import ChunkInsert
 
     with store.tx() as conn:
+        if once_prefix is not None:
+            # Serialize the check and append so overlapping ticks also converge.
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (gripe_id,)
+            )
+            if conn.execute(
+                "SELECT 1 FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'gripe_comment' AND text LIKE %s LIMIT 1",
+                (gripe_id, once_prefix + "%"),
+            ).fetchone():
+                return
         ords = conn.execute(
             "SELECT coalesce(max(ord), -1) + 1 FROM chunks WHERE ref_id = %s",
             (gripe_id,),

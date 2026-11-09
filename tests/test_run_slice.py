@@ -1375,6 +1375,10 @@ def test_submit_parks_when_every_lane_full(seams: dict[str, Any]) -> None:
         < run_slice.LANE_FULL_BACKOFF + timedelta(minutes=1)
     )
     assert ctx.failure is None
+    assert len(deferred) == 1
+    assert "every fit lane at its cap" in deferred[0][1]
+    assert ctx.meta_set["wait_parks"] == 1
+    assert "attempt_free" not in ctx.meta_set
     assert seams["launch"] == []
     assert "STATUS:open" in store.tag_strings(42)
 
@@ -5046,12 +5050,11 @@ def test_empty_pick_names_the_backed_off_lanes(
     assert ctx.failure is None and seams["launch"] == []
 
 
-def test_empty_lane_table_parks_as_no_enabled_lane(
+def test_empty_lane_table_fails_without_parking(
     seams: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An account table that derives no lanes parks the pick 'no enabled
-    lane' — 'every fit lane at its cap' would mislead."""
+    """gr611305: no configured lane is an immediate failure, not a wait."""
     from precis.utils.llm import accounts
 
     monkeypatch.setattr(accounts, "list_accounts", lambda store: [])
@@ -5066,8 +5069,53 @@ def test_empty_lane_table_parks_as_no_enabled_lane(
 
     ctx.defer = _defer
     assert run_slice.submit(ctx, None) is None
-    assert deferred and "no enabled lane" in deferred[0][1]
-    assert ctx.failure is None and seams["launch"] == []
+    assert deferred == []
+    assert ctx.status == "failed"
+    assert ctx.failure is not None
+    assert (
+        "no enabled lane for class code; next: enable a lane or retarget the class"
+        in ctx.failure
+    )
+    assert "wait_parks" not in ctx.meta_set
+    assert ctx.meta_set.get("attempt_free") != "lane-wait"
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_missing_class_fails_without_parking(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    """A disabled fit or an enabled non-fit cannot satisfy a slicer task."""
+    from dataclasses import replace
+
+    use_lanes(
+        monkeypatch,
+        replace(
+            seed_lane("devin"),
+            enabled=enabled,
+            task_classes=frozenset({"code"} if enabled else {"slicer"}),
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, "t", meta={"task_class": "slicer"})
+    ctx = _Ctx(store, {"todo_id": 42})
+
+    def _defer(wake: Any, note: str) -> bool:
+        raise AssertionError("a missing class must not park")
+
+    ctx.defer = _defer
+
+    assert run_slice.submit(ctx, None) is None
+    assert ctx.status == "failed"
+    assert ctx.failure is not None
+    assert (
+        "no enabled lane for class slicer; next: enable a lane or retarget the class"
+        in ctx.failure
+    )
+    assert "wait_parks" not in ctx.meta_set
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
 
 
 def test_refusal_raises_one_deduped_alert(
