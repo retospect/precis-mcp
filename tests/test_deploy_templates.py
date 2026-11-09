@@ -460,6 +460,60 @@ def test_collapsed_worker_slice_root_renders_on_the_gateway_unarmed() -> None:
     ) == {"PRECIS_SLICE_ROOT": "/srv/slices"}
 
 
+def _render_drain_base_env(**extra: object) -> dict[str, str]:
+    """Render 20d's ``_drain_base_env`` (the env every ``worker-drain-<N>``
+    lane exports) with the play's own local constants and a minimal stand-in
+    for Ansible's ``combine`` filter (shallow dict merge, later wins)."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20d-precis-worker-drain.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    expr = plays[0]["vars"]["_drain_base_env"]
+
+    def combine(base: dict[str, str], *rest: dict[str, str]) -> dict[str, str]:
+        out = dict(base)
+        for r in rest:
+            out.update(r)
+        return out
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    env.filters["combine"] = combine
+    rendered = env.from_string(expr).render(
+        precis_shared_env={},
+        _drain_venv="/opt/precis/venv",
+        _drain_dsn="postgresql://x@db/precis_prod",
+        _drain_hf_home="/var/lib/precis/hf-cache",
+        _drain_embedder="remote",
+        _drain_embedder_url="http://127.0.0.1:8181",
+        **extra,
+    )
+    assert isinstance(rendered, dict), f"_drain_base_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_drain_lanes_render_slice_root() -> None:
+    """``PRECIS_SLICE_ROOT`` renders in the drain lanes' env: ``release_poll``
+    is ``job_inproc``, these lanes claim it, and its engine-review-gate read
+    (``_git_lands`` -> ``run_slice.slice_root``) fails closed without it
+    ("engine review gate unreadable", gr610176). Same expression as 20b's
+    ``_l_b_slice_env`` / 20g; the play is gateway-only, so no host gate.
+    ``precis_slice_root`` overrides the fix lane's clone path."""
+    assert (
+        _render_drain_base_env()["PRECIS_SLICE_ROOT"] == "/Users/deploy/precis-fix-repo"
+    )
+    assert (
+        _render_drain_base_env(precis_fix_repo_dir="/srv/fix-repo")["PRECIS_SLICE_ROOT"]
+        == "/srv/fix-repo"
+    )
+    assert (
+        _render_drain_base_env(precis_slice_root="/srv/slices")["PRECIS_SLICE_ROOT"]
+        == "/srv/slices"
+    )
+
+
 def _render_collapsed_worker_slice_token_env(
     *, gateway: bool, **extra: object
 ) -> dict[str, str]:

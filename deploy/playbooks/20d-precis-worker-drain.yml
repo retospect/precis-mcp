@@ -91,6 +91,11 @@
     # exports today, minus the review/container/dream/anki/gateway-extras
     # blocks (job_inproc's job_types — embed_batch, derived_drain — never
     # touch the claude-agent / MCP / container path those gate).
+    # PRECIS_SLICE_ROOT: release_poll is job_inproc, so these lanes claim it,
+    # and its engine-review-gate read (_git_lands -> run_slice.slice_root)
+    # fails closed without the checkout path (gr610176). Same expression as
+    # 20b's `_l_b_slice_env` / 20g; no gateway gate needed, this play is
+    # gateway-only.
     _drain_base_env: >-
       {{ precis_shared_env
          | combine(precis_identity_env | default({}))
@@ -101,6 +106,7 @@
              'PGPASSFILE': '/Users/deploy/.pgpass',
              'HF_HOME': _drain_hf_home,
              'PRECIS_STRUCTURE_PREFLIGHT': '1',
+             'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo')),
              'PRECIS_EMBEDDER': _drain_embedder,
              'PRECIS_EMBEDDER_URL': _drain_embedder_url,
              'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,

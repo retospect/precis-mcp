@@ -993,3 +993,46 @@ def test_url_pull_needs_no_staging_capability(store: Store) -> None:
     )
     rows = _claim(store, "job_inproc", "nasless", check_job_type_requires=True)
     assert [r[0] for r in rows] == [jid]
+
+
+# ── release_poll needs a repo checkout (gr610176) ─────────────────────────
+#
+# ``release_poll`` is ``job_inproc`` with a static ``requires`` of nothing
+# (``job_inproc`` PROVIDES nothing, so a plain ``requires`` is rejected at
+# submit), but its engine-review-gate scan reads the slice checkout
+# (``PRECIS_SLICE_ROOT``). ``conditional_requires`` adds ``repo_checkout`` at
+# claim time so a checkout-less in-proc worker leaves the poll queued.
+
+
+def test_release_poll_effective_requires_include_repo_checkout() -> None:
+    from precis.workers.executors._common import job_type_requires
+    from precis.workers.job_types import release_poll
+
+    assert release_poll.SPEC.requires == frozenset()
+    assert job_type_requires({"job_type": "release_poll", "params": {}}) == frozenset(
+        {"repo_checkout"}
+    )
+
+
+def test_release_poll_skips_checkout_less_host(store: Store) -> None:
+    jid = _queue_typed_job(
+        store, executor="job_inproc", job_type="release_poll", params={}
+    )
+    rows = _claim(store, "job_inproc", "balthazar", check_job_type_requires=True)
+    assert rows == []
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (jid,)).fetchone()
+    assert row is not None
+    assert not (row[0] or {}).get("lease_until")
+
+
+def test_release_poll_claimed_on_checkout_host(store: Store) -> None:
+    _advertise(store, "gateway", {"repo_checkout": 1})
+    jid = _queue_typed_job(
+        store, executor="job_inproc", job_type="release_poll", params={}
+    )
+    rows = _claim(store, "job_inproc", "gateway", check_job_type_requires=True)
+    assert [r[0] for r in rows] == [jid]
+    # Check-only: a presence capability, no reservation.
+    assert "reserved" not in rows[0][2]
+    assert _free(store, "gateway", "repo_checkout") == 1

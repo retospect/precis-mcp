@@ -1284,6 +1284,9 @@ def _git_lands() -> tuple[list[_GitLand], str]:
     wave it through). ``origin`` is fetched first so a stale checkout
     cannot hide a hand land; any failure raises (the caller fails
     closed). Seam: tests patch it."""
+    # Needs repo_checkout: slice_root() reads PRECIS_SLICE_ROOT, set only on
+    # a host with the repo checkout — hence :func:`conditional_requires`
+    # (gr610176).
     from precis.workers.job_types import run_slice as _rs
 
     root = _rs.slice_root()
@@ -2606,6 +2609,23 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     log.info("%s", res.summary())
 
 
+#: Host-capability token the heartbeat advertises through ``resource_slots``
+#: on a host with a repo checkout (``capability_probe._probe_repo_checkout``).
+REPO_CHECKOUT_RESOURCE = "repo_checkout"
+
+
+def conditional_requires(params: dict[str, Any]) -> frozenset[str]:
+    """``{repo_checkout}`` always — :func:`_git_lands` fetches and scans the
+    slice checkout (``run_slice.slice_root``, ``PRECIS_SLICE_ROOT``), so a
+    checkout-less in-proc worker must leave the poll queued instead of
+    claiming it and failing closed with "engine review gate unreadable"
+    (gr610176). Declared here, not in ``requires``: ``job_inproc`` PROVIDES
+    nothing, so a static ``requires`` would be rejected at submit; the
+    claim-time gate (``claim_executor_jobs(check_job_type_requires=True)``)
+    folds this in."""
+    return frozenset({REPO_CHECKOUT_RESOURCE})
+
+
 SPEC = JobTypeSpec(
     name=NAME,
     params_schema=PARAMS_SCHEMA,
@@ -2617,6 +2637,7 @@ SPEC = JobTypeSpec(
     dedupe_pending=True,
     # It reads live DB/GitHub state at claim time; nothing enqueued rots.
     queue_ttl_exempt=True,
+    conditional_requires=conditional_requires,
 )
 
 
@@ -2627,11 +2648,13 @@ def load() -> JobTypeSpec:
 __all__ = [
     "NAME",
     "PARAMS_SCHEMA",
+    "REPO_CHECKOUT_RESOURCE",
     "SPEC",
     "WINDOWS_SETTING",
     "PollResult",
     "branch_in_flight",
     "cleared_head",
+    "conditional_requires",
     "engine_review_blockers",
     "in_window",
     "load",

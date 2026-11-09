@@ -81,6 +81,10 @@ _ALLOWLIST: dict[str, str] = {
         "precis-taproot-mint-help",
     )
 }
+_ALLOWLIST["precis-gripe-loop-help"] = (
+    "880a516e1 grew it 176 B past the cap and reddened main's pre-qland lint; "
+    "short-term room while gr610356 splits it for /toc + ~N access"
+)
 
 
 #: Floor on the swept corpus — parametrization over an empty glob
