@@ -360,8 +360,11 @@ trailer `Gate: lint + selected pytest` when it races main.
 
 Factory lands run basic checks only (gr599427, Reto 2026-11-08):
 `land_slice.ship_flag` picks `--checked` only when the selector's answer
-is a small spot selection (`SPOT_SELECTION_MAX_IDS` = 200 ids, answered
-inside `SPOT_SELECTION_TIMEOUT_S` = 3 min), else `--quick` — engine
+is a small spot selection (`pytest --collect-only` over the selected
+targets reports ≤ `SPOT_SELECTION_MAX_IDS` = 200 items — items, not
+target lines — with the selector and the count together answered inside
+`SPOT_SELECTION_TIMEOUT_S` = 3 min; `testmon=1` is unbounded and goes
+`--quick`), else `--quick` — engine
 diffs follow the same rule, and a FULL-selector refusal relaunches
 `--quick`, never `--full`. The full suite is the release gate's job —
 GitHub CI on `release/r<N>`; a red release goes through the existing

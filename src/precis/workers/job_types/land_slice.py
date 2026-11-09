@@ -115,10 +115,14 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   dependence: attempt-free, the re-land tick takes it), then, still red,
   on a throwaway ``origin/main`` worktree ``slice-main-td<id>`` (always
   removed afterwards, with its stack). Ids red on main too are not the
-  branch's: the land gates on the checked selection MINUS them (the
-  ``deselect`` phase — ``scripts/test --selected --deselect``, engine or
-  not) and ship relaunches ``--quick`` on its green — this run's lint
-  already passed — with a ``handoff``-style note on the todo. Only a
+  branch's: when the checked selection is a subset, the land gates on it
+  MINUS them (the ``deselect`` phase — ``scripts/test --selected
+  --deselect``, engine or not) and ship relaunches ``--quick`` on its
+  green — this run's lint already passed — with a ``handoff``-style note
+  on the todo. When the selection IS the suite (FULL) no minus-them gate
+  runs at all (td602151 removed the 3 h full-gate budget: no land runs
+  the suite); the ids are recorded as excluded on the todo and ship
+  relaunches ``--quick`` on the 1 h wall the same way. Only a
   main-green red burns an attempt; any launch or probe failure falls
   back to the ordinary red.
 * :func:`kill` SIGTERMs the live phase's process group (a running
@@ -168,6 +172,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -234,23 +239,73 @@ def ship_flag(params: dict[str, Any], engine: bool = False, spot: bool = False) 
     return "--quick"
 
 
-#: ``--checked`` earns its gate only when the impacted-tests selector's
-#: answer IS a spot check: at most this many selected ids (gr599427,
-#: comment 2's numbers).
+#: ``--checked`` earns its gate only when the impacted-tests selection's
+#: answer IS a spot check: at most this many COLLECTED pytest items
+#: (gr599427, comment 2's numbers). td602151: the td601534 code counted
+#: selector target LINES — a file target carries every item in the file
+#: plus its parametrizations, so ≤200 lines could run thousands of tests.
 SPOT_SELECTION_MAX_IDS = 200
-#: The same check's fallback bound in time: a selector still answering
-#: past this many seconds counts as wide — deciding alone would already
-#: out-cost the spot gate.
+#: The whole spot decision — the selector answer AND the ``pytest
+#: --collect-only`` count that bounds it — answers inside this many
+#: seconds or counts as wide: deciding alone must not out-cost the gate.
 SPOT_SELECTION_TIMEOUT_S = 180
 
 
+#: The line ``pytest --collect-only -q`` ends with — ``N/M tests
+#: collected`` when a ``-m`` filter deselected some; N is what the gate
+#: would run.
+_COLLECTED_RE = re.compile(r"(\d+)(?:/\d+)? tests? collected")
+
+
+def _collected_count(tree: Path, targets: list[str], timeout_s: float) -> int | None:
+    """Items the checked gate would run for ``targets`` — the
+    ``uv run pytest --collect-only -q -m 'not slow'`` count in ``tree``
+    (the selector's ``uv run`` already synced the project env; ``-m
+    'not slow'`` is the checked lane's own filter). ``None`` — collect
+    errors (a target importing an extra the host venv lacks), fails or
+    outruns ``timeout_s`` — counts as unbounded: the caller lands
+    ``--quick``."""
+    try:
+        cp = subprocess.run(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                "not slow",
+                *targets,
+            ],
+            cwd=str(tree),
+            env={**os.environ, "UV_PYTHON": ship_python()},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0:
+        return None
+    counts = _COLLECTED_RE.findall(cp.stdout)
+    return int(counts[-1]) if counts else None
+
+
 def spot_selection(tree: Path) -> bool:
-    """True when the impacted-tests selection for this diff is a small
-    spot check — ``FULL``, an empty or a wider-than-
-    :data:`SPOT_SELECTION_MAX_IDS` answer, and an unreadable or slow
-    (:data:`SPOT_SELECTION_TIMEOUT_S`) selector all count ``False``:
-    the land then goes ``--quick`` and GitHub CI is the gate
-    (gr599427)."""
+    """True when the checked gate for this diff is a small spot check,
+    decided inside :data:`SPOT_SELECTION_TIMEOUT_S` for both probes:
+    the selector answers non-FULL with at least one target AND a real
+    ``pytest --collect-only`` over those targets reports at most
+    :data:`SPOT_SELECTION_MAX_IDS` items. Everything else — ``FULL``, an
+    empty answer, ``testmon=1`` (``ship --checked`` then runs the map's
+    whole impacted set on top of the static targets; bounding it means
+    collecting the entire suite, which the host venv cannot do — missing
+    extras error — and which alone would out-cost the spot gate), a
+    failed/slow probe, or a wider count — lands ``--quick`` and GitHub
+    CI is the gate (gr599427)."""
+    budget = time.monotonic() + SPOT_SELECTION_TIMEOUT_S
     out = _selector_stdout(tree, SPOT_SELECTION_TIMEOUT_S)
     if out is None:
         return False
@@ -258,10 +313,16 @@ def spot_selection(tree: Path) -> bool:
     if lines == ["FULL"]:
         return False
     # The worktree family prints line 1 ``testmon=0|1`` then one pytest
-    # target per line.
+    # target per line; testmon=1 adds the map's impacted set on top.
     if lines and lines[0].startswith("testmon="):
+        if lines[0] == "testmon=1":
+            return False
         lines = lines[1:]
-    return 0 < len(lines) <= SPOT_SELECTION_MAX_IDS
+    remaining = budget - time.monotonic()
+    if not lines or remaining <= 0:
+        return False
+    n = _collected_count(tree, lines, remaining)
+    return n is not None and n <= SPOT_SELECTION_MAX_IDS
 
 
 def _planned_flag(meta: dict[str, Any] | None, params: dict[str, Any]) -> str:
@@ -403,92 +464,6 @@ def wall_seconds() -> float:
     except ValueError:
         return float(_DEFAULT_WALL_S)
     return float(n if n > 0 else _DEFAULT_WALL_S)
-
-
-#: Deadline a full-selection deselect gate renews (gr598110): when the
-#: checked selection IS the suite the deselect run is a full gate, and on
-#: a contended factory host that runs past the 1 h slice wall (jo595597
-#: died at 5463 s with the gate still running), so it gets its own
-#: budget — ``PRECIS_LAND_FULL_WALL_S``, default 3 h. The general 1 h
-#: land wall is unchanged.
-_DEFAULT_FULL_WALL_S = 10800
-
-
-def full_wall_seconds() -> float:
-    """Deadline a full-selection deselect gate renews
-    (``PRECIS_LAND_FULL_WALL_S``, default :data:`_DEFAULT_FULL_WALL_S`)."""
-    try:
-        n = int(os.environ.get("PRECIS_LAND_FULL_WALL_S", ""))
-    except ValueError:
-        return float(_DEFAULT_FULL_WALL_S)
-    return float(n if n > 0 else _DEFAULT_FULL_WALL_S)
-
-
-def _flag_wall_s(flag: str) -> float:
-    """The wall budget a relaunch with ``flag`` renews."""
-    return full_wall_seconds() if flag == "--full" else wall_seconds()
-
-
-# ── The last full-gate duration on this host ───────────────────────
-#
-# ``scripts/test --selected`` on a diff the selector answers FULL for is
-# the full suite: on a contended factory host that outruns the job wall
-# (gr598110). Whether such a run
-# may start at all is decided from the last full gate's measured
-# duration, kept in the worker-owned ops dir (per host, so a slow host
-# refuses while a fast one still lands). A killed run never records —
-# it did not finish, so its wall is no sample.
-
-
-def _full_gate_stats_path() -> Path:
-    """The host-local record of the last full gate's duration (seconds)."""
-    return _rs.ops_root() / "land-full-gate-s"
-
-
-def _last_full_gate_s() -> float | None:
-    """Seconds the last full gate on this host took, or ``None``."""
-    try:
-        raw = _full_gate_stats_path().read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
-
-
-def _record_full_gate_s(seconds: float) -> None:
-    if seconds <= 0:
-        return
-    try:
-        _full_gate_stats_path().write_text(f"{seconds:.0f}\n", encoding="utf-8")
-    except OSError:  # pragma: no cover — a stat miss never stops the land
-        log.warning("land_slice: full-gate duration record failed", exc_info=True)
-
-
-def _gate_started_at(row: dict[str, Any]) -> datetime | None:
-    """The launch time a handle or verify recorded, parsed."""
-    try:
-        return datetime.strptime(str(row["started_at"]), _TS_FMT).replace(tzinfo=UTC)
-    except (KeyError, ValueError):
-        return None
-
-
-def _record_full_gate_duration(row: dict[str, Any]) -> None:
-    """Record a finished full-selection deselect gate's elapsed seconds
-    as this host's last full-gate duration."""
-    started = _gate_started_at(row)
-    if started is not None:
-        _record_full_gate_s((_now() - started).total_seconds())
-
-
-def full_gate_fits() -> bool:
-    """True when a full gate may start inside its deadline: the last
-    full-gate duration on this host fits :func:`full_wall_seconds`, or
-    no run has been measured yet (the first one gathers the data)."""
-    last = _last_full_gate_s()
-    return last is None or last <= full_wall_seconds()
 
 
 def refusal_backoff_s() -> int:
@@ -924,8 +899,9 @@ def _checked_selection_full(tree: Path) -> bool | None:
     """``True`` when this diff's checked selection IS the suite — the
     ``scripts/impacted-tests --stdin`` FULL answer ``scripts/ship
     --checked`` refuses and ``scripts/test --selected`` expands to the
-    whole suite. Then the deselect gate runs full-gate minutes and the
-    full-gate budget decides whether it may start at all (gr598110).
+    whole suite. Then no deselect gate runs (td602151: the minus-ids
+    run would BE the suite, and no land runs the suite); the main-red
+    ids are recorded as excluded and the land relaunches ``--quick``.
     ``None`` — unreadable selector — counts as non-FULL: the deselect
     run bounds itself by what it actually is."""
     out = _selector_stdout(tree, 120)
@@ -1862,8 +1838,8 @@ def _defer_to_main(
         + (f"\ndrift probe (lander identity): {probe}" if probe else ""),
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the
-    # wait plus one fresh ship run (the flag's own budget).
-    deadline = _now().timestamp() + delay + _flag_wall_s(str(handle.get("flag") or ""))
+    # wait plus one fresh ship run (the 1 h wall).
+    deadline = _now().timestamp() + delay + wall_seconds()
     ctx.set_meta(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
     )
@@ -1897,7 +1873,7 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     ctx.set_meta(
         compute_handle=fresh,
         compute_handle_released=False,
-        deadline=_now().timestamp() + _flag_wall_s(flag),
+        deadline=_now().timestamp() + wall_seconds(),
     )
     return False
 
@@ -2155,8 +2131,9 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     * alone red + main red → not the branch's: the land gates on the
       checked selection MINUS the red-on-main ids (the ``deselect``
       phase — ``scripts/test --selected --deselect <id>…``, engine or
-      not) and relaunches ``--quick`` on its green — a
-      ``handoff``-style note names the ids on the todo;
+      not — skipped entirely when the selection IS the suite: the ids
+      are then recorded as excluded instead, td602151) and relaunches
+      ``--quick`` — a ``handoff``-style note names the ids on the todo;
     * alone red + main green → the branch's red after all: the ordinary
       red, attempt burned;
     * any launch or probe failure → the ordinary red."""
@@ -2176,8 +2153,7 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
             ctx.set_meta(
                 compute_handle=handle,
                 compute_handle_released=False,
-                deadline=_now().timestamp()
-                + (full_wall_seconds() if v.get("full_selection") else wall_seconds()),
+                deadline=_now().timestamp() + wall_seconds(),
             )
         elif v.pop("gate_wait", None) is not None:
             ctx.set_meta(compute_handle=handle, compute_handle_released=False)
@@ -2230,42 +2206,16 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # green means the land goes through ``--quick``; the engine
         # review reads the landed diff, not this gate. Any red or dead
         # probe is the ordinary red; a launch failure already fell back.
-        if v.get("full_selection"):
-            _record_full_gate_duration(v)
         if exit_code != 0:
             return _ordinary_ship_red(ctx, handle)
-        tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
-        subject = str(handle.get("subject") or "")
-        try:
-            _rs._append_comment(
-                ctx.store,
-                todo_id,
-                f"handoff: {', '.join(ids)} are red on origin/main too — "
-                "not this branch's; the checked selection minus them is "
-                "green and the land goes through --quick. The reds are "
-                "main's to fix.",
-            )
-        except Exception:  # pragma: no cover — the land still goes on
-            log.warning("land_slice: deselect note on td%d failed", todo_id)
-        ctx.append_chunk(
-            "job_event",
-            "land_slice: checked selection minus "
-            f"{', '.join(ids)} is green — relaunching scripts/ship --quick",
+        return _land_without_main_reds(
+            ctx,
+            handle,
+            params,
+            ids,
+            why="the checked selection minus them is green — the land "
+            "goes through --quick",
         )
-        Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
-        fresh = _launch_ship(ctx, tree, "--quick", subject, carry=handle)
-        if fresh is None:
-            return True
-        handle.clear()
-        handle.update(fresh)
-        if fresh.get("not_before"):
-            return False  # parked by the preflight; its deferral set the meta
-        ctx.set_meta(
-            compute_handle=fresh,
-            compute_handle_released=False,
-            deadline=_now().timestamp() + wall_seconds(),
-        )
-        return False
     # Phase "main" finished (or the probe died): the throwaway worktree
     # and its stack go away on every exit path — and the job meta forgets
     # the probe, so a later kill does not remove a tree already gone.
@@ -2284,29 +2234,34 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # "red on main too" needs the same evidence: a non-zero probe that
         # never ran the named tests is a probe failure, never a verdict.
         return _ordinary_ship_red(ctx, handle)
-    # gr598110 + td599058 + gr599427: EVERY checked land whose red is
-    # main's too gates on the checked selection MINUS the red-on-main ids
-    # — a detached ``scripts/test --selected --deselect <id>…`` is exactly
-    # that gate — and ``--quick`` then lands on its green, engine or not
+    # gr598110 + td599058 + gr599427 + td602151: EVERY checked land whose
+    # red is main's too goes through ``--quick``, engine or not
     # (``PRECIS_LAND_FULL_FALLBACK=off`` keeps the red a red for every
-    # land — the gr599427 ruling dropped E1's "never lint" clause). The
-    # full gate on a contended factory host outruns the
-    # job's wall (jo595597 died at 5463 s), so when the selection itself
-    # is the suite the deselect run IS a full gate and the last full-gate
-    # duration on this host decides whether it may start — over budget
-    # the job fails naming the ids for a human.
+    # land — the gr599427 ruling dropped E1's "never lint" clause). When
+    # the checked selection is a subset, a detached ``scripts/test
+    # --selected --deselect <id>…`` first proves it green minus the
+    # red-on-main ids, inside the 1 h wall. When the selection IS the
+    # suite (FULL) no gate runs — the deselect run would BE the suite
+    # and the 3 h full-gate budget is gone; the ids are recorded as
+    # excluded on the todo and ``--quick`` lands, the release gate's CI
+    # keeping the suite honest.
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
-    subject = str(handle.get("subject") or "")
     if full_fallback_flag() is None:
         return _ordinary_ship_red(ctx, handle)
-    full_sel = _checked_selection_full(tree)
-    if full_sel and not full_gate_fits():
-        return _full_gate_over(ctx, params, ids)
+    if _checked_selection_full(tree):
+        return _land_without_main_reds(
+            ctx,
+            handle,
+            params,
+            ids,
+            why="the checked selection is the suite (FULL), so they are "
+            "excluded from the gate — the land goes through --quick and "
+            "the release gate keeps the suite",
+        )
     argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
     verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
     if verify is None:
         return _ordinary_ship_red(ctx, handle)
-    verify["full_selection"] = bool(full_sel)
     _promote_verify(handle, verify)
     ctx.append_chunk(
         "job_event",
@@ -2317,47 +2272,57 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     ctx.set_meta(
         compute_handle=handle,
         compute_handle_released=False,
-        deadline=_now().timestamp()
-        + (full_wall_seconds() if full_sel else wall_seconds()),
+        deadline=_now().timestamp() + wall_seconds(),
     )
     return False
 
 
-def _full_gate_over(ctx: Any, params: dict[str, Any], ids: list[str]) -> bool:
-    """The gate left is the suite and it does not fit the job's wall on
-    this host (gr598110): fail attempt-free — the reds are main's, never
-    the branch's debt — but ``land_again_cap`` sends the tick to the
-    re-land ask, so a human sees the main-side red at once."""
+def _land_without_main_reds(
+    ctx: Any,
+    handle: dict[str, Any],
+    params: dict[str, Any],
+    ids: list[str],
+    *,
+    why: str,
+) -> bool:
+    """Relaunch ``scripts/ship --quick`` once the main-red ``ids`` are
+    out of the land's way — proven by a green deselect gate, or excluded
+    because the checked selection IS the suite (td602151: no land runs
+    the suite). The todo gets a ``handoff:`` note naming them FIRST —
+    the land log dies with the worktree — then the same 1 h relaunch
+    the FULL-selector fallback uses; no attempt is charged. ``why``
+    completes "the ids are not this branch's — {why}"."""
     todo_id = int(params.get("todo_id") or 0)
-    number = _pr_param(params)
-    default_branch = (
-        f"slice/pr-{number}" if number is not None else _rs.slice_branch(todo_id)
-    )
-    branch = str(params.get("branch") or default_branch)
-    last = _last_full_gate_s()
-    reason = f"full gate exceeds deadline: {', '.join(ids)} red on main"
-    ctx.set_meta(land_again_cap=True)
+    tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+    subject = str(handle.get("subject") or "")
+    try:
+        _rs._append_comment(
+            ctx.store,
+            todo_id,
+            f"handoff: {', '.join(ids)} are red on origin/main too — "
+            f"not this branch's; {why}. The reds are main's to fix.",
+        )
+    except Exception:  # pragma: no cover — the land still goes on
+        log.warning("land_slice: main-red note on td%d failed", todo_id)
     ctx.append_chunk(
-        "job_summary",
-        f"land_slice td{todo_id}: BLOCKED — {reason} (last full gate "
-        f"{last if last is not None else -1:.0f}s > {full_wall_seconds():.0f}s "
-        "budget)",
+        "job_event",
+        f"land_slice: {', '.join(ids)} red on origin/main too — {why}; "
+        "relaunching scripts/ship --quick",
     )
-    _fail(
-        ctx,
-        todo_id,
-        params.get("lane"),
-        reason,
-        handoff=(
-            f"land BLOCKED on {branch}: {reason}. The failing ids are red "
-            "on origin/main — not this branch's — but the only gate left "
-            "is the full suite and its last run on this host outran the "
-            "job's wall. A human fixes the red on main (or raises "
-            "PRECIS_LAND_FULL_WALL_S). Do not rebuild."
-        ),
-        attempt_free="full gate exceeds deadline",
+    Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+    fresh = _launch_ship(ctx, tree, "--quick", subject, carry=handle)
+    if fresh is None:
+        return True
+    handle.clear()
+    handle.update(fresh)
+    if fresh.get("not_before"):
+        return False  # parked by the preflight; its deferral set the meta
+    ctx.set_meta(
+        compute_handle=fresh,
+        compute_handle_released=False,
+        deadline=_now().timestamp() + wall_seconds(),
     )
-    return True
+    return False
 
 
 def poll(ctx: Any, handle: Any) -> bool:
@@ -2384,8 +2349,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             ctx.set_meta(
                 compute_handle=handle,
                 compute_handle_released=False,
-                deadline=_now().timestamp()
-                + _flag_wall_s(str(handle.get("flag") or "")),
+                deadline=_now().timestamp() + wall_seconds(),
             )
         elif handle.pop("gate_wait", None) is not None:
             ctx.set_meta(compute_handle=handle, compute_handle_released=False)
@@ -2469,7 +2433,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             ctx.set_meta(
                 compute_handle=fresh,
                 compute_handle_released=False,
-                deadline=_now().timestamp() + _flag_wall_s(fallback),
+                deadline=_now().timestamp() + wall_seconds(),
             )
             return False
         note = handle.pop("verify_note", None)

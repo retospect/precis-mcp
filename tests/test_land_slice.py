@@ -1847,30 +1847,74 @@ def test_ship_flag_is_checked_only_on_a_spot_selection() -> None:
 def test_spot_selection_verdicts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The spot rule's inputs: FULL, empty, >200 ids, and an unreadable
-    selector all count as wide — only a small non-empty target list is a
-    spot check. (No ``seams`` here — it stubs ``spot_selection`` itself;
-    the seam under test is ``_selector_stdout``.)"""
-    cases: list[tuple[str | None, bool]] = [
-        (None, False),
-        ("", False),
-        ("FULL\n", False),
-        ("testmon=0\n", False),
-        ("testmon=0\ntests/test_a.py\ntests/test_b.py::t\n", True),
-        (
-            "testmon=1\n" + "".join(f"tests/test_{i}.py\n" for i in range(200)),
-            True,
-        ),
-        (
-            "testmon=1\n" + "".join(f"tests/test_{i}.py\n" for i in range(201)),
-            False,
-        ),
+    """The spot rule's inputs (td602151): FULL, empty, ``testmon=1``
+    (the checked lane then runs the map's whole impacted set on top —
+    unbounded), an unreadable selector, an uncountable collect, and a
+    >200-item selection all count as wide — only a non-empty selection
+    pytest collects ≤200 items from is a spot check. (No ``seams`` here
+    — it stubs ``spot_selection`` itself; the seams under test are
+    ``_selector_stdout`` and ``_collected_count``.)"""
+    collected: list[list[str]] = []
+    count: dict[str, int | None] = {"n": 25}
+
+    def fake_collect(tree: Path, targets: list[str], timeout_s: float) -> int | None:
+        collected.append(list(targets))
+        return count["n"]
+
+    monkeypatch.setattr(land_slice, "_collected_count", fake_collect)
+    cases: list[tuple[str | None, int | None, bool]] = [
+        (None, 25, False),
+        ("", 25, False),
+        ("FULL\n", 25, False),
+        ("testmon=0\n", 25, False),
+        # testmon=1 adds the map's impacted set on top: unbounded → wide
+        ("testmon=1\ntests/test_a.py\n", 3, False),
+        ("testmon=0\ntests/test_a.py\ntests/test_b.py::t\n", 25, True),
+        ("testmon=0\ntests/test_a.py\ntests/test_b.py::t\n", 200, True),
+        ("testmon=0\ntests/test_a.py\ntests/test_b.py::t\n", 201, False),
+        # td602151 regression: two target LINES can still collect
+        # thousands of items — the bound is items, not lines
+        ("testmon=0\ntests/test_a.py\ntests/test_b.py\n", 4000, False),
+        # collect cannot answer (error, missing extra, timeout): wide
+        ("testmon=0\ntests/test_a.py\ntests/test_b.py\n", None, False),
     ]
-    for out, want in cases:
+    for out, n, want in cases:
+        count["n"] = n
+        collected.clear()
         monkeypatch.setattr(
             land_slice, "_selector_stdout", lambda tree, timeout_s, out=out: out
         )
         assert land_slice.spot_selection(tmp_path) is want, out
+    # the collect probe receives the selector's targets verbatim
+    assert collected
+    assert collected[-1] == ["tests/test_a.py", "tests/test_b.py"]
+
+
+def test_collected_count_parses_the_selected_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``-m 'not slow'`` deselects inside the collect: the FIRST number
+    of ``N/M tests collected`` is what the gate runs; a collect that
+    fails or selects nothing is unbounded (``None``), not zero."""
+    argv_seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        argv_seen.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="7/40 tests collected (33 deselected) in 0.42s\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert land_slice._collected_count(tmp_path, ["tests/test_a.py"], 30) == 7
+    [argv] = argv_seen
+    assert argv[:5] == ["uv", "run", "pytest", "--collect-only", "-q"]
+    assert argv[-3:] == ["-m", "not slow", "tests/test_a.py"]
+
+    def fail_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 5, stdout="no tests collected\n")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    assert land_slice._collected_count(tmp_path, ["tests/test_a.py"], 30) is None
 
 
 def test_checked_land_goes_quick_on_a_wide_selection(seams: dict[str, Any]) -> None:
@@ -2564,14 +2608,15 @@ def test_poll_verify_queued_behind_scripts_test_ticks_eats_no_wall(
     assert "gate_wait" not in verify
 
 
-def test_poll_deselect_wait_re_arms_the_full_budget(
+def test_poll_deselect_wait_re_arms_the_wall(
     seams: dict[str, Any],
     clock: dict[str, datetime],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A FULL-selection deselect run is itself a full gate: its queue
-    wait re-arms the ``--full`` budget, not the 1 h wall."""
-    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: True)
+    """A non-FULL deselect run is a normal gate: its queue wait re-arms
+    the ordinary 1 h wall (td602151 — the 3 h full-gate budget is gone;
+    a FULL selection never reaches this phase)."""
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
     seams["diff_names"] = "src/precis/x.py\n"
     seams["changed_paths"] = ["scripts/ship"]
     store = _Store()
@@ -2586,7 +2631,7 @@ def test_poll_deselect_wait_re_arms_the_full_budget(
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False
     verify = handle["verify"]
-    assert verify["phase"] == "deselect" and verify["full_selection"] is True
+    assert verify["phase"] == "deselect" and "full_selection" not in verify
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 1 of 3 (2 slots ahead are busy)\n"
         "  gate slot 0: held 9m by w1 (pid 11 on spark, alive)\n",
@@ -2597,7 +2642,7 @@ def test_poll_deselect_wait_re_arms_the_full_budget(
     assert verify["gate_wait"].startswith("gate slot 0: held")
     assert (
         pctx.meta_set["deadline"]
-        == (T0 + timedelta(seconds=90)).timestamp() + land_slice.full_wall_seconds()
+        == (T0 + timedelta(seconds=90)).timestamp() + land_slice.wall_seconds()
     )
 
 
@@ -2887,17 +2932,16 @@ def test_poll_checked_red_main_red_on_an_engine_land_deselects_checked(
     assert any("red on origin/main too" in e for e in events)
 
 
-def test_poll_checked_red_main_red_full_budget_over_fails_with_ids(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+def test_poll_checked_red_main_red_full_selection_lands_quick(
+    seams: dict[str, Any], clock: dict[str, datetime], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr598110: when the selection is the suite (FULL) a deselect run
-    is a full gate — and the last full gate on this host outran the
-    wall, so the job fails naming the main-red ids instead of launching
-    a doomed gate (parked at the re-land ask, no attempt)."""
+    """td602151: when the checked selection IS the suite (FULL) no
+    deselect gate launches — the minus-ids run would BE the suite and
+    the 3 h full-gate budget is gone. The main-red ids are recorded as
+    excluded on the todo BEFORE the land relaunches ``--quick`` inside
+    the 1 h wall, engine land or not."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
     monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: True)
-    monkeypatch.setattr(land_slice, "_last_full_gate_s", lambda: 20000.0)
-    monkeypatch.setenv("PRECIS_LAND_FULL_WALL_S", "10800")
     seams["diff_names"] = "src/precis/x.py\n"
     seams["changed_paths"] = ["scripts/ship"]
     store = _Store()
@@ -2910,18 +2954,27 @@ def test_poll_checked_red_main_red_full_budget_over_fails_with_ids(
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False
     _verify_finish(handle, 1)
-    assert land_slice.poll(pctx, handle) is True
-    assert pctx.status == "failed"
-    assert "full gate exceeds deadline" in (pctx.failure or "")
-    assert OUTSIDE_ID in (pctx.failure or "")
-    assert pctx.meta_set["land_again_cap"] is True
-    assert pctx.meta_set["attempt_free"] == "infra-land"
-    assert pctx.meta_set["red_class"] == "full gate exceeds deadline"
-    # no deselect launch, no --full relaunch
-    assert all("--full" not in call[0] for call in seams["launch"])
+    clock["t"] = T0 + timedelta(seconds=90)
+    assert land_slice.poll(pctx, handle) is False
+    # no deselect launch, no --full relaunch — straight to --quick
     assert all("--deselect" not in call[0] for call in seams["launch"])
-    handoff = store.comments(42)[-1]
-    assert "full gate exceeds deadline" in handoff and OUTSIDE_ID in handoff
+    assert all("--full" not in call[0] for call in seams["launch"])
+    argv, _kw = seams["launch"][-1]
+    assert argv[1] == "--quick" and argv[2] == SUBJECT
+    assert handle["flag"] == "--quick" and "verify" not in handle
+    assert (
+        pctx.meta_set["deadline"]
+        == (T0 + timedelta(seconds=90)).timestamp() + land_slice.wall_seconds()
+    )
+    # the excluded main-red ids ride the todo before --quick launched
+    [note] = store.comments(42)
+    assert note.startswith("handoff:") and "red on origin/main too" in note
+    assert OUTSIDE_ID in note and "excluded" in note
+    tags = store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    events = [t for k, t in pctx.chunks if k == "job_event"]
+    assert any("red on origin/main too" in e and "excluded" in e for e in events)
 
 
 def test_poll_checked_red_outside_alone_red_main_green_is_ordinary(
