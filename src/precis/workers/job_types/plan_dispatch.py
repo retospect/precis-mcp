@@ -16,8 +16,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
 2. **loops** — once every current child of a loop is closed: ``until`` open
    or ``meta.loop.count`` (default 0) at ``max`` closes the loop; otherwise
    the body is re-minted under it (:func:`precis.plans.templates.mint_body`)
-   and the count bumped. A body with no minter closes the loop with a
-   comment naming the gap. A ``release-fix`` loop's automatic cap is
+   and the count bumped. An open informational ask (``meta.ask.blocks ==
+   'nothing'``) counts as closed here and in step 3: it is a record for the
+   human, not a child still at work (gr589823). A body with no minter
+   closes the loop with a comment naming the gap. A ``release-fix`` loop's automatic cap is
    :data:`_RELEASE_FIX_AUTO_CAP` regardless of its stamped ``max``: the
    second red iteration files a ruling ask (naming the round, the head
    sha and the failing CI) and closes the loop — a third fix is a human
@@ -985,7 +987,9 @@ def _step_loops(
             continue
         if plan.blocked(n):
             continue
-        if not all(_closed(c) for c in plan.child_todos(n)):
+        # An informational ask (``blocks: "nothing"``) is a record, not a
+        # gate: it does not hold the loop open (gr589823).
+        if not all(_closed(c) or _informational_ask(c) for c in plan.child_todos(n)):
             continue
         spec = dict(n.meta.get("loop") or {})
         try:
@@ -1824,11 +1828,16 @@ def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
     """A generator tagged ``STATUS:done`` (its session's own close) while a
     child todo is open goes back to ``STATUS:open``: it closes as a phase
     once every child is closed, and until then must keep blocking whatever is
-    ``blocked-by`` it."""
+    ``blocked-by`` it. An open informational ask (``blocks: "nothing"``) is a
+    record for the human and never reopens it (gr589823)."""
     for n in plan.todos():
         if node_kind(n.meta) != "generator" or n.status != "done":
             continue
-        open_kids = [c for c in plan.child_todos(n) if not _closed(c)]
+        open_kids = [
+            c
+            for c in plan.child_todos(n)
+            if not _closed(c) and not _informational_ask(c)
+        ]
         if not open_kids:
             continue
         w.set_status(n, "open")
@@ -2091,7 +2100,7 @@ def _is_ask_node(m: _Node) -> bool:
 
 def _informational_ask(m: _Node) -> bool:
     """An ask with ``meta.ask.blocks == "nothing"``: a record for the
-    human, not a gate — it never holds a phase or generator open
+    human, not a gate — it never holds a phase, generator or loop open
     (gr589823). An ask that names a todo handle in ``blocks`` still does."""
     ask = m.meta.get("ask")
     return isinstance(ask, dict) and ask.get("blocks") == "nothing"

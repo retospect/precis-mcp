@@ -3486,6 +3486,79 @@ def test_loop_ask_blocks_its_pass_root(store: Store) -> None:
     assert _status(store, root) == "open"
 
 
+def _spent_loop_plan(store: Store) -> T.PlanMint:
+    """root -> loop (count at max) -> closed body child; an ask minted under
+    the loop is the variable each caller adds."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        loop = m.node(
+            "L",
+            "Loop",
+            {"loop": {"max": 1, "count": 1, "until": FUTURE, "body": "x"}},
+        )
+        m.node("kid", "Iteration 1", {"op": "run_slice"}, parent=loop)
+
+    mint = T._run(store, None, build)
+    _mark_done(store, mint.ids["kid"])
+    return mint
+
+
+def test_informational_ask_does_not_hold_a_loop_open(store: Store) -> None:
+    """gr589823: an open ``blocks: "nothing"`` ask under a loop is a record,
+    not a gate — the loop still completes over it (closing its plan root
+    with it), and the ask stays open for the human."""
+    mint = _spent_loop_plan(store)
+    loop = mint.ids["L"]
+    ask = _ask_child(store, loop, "nothing")
+    res = pd.run_pass(store)
+    assert res.loops_closed == 1
+    assert _status(store, loop) == "done"
+    assert _status(store, ask) == "open"
+    assert _status(store, mint.root_id) == "done"
+
+
+def test_blocking_ask_still_holds_a_loop_open(store: Store) -> None:
+    """gr589823: an ask whose ``blocks`` names a todo handle is a gate —
+    the loop waits on it like any open child."""
+    mint = _spent_loop_plan(store)
+    loop, kid = mint.ids["L"], mint.ids["kid"]
+    ask = _ask_child(store, loop, f"td{kid}")
+    res = pd.run_pass(store)
+    assert (res.loops_minted, res.loops_closed) == (0, 0)
+    assert _status(store, loop) == "open"
+    assert _status(store, ask) == "open"
+    assert _status(store, mint.root_id) == "open"
+
+
+def test_informational_ask_does_not_reopen_a_done_generator(store: Store) -> None:
+    """gr589823: a generator its session closed stays done when its only
+    open child is an informational ask — it is not a child still at
+    work."""
+    mint = _generator_plan(store)
+    gen, kid = mint.ids["gen"], mint.ids["kid"]
+    _mark_done(store, gen, kid)
+    ask = _ask_child(store, gen, "nothing")
+    res = pd.run_pass(store)
+    assert res.reopened == 0
+    assert _status(store, gen) == "done"
+    assert _status(store, ask) == "open"
+    assert _status(store, mint.root_id) == "done"
+
+
+def test_blocking_ask_reopens_a_done_generator(store: Store) -> None:
+    """gr589823: an open ask whose ``blocks`` names a todo handle is a
+    gate — it reopens a done generator like any open child."""
+    mint = _generator_plan(store)
+    gen, kid = mint.ids["gen"], mint.ids["kid"]
+    _mark_done(store, gen, kid)
+    _ask_child(store, gen, f"td{kid}")
+    res = pd.run_pass(store)
+    assert res.reopened == 1
+    assert _status(store, gen) == "open"
+    assert _status(store, mint.root_id) == "open"
+
+
 def _moot_plan(store: Store) -> T.PlanMint:
     """root -> childless triage generator -> after (blocked-by it)."""
 
