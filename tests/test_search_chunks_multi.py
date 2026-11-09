@@ -76,6 +76,41 @@ def test_multi_per_paper_cap_spreads(store: Store) -> None:
     assert ref_ids and len(ref_ids) == len(set(ref_ids))
 
 
+def test_multi_per_paper_widens_pool_past_dominant_ref(store: Store) -> None:
+    """td609888: the per-leg pool caps *chunks* before the ``per_paper``
+    ref collapse — a pool full of one ref's chunks must not hide the
+    other refs the requested page (plus probe) was sized for. The legs
+    re-run with a widened pool until the collapsed window fills."""
+    _seed(
+        store,
+        slug="dom",
+        blocks=[
+            f"nitrate ammonia copper {'nitrate ammonia copper ' * 6}{i}"
+            for i in range(8)
+        ],
+        embed=False,
+    )
+    for slug in ("sp1", "sp2", "sp3"):
+        _seed(
+            store,
+            slug=slug,
+            blocks=[f"A broad survey of nitrate ammonia copper {slug} methods"],
+            embed=False,
+        )
+    hits = store.chunks.search_chunks_multi(
+        q_texts=["nitrate ammonia copper"],
+        query_vecs=[],
+        kind="paper",
+        limit=4,
+        per_paper=1,
+        pool_per_leg=8,
+    )
+    # The dominant ref's 8 chunks fill the initial pool of 8; widening
+    # must still surface all four refs collapsed to one hit each.
+    slugs = {ref.slug for _b, ref, _s in hits}
+    assert {"dom", "sp1", "sp2", "sp3"} <= slugs
+
+
 def test_multi_lexical_mode_ignores_vectors(store: Store) -> None:
     # mode='lexical' must run only the text legs even with vectors present.
     _seed(store, slug="lexA", blocks=_A)

@@ -14,6 +14,7 @@ from precis.dispatch import boot
 from precis.embedder import MockEmbedder
 from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
+from precis.utils import handle_registry
 
 
 def _seed(rt: PrecisRuntime, kind: str, slug: str, title: str, text: str) -> int:
@@ -201,6 +202,76 @@ def test_source_search_pages(runtime_with_store: PrecisRuntime) -> None:
         },
     )
     assert "Page study" in page2
+
+
+def test_source_search_pages_past_pool_dominating_ref(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """td609888: the fused pool caps *chunks* before refs collapse — one
+    ref with 80+ matching chunks must not hide the other refs or
+    suppress the ``page=N+1`` continuation hint."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    dom = store.insert_ref(kind="paper", slug="pg-dom", title="Dominant study")
+    store.chunks.insert_chunks(
+        dom.id,
+        [
+            ChunkInsert(ord=i, text="magnon caloritronics " * 6, embedding=None)
+            for i in range(85)
+        ],
+    )
+    _seed(rt, "paper", "pg-tail-a", "Tail alpha", "magnon caloritronics tail alpha")
+    _seed(rt, "paper", "pg-tail-b", "Tail beta", "magnon caloritronics tail beta")
+
+    args = {
+        "kind": "paper",
+        "q": "magnon caloritronics",
+        "since": "2020-01-01",
+        "mode": "lexical",
+        "page_size": 2,
+    }
+    out = rt.dispatch("search", dict(args))
+    assert "args={'page': 2}" in out
+    page2 = rt.dispatch("search", {**args, "page": 2})
+    seen = out + page2
+    for title in ("Dominant study", "Tail alpha", "Tail beta"):
+        assert title in seen
+    # Three refs over two rows a page: the probe must not over-promise.
+    assert "'page': 3" not in page2
+
+
+def test_source_search_pin_counts_against_page(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """td609888: the pinned identity card is a page row, not a freebie —
+    the fused row it displaces on page 1 must still be reachable on a
+    later page (the page-2 offset accounts for the pinned row)."""
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    pin_ref = store.insert_ref(kind="paper", slug="pin-target", title="Pinned study")
+    handle = handle_registry.format_handle("paper", pin_ref.id)
+    for slug in ("pin-a", "pin-b", "pin-c"):
+        _seed(rt, "paper", slug, f"Study {slug}", f"cites {handle} on magnon pinning")
+
+    args = {
+        "kind": "paper",
+        "q": handle,
+        "since": "2020-01-01",
+        "mode": "lexical",
+        "page_size": 2,
+    }
+    out = rt.dispatch("search", dict(args))
+    # Page 1 leads with the pinned card plus one fetched row (top_k=2).
+    assert "Pinned study" in out
+    assert "args={'page': 2}" in out
+    page2 = rt.dispatch("search", {**args, "page": 2})
+    seen = out + page2
+    # All three fetched refs surface across the two pages — the row the
+    # pin displaced on page 1 is not skipped by the page-2 offset.
+    for slug in ("pin-a", "pin-b", "pin-c"):
+        assert f"Study {slug}" in seen
 
 
 def test_source_search_bad_page_refuses(runtime_with_store: PrecisRuntime) -> None:

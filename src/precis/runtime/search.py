@@ -1202,7 +1202,9 @@ class SearchMixin(RuntimeShape):
         the same channel (gr608576); ``queries=``/``answers=`` add
         broad-retrieval legs fused with ``q`` (same shape as the paper
         handler's broad path); ``page=`` pages the fused per-ref list with
-        a one-row probe for the continuation hint.
+        a one-row probe for the continuation hint. A pinned identity card
+        counts as a page row — it fills row 1 of page 1 and shifts every
+        later page's fused offset back one.
         """
         store = self.hub.store
         if store is None:
@@ -1360,10 +1362,31 @@ class SearchMixin(RuntimeShape):
                     f"{'s' if n_dead != 1 else ''} "
                     f"not found, so not excluded: {listed}"
                 )
+        # The pinned identity card (a handle/identifier ``q``) is part of
+        # the paginated stream, not decoration on top of it: it occupies
+        # row 1 of page 1, so every deeper page's fused offset shifts
+        # back one row — otherwise the fetched row it displaces is
+        # render-dropped on page 1 while page 2 skips past it for good
+        # (td609888). It resolves on every page, not just page 1, so that
+        # accounting stays consistent; its ref leaves the store query so
+        # no page can render it twice (the pin *is* that ref's row).
+        handle_hit = self._handle_query_hit(
+            q,
+            kinds=(None if expanded.strip().lower() in _CROSS_KIND_ALIASES else kinds),
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+        )
+        pin_rows = 1 if handle_hit is not None else 0
+        fetch_exclude_ref_ids = exclude_ref_ids
+        if handle_hit is not None and handle_hit.ref_id is not None:
+            fetch_exclude_ref_ids = sorted(
+                set(fetch_exclude_ref_ids or ()) | {handle_hit.ref_id}
+            )
         # Probe one row past the page so the continuation hint is exact
         # — the same trick the byline/stamp listings run; ``offset``
         # pages the one fused, per-ref-collapsed list.
-        offset = (page - 1) * top_k
+        page_rows = top_k - pin_rows if page == 1 else top_k
+        offset = max(0, (page - 1) * top_k - pin_rows)
         results = store.chunks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
@@ -1375,39 +1398,19 @@ class SearchMixin(RuntimeShape):
             since=since,
             until=until,
             sort=sort,
-            limit=top_k + 1,
+            limit=page_rows + 1,
             offset=offset,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
-            exclude_ref_ids=exclude_ref_ids,
+            exclude_ref_ids=fetch_exclude_ref_ids,
             include_ref_ids=include_ref_ids,
         )
-        has_more = len(results) > top_k
-        results = results[:top_k]
+        has_more = len(results) > page_rows
+        results = results[:page_rows]
         hits: list[SearchHit] = []
-        # The pinned identity card is a page-1 construct — it opens the
-        # ranking, so a deeper page neither repeats it nor reserves a row.
-        handle_hit = (
-            self._handle_query_hit(
-                q,
-                kinds=(
-                    None if expanded.strip().lower() in _CROSS_KIND_ALIASES else kinds
-                ),
-                include_ref_ids=include_ref_ids,
-                exclude_ref_ids=exclude_ref_ids,
-            )
-            if page == 1
-            else None
-        )
-        if handle_hit is not None:
+        if page == 1 and handle_hit is not None:
             hits.append(handle_hit)
         seen_parents: set[int] = set()
-        pinned_ref_id = handle_hit.ref_id if handle_hit is not None else None
         for block, ref, score in results:
-            # The pinned identity card already covers this ref — its own
-            # chunk hit must not list it again (nor push the page to
-            # top_k+1 rows).
-            if pinned_ref_id is not None and ref.id == pinned_ref_id:
-                continue
             for hit in block_hits_to_search_hits([(block, ref, score)], kind=ref.kind):
                 # gr495382: gripe/todo/quest comments are chunks, but the
                 # thing to act on is the parent (gr123), not the chunk handle
@@ -1434,10 +1437,10 @@ class SearchMixin(RuntimeShape):
             empty_body = f"no matches across {', '.join(kinds)} for {q!r}{date_suffix}"
         response = merge_and_render(
             [hits],
-            # The pinned card sits *beside* the page, not inside it —
-            # letting it eat a row slot would leave a one-hit gap
-            # between this page's render and the next page's offset.
-            page_size=top_k + (1 if handle_hit is not None else 0),
+            # The pinned card is a page row, not an extra — it fills
+            # row 1 of page 1 inside the same ``top_k`` window whose
+            # fetched share ``page_rows`` already reserved.
+            page_size=top_k,
             query=q,
             header_noun="match",
             mode="rrf",

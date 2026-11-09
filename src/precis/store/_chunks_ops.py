@@ -71,6 +71,19 @@ _ATTENTION_COLUMNS: dict[str, str] = {
 #: last-resort bound for direct (agentic-tier) callers.
 _MULTI_LEG_HARD_CAP = 32
 
+#: ``search_chunks_multi`` pool widening for the ``per_paper`` collapse:
+#: the per-leg pool caps *chunks* before refs collapse, so a pool
+#: dominated by one ref's chunks leaves the collapsed window short of
+#: ``offset + limit`` — hiding later refs and the caller's one-row
+#: continuation probe. When that happens the legs re-run with the pool
+#: grown by this factor per round …
+_MULTI_POOL_WIDEN_FACTOR = 4
+#: … up to this multiple of the initial pool. The cap keeps a genuinely
+#: skewed corpus (one ref with more matching chunks than any bounded
+#: pool covers) from turning pagination into unbounded re-scans; the
+#: collapsed contract stays pool-bounded, like ``ref_counts_out``.
+_MULTI_POOL_WIDEN_MAX = 8
+
 #: Default draft over-weight for the dream seed — a draft sorts as if it
 #: were this many days more overdue (see :meth:`select_dream_seed`).
 #: "kinda" over-weight: large enough that drafts win when even mildly
@@ -2141,7 +2154,11 @@ class ChunkStore:
         usable vectors, same contract as the single path).
 
         ``per_paper`` optionally caps hits per ref in the fused result
-        (diversity knob); ``None`` disables it.
+        (diversity knob); ``None`` disables it. The collapse runs after
+        the per-leg chunk pool is built, so when it is set the legs
+        re-run with a widened pool (bounded by ``_MULTI_POOL_*``) until
+        the collapsed list can fill the ``offset + limit`` window or
+        the pool is exhausted.
         ``prefer_body`` drops synthetic cards for refs with body hits in
         the fused candidate pool before capping/paging. Opt-in so callers
         that rank cards as evidence keep their existing ordering. Neither
@@ -2253,105 +2270,129 @@ class ChunkStore:
         pool = max(pool_per_leg, (offset + limit) * 2)
         clean_q = [qt for qt in q_texts if qt and qt.strip()]
 
-        legs: list[tuple[str, list[tuple[ChunkRow, Ref, float]]]] = []
-        if run_lexical:
-            for i, qt in enumerate(clean_q):
-                legs.append(
-                    (
-                        f"lex{i}",
-                        self.search_chunks_lexical(
-                            q=qt,
-                            kind=kind,
-                            kinds=kinds,
-                            created_from=created_from,
-                            created_to=created_to,
-                            scope_ref_id=scope_ref_id,
-                            tags=tags,
-                            exclude_tags=exclude_tags,
-                            limit=pool,
-                            exclude_ref_ids=exclude_ref_ids,
-                            include_ref_ids=include_ref_ids,
-                            include_speculative=include_speculative,
-                            year_from=year_from,
-                            year_to=year_to,
-                            chunk_kinds=chunk_kinds,
-                            chunk_ids=chunk_ids,
-                            card_kinds=card_kinds,
-                            has_body=has_body,
-                        ),
+        def _fetch_legs() -> list[tuple[str, list[tuple[ChunkRow, Ref, float]]]]:
+            legs: list[tuple[str, list[tuple[ChunkRow, Ref, float]]]] = []
+            if run_lexical:
+                for i, qt in enumerate(clean_q):
+                    legs.append(
+                        (
+                            f"lex{i}",
+                            self.search_chunks_lexical(
+                                q=qt,
+                                kind=kind,
+                                kinds=kinds,
+                                created_from=created_from,
+                                created_to=created_to,
+                                scope_ref_id=scope_ref_id,
+                                tags=tags,
+                                exclude_tags=exclude_tags,
+                                limit=pool,
+                                exclude_ref_ids=exclude_ref_ids,
+                                include_ref_ids=include_ref_ids,
+                                include_speculative=include_speculative,
+                                year_from=year_from,
+                                year_to=year_to,
+                                chunk_kinds=chunk_kinds,
+                                chunk_ids=chunk_ids,
+                                card_kinds=card_kinds,
+                                has_body=has_body,
+                            ),
+                        )
                     )
-                )
-        if run_semantic:
-            for i, qv in enumerate(query_vecs):
-                legs.append(
-                    (
-                        f"sem{i}",
-                        self.search_chunks_semantic(
-                            query_vec=qv,
-                            kind=kind,
-                            kinds=kinds,
-                            created_from=created_from,
-                            created_to=created_to,
-                            scope_ref_id=scope_ref_id,
-                            tags=tags,
-                            exclude_tags=exclude_tags,
-                            limit=pool,
-                            max_distance=max_distance,
-                            exclude_ref_ids=exclude_ref_ids,
-                            include_ref_ids=include_ref_ids,
-                            include_speculative=include_speculative,
-                            year_from=year_from,
-                            year_to=year_to,
-                            chunk_kinds=chunk_kinds,
-                            chunk_ids=chunk_ids,
-                            card_kinds=card_kinds,
-                            has_body=has_body,
-                        ),
+            if run_semantic:
+                for i, qv in enumerate(query_vecs):
+                    legs.append(
+                        (
+                            f"sem{i}",
+                            self.search_chunks_semantic(
+                                query_vec=qv,
+                                kind=kind,
+                                kinds=kinds,
+                                created_from=created_from,
+                                created_to=created_to,
+                                scope_ref_id=scope_ref_id,
+                                tags=tags,
+                                exclude_tags=exclude_tags,
+                                limit=pool,
+                                max_distance=max_distance,
+                                exclude_ref_ids=exclude_ref_ids,
+                                include_ref_ids=include_ref_ids,
+                                include_speculative=include_speculative,
+                                year_from=year_from,
+                                year_to=year_to,
+                                chunk_kinds=chunk_kinds,
+                                chunk_ids=chunk_ids,
+                                card_kinds=card_kinds,
+                                has_body=has_body,
+                            ),
+                        )
                     )
-                )
+            return legs
 
-        # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
-        # Keep the first-seen (ChunkRow, Ref) per chunk for rendering;
-        # leg_hits records which legs ranked it (gr514952).
-        fused: dict[int, float] = {}
-        seen: dict[int, tuple[ChunkRow, Ref]] = {}
-        leg_hits: dict[int, dict[str, tuple[int, float]]] = {}
-        for leg_name, leg in legs:
-            for rank, (block, ref, leg_score) in enumerate(leg):
-                cid = block.id
-                fused[cid] = fused.get(cid, 0.0) + 1.0 / (k + rank + 1)
-                if cid not in seen:
-                    seen[cid] = (block, ref)
-                leg_hits.setdefault(cid, {})[leg_name] = (rank, leg_score)
+        # The per-leg pool caps *chunks* before ``per_paper`` collapses
+        # refs, so a pool dominated by one ref's chunks leaves the
+        # collapsed window short of ``offset + limit`` — later refs
+        # never reach the page, and the caller's one-row probe sees a
+        # false "no more". Re-run the legs wider until the window fills,
+        # the legs are exhausted, or the widen cap bites (_MULTI_POOL_*).
+        pool_cap = pool * _MULTI_POOL_WIDEN_MAX
+        while True:
+            legs = _fetch_legs()
+
+            # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
+            # Keep the first-seen (ChunkRow, Ref) per chunk for rendering;
+            # leg_hits records which legs ranked it (gr514952).
+            fused: dict[int, float] = {}
+            seen: dict[int, tuple[ChunkRow, Ref]] = {}
+            leg_hits: dict[int, dict[str, tuple[int, float]]] = {}
+            for leg_name, leg in legs:
+                for rank, (block, ref, leg_score) in enumerate(leg):
+                    cid = block.id
+                    fused[cid] = fused.get(cid, 0.0) + 1.0 / (k + rank + 1)
+                    if cid not in seen:
+                        seen[cid] = (block, ref)
+                    leg_hits.setdefault(cid, {})[leg_name] = (rank, leg_score)
+
+            # Sort by fused score desc; deterministic tiebreak on chunk id.
+            ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
+
+            body_ref_ids = (
+                {
+                    ref.id
+                    for block, ref in seen.values()
+                    if not block.chunk_kind.startswith("card_")
+                }
+                if prefer_body
+                else set()
+            )
+            results: list[tuple[ChunkRow, Ref, float]] = []
+            ref_counts: dict[int, int] = {}
+            per_paper_count: dict[int, int] = {}
+            for cid, score in ordered:
+                block, ref = seen[cid]
+                if ref.id in body_ref_ids and block.chunk_kind.startswith("card_"):
+                    continue
+                ref_counts[ref.id] = ref_counts.get(ref.id, 0) + 1
+                if per_paper is not None:
+                    taken = per_paper_count.get(ref.id, 0)
+                    if taken >= per_paper:
+                        continue
+                    per_paper_count[ref.id] = taken + 1
+                results.append((block, ref, score))
+
+            if (
+                per_paper is None
+                or len(results) >= offset + limit
+                or pool >= pool_cap
+                or all(len(leg) < pool for _leg_name, leg in legs)
+            ):
+                break
+            pool = min(pool * _MULTI_POOL_WIDEN_FACTOR, pool_cap)
+
         if legs_out is not None:
             legs_out.update(leg_hits)
-
-        # Sort by fused score desc; deterministic tiebreak on chunk id.
-        ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
-
-        body_ref_ids = (
-            {
-                ref.id
-                for block, ref in seen.values()
-                if not block.chunk_kind.startswith("card_")
-            }
-            if prefer_body
-            else set()
-        )
-        results: list[tuple[ChunkRow, Ref, float]] = []
-        per_paper_count: dict[int, int] = {}
-        for cid, score in ordered:
-            block, ref = seen[cid]
-            if ref.id in body_ref_ids and block.chunk_kind.startswith("card_"):
-                continue
-            if ref_counts_out is not None:
-                ref_counts_out[ref.id] = ref_counts_out.get(ref.id, 0) + 1
-            if per_paper is not None:
-                taken = per_paper_count.get(ref.id, 0)
-                if taken >= per_paper:
-                    continue
-                per_paper_count[ref.id] = taken + 1
-            results.append((block, ref, score))
+        if ref_counts_out is not None:
+            ref_counts_out.update(ref_counts)
 
         return results[offset : offset + limit]
 
