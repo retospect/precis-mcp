@@ -1451,7 +1451,12 @@ def test_early_woken_park_adds_elapsed_time_not_a_backoff(
         lane_park_at=parked_at,
     )
     deferred: list[tuple[Any, str]] = []
-    ctx.defer = lambda wake_at, note: deferred.append((wake_at, note)) or True
+
+    def _defer(wake_at: Any, note: str) -> bool:
+        deferred.append((wake_at, note))
+        return True
+
+    ctx.defer = _defer
     assert run_slice.submit(ctx, None) is None
     assert ctx.meta_set["wait_parks"] == 3
     assert 149 <= ctx.meta_set["early_wait_s"] <= 155
