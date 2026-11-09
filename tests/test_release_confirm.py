@@ -7,7 +7,7 @@ store-side writers (:func:`precis.plans.release.pinned_deploy_sha`,
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -43,12 +43,12 @@ def _beat(store: Store, host: str, code_sha: str | None) -> None:
     store.record_heartbeat(host, meta={"code_sha": code_sha})
 
 
-def _stale(store: Store, host: str) -> None:
+def _stale(store: Store, host: str, minutes: int = 90) -> None:
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE host_heartbeat SET ts = now() - interval '90 minutes' "
+            "UPDATE host_heartbeat SET ts = now() - make_interval(mins => %s) "
             "WHERE host = %s",
-            (host,),
+            (minutes, host),
         )
 
 
@@ -285,6 +285,30 @@ def test_a_web_only_failure_marks_the_evidence(
     _beat(store, "node-b", SHA2)
     ev = rcf.gather_evidence(store, REL, now=NOW)
     assert not ev.ok and not ev.web_only and len(ev.problems) == 2
+
+
+def test_a_web_failure_while_a_worker_waits_is_not_web_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td609348: inside the restart window a waiting worker has NOT
+    attested — its heartbeat predates the deploy finish — so a failed
+    web probe is a plain failure, never the ``workers all at`` ask."""
+    R.record_prod_head(store, SHA, [])
+    rollout = (datetime.now(UTC) - timedelta(minutes=2)).strftime(rcf._TS_FMT)
+    psettings.set_setting(
+        "release.round",
+        _round_row(7, "deployed", {"sha": SHA, "rollout_at": rollout}),
+        store=store,
+    )
+    _beat(store, "node-a", SHA2)
+    _stale(store, "node-a", minutes=10)  # the beat predates the deploy finish
+    _beat(store, "node-b", SHA)  # fresh beat at the sha: attested
+    psettings.set_setting(rcf.HEALTH_URL_KEY, HEALTH_URL, store=store)
+    _web(monkeypatch, resp=SimpleNamespace(status_code=503, headers={}))
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert not ev.ok and not ev.web_only
+    assert ev.waiting == ("node-a",)
+    assert ev.problems == ["web HTTP 503"]
 
 
 # ── pinned_deploy_sha ───────────────────────────────────────────────

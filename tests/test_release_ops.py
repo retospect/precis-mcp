@@ -2874,6 +2874,44 @@ def test_probe_still_stale_at_the_deadline_files_an_ask(
     assert "confirmed" not in _meta(store, mint.root_id)["release"]
 
 
+def test_web_failure_during_the_restart_window_mints_no_attest_ask(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td609348 review: a failed web probe while a worker still waits on
+    its restart must NOT mint the ruling ask — its ``workers all at``
+    head lies: a heartbeat predating the deploy finish attests nothing.
+    The probe fails plainly and the tick's retry-cap mint files."""
+    _round_script(checkout)
+    mint, job_id, params = _walk_to_confirm(store, checkout, monkeypatch)
+    _stale_beat(store, "node-a", SHA2, minutes=10)  # predates the deploy finish
+    url = "https://health.example.invalid/healthz"
+    psettings.set_setting(rcf.HEALTH_URL_KEY, url, store=store)
+    monkeypatch.setattr(
+        rcf,
+        "_http_get",
+        lambda _url: SimpleNamespace(status_code=503, headers={}),
+    )
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    reason = ctx.failures[0]
+    assert "probe failed" in reason and "web HTTP 503" in reason
+    assert _asks_under(store, mint.root_id) == []  # no self-minted ruling ask
+    assert checkout["argv"] == launches  # nothing launched
+
+    # The failed job falls through to the tick's retry-cap mint, whose
+    # context is the failure tail — never the "workers all at" claim.
+    _fail_job(store, job_id, reason)
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    asks = _asks_under(store, mint.root_id)
+    assert len(asks) == 1
+    meta = _meta(store, asks[0])
+    assert "web HTTP 503" in meta["ask"]["context"]
+    assert "workers all at" not in meta["ask"]["context"]
+    assert "confirmed" not in _meta(store, mint.root_id)["release"]
+
+
 # ── the engine-review gate on the cut (td574937 E1) ────────────────
 #
 # ``release_cut.validate_submit`` and ``submit`` refuse while a reviewer

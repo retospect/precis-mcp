@@ -167,9 +167,10 @@ class Evidence:
     live hosts whose heartbeat predates the deploy finish and whose
     ``deadline`` (the restart-race window's end) has not passed — the
     probe parks on them instead of failing. ``web_only`` is true when
-    the web probe's is the ONLY problem — the workers already attest —
-    and the job files the ruling ask itself (gr607271) instead of dying
-    into the tick's retry-cap showstopper."""
+    the web probe's is the ONLY problem — every live worker already
+    attests and none is still waiting on a restart — and the job files
+    the ruling ask itself (gr607271) instead of dying into the tick's
+    retry-cap showstopper."""
 
     ok: bool
     sha: str | None
@@ -360,7 +361,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         problems=problems,
         waiting=tuple(waiting),
         deadline=deadline,
-        web_only=web_problem is not None and len(problems) == 1,
+        web_only=(web_problem is not None and len(problems) == 1 and not waiting),
     )
 
 
