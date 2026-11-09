@@ -340,7 +340,13 @@ curve per arm.
    Cross-paper/stance/memory tasks come from `planted.py`, not from added
    hand-written QASPER tasks. Still open: Reto's review of model-labelled
    rows (none exist yet).
-5. Harness + results schema + report script (tables, figures).
+5. Harness + results schema + report script (tables, figures). First cut
+   landed (td604857): the scripted tier only — `scripts/bench fill|run|report`,
+   `src/precis/bench/runner.py` / `layers.py` / `planted_ingest.py`, schema in
+   `bench/results/README.md`. It runs the 7 switch arms plus `chunk-rag` and
+   `whole-paper` over QASPER and planted tasks, guards every arm against an
+   empty layer (`vacuous`), and prints one markdown table. Still open: the LLM
+   tier, answer correctness, the 2^6 factorial arms, figures, CI.
 6. CI nightly + Zenodo bundle.
 7. Paper draft (precis `draft`, serves qu604835): related work from the
    quest's inquiry ticks, results sections regenerated from slice 5.

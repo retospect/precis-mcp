@@ -6,7 +6,13 @@
 #   scripts/bench manifest [--check]        # maintainers: rebuild/verify bench/corpus/manifest.json
 #   scripts/bench tasks --set quick|full    # extract the QASPER span-gold tasks -> bench/tasks/qasper-<set>.jsonl
 #                                           # (+ yield table; --check verifies the file on disk; full is gitignored)
-#   scripts/bench run | report              # not built yet (stubs)
+#   scripts/bench fill [--embedder bge-m3|mock]
+#                                           # free local derived passes on the dev DB: chunk embeddings
+#                                           # + per-chunk keywords (no LLM: summaries, categorizer tags
+#                                           # and edges stay empty; `run` reports their coverage)
+#   scripts/bench run --set quick [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
+#                                           # scripted-caller ablation matrix -> bench/results/<date>Z-<sha>-quick.json
+#   scripts/bench report <results.json>     # markdown table per arm (+ delta vs all-on)
 #
 # Everything runs inside the precis-dev container via scripts/dev, which points
 # PRECIS_DATABASE_URL at this worktree's precis_dev; the loader refuses any
@@ -26,5 +32,9 @@ if [[ "${1:-}" == "ingest" ]]; then
     scripts/dev db-up
 fi
 
-export PRECIS_DEV_ENV="${PRECIS_DEV_ENV:-} PRECIS_BENCH_CACHE=${PRECIS_BENCH_CACHE:-/app/.scratch/bench-cache}"
+# The container cannot read this worktree's git dir, so the host pins the sha
+# the results header records (PRECIS_BENCH_GIT_DIRTY = changed-path count).
+BENCH_SHA="$(git rev-parse HEAD)"
+BENCH_DIRTY="$(git status --porcelain | wc -l | tr -d ' ')"
+export PRECIS_DEV_ENV="${PRECIS_DEV_ENV:-} PRECIS_BENCH_CACHE=${PRECIS_BENCH_CACHE:-/app/.scratch/bench-cache} HF_HOME=${HF_HOME:-/app/.scratch/hf-cache} PRECIS_BENCH_GIT_SHA=${BENCH_SHA} PRECIS_BENCH_GIT_DIRTY=${BENCH_DIRTY}"
 exec scripts/dev uv run --no-sync python -m precis.bench "$@"

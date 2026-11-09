@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
-from precis.bench import corpus
-
-NOT_BUILT = "not built yet, see docs/backlog/memory-ablation-bench.md"
+from precis.bench import corpus, runner
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -47,8 +46,49 @@ def _parser() -> argparse.ArgumentParser:
         help="verify the file on disk equals a fresh extraction instead of writing",
     )
 
-    sub.add_parser("run", help="not built yet")
-    sub.add_parser("report", help="not built yet")
+    fil = sub.add_parser(
+        "fill",
+        help="run the free local derived passes (embeddings, keywords) on the dev DB",
+    )
+    fil.add_argument(
+        "--embedder",
+        default="bge-m3",
+        help="embedder name: bge-m3 (real, downloads once) or mock (hash)",
+    )
+    fil.add_argument("--no-keywords", action="store_true")
+
+    run = sub.add_parser(
+        "run", help="run the scripted ablation matrix on the ingested set"
+    )
+    run.add_argument(
+        "--set", dest="set_name", choices=sorted(corpus.SET_SIZES), default="quick"
+    )
+    run.add_argument(
+        "--arms",
+        default=None,
+        help="comma list of arms (default: all); see precis.bench.runner.ALL_ARMS",
+    )
+    run.add_argument("--seed", type=int, default=runner.PLANTED_SEED)
+    run.add_argument("--out", type=Path, default=None)
+    run.add_argument("--embedder", default="bge-m3")
+    run.add_argument("--manifest", type=Path, default=None)
+    run.add_argument("--tasks", type=Path, default=None)
+    run.add_argument(
+        "--planted",
+        type=int,
+        default=runner.PLANTED_N,
+        help="planted-fact tasks to generate and run (0 disables)",
+    )
+    run.add_argument("--budget", type=int, default=runner.TOKEN_BUDGET)
+    run.add_argument(
+        "--no-fill",
+        action="store_true",
+        help="skip the embeddings/keywords pass over chunks that lack them",
+    )
+    run.add_argument("--limit", type=int, default=None, help="first N QASPER tasks")
+
+    rep = sub.add_parser("report", help="print the markdown table for a results file")
+    rep.add_argument("results", type=Path)
     return ap
 
 
@@ -125,16 +165,71 @@ def _tasks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dsn() -> str:
+    dsn = os.environ.get("PRECIS_DATABASE_URL", "")
+    if not dsn:
+        raise corpus.BenchCorpusError(
+            "PRECIS_DATABASE_URL is unset; run via scripts/bench"
+        )
+    corpus.assert_throwaway_dsn(dsn)
+    return dsn
+
+
+def _fill(args: argparse.Namespace) -> int:
+    from precis.bench import layers
+    from precis.embedder import make_embedder
+    from precis.store import Store
+
+    store = Store.connect(_dsn())
+    try:
+        embedder = make_embedder(args.embedder, dim=store.embedding_dim())
+        totals = layers.fill(store, embedder, keywords=not args.no_keywords)
+    finally:
+        store.close()
+    print(json.dumps({"embedder": args.embedder, **totals}))
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    # A scripted run is thousands of searches: don't book a search trace row
+    # per call into the dev DB.
+    os.environ.setdefault("PRECIS_SEARCH_TRACES", "0")
+    path = runner.run_cli(
+        set_name=args.set_name,
+        arms=None if args.arms is None else [a.strip() for a in args.arms.split(",")],
+        seed=args.seed,
+        out=args.out,
+        embedder_name=args.embedder,
+        manifest_path=args.manifest,
+        tasks_path=args.tasks,
+        planted_n=args.planted,
+        budget=args.budget,
+        limit=args.limit,
+        dsn=_dsn(),
+        fill=not args.no_fill,
+    )
+    print(f"wrote {path}")
+    return 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    print(runner.report_markdown(runner.load_results(args.results)))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.cmd in ("run", "report"):
-        print(NOT_BUILT)
-        return 2
     try:
         if args.cmd == "tasks":
             return _tasks(args)
+        if args.cmd == "fill":
+            return _fill(args)
+        if args.cmd == "run":
+            return _run(args)
+        if args.cmd == "report":
+            return _report(args)
         return _ingest(args) if args.cmd == "ingest" else _manifest(args)
-    except corpus.BenchCorpusError as exc:
+    except (corpus.BenchCorpusError, runner.BenchRunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

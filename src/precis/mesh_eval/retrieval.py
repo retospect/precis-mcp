@@ -297,6 +297,31 @@ def _excerpt(text: str, cap: int = _HIT_EXCERPT) -> str:
     return flat if len(flat) <= cap else flat[: cap - 1].rstrip() + "…"
 
 
+def search_chunk_triples(
+    store: Store, question: str, k: int, embedder: Any | None
+) -> list[Any]:
+    """The hybrid chunk retrieval the ``search`` verb runs, ``k`` deep:
+    ``[(block, ref, score)]`` in rank order. Shared by the search arm below
+    and the memory-ablation ``chunk-rag`` baseline
+    (:mod:`precis.bench.runner`), which renders the full chunk text."""
+    from precis.bench import switches as bench_switches
+    from precis.utils.embed_query import query_vec_for
+
+    # Memory-ablation ``lexical-only`` / ``semantic-only``: the same
+    # single-leg modes the ``search`` verb is rewritten to (all-on: hybrid).
+    mode = bench_switches.current().search_mode("hybrid")
+    vec = query_vec_for(embedder, question, mode)
+    return list(
+        store.chunks.search_chunks(
+            q=question,
+            query_vec=vec,
+            mode=mode,
+            limit=k,
+            card_kinds=("card_combined",),
+        )
+    )
+
+
 def _search_arm(
     store: Store, question: str, k: int, embedder: Any | None
 ) -> tuple[str, list[str]]:
@@ -305,21 +330,9 @@ def _search_arm(
     Returns ``(rendered output, retrieved handles in rank order)``. Each
     hit renders as one line — the list an agent scans before drilling.
     """
-    from precis.bench import switches as bench_switches
     from precis.utils import handle_registry
-    from precis.utils.embed_query import query_vec_for
 
-    # Memory-ablation ``lexical-only`` / ``semantic-only``: the same
-    # single-leg modes the ``search`` verb is rewritten to (all-on: hybrid).
-    mode = bench_switches.current().search_mode("hybrid")
-    vec = query_vec_for(embedder, question, mode)
-    triples = store.chunks.search_chunks(
-        q=question,
-        query_vec=vec,
-        mode=mode,
-        limit=k,
-        card_kinds=("card_combined",),
-    )
+    triples = search_chunk_triples(store, question, k, embedder)
     lines: list[str] = []
     retrieved: list[str] = []
     for block, ref, _score in triples:
@@ -639,4 +652,5 @@ __all__ = [
     "report_to_json",
     "run_arm",
     "run_retrieval",
+    "search_chunk_triples",
 ]
