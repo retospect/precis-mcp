@@ -220,6 +220,37 @@ def test_compare_runs_both_without_recording(store: Any) -> None:
     assert all(hasattr(r, "ordinals") for r in reports.values())
 
 
+def test_run_eval_record_without_a_pin_refuses(store: Any) -> None:
+    """record=True with no account/placement/dispatch_fn would score the
+    chain's model and record it onto the candidate's card — refuse before
+    the first request (gr572168)."""
+    from precis.utils.llm.router import Tier
+
+    tasks = [GoldTask("n1", "long-context-recall", "needle", "?", {"needle": "x"})]
+    with pytest.raises(BadInput, match="operator chain"):
+        run_eval(store, model="m", tier=Tier.MEDIUM, tasks=tasks, record=True)
+
+
+def test_run_eval_record_false_without_a_pin_still_routes(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """record=False unpinned is exploratory: it may still dispatch through
+    the live router (the refusal is about *recording*, not running)."""
+    import precis.utils.llm.router as router
+    from precis.utils.llm.router import Tier
+
+    seen: list[Any] = []
+
+    def _route_stub(req: Any) -> Any:
+        seen.append(req)
+        return SimpleNamespace(text="no clue", data=None, error=None)
+
+    monkeypatch.setattr(router, "route", _route_stub)
+    tasks = [GoldTask("n1", "long-context-recall", "needle", "?", {"needle": "x"})]
+    report = run_eval(store, model="m", tier=Tier.MEDIUM, tasks=tasks, record=False)
+    assert seen and report.ordinals["long-context-recall"] == 1
+
+
 # ── production-path summary scorer ────────────────────────────────
 
 _CHUNK = (
@@ -840,6 +871,49 @@ def test_cli_void_axis_prints_first_error(
     )
     _cmd_eval(cast(Any, None), single)
     assert "first error: single err" in capsys.readouterr().out
+
+
+def test_cli_eval_unpinned_warns_and_forces_no_record(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``precis llm eval X`` without --account routes through the operator
+    chain, which may run a different model — it warns and forces
+    record=False so a mis-measured run never writes the card (gr572168)."""
+    import argparse
+
+    import precis.llm_eval as llm_eval_pkg
+    from precis.cli.llm import _cmd_eval
+    from precis.llm_eval.harness import EvalReport
+
+    captured: dict[str, Any] = {}
+
+    def _rep(store: Any, **kw: Any) -> EvalReport:
+        captured.update(kw)
+        return EvalReport(model="a", results=[], skipped=[])
+
+    monkeypatch.setattr(llm_eval_pkg, "run_eval", _rep)
+    base = dict(
+        model="a",
+        compare=None,
+        account=None,
+        tier="small",
+        gold=None,
+        no_record=False,
+        placement_a=None,
+        placement_b=None,
+        endpoint_a=None,
+        endpoint_b=None,
+    )
+    _cmd_eval(cast(Any, None), argparse.Namespace(**base))
+    out = capsys.readouterr().out
+    assert "operator chain" in out
+    assert captured["record"] is False
+    assert captured["account"] is None
+
+    # --account is the pin: recording honours --no-record as before.
+    _cmd_eval(cast(Any, None), argparse.Namespace(**{**base, "account": "acct-eval"}))
+    assert captured["record"] is True
+    assert captured["account"] == "acct-eval"
 
 
 def test_run_binds_the_four_process_stores(monkeypatch: pytest.MonkeyPatch) -> None:

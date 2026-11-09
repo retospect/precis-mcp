@@ -21,10 +21,12 @@ waiting three more days): once a lead's decision todo closes with an
 1. a **dark** ``llm_account`` row (``enabled = false``) + a dark ``llm``
    card are seeded for the candidate;
 2. :func:`precis.llm_eval.harness.run_eval` runs precis's own gold set
-   against the candidate (recorded onto its card — the ``measured-eval``
-   provenance, same path ``precis llm eval`` uses) and, for comparison,
-   against the tier's current incumbent (:func:`resolve_model`, not
-   recorded — the incumbent's own card is untouched);
+   against the candidate, pinned to the lead's dark account (``account=``
+   — the eval is then provably of the candidate, gr572168 — recorded
+   per-(account, model) onto its card, ``measured-eval`` provenance, same
+   path ``precis llm eval --account`` uses) and, for comparison, against
+   the tier's current incumbent (:func:`resolve_model`, not recorded —
+   the incumbent's own card is untouched);
 3. once the candidate actually produced a recorded ordinal (void axes —
    no profile/key wired yet for this vendor — leave the lead in place for
    the next pass to retry; nothing proceeds on a void eval), a SECOND
@@ -493,9 +495,13 @@ def _advance_qualifying_leads(
 
     ``dispatch_fn`` is :func:`precis.llm_eval.harness.run_eval`'s own
     injection seam, threaded through so a test can run this without a real
-    model call — ``None`` uses the live router, same as a bare ``precis
-    llm eval``.
+    model call. With no injected dispatch the candidate run pins itself to
+    the lead's account (``account=``): a ``record=True`` run through the
+    bare router would score the chain's model and is refused (gr572168).
+    A refusal — the dark account is not provisioned yet — is the "not yet
+    routable" state and retries next pass, same as a void eval.
     """
+    from precis.errors import BadInput
     from precis.llm_eval.harness import run_eval
     from precis.utils.llm.router import Tier, resolve_model
 
@@ -520,9 +526,32 @@ def _advance_qualifying_leads(
         )
         if not (vendor and model_id and account):
             continue
-        candidate_report = run_eval(
-            store, model=model_id, tier=tier, record=True, dispatch_fn=dispatch_fn
-        )
+        try:
+            candidate_report = run_eval(
+                store,
+                model=model_id,
+                tier=tier,
+                record=True,
+                # An injected dispatch_fn IS the pin (the test seam); else
+                # pin to the lead's account so the run is provably of the
+                # candidate — the bare router would measure the chain's
+                # model and record it here (gr572168).
+                account=account if dispatch_fn is None else None,
+                dispatch_fn=dispatch_fn,
+            )
+        except BadInput as exc:
+            # The dark account is not provisioned yet (adapter, profile,
+            # pools are a human's follow-up): refused before any request,
+            # so no measurement — leave the lead for the next pass.
+            log.warning(
+                "offer_discovery: %s candidate %r eval refused: %s — "
+                "lead todo %d stays 'qualifying'",
+                vendor,
+                model_id,
+                exc,
+                ref_id,
+            )
+            continue
         candidate_ordinals = _measured_ordinals(candidate_report, recorded=True)
         if not candidate_ordinals:
             # Not yet routable (every axis void) or nothing reached the card:

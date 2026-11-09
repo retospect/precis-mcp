@@ -372,6 +372,39 @@ class TestQualificationPath:
         finally:
             _delete_groq_accounts(store)
 
+    def test_unpinned_candidate_eval_pins_the_account_and_its_refusal_retries(
+        self, store: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No eval_dispatch_fn: the candidate eval pins itself to the lead's
+        dark account (gr572168). The seeded account is unprovisioned
+        (adapter 'api', no profile), so resolve_account_pin refuses before
+        any request — the refusal is the "not yet routable" state and the
+        lead stays 'qualifying' for the next pass."""
+        run_offer_discovery_pass(store, force=True, research_fn=lambda s: _REPORT)
+        ref_id, _meta = _one_lead(store)
+        _answer(store, ref_id, "answer: pursue")
+        try:
+            with caplog.at_level(logging.WARNING, logger=offer_discovery.log.name):
+                run_offer_discovery_pass(store, force=True, research_fn=lambda s: None)
+            _, meta = _one_lead(store)
+            lead = meta[_LEAD_META_KEY]
+            assert lead["state"] == "qualifying"
+            assert lead["account"]  # seeded, still dark
+            assert "decision_todo_id" not in lead
+            assert [t for t in _todo_titles(store) if "enable" in t] == []
+            card = store.find_ref_by_meta(
+                kind="llm", key="model_id", value="groq-free-test-model"
+            )
+            assert card is not None
+            assert not (card.meta or {}).get("capability")
+            assert not (card.meta or {}).get("account_evals")
+            assert any(
+                r.levelno == logging.WARNING and "eval refused" in r.getMessage()
+                for r in caplog.records
+            )
+        finally:
+            _delete_groq_accounts(store)
+
     def test_pursue_keeps_an_existing_cards_text(self, store: Any) -> None:
         from precis import llm_catalog
 

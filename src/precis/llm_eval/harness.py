@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import Internal
+from precis.errors import BadInput, Internal
 from precis.llm_eval.scorers import SCORERS, bucket_to_ordinal
 from precis.llm_eval.tasks import GoldTask, load_gold_set
 
@@ -190,6 +190,12 @@ def run_eval(
     :func:`router.route` (whose operator chain may override the model); tests
     inject a stub so no real model runs.
 
+    ``record=True`` requires a pin — ``account``, a ``'local'``/``'cloud'``
+    ``placement`` or an explicit ``dispatch_fn``: an unpinned recorded run
+    would score the chain's model and write its ordinals onto ``model``'s
+    card, so it refuses with :class:`BadInput` before the first request
+    (gr572168).
+
     ``account`` pins the run to one hosted ``llm_account`` instead:
     :func:`account_pin.resolve_account_pin` refuses (before any request) an
     account that cannot serve the model, :func:`account_pin.check_budget`
@@ -197,6 +203,23 @@ def run_eval(
     through :func:`account_pin.record_account_eval` — ``account_evals`` on
     the card + an ``account:<name>`` review, never card-level ``capability``.
     """
+    if (
+        record
+        and account is None
+        and dispatch_fn is None
+        and placement not in ("local", "cloud")
+    ):
+        raise BadInput(
+            f"run_eval(record=True) for {model!r} cannot prove the eval is "
+            "of the named model: without account=, placement= or "
+            "dispatch_fn the run dispatches through router.route, whose "
+            "operator chain pins its own rung models and ignores "
+            "LlmRequest.model — the measured-eval would land on the wrong "
+            "card (gr572168)",
+            next="pin the run (account=<llm_account>, "
+            "placement='local'|'cloud', or a dispatch_fn), or pass "
+            "record=False",
+        )
     pin = None
     if account is not None:
         from precis.llm_eval.account_pin import (

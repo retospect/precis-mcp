@@ -275,7 +275,9 @@ def add_parser(subparsers: Any) -> None:
         "(never router.route), for this model only, and record per "
         "(account, model). Works on a disabled account — the eval never "
         "reads or changes `enabled`. Mutually exclusive with --compare, "
-        "--placement-a/-b and --endpoint-a/-b.",
+        "--placement-a/-b and --endpoint-a/-b. Without it a single-model "
+        "run goes through the operator chain (which may override the "
+        "model) and never records.",
     )
     ev.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
@@ -862,12 +864,22 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
             print(f"\nskipped ({len(skipped)}): " + "; ".join(skipped))
         return
 
+    if account is None:
+        # Unpinned: the run dispatches through the operator chain, whose
+        # rungs pin their own model (gr464223) — the scores may not be the
+        # candidate's, so nothing may be recorded (gr572168).
+        print(
+            "warning: eval without --account routes through the operator "
+            "chain, which may override the candidate model — running "
+            "unrecorded (--no-record); a measured-eval must be provably "
+            "of the named model."
+        )
     report = run_eval(
         store,
         model=args.model,
         tier=tier,
         gold_path=args.gold,
-        record=not args.no_record,
+        record=account is not None and not args.no_record,
         account=account,
     )
     header = f"golden eval — {args.model} (tier {args.tier}"
