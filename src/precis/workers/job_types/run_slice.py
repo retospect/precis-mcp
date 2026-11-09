@@ -49,7 +49,10 @@ that holds the lane's credentials with ``params.target_node``):
   signal 0. Legacy Darwin handles cannot use EPERM as evidence of liveness.
 * :func:`poll` waits for the exit file (or a dead pid AND an emptied
   group — a TERM can kill the wrapping ``sh`` while a vendor process
-  keeps the group open, td602769), checks the branch
+  keeps the group open, td602769 — and an exit file past which the
+  group still answers holds the poll while a bound applies, so a
+  stop's escalation and an untripped bound run until the group is
+  gone, td603296), checks the branch
   against the lane's ``deny_write_paths`` (:func:`deny_violations`),
   stamps the vendor's reported usage on ``meta.usage`` each pass —
   devin's ATIF ``--export`` file, live per turn; claude's result
@@ -3172,6 +3175,17 @@ _BUDGET_TERM_GRACE_S = 30.0
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
+def _budget_bound(ctx: Any) -> float:
+    """``params.budget_usd`` as an enforceable bound — the node's
+    remaining allowance — or 0 when the job carries none."""
+    params = (ctx.meta or {}).get("params") or {}
+    raw = params.get("budget_usd")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return 0.0
+    budget = float(raw)
+    return budget if math.isfinite(budget) and budget > 0 else 0.0
+
+
 def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     """The remaining-allowance bound (td601015): ``params.budget_usd``
     is the node's allowance ``plan_dispatch._escalate`` left after
@@ -3184,15 +3198,13 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     — escalates to SIGKILL, retried on every live pass: one signal is
     not the enforcement, termination is. Liveness is the group's, not
     the wrapper's — a TERM can kill the ``sh`` while a vendor process
-    ignores it (td602769). No live usage channel (a
+    ignores it (td602769), and an exit file while the group still
+    answers does not end the watch — the poll keeps it live while a
+    bound applies (td603296). No live usage channel (a
     vendor reporting no spend, or none yet) means the bound simply
     cannot trip."""
-    params = (ctx.meta or {}).get("params") or {}
-    raw = params.get("budget_usd")
-    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
-        return
-    budget = float(raw)
-    if not math.isfinite(budget) or budget <= 0:
+    budget = _budget_bound(ctx)
+    if budget <= 0:
         return
     pgid = _handle_pgid(handle)
     kill = handle.get("budget_kill")
@@ -3298,9 +3310,19 @@ def poll(ctx: Any, handle: Any) -> bool:
     exit_code = _read_exit(handle)
     tree = Path(str(handle.get("worktree") or ""))
     vanished = not tree.is_dir()
-    if exit_code is None and not vanished and _session_alive(handle):
+    if not vanished and _session_alive(handle):
         _watch_budget(ctx, handle)
-        return False
+        # An exit file is the wrapper's end, not the group's (td603296):
+        # while the group still answers and a bound applies — a stop
+        # mid-escalation, or an allowance that can still trip — the
+        # poll holds so the watch runs until the group is gone. An
+        # uncapped session's survivor is the orphan reaper's.
+        if (
+            exit_code is None
+            or isinstance(handle.get("budget_kill"), dict)
+            or _budget_bound(ctx) > 0
+        ):
+            return False
     ctx.set_meta(compute_handle_released=True)
 
     params = (ctx.meta or {}).get("params") or {}

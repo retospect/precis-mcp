@@ -6297,6 +6297,108 @@ def test_group_alive_rejects_a_recycled_leader_slot(
     assert run_slice._group_alive(4242) is False
 
 
+def test_exit_file_with_surviving_group_keeps_sigkill_escalating(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td603296 review: the TERM can kill the wrapper — its exit record
+    lands — while the vendor child keeps the group open. Finalizing on
+    the exit file used to stop the escalation mid-stop; the poll holds
+    while the group answers and keeps SIGKILLing until it is gone, and
+    only then fails the attempt on the bound."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25})
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    # The TERM took the wrapper down — its exit file is written — but a
+    # vendor child keeps the group open; grace expired.
+    seams["alive"] = False
+    seams["group_alive"] = True
+    _finish(handle, 143, "transcript tail\n")
+    handle["budget_kill"]["at"] = "2000-01-01T00:00:00Z"
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    assert pctx2.status is None
+    assert "compute_handle_released" not in pctx2.meta_set
+    pctx3 = _poll_ctx(store, pctx2)
+    assert run_slice.poll(pctx3, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    # Only when the group stops answering does the stop fail the attempt.
+    seams["group_alive"] = False
+    pctx4 = _poll_ctx(store, pctx3)
+    assert run_slice.poll(pctx4, handle) is True
+    assert pctx4.status == "failed"
+    assert pctx4.failure is not None and "remaining budget" in pctx4.failure
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_exit_file_with_surviving_group_keeps_the_bound_armed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td603296 review: an exit file with the group still answering is
+    not the bound's end either — the survivor can still push live usage
+    over the allowance, so the poll holds and the watch TERMs the group
+    when it crosses, escalating until the group is gone."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 4.0})
+    # The wrapper records a clean exit while a child keeps the group —
+    # and the spend — open. The poll holds: the bound can still trip.
+    seams["alive"] = False
+    seams["group_alive"] = True
+    _finish(handle, 0, "all done\n")
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [] and "budget_kill" not in handle
+    # The survivor's spend crosses the allowance: the watch still fires.
+    # (_poll_ctx carries params + meta_set; the lane pair rides meta —
+    # restamp it as ssh_node's DB-built ctx would.)
+    _atif(Path(handle["atif"]), final={"total_cost_usd": 6.25})
+    pctx2 = _poll_ctx(store, pctx)
+    pctx2.meta.update(lane="devin", adapter="devin_tree")
+    assert run_slice.poll(pctx2, handle) is False
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    handle["budget_kill"]["at"] = "2000-01-01T00:00:00Z"
+    pctx3 = _poll_ctx(store, pctx2)
+    assert run_slice.poll(pctx3, handle) is False
+    assert seams["signals"][-1] == (handle["pgid"], signal.SIGKILL)
+    seams["group_alive"] = False
+    pctx4 = _poll_ctx(store, pctx3)
+    assert run_slice.poll(pctx4, handle) is True
+    assert pctx4.status == "failed"
+    assert pctx4.failure is not None and "remaining budget" in pctx4.failure
+    assert seams["lands"] == []
+    assert "attempt:1" in store.tag_strings(42)
+
+
+def test_exit_file_with_surviving_group_uncapped_finalizes(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td603296: the exit record is final again once nothing binds the
+    survivor — an uncapped session's lingering child is the orphan
+    reaper's, not the poll's."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    seams["alive"] = False
+    seams["group_alive"] = True
+    _finish(handle, 1, "transcript tail\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["compute_handle_released"] is True
+    assert "attempt:1" in store.tag_strings(42)
+
+
 def test_budget_kill_fails_the_attempt_even_on_a_clean_exit(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
