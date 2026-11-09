@@ -8,9 +8,9 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Do next 1 (gr605668) and 2 (gr605669) share one primitive — the
-  `scratch-for:<owner>` tag — so one builder takes both, then 3 (gr605672)
-  writes the harvest step against them. Builder tier: Opus (Reto
+- **Next:** Do next 2 (gr605669) — the `scratch-for:<owner>` tag and the
+  owner-keyed expiry shipped with Do next 1 (gr605668); 3 (gr605672)
+  then writes the harvest step against them. Builder tier: Opus (Reto
   2026-11-09): every item here lands skill text (`precis-memory-help`,
   `precis-gripe-loop-help`) in the same commit as its code; the skill text
   is the deliverable the cluster agents read, so a mechanical tier does
@@ -43,9 +43,10 @@ ordered by dependency (the owner tag first, then what reads it).
 
 ## Do next
 
-1. **gr605668** — scratch expiry keyed to the owning task's close. First
-   because it mints the `scratch-for:<owner>` tag the other two read; a
-   wall-clock TTL loses long tasks' scratch mid-flight.
+1. ~~gr605668~~ — scratch expiry keyed to the owning task's close.
+   **Done** (td606756): `scratch-for:td<N>`/`gr<N>` open tag +
+   `memory_thread_sweep` owner resolution (close + 3d grace, 30d floor,
+   `meta.expires` overrides) + `precis-memory-help` §Scratch memories.
 2. **gr605669** — thread-scoped scratch recall (`RingFilter` tags
    dimension, `put(args={'scratch_for': …})`). Same tag; without it
    concurrent builders recall each other's probes.

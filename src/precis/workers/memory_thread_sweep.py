@@ -19,12 +19,20 @@ already wrote down; this cadence is just their executor:
   linked back to the retired node — is minted in the same transaction
   first, so the sweep forgets the *state* without dropping the *work*.
 * **rule s** — ``SPACE:scratch`` (gr568398): the opt-in throwaway space.
-  A scratch node untouched past its TTL self-retires — default
+  A scratch node untouched past its expiry self-retires — default
   :data:`SCRATCH_TTL_DAYS` days from ``updated_at``, ``meta.expires`` a
   per-node override (absolute instant, or a ``<n>[mhdw]`` duration from
-  ``updated_at``, shorter or longer). Probes, session scratch and drafts
-  clean themselves up without anyone remembering a delete; the untagged
-  default stays ``SPACE:research`` so nothing expires by accident.
+  ``updated_at``, shorter or longer). A ``scratch-for:td<N>`` /
+  ``scratch-for:gr<N>`` open tag keys the clock to the owning task
+  instead (gr605668): while an owner is still open the
+  :data:`SCRATCH_FLOOR_DAYS`-day floor from ``updated_at`` is the only
+  limit; once every owner is closed — terminal ``STATUS`` stamp or
+  retirement — expiry is the last close + :data:`SCRATCH_OWNER_GRACE_DAYS`
+  days grace, still capped by the floor so a task that never closes
+  loses its scratch anyway. ``meta.expires`` overrides both clocks.
+  Probes, session scratch and drafts clean themselves up without anyone
+  remembering a delete; the untagged default stays ``SPACE:research``
+  so nothing expires by accident.
 
 Scope is deliberately narrow: ``kind='memory'`` rows tagged
 ``section:threads`` only — never other kinds, never ``section:index``
@@ -64,6 +72,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.todo import BLOCKER_TERMINAL_STATUSES
 from precis.utils.memory_threads import (
     INDEX_TAG,
     STALE_DAYS,
@@ -115,17 +124,34 @@ SELECT r.ref_id, r.title, r.updated_at,
 """
 
 #: ``SPACE:scratch`` default TTL (gr568398) — days from ``updated_at``
-#: after which a scratch node self-retires. Deliberately longer than the
-#: one hour the gripe ruled out: an hour races enrichment (gr563702) and
-#: is too short to be useful.
+#: after which an *ownerless* scratch node self-retires. Deliberately
+#: longer than the one hour the gripe ruled out: an hour races
+#: enrichment (gr563702) and is too short to be useful.
 SCRATCH_TTL_DAYS = 7
+
+#: Grace after the owning task closes before its ``scratch-for:`` nodes
+#: dissolve (gr605668) — expiry = the owner's close stamp + this many
+#: days.
+SCRATCH_OWNER_GRACE_DAYS = 3
+
+#: Hard floor for owner-tagged scratch (gr605668) — days from
+#: ``updated_at`` regardless of owner state, so scratch of a task that
+#: never closes still dissolves. Also caps the close+grace expiry.
+SCRATCH_FLOOR_DAYS = 30
 
 #: Live memories whose *only* ``SPACE:`` tag is ``scratch`` — a second
 #: space would make the expiry intent ambiguous, and ``section:index``
 #: hubs are structural even when scratch-tagged. ``meta`` rides along
-#: for the ``meta.expires`` override (parsed in Python, like ``Left:``).
+#: for the ``meta.expires`` override (parsed in Python, like ``Left:``),
+#: and ``scratch_for`` carries the node's ``scratch-for:<handle>`` open
+#: tag values for the owner-keyed clock (gr605668).
 _SCRATCH_CANDIDATES = """
-SELECT r.ref_id, r.title, r.updated_at, r.meta
+SELECT r.ref_id, r.title, r.updated_at, r.meta,
+       (SELECT array_agg(t.value ORDER BY t.value)
+          FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE rt.ref_id = r.ref_id
+           AND t.namespace = 'OPEN' AND t.value LIKE 'scratch-for:%%')
+       AS scratch_for
   FROM refs r
  WHERE r.kind = 'memory' AND r.retired_at IS NULL
    AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -151,6 +177,26 @@ _SCRATCH_DURATION_UNITS = {
     "d": "days",
     "w": "weeks",
 }
+
+#: The ``scratch-for:<handle>`` owner tag (gr605668): an open tag naming
+#: the todo or gripe the scratch belongs to — the same tag the
+#: thread-scoped recall work reads. Any other value under the prefix is
+#: ignored (a ``scratch-for:me5`` keeps the default TTL).
+_SCRATCH_FOR_RE = re.compile(r"^scratch-for:((?:td|gr)\d+)$")
+
+#: Status rows of every ``scratch-for`` owner in one fetch. The inner
+#: join keeps ``ref_tags`` rows pointing at ``STATUS`` tags only, so a
+#: ref with no STATUS at all surfaces as a single all-NULL row (still
+#: open). Expired tag rows are ignored the way search ignores them.
+_SCRATCH_OWNER_STATUS = """
+SELECT r.ref_id, r.retired_at, t.value, rt.created_at
+  FROM refs r
+  LEFT JOIN (ref_tags rt JOIN tags t
+               ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
+              AND (rt.expires_at IS NULL OR rt.expires_at > now()))
+         ON rt.ref_id = r.ref_id
+ WHERE r.ref_id = ANY(%s)
+"""
 
 #: ``{superseded ref_id: superseding live memory id}`` — the *edge*, never
 #: the prose: a body that merely says "supersedes meN" retires nothing
@@ -376,12 +422,74 @@ class ScratchCandidate:
     reason: str  # human-readable why, for the log line and dry-run list
 
 
-def _scratch_expiry(meta: dict[str, Any] | None, updated_at: datetime) -> datetime:
-    """When a scratch node expires: ``meta.expires`` as an absolute
-    instant or ``<n>[mhdw]`` duration from ``updated_at`` when set and
-    parseable, else ``updated_at + SCRATCH_TTL_DAYS``. An unparseable
-    override falls back to the default TTL — a typo must not make a
-    throwaway node immortal."""
+@dataclass(frozen=True)
+class _ScratchOwner:
+    """A resolved ``scratch-for:<handle>`` tag — the task the scratch
+    belongs to and its close stamp (``None`` while the task is still
+    open)."""
+
+    ref_id: int
+    handle: str  # e.g. 'td606756' — for the plan's reason line
+    closed_at: datetime | None
+
+
+def _scratch_owner_closes(
+    conn: Connection, owner_ids: set[int]
+) -> dict[int, datetime | None]:
+    """``ref_id → close stamp`` for every owner ref that exists —
+    ``None`` while the owner is still open.
+
+    The close stamp is the terminal ``STATUS`` tag's
+    ``ref_tags.created_at`` (the row is rewritten on every status move,
+    so it is the transition time), or the owner's own ``retired_at``
+    when the task was tombstoned — the earlier of the two when both
+    exist. A handle naming a nonexistent ref is absent from the map, so
+    an unresolvable owner keeps the node on the default TTL."""
+    present: set[int] = set()
+    status: dict[int, tuple[datetime, str]] = {}
+    retired: dict[int, datetime] = {}
+    for ref_id, retired_at, value, stamped in conn.execute(
+        _SCRATCH_OWNER_STATUS, (sorted(owner_ids),)
+    ).fetchall():
+        rid = int(ref_id)
+        present.add(rid)
+        if retired_at is not None:
+            retired[rid] = retired_at
+        if value is not None:
+            prev = status.get(rid)
+            if prev is None or stamped > prev[0]:
+                status[rid] = (stamped, str(value))
+    closes: dict[int, datetime | None] = {}
+    for rid in present:
+        stamps = []
+        current = status.get(rid)
+        if current is not None and current[1] in BLOCKER_TERMINAL_STATUSES:
+            stamps.append(current[0])
+        if rid in retired:
+            stamps.append(retired[rid])
+        closes[rid] = min(stamps) if stamps else None
+    return closes
+
+
+def _scratch_expiry(
+    meta: dict[str, Any] | None,
+    updated_at: datetime,
+    *,
+    owners: list[_ScratchOwner] | None = None,
+) -> tuple[datetime, str]:
+    """When a scratch node expires, and what drove it — ``(expiry,
+    driver)`` where driver is the short phrase the plan's reason line
+    reports.
+
+    ``meta.expires`` wins: an absolute instant or ``<n>[mhdw]`` duration
+    from ``updated_at`` when set and parseable; an unparseable override
+    falls through — a typo must not make a throwaway node immortal.
+    Next the ``scratch-for:`` owner (gr605668): while any owner is still
+    open the only clock is the :data:`SCRATCH_FLOOR_DAYS`-day floor from
+    ``updated_at``; once every owner is closed the expiry is the last
+    close stamp + :data:`SCRATCH_OWNER_GRACE_DAYS` — the floor still
+    caps it, so a task that never closes loses its scratch anyway.
+    Ownerless nodes keep the :data:`SCRATCH_TTL_DAYS`-day default."""
     raw = (meta or {}).get("expires")
     expires = as_utc(raw)
     if expires is None and isinstance(raw, str):
@@ -391,8 +499,28 @@ def _scratch_expiry(meta: dict[str, Any] | None, updated_at: datetime) -> dateti
                 **{_SCRATCH_DURATION_UNITS[m.group(2)]: int(m.group(1))}
             )
     if expires is not None:
-        return expires
-    return updated_at + timedelta(days=SCRATCH_TTL_DAYS)
+        return expires, "meta.expires"
+    if owners:
+        floor = updated_at + timedelta(days=SCRATCH_FLOOR_DAYS)
+        open_handles = [o.handle for o in owners if o.closed_at is None]
+        if open_handles:
+            return floor, (
+                f"owner {', '.join(open_handles)} open; {SCRATCH_FLOOR_DAYS}d floor"
+            )
+        last_close = max(c for c in (o.closed_at for o in owners) if c is not None)
+        named = next(o.handle for o in owners if o.closed_at == last_close)
+        close_expiry = last_close + timedelta(days=SCRATCH_OWNER_GRACE_DAYS)
+        if close_expiry <= floor:
+            return close_expiry, (
+                f"owner {named} closed {last_close.date().isoformat()} "
+                f"+{SCRATCH_OWNER_GRACE_DAYS}d grace"
+            )
+        return floor, (
+            f"{SCRATCH_FLOOR_DAYS}d floor bound before owner {named}'s close+grace"
+        )
+    return updated_at + timedelta(days=SCRATCH_TTL_DAYS), (
+        f"default {SCRATCH_TTL_DAYS}d TTL"
+    )
 
 
 def plan_scratch_sweep(
@@ -400,23 +528,48 @@ def plan_scratch_sweep(
 ) -> list[ScratchCandidate]:
     """Every live ``SPACE:scratch`` node past its expiry, oldest id
     first. Pure read — the dry-run mode is this plan printed."""
+    from precis.utils import handle_registry
+
     now = now or datetime.now(UTC)
     with store.pool.connection() as conn:
         rows = conn.execute(_SCRATCH_CANDIDATES, (INDEX_TAG,)).fetchall()
+        parsed: list[tuple[int, str, datetime | None, Any, list[tuple[str, int]]]] = []
+        owner_ids: set[int] = set()
+        for ref_id, title, updated_at, meta, scratch_for in rows:
+            pairs: list[tuple[str, int]] = []
+            seen: set[int] = set()
+            for value in scratch_for or []:
+                m = _SCRATCH_FOR_RE.match(str(value))
+                if not m:
+                    continue
+                handle = m.group(1)
+                p = handle_registry.parse(handle)
+                if p is None or p[1] or p[2] in seen:
+                    continue
+                seen.add(p[2])
+                pairs.append((handle, p[2]))
+            owner_ids.update(rid for _, rid in pairs)
+            parsed.append((int(ref_id), str(title or ""), updated_at, meta, pairs))
+        closes = _scratch_owner_closes(conn, owner_ids) if owner_ids else {}
     plan: list[ScratchCandidate] = []
-    for ref_id, title, updated_at, meta in rows:
+    for ref_id, title, updated_at, meta, pairs in parsed:
         if updated_at is None:
             continue
-        expiry = _scratch_expiry(meta, updated_at)
+        owners = [
+            _ScratchOwner(rid, handle, closes[rid])
+            for handle, rid in pairs
+            if rid in closes
+        ]
+        expiry, driver = _scratch_expiry(meta, updated_at, owners=owners)
         if expiry <= now:
             age = (now - updated_at).days
             plan.append(
                 ScratchCandidate(
-                    int(ref_id),
-                    str(title or ""),
+                    ref_id,
+                    title,
                     "s",
                     f"scratch node expired {expiry.date().isoformat()} "
-                    f"(untouched {age}d)",
+                    f"({driver}; untouched {age}d)",
                 )
             )
     return plan
@@ -466,6 +619,8 @@ def run_scratch_sweep_pass(
 
 
 __all__ = [
+    "SCRATCH_FLOOR_DAYS",
+    "SCRATCH_OWNER_GRACE_DAYS",
     "SCRATCH_TTL_DAYS",
     "ScratchCandidate",
     "SweepCandidate",

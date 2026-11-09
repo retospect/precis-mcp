@@ -692,8 +692,10 @@ can succeed. Receipts do not block edits or provide undo/reviewed apply.
 
 `SPACE:scratch` is for probes, session scratch, and drafts you would
 otherwise have to remember to delete. The daily `memory_thread_sweep`
-cadence soft-retires a scratch node once `updated_at` is older than its
-TTL — `rule=s` in the sweep log. Nothing else reads `scratch` as "keep
+cadence soft-retires a scratch node once it is past its expiry —
+7 days from the last touch by default, or keyed to the owning task's
+close when the node carries `scratch-for:` — `rule=s` in the sweep
+log. Nothing else reads `scratch` as "keep
 less"; recall and `+recall` stay inside one `SPACE:`, so scratch never
 leaks into research or repo-dev recall.
 
@@ -703,7 +705,23 @@ put(kind="memory", text="probe: does the embedder see 'quokka'?",
 # Default TTL is 7 days from the last touch. Per-node override:
 put(kind="memory", text="keep this draft until the round closes",
     tags=["SPACE:scratch"], meta={"expires": "30d"})   # or an ISO date
+# Working notes for one task: name the owner and the clock keys to its
+# close, not the wall.
+put(kind="memory", text="dead end: pool recycle did not fix it",
+    tags=["SPACE:scratch", "scratch-for:td606756"])
 ```
+
+A `scratch-for:<handle>` open tag — `td<N>` for a todo, `gr<N>` for a
+gripe — keys the expiry to the owning task. While any named owner is
+still open the only limit is the 30-day floor from the last touch, so
+a long task's notes don't dissolve mid-flight; once the last owner
+closes (a terminal `STATUS` stamp, or the task's retirement) the node
+expires at that stamp + 3 days grace, so a finished task's notes leave
+recall instead of lingering a week. The floor still caps everything —
+scratch of a task that never closes dissolves at 30 days untouched.
+`meta.expires` overrides both clocks. A `scratch-for:` handle that
+doesn't resolve (dead id, or a kind outside `td`/`gr`) is ignored and
+the node keeps the 7-day default.
 
 `meta.expires` accepts an ISO date/datetime or a `<n>[mhdw]` duration
 (resolved to an absolute instant at write) — shorter or longer than the

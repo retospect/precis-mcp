@@ -19,6 +19,8 @@ from precis.handlers.memory import MemoryHandler
 from precis.store.types import Tag
 from precis.utils.memory_threads import STALE_DAYS
 from precis.workers.memory_thread_sweep import (
+    SCRATCH_FLOOR_DAYS,
+    SCRATCH_OWNER_GRACE_DAYS,
     SCRATCH_TTL_DAYS,
     plan_scratch_sweep,
     plan_thread_sweep,
@@ -519,3 +521,191 @@ def test_scratch_ownership_boundary_between_the_passes(
 
     assert (scratch.claimed, scratch.ok) == (1, 1)
     assert _retired(store, done)
+
+
+# ---------------------------------------------------------------------------
+# scratch-for:<owner> — expiry keyed to the owning task's close (gr605668)
+# ---------------------------------------------------------------------------
+
+
+def _owner_task(
+    store: Any,
+    *,
+    kind: str = "todo",
+    status: str = "open",
+    closed_days: int | None = None,
+) -> int:
+    """A task row (todo or gripe) carrying ``STATUS:<status>`` —
+    ``closed_days`` backdates the tag's ``ref_tags.created_at`` so the
+    close stamp lands where the test needs it. One transaction: the
+    deferred gripe-STATUS check (migration 0176) fires at commit."""
+    with store.tx() as conn:
+        ref = store.insert_ref(kind=kind, slug=None, title="task", conn=conn)
+        store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent", conn=conn)
+    if closed_days is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE ref_tags rt SET created_at = "
+                "now() - make_interval(days => %s) "
+                "FROM tags t "
+                "WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+                "AND t.namespace = 'STATUS' AND t.value = %s",
+                (closed_days, ref.id, status),
+            )
+            conn.commit()
+    return int(ref.id)
+
+
+def test_rule_s_an_open_owner_keeps_scratch_past_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """The gripe's driver: wall-clock expiry loses a long task's notes
+    mid-flight — an open owner suspends the 7-day clock; only the 30-day
+    floor still runs."""
+    tid = _owner_task(store)
+    sid = _scratch(handler, "mid-flight probe", tags=[f"scratch-for:td{tid}"])
+    _age(store, sid, SCRATCH_TTL_DAYS + 5)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, sid)
+
+
+def test_rule_s_a_closed_owner_expires_scratch_after_the_grace(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """The other half: the task closed 5 days ago, so its one-day-old
+    scratch is already past the close+grace expiry — wall-clock youth
+    does not keep a finished task's notes in recall."""
+    tid = _owner_task(store, status="done", closed_days=SCRATCH_OWNER_GRACE_DAYS + 2)
+    sid = _scratch(handler, "finished probe", tags=[f"scratch-for:td{tid}"])
+
+    plan = {item.ref_id: item for item in plan_scratch_sweep(store)}
+    assert f"owner td{tid} closed" in plan[sid].reason
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
+    assert _retired(store, sid)
+
+
+def test_rule_s_a_closed_owner_inside_grace_keeps_scratch(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """Closed yesterday — inside the 3-day grace — keeps the scratch
+    even though the 7-day default has already passed; once the grace
+    lapses it goes."""
+    tid = _owner_task(store, status="done", closed_days=1)
+    sid = _scratch(handler, "grace-window probe", tags=[f"scratch-for:td{tid}"])
+    _age(store, sid, SCRATCH_TTL_DAYS + 5)
+
+    assert run_scratch_sweep_pass(store).claimed == 0
+    assert not _retired(store, sid)
+
+    later = datetime.now(UTC) + timedelta(days=SCRATCH_OWNER_GRACE_DAYS)
+    assert run_scratch_sweep_pass(store, now=later).ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_the_floor_dissolves_scratch_of_a_never_closing_task(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """The hard floor stays: a task that is still open (or never
+    closes) cannot pin scratch past 30 days untouched."""
+    tid = _owner_task(store)
+    sid = _scratch(handler, "orphaned probe", tags=[f"scratch-for:td{tid}"])
+    _age(store, sid, SCRATCH_FLOOR_DAYS + 1)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_meta_expires_overrides_the_owner_clock(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """``meta.expires`` overrides both clocks: a scratch pinned 30 days
+    survives its owner's close+grace expiry."""
+    tid = _owner_task(store, status="done", closed_days=SCRATCH_OWNER_GRACE_DAYS + 5)
+    sid = _scratch(
+        handler,
+        "pinned past the close",
+        tags=[f"scratch-for:td{tid}"],
+        meta={"expires": "30d"},
+    )
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (0, 0)
+    assert not _retired(store, sid)
+
+
+def test_rule_s_an_unresolvable_owner_keeps_the_default_ttl(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """A ``scratch-for:`` naming no live todo/gripe — or a handle
+    outside the td/gr grammar — is ignored: the node stays on the
+    7-day clock (a typo must not make a throwaway node immortal)."""
+    dangling = _scratch(handler, "dead handle", tags=["scratch-for:td999999999"])
+    not_a_task = _scratch(handler, "memory handle", tags=["scratch-for:me1"])
+    for rid in (dangling, not_a_task):
+        _age(store, rid, SCRATCH_TTL_DAYS + 1)
+
+    result = run_scratch_sweep_pass(store)
+
+    assert (result.claimed, result.ok) == (2, 2)
+    assert _retired(store, dangling)
+    assert _retired(store, not_a_task)
+
+
+def test_rule_s_a_gripe_owner_closes_scratch_too(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """``scratch-for:gr<N>`` — a gripe closed ``wontfix`` is as terminal
+    as a todo's ``done``."""
+    gid = _owner_task(
+        store, kind="gripe", status="wontfix", closed_days=SCRATCH_OWNER_GRACE_DAYS + 2
+    )
+    sid = _scratch(handler, "gripe probe", tags=[f"scratch-for:gr{gid}"])
+
+    result = run_scratch_sweep_pass(store)
+
+    assert result.ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_a_retired_owner_counts_as_closed(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """A tombstoned task never got a terminal STATUS — its
+    ``retired_at`` is the close stamp, and the grace runs from it."""
+    tid = _owner_task(store)
+    store.retire_ref(tid)
+    sid = _scratch(handler, "dead task's probe", tags=[f"scratch-for:td{tid}"])
+    _age(store, sid, SCRATCH_TTL_DAYS + 5)
+
+    assert run_scratch_sweep_pass(store).claimed == 0
+    assert not _retired(store, sid)
+
+    later = datetime.now(UTC) + timedelta(days=SCRATCH_OWNER_GRACE_DAYS + 1)
+    assert run_scratch_sweep_pass(store, now=later).ok == 1
+    assert _retired(store, sid)
+
+
+def test_rule_s_multiple_owners_wait_for_the_last_close(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """Two named owners: one open is enough to keep the scratch — it
+    dissolves on the last close, not the first."""
+    open_t = _owner_task(store)
+    done_t = _owner_task(store, status="done", closed_days=SCRATCH_OWNER_GRACE_DAYS + 5)
+    sid = _scratch(
+        handler,
+        "two tasks' probe",
+        tags=[f"scratch-for:td{open_t}", f"scratch-for:td{done_t}"],
+    )
+    _age(store, sid, SCRATCH_TTL_DAYS + 5)
+
+    assert run_scratch_sweep_pass(store).claimed == 0
+    assert not _retired(store, sid)
