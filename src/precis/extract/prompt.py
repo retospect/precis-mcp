@@ -9,8 +9,10 @@ Two prompts, two models:
   proposes bindings, the deterministic checks and the frontier sampler
   carry the burden of proof.
 * :func:`review_prompt` — the per-measure sampler prompt for the
-  frontier model: one written row plus the text of its anchored span;
-  the verdict the acceptance step counts.
+  frontier model: one written row plus the source chunk with its
+  anchored span marked (corpus finding 3: the reviewer judges against
+  the whole chunk, so a condition stated in a neighbouring sentence is
+  checkable); the verdict the acceptance step counts.
 """
 
 from __future__ import annotations
@@ -372,28 +374,56 @@ def review_prompt(
             bits.append(f"footnote marker: {table['footnote']}")
     return (
         "A numeric-extraction pass wrote this measure row from a survey "
-        "paper. The anchored source span follows the row. Reply with ONE "
-        "JSON object and nothing else:\n"
-        '{"verdict": "correct|wrong|undecidable", "reason": "<short>"}\n\n'
-        "correct = the literal, unit and measurand say what the span says, "
-        "about the stated subject. wrong = the value is misread, the unit "
-        "wrong, the measurand misassigned, or the span does not contain the "
-        "literal. undecidable = the span is there but the claim cannot be "
-        "judged from it.\n\n" + "\n".join(bits) + "\n\nspan:\n" + span_text
+        "paper. The evidence follows the row: the source chunk with the "
+        "anchored span marked «…». Reply with ONE JSON object and nothing "
+        "else:\n"
+        '{"verdict": "correct|wrong|undecidable", "class": "<see below>", '
+        '"reason": "<short>"}\n\n'
+        "correct = the literal, unit and measurand say what the marked "
+        "span says, about the stated subject. wrong = the value is "
+        "misread, the unit wrong, the measurand misassigned, or the span "
+        "does not contain the literal. undecidable = the evidence is "
+        "there but the claim cannot be judged from it.\n"
+        "class — required on wrong, null otherwise: wrong_number = the "
+        "literal or value is misread; wrong_measurand = the measurand "
+        "does not fit the evidence; missing_condition = a condition the "
+        "evidence states is missing from the row; wrong_unit = the unit "
+        "is missing or incorrect; bad_anchor = the marked span does not "
+        "contain the literal; other = anything else.\n\n"
+        + "\n".join(bits)
+        + "\n\nspan:\n"
+        + span_text
     )
 
 
-def parse_verdict(text: str) -> tuple[str, str | None]:
-    """The sampler's verdict: ``('correct'|'wrong'|'undecidable', reason)``.
+#: The reviewer's failure taxonomy on a non-correct verdict (corpus
+#: finding 3 — the classes gardener-value slice 5's trial reads).
+VERDICT_CLASSES = frozenset(
+    {
+        "wrong_number",
+        "wrong_measurand",
+        "missing_condition",
+        "wrong_unit",
+        "bad_anchor",
+        "other",
+    }
+)
 
-    An unparseable or unlabeled reply reads as ``('undecidable', ...)`` —
-    never silently a pass.
+
+def parse_verdict(text: str) -> tuple[str, str | None, str | None]:
+    """The sampler's verdict: ``(verdict, reason, class)``.
+
+    ``class`` is one of :data:`VERDICT_CLASSES` — ``None`` on a correct
+    verdict or an absent/unknown label. An unparseable or unlabeled
+    reply reads as ``('undecidable', …, None)`` — never silently a pass.
     """
     obj = extract_json_object(text)
     if not isinstance(obj, dict):
-        return "undecidable", "unparseable reply"
+        return "undecidable", "unparseable reply", None
     verdict = obj.get("verdict")
     reason = obj.get("reason") if isinstance(obj.get("reason"), str) else None
+    cls = obj.get("class")
+    cls = cls if cls in VERDICT_CLASSES else None
     if verdict in ("correct", "wrong", "undecidable"):
-        return verdict, reason
-    return "undecidable", reason
+        return verdict, reason, (None if verdict == "correct" else cls)
+    return "undecidable", reason, cls

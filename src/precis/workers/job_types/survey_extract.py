@@ -32,12 +32,14 @@ read.
 When every chunk is read the job spawns one ``measure_accept`` child
 and waits on it. ``measure_accept`` draws the deterministic stratified
 sample (:mod:`precis.extract.accept`), has a frontier-tier model review
-each sampled row against its anchored span, records the verdicts on the
-``reviews`` ledger, and marks the batch accepted or failed by the
-Wilson rule (upper edge of the error-rate interval ≤ the bar, default
-5% at the one-sided 95% quantile). The verdict rides
-``refs.meta.acceptance`` on the accept job and comes back into the
-parent's summary.
+each sampled row against the whole chunk with its anchored span marked
+(corpus finding 3 — a condition in a neighbouring sentence stays
+checkable), records the verdicts — each non-correct one carrying the
+reviewer's failure ``class`` — on the ``reviews`` ledger, and marks the
+batch accepted or failed by the Wilson rule (upper edge of the
+error-rate interval ≤ the bar, default 5% at the one-sided 95%
+quantile). The verdict rides ``refs.meta.acceptance`` on the accept job
+and comes back into the parent's summary.
 
 ``measure_accept`` is also a standalone job_type — re-accepting a batch
 (more samples, a different bar, a new frontier model) never re-runs the
@@ -1630,12 +1632,38 @@ def _span_text(
         if (
             isinstance(span, list)
             and len(span) == 3
-            and all(isinstance(x, int) for x in span)
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in span)
         ):
-            body = text[span[1] : span[2]]
+            body = _marked_span(text, span[1], span[2], cap=row_cap)
         else:
             body = text
     return f"{head}\n…\n{body}" if head else body
+
+
+def _marked_span(text: str, start: int, end: int, *, cap: int = _SPAN_TEXT_CAP) -> str:
+    """The chunk with the anchored span wrapped in «» markers — the
+    reviewer's evidence for a prose row (corpus finding 3): the whole
+    chunk, not the sentence alone, so a condition stated in a
+    neighbouring sentence stays checkable instead of reading
+    'undecidable'. A chunk over ``cap`` is windowed around the span's
+    midpoint, ``…`` marking the cut edges."""
+    start = max(0, min(start, len(text)))
+    end = max(start, min(end, len(text)))
+    if len(text) + 2 <= cap:
+        return f"{text[:start]}«{text[start:end]}»{text[end:]}"
+    inner = cap - 4  # «» plus the two edge ellipses
+    mid = (start + end) // 2
+    lo = max(0, min(mid - inner // 2, len(text) - inner))
+    hi = min(len(text), lo + inner)
+    lo = max(0, hi - inner)
+    seg = text[lo:hi]
+    ms = min(max(start - lo, 0), len(seg))
+    me = min(max(end - lo, ms), len(seg))
+    return (
+        ("…" if lo else "")
+        + f"{seg[:ms]}«{seg[ms:me]}»{seg[me:]}"
+        + ("…" if hi < len(text) else "")
+    )
 
 
 def _row_conditions(
@@ -1643,17 +1671,36 @@ def _row_conditions(
 ) -> list[str]:
     """The run's conditions for the sampler: the output row's named
     context dict (baseline, period, model — gr511461) plus its input
-    rows."""
+    rows — each anchored input carrying its own evidence span so a
+    'cond = value' line is checkable, not bare (corpus finding 3)."""
     out = [
         f"{k} = {v}" for k, v in (output_conditions or {}).items() if isinstance(v, str)
     ]
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT meta->>'condition', literal FROM measures "
-            "WHERE run_key = %s AND direction = 'input' ORDER BY id",
+            "SELECT m.meta->>'condition', m.literal, m.span, l.src_chunk_id "
+            "  FROM measures m "
+            "  LEFT JOIN links l ON l.link_id = m.primary_link_id "
+            "WHERE m.run_key = %s AND m.direction = 'input' ORDER BY m.id",
             (run_key,),
         ).fetchall()
-    out += [f"{cond or '?'} = {lit}" for cond, lit in rows if isinstance(lit, str)]
+    texts: dict[int, str] = {}
+    for cond, lit, span, chunk_id in rows:
+        if not isinstance(lit, str):
+            continue
+        line = f"{cond or '?'} = {lit}"
+        if (
+            isinstance(chunk_id, int)
+            and isinstance(span, list)
+            and len(span) == 3
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in span)
+        ):
+            if chunk_id not in texts:
+                texts[chunk_id] = _chunk_text(store, chunk_id) or ""
+            evidence = texts[chunk_id][span[1] : span[2]].strip()
+            if evidence:
+                line += f" — evidence: {evidence!r}"
+        out.append(line)
     return out
 
 
@@ -1912,7 +1959,7 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                 "reason": f"llm_error: {str(result.error)[:120]}",
             }
             continue
-        verdict, reason = _prompt.parse_verdict(result.text)
+        verdict, reason, cls = _prompt.parse_verdict(result.text)
         model_used = getattr(result, "model", None) or model_pin or resolve_model(tier)
         try:
             ctx.store.record_target_review(
@@ -1922,13 +1969,17 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                 verdict=_VERDICT_TO_REVIEW[verdict],
                 model=model_used,
                 version="1",
-                note=reason[:500] if reason else None,
+                note=(
+                    f"[{cls}] {reason or ''}"[:500].rstrip()
+                    if cls
+                    else (reason[:500] if reason else None)
+                ),
             )
         except Exception as exc:  # row vanished between fetch and review
             log.info("measure_accept: review of mx%s failed: %s", mid, exc)
             verdict = "undecidable"
             reason = f"review write failed: {exc}"
-        verdicts[str(mid)] = {"verdict": verdict, "reason": reason}
+        verdicts[str(mid)] = {"verdict": verdict, "reason": reason, "class": cls}
         processed += 1
 
     if idx < len(sampled):
@@ -1985,6 +2036,15 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
     }
     if n_unanchored:
         acc_meta["unanchored"] = n_unanchored
+    # Per-class failure rates the trial reads (corpus finding 3): the
+    # reviewer's taxonomy on every non-correct verdict.
+    classes: dict[str, int] = {}
+    for mid in scored:
+        c = verdicts[str(mid)].get("class")
+        if isinstance(c, str) and verdicts[str(mid)].get("verdict") != "correct":
+            classes[c] = classes.get(c, 0) + 1
+    if classes:
+        acc_meta["classes"] = classes
     if covered:
         acc_meta["papers"] = papers
         acc_meta["max_id"] = max_id
@@ -2017,7 +2077,8 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         head += f"; {n_unanchored} unanchored, excluded"
     lines = [head]
     for mid, v in bad[:50]:
-        lines.append(f"  mx{mid}: {v.get('verdict')} — {v.get('reason') or ''}")
+        cls = f" ({v['class']})" if v.get("class") else ""
+        lines.append(f"  mx{mid}: {v.get('verdict')}{cls} — {v.get('reason') or ''}")
     for mid, v in excluded[:50]:
         lines.append(f"  mx{mid}: {v.get('verdict')} — {v.get('reason') or ''}")
     ctx.append_chunk("job_summary", "\n".join(lines))

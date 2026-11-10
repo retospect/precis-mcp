@@ -3850,6 +3850,174 @@ class TestReviewTimeTableContext:
         assert len(span) <= job._SPAN_TEXT_CAP
 
 
+class TestReviewEvidenceWidened:
+    """Corpus finding 3 (gr548627): the reviewer sees the whole chunk
+    with the anchored span marked, plus each input row's own span — a
+    condition in a neighbouring sentence is checkable instead of
+    'undecidable'. Non-correct verdicts carry the reviewer's failure
+    class the trial reads per-class rates from."""
+
+    def test_prose_span_text_marks_the_span_in_the_whole_chunk(
+        self, world: dict
+    ) -> None:
+        store = world["store"]
+        text = (
+            "The electrolyte was 0.1 M KOH. "
+            "The faradaic efficiency toward NH3 reached 95% at -0.5 V. "
+            "The cell ran for 12 h without decay."
+        )
+        cid = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text=text,
+            ord=3,
+            chunk_kind="paragraph",
+        )
+        start = text.index("The faradaic")
+        end = text.index(" The cell")
+        span = job._span_text(store, {"chunk_id": cid, "span": [cid, start, end]})
+        assert span is not None
+        assert span == f"{text[:start]}«{text[start:end]}»{text[end:]}"
+        assert "0.1 M KOH" in span and "12 h" in span
+
+    def test_marked_span_windows_an_over_cap_chunk(self) -> None:
+        # A paragraph longer than the evidence cap keeps the marked
+        # span and drops context at the edges, «» markers intact.
+        pad = "filler sentence padding. " * 80
+        text = pad + "the value was 95% under flow. " + pad
+        start = text.index("the value")
+        end = start + len("the value was 95% under flow. ")
+        out = job._marked_span(text, start, end, cap=200)
+        assert len(out) <= 200
+        assert "«" in out and "»" in out
+        assert out.startswith("…") and out.endswith("…")
+
+    def test_row_conditions_carry_the_input_rows_own_span(self, world: dict) -> None:
+        store = world["store"]
+        text = "At -0.5 V vs RHE the rate doubled. Faradaic efficiency hit 95%."
+        cid = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text=text,
+            ord=4,
+            chunk_kind="paragraph",
+        )
+        anchor = MeasureAnchor(world["paper"], cid, "offsets", [cid, 0, 15])
+        run = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["fe"],
+                literal="95",
+                subject_ref_id=world["paper"],
+                reported_unit="%",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"],
+                    cid,
+                    "offsets",
+                    [cid, text.index("Faradaic"), len(text)],
+                ),
+            ),
+            [
+                MeasureSpec(
+                    measurand_ref_id=world["potential"],
+                    literal="-0.5",
+                    subject_ref_id=world["paper"],
+                    reported_unit="V",
+                    direction="input",
+                    role="context",
+                    source_attribution="own_work",
+                    anchor=anchor,
+                    meta={"condition": "applied-potential"},
+                )
+            ],
+            actor="test",
+        )
+        lines = job._row_conditions(store, run.run_key)
+        assert lines == ["applied-potential = -0.5 — evidence: 'At -0.5 V vs RH'"]
+
+    def test_wrong_verdict_records_the_failure_class(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        cid = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text="The efficiency was 95% at -0.5 V.",
+            ord=5,
+            chunk_kind="paragraph",
+        )
+        mid = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["fe"],
+                literal="95",
+                subject_ref_id=world["paper"],
+                reported_unit="%",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(world["paper"], cid, "offsets", [cid, 4, 28]),
+                meta={"extraction_run": "class-run"},
+            ),
+            actor="test",
+        ).output_id
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps(
+                    {
+                        "verdict": "wrong",
+                        "class": "wrong_unit",
+                        "reason": "the unit is kPa, not %",
+                    }
+                ),
+                "frontier-x",
+            ),
+        )
+        done, events = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {
+                    "extraction_run": "class-run",
+                    "bar": 0.5,
+                    "reviews_per_slice": 10,
+                },
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success
+        assert f"mx{mid}: wrong (wrong_unit)" in done.summary
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        assert acc["classes"] == {"wrong_unit": 1}
+        with store.pool.connection() as conn:
+            note = conn.execute(
+                "SELECT note FROM reviews WHERE target_kind = 'measure' "
+                "AND target_id = %s",
+                (mid,),
+            ).fetchone()
+        assert note is not None and note[0].startswith("[wrong_unit]")
+
+    def test_parse_verdict_reads_the_class(self) -> None:
+        assert job._prompt.parse_verdict(
+            '{"verdict": "wrong", "class": "missing_condition", "reason": "r"}'
+        ) == ("wrong", "r", "missing_condition")
+        # An unknown class label drops to None; a correct verdict never
+        # carries one.
+        assert job._prompt.parse_verdict(
+            '{"verdict": "wrong", "class": "typo", "reason": "r"}'
+        ) == ("wrong", "r", None)
+        assert job._prompt.parse_verdict(
+            '{"verdict": "correct", "class": "other"}'
+        ) == ("correct", None, None)
+        assert job._prompt.parse_verdict("not json") == (
+            "undecidable",
+            "unparseable reply",
+            None,
+        )
+
+
 class TestMeasureRecheck:
     """gr506762 subset-4, item 4: ``measure_recheck`` dry-runs the
     current extraction guards over stored table_recipe rows and lists
