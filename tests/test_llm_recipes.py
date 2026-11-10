@@ -358,6 +358,42 @@ def test_seed_sources() -> None:
     assert sorted(seeded) == sorted(sources)
 
 
+def test_axis_recipe_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr572091: every ``data/axes/<id>.yaml`` axis logs ``axis:<id>`` — one
+    ``axis:`` prefix-family recipe (the ``review:`` mechanism) covers the
+    whole family, so the next enabled axis does not refile the gripe."""
+    sql = (
+        Path(__file__).parents[1] / "src/precis/migrations/0298_task_recipes_axis.sql"
+    ).read_text(encoding="utf-8")
+    seeded = re.findall(
+        r"^    \('([^']+)', '([^']+)', '([^']+)', '([^']+)', (true|false)\)",
+        sql,
+        flags=re.MULTILINE,
+    )
+    rows = {
+        src: Recipe(
+            src,
+            kind,
+            lane_class=lane,
+            consequence=cons,
+            classify=flag == "true",
+        )
+        for src, kind, lane, cons, flag in seeded
+    }
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    recipe = recipes.lookup("axis:domain")
+    assert recipe is not None
+    assert (recipe.task_kind, recipe.consequence) == ("chunk.classify", "low")
+    assert recipes.lookup("axis:material") == recipe
+    assert recipes.lookup("axis:domain:local") == recipe
+    assert recipes.resolve("axis:domain") == (
+        "chunk.classify",
+        "low",
+        "default",
+        "recipe",
+    )
+
+
 @pytest.mark.db
 def test_gap_daily_and_open_dedupe(store: Store) -> None:
     """Exercise the real SQL, including closure and the UTC-day boundary."""
