@@ -115,6 +115,8 @@ stat-checked, content not revalidated (shown in the drill-down). Walks and Git
 observations are non-atomic. Entry discovery labels separately read project
 metadata. Runtrace provenance does not attest executed bytes.
 
+## Assert the expected root before indexing
+
 `get(kind='python')` lists configured aliases and availability without indexing
 every root. Assert a known alias's expected root before indexing:
 
@@ -139,7 +141,9 @@ same checkout. Exact server paths also work; unknown mount prefixes are not
 guessed, and a different tree still refuses. On mismatch the ack's `next`
 names the alias that does resolve to the expected root — substituted into
 your id/scope as a callable `get`/`search` — when one exists (worktree
-aliases included); otherwise inspect the alias with
+aliases included, unless a static root of the same name shadows the alias:
+that name resolves to the static checkout, so it is never recommended);
+otherwise inspect the alias with
 `get(kind='python', id='<alias>')` without `expected_root`,
 or use local Grep/Read for your tree. Roots are
 registered at server construction; there is no request-time arbitrary-path fallback. Do not bind

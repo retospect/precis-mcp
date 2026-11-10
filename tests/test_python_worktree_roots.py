@@ -168,6 +168,44 @@ def test_expected_root_mismatch_search_names_the_matching_scope(env):
     assert "search(kind='python', q='f', scope='wt-beta::m')" in hint
 
 
+@pytest.mark.parametrize("verb", ["get", "search"])
+def test_expected_root_mismatch_skips_shadowed_worktree_alias(env, verb):
+    """A static root named like a worktree shadows that alias — following
+    the recommendation would read the static checkout, not the expected
+    one, so the ack falls back to the generic recovery hint."""
+    main, wts, tmp = env
+    _, reg, _ = _make(env, ("alpha", "beta"))
+    static = tmp / "static"
+    _checkout(static)
+    h = PythonHandler(
+        hub=Hub(), roots={"main": main, "wt-alpha": static}, worktrees=reg
+    )
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        if verb == "get":
+            h.get(id="main::m.f", expected_root=str(wts / "alpha"))
+        else:
+            h.search(q="f", scope="main::m", expected_root=str(wts / "alpha"))
+    hint = str(caught.value.next)
+    assert "wt-alpha::m.f" not in hint
+    assert "resolves to the expected root" not in hint
+    assert "Grep/Read in your own tree" in hint
+
+
+def test_expected_root_mismatch_recommends_unshadowed_worktree_alias(env):
+    """Shadowing one alias does not stop the mismatch ack naming another
+    worktree alias that does resolve to the expected root."""
+    main, _, tmp = env
+    _, reg, _ = _make(env, ("alpha", "beta"))
+    static = tmp / "static"
+    _checkout(static)
+    h = PythonHandler(
+        hub=Hub(), roots={"main": main, "wt-alpha": static}, worktrees=reg
+    )
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        h.get(id="main::m.f", expected_root=f"{HOST}/wts/beta")
+    assert "get(kind='python', id='wt-beta::m.f')" in str(caught.value.next)
+
+
 def test_expected_root_mismatch_names_static_alias_match(env):
     """Addressing main while expecting a worktree points at the wt- alias."""
     _, wts, _ = env

@@ -2315,6 +2315,11 @@ class PythonHandler(Handler):
             if path == root:
                 return alias
         for alias, path in self._worktree_listing().items():
+            # A static root of the same name shadows the worktree alias
+            # (``_resolve_alias`` checks static roots first), so recommending
+            # it would read the static checkout instead of ``root``.
+            if alias in self.roots:
+                continue
             if path == root:
                 return alias
         return None
