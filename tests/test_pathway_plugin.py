@@ -4353,6 +4353,11 @@ def test_compare_gate_column_and_filter(
 
     out = h.get(id="gate-pd", view="compare").body
     assert "pass" in out and "blocked (detachment)" in out
+    # td625117 review: the credit anchor rides each row — the passing row
+    # names its gates + seeds, the blocked row its no-credit reason
+    assert "{cand\tcandidate\tgate\tanchor" in out
+    assert "seeds [0, 1]" in out
+    assert "no credit (detachment)" in out
 
     keep = h.get(id="gate-pd", view="compare", args={"gate": "pass"}).body
     assert "gate-pd" in keep and "gate-pt" not in keep

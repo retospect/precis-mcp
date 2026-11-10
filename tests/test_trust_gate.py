@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from precis.utils import trust_gate
-from precis_pathway.toon_views import compare_toon, gate_verdict, trust_toon
+from precis_pathway.toon_views import compare_toon, gate_verdict, row_anchor, trust_toon
 
 
 @pytest.fixture(autouse=True)
@@ -1154,6 +1154,109 @@ def test_gate_verdict_na_without_trust_records() -> None:
     assert gate_verdict({"results": {}}) == ("n/a", "pre-trust-schema")
     meta = _meta(_results([], [0]))
     assert gate_verdict(meta) == ("n/a", "no trust records")
+
+
+def test_row_anchor_renders_the_named_credit() -> None:
+    """td625117 review: view='compare' must render each row's named credit
+    anchor itself — the gates credited + the seed set — not footnote the
+    reader off to a view='trust' lookup."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]))
+    cell = row_anchor(meta)
+    assert cell.startswith("gates ")
+    assert "endpoint_agreement" in cell
+    assert "seed independence (precis)" in cell
+    assert "seeds [0, 1]" in cell
+    assert "no credit" not in cell
+
+
+def test_row_anchor_no_credit_names_the_failed_gates() -> None:
+    records = _records([0])
+    cell = row_anchor(_meta(_results(records, [0])))
+    assert cell.startswith("no credit (")
+    assert "detachment" in cell
+
+
+def test_row_anchor_na_and_lookup_failure() -> None:
+    assert row_anchor({"results": {}}) == "n/a"
+    meta = _meta(_results([], [0]))
+    assert row_anchor(meta) == "n/a"
+    clean = _meta(
+        _results(_records([0, 1], hi_states=(), with_detachment=False), [0, 1])
+    )
+    # an unverifiable sibling pool never anchors credit (review item 10)
+    assert row_anchor(clean, seed_lookup_failed=True) == (
+        "no credit (seed pool unverifiable)"
+    )
+
+
+def test_row_anchor_credits_the_lower_basin() -> None:
+    """A reproducible second basin keeps the credit with endpoint_agreement
+    credited over — the same ruling view='trust' headlines (gr543165)."""
+    records = _records([0, 1, 2], hi_states=("A",), with_detachment=False)
+    # seed 2 joins seed 1's higher basin on A → the split is reproducible
+    for rec in records:
+        if rec["check"] == "endpoint_identity" and rec.get("state") == "A":
+            if rec["seed"] == 2:
+                rec["evidence"] = {
+                    "e_eV": round(-10.0 + 0.8669, 6),
+                    "fingerprint": _FP_HI,
+                }
+    records.append(
+        _rec(
+            "endpoint_agreement",
+            "fail",
+            "fatal",
+            seed=2,
+            state="A",
+            evidence={
+                "e_eV": round(-10.0 + 0.8669, 6),
+                "e_min_eV": -10.0,
+                "delta_meV": 866.9,
+                "n_runs": 3,
+                "n_fingerprints": 2,
+                "reason": "endpoint-mismatch",
+                "tol_eV": 0.05,
+            },
+        )
+    )
+    cell = row_anchor(_meta(_results(records, [0, 1, 2])))
+    assert "credited over endpoint_agreement" in cell
+    assert "lower basin, seeds [0]" in cell
+
+
+def test_compare_toon_renders_anchor_column_and_legend() -> None:
+    """The compare table carries the row's credit anchor in its own column
+    (td625117 review) — an explicit 'no credit (…)' cell for blocked rows,
+    never a blank, never a footnote pointing at view='trust'."""
+    from precis.utils import reaction_graph as analysis
+
+    meta = _meta(_results(_records([0]), [0]))
+    graph = meta["graph"]
+    root, target = analysis.roots(graph, meta["results"])
+    candidates = [
+        {
+            "slug": "credited-run",
+            "lever": "Pd",
+            "graph": graph,
+            "root": root,
+            "target": target,
+            "anchor": "gates endpoint_agreement, neb_convergence · seeds [0, 1]",
+        },
+        {
+            "slug": "uncredited-run",
+            "lever": "Pt",
+            "graph": graph,
+            "root": root,
+            "target": target,
+            "anchor": "no credit (detachment)",
+        },
+    ]
+    out = compare_toon(candidates)
+    assert "{cand\tcandidate\tgate\tanchor" in out  # schema carries the column
+    assert "seeds [0, 1]" in out
+    assert "no credit (detachment)" in out
+    assert "named credit anchor" in out  # anchor legend names the cell
 
 
 def test_compare_toon_renders_gate_column_and_legends() -> None:

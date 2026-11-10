@@ -1700,12 +1700,15 @@ class PathwayHandler(Handler):
         Every row carries a ``gate`` column — the trust-gate verdict replayed
         per row, exactly the gate view='trust' renders (gr592278: a tight
         rate-limiting spread used to read as ``conf=ok`` on gate-BLOCKED
-        candidates). ``gate='pass'|'blocked'`` filters rows by that verdict;
-        ``n/a`` rows (pre-trust-schema) never survive a filter."""
+        candidates) — and an ``anchor`` cell, the named credit anchor
+        view='trust' headlines (td625117 review: the footnote pointing at
+        view='trust' supplied no anchor and cost a lookup per row).
+        ``gate='pass'|'blocked'`` filters rows by that verdict; ``n/a``
+        rows (pre-trust-schema) never survive a filter."""
         from precis.utils import reaction_graph as analysis
         from precis.utils import trust_gate
 
-        from .toon_views import compare_toon, gate_verdict
+        from .toon_views import compare_toon, gate_verdict, row_anchor
 
         r = meta.get("results", {})
         substrate, target = r.get("substrate"), r.get("target")
@@ -1787,6 +1790,16 @@ class PathwayHandler(Handler):
                 seed_lookup_failed=seed_lookup_failed,
             )
             c["gate"] = f"{verdict} ({why})" if why else verdict
+            # td625117 review: the row's credit anchor rides the table —
+            # the old footnote pointed at view='trust' for it, one lookup
+            # per row, and supplied nothing.
+            c["anchor"] = row_anchor(
+                row_metas[rid],
+                candidate_meta=cand_meta_by_ref.get(rid),
+                pooled_seeds=pooled,
+                pooled_identity=identity,
+                seed_lookup_failed=seed_lookup_failed,
+            )
         if gate is not None:
             surviving = [c for c in candidates if str(c["gate"]).startswith(gate)]
             if not surviving:

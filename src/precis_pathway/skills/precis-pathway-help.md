@@ -486,12 +486,14 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
 Each row carries a `gate` column — the barrier trust-gate verdict, replayed
 per row exactly like `view='trust'` (`pass` | `blocked (why)` | `n/a` for
-pre-trust-schema runs). `conf` is **only** the rate-limiting step's seed-spread
+pre-trust-schema runs) — and an `anchor` cell, the named credit anchor
+computed per row like `view='trust'`: the gates credited + the seed set a
+quest citing this row's barrier names (`no credit (…)` names the blocking
+gates). `conf` is **only** the rate-limiting step's seed-spread
 verdict (`ok` = std within tolerance) — NOT the gate: a candidate can read
 `conf=ok` and still be gate-`blocked`, so pick candidates by `gate`, not
 `conf`. `args={'gate': 'pass'}` keeps only gate-passing rows;
-`args={'gate': 'blocked'}` the failures. The credit anchor a `pass` stands on
-is the `anchor:` line of `view='trust'` on that row.
+`args={'gate': 'blocked'}` the failures.
 
 ## The staircase read — per-rung ΔG(U), U_L and the reset contour
 

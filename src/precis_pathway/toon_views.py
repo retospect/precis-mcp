@@ -854,6 +854,152 @@ def gate_verdict(
     return verdict, why
 
 
+def row_anchor(
+    meta: dict[str, Any],
+    *,
+    candidate_meta: dict[str, Any] | None = None,
+    pooled_seeds: set[int] | None = None,
+    pooled_identity: list[dict[str, Any]] | None = None,
+    seed_lookup_failed: bool = False,
+) -> str:
+    """The row's named credit anchor for ``view='compare'`` (td625117
+    review of the gate column: the table footnote pointed at view='trust'
+    for the anchor — one lookup per row, and it supplied nothing). The
+    exact computation view='trust' headlines: the record gate rows + seed
+    row + precis-side guards, the union endpoint replay mutating the
+    ``endpoint_agreement`` row, then :func:`trust_gate.trust_anchor` over
+    the pooled union seed set. ``n/a`` mirrors the gate column for
+    pre-trust-schema rows; a blocked row reads ``no credit (…)`` naming
+    the failed gates; a sibling-lookup failure reads ``no credit (seed
+    pool unverifiable)`` — an unprovable pool never anchors credit, and
+    the cell is never blank."""
+    from precis.quest.compute import _autocatpath_current_version, _pathway_tier
+    from precis.utils import trust_gate
+
+    results = meta.get("results")
+    results = results if isinstance(results, dict) else {}
+    if results.get("trust_schema") not in (1, 2):
+        return "n/a"
+    records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
+    if not records:
+        return "n/a"
+    engine = meta.get("autocatpath_version")
+    engine = engine if isinstance(engine, str) and engine else None
+    tier = _pathway_tier(meta)
+    pooled = pooled_seeds or set()
+    scope = trust_gate.route_scope(results)
+    thresholds = trust_gate.thresholds_from(records, meta.get("config"))
+    rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
+    rows.append(
+        trust_gate.seed_row(
+            records,
+            engine=engine,
+            declared=results.get("seeds"),
+            pooled=pooled,
+            tier=tier,
+            lookup_failed=seed_lookup_failed,
+        )
+    )
+    rl = analysis.rate_limiting(meta.get("graph") or {}, *_roots(meta))
+    rl_std = rl.get("std") if rl else None
+    barrier = (candidate_meta or {}).get("barrier")
+    if not isinstance(barrier, int | float) or isinstance(barrier, bool):
+        barrier = meta.get("rate_Ea")
+    low_conf = bool(
+        (candidate_meta or {}).get("barrier_low_confidence", meta.get("low_confidence"))
+    )
+    rows += trust_gate.precis_guard_rows(
+        candidate_meta,
+        barrier_ea=(
+            float(barrier)
+            if isinstance(barrier, int | float) and not isinstance(barrier, bool)
+            else None
+        ),
+        rate_limit_std=(
+            float(rl_std)
+            if isinstance(rl_std, int | float) and not isinstance(rl_std, bool)
+            else None
+        ),
+        low_confidence=low_conf,
+        thresholds=thresholds,
+        engine=engine,
+        current_engine=_autocatpath_current_version(),
+    )
+    # The union endpoint replay mutates the endpoint_agreement row exactly
+    # as view='trust' does before the anchor judges it (a vacuous own
+    # check the union answered passes; a union disagreement fails).
+    if tier == "neb" and pooled and not seed_lookup_failed:
+        union_run = trust_gate.run_seeds(
+            records, engine=engine, declared=results.get("seeds")
+        )
+        if union_run is not None:
+            union_blk, union_input = trust_gate.endpoint_union_blocker(
+                records,
+                pooled_identity or [],
+                scope,
+                run=union_run,
+                union=union_run | pooled,
+                engine=engine,
+                tol_eV=thresholds.endpoint_tol_ev,
+            )
+            ea_row = next((r for r in rows if r["gate"] == "endpoint_agreement"), None)
+            union_threshold = (
+                f"tol {thresholds.endpoint_tol_ev:g} eV across the sibling union"
+            )
+            if union_blk is not None:
+                if ea_row is not None:
+                    ea_row.update(
+                        verdict="fail",
+                        input=union_input,
+                        threshold=union_threshold,
+                        blocking=1,
+                    )
+            elif union_input and ea_row is not None and ea_row["verdict"] == "not-run":
+                ea_row.update(
+                    verdict="pass",
+                    input=union_input,
+                    threshold=union_threshold,
+                    blocking=0,
+                )
+    if seed_lookup_failed:
+        return "no credit (seed pool unverifiable)"
+    anchor_run = trust_gate.run_seeds(
+        records, engine=engine, declared=results.get("seeds")
+    )
+    union_seeds = (anchor_run | pooled) if anchor_run is not None else None
+    repro, _basin_detail, lower_seeds = trust_gate.second_basin(
+        [*records, *(pooled_identity or [])], scope, engine=engine
+    )
+    anchor = trust_gate.trust_anchor(
+        rows,
+        pathway="pathway",
+        seeds=union_seeds,
+        creditable={"endpoint_agreement"} if repro else (),
+    )
+    if anchor is None:
+        failed_gates = [
+            str(r["gate"])
+            for r in rows
+            if r.get("verdict") == "fail" and r.get("blocking") != "—"
+        ]
+        return (
+            "no credit ("
+            + (
+                ", ".join(failed_gates)
+                if failed_gates
+                else "no passing gates / unprovable seed set"
+            )
+            + ")"
+        )
+    cell = f"gates {', '.join(anchor['gates'])} · seeds {anchor['seeds']}"
+    if anchor["over"]:
+        cell += (
+            f" · credited over {', '.join(anchor['over'])} "
+            f"(lower basin, seeds {sorted(lower_seeds)})"
+        )
+    return cell
+
+
 def potential_line(U: float) -> str:
     """The one-line CHE caveat every U-levered view leads with."""
     return (
@@ -1609,8 +1755,13 @@ def _solve_lines(
 _GATE_LEGEND = (
     "# gate = trust-gate verdict, replayed per row like view='trust': "
     "pass | blocked (…) | n/a (pre-trust-schema). "
-    "args={'gate': 'pass'} keeps only passing rows. The credit anchor a "
-    "pass stands on is the anchor: line of view='trust' on that row."
+    "args={'gate': 'pass'} keeps only passing rows."
+)
+_ANCHOR_LEGEND = (
+    "# anchor = the row's named credit anchor (gr543165), computed per row "
+    "like view='trust': gates credited · seed set — what a quest citing "
+    "this row's barrier names. 'no credit (…)' names the blocking gates; "
+    "n/a = pre-trust-schema."
 )
 _CONF_LEGEND = (
     "# conf = seed-spread verdict on the RATE-limiting step ONLY (ok = std "
@@ -1621,16 +1772,20 @@ _CONF_LEGEND = (
 
 def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
     """`candidates`: [{slug, lever, graph, root, target, candidate?, gate?,
-    ref_id?}]. Rows = candidates; ``candidate`` (optional, gr592665) is
-    the ``st<N> <title>`` cell naming the structure the pathway ran on —
-    '-' when unstamped; ``gate`` (optional, gr592278) is the row's
-    trust-gate verdict cell ('n/a' when the caller supplies none). When
-    they share a network, columns interleave state(rel eV) + ‡(barrier Eₐ)
-    along the reaction coordinate; always: gate, RATE (max step), SPAN,
-    conf. Sorted by RATE ascending (best first). With ``U`` (V vs RHE)
-    every CHE-stamped candidate is re-levered to that potential and the
-    table ranks by SPAN at U instead (RATE is U-independent); a candidate
-    without ``n_H`` stays unshifted and is named in the header."""
+    anchor?, ref_id?}]. Rows = candidates; ``candidate`` (optional,
+    gr592665) is the ``st<N> <title>`` cell naming the structure the
+    pathway ran on — '-' when unstamped; ``gate`` (optional, gr592278) is
+    the row's trust-gate verdict cell ('n/a' when the caller supplies
+    none); ``anchor`` (optional, td625117 review) is the row's credit
+    anchor cell — gates credited + seed set, or 'no credit (…)' — the
+    same anchor view='trust' headlines ('n/a' when the caller supplies
+    none). When they share a network, columns interleave state(rel eV) +
+    ‡(barrier Eₐ) along the reaction coordinate; always: gate, anchor,
+    RATE (max step), SPAN, conf. Sorted by RATE ascending (best first).
+    With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
+    that potential and the table ranks by SPAN at U instead (RATE is
+    U-independent); a candidate without ``n_H`` stays unshifted and is
+    named in the header."""
     if not candidates:
         return "no computed candidates to compare."
 
@@ -1676,6 +1831,7 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
             "cand": _cand_cell(p["c"]),
             "candidate": str(p["c"].get("candidate") or "-"),
             "gate": str(p["c"].get("gate") or "n/a"),
+            "anchor": str(p["c"].get("anchor") or "n/a"),
             "lever": p["c"].get("lever", ""),
             "RATE": _ea_or_na(rl.get("ea")),
             "SPAN": _b(p["summ"]["span"]) or "n/a",
@@ -1701,10 +1857,21 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
             + note
             + toon.dump(
                 rows,
-                schema=["cand", "candidate", "gate", "lever", "RATE", "SPAN", "conf"],
+                schema=[
+                    "cand",
+                    "candidate",
+                    "gate",
+                    "anchor",
+                    "lever",
+                    "RATE",
+                    "SPAN",
+                    "conf",
+                ],
             )
             + "\n"
             + _GATE_LEGEND
+            + "\n"
+            + _ANCHOR_LEGEND
             + "\n"
             + _CONF_LEGEND
         )
@@ -1718,7 +1885,7 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         else:
             col_names.append(col["pos"])
             legend.append(f"{col['pos']} {col['label']}")
-    schema = ["cand", "candidate", "gate", *col_names, "RATE", "SPAN", "conf"]
+    schema = ["cand", "candidate", "gate", "anchor", *col_names, "RATE", "SPAN", "conf"]
 
     rows = []
     for p in profiles:
@@ -1737,6 +1904,8 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         + toon.dump(rows, schema=schema)
         + "\n"
         + _GATE_LEGEND
+        + "\n"
+        + _ANCHOR_LEGEND
         + "\n"
         + _CONF_LEGEND
     )
