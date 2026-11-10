@@ -21,7 +21,12 @@
 #      is always the newest thing under the share; the NAS leg snapshots
 #      only when nothing under the dir is newer than the stamp (quiescent)
 #      and the stamp is one it has not snapshotted yet.
-#   4. Delete the local staging dir (cluster-fileserver-move 4a: no
+#   4. Stamp the in-DB backup contract the MCP /facts view reads
+#      (gr593053): app_state backup.last_run_at / .last_size_bytes /
+#      .last_kind. The server never sees the dump or the restic stamps,
+#      so the DB-node leg — the only part of the chain that can both
+#      measure the dump and reach the DB — writes them.
+#   5. Delete the local staging dir (cluster-fileserver-move 4a: no
 #      retained backups on the DB node). A run that dies before the stamp
 #      leaves the NAS dir mixed old/new — unsnapshotable by construction.
 #
@@ -137,6 +142,22 @@ rsync -rt --delete --inplace --checksum "${LOCAL_DUMP_DIR}/" "${NAS_DUMP_DIR}/"
 
 # Stamp LAST: it must be the newest write under the share (see header).
 date -u +%Y-%m-%dT%H:%M:%SZ > "${SYNC_OK}"
+
+# In-DB stamp for /facts (see header step 4). psql is on the pinned PATH
+# above. The stamp runs AFTER the sync-ok write so a psql failure can
+# never hold up the NAS restic leg, and warns instead of failing — the
+# backup itself already succeeded.
+DUMP_BYTES=$(du -sk "${LOCAL_DUMP_DIR}" | awk '{print $1 * 1024}')
+psql -U {{ pg_user }} -d precis_prod -q -v ON_ERROR_STOP=1 \
+  -v run_at="$(cat "${SYNC_OK}")" \
+  -v size_bytes="${DUMP_BYTES}" \
+  -c "INSERT INTO app_state (key, value) VALUES
+        ('backup.last_run_at', :'run_at'),
+        ('backup.last_size_bytes', :'size_bytes'),
+        ('backup.last_kind', 'pg-dump-dir')
+      ON CONFLICT (key) DO UPDATE SET
+        value = EXCLUDED.value, updated_at = now()" \
+  || echo "[$(date -u)] [WARN] app_state backup.* stamp failed (the backup itself completed)" >&2
 
 rm -rf "${LOCAL_DUMP_DIR}"
 echo "[$(date -u)] rsync verified by exit status; local staging dir removed"

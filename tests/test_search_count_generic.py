@@ -143,6 +143,86 @@ def test_generic_count_refuses_unknown_extras(
     assert "'mode'" in body
 
 
+def test_generic_count_honours_folder_scope(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``folder=`` folds into the top-level ``include_ref_ids`` channel
+    in the count interception — the generic path must count the scope,
+    not the whole kind."""
+    folder = store.insert_ref(kind="folder", slug=None, title="F", meta={}).id
+    inside, outside = _pres(store, 2)
+    store.set_parent(inside, folder)
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "pres", "view": "count", "folder": folder}
+    )
+    assert body.startswith("# 1 pres entry"), body
+
+
+def test_generic_count_honours_resolved_id_channels(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """Top-level ``include_ref_ids``/``exclude_ref_ids`` — the channel
+    ``under=``/``cited=``/``uncited=``/``hubbed=`` resolve into — must
+    bind the generic count."""
+    a, b, _c = _pres(store, 3)
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "pres",
+            "view": "count",
+            "include_ref_ids": [a, b],
+            "exclude_ref_ids": [b],
+        },
+    )
+    assert body.startswith("# 1 pres entry"), body
+
+
+def test_generic_count_empty_include_is_zero(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """An empty inclusion list is a real scope — zero matches, not an
+    unscoped count of the whole kind."""
+    _pres(store, 3)
+    body = runtime_with_store.dispatch(
+        "search",
+        {"kind": "pres", "view": "count", "include_ref_ids": []},
+    )
+    assert body.startswith("# 0 pres entries"), body
+
+
+def test_generic_count_intersects_top_and_extras_includes(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A caller's own ``args={'include_ref_ids': …}`` narrows the
+    dispatch-resolved scope further — both bind."""
+    a, b, c = _pres(store, 3)
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "pres",
+            "view": "count",
+            "include_ref_ids": [a, b],
+            "__extras__": {"include_ref_ids": [b, c]},
+        },
+    )
+    assert body.startswith("# 1 pres entry"), body
+
+
+def test_generic_count_extras_exclude_ref_ids(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    a, b, _c = _pres(store, 3)
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "pres",
+            "view": "count",
+            "__extras__": {"exclude_ref_ids": [a, b]},
+        },
+    )
+    assert body.startswith("# 1 pres entry"), body
+
+
 def test_generic_count_head_parses_like_native(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

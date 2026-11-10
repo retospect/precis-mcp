@@ -166,15 +166,15 @@ snapshot TTL).
 get(kind='job', id='/facts')
 # → served code stamp, refs per kind (live), chunks + exact embedding
 #   counts with coverage %, PDF count/bytes per role (paper, pres,
-#   datasheet, ...), DB size, and the newest backup's size + age when a
-#   deploy-side writer has recorded it in app_state (backup.last_run_at /
-#   backup.last_size_bytes).
+#   datasheet, ...), DB size, and the newest backup's size + age (the
+#   nightly DB-node dir-dump leg stamps app_state backup.last_run_at /
+#   backup.last_size_bytes after each run).
 ```
 
 The "how big is the corpus" block the weekly report's quick-facts line
 reads (gr593053) — one call, read-only, no Bash. Everything is SQL over
-tables this server owns; the backup line says `no in-DB record` until a
-writer stamps it rather than reporting a stale figure. Pair with
+tables this server owns; the backup line says `no in-DB record` until
+the dir-dump leg's stamp lands rather than reporting a stale figure. Pair with
 `get(kind='skill', id='precis-status')` for build staleness and
 `search(kind=K, view='count')` for filtered totals on one kind.
 

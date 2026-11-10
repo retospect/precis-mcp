@@ -1542,13 +1542,19 @@ class JobHandler(NumericRefHandler):
         carried: refs per kind, exact chunk/embedding counts with
         coverage, PDF bytes by role, DB size, and the served build.
         Everything here is read-only SQL over tables this server owns —
-        no host paths, no deploy-side state. One number has no in-DB
-        source today — the nightly DB backup's size and age live in
-        deploy-side stamps (``restic-last-ok``) this process can't see —
-        so the view reads the ``backup.*`` ``app_state`` contract
-        (``backup.last_run_at`` ISO, ``backup.last_size_bytes`` digits,
-        optional ``backup.last_kind``) and says plainly when nothing has
-        written it yet, instead of printing a stale figure from memory.
+        no host paths, no deploy-side state. The embedding counts join
+        ``chunks`` on ``retired_at IS NULL``: retired chunks keep their
+        ``chunk_embeddings`` rows, so an unjoined count lets coverage
+        climb past 100% of the live-chunk denominator.
+
+        The nightly DB backup's size and age live on the deploy side
+        this process can't see — so the view reads the ``backup.*``
+        ``app_state`` contract (``backup.last_run_at`` ISO,
+        ``backup.last_size_bytes`` digits, optional
+        ``backup.last_kind``) the DB-node dir-dump leg stamps after each
+        run (``deploy/roles/backups/templates/pg_backup_dir.sh.j2``),
+        and says plainly when nothing has written it yet instead of
+        printing a stale figure from memory.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
         if params:
@@ -1568,12 +1574,14 @@ class JobHandler(NumericRefHandler):
                 "SELECT count(*) FROM chunks WHERE retired_at IS NULL"
             ).fetchone()
             embed_row = conn.execute(
-                "SELECT count(*) FILTER (WHERE status = 'ok' "
-                "AND vector IS NOT NULL), "
-                "count(DISTINCT chunk_id) FILTER (WHERE status = 'ok' "
-                "AND vector IS NOT NULL), "
-                "count(*) FILTER (WHERE status = 'failed') "
-                "FROM chunk_embeddings"
+                "SELECT count(*) FILTER (WHERE e.status = 'ok' "
+                "AND e.vector IS NOT NULL), "
+                "count(DISTINCT e.chunk_id) FILTER (WHERE e.status = 'ok' "
+                "AND e.vector IS NOT NULL), "
+                "count(*) FILTER (WHERE e.status = 'failed') "
+                "FROM chunk_embeddings e "
+                "JOIN chunks c ON c.chunk_id = e.chunk_id "
+                "AND c.retired_at IS NULL"
             ).fetchone()
             pdf_rows = conn.execute(
                 "SELECT kind, count(*), sum(size_bytes) FROM ("
@@ -1655,11 +1663,10 @@ class JobHandler(NumericRefHandler):
         backup_bytes = self.store.get_setting("backup.last_size_bytes")
         if backup_at is None and backup_bytes is None:
             lines.append(
-                "backup: no in-DB record — the nightly dump's size and age "
-                "live in deploy-side stamps this server can't read. A "
-                "deploy-side writer can light this line up by setting "
-                "app_state backup.last_run_at (ISO) and "
-                "backup.last_size_bytes (digits)."
+                "backup: no in-DB record — the DB-node dir-dump leg "
+                "(pg_backup_dir.sh) stamps app_state backup.last_run_at "
+                "and backup.last_size_bytes after each nightly run; "
+                "none has landed yet."
             )
         else:
             when = str(backup_at) if backup_at else "unknown time"

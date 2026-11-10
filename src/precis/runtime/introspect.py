@@ -397,8 +397,30 @@ class IntrospectionMixin(RuntimeShape):
             filter_tags = [str(t) for t in tags_arg]
         if status is not None and str(status).strip() and status != "*":
             filter_tags.append(f"STATUS:{str(status).strip()}")
-        include_ref_ids = extras.get("include_ref_ids")
-        exclude_ref_ids = extras.get("exclude_ref_ids")
+        # The ref-id scope channels arrive at two levels: dispatch
+        # resolves ``folder=`` (in the view='count' block above),
+        # ``under=``, ``cited=``, ``uncited=`` and ``hubbed=`` into
+        # TOP-LEVEL ``include_ref_ids``/``exclude_ref_ids`` before this
+        # runs, and a caller's ``args=`` may carry a second set. Both
+        # bind — inclusions intersect, exclusions union. An empty
+        # inclusion list is a real scope: ``ANY('{}')`` counts zero rows,
+        # which is the right answer; collapsing it to None would count
+        # the whole kind under a folder or facet that matched nothing.
+        include = self._ref_id_channel(args.get("include_ref_ids"), "include_ref_ids")
+        caller_include = self._ref_id_channel(
+            extras.get("include_ref_ids"), "args.include_ref_ids"
+        )
+        if include is not None and caller_include is not None:
+            include &= caller_include
+        elif include is None:
+            include = caller_include
+        exclude = (
+            self._ref_id_channel(args.get("exclude_ref_ids"), "exclude_ref_ids")
+            or set()
+        ) | (
+            self._ref_id_channel(extras.get("exclude_ref_ids"), "args.exclude_ref_ids")
+            or set()
+        )
         since_dt = _parse_window_bound(args.get("since"), "since")
         until_dt = _parse_window_bound(args.get("until"), "until")
         facets = _parse_count_facets(extras.get("group_by"))
@@ -406,12 +428,8 @@ class IntrospectionMixin(RuntimeShape):
         total, groups = self.store.count_refs_facets(
             kind=kind,
             tags=filter_tags or None,
-            include_ref_ids=(
-                [int(i) for i in include_ref_ids] if include_ref_ids else None
-            ),
-            exclude_ref_ids=(
-                [int(i) for i in exclude_ref_ids] if exclude_ref_ids else None
-            ),
+            include_ref_ids=sorted(include) if include is not None else None,
+            exclude_ref_ids=sorted(exclude) if exclude else None,
             facets=facets,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
@@ -460,3 +478,29 @@ class IntrospectionMixin(RuntimeShape):
             ).lstrip("\n")
         )
         return Response(body="\n".join(parts), result_count=total)
+
+    @staticmethod
+    def _ref_id_channel(value: Any, name: str) -> set[int] | None:
+        """One ``*_ref_ids`` channel → ``set[int]``; ``None`` when absent.
+
+        ``[]`` stays ``[]`` — an empty inclusion is a scope that matches
+        nothing (``ANY('{}')``), not an absent filter. ``BadInput`` on a
+        non-list or a non-int member: the channel carries ref ids, never
+        handles or slugs.
+        """
+        if value is None:
+            return None
+        if isinstance(value, (str, bytes)) or not isinstance(
+            value, (list, tuple, set, frozenset)
+        ):
+            raise BadInput(
+                f"{name}= must be a list of ref ids, got {value!r}",
+                next=f"pass {name}= as a JSON list of integers",
+            )
+        try:
+            return {int(i) for i in value}
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"{name}= members must be ref ids, got {value!r}",
+                next=f"pass {name}= as a JSON list of integers",
+            ) from None

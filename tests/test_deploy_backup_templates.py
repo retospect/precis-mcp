@@ -180,6 +180,26 @@ def test_restic_dbdump_snapshot_copy_forget_and_stamps() -> None:
     assert "/etc/restic/env" in out
 
 
+def test_pg_backup_dir_stamps_facts_backup_contract() -> None:
+    # gr593053: `get(kind='job', id='/facts')` reads app_state backup.*
+    # — the DB-node dir-dump leg is the only part of the chain that can
+    # both measure the dump and reach the DB, so it writes the keys.
+    out = _render("pg_backup_dir.sh.j2")
+    assert "INSERT INTO app_state" in out
+    for key in ("backup.last_run_at", "backup.last_size_bytes", "backup.last_kind"):
+        assert key in out
+    assert "ON CONFLICT (key) DO UPDATE" in out
+    # A failed stamp must not fail a backup that already succeeded —
+    # and it runs after the sync-ok write (never holds up the restic
+    # leg) but before the local staging dir goes (it measures it).
+    assert "|| echo" in out
+    assert (
+        out.index('> "${SYNC_OK}"')
+        < out.index("INSERT INTO app_state")
+        < out.rindex('rm -rf "${LOCAL_DUMP_DIR}"')
+    )
+
+
 def test_pg_backup_dir_slot_outside_the_backup_window() -> None:
     # The cron slot must stay clear of 03:00–04:20 UTC (backup-window guard)
     # and of the optional 03:00 reboot; the defaults file is the single

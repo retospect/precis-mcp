@@ -125,6 +125,49 @@ def test_facts_renders_storage_block(jobs: JobHandler, store: Store, hub: Hub) -
     assert "precis-status" in body
 
 
+def test_facts_embedding_coverage_counts_live_chunks_only(
+    jobs: JobHandler, store: Store, hub: Hub
+) -> None:
+    """Retired chunks keep their ``chunk_embeddings`` rows — the
+    embedding counts must join live chunks or the numerator outgrows the
+    live-chunk denominator and coverage climbs past 100%."""
+    _drop_backup_keys(store)
+    live_id = store.insert_ref(kind="todo", slug=None, title="t-live", meta={}).id
+    gone_id = store.insert_ref(kind="todo", slug=None, title="t-gone", meta={}).id
+    live = store.chunks.insert_chunks(
+        live_id,
+        [
+            ChunkInsert(ord=i, text=f"live {i}", meta={"chunk_kind": "paragraph"})
+            for i in range(2)
+        ],
+    )
+    dead = store.chunks.insert_chunks(
+        gone_id,
+        [
+            ChunkInsert(ord=i, text=f"dead {i}", meta={"chunk_kind": "paragraph"})
+            for i in range(2)
+        ],
+    )
+    vec = hub.embed_one("test")
+    with store.pool.connection() as conn:
+        for block in live + dead:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+                "VALUES (%s, 'bge-m3', %s, 'ok')",
+                (block.id, vec),
+            )
+        conn.execute(
+            "UPDATE chunks SET retired_at = now() WHERE chunk_id = ANY(%s)",
+            ([b.id for b in dead],),
+        )
+        conn.commit()
+
+    body = jobs.get(id="/facts").body
+    assert "chunks: 2 live" in body
+    assert "2 ok vectors" in body
+    assert "2 distinct chunks embedded, 100.0% of live chunks" in body
+
+
 def test_facts_renders_recorded_backup(jobs: JobHandler, store: Store) -> None:
     _drop_backup_keys(store)
     try:
