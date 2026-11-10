@@ -288,6 +288,77 @@ def _parse_id(raw: str) -> _ParsedId:
     )
 
 
+def _top_level_assign_span(source: str, name: str) -> tuple[int, int] | None:
+    """Line span of the first module-level ``name = …`` binding, else None.
+
+    ``<mod>.<leaf>`` misses on names a module binds by plain assignment —
+    constants, registries, sentinels — are real, readable code that is
+    not an indexable symbol (gr573036). The span turns the miss into an
+    exact ``~L<a>-L<b>`` source read.
+    """
+    if not source:
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            hit = any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            hit = isinstance(node.target, ast.Name) and node.target.id == name
+        else:
+            hit = False
+        if hit:
+            return node.lineno, node.end_lineno or node.lineno
+    return None
+
+
+def _member_miss_hint(idx: RepoIndex, alias: str, qualname: str) -> str | None:
+    """A next-step for a ``<mod>.<leaf>`` miss whose parent module exists.
+
+    The leaf of a module-member miss is usually one of three things
+    (gr573036): a name ``mod`` imports (the symbol lives under another
+    qualname — name it when it is in-repo, say so when it is external),
+    a module-level assignment (``::`` addresses index modules, classes
+    and functions only — point at its lines instead), or nothing the
+    module binds at all (the file outline answers "what is in it").
+    ``None`` when no module prefix resolves — bare-leaf and
+    wrong-package misses stay on the close-match/search recovery.
+    """
+    mod_qn, _, leaf = qualname.rpartition(".")
+    if not mod_qn or not leaf:
+        return None
+    mod = idx.module(mod_qn)
+    if mod is None:
+        return None
+    resolved = mod.imports.get(leaf)
+    if resolved is not None:
+        if idx.symbol(resolved) is not None:
+            return (
+                f"{leaf!r} is imported into {mod_qn} — the symbol it "
+                f"re-exports is get(kind='python', id='{alias}::{resolved}')"
+            )
+        return (
+            f"{leaf!r} is imported into {mod_qn} ({resolved}) but is not "
+            f"a symbol in this repo — grep or read "
+            f"get(kind='python', id='{alias}/{mod.file}', view='source')"
+        )
+    span = _top_level_assign_span(mod.source or "", leaf)
+    if span is not None:
+        lo, hi = span
+        rng = f"~L{lo}" if lo == hi else f"~L{lo}-L{hi}"
+        return (
+            f"{leaf!r} is a module-level name in {mod_qn}, not an indexable "
+            f"symbol — read it with get(kind='python', "
+            f"id='{alias}/{mod.file}{rng}', view='source')"
+        )
+    return (
+        f"{mod_qn} has no {leaf!r} member — its outline lists what it does "
+        f"have: get(kind='python', id='{alias}/{mod.file}')"
+    )
+
+
 def _close_symbol_matches(
     idx: RepoIndex, qualname: str, *, limit: int = 3
 ) -> list[str]:
@@ -326,7 +397,9 @@ def _symbol_not_found(
 
     gr563571: a wrong module path used to dead-end on a bare search
     hint; the corrected qualname in ``<alias>::<qualname>`` id form is
-    the copy-pasteable next step.
+    the copy-pasteable next step. gr573036: when the miss names a real
+    module, say what the leaf actually is — a re-exported import, a
+    module-level constant, or nothing — with the read that shows it.
     """
     close = _close_symbol_matches(idx, qualname)
     nexts: list[str] = []
@@ -335,6 +408,9 @@ def _symbol_not_found(
             "did you mean "
             + ", ".join(f"get(kind='python', id='{alias}::{q}')" for q in close)
         )
+    member = _member_miss_hint(idx, alias, qualname)
+    if member is not None:
+        nexts.append(member)
     nexts.append(fallback_next)
     return NotFound(
         f"symbol {qualname!r} not found in repo {alias!r}",

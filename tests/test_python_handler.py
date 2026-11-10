@@ -425,6 +425,72 @@ def test_get_unknown_symbol_no_match_keeps_search_fallback(
     assert "search(kind='python'" in text
 
 
+def test_get_unknown_symbol_module_constant_points_at_lines(
+    tmp_path: Path,
+) -> None:
+    """gr573036: a module-level constant is a real name but not an
+    indexable symbol — the miss names the file/lines read that shows it."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/m.py",
+        """
+        LIMIT: frozenset[int] = frozenset(
+            {1, 2, 3}
+        )
+
+
+        def f() -> None:
+            pass
+        """,
+    )
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.m.LIMIT")
+    text = str(exc.value)
+    assert "module-level name" in text
+    assert "id='r/pkg/m.py~L1-L3'" in text
+    assert "view='source'" in text
+    assert "search(kind='python'" in text
+
+
+def test_get_unknown_symbol_import_reexport_names_real_qualname(
+    tmp_path: Path,
+) -> None:
+    """gr573036: `mod::name` on an in-repo re-export names the qualname
+    the symbol actually lives under."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/m.py", "def helper() -> None:\n    pass\n")
+    _write(tmp_path, "pkg/m2.py", "from .m import helper\n")
+    handler = PythonHandler(hub=Hub(), roots={"r": tmp_path})
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.m2.helper")
+    text = str(exc.value)
+    assert "'helper' is imported into pkg.m2" in text
+    assert "get(kind='python', id='r::pkg.m.helper')" in text
+
+
+def test_get_unknown_symbol_external_import_names_it(handler: PythonHandler) -> None:
+    """A `mod::name` miss on an out-of-repo import says it is external."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.m.join")
+    text = str(exc.value)
+    assert "'join' is imported into pkg.m (os.path.join)" in text
+    assert "id='r/pkg/m.py'" in text
+
+
+def test_get_unknown_symbol_member_miss_offers_module_outline(
+    handler: PythonHandler,
+) -> None:
+    """A real module with no such member offers its outline as the
+    honest answer to "what is in it" (gr573036)."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="r::pkg.m.NoSuchSymbol")
+    text = str(exc.value)
+    assert "pkg.m has no 'NoSuchSymbol' member" in text
+    assert "get(kind='python', id='r/pkg/m.py')" in text
+
+
 def test_get_block_selector_resolves_local_symbol(handler: PythonHandler) -> None:
     """`~Greeter.greet` on a file resolves to the symbol's drill-down view."""
     out = handler.get(id="r/pkg/m.py~Greeter.greet")
