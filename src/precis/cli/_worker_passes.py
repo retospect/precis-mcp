@@ -633,7 +633,14 @@ def build_ref_passes(
     # tag cleared, manual_kick tag added, or cancel_requested
     # overlay). Cheap status-flip + chunk write per re-queue;
     # no compute. See workers/wake_runner.py.
-    if _register("wake_runner"):
+    #
+    # gr626353: the long-running worker runs this on its own daemon thread
+    # (``start_wake_thread``, started in ``cli/worker.py`` under the same
+    # ``_register``/``_pass_gate``), because a ~10 min job batch holds the
+    # serial rotation and the wakes fired 5-19 min late. The rotation pass
+    # registers only for a one-shot ``--once`` run, where no thread starts —
+    # never both, or each wake would be raced twice per cycle.
+    if _register("wake_runner") and getattr(args, "once", False):
         from precis.workers.wake_runner import wake_pass_for_runner
 
         def _wake_runner_pass(batch_size: int) -> _BatchResult:

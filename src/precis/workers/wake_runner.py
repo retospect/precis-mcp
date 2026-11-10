@@ -44,9 +44,23 @@ still owns its terminalization), plus ``meta.degraded_children`` /
 decides what to do about the stragglers. The master's "a parent never
 blocks forever on a child" — now by design, not by sweeper accident.
 
-Cadence: piggy-backs on the system worker's idle poll (2 s by
-default). Low-latency enough for human-acknowledge → resume; if
-sub-second wake matters later, run wake_runner in a tighter loop.
+Cadence: its own daemon thread (:func:`start_wake_thread`) with its own
+``Store``, ticking every ``PRECIS_WAKE_INTERVAL_S`` (default 3 s), off the
+serial rotation. It used to ride ``runner.run_loop`` between passes, which
+a ~10 min ``embed_batch`` / ``derived_drain`` job batch holds, so ``at_time``
+wakes (``ci_verdict_poll`` on a release, quest ticks, lane parks) fired 5-19
+min late (gr626353). The thread honours the same service gate as the
+rotation pass (``service_config`` / ``--only`` / ``--skip``). The rotation
+runs :func:`wake_pass_for_runner` only for a one-shot ``--once`` invocation,
+where no thread is started.
+
+Concurrency: every wake SELECT holds ``FOR UPDATE SKIP LOCKED`` only while
+it selects; the lock is released at the selection commit, *before* the
+re-queue write. Two passes (this thread, a peer host's) can therefore
+select the same row, so each write re-reads the row's ``STATUS:`` under a
+row lock and skips when it is no longer the ``waiting_*`` / ``cancel_requested``
+state the selector saw (:func:`_still_in`): a second pass never re-queues a
+job a first pass already woke and an executor already claimed.
 
 See ``dft-phase-0-pr-3-coordinator-executor`` (git-only) §3.2.
 """
@@ -54,11 +68,14 @@ See ``dft-phase-0-pr-3-coordinator-executor`` (git-only) §3.2.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from psycopg import Connection
 
+from precis.utils.env import env_float
 from precis.workers.executors._common import (
     CANCEL_REQUESTED as _CANCEL_REQUESTED,
 )
@@ -85,6 +102,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     append_chunk as _append_chunk,
+)
+from precis.workers.executors._common import (
+    current_status as _current_status,
 )
 from precis.workers.executors._common import (
     set_meta as _set_meta,
@@ -444,8 +464,36 @@ def _clear_lease(conn: Connection, ref_id: int) -> None:
     )
 
 
-def _requeue(store: Store, ref_id: int, reason: str) -> None:
+def _still_in(conn: Connection, ref_id: int, expect: tuple[str, ...]) -> bool:
+    """Lock ``ref_id``'s row and report whether its ``STATUS:`` is still one
+    of ``expect`` — the re-check that makes two concurrent wake passes safe.
+
+    The selectors' ``FOR UPDATE SKIP LOCKED`` is released at the selection
+    commit, before the write, so a peer pass (another host, or this host's
+    wake thread) can hold the same ready row. The blocking row lock here
+    serialises the two writers; the loser then reads the winner's committed
+    state (a fresh statement under READ COMMITTED) and backs off instead of
+    flipping a job the winner woke — or an executor has since claimed —
+    back to ``queued``.
+    """
+    conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
+    return _current_status(conn, ref_id) in expect
+
+
+def _requeue(
+    store: Store,
+    ref_id: int,
+    reason: str,
+    *,
+    expect: tuple[str, ...] | None = None,
+) -> bool:
     """Transition ``ref_id`` back to ``STATUS:queued`` + audit chunk.
+
+    ``expect`` (the wake pass passes the ``waiting_*`` status its selector
+    saw) makes the write conditional on the row still being in that state;
+    returns ``False`` without writing when a concurrent pass got there
+    first (see :func:`_still_in`). ``None`` (the ``job wake`` handler's
+    manual wake) writes unconditionally.
 
     Holds the connection only for the status + chunk writes so
     contention with the coordinator pass is minimal.
@@ -457,6 +505,9 @@ def _requeue(store: Store, ref_id: int, reason: str) -> None:
     (at_time)" lines and nothing about what it waited for (gr508162).
     """
     with store.pool.connection() as conn:
+        if expect is not None and not _still_in(conn, ref_id, expect):
+            conn.rollback()
+            return False
         row = conn.execute(
             "SELECT meta->'wake_when'->'payload'->>'why' FROM refs WHERE ref_id = %s",
             (ref_id,),
@@ -474,9 +525,10 @@ def _requeue(store: Store, ref_id: int, reason: str) -> None:
             conn=conn,
         )
         conn.commit()
+    return True
 
 
-def _cancel_parked(store: Store, ref_id: int) -> None:
+def _cancel_parked(store: Store, ref_id: int) -> bool:
     """Transition a parked ``STATUS:cancel_requested`` job to
     ``STATUS:cancelled`` + audit chunk (gr570507).
 
@@ -489,8 +541,14 @@ def _cancel_parked(store: Store, ref_id: int) -> None:
     slice-boundary cancel. The park's ``wake_when.payload.why`` is echoed
     like a re-queue's, so the record says what the job was waiting for
     when it was cancelled.
+
+    Returns ``False`` without writing when the row is no longer
+    ``cancel_requested`` (a concurrent pass cancelled it first).
     """
     with store.pool.connection() as conn:
+        if not _still_in(conn, ref_id, (_CANCEL_REQUESTED,)):
+            conn.rollback()
+            return False
         row = conn.execute(
             "SELECT meta->'wake_when'->'payload'->>'why' FROM refs WHERE ref_id = %s",
             (ref_id,),
@@ -505,11 +563,12 @@ def _cancel_parked(store: Store, ref_id: int) -> None:
         )
         _set_status(store, ref_id, _CANCELLED, conn=conn)
         conn.commit()
+    return True
 
 
 def _requeue_degraded(
     store: Store, ref_id: int, still_running_child_ids: list[int]
-) -> None:
+) -> bool:
     """Re-queue a past-deadline ``waiting_children`` parent "woken-
     degraded" (§H piece 5) — the master's "a parent never blocks forever
     on a child".
@@ -540,6 +599,9 @@ def _requeue_degraded(
     from precis.store import Tag
 
     with store.pool.connection() as conn:
+        if not _still_in(conn, ref_id, (_WAITING_CHILDREN,)):
+            conn.rollback()
+            return False
         row = conn.execute(
             "SELECT parent_id FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
@@ -576,9 +638,19 @@ def _requeue_degraded(
             conn=conn,
         )
         conn.commit()
+    return True
 
 
 # ── Pass entry point ──────────────────────────────────────────────
+
+#: The ``waiting_*`` STATUS each re-queueing selector's rows sit in — what
+#: :func:`_requeue` re-checks under the row lock before writing.
+_WAKE_STATUS: dict[str, str] = {
+    "children_done": _WAITING_CHILDREN,
+    "at_time": _WAITING_TIME,
+    "tag_cleared": _WAITING_ASK_USER,
+    "tag_added": _WAITING_MANUAL_KICK,
+}
 
 
 def run_wake_pass(store: Store, *, limit: int = 16) -> dict[str, int]:
@@ -649,13 +721,17 @@ def run_wake_pass(store: Store, *, limit: int = 16) -> dict[str, int]:
             conn.rollback()
         conn.commit()
 
+    skipped = 0
     for ref_id, label in ready:
         try:
             if label == "cancel":
-                _cancel_parked(store, ref_id)
+                done = _cancel_parked(store, ref_id)
             else:
-                _requeue(store, ref_id, label)
-            ok += 1
+                done = _requeue(store, ref_id, label, expect=(_WAKE_STATUS[label],))
+            if done:
+                ok += 1
+            else:
+                skipped += 1
         except Exception:  # pragma: no cover — defensive
             failed += 1
             log.warning(
@@ -667,8 +743,10 @@ def run_wake_pass(store: Store, *, limit: int = 16) -> dict[str, int]:
 
     for ref_id, still_running in degraded:
         try:
-            _requeue_degraded(store, ref_id, still_running)
-            ok += 1
+            if _requeue_degraded(store, ref_id, still_running):
+                ok += 1
+            else:
+                skipped += 1
         except Exception:  # pragma: no cover — defensive
             failed += 1
             log.warning(
@@ -677,7 +755,13 @@ def run_wake_pass(store: Store, *, limit: int = 16) -> dict[str, int]:
                 exc_info=True,
             )
 
-    return {"claimed": len(ready) + len(degraded), "ok": ok, "failed": failed}
+    # ``claimed`` counts rows this pass acted on; a row a concurrent pass
+    # already woke (``skipped``) is that pass's claim, not ours.
+    return {
+        "claimed": len(ready) + len(degraded) - skipped,
+        "ok": ok,
+        "failed": failed,
+    }
 
 
 def wake_pass_for_runner(store: Store, batch_size: int) -> BatchResult:
@@ -696,4 +780,167 @@ def wake_pass_for_runner(store: Store, batch_size: int) -> BatchResult:
     )
 
 
-__all__ = ["run_wake_pass", "wake_pass_for_runner"]
+# ── Dedicated wake thread (gr626353) ──────────────────────────────
+
+#: ``service_config`` / registry name this thread gates under.
+SERVICE_NAME = "wake_runner"
+
+#: Env var overriding :data:`DEFAULT_WAKE_INTERVAL_S`.
+WAKE_INTERVAL_ENV = "PRECIS_WAKE_INTERVAL_S"
+
+#: Seconds between wake passes. A wake pass is a handful of indexed SELECTs
+#: plus a status flip per ready row, so a few seconds is cheap and keeps an
+#: ``at_time`` wake within one interval of its instant.
+DEFAULT_WAKE_INTERVAL_S = 3.0
+
+#: An idle thread still logs one ``payload.handler`` liveness row this often,
+#: so ``conditions``' pass-dead detector (which reads those rows) sees the
+#: pass alive without a row every few seconds.
+_LIVENESS_LOG_EVERY_S = 60.0
+
+
+def _wake_interval_s() -> float:
+    return env_float(WAKE_INTERVAL_ENV, DEFAULT_WAKE_INTERVAL_S, lo=0.01)
+
+
+def _sleep_with_stop_check(duration: float, should_stop: Callable[[], bool]) -> None:
+    """Sleep ``duration`` s in <= 0.5 s steps, returning as soon as
+    ``should_stop()`` flips so shutdown is noticed promptly."""
+    remaining = duration
+    while remaining > 0 and not should_stop():
+        step = min(0.5, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
+def _close_quietly(store: Store | None) -> None:
+    if store is not None:
+        try:
+            store.close()
+        except Exception:
+            pass
+
+
+def _wake_tick(store: Store, batch_size: int, last_logged: float) -> float:
+    """One wake pass plus its (rate-limited) liveness row; returns the
+    monotonic time of the last logged row."""
+    t0 = time.monotonic()
+    r = run_wake_pass(store, limit=batch_size)
+    now = time.monotonic()
+    if not (r["claimed"] or r["failed"] or now - last_logged >= _LIVENESS_LOG_EVERY_S):
+        return last_logged
+    log.info(
+        "worker: %s claimed=%d ok=%d failed=%d",
+        SERVICE_NAME,
+        r["claimed"],
+        r["ok"],
+        r["failed"],
+        extra={
+            "payload": {
+                "handler": SERVICE_NAME,
+                "claimed": r["claimed"],
+                "ok": r["ok"],
+                "failed": r["failed"],
+                "report_only": False,
+                "duration_ms": int((now - t0) * 1000),
+            }
+        },
+    )
+    return now
+
+
+def _wake_thread_body(
+    dsn: str,
+    batch_size: int,
+    gate: Callable[[str], bool] | None,
+    should_stop: Callable[[], bool],
+) -> None:
+    """The :func:`start_wake_thread` loop body — see its docstring."""
+    from precis.store import Store
+
+    store: Store | None = None
+    last_logged = float("-inf")
+    while not should_stop():
+        try:
+            try:
+                enabled = gate is None or gate(SERVICE_NAME)
+            except Exception:
+                # The gate is a DB-backed resolver: if it errors, skip this
+                # tick rather than wake against an unknown run-control state.
+                log.warning("wake thread: gate check failed; skipping", exc_info=True)
+                enabled = False
+            if not enabled:
+                # Gate off: idle, and hand the connection back.
+                _close_quietly(store)
+                store = None
+            else:
+                if store is None:
+                    try:
+                        store = Store.connect(dsn)
+                    except Exception:
+                        log.warning(
+                            "wake thread: failed to connect; retrying", exc_info=True
+                        )
+                if store is not None:
+                    last_logged = _wake_tick(store, batch_size, last_logged)
+        except Exception:
+            # A bug or a dead connection must never take the worker down.
+            # The store is dropped too — its connection may be the fault —
+            # and reconnected on the next tick.
+            log.warning("wake thread: tick failed", exc_info=True)
+            _close_quietly(store)
+            store = None
+
+        _sleep_with_stop_check(_wake_interval_s(), should_stop)
+
+    _close_quietly(store)
+
+
+def start_wake_thread(
+    dsn: str,
+    *,
+    batch_size: int = 32,
+    gate: Callable[[str], bool] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> threading.Thread:
+    """Start a daemon thread that runs :func:`run_wake_pass` every
+    ``PRECIS_WAKE_INTERVAL_S`` (default 3 s), off the serial rotation
+    (gr626353).
+
+    ``workers/runner.py``'s ``run_loop`` runs one pass at a time, and the
+    in-line job lane's ``embed_batch`` / ``derived_drain`` batches hold it
+    for up to ~10 min, so the in-rotation wake pass (even interleaved) ran
+    5-19 min late and an ``at_time`` ``ci_verdict_poll`` stalled a release.
+    The thread has its own ``Store.connect(dsn)`` (psycopg connections are
+    not usable across threads) and the rotation does not also run the pass
+    (``--once`` excepted: no thread is started there).
+
+    Safe beside other hosts' copies and the one-shot rotation pass: the
+    selectors are ``FOR UPDATE SKIP LOCKED`` and each write re-checks the
+    row's STATUS under a row lock (:func:`_still_in`), so a row is woken
+    once however many passes race for it.
+
+    ``gate`` is the worker's per-cycle service gate (``cli/worker.py``'s
+    ``_pass_gate``), consulted each tick as ``gate("wake_runner")``: a
+    ``service_config`` prio-0 row or ``--skip`` idles the thread (and closes
+    its connection) within one resolver TTL, exactly as it dims the rotation
+    pass. ``None`` (``--only``) means ungated.
+
+    The thread never crashes the worker: a connect failure, gate error or
+    pass exception is logged, the store is dropped, and the next tick
+    reconnects. It exits when ``should_stop()`` is true.
+
+    Returns the started daemon thread.
+    """
+    stop = should_stop or (lambda: False)
+    thread = threading.Thread(
+        target=_wake_thread_body,
+        args=(dsn, batch_size, gate, stop),
+        name="wake_runner",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+__all__ = ["run_wake_pass", "start_wake_thread", "wake_pass_for_runner"]

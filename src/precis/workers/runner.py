@@ -72,13 +72,12 @@ RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile"
 
 #: Passes :func:`run_loop` ages to the front on the same budget as
 #: :data:`RESCUE_SERVICES`, without joining the rescue-gap alert set: the
-#: coordinator executor AND the wake pass that re-queues its parked jobs —
-#: a parked ``quest_tick`` (5-min ``at_time`` heartbeat) only becomes
-#: claimable once ``wake_runner`` flips it back to ``STATUS:queued``, so
-#: interleaving the claim alone (gr493226) still left the resume at
-#: rotation cadence, and the parked job outlived its claim-time lease
-#: (gr507636). Both halves now run within ``rescue_budget_s`` plus one
-#: pass instead of once per full rotation (~85 min on melchior).
+#: coordinator executor, which claims a parked ``quest_tick`` (5-min
+#: ``at_time`` heartbeat) once it is back at ``STATUS:queued`` (gr493226).
+#: The wake pass that re-queues it (``wake_runner``) was interleaved here
+#: too (gr507636) but still waited out a ~10 min job batch, so it now runs
+#: on its own thread (``wake_runner.start_wake_thread``, gr626353) and is
+#: not in this tuple.
 #: ``chunk_keywords`` (gr549751): same starvation shape — a steady drain
 #: whose 1.6M-chunk backlog sank to ~3-7 runs/h under the serial
 #: rotation. Safe to interleave only because the pass now bounds itself
@@ -93,7 +92,6 @@ RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile"
 INTERLEAVED_SERVICES: tuple[str, ...] = (
     *RESCUE_SERVICES,
     "job_coordinator",
-    "wake_runner",
     "chunk_keywords",
     "minter",
 )

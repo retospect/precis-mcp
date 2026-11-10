@@ -1283,8 +1283,8 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     )
     if isinstance(outcome, TickSlice):
         # Mid-tick stage boundary: park the tick's own checkpoint and come
-        # straight back (the wake_runner piggy-backs the 2s system-worker
-        # poll, so this costs seconds, not a heartbeat). Not a tick outcome —
+        # straight back (the wake_runner thread ticks every ~3s, so this
+        # costs seconds, not a heartbeat). Not a tick outcome —
         # the give-up budgets carry forward untouched, exactly like a defer.
         return Yield(
             state={

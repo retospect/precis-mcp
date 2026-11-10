@@ -705,6 +705,7 @@ def run(args: argparse.Namespace) -> None:
     except Exception:
         log.warning("worker: boot_id advertise failed", exc_info=True)
     sched_thread: threading.Thread | None = None
+    wake_thread: threading.Thread | None = None
     stop_flag: dict[str, bool] = {"stop": False}
     try:
         if getattr(args, "dedicated", False):
@@ -956,6 +957,24 @@ def run(args: argparse.Namespace) -> None:
                 gate=_pass_gate,
                 should_stop=lambda: stop_flag["stop"],
             )
+        # gr626353: the wake pass (paused jobs whose at_time / children /
+        # tag wake fired -> queued) off the serial rotation too. A ~10 min
+        # embed_batch / derived_drain job batch holds the rotation, and the
+        # wakes (ci_verdict_poll on a release, quest ticks, lane parks) ran
+        # 5-19 min late. The thread has its own Store; `_register("wake_runner")`
+        # is the same boot gate as before (`--only` / `--skip` / profile) and
+        # `_pass_gate` is consulted per tick, so a live `service_config` flip
+        # idles it. The rotation does NOT also run it (see the registration
+        # in `_worker_passes.py`; `--once` keeps the rotation pass instead).
+        if _register("wake_runner") and not args.once:
+            from precis.workers.wake_runner import start_wake_thread
+
+            wake_thread = start_wake_thread(
+                dsn,
+                batch_size=args.batch_size,
+                gate=_pass_gate,
+                should_stop=lambda: stop_flag["stop"],
+            )
         run_loop(
             handlers,
             store,
@@ -972,6 +991,10 @@ def run(args: argparse.Namespace) -> None:
             stop_flag,
             env_float(_SCHED_JOIN_ENV, _SCHED_JOIN_DEFAULT_S, lo=0.0),
         )
+        # stop_flag is set by now; the wake thread exits within one tick
+        # (<= 0.5 s sleep step + at most one pass). Short bounded join.
+        if wake_thread is not None:
+            wake_thread.join(timeout=5.0)
         # gr573250: hand back every local-LLM slot hold this process still
         # owns — a SIGTERM'd worker used to leave them orphaned until the
         # 600s reaper floor / 3600s TTL. Scoped to this pid + boot_id;

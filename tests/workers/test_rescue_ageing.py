@@ -187,34 +187,14 @@ def test_job_coordinator_claim_wait_is_bounded_under_flood(
     assert _max_gap(runs, horizon_s) <= _DEFAULT_BUDGET_S + 36 * _MIN
 
 
-def test_wake_runner_requeue_wait_is_bounded_under_flood(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """gr507636: the job_coordinator interleave (gr493226) only covers the
-    claim half of a parked job's resume — the ``waiting_*`` → ``queued``
-    flip is ``wake_runner``'s, and it still waited a full rotation (~85 min
-    on melchior, once per hour observed), stranding the 5-min heartbeat
-    long enough that parked loops outlived their claim-time leases and were
-    reaped as orphans. ``wake_runner`` is interleaved on the same budget
-    now."""
-    sim = _SimTime()
-    monkeypatch.setattr(runner, "time", sim)
-    monkeypatch.delenv("PRECIS_WORKER_RESCUE_BUDGET_S", raising=False)
-    horizon_s = 24 * 60 * _MIN
-    runs: list[float] = []
-    ref_passes: list[RefPass] = [
-        _rescue("wake_runner", sim, runs),
-        _pass("llm_summarize", sim, 36 * _MIN, 32),
-        _pass("fetch", sim, 30 * _MIN, 32),
-        _pass("chase", sim, 30 * _MIN, 32),
-    ]
-    run_loop(
-        [],
-        store=_NO_STORE,
-        ref_passes=ref_passes,
-        should_stop=lambda: sim.now >= horizon_s,
-    )
-    assert _max_gap(runs, horizon_s) <= _DEFAULT_BUDGET_S + 36 * _MIN
+def test_wake_runner_is_not_in_the_serial_rotation() -> None:
+    """gr626353: ``wake_runner`` was interleaved here (gr507636) but the
+    interleave only fires BETWEEN passes, so a ~10 min embed_batch /
+    derived_drain job batch still held it and ``at_time`` wakes ran 5-19 min
+    late. It runs on its own thread now (``tests/workers/test_wake_thread.py``);
+    interleaving it as well would race the thread's pass twice per cycle."""
+    assert "wake_runner" not in runner.INTERLEAVED_SERVICES
+    assert "wake_runner" not in runner.RESCUE_SERVICES
 
 
 def test_chunk_keywords_drain_wait_is_bounded_under_flood(

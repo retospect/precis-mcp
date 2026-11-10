@@ -1139,6 +1139,78 @@ class TestHeartbeatThreadWiring:
         assert "should_stop" in kwarg_names
 
 
+class TestWakeThreadWiring:
+    """gr626353 — the wake pass runs on its own thread, never ALSO in the
+    serial rotation. Static AST checks, like ``TestHeartbeatThreadWiring``
+    (``run()`` needs a live DSN to execute)."""
+
+    @staticmethod
+    def _if_nodes(module):
+        import ast
+        from pathlib import Path
+
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        return [n for n in ast.walk(tree) if isinstance(n, ast.If)]
+
+    @staticmethod
+    def _test_tokens(node) -> set[str]:
+        import ast
+
+        out: set[str] = set()
+        for n in ast.walk(node.test):
+            if isinstance(n, ast.Attribute):
+                out.add(n.attr)
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+                out.add(n.value)
+        return out
+
+    def test_thread_gated_on_register_and_not_once_with_gate_and_stop(self) -> None:
+        import ast
+
+        from precis.cli import worker as worker_mod
+
+        def _starts_thread(node: ast.If) -> bool:
+            return any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "start_wake_thread"
+                for b in node.body
+                for n in ast.walk(b)
+            )
+
+        guards = [n for n in self._if_nodes(worker_mod) if _starts_thread(n)]
+        assert guards, "no `if` guarding start_wake_thread(...) in cli/worker.py"
+        guard = guards[-1]  # innermost: the guard directly around the call
+        assert {"wake_runner", "once"} <= self._test_tokens(guard)
+        call = next(
+            n
+            for n in ast.walk(guard)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "start_wake_thread"
+        )
+        assert {"gate", "should_stop"} <= {kw.arg for kw in call.keywords}
+
+    def test_rotation_pass_registers_only_for_a_one_shot_run(self) -> None:
+        """``_wake_runner_pass`` is appended under ``_register("wake_runner")``
+        AND ``args.once`` — a long-running worker gets the thread instead, so
+        no wake is raced twice per cycle."""
+        import ast
+
+        from precis.cli import _worker_passes
+
+        def _defines_pass(node: ast.If) -> bool:
+            return any(
+                isinstance(n, ast.FunctionDef) and n.name == "_wake_runner_pass"
+                for b in node.body
+                for n in ast.walk(b)
+            )
+
+        guards = [n for n in self._if_nodes(_worker_passes) if _defines_pass(n)]
+        assert len(guards) == 1
+        assert {"wake_runner", "once"} <= self._test_tokens(guards[0])
+
+
 class TestClaudeGate:
     """gr518089 — the ``needs_claude`` hard veto: a host with no runnable
     claude lane never runs a claude-dependent pass, even over an explicit
