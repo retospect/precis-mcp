@@ -497,8 +497,16 @@
                  class="absolute left-0 top-full mt-1 z-20 w-96 max-w-[90vw] rounded-md border border-line bg-surface p-3 text-xs text-fg-muted shadow-lg whitespace-pre-line">{{ row.chunk_full }}</div>
             {% endif %}
           </span>
-        {% elif row.created_at %}
-          <p class="text-xs text-fg-faint mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
+        {% endif %}
+        {# Both stamps on every row (gr592977) — ``added`` + ``updated``,
+           the same pair the /gripes list shows; ``updated_at`` is the
+           stamp ``sort=modified`` orders by, so it earns its place
+           beside ``added`` rather than replacing it. #}
+        {% if row.created_at or row.updated_at %}
+          <p class="text-xs text-fg-faint mt-0.5">
+            {%- if row.created_at %}added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span>{% endif %}
+            {%- if row.updated_at %}{% if row.created_at %} · {% endif %}updated <span title="{{ row.updated_at | abs_ts }}">{{ row.updated_at | ago }}</span>{% endif %}
+          </p>
         {% endif %}
         {# Off-site links (paper rows): "find:" search links (DOI/UoL/Scholar)
            plus direct-download PDFs (LibKey/arXiv). Download links carry

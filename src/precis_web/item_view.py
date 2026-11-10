@@ -804,6 +804,7 @@ def item_row(
         "thumbnail": p.thumbnail(ref),
         "actions": p.actions(ref),
         "created_at": getattr(ref, "created_at", None),
+        "updated_at": getattr(ref, "updated_at", None),
         "state": p.state(ref, has_chunks=has_chunks, design=design),
         "tags": _display_tags(tags),
         "links": p.links(identifier),

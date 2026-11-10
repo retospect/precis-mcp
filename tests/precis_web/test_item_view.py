@@ -299,6 +299,23 @@ def test_open_url_routes_id_addressed_readers() -> None:
         assert ItemPresenter(kind).open_url(_ref(kind=kind, id=7)) == expected
 
 
+def test_item_row_carries_created_and_updated_stamps() -> None:
+    """gr592977 — the row view-model carries both ``created_at`` and
+    ``updated_at`` so every Drive list can show the /gripes-style stamp
+    pair (``added`` + ``updated``); either may be ``None`` on a ref."""
+    import datetime as _dt
+
+    created = _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC)
+    updated = _dt.datetime(2026, 2, 1, tzinfo=_dt.UTC)
+    row = item_row(_ref(created_at=created, updated_at=updated), None, 0.0, set())
+    assert row["created_at"] == created
+    assert row["updated_at"] == updated
+
+    bare = item_row(_ref(), None, 0.0, set())
+    assert bare["created_at"] is None
+    assert bare["updated_at"] is None
+
+
 def test_item_row_carries_hover_thumbnail_actions() -> None:
     ref = _ref(kind="youtube", slug="abc123", title="A video")
     row = item_row(ref, _block("a caption line"), 0.5, set())

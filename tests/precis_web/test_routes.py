@@ -981,6 +981,40 @@ def test_drive_stub_vs_ingested_badges(runtime, client) -> None:
     assert ">stub<" not in resp2.text
 
 
+def test_drive_rows_show_added_and_updated(runtime, client) -> None:
+    """gr592977 — a Drive row shows both stamps (``added`` +
+    ``updated``), like the /gripes list, in every list the page renders.
+    Asserted on a search hit — the branch that previously showed NO
+    stamp (the preview held the spot) — and on the deleted browse list,
+    so both row sources (``_run_search`` / ``_recent_rows``) are covered."""
+    import datetime as _dt
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    pref = make_ref(
+        id=10,
+        kind="paper",
+        slug="smith2024",
+        title="A paper",
+        created_at=_dt.datetime(2026, 1, 1, tzinfo=_dt.UTC),
+        updated_at=_dt.datetime(2026, 2, 1, tzinfo=_dt.UTC),
+    )
+    blk = SimpleNamespace(id=1001, ord=0, text="passage about the query")
+    runtime.store.cross_kind_hits = [(blk, pref, 0.9)]
+
+    resp = client.get("/drive?q=query")
+    assert resp.status_code == 200
+    assert 'added <span title="2026-01-01 00:00 UTC">' in resp.text
+    assert 'updated <span title="2026-02-01 00:00 UTC">' in resp.text
+
+    runtime.store.deleted_recent_refs = [pref]
+    resp = client.get("/drive?state=deleted")
+    assert resp.status_code == 200
+    assert 'added <span title="2026-01-01 00:00 UTC">' in resp.text
+    assert 'updated <span title="2026-02-01 00:00 UTC">' in resp.text
+
+
 def test_drive_search_row_shows_pdf_badge(runtime, client) -> None:
     """A search hit for a ref carrying ``pdf_sha256`` shows the 'pdf'
     badge (alongside 'chunks' — a search hit is ingested by definition)."""
