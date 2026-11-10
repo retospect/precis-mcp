@@ -2,8 +2,9 @@
 id: precis-gardener-help
 family: memory
 title: precis — the graph gardener (reviewed graph upkeep)
-summary: scheduled, bounded maintenance over graph nodes/edges/tags that files review-ledger proposals; a consumer step prunes dangling edges and has Opus apply or reject merges
+summary: scheduled, bounded gardening of the graph — maintenance over nodes/edges/tags that files review-ledger proposals; a consumer step prunes dangling edges and has Opus apply or reject merges
 answers:
+  - what is memory gardening / the graph gardener?
   - what is the graph_garden job and what does it change?
   - where do gardener merge/split/relink/prune/tag proposals land?
   - how do I review or act on a gardener proposal?
@@ -20,7 +21,8 @@ status: active
 
 # precis-gardener-help — the graph gardener
 
-`graph_garden` is a job_type for graph maintenance. Its detectors and
+`graph_garden` is a job_type for graph maintenance — the gardening pass
+over nodes, edges and tags. Its detectors and
 proposer emit proposals; its consumer applies the supported actions
 described below. Every accepted candidate lands as one row in the reviews
 ledger: `verdict='proposed'`, `actor='graph-garden'`, the machine

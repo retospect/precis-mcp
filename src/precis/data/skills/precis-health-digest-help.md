@@ -8,6 +8,7 @@ answers:
   - how does a health-digest finding turn into an alert?
   - when does a health-digest result get pushed to me vs stay quiet?
   - what does a pass-dead alert mean (a handler dead inside a live worker)?
+  - what does the doctor_tick pass do with the health findings?
 applies-to: precis worker --only health_digest; kind='alert' (alert-source:watchdog:*); kind='gripe' (origin:health-digest-router)
 tags: troubleshooting, workflow
 kinds: alert, gripe
@@ -141,7 +142,23 @@ Derived groups name their check after the thing they watch:
   over threshold, retractions, or rising host swap-in — read from
   `host_heartbeat_log`'s `serving_*` columns).
 
+## Where does the doctor read these? — `doctor_tick`
+
+`doctor_tick` is the recurring Layer-3 judgment pass (a `claude_inproc`
+job) that reads what the checks above publish — the `watchdog:` alerts,
+the `conditions.py` findings, the job queue — classifies each by ratio
+(a broken pass vs noisy-but-working vs baseline noise), diagnoses via
+culprit-localization walks, and files or annotates gripes. It never
+raises an alert itself: names like `deploy-behind:<host>`,
+`lanes_idle_beside_queue` and `limiter-refusing:<provider>` (the
+`external_rate_limits` row it cites) reach the doctor through the same
+fingerprints this page lists. Its report is a per-UTC-day `kind='draft'`
+(`meta.author='doctor'`) — `doctor_report_fresh` in the table above is
+the check that watches the doctor itself — and `meta.transcript` on the
+`doctor_tick` job ref holds the pass's own transcript.
+
 ## See also
 
 - [[precis-nursery-help]] — the `critical`, page-now sibling reviewer.
 - [[precis-alert-help]] — the `alert` kind (lifecycle, dedup, tab).
+- [[precis-job-help]] — the `doctor_tick` row in the job_type table.

@@ -74,6 +74,7 @@ their own view set instead, is in `precis-overview`.
 | Batch gripes for a builder, record handoff / verdict / landed sha | `edit(kind='gripe', id=[...], mode='fix', args={'batch': 'x', 'brief': '...'})`; queues `get(kind='gripe', id='/queue')` | `precis-gripe-loop-help` |
 | Run a question round before a flagged build | `search(kind='memory'|'conv'|'paper', q=...)` first, then `put(kind='todo', id=N, text='grill: ...')` for what stays open | `precis-grill-me-help` |
 | Keep a note for later | `put(kind='memory', text='...')` | `precis-memory-help` |
+| Capture a term into the learner's knowledge graph | `put(kind='concept', text='<name> — <definition>')` (`dry_run` previews near-duplicates); typed edges `has-prerequisite`/`analogy-of`/`contrasts-with` | `precis-concept-help` |
 | Rewrite a region of a file | `edit(kind='markdown', id='notes/x.md', find='...', text='...')` | `precis-edit-help` |
 | Delete a matched span | `edit(..., find='...', text='')` | `precis-edit-help` |
 | Rewrite a todo in place | `edit(kind='todo', id=122, mode='replace', text='...')` | `precis-todo-help` |

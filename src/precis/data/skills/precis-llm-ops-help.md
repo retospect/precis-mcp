@@ -1,23 +1,28 @@
 ---
 id: precis-llm-ops-help
 family: work
-title: precis — LLM call failures, deferred calls and the budget breaker
-summary: why an LLM call failed (quota / budget / rate / transport / content / unparseable / subscription_* reason_class + retry horizon), the deferred_llm_call job that re-runs a failed call, the budget breaker's alerts, and the catalog-reconcile / model-swap daemons
+title: precis — LLM ops: call failures, deferred calls, the budget breaker, provider accounts and profiles
+summary: why an LLM call failed (quota / budget / rate / transport / content / unparseable / subscription_* reason_class + retry horizon), the deferred_llm_call job that re-runs a failed call, the budget breaker's alerts, the catalog-reconcile / model-swap / offer-discovery daemons, and the owner doors for a hosted provider account or profile (add, enable, list, qualification eval via precis llm eval --account)
 answers:
   - why did an LLM call fail, and will retrying help (quota, rate limit, budget)?
   - what is deferred_llm_call?
   - where do I see a tripped LLM budget or quota window?
   - which model chain is stored for an operation, and when was it set?
+  - how do I add a hosted provider account or profile, and enable it?
+  - how do I list llm accounts?
+  - what is offer discovery, and how does a discovered model get qualified?
+  - how do I run a qualification eval on a dark hosted account candidate model?
 applies-to: get/search (kind='llm'); llm_call_log reason_class; deferred_llm_call job; /budget
 tags: troubleshooting, workflow
 kinds: llm
 status: active
 ---
 
-# precis-llm-ops-help — failures, deferred calls, the budget breaker
+# precis-llm-ops-help — failures, deferred calls, the budget breaker, provider accounts and profiles
 
-The ops side of the `llm` kind — what happens when a call fails.
-Choosing a model is [[precis-llm-help]].
+The ops side of the `llm` kind — what happens when a call fails, plus
+the owner doors for provider accounts, profiles and offer discovery
+below. Choosing a model is [[precis-llm-help]].
 
 ## Read an operation's stored model route
 
@@ -84,6 +89,7 @@ raised, or an operator resumes on `/budget`. A related per-host check:
 credential is expired or unreadable (re-login there).
 
 ## What are llm_reconcile, llama_swap and offer_discovery?
+## What is offer discovery — how does a free model get qualified?
 
 **`llm_reconcile` and `llama_swap`.** `llm_reconcile` diffs the
 catalogue against the proxy's served list — a catalogued model the proxy
@@ -203,6 +209,7 @@ writes `meta.suitability` on each model card plus one
 reads the ledger — it is reviewer-facing evidence, not routing input.
 
 ## Add a hosted OpenAI-compatible provider
+## How do I add or enable an llm provider account or profile?
 
 `put(kind='llm', args={'account': {...}})` is the owner door for a hosted
 provider (Groq, OpenRouter, Cerebras). One put carries the whole ledger
@@ -230,7 +237,7 @@ yet, so the pools read `pacing=unknown` until a usage report lands.
 Discovery-found free models still enter through `offer_discovery` —
 never hand-seed a Groq/Cerebras/OpenRouter card.
 
-**Qualify a hosted account: `precis llm eval <model> --account <name>`.**
+**The qualification eval — `precis llm eval <model> --account <name>`.**
 A plain `llm eval` routes through the operator chain, which can swap the
 candidate model; `--account` instead sends every gold-task request to
 exactly that account's `llm.profiles` endpoint and key for exactly that

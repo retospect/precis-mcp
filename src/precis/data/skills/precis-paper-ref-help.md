@@ -2,9 +2,13 @@
 id: precis-paper-ref-help
 family: paper
 title: precis — repair and maintain paper refs
-summary: the doors that fix a paper record — bylines, identifiers, merging a duplicate pair, re-pointing a merged stub, retiring an unwanted paper, re-arming a worker stamp, attaching a legal PDF; finding and reading papers is precis-paper-help
+summary: the doors that fix a paper record — title/venue/year/DOI metadata edits, bylines, identifiers, merging a duplicate pair, re-pointing a merged stub, body ops (drop_body / split_body / move_body_to / reextract), retiring an unwanted paper, re-arming a worker stamp (clear_stamp), attaching a legal PDF; finding and reading papers is precis-paper-help
 answers:
+  - how do I edit a paper's title, venue, year, DOI or other metadata?
   - how do I fix a wrong or missing author on a paper?
+  - how do I re-extract, re-ingest or refetch a paper's PDF body?
+  - how do I split or move a ref's body onto another paper (split_body / move_body_to / drop_body)?
+  - a worker stamped a paper done/failed — how do I re-run it (clear_stamp)?
   - two live refs are the same paper — how do I merge them?
   - an identifier collision blocked my edit — what now?
   - a merged stub resolves to the wrong paper — how do I re-point it?
@@ -97,6 +101,7 @@ kept). This always writes `source='human'` and stamps the paper's
 `human_verified_at` sign-off — a manual byline correction *is* the
 review that stamp records.
 
+## Edit paper metadata — title, venue, year, DOI
 ## Repair a stub's metadata in place — title, identifiers, venue
 
 A paper whose metadata is missing (a bad-import stub) can be
@@ -287,8 +292,8 @@ the `paper_reconcile` pass or `precis bodiless-heal --apply` re-extracts
 the stored file, no refetch needed. Attached to several PDFs?
 `'pdf_sha256': '<sha>'` names the one to keep — required then; a named
 non-pointer sha re-points `refs.pdf_sha256` at it.
-`reextract` queues a `paper_reextract` job to re-extract the body from
-the stored pdf — the repair for a bad *extraction* of the right file
+`reextract` queues a `paper_reextract` job — the re-ingest door for the
+stored pdf: the repair for a bad *extraction* of the right file
 (garbled chunks, an old Marker). The door only validates: a sha no
 node holds refuses toward `pdf_url`, and a ref with no pdf refuses the
 same way. The job probes the file, checks its leading pages against
