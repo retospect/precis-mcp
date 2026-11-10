@@ -36,11 +36,16 @@ bytes, through the exact selector.
 
 Verification is read-only and re-derives everything it can: producer
 identity (``changed-source``), output digest (``changed-output``), selector
-presence (``missing-field``, naming what IS there), and — when a caller
-restates what a manuscript cites — unit and method agreement
-(``unit-mismatch`` / ``method-mismatch``). Nothing here re-resolves a moved
-pin onto new bytes; a moved pin is a refusal, and the fix is always to
-re-derive and re-approve, exactly the standing ``check_computed`` behavior.
+presence (``missing-field``, naming what IS there), the value the contract
+claims against the pinned bytes — number, text AND the printed literal —
+(``changed-output``), and — when a caller restates what a manuscript cites
+— unit and method agreement (``unit-mismatch`` / ``method-mismatch``). The
+stored ``method.conditions`` are re-hashed against the contract's own
+``conditions_sha256`` on every verify: conditions edited in place refuse as
+``method-mismatch`` even when every pin still stands. Nothing here
+re-resolves a moved pin onto new bytes; a moved pin is a refusal, and the
+fix is always to re-derive and re-approve, exactly the standing
+``check_computed`` behavior.
 """
 
 from __future__ import annotations
@@ -733,6 +738,12 @@ def verify_source(
     (a manuscript block, an export) restates NOW: disagreement with the
     frozen contract is a mismatch issue, never a silent adoption.
 
+    Contract-internal edits refuse too, without needing any restatement: the
+    printed ``value.literal`` is re-derived against the pinned bytes (an
+    edited literal is ``changed-output`` like an edited number) and the
+    stored ``method.conditions`` are re-hashed against the contract's own
+    ``conditions_sha256`` (edited conditions are ``method-mismatch``).
+
     A pathway contract needs the candidate ``envelope``; an external one the
     candidate ``data`` bytes. Both are read-only inputs — verification never
     mutates, re-freezes, or substitutes."""
@@ -834,6 +845,49 @@ def verify_source(
                             "or its pins moved; re-derive it from the envelope",
                         )
                     )
+                # the printed literal is half of what a reader cites: it must
+                # BE the resolved value, not an approximation — an edited
+                # literal refuses exactly like an edited number
+                stated = value["literal"]
+                if number is not None:
+                    literal_number: float | None
+                    try:
+                        literal_number = float(stated.strip())
+                    except ValueError:
+                        literal_number = None
+                        issues.append(
+                            SourceIssue(
+                                "changed-output",
+                                f"the contract's literal {stated!r} is not a "
+                                f"number but selector "
+                                f"{contract['output']['selector']!r} resolves to "
+                                f"{number:g} in the pinned bytes — the contract "
+                                "was edited; re-derive it from the envelope",
+                            )
+                        )
+                    if literal_number is not None and literal_number != number:
+                        issues.append(
+                            SourceIssue(
+                                "changed-output",
+                                f"the contract's literal {stated!r} states "
+                                f"{literal_number:g} but selector "
+                                f"{contract['output']['selector']!r} resolves to "
+                                f"{number:g} in the pinned bytes — the contract "
+                                "was edited; re-derive it from the envelope",
+                            )
+                        )
+                elif text is not None and stated != text.strip():
+                    # build stores literal.strip() while value.text keeps the
+                    # verbatim bytes — compare against the stripped spelling
+                    issues.append(
+                        SourceIssue(
+                            "changed-output",
+                            f"the contract's literal {stated!r} is not the value "
+                            f"selector {contract['output']['selector']!r} resolves "
+                            f"to in the pinned bytes ({text!r}) — the contract "
+                            "was edited; re-derive it from the envelope",
+                        )
+                    )
     cited_unit = contract["value"]["unit"]
     if unit is not None and unit.strip() != cited_unit:
         issues.append(
@@ -867,6 +921,19 @@ def verify_source(
                     "run that actually produced it",
                 )
             )
+    stored_conditions = contract["method"]["conditions"]
+    stored_digest = hashlib.sha256(canonical_bytes(stored_conditions)).hexdigest()
+    if stored_digest != contract["method"]["conditions_sha256"]:
+        issues.append(
+            SourceIssue(
+                "method-mismatch",
+                "the contract's stored method.conditions hash "
+                f"{stored_digest[:12]}… but the contract froze "
+                f"{contract['method']['conditions_sha256'][:12]}… — the "
+                "conditions were edited in place; re-derive the source from "
+                "the producer's retained evidence and re-approve",
+            )
+        )
     return issues
 
 

@@ -61,6 +61,7 @@ from precis.export._data_package import (
     header_lines,
     sidecar_json,
     table_lines,
+    verify_snapshot,
 )
 from precis.export._nanopub_appendix import (
     SECTION_TITLE as _NANOPUB_SECTION_TITLE,
@@ -2830,6 +2831,11 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
     ctx.figures.append((relpath, data))
     snapshot = collect_entry(c)
     if snapshot is not None:
+        for problem in verify_snapshot(snapshot):
+            ctx.warnings.append(
+                f"figure {c.dc}: {problem} — the data package carries a "
+                "computed source the export cannot re-check"
+            )
         ctx.data_package.append(
             DataPackageFigure(label=c.dc, caption=c.text or "", snapshot=snapshot)
         )

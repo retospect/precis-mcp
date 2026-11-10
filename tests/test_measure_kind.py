@@ -1741,6 +1741,100 @@ class TestPutRun:
         # the refusal wrote nothing
         assert store.search_measures(w["fe"], include_all=True).rows == []
 
+    def test_computed_source_must_agree_with_the_row(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        """A contract pins THIS row's value: a row whose stated number or
+        unit disagrees with the contract it carries would let an unrelated
+        number ride on someone else's valid evidence."""
+        contract = self._contract()
+        base = self._meta(w, tier="computed", origin="computation")
+        del base["anchor"]
+        # value_num disagreeing with the pinned number refuses
+        meta = dict(base, value_num=94)
+        meta["computed_source"] = contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source") as ei:
+            h.put(text="95", meta=meta)
+        assert "pins 95" in str(ei.value) and "value_num" in str(ei.value)
+        # a numeric literal that disagrees refuses even without value_num
+        meta = dict(base)
+        meta["computed_source"] = contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source") as ei:
+            h.put(text="94", meta=meta)
+        assert "literal" in str(ei.value)
+        # a unit disagreement refuses
+        meta = dict(base, reported_unit="ppm")
+        meta["computed_source"] = contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source") as ei:
+            h.put(text="95", meta=meta)
+        assert "'%'" in str(ei.value) and "ppm" in str(ei.value)
+        # a number row cannot carry a text/bool statement
+        meta = dict(base, value_text="high")
+        meta["computed_source"] = contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source"):
+            h.put(text="95", meta=meta)
+        # the refusals wrote nothing
+        assert store.search_measures(w["fe"], include_all=True).rows == []
+        # a matching row (value_num equal to the pinned number) writes
+        meta = dict(base, value_num=95)
+        meta["computed_source"] = contract
+        body = h.put(text="95", meta=meta).body
+        assert re.search(r"^mx\d+ ", body, re.M)
+
+    def test_computed_source_text_and_bool_agreement(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        text_contract = build_external_source(
+            producer="figrecipe",
+            run_key="run-9",
+            data=b'{"s": {"dump": "Cu 0 0 0"}}',
+            path="outputs/result.json",
+            encoding="json",
+            selector="s.dump",
+            literal="Cu 0 0 0",
+            unit="1",
+            method="structure dump",
+        )
+        bool_contract = build_external_source(
+            producer="figrecipe",
+            run_key="run-9",
+            data=b'{"ok": true}',
+            path="outputs/result.json",
+            encoding="json",
+            selector="ok",
+            literal="true",
+            unit="1",
+            method="convergence check",
+        )
+        base = self._meta(w, tier="computed", origin="computation")
+        del base["anchor"]
+        # a text row citing the contract's text writes
+        meta = dict(base, value_text="Cu 0 0 0", reported_unit="1")
+        meta["computed_source"] = text_contract
+        body = h.put(text="Cu 0 0 0", meta=meta).body
+        assert re.search(r"^mx\d+ ", body, re.M)
+        # a text row whose value_text disagrees refuses
+        meta = dict(base, value_text="Cu 1 1 1", reported_unit="1")
+        meta["computed_source"] = text_contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source"):
+            h.put(text="Cu 0 0 0", meta=meta)
+        # a numeric row cannot carry a text contract
+        meta = dict(base, reported_unit="1")
+        meta["computed_source"] = text_contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source") as ei:
+            h.put(text="95", meta=meta)
+        assert "text" in str(ei.value)
+        # a bool row whose value_bool disagrees with the pinned text refuses
+        meta = dict(base, value_bool=False, reported_unit="1")
+        meta["computed_source"] = bool_contract
+        with pytest.raises(BadInput, match=r"meta\.computed_source"):
+            h.put(text="false", meta=meta)
+        # a matching bool row writes
+        meta = dict(base, value_bool=True, reported_unit="1")
+        meta["computed_source"] = bool_contract
+        body = h.put(text="true", meta=meta).body
+        assert re.search(r"^mx\d+ ", body, re.M)
+
     def test_a_non_string_note_is_refused(
         self, w: dict[str, Any], h: MeasureHandler
     ) -> None:

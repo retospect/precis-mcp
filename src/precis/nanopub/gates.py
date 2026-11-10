@@ -37,6 +37,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis import computed_sources
 from precis.errors import BadInput
 from precis.nanopub import evidence as ev
 from precis.nanopub import snip as sniplib
@@ -341,9 +342,17 @@ def run_mint_gates(
     # every artifact type. At approve it reads the hub's live edges; a
     # frozen payload that carries the approve-time pin set (`computed`)
     # is checked on that set instead, so a later recompute cannot change
-    # an approved claim's evidence (Reto 2026-10-16, ruling 3a).
+    # an approved claim's evidence (Reto 2026-10-16, ruling 3a). Computed
+    # source contracts the payload carries (``computed_sources``) are
+    # shape-checked on the live payload and — once frozen — re-checked
+    # against the frozen pin set, so a signed artifact is never silently
+    # retargeted onto evidence it was not approved over.
     frozen_computed = frozen_computed_pins(payload) if frozen else None
-    violations += check_computed(bundle, frozen_pins=frozen_computed)
+    violations += check_computed(
+        bundle,
+        frozen_pins=frozen_computed,
+        source_contracts=payload.get("computed_sources"),
+    )
 
     # Definition-only evidence: the shared eligibility predicate refused the
     # edge (graph-node-trust-state slice 2a), so it cannot back a published
@@ -1141,7 +1150,10 @@ def frozen_computed_pins(payload: dict[str, Any]) -> list[dict[str, Any]] | None
 
 
 def check_computed(
-    bundle: ev.HubBundle, *, frozen_pins: list[dict[str, Any]] | None = None
+    bundle: ev.HubBundle,
+    *,
+    frozen_pins: list[dict[str, Any]] | None = None,
+    source_contracts: list[dict[str, Any]] | None = None,
 ) -> list[GateViolation]:
     """Computed-evidence standing gate: a ``pathway`` evidence edge
     (:attr:`~precis.nanopub.evidence.HubBundle.computed`) refuses mint
@@ -1168,6 +1180,15 @@ def check_computed(
       analogue of the verbatim-quote gate, re-run here so a number that
       drifted post-attach cannot mint).
 
+    ``source_contracts`` (:mod:`precis.computed_sources` contracts a
+    payload carries — computed measure rows cited by the draft): on the
+    live payload each contract must at least be well-formed
+    (``computed-pin`` naming the field); on a frozen payload each must
+    still be covered by the frozen pin set
+    (:func:`precis.computed_sources.check_frozen_pins`) — a contract whose
+    pathway pin the approved artifact never froze names evidence the
+    claim was not approved over.
+
     Reads the live ``bundle.computed`` — ``stale_reason`` /
     ``mismatch_reason`` are already re-derived against the pathway's
     current ``meta`` at read time, so the same check is correct at
@@ -1180,6 +1201,7 @@ def check_computed(
     content-keyed URN, which stays verifiable). The frozen arm only
     refuses a pin that lacks its keys or tier (a hand-edited payload)."""
     out: list[GateViolation] = []
+    contracts = source_contracts if isinstance(source_contracts, list) else None
     if frozen_pins is not None:
         for pin in frozen_pins:
             missing = [
@@ -1196,7 +1218,27 @@ def check_computed(
                         "— reopen and re-approve to re-freeze the pin set",
                     )
                 )
+        for i, contract in enumerate(contracts or []):
+            for issue in computed_sources.check_frozen_pins(contract, frozen_pins):
+                out.append(
+                    GateViolation(
+                        "computed-pin",
+                        f"computed source contract [{i}] ({issue.kind}): "
+                        f"{issue.message}",
+                    )
+                )
         return out
+    for i, contract in enumerate(contracts or []):
+        for problem in computed_sources.validate_contract(contract):
+            out.append(
+                GateViolation(
+                    "computed-pin",
+                    f"computed source contract [{i}]: {problem} — a computed "
+                    "citation that cannot be re-checked is not citable; "
+                    "re-derive it with build_pathway_source / "
+                    "build_external_source",
+                )
+            )
     for edge in bundle.computed:
         handle = handle_registry.try_format("pathway", edge.pathway_ref_id) or (
             f"pathway ref {edge.pathway_ref_id}"

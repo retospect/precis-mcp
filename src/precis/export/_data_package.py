@@ -25,6 +25,21 @@ its own PDF, so the sidecar is the only carrier guaranteed to survive
 publication. This module resolves one shared shape (header lines + a
 fixed-width table + the JSON string) so the two exporters render
 identical numbers and never drift.
+
+**Computed source contracts ride verbatim and are checked at the door.**
+A snapshot may carry ``computed_sources`` — :mod:`precis.computed_sources`
+contracts pinning a computed number in the figure to its producer's
+frozen output bytes, unit and method (a computed measure row cited by the
+draft). The exporters run :func:`verify_snapshot` when collecting a figure
+and refuse the export on a malformed contract, never publishing a
+citation chain they cannot re-check; the sidecar freezes every carried
+contract's :func:`~precis.computed_sources.contract_fingerprint`
+alongside, so a contract edited after export shows as a fingerprint
+change. Standing against producer evidence (the envelope or bytes) is
+re-derived by whoever restates the value, through
+:func:`~precis.computed_sources.verify_source` — this module never
+derives numbers from formatted text, only formats and fingerprints what
+the snapshot already froze.
 """
 
 from __future__ import annotations
@@ -32,6 +47,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
+
+from precis import computed_sources
+from precis.errors import BadInput
 
 #: Section heading, identical in both exporters.
 SECTION_TITLE = "Data package"
@@ -71,6 +89,50 @@ def collect_entry(chunk: Any) -> dict[str, Any] | None:
     if "columns" not in snapshot or "rows" not in snapshot:
         return None
     return snapshot
+
+
+def source_contracts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """The computed source contracts a snapshot carries under
+    ``computed_sources`` (:mod:`precis.computed_sources`) — dict entries
+    only; anything else is left for :func:`verify_snapshot` to refuse."""
+    raw = snapshot.get("computed_sources")
+    if not isinstance(raw, list):
+        return []
+    return [c for c in raw if isinstance(c, dict)]
+
+
+def verify_snapshot(snapshot: dict[str, Any], *, pins: Any = None) -> list[str]:
+    """Every problem with the snapshot's carried computed source contracts,
+    as human lines (empty: the contracts are well-formed, and — when
+    ``pins`` (a frozen computed pin set) is supplied — covered by it, so
+    the export never publishes a citation chain it cannot re-check)."""
+    out: list[str] = []
+    for i, contract in enumerate(source_contracts(snapshot)):
+        for problem in computed_sources.validate_contract(contract):
+            out.append(f"computed source contract [{i}]: {problem}")
+        if pins is not None:
+            for issue in computed_sources.check_frozen_pins(contract, pins):
+                out.append(
+                    f"computed source contract [{i}] ({issue.kind}): {issue.message}"
+                )
+    return out
+
+
+def require_verified_snapshot(
+    snapshot: dict[str, Any], *, label: str, pins: Any = None
+) -> None:
+    """:func:`verify_snapshot` as a refusal: raises :class:`BadInput`
+    naming every problem (and the figure) when a carried contract is
+    malformed or uncovered — an export is a publication surface, so a
+    broken citation chain stops it rather than rendering a notice."""
+    problems = verify_snapshot(snapshot, pins=pins)
+    if problems:
+        raise BadInput(
+            f"figure {label}: " + "; ".join(problems),
+            next="re-derive the computed source with build_pathway_source / "
+            "build_external_source, or drop the computed_sources key from "
+            "the figure's data_package snapshot",
+        )
 
 
 def fmt(v: Any) -> str:
@@ -161,15 +223,30 @@ def table_lines(fig: DataPackageFigure) -> list[str]:
 
 def sidecar_json(figures: list[DataPackageFigure]) -> str:
     """The ``data-package.json`` sidecar body: one entry per figure,
-    carrying the label/caption plus every key of its raw snapshot."""
+    carrying the label/caption plus every key of its raw snapshot. A
+    figure that carries computed source contracts also gets their frozen
+    ``contract_fingerprint`` list — the export is the freezer
+    (:func:`precis.computed_sources.contract_fingerprint`), so a contract
+    hand-edited after export is visible as a fingerprint change even when
+    every pin still verifies."""
+    entries: list[dict[str, Any]] = []
+    for fig in figures:
+        entry: dict[str, Any] = {
+            "label": fig.label,
+            "caption": fig.caption,
+            **fig.snapshot,
+        }
+        contracts = source_contracts(fig.snapshot)
+        if contracts:
+            entry["computed_source_fingerprints"] = [
+                computed_sources.contract_fingerprint(c) for c in contracts
+            ]
+        entries.append(entry)
     return json.dumps(
         {
             "schema": 1,
             "generator": "precis draft export",
-            "figures": [
-                {"label": fig.label, "caption": fig.caption, **fig.snapshot}
-                for fig in figures
-            ],
+            "figures": entries,
         },
         indent=2,
         sort_keys=False,
@@ -183,6 +260,9 @@ __all__ = [
     "collect_entry",
     "fmt",
     "header_lines",
+    "require_verified_snapshot",
     "sidecar_json",
+    "source_contracts",
     "table_lines",
+    "verify_snapshot",
 ]

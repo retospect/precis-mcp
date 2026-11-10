@@ -4,12 +4,14 @@ vault rows and no network are involved."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
 
 import pytest
 
+from precis.computed_sources import build_pathway_source, canonical_bytes
 from precis.errors import BadInput
 from precis.nanopub import evidence, gates, mint
 from precis.nanopub.keys import generate_keypair
@@ -1968,3 +1970,122 @@ def test_approve_stores_canonical_snip(store: Any) -> None:
     out = mint_mod._freeze_canonical_snip(passages)
     assert out[0]["snip"] == "anisotropy can reach a 400 1 ratio"
     assert passages[0]["snip"].startswith("Anisotropy")  # input untouched
+
+
+# ── computed source contracts (gr564183 chain) ──────────────────────────
+# A claim draft may carry computed source contracts (computed measure rows
+# it cites). Approve shape-checks each one and freezes it verbatim; sign
+# re-checks the frozen contracts against the frozen computed pin set, so a
+# signed artifact is never silently retargeted onto evidence it was not
+# approved over.
+
+
+def _source_envelope() -> dict[str, Any]:
+    """A minimal stored-seed envelope (the same shape
+    ``precis_pathway.bundle.build_envelope`` emits) — enough pins for a
+    pathway source contract."""
+    data = {"states": {"s1": {"energy": -1.25}}}
+    return {
+        "schema": "precis_pathway_seed_envelope",
+        "schema_version": 1,
+        "run": {
+            "job_id": 7,
+            "job_type": "autocatpath_seed",
+            "content_key": "seed-key",
+            "seed": 3,
+            "model_index": 0,
+            "model": "mace:small",
+        },
+        "pathway_context": {"pathway_ref_id": 11, "content_key": "pathway-key"},
+        "outputs": [
+            {
+                "name": "outputs/partial.json",
+                "encoding": "json",
+                "data": data,
+                "sha256": hashlib.sha256(canonical_bytes(data)).hexdigest(),
+            }
+        ],
+        "output_id": "a" * 64,
+        "bundle_id": "b" * 64,
+    }
+
+
+def _source_contract() -> dict[str, Any]:
+    return build_pathway_source(
+        envelope=_source_envelope(),
+        path="outputs/partial.json",
+        selector="states.s1.energy",
+        literal="-1.25",
+        unit="eV",
+        method="mace:small relaxation",
+    )
+
+
+_SRC_PINS = [
+    {
+        "pathway_ref_id": 11,
+        "content_key": "pathway-key",
+        "provenance_key": "urn:precis:pathway:pathway-key",
+        "evidence_tier": "computed",
+    }
+]
+
+
+def test_payload_computed_sources_are_shape_checked_at_approve(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-src1", content_key="sha-src1")
+    hub = _computed_claim_hub(store, paper, pathway)
+    contract = _source_contract()
+    payload = _payload(chunk, sha, computed_sources=[contract])
+    assert _gate_slugs(store, hub, payload).isdisjoint({"computed-pin"})
+    # a malformed contract refuses with the field named
+    payload = _payload(chunk, sha, computed_sources=[{"schema": "nope"}])
+    assert "computed-pin" in _gate_slugs(store, hub, payload)
+    violations = gates.run_mint_gates(store, evidence.load_bundle(store, hub), payload)
+    bad = [v for v in violations if v.gate == "computed-pin"]
+    assert bad and "schema" in bad[0].message
+
+
+def test_approve_freezes_computed_source_contracts_verbatim(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="rule-rx-src2", content_key="sha-r-src2")
+    hub = _computed_claim_hub(store, paper, pathway)
+    contract = _source_contract()
+    row = mint.approve(
+        store,
+        hub,
+        payload=_payload(chunk, sha, computed_sources=[contract]),
+        interactive=True,
+    )
+    assert row.grounding["computed_sources"] == [contract]
+
+
+def test_approve_freezes_an_empty_computed_source_list(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="rule-rx-src4", content_key="sha-r-src4")
+    hub = _computed_claim_hub(store, paper, pathway)
+    row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
+    assert row.grounding["computed_sources"] == []
+
+
+def test_frozen_pin_set_must_cover_computed_source_contracts(store: Any) -> None:
+    """At sign the frozen contracts are re-checked against the frozen pin
+    set: a contract whose pathway pin the approved artifact never froze
+    names evidence the claim was not approved over."""
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-src3", content_key="sha-src3")
+    hub = _computed_claim_hub(store, paper, pathway)
+    contract = _source_contract()
+    covered = _payload(chunk, sha, computed=_SRC_PINS, computed_sources=[contract])
+    violations = gates.run_mint_gates(
+        store, evidence.load_bundle(store, hub), covered, frozen=True
+    )
+    assert not [v for v in violations if v.gate == "computed-pin"]
+    # a pin set approved over different evidence does not cover the contract
+    uncovered = _payload(chunk, sha, computed=[], computed_sources=[contract])
+    violations = gates.run_mint_gates(
+        store, evidence.load_bundle(store, hub), uncovered, frozen=True
+    )
+    bad = [v for v in violations if v.gate == "computed-pin"]
+    assert bad
+    assert "never retarget" in bad[0].message or "re-approve" in bad[0].message

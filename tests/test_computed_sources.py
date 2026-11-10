@@ -324,6 +324,81 @@ def test_require_verified_raises_naming_every_issue(
     assert "re-derive" in (ei.value.next or "")
 
 
+# ── verify: contract-internal edits refuse ─────────────────────────────
+
+
+def test_an_edited_literal_is_changed_output(envelope: dict[str, Any]) -> None:
+    contract = _contract(envelope)
+    contract["value"]["literal"] = "-1.3"
+    issues = verify_source(contract, envelope=envelope)
+    assert [i.kind for i in issues] == ["changed-output"]
+    assert "states -1.3" in issues[0].message
+
+
+def test_a_garbage_edited_literal_is_changed_output(
+    envelope: dict[str, Any],
+) -> None:
+    contract = _contract(envelope)
+    contract["value"]["literal"] = "about one"
+    issues = verify_source(contract, envelope=envelope)
+    assert [i.kind for i in issues] == ["changed-output"]
+    assert "not a number" in issues[0].message
+
+
+def test_an_edited_text_literal_is_changed_output(
+    envelope: dict[str, Any],
+) -> None:
+    extxyz = "1\nProperties=species:S:1:pos:R:3\nCu 0 0 0\n"
+    contract = _contract(
+        envelope,
+        path="outputs/structures.json",
+        selector="s1",
+        literal=extxyz,
+        unit="extxyz",
+        method="structure dump",
+    )
+    contract["value"]["literal"] = "1\nCu 1 1 1\n"
+    issues = verify_source(contract, envelope=envelope)
+    assert [i.kind for i in issues] == ["changed-output"]
+    assert "was edited" in issues[0].message
+
+
+def test_edited_stored_conditions_refuse(envelope: dict[str, Any]) -> None:
+    """conditions edited in place (the digest left untouched) refuse —
+    verification re-hashes the stored conditions against the contract's
+    own conditions_sha256."""
+    contract = _contract(envelope)
+    contract["method"]["conditions"] = {"temperature": 400}
+    issues = verify_source(contract, envelope=envelope)
+    assert [i.kind for i in issues] == ["method-mismatch"]
+    assert "stored method.conditions" in issues[0].message
+
+
+def test_external_literal_and_conditions_edits_refuse() -> None:
+    data = b'{"barrier": {"eV": 0.85}}'
+    contract = build_external_source(
+        producer="figrecipe",
+        run_key="run-9",
+        data=data,
+        path="outputs/result.json",
+        encoding="json",
+        selector="barrier.eV",
+        literal="0.85",
+        unit="eV",
+        method="nudged elastic band",
+        conditions={"replicas": 4},
+    )
+    assert verify_source(contract, data=data) == []
+    edited = copy.deepcopy(contract)
+    edited["value"]["literal"] = "0.90"
+    assert [i.kind for i in verify_source(edited, data=data)] == ["changed-output"]
+    edited = copy.deepcopy(contract)
+    edited["method"]["conditions"] = {"replicas": 5}
+    issues = verify_source(edited, data=data)
+    assert [i.kind for i in issues] == ["method-mismatch"]
+    assert "stored method.conditions" in issues[0].message
+
+
 # ── frozen pins: a signed artifact is never retargeted ───────────────────
 
 

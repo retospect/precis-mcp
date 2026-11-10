@@ -12,9 +12,15 @@ from pathlib import Path
 from typing import Any
 
 import docx as docx_lib
+import pytest
 from psycopg.types.json import Jsonb
 
+from precis.computed_sources import (
+    build_external_source,
+    contract_fingerprint,
+)
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.export import docx, latex
 from precis.export._data_package import (
     SECTION_TITLE,
@@ -22,7 +28,9 @@ from precis.export._data_package import (
     DataPackageFigure,
     fmt,
     header_lines,
+    require_verified_snapshot,
     table_lines,
+    verify_snapshot,
 )
 from precis.handlers.draft import DraftHandler
 from precis.handlers.todo import TodoHandler
@@ -286,3 +294,122 @@ def test_verbatim_breakout_neutralized() -> None:
     inner = body.rsplit("\\end{verbatim}", 1)[0]
     assert "\\end{verbatim}" not in inner
     assert "\\section*{pwned}" not in section.rsplit("\\end{verbatim}", 1)[1]
+
+
+# ── computed source contracts riding in a snapshot ──────────────────────
+
+
+def _source_contract() -> dict[str, Any]:
+    return build_external_source(
+        producer="figrecipe",
+        run_key="run-9",
+        data=b'{"fe": {"pct": 95}}',
+        path="outputs/result.json",
+        encoding="json",
+        selector="fe.pct",
+        literal="95",
+        unit="%",
+        method="loaded ensemble",
+    )
+
+
+def test_snapshot_with_computed_source_freezes_fingerprints_latex(
+    hub: Hub, tmp_path: Path
+) -> None:
+    snap = dict(_SNAPSHOT, computed_sources=[_source_contract()])
+    ref = _draft_with_figure(hub, slug="dsrc", snapshot=snap)
+
+    result = latex.export_draft(hub.live_store, ref, target_dir=tmp_path / "src")
+    sidecar = (tmp_path / "src") / SIDECAR_NAME
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    (entry,) = data["figures"]
+    assert entry["computed_source_fingerprints"] == [
+        contract_fingerprint(_source_contract())
+    ]
+    # a well-formed contract rides verbatim and raises no computed warning
+    assert entry["computed_sources"] == [_source_contract()]
+    assert not [w for w in result.warnings if "computed source" in w]
+
+
+def test_snapshot_with_malformed_computed_source_warns_latex(
+    hub: Hub, tmp_path: Path
+) -> None:
+    snap = dict(_SNAPSHOT, computed_sources=[{"schema": "nope"}])
+    ref = _draft_with_figure(hub, slug="dbad", snapshot=snap)
+
+    result = latex.export_draft(hub.live_store, ref, target_dir=tmp_path / "bad")
+
+    # the export still ships, but the operator sees the broken chain named
+    assert any("computed source contract" in w for w in result.warnings)
+    assert any("schema" in w for w in result.warnings)
+    assert ((tmp_path / "bad") / SIDECAR_NAME).exists()
+
+
+def test_snapshot_with_computed_source_docx(hub: Hub, tmp_path: Path) -> None:
+    snap = dict(_SNAPSHOT, computed_sources=[_source_contract()])
+    ref = _draft_with_figure(hub, slug="ddsrc", snapshot=snap)
+
+    out = tmp_path / "dsrc.docx"
+    result = docx.export_docx(hub.live_store, ref, target_path=out)
+
+    sidecar = out.with_name(f"{out.stem}.{SIDECAR_NAME}")
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    (entry,) = data["figures"]
+    assert entry["computed_source_fingerprints"] == [
+        contract_fingerprint(_source_contract())
+    ]
+    assert not [w for w in result.warnings if "computed source" in w]
+    # a malformed contract warns in docx exactly like latex
+    snap = dict(_SNAPSHOT, computed_sources=[{"schema": "nope"}])
+    ref = _draft_with_figure(hub, slug="ddbad", snapshot=snap)
+    out2 = tmp_path / "dbad.docx"
+    result = docx.export_docx(hub.live_store, ref, target_path=out2)
+    assert any("computed source contract" in w for w in result.warnings)
+
+
+def test_verify_snapshot_units() -> None:
+    """verify_snapshot names every carried problem; pins=None checks shape
+    only, pins=[...] also checks frozen-pin coverage (external contracts
+    carry no pathway pin and always pass)."""
+    contract = _source_contract()
+    snap = dict(_SNAPSHOT, computed_sources=[contract, {"schema": "nope"}])
+    problems = verify_snapshot(snap)
+    assert problems and all(
+        p.startswith("computed source contract [1]") for p in problems
+    )
+    assert any("schema" in p for p in problems)
+    assert verify_snapshot(dict(_SNAPSHOT, computed_sources=[contract])) == []
+    assert verify_snapshot(dict(_SNAPSHOT, computed_sources=[])) == []
+    assert verify_snapshot(_SNAPSHOT) == []
+    # pin coverage: a pathway contract the frozen pin set does not cover
+    pathway_like = dict(
+        contract,
+        producer={
+            "adapter": "pathway_seed",
+            "job_id": 7,
+            "job_type": "autocatpath_seed",
+            "content_key": "seed-key",
+            "seed": 3,
+            "model_index": 0,
+            "model": "mace:small",
+            "pathway_ref_id": 11,
+            "pathway_content_key": "pathway-key",
+            "output_id": "a" * 64,
+            "bundle_id": "b" * 64,
+        },
+    )
+    uncovered = verify_snapshot(
+        dict(_SNAPSHOT, computed_sources=[pathway_like]), pins=[]
+    )
+    assert len(uncovered) == 1 and "re-approve" in uncovered[0]
+    covered = verify_snapshot(
+        dict(_SNAPSHOT, computed_sources=[pathway_like]),
+        pins=[{"pathway_ref_id": 11, "content_key": "pathway-key"}],
+    )
+    assert covered == []
+    # the refusal idiom: a producer stamping contracts stops on a bad one
+    with pytest.raises(BadInput, match="dc9") as exc:
+        require_verified_snapshot(
+            snap, label="dc9", pins=[{"pathway_ref_id": 11, "content_key": "k"}]
+        )
+    assert "schema" in str(exc.value)

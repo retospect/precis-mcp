@@ -77,7 +77,10 @@ def approve(
     from a hub that later drifts). ``payload`` is the grounding envelope
     (``passages`` / ``fields`` / ``motivation`` / ``testable_by`` /
     ``hanging`` / ``hypothesis`` / ``artifact_type`` / ``motivated_by_refs``
-    / ``llm_models``) — ``artifact_type`` (``"report"`` or ``"definition"``)
+    / ``llm_models``; a claim draft may also carry ``computed_sources`` —
+    computed source contracts frozen verbatim and re-checked against the
+    frozen pin set at sign) — ``artifact_type`` (``"report"`` or
+    ``"definition"``)
     is accepted HERE ONLY, never at mint/put, so a failing claim cannot be
     moved into a non-empirical type by an unattended pass — every Layer-A
     gate runs NOW, against the post-reword sentence, so the review queue
@@ -272,6 +275,7 @@ def approve(
     frozen_payload["computed"] = (
         _freeze_computed(bundle) if artifact_type == "claim" else []
     )
+    frozen_payload["computed_sources"] = _freeze_computed_sources(payload)
     ok = store.nanopub_approve(
         row.id,
         approved_title=approved,
@@ -327,6 +331,22 @@ def _freeze_computed(bundle: evidence.HubBundle) -> list[dict[str, Any]]:
         for e in bundle.computed
         if e.evidence_tier and e.provenance_key
     ]
+
+
+def _freeze_computed_sources(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Computed source contracts (:mod:`precis.computed_sources`) the payload
+    carries, frozen verbatim for the signer. The live gate already refused
+    every malformed contract before approve ran, so the frozen set is
+    exactly what :func:`precis.nanopub.gates.check_computed` re-checks
+    against the frozen pin set at sign
+    (:func:`precis.computed_sources.check_frozen_pins`) — a signed artifact
+    is never silently retargeted onto evidence it was not approved over.
+    A payload with no contracts freezes an empty list, like ``computed``
+    for a non-claim."""
+    raw = payload.get("computed_sources")
+    if not isinstance(raw, list):
+        return []
+    return [c for c in raw if isinstance(c, dict)]
 
 
 def _passage_source_key(p: dict[str, Any]) -> str:

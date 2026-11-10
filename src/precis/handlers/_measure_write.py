@@ -31,16 +31,20 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
 * ``computed_source`` — a computed-evidence contract dict
   (:mod:`precis.computed_sources`, gr564183) pinning the row's number to a
   producer's exact frozen output bytes, field selector, unit and method.
-  Shape-validated here; standing is re-checked with the frozen producer
-  evidence (:func:`precis.computed_sources.verify_source`). The row's own
-  contract is unchanged — a computed row carries no paper ``anchor`` and must
-  say ``origin='computation'``; the source rides in the row's frozen ``meta``.
+  Shape-validated here, and its pinned value/unit must agree with the row's
+  own stated number (``value_num`` or a numeric literal) and
+  ``reported_unit`` — unrelated numbers must not ride on someone else's
+  valid evidence; standing is re-checked with the frozen producer evidence
+  (:func:`precis.computed_sources.verify_source`). The row's own contract
+  is unchanged — a computed row carries no paper ``anchor`` and must say
+  ``origin='computation'``; the source rides in the row's frozen ``meta``.
 
 The output's ``meta`` also takes ``run_key`` and ``model`` (the writing model).
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -49,6 +53,7 @@ from precis import computed_sources
 from precis.errors import BadInput
 from precis.store import Store
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.taxonomy.measure_units import MINUS_FOLD
 from precis.utils import handle_registry
 
 _ROW_FIELDS = frozenset(
@@ -132,6 +137,16 @@ def _bad(where: str, field: str, problem: str) -> BadInput:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _literal_number(literal: str) -> float | None:
+    """The literal as a finite float, or ``None`` when it is not a plain
+    number (a text value like an extxyz dump, or an inequality)."""
+    try:
+        number = float(literal.strip().translate(MINUS_FOLD))
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _measure_id(raw: Any, where: str, field: str) -> int:
@@ -220,6 +235,84 @@ class RunParser:
         if not isinstance(scheme, str):
             raise _bad(where, f"{field}.anchor_scheme", "must be a string")
         return MeasureAnchor(paper, chunk_id, scheme, raw["span"])
+
+    def _source_agreement(
+        self, raw: dict[str, Any], source: dict[str, Any], where: str, literal: str
+    ) -> None:
+        """The contract must pin THIS row's value, not merely some valid
+        evidence: a row whose stated number or unit disagrees with the
+        contract it carries would let an unrelated number ride on someone
+        else's producer evidence."""
+        value = source["value"]
+        contract_number = value.get("number")
+        contract_text = value.get("text")
+        contract_unit = value["unit"]
+        stated: list[tuple[str, float]] = []
+        if _is_number(raw.get("value_num")):
+            stated.append(("value_num", float(raw["value_num"])))
+        literal_number = _literal_number(literal)
+        if literal_number is not None:
+            stated.append(("literal", literal_number))
+        if contract_number is not None:
+            for field, number in stated:
+                if number != float(contract_number):
+                    raise _bad(
+                        where,
+                        "computed_source",
+                        f"the contract pins {float(contract_number):g} "
+                        f"{contract_unit} but {field} states {number:g} — a "
+                        "computed row must cite the value its own evidence "
+                        "holds; re-derive the contract from this row's "
+                        "number or fix the row",
+                    )
+            if (
+                raw.get("value_text") not in (None, "")
+                or raw.get("value_bool") is not None
+            ):
+                raise _bad(
+                    where,
+                    "computed_source",
+                    f"the contract pins a number ({float(contract_number):g} "
+                    f"{contract_unit}) but the row states a text/bool value — "
+                    "the contract and the row describe different values",
+                )
+        else:
+            if stated:
+                raise _bad(
+                    where,
+                    "computed_source",
+                    f"the contract pins text {contract_text!r} ({contract_unit}) "
+                    "but the row states a number — the contract and the row "
+                    "describe different values",
+                )
+            if raw.get("value_text") is not None and raw["value_text"] != contract_text:
+                raise _bad(
+                    where,
+                    "computed_source",
+                    f"the contract pins text {contract_text!r} but value_text "
+                    f"is {raw['value_text']!r} — the row must cite the value "
+                    "its own evidence holds",
+                )
+            bool_raw = raw.get("value_bool")
+            if bool_raw is not None and ("true" if bool_raw else "false") != (
+                contract_text or ""
+            ):
+                raise _bad(
+                    where,
+                    "computed_source",
+                    f"the contract pins text {contract_text!r} but value_bool "
+                    f"is {bool_raw} — the row must cite the value its own "
+                    "evidence holds",
+                )
+        reported = raw.get("reported_unit")
+        if reported is not None and reported.strip() != contract_unit:
+            raise _bad(
+                where,
+                "computed_source",
+                f"the contract freezes unit {contract_unit!r} but "
+                f"reported_unit is {reported.strip()!r} — the literal and the "
+                "contract must be printed in the same unit; restate one of them",
+            )
 
     # -- rows ------------------------------------------------------------
 
@@ -333,6 +426,7 @@ class RunParser:
                     "produced); a computed value filed as an experiment "
                     "misstates its provenance",
                 )
+            self._source_agreement(raw, source, where, literal)
             meta["computed_source"] = source
         group = raw.get("subject_group")
         if group is None and defaults is not None:
