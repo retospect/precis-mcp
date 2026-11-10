@@ -274,7 +274,11 @@ def test_trust_stamp_unset_frontier_rereads_absence(structure, store):
 def test_trust_stamp_concurrent_corrections_both_audit(structure, store):
     """Two overlapping corrections must serialize: both audit entries
     survive and the second records the first's result as its ``from`` —
-    the stale-snapshot overwrite this regression test guards."""
+    the stale-snapshot overwrite this regression test guards. The stored
+    ``trust_stamp_log`` order IS the serialization order: the append
+    happens under ``SELECT … FOR UPDATE`` while each entry's ``at`` is
+    minted in the handler before the lock, so re-sorting by ``at`` can
+    reverse a valid audit (gr627152)."""
     import threading
 
     structure.put(id="pd_pair", text=_PD)
@@ -305,7 +309,7 @@ def test_trust_stamp_concurrent_corrections_both_audit(structure, store):
     assert not errors
 
     meta = _meta(store, ref_id)
-    first, second = sorted(meta["trust_stamp_log"], key=lambda e: e["at"])
+    first, second = meta["trust_stamp_log"]
     assert first["from"] is True
     assert second["from"] == first["to"]
     assert meta["barrier_trusted"] == second["to"]
