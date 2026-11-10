@@ -414,7 +414,7 @@ def parse_verdict(text: str) -> tuple[str, str | None, str | None]:
     """The sampler's verdict: ``(verdict, reason, class)``.
 
     ``class`` is one of :data:`VERDICT_CLASSES` — ``None`` on a correct
-    verdict or an absent/unknown label. An unparseable or unlabeled
+    verdict or an absent, non-string or unknown label. An unparseable or unlabeled
     reply reads as ``('undecidable', …, None)`` — never silently a pass.
     """
     obj = extract_json_object(text)
@@ -423,7 +423,7 @@ def parse_verdict(text: str) -> tuple[str, str | None, str | None]:
     verdict = obj.get("verdict")
     reason = obj.get("reason") if isinstance(obj.get("reason"), str) else None
     cls = obj.get("class")
-    cls = cls if cls in VERDICT_CLASSES else None
+    cls = cls if isinstance(cls, str) and cls in VERDICT_CLASSES else None
     if verdict in ("correct", "wrong", "undecidable"):
         return verdict, reason, (None if verdict == "correct" else cls)
     return "undecidable", reason, cls

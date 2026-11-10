@@ -4017,6 +4017,21 @@ class TestReviewEvidenceWidened:
             None,
         )
 
+    def test_parse_verdict_rejects_malformed_class(self) -> None:
+        # A non-string class (array, object, number, bool, null) is an
+        # unknown label, not a TypeError — membership in VERDICT_CLASSES
+        # requires the isinstance guard (review td626406).
+        for malformed in (
+            '["wrong_unit"]',
+            '{"name": "wrong_unit"}',
+            "7",
+            "true",
+            "null",
+        ):
+            assert job._prompt.parse_verdict(
+                f'{{"verdict": "wrong", "class": {malformed}, "reason": "r"}}'
+            ) == ("wrong", "r", None), malformed
+
 
 class TestMeasureRecheck:
     """gr506762 subset-4, item 4: ``measure_recheck`` dry-runs the
