@@ -581,6 +581,58 @@ def _claim_setting_value(key: str, value: Any) -> str:
     return f"{float(value):g}"
 
 
+# ── put(mode='extend') — the audited wall/deadline extension door
+# (gr625303) ──────────────────────────────────────────────────────────
+#: The per-call bound on the ``seconds`` delta — a week. A bigger push
+#: wants a second audited call; the bound keeps one mistyped zero from
+#: unbounding a fleet of kill deadlines.
+_EXTEND_MAX_SECONDS = 7 * 86400
+
+#: Most live jobs one ``under=`` call may touch — beyond it the caller
+#: narrows (``job_type=``, or one ``id=`` per call) instead of a bulk
+#: write landing unreviewed.
+_EXTEND_GROUP_CAP = 64
+
+_EXTEND_NEXT = (
+    "put(kind='job', id=<job>, mode='extend', args={'seconds': "
+    "<1..604800>, 'reason': '<why>'}) — or a group: "
+    "args={'under': '<ref>', 'seconds': ..., 'reason': ...} "
+    "(narrow with args={'job_type': '<type>'})"
+)
+
+
+def _extend_seconds(value: Any) -> int:
+    """The ``seconds`` knob: an int 1..:data:`_EXTEND_MAX_SECONDS`
+    (int, int-valued float or digit string); anything else is a BadInput
+    naming the range."""
+    n = 0
+    if not isinstance(value, bool):
+        try:
+            n = int(str(value).strip()) if isinstance(value, str) else int(value)
+        except (TypeError, ValueError):
+            n = 0
+        else:
+            if isinstance(value, float) and not value.is_integer():
+                n = 0
+    if not 1 <= n <= _EXTEND_MAX_SECONDS:
+        raise BadInput(
+            f"mode='extend' takes args={{'seconds': <int 1.."
+            f"{_EXTEND_MAX_SECONDS}>}}, got {value!r}",
+            next=_EXTEND_NEXT,
+        )
+    return n
+
+
+def _fmt_epoch(value: Any) -> str:
+    """``YYYY-MM-DDTHH:MM:SSZ`` for a unix-epoch meta stamp such as
+    ``meta.deadline`` (``as_utc`` only parses datetime/ISO), the raw
+    value when it is not a number."""
+    try:
+        return datetime.fromtimestamp(float(value), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return str(value)
+
+
 def _job_search_call(
     *,
     job_type: str | None = None,
@@ -970,10 +1022,11 @@ class JobHandler(NumericRefHandler):
         # values are the retry surface (put(id=N, mode='retry')), the
         # queued-pin move (put(id=N, mode='retarget')) and the audited
         # claim.* override door (put(mode='setting')), and immediate
-        # wake of a time-parked job (put(mode='wake')); every other
-        # value is rejected (gr343755 — a real vocabulary, not the
+        # wake of a time-parked job (put(mode='wake')), plus the audited
+        # wall/deadline extension (put(mode='extend'), gr625303); every
+        # other value is rejected (gr343755 — a real vocabulary, not the
         # "every mode= rejected" `()` shape).
-        modes=("retry", "retarget", "setting", "wake"),
+        modes=("retry", "retarget", "setting", "wake", "extend"),
     )
 
     kind: ClassVar[str] = "job"
@@ -3120,14 +3173,16 @@ class JobHandler(NumericRefHandler):
         placement: str | None = None,
         prio: int | None = None,
         origin: str | None = None,
-        # mode='setting' / 'wake' args: audited operator actions.
-        # Declared (not read off ``**_kw``) so the args= extras gate
-        # passes them; validated against their modes below.
+        # mode='setting' / 'wake' / 'extend' args: audited operator
+        # actions. Declared (not read off ``**_kw``) so the args=
+        # extras gate passes them; validated against their modes below.
         key: str | None = None,
         value: Any = None,
         reason: str | None = None,
         unset: bool | str | None = None,
         force: bool | str | None = None,
+        seconds: int | str | None = None,
+        under: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
@@ -3146,6 +3201,11 @@ class JobHandler(NumericRefHandler):
                 "force= only applies to put(mode='wake')",
                 next="put(kind='job', id=<waiting_job_id>, mode='wake')",
             )
+        if (seconds is not None or under is not None) and mode != "extend":
+            raise BadInput(
+                "seconds=/under= only apply to put(mode='extend')",
+                next=_EXTEND_NEXT,
+            )
         if mode != "setting" and (
             key is not None or value is not None or unset is not None
         ):
@@ -3153,12 +3213,13 @@ class JobHandler(NumericRefHandler):
                 "key=/value=/unset= only apply to put(mode='setting')",
                 next=_CLAIM_SETTING_NEXT,
             )
-        if reason is not None and mode not in ("setting", "wake"):
+        if reason is not None and mode not in ("setting", "wake", "extend"):
             raise BadInput(
-                "reason= only applies to put(mode='setting') or put(mode='wake')",
-                next="use reason= with mode='setting' or mode='wake'",
+                "reason= only applies to put(mode='setting'), "
+                "put(mode='wake') or put(mode='extend')",
+                next="use reason= with mode='setting', mode='wake' or mode='extend'",
             )
-        if mode in ("retry", "retarget", "setting", "wake") and (
+        if mode in ("retry", "retarget", "setting", "wake", "extend") and (
             prio is not None or origin is not None
         ):
             raise BadInput(
@@ -3184,6 +3245,29 @@ class JobHandler(NumericRefHandler):
                 unlink=unlink,
                 rel=rel,
                 job_type=job_type,
+                executor=executor,
+                params=params,
+                idem_key=idem_key,
+                requires=requires,
+                parent_id=parent_id,
+                model=model,
+                select=select,
+                placement=placement,
+                **_kw,
+            )
+        if mode == "extend":
+            return self._extend_job(
+                id=id,
+                under=under,
+                seconds=seconds,
+                reason=reason,
+                job_type=job_type,
+                text=text,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
                 executor=executor,
                 params=params,
                 idem_key=idem_key,
@@ -3967,6 +4051,238 @@ class JobHandler(NumericRefHandler):
             )
         )
 
+    def _extend_job(
+        self,
+        *,
+        id: str | int | None,
+        under: str | int | None,
+        seconds: Any,
+        reason: Any,
+        job_type: str | None,
+        **_kw: Any,
+    ) -> Response:
+        """Extend a live job's stored wall budget and active deadline.
+
+        ``put(kind='job', id=N, mode='extend', args={'seconds': <int>,
+        'reason': '<why>'})`` adds ``seconds`` to the job's stored
+        ``params.resources.wall_seconds`` and to an already-stamped
+        ``meta.deadline`` — the executors' wall-clock kill bound read on
+        every poll. The deadline stays anchored at its original
+        submit/launch origin (``old + seconds``, never ``now + budget``),
+        so elapsed time is not reset and the compute is not restarted
+        (gr625303 — the remediation Reto asked for on qu164903's
+        autocatpath seeds; before this door it needed a targeted
+        prod-psql transaction).
+
+        ``args={'under': '<ref>'}`` applies the same bump to every
+        non-terminal job under a root ref — the same member + link
+        resolution ``search(kind='job', under=…)`` reports — optionally
+        narrowed by ``args={'job_type': …}`` and bounded at
+        :data:`_EXTEND_GROUP_CAP` live jobs per call. Terminal jobs are
+        skipped and named in the report, never extended; a live job with
+        neither field stored has nothing to extend. ``reason=`` is
+        required: the actor, reason, delta and old→new values land in a
+        ``job-extend`` event on each job.
+        """
+        stray = sorted(k for k, v in _kw.items() if v is not None)
+        if stray:
+            raise BadInput(
+                f"mode='extend' mints no job row — {stray} don't apply; "
+                "it takes id= or args={'under'}, plus args={'seconds', "
+                "'reason'} (and args={'job_type'} only with under=)",
+                next=_EXTEND_NEXT,
+            )
+        if id is not None and under is not None:
+            raise BadInput(
+                "mode='extend' takes id= OR args={'under'} — not both",
+                next=_EXTEND_NEXT,
+            )
+        if id is None and under is None:
+            raise BadInput(
+                "mode='extend' requires id=<job> or args={'under': '<ref>'}",
+                next=_EXTEND_NEXT,
+            )
+        n_seconds = _extend_seconds(seconds)
+        reason_s = reason.strip() if isinstance(reason, str) else ""
+        if not reason_s:
+            raise BadInput(
+                "mode='extend' requires args={'reason': '<why>'}; it is "
+                "recorded with the change",
+                next=_EXTEND_NEXT,
+            )
+        jt = str(job_type).strip() if job_type is not None else None
+        if jt is not None and under is None:
+            raise BadInput(
+                "args={'job_type'} filters only an args={'under'} group",
+                next=_EXTEND_NEXT,
+            )
+
+        # Resolve the target set. ``id=`` is one job (existence +
+        # liveness checked now, terminal refused up front); ``under=``
+        # is the same member+link job resolution the search view uses —
+        # terminal rows are dropped from the candidates here and
+        # re-checked under the row lock below.
+        job_id: int | None = None
+        scope: str
+        target_ids: list[int]
+        terminal_n = 0
+        if under is None:
+            assert id is not None  # the id/under guards above ran
+            job_id = self._coerce_id(id)
+            self._resolve_live_ref(job_id)
+            status = _status_of(self.store.tags_for(job_id))
+            if status in _TERMINAL_STATUSES:
+                raise BadInput(
+                    f"job id={job_id} is STATUS:{status} — a completed "
+                    "job has no active deadline to extend",
+                    next=(
+                        "to re-run it with a larger budget: "
+                        f"put(kind='job', id={job_id}, mode='retry')"
+                    ),
+                )
+            target_ids = [job_id]
+            scope = f"job #{job_id}"
+        else:
+            root = self._resolve_under_root(under)
+            members, _capped = self._under_members(root.id, _UNDER_DEFAULT_DEPTH)
+            rows = self._under_jobs(
+                [m[0] for m in members],
+                status=None,
+                since=None,
+                until=None,
+                job_type=jt,
+            )
+            target_ids = sorted(r[0] for r in rows if r[5] not in _TERMINAL_STATUSES)
+            terminal_n = len(rows) - len(target_ids)
+            if len(target_ids) > _EXTEND_GROUP_CAP:
+                raise BadInput(
+                    f"{len(target_ids)} live jobs under {under!r} "
+                    f"exceeds the per-call bound of {_EXTEND_GROUP_CAP}",
+                    next=(
+                        "narrow with args={'job_type': '<type>'}, or "
+                        "extend one job per call with id="
+                    ),
+                )
+            root_label = handle_registry.try_format(root.kind, root.id) or (
+                f"{root.kind}:{root.id}"
+            )
+            scope = f"job(s) under {root_label}"
+
+        from precis.store.revision_context import current_revision_context
+
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
+        applied: list[tuple[int, Any, Any, Any, Any]] = []
+        skipped: list[tuple[int, str]] = []
+        with self.store.tx() as conn:
+            for target in target_ids:
+                row = conn.execute(
+                    "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE",
+                    (target,),
+                ).fetchone()
+                if row is None:
+                    skipped.append((target, "retired"))
+                    continue
+                terminal = conn.execute(
+                    "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                    "WHERE rt.ref_id = %s AND t.namespace = %s "
+                    "AND t.value = ANY(%s) "
+                    "AND (rt.expires_at IS NULL OR rt.expires_at > now()) "
+                    "LIMIT 1",
+                    (target, STATUS_NAMESPACE, list(_TERMINAL_STATUSES)),
+                ).fetchone()
+                if terminal is not None:
+                    skipped.append((target, "terminal"))
+                    continue
+                meta = dict(row[0] or {})
+                params = dict(meta.get("params") or {})
+                resources = dict(params.get("resources") or {})
+                old_wall = resources.get("wall_seconds")
+                new_wall = (
+                    old_wall + n_seconds
+                    if isinstance(old_wall, (int, float))
+                    and not isinstance(old_wall, bool)
+                    else None
+                )
+                old_deadline = meta.get("deadline")
+                new_deadline = (
+                    float(old_deadline) + n_seconds
+                    if isinstance(old_deadline, (int, float))
+                    and not isinstance(old_deadline, bool)
+                    else None
+                )
+                if new_wall is None and new_deadline is None:
+                    skipped.append((target, "no stored wall/deadline"))
+                    continue
+                patch: dict[str, Any] = {}
+                if new_wall is not None:
+                    resources["wall_seconds"] = new_wall
+                    params["resources"] = resources
+                    patch["params"] = params
+                if new_deadline is not None:
+                    patch["deadline"] = new_deadline
+                self.store.stamp_ref_meta(target, patch, conn=conn)
+                self.store.append_event(
+                    target,
+                    source="job-extend",
+                    event="extended",
+                    payload={
+                        "by": actor,
+                        "reason": reason_s,
+                        "seconds": n_seconds,
+                        "wall_seconds": {"old": old_wall, "new": new_wall},
+                        "deadline": {"old": old_deadline, "new": new_deadline},
+                    },
+                    conn=conn,
+                )
+                applied.append((target, old_wall, new_wall, old_deadline, new_deadline))
+
+        if under is None and not applied:
+            why = skipped[0][1] if skipped else "unchanged"
+            if why == "no stored wall/deadline":
+                msg = (
+                    f"job id={job_id} has nothing to extend — it carries "
+                    "no params.resources.wall_seconds and no meta.deadline"
+                )
+            else:
+                msg = f"job id={job_id} could not be extended ({why})"
+            raise BadInput(msg, next=_EXTEND_NEXT)
+        delta = f"+{_fmt_interval(n_seconds)}"
+        lines = [
+            f"extended {len(applied)} {scope} {delta} (recorded by {actor}: {reason_s})"
+        ]
+        for target, old_wall, new_wall, old_deadline, new_deadline in applied:
+            wall_bit = (
+                f"wall_seconds {old_wall:g} -> {new_wall:g}"
+                if new_wall is not None
+                else "wall_seconds (none stored)"
+            )
+            dl_bit = (
+                f"deadline {_fmt_epoch(old_deadline)} -> {_fmt_epoch(new_deadline)}"
+                if new_deadline is not None
+                else "deadline (none stamped)"
+            )
+            lines.append(f"  jo{target}: {wall_bit}; {dl_bit}")
+        if terminal_n:
+            lines.append(f"  skipped terminal: {terminal_n} completed job(s)")
+        if skipped:
+            by_why: dict[str, list[int]] = {}
+            for target, why in skipped:
+                by_why.setdefault(why, []).append(target)
+            for why, ids_ in sorted(by_why.items()):
+                shown = ", ".join(f"jo{i}" for i in ids_[:8])
+                tail = f" (+{len(ids_) - 8} more)" if len(ids_) > 8 else ""
+                lines.append(f"  skipped {why}: {shown}{tail}")
+        next_calls = [
+            (
+                f"get(kind='job', id={job_id})"
+                if under is None
+                else f"search(kind='job', under={under!r})",
+                "check the result",
+            )
+        ]
+        return Response(body="\n".join(lines) + render_next_section(next_calls))
+
     def _retry_job(
         self,
         *,
@@ -4451,6 +4767,16 @@ class JobHandler(NumericRefHandler):
             lines.append(f"executor: {meta['executor']}")
         if meta.get("wall_seconds") is not None:
             lines.append(f"wall_seconds: {meta['wall_seconds']:.1f}")
+        # The two fields ``mode='extend'`` bumps (gr625303): the stored
+        # budget under ``params.resources`` and the stamped wall-clock
+        # kill bound. They ride the header block because the params
+        # object a raw read dumps can carry artifact lists big enough
+        # to push these past the card cap.
+        resources = (meta.get("params") or {}).get("resources")
+        if isinstance(resources, dict) and resources.get("wall_seconds") is not None:
+            lines.append(f"resources.wall_seconds: {resources['wall_seconds']}")
+        if meta.get("deadline") is not None:
+            lines.append(f"deadline: {_fmt_epoch(meta['deadline'])}")
         if meta.get("branch"):
             lines.append(f"branch: {meta['branch']}")
         if meta.get("sha"):

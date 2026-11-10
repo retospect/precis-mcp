@@ -328,8 +328,8 @@ put(kind='job', parent_id=<todo>, job_type='survey_extract',
   on any non-terminal job (queued, running, `waiting_*`; the write
   lands on the row's next claim/re-queue). A terminal job refuses:
   nothing claims it again. `prio=`/`origin=` on `mode='retry'` /
-  `mode='retarget'` / `mode='setting'` / `mode='wake'` are refused —
-  those verbs don't mint.
+  `mode='retarget'` / `mode='setting'` / `mode='wake'` /
+  `mode='extend'` are refused — those verbs don't mint.
 
 The handler validates `job_type`, `executor`, `params`, AND the
 parent todo's existence at submit time. If something's wrong, the
@@ -648,6 +648,36 @@ Web sources, every worker source (`precis-worker*`, `asa-*`), and calls
 inside a background pass are denied.
 Read the live overrides next to their code defaults with
 `get(kind='job', id='/claim')` ([[precis-job-observe-help]]).
+
+## Extend a live job's wall budget and deadline
+## Give a running job more time without restarting it
+
+An active job's kill bound is `meta.deadline` (stamped at submit/launch
+from `params.resources.wall_seconds` + the executor margin). To give a
+live job more time **without resetting elapsed time or restarting the
+compute**, extend both stored fields in place — one job, or every live
+job under a tree (`under=` resolves the same member+link set as
+`search(kind='job', under=…)`):
+
+```python
+put(kind='job', id=<job>, mode='extend',
+    args={'seconds': 86400, 'reason': '<why>'})
+put(kind='job', mode='extend',
+    args={'under': 'qu164903', 'job_type': 'autocatpath_seed',
+          'seconds': 86400, 'reason': '<why>'})
+```
+
+Each call adds `seconds` (1..604800 — a week; a bigger push takes a
+second audited call) to the stored `resources.wall_seconds` and to the
+existing `meta.deadline` — `old + seconds`, never `now + budget`, so
+the deadline stays anchored at its original submit origin. `reason=` is
+required; the actor, reason and old→new values land in a `job-extend`
+event on each job. A terminal job refuses (`id=`) or is skipped and
+named (`under=`); a live job with neither field has nothing to extend.
+`under=` touches at most 64 live jobs per call — narrow with
+`job_type=`. The response lists every job's old→new `wall_seconds` and
+`deadline`; both fields also ride the `get(kind='job', id=N)` status
+card as `resources.wall_seconds:` / `deadline:`.
 
 ## Wake a time-parked job now
 
