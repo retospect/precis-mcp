@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from precis.bench import corpus, runner
+from precis.bench import corpus, raw, runner
 from precis.config import load_config
 
 
@@ -129,6 +129,25 @@ def _parser() -> argparse.ArgumentParser:
         "(one per caller) are also compared side by side",
     )
     rep.add_argument("results", type=Path, nargs="+")
+
+    raw_p = sub.add_parser(
+        "raw",
+        help="read a results file's raw log in bounded slices: one block per "
+        "task x arm row with its per-call token log",
+    )
+    raw_p.add_argument("results", type=Path)
+    raw_p.add_argument(
+        "--arm",
+        action="append",
+        choices=list(runner.ALL_ARMS),
+        metavar="ARM",
+        help="only this arm (repeatable); default: every arm",
+    )
+    raw_p.add_argument("--task", default=None, help="only this task id")
+    raw_p.add_argument("--source", choices=("qasper", "planted"), default=None)
+    raw_p.add_argument("--abstention", action="store_true", help="abstention rows only")
+    raw_p.add_argument("--offset", type=int, default=0)
+    raw_p.add_argument("--limit", type=int, default=raw.DEFAULT_LIMIT)
     return ap
 
 
@@ -281,6 +300,22 @@ def _report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _raw(args: argparse.Namespace) -> int:
+    results = runner.load_results(args.results)
+    print(
+        raw.raw_markdown(
+            results,
+            arms=args.arm or None,
+            task=args.task,
+            source=args.source,
+            abstention=args.abstention,
+            offset=args.offset,
+            limit=args.limit,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -294,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
             return _sweep(args)
         if args.cmd == "report":
             return _report(args)
+        if args.cmd == "raw":
+            return _raw(args)
         return _ingest(args) if args.cmd == "ingest" else _manifest(args)
     except (corpus.BenchCorpusError, runner.BenchRunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -9,7 +9,8 @@ side comparison.
 
 Design and slices: `docs/backlog/memory-ablation-bench.md` (§Ablation matrix,
 §Metrics per task, §Reproducibility). Code: `src/precis/bench/runner.py`
-(runner, report), `layers.py` (coverage guard, local fill), `planted_ingest.py`
+(runner, report), `raw.py` (the raw-log reader behind `bench raw`),
+`layers.py` (coverage guard, local fill), `planted_ingest.py`
 (planted facts into the dev DB).
 
 ## Reproduce
@@ -42,7 +43,7 @@ need an LLM; the dev DB does not have them, and the header says so.
 
 | key | meaning |
 |---|---|
-| `schema` | results schema version (1) |
+| `schema` | results schema version (2; 1 = no per-row `call_log`, runs #1–#3) |
 | `tier` | `scripted` (the model-free caller; LLM tier is a later cut) |
 | `set`, `corpus_sha256` | fixture set and its hash from `bench/corpus/manifest.json` |
 | `tasks_file`, `tasks_sha256`, `tasks` | QASPER task file, its sha256, and counts (`qasper`, `planted`, `abstention`, `skipped`) |
@@ -91,6 +92,7 @@ effect.
 | `errors`, `refusals` | failed calls; and calls the server refused because the arm switched that rung/filter off (`BadInput` naming `PRECIS_BENCH_SWITCHES`). `triage` never asks for a removed rung, so its `refusals` is 0 for every arm; `ladder` counts them |
 | `recall_at_{1,3,5,10}` | share of the task's gold items touched by a chunk among the top k search hits; `null` without gold and for `whole-paper` |
 | `transcript_sha256` | hash of the normalised call/output stream (drives the vacuity check); `null` for the baselines |
+| `call_log` | the per-call token log: one entry per rendered call (`n`, `verb`, `what`, `tokens`, `refusal`), in order; `chunk` / `doc` entries for the two baselines; absent on schema-1 files |
 | `wall_s` | wall time; the only non-deterministic field |
 
 ## Report
@@ -104,6 +106,20 @@ different `censored` counts compares different task subsets; read the two
 columns together. Tables follow for the QASPER and planted tasks separately,
 then the unanswerable tasks (mean tokens and calls only). A vacuous arm is
 flagged `VACUOUS` and its delta is not a layer effect.
+
+## Raw log
+
+`scripts/bench raw <results.json>` reads the raw long table in bounded
+slices — the reader for when the aggregate tables are not enough (gr624301:
+runs #1–#3 digests truncated past the first few arms when the file was read
+whole). Each block is one task × arm row: the summary line (outcome,
+tok→gold, total, calls, opens, refusals, recall@5) followed by the row's
+per-call token log. Select with `--arm` (repeatable), `--task`, `--source`,
+`--abstention`; page with `--offset` / `--limit` (default 50 rows). When
+rows remain past the window, a `Next:` block (the sanctioned
+`utils/next_block.py` renderer, as in the product's renders) names the exact
+`--offset`/`--limit` call that reads the next slice. Schema-1 files (runs
+#1–#3) carry no `call_log`; their summary lines still print.
 
 ## What counts as found
 

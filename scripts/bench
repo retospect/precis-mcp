@@ -15,6 +15,9 @@
 #   scripts/bench sweep [--caller triage|rowkw] [--seeds 1,2,3]   # pick the triage threshold on planted dev seeds (throwaway DB of its own:
 #                                           # PRECIS_DATABASE_URL=...precis_dev_sweep; never the reported seed, never QASPER)
 #   scripts/bench report <results.json>...  # markdown table per arm (+ delta vs all-on); >1 file also side by side
+#   scripts/bench raw <results.json> [--arm A]… [--task T] [--source S] [--offset N] [--limit M]
+#                                           # the raw log in bounded slices: one block per task x arm
+#                                           # row with its per-call token log; the Next: line names the next slice
 #
 # Everything runs inside the precis-dev container via scripts/dev, which points
 # PRECIS_DATABASE_URL at this worktree's precis_dev; the loader refuses any

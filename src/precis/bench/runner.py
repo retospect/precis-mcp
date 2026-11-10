@@ -96,7 +96,9 @@ from precis.bench import gold, planted
 from precis.bench import switches as bench_switches
 from precis.bench.switches import ARMS
 
-RESULTS_SCHEMA = 1
+#: 2 adds ``call_log`` to every row (the per-call token log; schema-1 files,
+#: runs #1–#3, carry no call lines — the raw reader tolerates both).
+RESULTS_SCHEMA = 2
 
 PLANTED_SEED = 7
 PLANTED_N = 40
@@ -438,6 +440,9 @@ class Session:
     refusals: int = 0
     #: ``get(extent='verbatim')`` calls issued (a chunk read whole).
     opens: int = 0
+    #: One entry per dispatched call, in order (the per-call token log the raw
+    #: reader prints; ``what`` is :func:`_compact_call` of the args).
+    call_log: list[dict[str, Any]] = field(default_factory=list)
     digest: Any = field(default_factory=hashlib.sha256)
 
     def switches(self) -> bench_switches.Switches:
@@ -453,11 +458,21 @@ class Session:
         if verb == "get" and args.get("extent") == "verbatim":
             self.opens += 1
         self.tokens += tokens_of(body)
+        refused = is_error and bench_switches.ENV_VAR in body
         if is_error:
-            if bench_switches.ENV_VAR in body:
+            if refused:
                 self.refusals += 1
             else:
                 self.errors += 1
+        self.call_log.append(
+            {
+                "n": len(self.call_log) + 1,
+                "verb": verb,
+                "what": _compact_call(verb, args),
+                "tokens": round(tokens_of(body), 2),
+                "refusal": refused,
+            }
+        )
         self.digest.update(json.dumps([verb, args], sort_keys=True).encode("utf-8"))
         self.digest.update(body.encode("utf-8"))
         return body, is_error
@@ -482,6 +497,17 @@ def _search_args(task: BenchTask, k: int) -> dict[str, Any]:
 #: (``utils/next_block.py`` is the emitter), so the pattern is a regex and not
 #: a hand-built literal trailer (tests/test_next_literal_ratchet.py).
 _NEXT_TRAILER_RE = re.compile(r"\nNext\s*:")
+
+
+def _compact_call(verb: str, args: Mapping[str, Any]) -> str:
+    """One-line argument summary for the per-call token log."""
+    if verb == "get":
+        return f"{args.get('id')} {args.get('extent', '')}".strip()
+    if verb == "search":
+        q = str(args.get("q", ""))
+        head = q[:60] + ("…" if len(q) > 60 else "")
+        return f"{args.get('kind', '')} {head}".strip()
+    return json.dumps(args, sort_keys=True, ensure_ascii=False)[:120]
 
 
 def parse_hits(task: BenchTask, body: str) -> list[str]:
@@ -546,6 +572,7 @@ def _result(
     applicable: bool = True,
     caller: str | None = None,
     opens: int = 0,
+    call_log: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     abstain = task.abstain
     censored = (not abstain) and applicable and not found
@@ -574,6 +601,7 @@ def _result(
         "refusals": refusals,
         **{f"recall_at_{k}": recall.get(k) for k in RECALL_KS},
         "transcript_sha256": transcript,
+        "call_log": [dict(c) for c in (call_log or ())],
         "wall_s": round(wall_s, 3),
     }
 
@@ -645,6 +673,7 @@ def run_scripted(
         wall_s=time.monotonic() - t0,
         caller=caller,
         opens=s.opens,
+        call_log=s.call_log,
     )
 
 
@@ -800,6 +829,7 @@ def run_chunk_rag(
     triples = search_chunk_triples(store, task.question, search_k, embedder)
     infos = catalog.chunks(int(b.id) for b, _r, _s in triples)
     per_rank: list[set[int]] = []
+    call_log: list[dict[str, Any]] = []
     tokens = 0.0
     found_at: float | None = None
     for block, _ref, _score in triples:
@@ -812,6 +842,15 @@ def run_chunk_rag(
         per_rank.append(items)
         if found_at is None and tokens < budget:  # read it, in rank order
             tokens += tokens_of(text)
+            call_log.append(
+                {
+                    "n": len(call_log) + 1,
+                    "verb": "chunk",
+                    "what": f"pc{block.id}",
+                    "tokens": round(tokens_of(text), 2),
+                    "refusal": False,
+                }
+            )
             if items and task.has_gold:
                 found_at = tokens
     recall: dict[int, float | None] = {k: None for k in RECALL_KS}
@@ -839,6 +878,7 @@ def run_chunk_rag(
         recall=recall,
         transcript=None,
         wall_s=time.monotonic() - t0,
+        call_log=call_log,
     )
 
 
@@ -852,10 +892,21 @@ def run_whole_paper(
     t0 = time.monotonic()
     tokens = 0.0
     calls = 0
+    call_log: list[dict[str, Any]] = []
     for doc in task.docs:
         for ref_id in catalog.doc_ref_ids(doc):
-            tokens += tokens_of(catalog.canonical_text(ref_id))
+            text = catalog.canonical_text(ref_id)
+            tokens += tokens_of(text)
             calls += 1
+            call_log.append(
+                {
+                    "n": calls,
+                    "verb": "doc",
+                    "what": f"ref {ref_id}",
+                    "tokens": round(tokens_of(text), 2),
+                    "refusal": False,
+                }
+            )
     applicable = not task.is_memory
     found = bool(task.has_gold and calls and applicable)
     return _result(
@@ -873,6 +924,7 @@ def run_whole_paper(
         transcript=None,
         wall_s=time.monotonic() - t0,
         applicable=applicable,
+        call_log=call_log,
     )
 
 

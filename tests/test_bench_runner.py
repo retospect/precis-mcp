@@ -24,6 +24,7 @@ from precis.bench import (
     planted,
     planted_ingest,
     qasper_tasks,
+    raw,
     runner,
 )
 from precis.bench.switches import ARMS
@@ -409,6 +410,87 @@ def test_load_results_rejects_other_json(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# pure: the raw-log reader (gr624301)
+# ---------------------------------------------------------------------------
+
+
+def _raw_results() -> dict[str, Any]:
+    return {
+        "header": {"set": "quick", "caller": {"name": "triage"}},
+        "rows": [
+            {
+                **_row("t1", "all-on", "a"),
+                "call_log": [
+                    {
+                        "n": 1,
+                        "verb": "search",
+                        "what": "paper q?",
+                        "tokens": 100.0,
+                        "refusal": False,
+                    },
+                    {
+                        "n": 2,
+                        "verb": "get",
+                        "what": "pc1 verbatim",
+                        "tokens": 40.0,
+                        "refusal": False,
+                    },
+                ],
+            },
+            {**_row("t2", "all-on", "b", found=False, censored=True), "call_log": []},
+            {
+                **_row("t1", "no-kwd", "c", refusals=1),
+                "call_log": [
+                    {
+                        "n": 1,
+                        "verb": "search",
+                        "what": "paper q?",
+                        "tokens": 100.0,
+                        "refusal": False,
+                    },
+                    {
+                        "n": 2,
+                        "verb": "get",
+                        "what": "pc1 kwd",
+                        "tokens": 10.0,
+                        "refusal": True,
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def test_raw_reader_selects_by_arm_and_task_and_pages():
+    res = _raw_results()
+    md = raw.raw_markdown(res)
+    assert md.splitlines()[0] == ("# raw log quick (caller triage) — rows 0-3 of 3")
+    assert "1. search paper q? — 100 tok" in md
+    assert "2. get pc1 verbatim — 40 tok" in md
+    only = raw.raw_markdown(res, arms=("no-kwd",))
+    assert only.splitlines()[0].endswith("— rows 0-1 of 1")
+    assert "2. get pc1 kwd — 10 tok (refused)" in only
+    assert "pc1 verbatim" not in only
+    by_task = raw.raw_markdown(res, task="t1")
+    assert by_task.splitlines()[0].endswith("— rows 0-2 of 2")
+    page = raw.raw_markdown(res, offset=1, limit=1)
+    assert page.splitlines()[0].endswith("— rows 1-2 of 3")
+    assert "Next:" in page and "--offset 2" in page and "read rows 2-3 of 3" in page
+    last = raw.raw_markdown(res, offset=2, limit=1)
+    assert "Next:" not in last
+    with pytest.raises(ValueError, match="offset"):
+        raw.raw_markdown(res, offset=-1)
+
+
+def test_raw_reader_tolerates_schema1_rows_without_call_log():
+    res = {"header": {"set": "quick"}, "rows": [_row("t1", "all-on", "a")]}
+    md = raw.raw_markdown(res)
+    assert "task t1" in md and "tok→gold 100.0" in md
+    assert "calls 4" in md  # the summary still prints
+    assert "\n  1." not in md  # but no call lines
+
+
+# ---------------------------------------------------------------------------
 # DB: the caller, the baselines, the coverage guard
 # ---------------------------------------------------------------------------
 
@@ -521,6 +603,23 @@ def test_whole_paper_tokens_are_the_canonical_text_of_the_docs(world):
     other = world["papers"]["9904.00002"][1]
     want = (len(corpus.canonical_text(paper)) + len(corpus.canonical_text(other))) / 4
     assert r2["calls"] == 2 and r2["tokens_total"] == pytest.approx(want, abs=0.01)
+
+
+def test_baseline_rows_carry_a_per_call_token_log(world):
+    task = _by_question(world["rows"], "What did the quasar1x2 instrument")
+    rag = runner.run_chunk_rag(
+        world["store"], world["embedder"], world["catalog"], task
+    )
+    assert rag["call_log"] and all(c["verb"] == "chunk" for c in rag["call_log"])
+    assert [c["n"] for c in rag["call_log"]] == list(range(1, len(rag["call_log"]) + 1))
+    assert sum(c["tokens"] for c in rag["call_log"]) == pytest.approx(
+        rag["tokens_total"], abs=0.1
+    )
+    wp = runner.run_whole_paper(world["catalog"], task)
+    assert wp["call_log"] and all(c["verb"] == "doc" for c in wp["call_log"])
+    assert sum(c["tokens"] for c in wp["call_log"]) == pytest.approx(
+        wp["tokens_total"], abs=0.1
+    )
 
 
 def test_layer_coverage_counts_what_the_db_holds(world):
@@ -748,6 +847,7 @@ def test_run_cli_writes_a_results_file_whose_header_pins_everything(
         "chunk-rag",
         "whole-paper",
     }
+    assert all("call_log" in r for r in res["rows"])
     md = runner.report_markdown(res)
     assert "| no-kwd |" in md and "VACUOUS" in md and "Unanswerable" in md
 
@@ -881,6 +981,20 @@ def test_triage_is_deterministic(stub_gold):
     b, rt_b = _stub_run("all-on", "triage", threshold=0.5)
     assert _comparable(a) == _comparable(b) and rt_a.log == rt_b.log
     assert a["caller"] == "triage"
+
+
+def test_call_log_records_every_call_with_tokens_and_marks_refusals(stub_gold):
+    row, _rt = _stub_run("all-on", "triage", threshold=0.5)
+    log = row["call_log"]
+    assert [c["n"] for c in log] == list(range(1, len(log) + 1))
+    assert log[0]["verb"] == "search" and log[0]["what"].startswith("paper")
+    assert all(c["tokens"] > 0 for c in log)
+    assert sum(c["tokens"] for c in log) == pytest.approx(row["tokens_total"], abs=0.2)
+    lad = _stub_run("no-kwd", "ladder")[0]
+    refused = [c for c in lad["call_log"] if c["refusal"]]
+    assert refused and all(c["what"].endswith("kwd") for c in refused)
+    unrefused = [c for c in lad["call_log"] if not c["refusal"]]
+    assert len(unrefused) == lad["calls"] - lad["refusals"]
 
 
 def test_triage_opens_by_score_above_the_threshold_and_fewer_than_ladder(stub_gold):
