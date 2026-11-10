@@ -218,35 +218,37 @@ def test_null_retraction_status_does_not_change_ranking(store: Store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# gr613850 — mode='semantic' scores are cosine DISTANCE (smaller = better).
-# The downrank used to sort every mode by ``-(score * factor)``, which
-# reversed a semantic page farthest-first.
+# gr613850/gr614312 — mode='semantic' scores are cosine DISTANCE at the
+# store (smaller = better). ``FusedBlockSearch.run`` converts them to
+# similarity (``1 - d``) before the downrank, so the re-sort keeps a
+# single descending bigger-is-better path for every mode.
 # ---------------------------------------------------------------------------
 
 
-def test_downrank_ascending_keeps_nearest_first_and_sinks_retracted() -> None:
-    """Distance scores: no-status hits keep nearest-first, and a retracted
-    hit's distance gets WORSE (larger), not better."""
-    near: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.10)
-    mid: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.20)
-    far: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.30)
-    assert _apply_retraction_downrank([near, mid, far], ascending=True) == [
+def test_downrank_similarity_scores_sink_retracted() -> None:
+    """Similarity scores (the post-conversion convention): no-status hits
+    keep best-first order, and a retracted hit's score shrinks by the
+    multiplicative factor."""
+    near: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.90)
+    mid: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.80)
+    far: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.70)
+    assert _apply_retraction_downrank([near, mid, far]) == [
         near,
         mid,
         far,
     ]
-    # retracted nearest hit: 0.10 / 0.02 = 5.0 -> behind both clean hits.
-    bad_near: tuple[Any, Any, float] = (object(), _FakeRef("retracted"), 0.10)
-    assert _apply_retraction_downrank([bad_near, mid, far], ascending=True) == [
+    # retracted nearest hit: 0.90 * 0.02 = 0.018 -> behind both clean hits.
+    bad_near: tuple[Any, Any, float] = (object(), _FakeRef("retracted"), 0.90)
+    assert _apply_retraction_downrank([bad_near, mid, far]) == [
         mid,
         far,
         bad_near,
     ]
-    # soft status (factor 0.85): 0.10 / 0.85 = 0.118 stays ahead of 0.20.
-    soft_near: tuple[Any, Any, float] = (object(), _FakeRef("corrected"), 0.10)
-    assert _apply_retraction_downrank([soft_near, mid], ascending=True) == [
-        soft_near,
+    # soft status (factor 0.85): 0.90 * 0.85 = 0.765 -> below the clean 0.80.
+    soft_near: tuple[Any, Any, float] = (object(), _FakeRef("corrected"), 0.90)
+    assert _apply_retraction_downrank([soft_near, mid]) == [
         mid,
+        soft_near,
     ]
 
 
@@ -290,9 +292,9 @@ def test_semantic_paper_search_returns_nearest_first(store: Store) -> None:
 def test_semantic_paper_search_downranks_retracted_not_promotes(
     store: Store,
 ) -> None:
-    """The retracted paper is the NEAREST hit (distance 0.005); /0.02 puts
-    it at 0.25, between the 0.7 (0.235) and 0.9 (0.378) angles — behind
-    the clean nearer papers, still present."""
+    """The retracted paper is the NEAREST hit (similarity ~0.995 after
+    the gr614312 distance→similarity conversion); *0.02 sinks it to the
+    bottom of the page — behind every clean paper, still present."""
     e = _AxisEmbedder(dim=1024)
     rids = _seed_angled(store, e, [0.1, 0.3, 0.5, 0.7, 0.9])
     store.set_retraction_status(rids[0], status="retracted")
@@ -303,8 +305,8 @@ def test_semantic_paper_search_downranks_retracted_not_promotes(
         rids[1],
         rids[2],
         rids[3],
-        rids[0],
         rids[4],
+        rids[0],
     ]
 
 

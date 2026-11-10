@@ -198,11 +198,19 @@ class SearchHit:
     numbers.
 
     Attributes:
-        score: Raw relevance from the producer.  Higher = better.
-            For lexical/RRF results this is the original tsrank or
-            fused score.  Used for *intra-stream* ordering only —
-            cross-stream fusion uses the rank position, not this
-            number, so producers don't need to normalise.
+        score: Raw relevance from the producer.  Higher = better —
+            ALWAYS: the one cross-kind score convention (gr614312).
+            A single-leg ``mode='semantic'`` store search returns
+            cosine *distances* (smaller = better); producers must
+            convert them to similarity at this boundary (``1 - d`` —
+            ``block_hits_to_search_hits(score_is_distance=True)`` /
+            :func:`distance_as_similarity`), otherwise
+            :func:`_merge_rrf`'s ``-raw_max`` tie-break and any
+            max-score sentinel cap invert.  For lexical/RRF results
+            this is the original tsrank or fused score.  Used for
+            *intra-stream* ordering and tie-breaks only — cross-stream
+            fusion uses the rank position, not this number, so
+            producers don't need to normalise scale.
         kind: Owning kind (``"paper"``, ``"patent"``, ``"memory"``).
             Surfaced as a per-hit label in cross-kind merges.
         slug: Citation handle for the underlying ref. ``None`` for
@@ -488,7 +496,11 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
     object identity (every such hit is its own document).
 
     Returns hits sorted by total RRF score desc, ties broken by
-    raw ``score`` desc.  We return one ``SearchHit`` per document
+    raw ``score`` desc — which is only a *correct* bigger-is-better
+    tie-break because producers normalise semantic-mode cosine
+    distances to similarity at the ``SearchHit`` boundary
+    (:func:`scores_are_distances` / :func:`distance_as_similarity`,
+    gr614312).  We return one ``SearchHit`` per document
     — the first one encountered when iterating streams in order
     — so consumers see consistent metadata.
 
@@ -810,6 +822,29 @@ def _empty_body(header_noun: str, query: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def scores_are_distances(mode: str | None, query_vec: Any) -> bool:
+    """True when a ``search_chunks(mode=…)`` call scored in cosine
+    *distance* — smaller = better — instead of a bigger-is-better score.
+
+    Only the single-leg ``mode='semantic'`` dispatcher branch
+    (``Store.chunks.search_chunks_semantic``) returns distances, and only
+    when the vector leg actually ran: with ``query_vec=None`` the same
+    call silently falls back to lexical ts_rank (bigger-is-better), so
+    callers must evaluate this *after* their query-vector resolution,
+    never from ``mode`` alone. Multi-leg ``search_chunks_multi`` /
+    ``search_chunks_across_kinds`` always return RRF scores — including
+    under ``mode='semantic'`` — so broad/across-kinds callers leave the
+    flag off entirely. (gr614312.)
+    """
+    return (mode or "").strip().lower() == "semantic" and query_vec is not None
+
+
+def distance_as_similarity(score: float) -> float:
+    """Cosine distance → ``1 - d`` similarity, the bigger-is-better score
+    the ``SearchHit.score`` convention requires (gr614312)."""
+    return 1.0 - float(score)
+
+
 def block_hits_to_search_hits(
     triples: list[tuple[Any, Any, float]],
     *,
@@ -819,6 +854,7 @@ def block_hits_to_search_hits(
     extra_lines_for: Any = None,
     dedupe_by_handle: bool = True,
     ref_level_dedupe: bool = False,
+    score_is_distance: bool = False,
 ) -> list[SearchHit]:
     """Adapt ``(block, ref, score)`` rows from the store into ``SearchHit``s.
 
@@ -854,6 +890,16 @@ def block_hits_to_search_hits(
             remote hits keyed on DOCDB id) — without this collapse
             the per-ref dedup the merge needs can't fire because
             every local block has a different ``slug~pos`` key.
+        score_is_distance: Set ``True`` when ``triples`` carry cosine
+            *distance* scores — a single-leg ``mode='semantic'``
+            ``search_chunks`` result (smaller = better). Each score is
+            converted via :func:`distance_as_similarity` so the emitted
+            ``SearchHit.score`` honours the bigger-is-better convention
+            documented on the field (gr614312). Compute the flag with
+            :func:`scores_are_distances` *after* query-vector
+            resolution — ``mode='semantic'`` with ``query_vec=None``
+            actually ran the lexical leg, whose ts_rank must NOT be
+            converted.
     """
     out: list[SearchHit] = []
     for block, ref, score in triples:
@@ -876,7 +922,9 @@ def block_hits_to_search_hits(
         kw = getattr(block, "keywords", None) or ()
         out.append(
             SearchHit(
-                score=float(score),
+                score=(
+                    distance_as_similarity(score) if score_is_distance else float(score)
+                ),
                 kind=kind,
                 title=getattr(ref, "title", "") or "",
                 preview=preview,

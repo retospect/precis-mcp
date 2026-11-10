@@ -63,7 +63,11 @@ from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.mentions import LINKIFY_KINDS
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    scores_are_distances,
+)
 from precis.utils.text import excerpt as _excerpt
 
 if TYPE_CHECKING:
@@ -1647,7 +1651,11 @@ class CacheBackedHandler(Handler):
         )
         # Salience bump (block-level); no-op for dream-actor reads.
         self.store.chunks.bump_salience([block.id for block, _ref, _score in triples])
-        return block_hits_to_search_hits(triples, kind=self.spec.kind)
+        return block_hits_to_search_hits(
+            triples,
+            kind=self.spec.kind,
+            score_is_distance=scores_are_distances(mode, query_vec),
+        )
 
     # ── block ingestion helper ────────────────────────────────────
 

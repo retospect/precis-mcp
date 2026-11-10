@@ -84,6 +84,7 @@ from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
     ref_hits_to_search_hits,
+    scores_are_distances,
 )
 from precis.utils.table_data import (
     TABLE_CTRL_RE,
@@ -1346,7 +1347,11 @@ class DraftHandler(Handler):
             # their distance.
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
-        out = block_hits_to_search_hits(triples, kind="draft")
+        out = block_hits_to_search_hits(
+            triples,
+            kind="draft",
+            score_is_distance=scores_are_distances(mode, query_vec),
+        )
         title_pairs = self._title_lexical_pairs(
             q,
             mode=mode,

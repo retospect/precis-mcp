@@ -56,6 +56,7 @@ from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
     merge_and_render,
+    scores_are_distances,
 )
 from precis.utils.text import excerpt as _excerpt
 
@@ -225,14 +226,20 @@ class EdgarHandler(Handler):
             scope_ref_id = scope_ref.id
 
         local_hits: list[tuple[Any, Ref, float]] = []
+        local_distances = False
         if reach != "remote" or scope_ref_id is not None:
+            local_query_vec: list[float] | None = None
+            if q and str(q).strip() and (mode or "").strip().lower() != "lexical":
+                local_query_vec = embed_query(self.embedder, q)
             local_hits = self._search_local(
                 q=q,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
                 page_size=page_size,
+                query_vec=local_query_vec,
                 mode=mode,
             )
+            local_distances = scores_are_distances(mode, local_query_vec)
 
         remote_hits: list[EdgarHit] = []
         params_used: dict[str, str] | None = None
@@ -264,6 +271,7 @@ class EdgarHandler(Handler):
             local_hits=local_hits,
             remote_hits=remote_hits,
             page_size=page_size,
+            score_is_distance=local_distances,
         )
 
         # Accession-shaped query that found nothing → point at the direct
@@ -349,6 +357,12 @@ class EdgarHandler(Handler):
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind="edgar")
+        # Resolve the vector here (not inside ``_search_local``) so the
+        # distance flag below knows whether the semantic leg ran.
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         triples = self._search_local(
             q=q,
             scope_ref_id=None,
@@ -357,7 +371,11 @@ class EdgarHandler(Handler):
             query_vec=query_vec,
             mode=mode,
         )
-        return block_hits_to_search_hits(triples, kind="edgar")
+        return block_hits_to_search_hits(
+            triples,
+            kind="edgar",
+            score_is_distance=scores_are_distances(mode, query_vec),
+        )
 
     # ── rendering ──────────────────────────────────────────────────────
 
@@ -537,6 +555,7 @@ class EdgarHandler(Handler):
         local_hits: list[tuple[Any, Ref, float]],
         remote_hits: list[EdgarHit],
         page_size: int,
+        score_is_distance: bool = False,
     ) -> Response:
         local_stream: list[SearchHit] = block_hits_to_search_hits(
             local_hits,
@@ -544,6 +563,7 @@ class EdgarHandler(Handler):
             reach="local",
             excerpt=200,
             ref_level_dedupe=True,
+            score_is_distance=score_is_distance,
         )
         remote_stream: list[SearchHit] = [
             _edgar_hit_to_search_hit(h) for h in remote_hits

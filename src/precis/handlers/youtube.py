@@ -60,7 +60,11 @@ from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
 from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    scores_are_distances,
+)
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.youtube_ids import (
     extract_video_id as _extract_video_id,
@@ -806,7 +810,10 @@ class YouTubeHandler(CacheBackedHandler):
         )
         self.store.chunks.bump_salience([block.id for block, _r, _s in triples])
         return block_hits_to_search_hits(
-            triples, kind=self.spec.kind, ref_level_dedupe=True
+            triples,
+            kind=self.spec.kind,
+            ref_level_dedupe=True,
+            score_is_distance=scores_are_distances(mode, query_vec),
         )
 
     # ── refresh-by-slug support ───────────────────────────────────────

@@ -56,6 +56,7 @@ from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
     merge_and_render,
+    scores_are_distances,
 )
 from precis.utils.text import excerpt as _excerpt
 
@@ -332,14 +333,20 @@ class PatentHandler(Handler):
         # local-only (searching one specific patent remotely makes no
         # sense) so the local leg always runs when scope is set.
         local_hits: list[tuple[Any, Ref, float]] = []
+        local_distances = False
         if reach != "remote" or scope_ref_id is not None:
+            local_query_vec: list[float] | None = None
+            if q and str(q).strip() and (mode or "").strip().lower() != "lexical":
+                local_query_vec = embed_query(self.embedder, q)
             local_hits = self._search_local(
                 q=q,
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
                 page_size=page_size,
+                query_vec=local_query_vec,
                 mode=mode,
             )
+            local_distances = scores_are_distances(mode, local_query_vec)
 
         # Remote leg: only when q= or a CQL-liftable tag is present
         # AND scope is None (scope is local-only — searching one
@@ -437,6 +444,7 @@ class PatentHandler(Handler):
             local_hits=local_hits,
             remote_hits=remote_hits,
             page_size=page_size,
+            score_is_distance=local_distances,
         )
 
         # DOCDB-shaped query that found nothing → mirror paper's
@@ -807,6 +815,7 @@ class PatentHandler(Handler):
         local_hits: list[tuple[Any, Ref, float]],
         remote_hits: list[OpsHit],
         page_size: int,
+        score_is_distance: bool = False,
     ) -> Response:
         """Merge local + remote hits into one rendered response.
 
@@ -829,6 +838,7 @@ class PatentHandler(Handler):
             reach="local",
             excerpt=200,
             ref_level_dedupe=True,
+            score_is_distance=score_is_distance,
         )
         remote_stream: list[SearchHit] = [
             _ops_hit_to_search_hit(h) for h in remote_hits
@@ -878,6 +888,12 @@ class PatentHandler(Handler):
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind="patent")
+        # Resolve the vector here (not inside ``_search_local``) so the
+        # distance flag below knows whether the semantic leg ran.
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         triples = self._search_local(
             q=q,
             scope_ref_id=None,
@@ -887,7 +903,11 @@ class PatentHandler(Handler):
             mode=mode,
             hard_cut=True,
         )
-        return block_hits_to_search_hits(triples, kind="patent")
+        return block_hits_to_search_hits(
+            triples,
+            kind="patent",
+            score_is_distance=scores_are_distances(mode, query_vec),
+        )
 
 
 # ---------------------------------------------------------------------------

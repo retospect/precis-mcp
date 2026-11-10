@@ -26,6 +26,7 @@ from precis.utils.search_merge import (
     merge_and_render,
     ref_hits_to_search_hits,
     salient_link_label,
+    scores_are_distances,
 )
 
 # ---------------------------------------------------------------------------
@@ -290,6 +291,53 @@ def test_block_helper_reach_overrides_label() -> None:
     [hit] = block_hits_to_search_hits(triples, kind="patent", reach="local")
     assert hit.reach == "local"
     assert hit.kind == "patent"
+
+
+# ---------------------------------------------------------------------------
+# gr614312 — semantic-mode cosine distances → similarity at the boundary
+# ---------------------------------------------------------------------------
+
+
+def test_scores_are_distances_only_for_a_live_semantic_leg() -> None:
+    """The flag is the store's dispatch condition: ``mode='semantic'``
+    AND a resolved ``query_vec`` — with ``None`` the call fell back to
+    lexical ts_rank (already bigger-is-better)."""
+    assert scores_are_distances("semantic", [0.1])
+    assert scores_are_distances(" Semantic ", [0.1])
+    assert not scores_are_distances("semantic", None)
+    assert not scores_are_distances("hybrid", [0.1])
+    assert not scores_are_distances("lexical", [0.1])
+    assert not scores_are_distances(None, [0.1])
+    assert not scores_are_distances(None, None)
+
+
+def test_block_adapter_converts_distances_to_similarity() -> None:
+    """``score_is_distance=True`` turns cosine distances (smaller =
+    better) into ``1 - d`` similarity so ``SearchHit.score`` keeps its
+    bigger-is-better convention."""
+    triples = [
+        (FakeBlock("near", 0), FakeRef("t", "a"), 0.0),
+        (FakeBlock("far", 1), FakeRef("t", "b"), 0.5),
+    ]
+    hits = block_hits_to_search_hits(triples, kind="paper", score_is_distance=True)
+    assert [h.score for h in hits] == [1.0, 0.5]
+
+
+def test_block_adapter_default_keeps_scores_untouched() -> None:
+    triples = [(FakeBlock("body", 0), FakeRef("t", "a"), 0.5)]
+    [hit] = block_hits_to_search_hits(triples, kind="paper")
+    assert hit.score == 0.5
+
+
+def test_rrf_tie_break_prefers_the_better_similarity() -> None:
+    """Two rank-1 hits from different kinds tie exactly on RRF total —
+    the ``-raw_max`` tie-break must pick the *higher* similarity. With
+    unconverted distances the closer hit used to lose (gr614312)."""
+    s1 = [_hit(slug="near", dedupe_key="paper:near", score=0.9)]
+    s2 = [_hit(slug="far", dedupe_key="memory:far", score=0.4)]
+    out = merge_and_render([s1, s2], page_size=10, mode="rrf")
+    assert "1. near" in out.body
+    assert "2. far" in out.body
 
 
 # ---------------------------------------------------------------------------

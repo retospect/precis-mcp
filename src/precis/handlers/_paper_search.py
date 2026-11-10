@@ -57,6 +57,7 @@ from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import distance_as_similarity, scores_are_distances
 from precis.utils.title_views import title_md
 
 if TYPE_CHECKING:
@@ -206,8 +207,6 @@ def _representative_block_for_ref(store: Store, rid: int) -> Any | None:
 
 def _apply_retraction_downrank(
     hits: list[tuple[Any, Any, float]],
-    *,
-    ascending: bool = False,
 ) -> list[tuple[Any, Any, float]]:
     """Stable-resort ``(block, ref, score)`` triples so a retracted /
     corrected / EoC paper ranks appropriately below an otherwise-
@@ -229,14 +228,14 @@ def _apply_retraction_downrank(
     injection would silently fail to downrank an injected retracted
     title match. Running before keeps the two passes independent.
 
-    ``ascending=True`` is for scores where SMALLER is better — the
-    cosine DISTANCE a single-leg ``mode='semantic'`` search returns
-    (``Store.chunks.search_chunks_semantic``). The factor is a
-    relevance multiplier (< 1 = penalty), so a distance is *divided* by
-    it (a retracted hit's distance grows) and the sort is ascending. The
-    default descending ``-(score * factor)`` is right for the
-    bigger-is-better scores (RRF fusion, ts_rank); applying it to
-    distances reversed a semantic page farthest-first (gr613850).
+    Scores must already be bigger-is-better here: a single-leg
+    ``mode='semantic'`` page arrives as cosine DISTANCE (smaller =
+    better), which the descending ``-(score * factor)`` sort used to
+    rank farthest-first (gr613850). ``FusedBlockSearch.run`` now
+    converts distances to similarity (``1 - d``) at the boundary —
+    the same one cross-kind ``SearchHit.score`` convention as
+    ``search_merge`` (gr614312) — so this function keeps a single
+    descending path for every mode.
     """
     if not hits:
         return hits
@@ -245,8 +244,6 @@ def _apply_retraction_downrank(
         status = (getattr(ref, "retraction_status", None) or "").strip().lower()
         return _RETRACTION_SCORE_FACTOR.get(status, 1.0)
 
-    if ascending:
-        return sorted(hits, key=lambda triple: triple[2] / _factor(triple[1]))
     return sorted(hits, key=lambda triple: -(triple[2] * _factor(triple[1])))
 
 
@@ -1140,10 +1137,9 @@ class FusedBlockSearch:
             # the vector leg (the store dispatcher falls to lexical when
             # ``query_vec`` is None) scores in cosine DISTANCE, smaller =
             # better; every other path (multi-leg RRF, fused, lexical)
-            # is bigger-better — see ``_apply_retraction_downrank``.
-            score_is_distance = (
-                mode or ""
-            ).strip().lower() == "semantic" and query_vec is not None
+            # is bigger-better — normalised to similarity just below
+            # (gr614312).
+            score_is_distance = scores_are_distances(mode, query_vec)
             _log.debug(
                 "paper search: embed stage (single-leg, mode=%s) took %.3fs",
                 mode,
@@ -1180,6 +1176,17 @@ class FusedBlockSearch:
             )
             single_page_has_more = len(probe) > page_size
             hits = probe[:page_size]
+        # gr614312: convert a distance page to similarity at the
+        # boundary so every downstream consumer — the downrank below,
+        # the ``float('inf')`` sentinel arithmetic, any reader of the
+        # triple's third element — sees the same bigger-is-better score
+        # convention ``search_merge`` documents (the conversion is
+        # order-preserving: ``1 - d`` is monotonically decreasing).
+        if score_is_distance:
+            hits = [
+                (block, ref, distance_as_similarity(score))
+                for block, ref, score in hits
+            ]
         _pre_dedup_n = len(hits)
         hits = _dedup_card_hits(hits)
         # gr460340: ``total`` counts raw chunk rows (card + body), so every
@@ -1190,7 +1197,7 @@ class FusedBlockSearch:
         # which stamps a float('inf') sentinel score that a
         # multiplicative penalty can't touch (see
         # ``_apply_retraction_downrank``'s docstring).
-        hits = _apply_retraction_downrank(hits, ascending=score_is_distance)
+        hits = _apply_retraction_downrank(hits)
 
         # Title introducer: a query that *is* a paper's title
         # ("attention is all you need") gets stripped by FTS to its

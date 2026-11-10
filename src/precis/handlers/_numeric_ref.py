@@ -93,7 +93,12 @@ from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_header import format_search_headline
-from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+from precis.utils.search_merge import (
+    SearchHit,
+    distance_as_similarity,
+    ref_hits_to_search_hits,
+    scores_are_distances,
+)
 
 log = logging.getLogger(__name__)
 
@@ -3114,6 +3119,14 @@ class NumericRefHandler(Handler):
         normalized_tags = Tag.normalize_filter(
             tags, kind=self.kind, axis_in_use=self._axis_in_use
         )
+        # Resolve the vector here (``_best_body_hits`` reuses it) so the
+        # distance flag below knows whether the semantic leg actually ran —
+        # gr614312: a single-leg mode='semantic' score is a cosine
+        # distance and must be converted to similarity before it becomes
+        # a ``SearchHit.score``.
+        if query_vec is None:
+            query_vec = query_vec_for(getattr(self.hub, "embedder", None), q, mode)
+        is_distance = scores_are_distances(mode, query_vec)
         ordered, _, _fold_info = self._best_body_hits(
             q,
             normalized_tags,
@@ -3132,7 +3145,7 @@ class NumericRefHandler(Handler):
         sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in ordered])
         return [
             SearchHit(
-                score=rank,
+                score=distance_as_similarity(rank) if is_distance else rank,
                 kind=self.kind,
                 title=ref.title
                 or self._snippet(self._hit_text(ref, block), max_chars=80),

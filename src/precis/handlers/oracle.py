@@ -71,6 +71,7 @@ from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
+    scores_are_distances,
 )
 from precis.utils.text import excerpt as _excerpt
 
@@ -309,7 +310,11 @@ class OracleHandler(Handler):
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
-        return block_hits_to_search_hits(triples, kind="oracle")
+        return block_hits_to_search_hits(
+            triples,
+            kind="oracle",
+            score_is_distance=scores_are_distances(mode, query_vec),
+        )
 
     # ── seven-verb surface ─────────────────────────────────────────
 

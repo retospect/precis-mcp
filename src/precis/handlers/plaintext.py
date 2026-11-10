@@ -83,7 +83,11 @@ from precis.utils.plaintext_parse import (
     parse_plaintext,
 )
 from precis.utils.search_header import detect_score_cliff, format_search_headline
-from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    scores_are_distances,
+)
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 
@@ -812,7 +816,11 @@ class PlaintextHandler(Handler):
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
-        return block_hits_to_search_hits(triples, kind=self._KIND)
+        return block_hits_to_search_hits(
+            triples,
+            kind=self._KIND,
+            score_is_distance=scores_are_distances(mode, query_vec),
+        )
 
     # ── put: create a new file (creation-only) ─────────────────────
 

@@ -141,7 +141,12 @@ from precis.utils.link_tag_ops import (
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.record_cite import RECORD_TYPES, is_record_cite, record_type_of
-from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    distance_as_similarity,
+    scores_are_distances,
+)
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.title_merge import title_merge_refusal
@@ -4164,6 +4169,13 @@ class PaperHandler(Handler):
             card_kinds=("card_combined",),
             exclude_tags=_junk_exclude(tags),
         )
+        # gr614312: a single-leg mode='semantic' result scores in cosine
+        # distance — convert to similarity NOW, so the ``float('inf')``
+        # sentinel cap below (``max`` of the finite scores) and every
+        # emitted ``SearchHit.score`` stay on the bigger-is-better
+        # convention ``_merge_rrf``'s tie-break assumes.
+        if scores_are_distances(mode, query_vec):
+            triples = [(b, r, distance_as_similarity(s)) for b, r, s in triples]
         triples = _dedup_card_hits(triples)
         # Title introducer, as in :meth:`search`: FTS strips an exact-title
         # query ("attention is all you need") to 'attent' & 'need', so the

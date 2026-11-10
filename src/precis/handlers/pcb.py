@@ -204,7 +204,11 @@ from precis.utils.link_tag_ops import (
 )
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
-from precis.utils.search_merge import SearchHit
+from precis.utils.search_merge import (
+    SearchHit,
+    distance_as_similarity,
+    scores_are_distances,
+)
 from precis.utils.units import parse_angle_deg
 
 log = logging.getLogger(__name__)
@@ -9816,9 +9820,16 @@ class PcbHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
+        # Resolve the vector here so the distance flag knows whether
+        # the semantic leg ran (gr614312 — distances become similarity).
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
+            query_vec = embed_query(self.embedder, q)
         triples = self._card_search(
             q, query_vec=query_vec, mode=mode, page_size=page_size
         )
+        is_distance = scores_are_distances(mode, query_vec)
         self.store.chunks.bump_salience([b.id for b, _r, _s in triples])
         out: list[SearchHit] = []
         for block, ref, score in triples:
@@ -9826,7 +9837,9 @@ class PcbHandler(Handler):
             preview = text if len(text) <= 200 else text[:199].rstrip() + "…"
             out.append(
                 SearchHit(
-                    score=float(score),
+                    score=(
+                        distance_as_similarity(score) if is_distance else float(score)
+                    ),
                     kind="pcb",
                     title=ref.title or ref.slug or "",
                     preview=preview,
