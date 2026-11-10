@@ -673,7 +673,7 @@ def test_parented_put_stores_a_dict_op_on_create(
     root = id_of(handler.put(text="Root.", meta={"rotation_root": True}).body)
     op = {
         "type": "run_slice",
-        "params": {"model": "claude-sonnet-5", "effort": "low"},
+        "params": {"model": "claude-sonnet-5-5", "effort": "low"},
     }
     child = id_of(
         handler.put(

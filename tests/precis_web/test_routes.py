@@ -3601,7 +3601,7 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
                 "stop_reason": "end_turn",
                 "input_tokens": 420,
                 "output_tokens": 137,
-                "model": "claude-opus-4-7",
+                "model": "claude-opus-5-5",
             },
         ),
     ]
@@ -3634,7 +3634,7 @@ def test_conv_detail_renders_full_meta_per_turn(client, runtime) -> None:
         "output_tokens",
         "137",
         "model",
-        "claude-opus-4-7",
+        "claude-opus-5-5",
     ):
         assert needle in resp.text, f"{needle!r} missing from rendered transcript"
 
@@ -5402,7 +5402,7 @@ def test_status_services_tab_renders_llm_operations_panel(client) -> None:
     assert "Evening meditation" in resp.text
     # Derived from the registry rather than spelled out: this asserts the panel
     # *renders a default*, and has no opinion on which default currently ships
-    # — it used to hardcode "frontier / claude-sonnet-5" and so broke when the
+    # — it used to hardcode "frontier / claude-sonnet-5-5" and so broke when the
     # casts moved off the quota-gated claude pin on 2026-08-07.
     from precis.utils.llm.operations import LLM_OPERATIONS
 

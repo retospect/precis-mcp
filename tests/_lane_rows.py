@@ -55,11 +55,11 @@ SEED_LANES: tuple[Lane, ...] = (
         task_classes=frozenset({ANY_CLASS}),
         vendor="anthropic",
         models=(
-            "claude-haiku-4-5-20251001",
-            "claude-sonnet-5",
-            "claude-opus-4-8",
+            "claude-haiku-5-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
         ),
-        default_model="claude-sonnet-5",
+        default_model="claude-sonnet-5-5",
         model_prefix="claude-",
     ),
     # The ``kimi`` account row (adapter ``kimi_tree``, lane_rank 40)

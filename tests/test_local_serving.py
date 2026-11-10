@@ -102,7 +102,7 @@ def test_no_warning_for_cloud_model_mismatch(store, caplog) -> None:
     meter.bind_store(store)
     _serve(store, "testnode", "qwen3-next-80b-a3b-q4_k_m", 2)
     with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
-        assert local_serving.acquire("claude-opus-4-8") is None
+        assert local_serving.acquire("claude-opus-5-5") is None
         assert local_serving.acquire("gpt-5") is None
     assert not caplog.records
 

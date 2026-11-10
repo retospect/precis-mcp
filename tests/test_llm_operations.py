@@ -144,13 +144,13 @@ def test_unregistered_source_returns_none(
 
 
 def test_model_pin_via_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_op_override(monkeypatch, "reading_brief", {"model": "claude-opus-4-8"})
-    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "claude-opus-4-8")
+    _set_op_override(monkeypatch, "reading_brief", {"model": "claude-opus-5-5"})
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "claude-opus-5-5")
 
 
 def test_model_pin_cleared_reverts_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_op_override(monkeypatch, "reading_brief", {"model": "claude-opus-4-8"})
-    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "claude-opus-4-8")
+    _set_op_override(monkeypatch, "reading_brief", {"model": "claude-opus-5-5"})
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "claude-opus-5-5")
 
     # Clear the row and bust the cache — the next read re-queries and finds
     # nothing, so the resolver falls back to the registry default.
@@ -465,7 +465,7 @@ def test_dispatch_op_tier_remap_reaches_breaker_and_result(
     entirely. The model is pinned in the same override so the result assertion
     doesn't depend on whatever the tier's chain happens to resolve to."""
     _set_op_override(
-        monkeypatch, "reading_brief", {"tier": "medium", "model": "claude-sonnet-5"}
+        monkeypatch, "reading_brief", {"tier": "medium", "model": "claude-sonnet-5-5"}
     )
 
     def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
@@ -497,7 +497,7 @@ def test_dispatch_op_tier_remap_reaches_breaker_and_result(
     assert breaker_tiers == [Tier.MEDIUM]
     # The tier stamped into the final result is the remapped one too.
     assert out.tier is Tier.MEDIUM
-    assert out.model == "claude-sonnet-5"
+    assert out.model == "claude-sonnet-5-5"
     assert out.text == "brief text"
 
 

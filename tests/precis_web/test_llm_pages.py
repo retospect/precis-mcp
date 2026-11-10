@@ -108,7 +108,7 @@ def test_keyword_route_preview_match(
         rule_id="3",
         pattern="opus",
         is_regex=False,
-        target={"model": "claude-opus-4-8"},
+        target={"model": "claude-opus-5-5"},
         compiled=keyword_route._compile("opus", False, "3"),
     )
     monkeypatch.setattr(keyword_route, "_refresh_snapshot", lambda: [rule])
@@ -120,7 +120,7 @@ def test_keyword_route_preview_match(
     row = resp.json()
     assert row["matched"] is True
     assert row["rule_id"] == "3"
-    assert row["target"] == {"model": "claude-opus-4-8"}
+    assert row["target"] == {"model": "claude-opus-5-5"}
     # The plan either names the model or the reason it can't run here —
     # both are informative preview output, never an error.
     assert "model" in row or "fallback" in row
@@ -134,7 +134,7 @@ def test_llm_rule_posts_never_500(client: TestClient) -> None:
         data={
             "pattern": "opus",
             "target_kind": "model",
-            "target_value": "claude-opus-4-8",
+            "target_value": "claude-opus-5-5",
         },
         follow_redirects=False,
     )

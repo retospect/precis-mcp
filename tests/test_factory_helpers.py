@@ -107,14 +107,14 @@ def test_hosts_reports_liveness(store) -> None:
 def test_config_rows_returns_all_rows(store) -> None:
     set_service_prio(store, "melchior", "classify", 0)
     set_service_prio(store, "*", "classify", 3)
-    set_service_model(store, "caspar", "briefing", "claude-opus-4-8")
+    set_service_model(store, "caspar", "briefing", "claude-opus-5-5")
     rows = _config_rows(store)
     triples = {(s, h, p) for (s, h, p, _m) in rows}
     assert ("classify", "melchior", 0) in triples
     assert ("classify", "*", 3) in triples
     # model row carries its model_pref
     briefing = [r for r in rows if r[0] == "briefing"][0]
-    assert briefing[3] == "claude-opus-4-8"
+    assert briefing[3] == "claude-opus-5-5"
 
 
 def test_activity_keys_by_payload_handler(store) -> None:

@@ -63,14 +63,14 @@ def test_quota_metadata_agrees_with_executor_horizon(
             final_text=text, cost_usd=0.0, duration_s=0.0, turns_used=1
         )
         result = router.result_from_agent(
-            agent_result, model="claude-sonnet-5", tier=router.Tier.BIG
+            agent_result, model="claude-sonnet-5-5", tier=router.Tier.BIG
         )
     else:
         claude_p_result = ClaudePResult(
             data={}, raw_stdout=text, cost_usd=0.0, text=text
         )
         result = router.result_from_claude_p(
-            claude_p_result, model="claude-sonnet-5", tier=router.Tier.BIG
+            claude_p_result, model="claude-sonnet-5-5", tier=router.Tier.BIG
         )
 
     assert result.reason_class == "quota"
@@ -86,7 +86,7 @@ def test_parsed_answer_does_not_gain_quota_metadata():
     text = "You've hit your session limit · resets 9pm (UTC)"
     raw = ClaudePResult(data={"note": text}, raw_stdout=text, cost_usd=0.0, text=text)
     result = router.result_from_claude_p(
-        raw, model="claude-sonnet-5", tier=router.Tier.BIG
+        raw, model="claude-sonnet-5-5", tier=router.Tier.BIG
     )
     assert not result.paused
     assert result.reason_class is None and result.retry_at is None
@@ -97,7 +97,7 @@ def test_successful_agent_answer_keeps_metadata_unset():
         final_text="A useful answer.", cost_usd=0.0, duration_s=0.0, turns_used=1
     )
     result = router.result_from_agent(
-        raw, model="claude-sonnet-5", tier=router.Tier.BIG
+        raw, model="claude-sonnet-5-5", tier=router.Tier.BIG
     )
     assert result.reason_class is None and result.retry_at is None
 

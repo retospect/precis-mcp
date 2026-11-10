@@ -241,9 +241,9 @@ class Backend(StrEnum):
 # CLI's own default. Every cloud-reasoning caller (dream, tex-fix, reviewers,
 # fix-gripe, the generic ``claude_agent`` default) resolves through here.
 _TIER_MODEL: dict[Tier, tuple[str, str]] = {
-    Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
-    Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
-    Tier.MEDIUM: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
+    Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-5-5"),
+    Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5-5"),
+    Tier.MEDIUM: ("PRECIS_MODEL_HAIKU", "claude-haiku-5-5"),
     # The local ``summarizer`` alias (``LlmConfig.model`` default), read
     # from ``PRECIS_SUMMARIZE_MODEL`` exactly as ``LlmConfig.from_env``.
     Tier.SMALL: ("PRECIS_SUMMARIZE_MODEL", "summarizer"),

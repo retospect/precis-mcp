@@ -30,7 +30,7 @@ more — never a truncation salvage (a cut object has no complete block).
 Knobs (all overridable per call, project defaults via env):
 
 * ``PRECIS_CLAUDE_BIN``       — claude binary path (default ``claude``).
-* ``PRECIS_CLAUDE_MODEL``     — model id (default ``claude-haiku-4-5``).
+* ``PRECIS_CLAUDE_MODEL``     — model id (default ``claude-haiku-5-5``).
 * ``PRECIS_CLAUDE_MAX_USD``   — per-call cost cap (default ``0.10``).
 * ``PRECIS_CLAUDE_TIMEOUT_S`` — wall-clock timeout (default ``120``).
 
@@ -76,7 +76,7 @@ log = logging.getLogger(__name__)
 # Default model: Haiku is fast + cheap for the verifier-shaped tasks
 # the chase worker uses (one-shot JSON output, ≤ ~4 KB context). Bump
 # to Sonnet/Opus per call when more judgment is needed.
-_DEFAULT_MODEL = "claude-haiku-4-5"
+_DEFAULT_MODEL = "claude-haiku-5-5"
 
 # Default budget per call — wide enough for a single Haiku turn with
 # a few KB of context, narrow enough that a runaway loop is bounded.
@@ -274,7 +274,7 @@ def call_claude_p(
             including a JSON-shape hint at the end so the model
             emits parseable output.
         model: Override the default model (``PRECIS_CLAUDE_MODEL`` or
-            ``claude-haiku-4-5``). Pass a heavier model for harder
+            ``claude-haiku-5-5``). Pass a heavier model for harder
             judgment tasks.
         max_usd: Override the per-call cost cap
             (``PRECIS_CLAUDE_MAX_USD`` or ``0.10``).

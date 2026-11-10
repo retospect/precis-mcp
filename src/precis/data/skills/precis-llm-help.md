@@ -23,7 +23,7 @@ actually performed on precis's own work. It exists so model choice is an
 *informed, window-safe, budget-aware* decision instead of a hardcoded constant.
 
 The canonical address is the handle `lm<id>` (e.g. `lm7`), but the **model slug
-is the human key** — `get(kind='llm', id='claude-opus-4-8')` resolves it.
+is the human key** — `get(kind='llm', id='claude-opus-5-5')` resolves it.
 
 Cards are **machine-maintained** (a reconcile pass keeps facts true against the
 live model feed); you *read* the catalog, you don't hand-author it.
@@ -33,7 +33,7 @@ live model feed); you *read* the catalog, you don't hand-author it.
 
 ```python
 search(kind="llm", q="careful SQL and multi-file refactors")
-get(kind="llm", id="claude-opus-4-8")
+get(kind="llm", id="claude-opus-5-5")
 ```
 
 `search` matches your phrasing against each card's capability prose. `get` shows
@@ -46,8 +46,8 @@ window, price), the coarse **1–5 capability axes** (`code`,
 ## See a model's realized cost + error rate + reviews
 
 ```python
-get(kind="llm", id="claude-opus-4-8", view="tote")
-get(kind="llm", id="claude-opus-4-8", view="reviews")
+get(kind="llm", id="claude-opus-5-5", view="tote")
+get(kind="llm", id="claude-opus-5-5", view="reviews")
 ```
 
 `view='tote'` rolls up `llm_call_log` — realized calls, cost, error rate, p50
@@ -87,7 +87,7 @@ need raw `llm_call_log` SQL.
 ```python
 put(
     kind="llm",
-    id="claude-opus-4-8",
+    id="claude-opus-5-5",
     text="excellent at SQL-migration reasoning",
     entry="agent-review",
     by="agent",
@@ -135,8 +135,8 @@ tags back in the rendered card (and the generic links section), but
 there's no llm-specific facet UI or search-filter semantics beyond that:
 
 ```python
-tag(kind="llm", id="claude-opus-4-8", add=["topic:sql-migration"])
-link(kind="llm", id="claude-opus-4-8", target="memory:me812", rel="see-also")
+tag(kind="llm", id="claude-opus-5-5", add=["topic:sql-migration"])
+link(kind="llm", id="claude-opus-5-5", target="memory:me812", rel="see-also")
 ```
 
 

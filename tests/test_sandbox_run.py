@@ -378,7 +378,7 @@ def test_build_run_argv_invariants() -> None:
         job_id=42,
         image="code-task:abc",
         work_dir="/tmp/precis-sandbox/sandbox-42",
-        model="claude-opus-4-7",
+        model="claude-opus-5-5",
         memory="8g",
         cpus="2",
         pids_limit=512,
@@ -1138,7 +1138,7 @@ def _mk_build_folder(store: Store, *, with_run_json: bool = True) -> int:
         container_name="sandbox-build-1",
         work_dir=work_dir,
         image="code-task:abc",
-        model="claude-opus-4-7",
+        model="claude-opus-5-5",
     )
     assert result.folder_ref_id is not None
     return result.folder_ref_id

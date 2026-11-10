@@ -119,7 +119,7 @@ def pop_trust_payload(args: dict[str, Any], extras_key: str) -> dict[str, Any] |
         raise BadInput(
             f"a kg-review reason is 'kg-review:<model>:<YYYY-MM-DD>:ok|fixed'"
             f", got {reason!r}",
-            next="reason='kg-review:claude-opus-4-8:2026-10-22:ok' "
+            next="reason='kg-review:claude-opus-5-5:2026-10-22:ok' "
             "(reviewer model, UTC review date, ok|fixed)",
         )
     return payload

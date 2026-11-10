@@ -72,11 +72,11 @@ def test_ttl_cache_holds_then_invalidate_refreshes(store) -> None:
 
 def test_set_clear_and_list_roundtrip(store) -> None:
     set_service_prio(store, "melchior", "classify", 2, actor="reto")
-    set_service_model(store, "melchior", "briefing", "claude-opus-4-8", actor="reto")
+    set_service_model(store, "melchior", "briefing", "claude-opus-5-5", actor="reto")
     rows = list_service_config(store)
     by_key = {(r["host"], r["service"]): r for r in rows}
     assert by_key[("melchior", "classify")]["prio"] == 2
-    assert by_key[("melchior", "briefing")]["model_pref"] == "claude-opus-4-8"
+    assert by_key[("melchior", "briefing")]["model_pref"] == "claude-opus-5-5"
     # model set didn't disturb prio (defaulted to DEFAULT_PRIO for the new row)
     assert by_key[("melchior", "briefing")]["prio"] == DEFAULT_PRIO
 
@@ -96,12 +96,12 @@ def test_set_prio_rejects_out_of_range(store) -> None:
 
 def test_model_pin_survives_prio_flip(store) -> None:
     """`service prio` must not wipe a separately-set model_pref."""
-    set_service_model(store, "melchior", "briefing", "claude-opus-4-8")
+    set_service_model(store, "melchior", "briefing", "claude-opus-5-5")
     set_service_prio(store, "melchior", "briefing", 0)  # no model_pref supplied
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
     row = rows[("melchior", "briefing")]
     assert row["prio"] == 0
-    assert row["model_pref"] == "claude-opus-4-8"  # preserved by COALESCE
+    assert row["model_pref"] == "claude-opus-5-5"  # preserved by COALESCE
 
 
 # ---------------------------------------------------------------------------

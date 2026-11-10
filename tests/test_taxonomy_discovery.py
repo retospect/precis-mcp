@@ -456,7 +456,7 @@ class MeteredClient:
         if len(self.calls) == 1:
             return Reply(
                 text=self._payload,
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 cost_usd=0.0125,
                 input_tokens=900,
                 output_tokens=40,
@@ -499,7 +499,7 @@ def test_discover_records_every_call_with_prompt_hash_and_metering() -> None:
         40,
     )
     assert (metered.cache_read_tokens, metered.cache_creation_tokens) == (850, 0)
-    assert metered.model == "claude-sonnet-5"
+    assert metered.model == "claude-sonnet-5-5"
     # A bare-string reply is an unmetered call: every metering field stays
     # None (unreported), never a fabricated zero.
     assert bare.cost_usd is None and bare.input_tokens is None
@@ -601,7 +601,7 @@ class _FakeDispatch:
 def test_router_adapter_maps_the_llm_result_metering_onto_the_reply() -> None:
     dispatch = _FakeDispatch(
         text="[]",
-        model="claude-sonnet-5",
+        model="claude-sonnet-5-5",
         cost_usd=0.02,
         input_tokens=10,
         output_tokens=5,
@@ -613,7 +613,7 @@ def test_router_adapter_maps_the_llm_result_metering_onto_the_reply() -> None:
     assert dispatch.messages == [[{"role": "user", "content": "the prompt"}]]
     assert reply == Reply(
         text="[]",
-        model="claude-sonnet-5",
+        model="claude-sonnet-5-5",
         cost_usd=0.02,
         input_tokens=10,
         output_tokens=5,

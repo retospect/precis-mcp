@@ -18,7 +18,7 @@ def _rec(**kw: Any) -> LlmCallRecord:
         "source": "dream",
         "tier": "frontier",
         "transport": "claude_agent",
-        "model": "claude-opus-4-8",
+        "model": "claude-opus-5-5",
         "tools_needed": True,
         "request_text": "REQ",
         "response_text": "RESP",
@@ -67,7 +67,7 @@ def test_record_call_writes_row_and_dedups_blobs(store: Any) -> None:
         ).fetchone()
     assert n_calls == 2
     assert n_shared_blob == 1  # deduped — the big repeated request stored once
-    assert row[0] == "claude-opus-4-8"
+    assert row[0] == "claude-opus-5-5"
     assert row[1] == len(shared_req)
     assert row[2] is True
 
@@ -707,7 +707,7 @@ def test_dispatch_records_the_full_call(store: Any, monkeypatch: Any) -> None:
     assert row is not None
     assert row[0] == src
     assert row[1] == "claude_p"
-    assert row[2] == "claude-haiku-4-5-20251001"  # resolved from the tier
+    assert row[2] == "claude-haiku-5-5"  # resolved from the tier
     assert row[3] is True  # judge JSON parsed
     assert row[4] is False
     assert row[5]["source"] == src  # features captured

@@ -342,8 +342,8 @@ def test_seed_table_enabled_lanes() -> None:
     assert [(r.lane, r.model) for r in ladder("code", lanes=SEED_LANES)] == [
         ("devin", "swe-2-high"),
         ("devin", "swe-2-max"),
-        ("claude-sub", "claude-sonnet-5"),
-        ("claude-sub", "claude-opus-4-8"),
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
     ]
     sub = seed_lane("claude-sub")
     assert (sub.adapter, sub.credential_pool, sub.cap) == (
@@ -360,11 +360,11 @@ def test_claude_sub_accepts_models_and_defaults_to_sonnet() -> None:
     can still write code, not the frontier pin."""
     sub = seed_lane("claude-sub")
     assert sub.models == (
-        "claude-haiku-4-5-20251001",
-        "claude-sonnet-5",
-        "claude-opus-4-8",
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
     )
-    assert sub.default_model == "claude-sonnet-5"
+    assert sub.default_model == "claude-sonnet-5-5"
     for lane in SEED_LANES:
         assert lane.default_model is None or lane.default_model in lane.models
 
@@ -382,12 +382,12 @@ def test_resolve_model_order(
     assert run_slice.resolve_model({}, lane) == "claude-test-model"
     assert run_slice.resolve_model({}, _vendor_lane("codex", "codex_exec")) is None
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
-    assert run_slice.resolve_model({}, lane) == "claude-sonnet-5"
+    assert run_slice.resolve_model({}, lane) == "claude-sonnet-5-5"
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
     monkeypatch.delenv("PRECIS_LLM_MODEL_FRONTIER", raising=False)
-    assert run_slice.resolve_model({}) == "claude-opus-4-8"
+    assert run_slice.resolve_model({}) == "claude-opus-5-5"
     assert run_slice.resolve_model({}, _lane("bare", 1, {ANY_CLASS})) == (
-        "claude-opus-4-8"
+        "claude-opus-5-5"
     )
 
 
@@ -429,16 +429,16 @@ def test_pick_lane_honours_a_pinned_model() -> None:
         "sub",
         2,
         frozenset({ANY_CLASS}),
-        models=("claude-sonnet-5",),
+        models=("claude-sonnet-5-5",),
         model_prefix="claude-",
     )
     table = (codex, sub)
     picked = pick_lane(None, "code", lanes=table, counts={})
     assert picked is codex
-    picked = pick_lane(None, "code", lanes=table, counts={}, model="claude-sonnet-5")
+    picked = pick_lane(None, "code", lanes=table, counts={}, model="claude-sonnet-5-5")
     assert picked is sub
     # Outside ``models`` but under the prefix: the CLI takes any claude id.
-    picked = pick_lane(None, "code", lanes=table, counts={}, model="claude-sonnet-5-5")
+    picked = pick_lane(None, "code", lanes=table, counts={}, model="claude-haiku-5-5")
     assert picked is sub
     assert pick_lane(None, "code", lanes=table, counts={}, model="gpt-5-codex") is None
     assert not codex.accepts_model("gpt-5-codex")
@@ -450,7 +450,7 @@ def test_pick_lane_honours_a_pinned_model() -> None:
     assert seed_devin.accepts_model("swe-2-high")
     assert not seed_devin.accepts_model("swe-2-high-lightning")
     assert seed_sub.accepts_model("claude-sonnet-5-5")
-    assert seed_sub.accepts_model("claude-opus-4-8")
+    assert seed_sub.accepts_model("claude-opus-5-5")
 
 
 def test_pick_lane_skips_a_backed_off_lane(
@@ -550,7 +550,7 @@ def test_pick_lane_paid_not_ok_waits(monkeypatch: pytest.MonkeyPatch) -> None:
         1,
         frozenset({ANY_CLASS}),
         vendor="anthropic",
-        models=("claude-sonnet-5",),
+        models=("claude-sonnet-5-5",),
     )
     use_lanes(monkeypatch, free, paid)
     # The free lane at its cap is a wait, not a paid pick.
@@ -558,7 +558,9 @@ def test_pick_lane_paid_not_ok_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     picked = pick_lane(None, "code", counts={"free": 1})
     assert picked is not None and picked.name == "paid"
     # Every free lane filtered → the paid lanes stay in the set.
-    picked = pick_lane(None, "code", counts={}, model="claude-sonnet-5", paid_ok=False)
+    picked = pick_lane(
+        None, "code", counts={}, model="claude-sonnet-5-5", paid_ok=False
+    )
     assert picked is not None and picked.name == "paid"
     future = datetime.now(UTC) + timedelta(minutes=30)
     picked = pick_lane(None, "code", counts={}, paid_ok=False, backoff={"free": future})
@@ -686,7 +688,7 @@ def test_generator_brief_creates_children_and_never_lands(
     assert "'op': {'type': 'run_slice'" in brief
     assert "'model': '<id>'" in brief
     assert "'effort': '<low|medium|high>'" in brief
-    assert "claude-sonnet-5" in brief
+    assert "claude-sonnet-5-5" in brief
     assert "blocked-by" in brief
     assert "Do not tag this todo done: the dispatcher closes it" in brief
     # no land steps: no ship, no landed comment, no STATUS:done instruction
@@ -1209,9 +1211,9 @@ def test_submit_unpinned_child_uses_lane_default_model(
     store = _Store()
     store.add_todo(42, "Verify the fix", meta={"op": "run_slice"})
     ctx, _handle = _submit(store, seams)
-    assert ctx.meta_set["model"] == "claude-sonnet-5"
+    assert ctx.meta_set["model"] == "claude-sonnet-5-5"
     [(argv, _kw)] = seams["launch"]
-    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5-5"
 
 
 def test_submit_env_is_an_allowlist(

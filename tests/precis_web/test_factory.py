@@ -42,7 +42,7 @@ def test_post_prio_redirects_to_services_tab(client) -> None:
 def test_post_model_redirects(client) -> None:
     resp = client.post(
         "/factory/model",
-        data={"host": "*", "service": "briefing", "model": "claude-opus-4-8"},
+        data={"host": "*", "service": "briefing", "model": "claude-opus-5-5"},
         follow_redirects=False,
     )
     assert resp.status_code == 303

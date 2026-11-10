@@ -142,12 +142,12 @@ def test_result_from_agent_reports_modelusage() -> None:
         cost_usd=0.01,
         duration_s=1.0,
         turns_used=2,
-        raw_stdout=_agent_stdout(["claude-opus-4-8-20260101", "claude-haiku-4-5"]),
+        raw_stdout=_agent_stdout(["claude-opus-5-5-20261101", "claude-haiku-5-5"]),
     )
-    out = router.result_from_agent(res, model="claude-opus-4-8", tier=Tier.MEDIUM)
+    out = router.result_from_agent(res, model="claude-opus-5-5", tier=Tier.MEDIUM)
     assert out.observed == {
-        "model": "claude-opus-4-8-20260101",
-        "models": ["claude-haiku-4-5", "claude-opus-4-8-20260101"],
+        "model": "claude-opus-5-5-20261101",
+        "models": ["claude-haiku-5-5", "claude-opus-5-5-20261101"],
         "provider": None,
         "quant": None,
     }
@@ -163,15 +163,15 @@ def test_result_from_agent_fingerprints_the_primary_model() -> None:
         turns_used=2,
         raw_stdout=_agent_stdout_usage(
             {
-                "claude-opus-4-8-20260101": {"inputTokens": 3, "outputTokens": 900},
-                "claude-haiku-4-5": {"inputTokens": 2, "outputTokens": 4},
+                "claude-opus-5-5-20261101": {"inputTokens": 3, "outputTokens": 900},
+                "claude-haiku-5-5": {"inputTokens": 2, "outputTokens": 4},
             }
         ),
     )
-    out = router.result_from_agent(res, model="claude-opus-4-8", tier=Tier.MEDIUM)
+    out = router.result_from_agent(res, model="claude-opus-5-5", tier=Tier.MEDIUM)
     assert out.observed == {
-        "model": "claude-opus-4-8-20260101",
-        "models": ["claude-haiku-4-5", "claude-opus-4-8-20260101"],
+        "model": "claude-opus-5-5-20261101",
+        "models": ["claude-haiku-5-5", "claude-opus-5-5-20261101"],
         "provider": None,
         "quant": None,
     }
@@ -187,15 +187,15 @@ def test_result_from_agent_fingerprint_tie_picks_greater_model_id() -> None:
         turns_used=2,
         raw_stdout=_agent_stdout_usage(
             {
-                "claude-haiku-4-5": {"inputTokens": 2, "outputTokens": 7},
-                "claude-opus-4-8-20260101": {"inputTokens": 3, "outputTokens": 7},
+                "claude-haiku-5-5": {"inputTokens": 2, "outputTokens": 7},
+                "claude-opus-5-5-20261101": {"inputTokens": 3, "outputTokens": 7},
             }
         ),
     )
-    out = router.result_from_agent(res, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+    out = router.result_from_agent(res, model="claude-haiku-5-5", tier=Tier.MEDIUM)
     assert out.observed == {
-        "model": "claude-opus-4-8-20260101",
-        "models": ["claude-haiku-4-5", "claude-opus-4-8-20260101"],
+        "model": "claude-opus-5-5-20261101",
+        "models": ["claude-haiku-5-5", "claude-opus-5-5-20261101"],
         "provider": None,
         "quant": None,
     }
@@ -224,15 +224,15 @@ def test_result_from_agent_malformed_output_tokens_counts_as_zero(
         turns_used=2,
         raw_stdout=_agent_stdout_usage(
             {
-                "claude-haiku-4-5": entry,
-                "claude-opus-4-8-20260101": {"outputTokens": 5},
+                "claude-haiku-5-5": entry,
+                "claude-opus-5-5-20261101": {"outputTokens": 5},
             }
         ),
     )
     out = router.result_from_agent(res, model="m", tier=Tier.MEDIUM)
     assert out.observed == {
-        "model": "claude-opus-4-8-20260101",
-        "models": ["claude-haiku-4-5", "claude-opus-4-8-20260101"],
+        "model": "claude-opus-5-5-20261101",
+        "models": ["claude-haiku-5-5", "claude-opus-5-5-20261101"],
         "provider": None,
         "quant": None,
     }

@@ -10,7 +10,7 @@ A model card is a numeric ``kind='llm'`` ref: ``title`` = the capability prose (
 as ``card_combined`` so the card is a vector), ``meta`` = the structured facts:
 
 * ``model_id``    — the canonical model slug, the human key ``get(kind='llm',
-                    id='claude-opus-4-8')`` resolves (via ``store.find_ref_by_meta``).
+                    id='claude-opus-5-5')`` resolves (via ``store.find_ref_by_meta``).
 * ``tier_floor``  — the ``Tier`` this model backstops (the degrade-to-floor).
 * ``offerings``   — operating points ``[{effort, transport, endpoint, max_input,
                     max_output, price_in, price_out, quant}]``; effort/window are axes

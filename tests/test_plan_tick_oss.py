@@ -255,7 +255,7 @@ def test_run_oss_binds_context_and_maps_clean(monkeypatch: pytest.MonkeyPatch) -
     # `meta.llm_tier` alias becomes advisory. In prod this id is itself
     # superseded by rung 0 of `llm.chain.big` (local qwen3-235b), which pins its
     # own model; it only surfaces here because no chain override is configured.
-    assert seen["model_id"] == "claude-sonnet-5"
+    assert seen["model_id"] == "claude-sonnet-5-5"
     # The alias still reaches the tick's *context* — it is what the planner
     # prompt sees and what `ctx.model` records — it just no longer picks placement.
     assert ctx.model == "opus"

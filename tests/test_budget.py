@@ -554,7 +554,7 @@ class _ToteConn:
 
     def execute(self, sql: str, params: tuple = ()) -> _Rows:
         if "llm_call_log" in sql and "LIMIT 12" in sql:
-            return _Rows([("claude-opus-4-8", 3, 1.5), ("summarizer", 10, 0.0)])
+            return _Rows([("claude-opus-5-5", 3, 1.5), ("summarizer", 10, 0.0)])
         if "llm_call_log" in sql:
             return _Rows([("dream", 3, 1.5), ("chase:verify", 2, 0.3)])
         return _Rows([("perplexity-research", 1, 0.5)])
@@ -592,7 +592,7 @@ def test_budget_tote_shapes_windows_and_breakdowns(
     labels = [s["label"] for s in tote["by_source"]]
     assert labels[0] == "dream"  # $1.50, the top spender
     assert "perplexity-research" in labels  # paid fetch folded in
-    assert tote["by_model"][0]["label"] == "claude-opus-4-8"
+    assert tote["by_model"][0]["label"] == "claude-opus-5-5"
 
 
 def test_budget_tote_empty_without_store(monkeypatch: pytest.MonkeyPatch) -> None:

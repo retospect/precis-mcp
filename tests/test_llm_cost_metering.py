@@ -160,7 +160,7 @@ def test_result_from_claude_p_threads_token_fields() -> None:
         cache_read_tokens=1,
         cache_creation_tokens=2,
     )
-    out = result_from_claude_p(pres, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+    out = result_from_claude_p(pres, model="claude-haiku-5-5", tier=Tier.MEDIUM)
 
     assert out.input_tokens == 10
     assert out.output_tokens == 20
@@ -187,7 +187,7 @@ def test_claude_p_result_text_is_the_answer_not_the_envelope(
     monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
 
     res = claude_p.call_claude_p("judge this. reply JSON {}")
-    out = result_from_claude_p(res, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+    out = result_from_claude_p(res, model="claude-haiku-5-5", tier=Tier.MEDIUM)
 
     assert "total_cost_usd" not in out.text
     assert out.text == '{"verdict": "yes"}'
@@ -243,7 +243,7 @@ def _rec(**kw: Any) -> LlmCallRecord:
         "source": "briefing",
         "tier": "big",
         "transport": "claude_agent",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "tools_needed": True,
         "request_text": "REQ",
         "response_text": "RESP",
@@ -502,7 +502,7 @@ def test_claude_p_is_error_dict_result_fails_not_succeeds(
     assert exc.cost_usd == 0.02
     assert exc.reply is not None
     assert _json.loads(exc.reply) == {"error": "API Error: 529 Overloaded"}
-    res = _error_result(exc, model="claude-sonnet-5", tier=Tier.BIG)
+    res = _error_result(exc, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert res.reason_class == "transport"
 
 
@@ -535,7 +535,7 @@ def test_claude_p_error_max_budget_usd_parseable_result_fails(
         claude_p.call_claude_p("reply JSON {}")
 
     assert ei.value.subtype == "error_max_budget_usd"
-    res = _error_result(ei.value, model="claude-haiku-4-5", tier=Tier.MEDIUM)
+    res = _error_result(ei.value, model="claude-haiku-5-5", tier=Tier.MEDIUM)
     assert res.reason_class == "budget"
     assert res.cost_usd == 0.10
 

@@ -199,7 +199,7 @@ def load_config_from_env() -> FixGripeConfig:
         work_dir=Path(work_dir_raw).resolve(),
         claude_bin=os.environ.get("PRECIS_FIX_CLAUDE_BIN", "claude"),
         # Model selection via the LLM routing seam resolver's FRONTIER tier
-        # (``PRECIS_MODEL_OPUS`` / ``claude-opus-4-8`` — the consolidated cloud
+        # (``PRECIS_MODEL_OPUS`` / ``claude-opus-5-5`` — the consolidated cloud
         # reasoning tier the planner + reviewers + dream share). The bespoke
         # ``PRECIS_FIX_CLAUDE_MODEL`` override still wins so a deployment can pin
         # fix-gripe to a different model; unset, it falls through to the shared

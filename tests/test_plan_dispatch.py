@@ -267,7 +267,7 @@ def test_dict_op_pins_model_and_effort_on_the_job(store: Store) -> None:
                 "op": {
                     "type": "run_slice",
                     "params": {
-                        "model": "claude-haiku-4-5-20251001",
+                        "model": "claude-haiku-5-5",
                         "effort": "low",
                     },
                 }
@@ -281,7 +281,7 @@ def test_dict_op_pins_model_and_effort_on_the_job(store: Store) -> None:
     assert job[1]["job_type"] == "run_slice"
     assert job[1]["params"] == {
         "todo_id": mint.ids["task"],
-        "model": "claude-haiku-4-5-20251001",
+        "model": "claude-haiku-5-5",
         "effort": "low",
     }
 
@@ -1533,15 +1533,13 @@ def test_retry_climbs_the_lane_model_ladder(
     assert any("climbs to" in n and "rung" in n for n in res.notes)
 
     # A pinned op is the triage's pick: the ladder leaves it alone.
-    pinned_mint = _pinned_plan(store, "claude-haiku-4-5-20251001")
+    pinned_mint = _pinned_plan(store, "claude-haiku-5-5")
     pinned = pinned_mint.ids["task"]
     _failed_job(store, pinned, "first failure")
     store.add_tag(pinned, Tag.open("child-failed:1"), set_by="system")
     res = pd.run_pass(store)
     assert res.dispatched == 1
-    assert _jobs_under(store, pinned)[-1][1]["params"]["model"] == (
-        "claude-haiku-4-5-20251001"
-    )
+    assert _jobs_under(store, pinned)[-1][1]["params"]["model"] == ("claude-haiku-5-5")
 
 
 def test_retry_climbs_across_lanes(
@@ -1574,8 +1572,8 @@ def test_retry_climbs_across_lanes(
         ("free", "f-high"),
         ("free", "f-max"),
         ("bare", None),
-        ("claude-sub", "claude-sonnet-5"),
-        ("claude-sub", "claude-opus-4-8"),
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
     ]
 
     def build(m: T._Minter) -> None:
@@ -1587,9 +1585,9 @@ def test_retry_climbs_across_lanes(
     expected = [
         ("free", "f-max"),
         ("bare", None),
-        ("claude-sub", "claude-sonnet-5"),
-        ("claude-sub", "claude-opus-4-8"),
-        ("claude-sub", "claude-opus-4-8"),  # floored at the top
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
+        ("claude-sub", "claude-opus-5-5"),  # floored at the top
     ]
     # The first attempt ran on the ladder's foot (as run_slice would record).
     _failed_job(store, task, "first failure", lane="free", model="f-high")
@@ -1633,8 +1631,8 @@ def test_retry_cap_climbs_the_ladder_then_rescues(
     rungs = [
         ("devin", "swe-2-high"),
         ("devin", "swe-2-max"),
-        ("claude-sub", "claude-sonnet-5"),
-        ("claude-sub", "claude-opus-4-8"),
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
     ]
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == rungs
     # Attempt 1 ran the ladder's foot (as run_slice stamps meta.lane/model).
@@ -2034,7 +2032,7 @@ def test_mechanical_pin_refuses_a_backed_off_lane(
     params = _jobs_under(store, task)[-1][1]["params"]
     assert (params["lane"], params.get("model")) == (
         "claude-sub",
-        "claude-sonnet-5",
+        "claude-sonnet-5-5",
     )
 
 
@@ -2174,7 +2172,7 @@ def test_spend_cap_skips_only_the_capped_rung(
     # $30 ≥ $25 skips fable; the claude-sub subscription rungs remain.
     assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert (params["lane"], params["model"]) == ("claude-sub", "claude-sonnet-5")
+    assert (params["lane"], params["model"]) == ("claude-sub", "claude-sonnet-5-5")
 
 
 def test_spend_cap_maps_acu_to_usd(
@@ -2775,19 +2773,19 @@ def test_model_pinned_node_caps_at_default_retries(
     falls back to :data:`DEFAULT_RETRIES` and the second failure enters
     rescue (it used to ride the four-rung ladder to four)."""
     use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
-    mint = _pinned_plan(store, "claude-haiku-4-5-20251001")
+    mint = _pinned_plan(store, "claude-haiku-5-5")
     task = mint.ids["task"]
     _failed_job(
         store,
         task,
         "first failure",
         lane="claude-sub",
-        model="claude-haiku-4-5-20251001",
+        model="claude-haiku-5-5",
     )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
     job_id, meta = _jobs_under(store, task)[-1]
-    assert meta["params"]["model"] == "claude-haiku-4-5-20251001"
+    assert meta["params"]["model"] == "claude-haiku-5-5"
     store.stamp_ref_meta(job_id, {"lane": "claude-sub"})
     _set_job_status(store, job_id, "failed")
     store.chunks.insert_chunks(
@@ -2951,8 +2949,8 @@ def test_escalate_skips_a_lane_in_backoff(
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
         ("low", None),
         ("mid", None),
-        ("claude-sub", "claude-sonnet-5"),
-        ("claude-sub", "claude-opus-4-8"),
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
     ]
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -2973,7 +2971,7 @@ def test_escalate_skips_a_lane_in_backoff(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5"
+    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5-5"
 
 
 def test_escalate_skips_a_parked_lane(
@@ -3004,8 +3002,8 @@ def test_escalate_skips_a_parked_lane(
     # The parked lane contributes no rungs at all.
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
         ("low", None),
-        ("claude-sub", "claude-sonnet-5"),
-        ("claude-sub", "claude-opus-4-8"),
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
     ]
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -3013,7 +3011,7 @@ def test_escalate_skips_a_parked_lane(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5"
+    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5-5"
 
 
 def test_every_fit_lane_parked_asks_like_no_lane(
@@ -3118,7 +3116,7 @@ def test_escalate_never_drops_below_the_last_attempt(
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
     assert params["lane"] == "claude-sub"
-    assert params["model"] == "claude-sonnet-5"
+    assert params["model"] == "claude-sonnet-5-5"
 
     # The last real attempt ran at the top rung and that lane is backed
     # off: nothing free sits above it, so the node parks — no mint, a
@@ -3130,7 +3128,7 @@ def test_escalate_never_drops_below_the_last_attempt(
         task2,
         "real failure at the top rung",
         lane="claude-sub",
-        model="claude-opus-4-8",
+        model="claude-opus-5-5",
     )
     _slice_job(
         store,
@@ -5985,7 +5983,7 @@ def test_fix_chain_round_three_escalates_to_the_top_rung(
 ) -> None:
     """gr604629: the depth counter rides the fix node's ``meta.fix_depth``
     — the third-generation mint reads it off its chain parent, pins
-    ``meta.op.params.model`` to the ladder's top rung (claude-opus-4-8 on
+    ``meta.op.params.model`` to the ladder's top rung (claude-opus-5-5 on
     the seed table) and dispatches in the same pass: no second
     design-call hold, no re-walk."""
     use_lanes(monkeypatch)
@@ -5994,12 +5992,12 @@ def test_fix_chain_round_three_escalates_to_the_top_rung(
     assert fm["fix_depth"] == 3
     assert fm["op"] == {
         "type": "run_slice",
-        "params": {"model": "claude-opus-4-8"},
+        "params": {"model": "claude-opus-5-5"},
     }
     assert "waiting-for:brief" not in _open_tags(store, f3)
     (_job_id, job_meta) = _jobs_under(store, f3)[-1]
     params = job_meta.get("params") or {}
-    assert params.get("model") == "claude-opus-4-8"
+    assert params.get("model") == "claude-opus-5-5"
     assert _todo_comments(store, f3)[-1].startswith(
         f"plan_dispatch: escalated: round 3 of td{mint.root_id}"
     )

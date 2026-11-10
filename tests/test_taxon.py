@@ -616,13 +616,13 @@ class TestCoverage:
         _mk(store, "cov unreviewed")
         _created_memory(store, "cov memory")
         self._consider(
-            store, reviewed, reason="kg-review:claude-opus-4-8:2026-10-22:ok"
+            store, reviewed, reason="kg-review:claude-opus-5-5:2026-10-22:ok"
         )
         body = _handler(store).get(id="/coverage").body
         assert "30 day(s)" in body
         taxon_row = next(l for l in body.splitlines() if l.startswith("taxon"))
         assert taxon_row.split("\t")[1:4] == ["2", "1", "50.0%"]
-        assert "claude-opus-4-8: 1" in taxon_row
+        assert "claude-opus-5-5: 1" in taxon_row
         memory_row = next(l for l in body.splitlines() if l.startswith("memory"))
         assert "\t0\t0.0%" in memory_row
 

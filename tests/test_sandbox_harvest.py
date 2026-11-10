@@ -379,7 +379,7 @@ class TestHarvestOut:
             container_name="sandbox-1",
             work_dir=work_dir,
             image="code-task:abc",
-            model="claude-opus-4-7",
+            model="claude-opus-5-5",
             root=precis_root,
             artifact_store_root=art_root,
         )

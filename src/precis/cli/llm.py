@@ -96,13 +96,13 @@ def add_parser(subparsers: Any) -> None:
     ls.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     t = lsub.add_parser("tote", help="Show a model's realized-telemetry rollup.")
-    t.add_argument("model", help="Model id (e.g. claude-opus-4-8).")
+    t.add_argument("model", help="Model id (e.g. claude-opus-5-5).")
     t.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     o = lsub.add_parser(
         "observe", help="Derive + record observed axes from llm_call_log telemetry."
     )
-    o.add_argument("model", help="Model id (e.g. claude-opus-4-8).")
+    o.add_argument("model", help="Model id (e.g. claude-opus-5-5).")
     o.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     s = lsub.add_parser(

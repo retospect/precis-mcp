@@ -112,13 +112,13 @@ def test_budget_tote_rolls_up_llm_call_log_pg(store: Any) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO llm_call_log (source, model, cost_usd) VALUES (%s, %s, %s)",
-            ("dream", "claude-opus-4-8", 0.5),
+            ("dream", "claude-opus-5-5", 0.5),
         )
         conn.commit()
     tote = _budget_tote(store)
     assert tote  # non-empty when a store + a priced row exist
     models = {m["label"]: m["cost"] for m in tote["by_model"]}
-    assert models.get("claude-opus-4-8") == pytest.approx(0.5)
+    assert models.get("claude-opus-5-5") == pytest.approx(0.5)
     sources = {s["label"] for s in tote["by_source"]}
     assert "dream" in sources
     assert [w["label"] for w in tote["windows"]] == ["Hourly", "24h"]

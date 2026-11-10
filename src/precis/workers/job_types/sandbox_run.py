@@ -244,7 +244,7 @@ def resolve_sandbox_model() -> str:
 
     ``PRECIS_SANDBOX_MODEL`` override wins; otherwise the LLM routing seam
     ``Tier.FRONTIER`` opus pin (``PRECIS_MODEL_OPUS`` /
-    ``claude-opus-4-7`` default). Never a private constant.
+    ``claude-opus-5-5`` default). Never a private constant.
     """
     return os.environ.get("PRECIS_SANDBOX_MODEL") or resolve_model(Tier.FRONTIER)
 

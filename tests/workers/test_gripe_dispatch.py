@@ -130,7 +130,7 @@ def two_lanes(monkeypatch: pytest.MonkeyPatch) -> tuple[Lane, Lane]:
         2,
         frozenset({ANY_CLASS}),
         vendor="anthropic",
-        models=("claude-sonnet-5",),
+        models=("claude-sonnet-5-5",),
         model_prefix="claude-",
     )
     use_lanes(monkeypatch, codex, sub)
@@ -420,7 +420,7 @@ def test_one_tick_fills_every_free_build_slot(
             3,
             frozenset({ANY_CLASS}),
             vendor="anthropic",
-            models=("claude-sonnet-5",),
+            models=("claude-sonnet-5-5",),
             model_prefix="claude-",
         ),
     )

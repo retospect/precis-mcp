@@ -1,6 +1,6 @@
 """LlmHandler — the `llm` model catalog (migration 0071, ``llm-catalog`` (git-only)).
 
-A model card is one numeric ref per model (``claude-opus-4-8``, ``qwen-heavy``): the
+A model card is one numeric ref per model (``claude-opus-5-5``, ``qwen-heavy``): the
 body is the capability prose (embedded as ``card_combined`` — an ``llm`` card *is a
 vector*, so ``search(kind='llm', q='careful SQL')`` matches on capability), and ``meta``
 carries the structured facts (``model_id`` / ``tier_floor`` / ``offerings`` /
@@ -254,7 +254,7 @@ class LlmHandler(NumericRefHandler):
             "A model catalog card — one ref per model. Body is the capability "
             "prose (embedded, so the card is a vector); meta carries the facts "
             "(model_id, tier_floor, offerings, capability axes, provenance). Read "
-            "with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', "
+            "with get(kind='llm', id='claude-opus-5-5') or search(kind='llm', "
             "q='careful SQL'). The llm_reconcile pass mints + refreshes cards "
             "against the live OpenRouter feed and flags drift. "
             "get(kind='llm', id='/placement') reports the local vs cloud share "
@@ -306,7 +306,7 @@ class LlmHandler(NumericRefHandler):
 
     def _ref_for(self, id: str | int) -> Ref:
         """Resolve ``id`` → a live ref, accepting a **model slug**
-        (``claude-opus-4-8`` — the human key, looked up via ``meta.model_id``), a
+        (``claude-opus-5-5`` — the human key, looked up via ``meta.model_id``), a
         bare int, or ``llm:<int>``. The ``lm`` handle is decoded to a numeric
         public id by the runtime before it reaches here.
         """

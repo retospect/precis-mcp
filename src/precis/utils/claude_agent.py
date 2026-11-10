@@ -21,7 +21,7 @@ Knobs (all overridable per call, project defaults via env):
 
 * ``PRECIS_CLAUDE_BIN``       — claude binary path (default ``claude``).
 * ``PRECIS_CLAUDE_AGENT_MODEL`` — default model (falls back to the router's
-  ``Tier.FRONTIER`` = ``claude-opus-4-8``).
+  ``Tier.FRONTIER`` = ``claude-opus-5-5``).
 * ``PRECIS_CLAUDE_AGENT_MAX_USD`` — per-call cost cap (default ``2.00``).
 * ``PRECIS_CLAUDE_AGENT_TIMEOUT_S`` — wall-clock timeout (default ``600``).
 """

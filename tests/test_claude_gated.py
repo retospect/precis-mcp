@@ -332,7 +332,7 @@ def _fast_gate(monkeypatch: pytest.MonkeyPatch, deadline: float = 3.0) -> None:
 def _args(**over: object) -> list[str]:
     kw: dict[str, Any] = {
         "prompt": "hi",
-        "model": "claude-opus-4-8",
+        "model": "claude-opus-5-5",
         "system_prompt": None,
         "mcp_config": "/tmp/mcp.json",
         "max_turns": 5,

@@ -71,7 +71,7 @@ def _review(
     ref_id: int,
     *,
     actor: str = "opus",
-    model: str | None = "claude-opus-4-8",
+    model: str | None = "claude-opus-5-5",
     basis: Literal["content", "trust-subject"] = "trust-subject",
 ) -> int:
     r = store.record_target_review(
@@ -424,14 +424,14 @@ def test_apply_structural_by_opus_not_defined(store: Store) -> None:
     child = _ref(store, "taxon")
     parent = _ref(store, "taxon")
     prop = _structural_proposal(store, child, parent)
-    out = apply_structural(store, prop, actor="opus-review", model="claude-opus-4-8")
+    out = apply_structural(store, prop, actor="opus-review", model="claude-opus-5-5")
     assert out["relation"] == "specialises" and out["defined_grounding_id"] is None
     links = store.links_for(child, relation="specialises")
     assert len(links) == 1 and int(links[0].dst_ref_id) == parent
     assert store.grounding_set("link", out["link_id"]) == frozenset()
     # the machine review of the proposal is recorded
     revs = [r for r in store.reviews_for("ref", child) if r.verdict == "approved"]
-    assert any(r.model == "claude-opus-4-8" for r in revs)
+    assert any(r.model == "claude-opus-5-5" for r in revs)
 
 
 def test_apply_structural_by_owner_defined(store: Store) -> None:

@@ -279,7 +279,7 @@ def test_agent_specs_launchd_label_is_the_collapsed_worker_unit() -> None:
 
 def test_background_agents_resolve_model_default_through_the_router() -> None:
     """``structural``/``deep_review``/``dream_agent`` used to hardcode
-    ``model_default="claude-opus-4-8"`` (model-vocabulary-drift audit) — a
+    ``model_default="claude-opus-5-5"`` (model-vocabulary-drift audit) — a
     display-only literal that could silently diverge from the router's
     default. They carry a ``tier_default`` and leave ``model_default``
     empty; the consumer (``/env``) resolves the live model at render time.

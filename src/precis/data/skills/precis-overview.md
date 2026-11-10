@@ -132,7 +132,7 @@ name/path.
 | `concept` | `cn88` | A node in the learner's personal knowledge graph — a term with a continuous mastery field and typed edges (`has-prerequisite`/`analogy-of`/`contrasts-with`) to other concepts, promoted from paper glossaries. | store |
 | `taxon` | `tn31` | A node in the term taxonomy — a named term with a one-sentence definition (embedded, so search matches by meaning), an earned status (`proposed`/`systematic`) and an optional dimension. See `precis-taxon-help`. | store |
 | `quest` | `qu7` | A perpetual, unachievable striving that pulls work + knowledge into its service — never `done`; work `serves` it (a DAG above the todo tree). See `precis-quest-help` (mechanics), `precis-quest-writing-help` (writing a good striving). | store |
-| `llm` | `lm7` (model slug `claude-opus-4-8` also resolves) | A model catalog card — one ref per model, capability prose embedded so `search(kind='llm', q='careful SQL')` matches on capability. Read-only, machine-maintained. See `precis-llm-help`. | store |
+| `llm` | `lm7` (model slug `claude-opus-5-5` also resolves) | A model catalog card — one ref per model, capability prose embedded so `search(kind='llm', q='careful SQL')` matches on capability. Read-only, machine-maintained. See `precis-llm-help`. | store |
 | `citation` | `ci18` | Verified claim → source quote | store |
 | `finding` | `fi73` | Chain-of-evidence head over a citation chase; a `TAPROOT:claim`-tagged finding is a cross-paper claim hub (see `precis-taproot-help`) | store |
 | `orcid` | `orcid:0000-0002-1825-0097` | Researcher identity (ORCID): resolves + stores an author dossier, links held works + reports missing ones (LLM-gated `enqueue=`), and is the `authored` link hub. See `precis-orcid-help`. | `ORCID_CLIENT_ID` |
