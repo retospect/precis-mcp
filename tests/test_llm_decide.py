@@ -779,6 +779,48 @@ def test_unset_tier_floor_passes_small_demand() -> None:
     assert decision.chosen == no_floor
 
 
+def test_local_offering_live_via_reachable_slot_pool() -> None:
+    """A heartbeat miss on the ``served_by`` label cannot retire a pool the
+    dispatcher acquires (gr622036): the label is an accounting key, not
+    necessarily a heartbeat-writing machine, so ``live=False`` plus a
+    reachable ``llm:<model>`` slot pool still ranks — a lane dispatch runs
+    every call on was reading "not live", giving 0% claim.verify agreement."""
+    local = offering(
+        "openai/gpt-oss-120b@local/local",
+        model="openai/gpt-oss-120b",
+        adapter="local",
+        account="local",
+        billing="local",
+        locality="local",
+        live=False,
+        price_in=0.0,
+        price_out=0.0,
+        tier_floor="big",
+    )
+    led = ledger(local, slots={"openai/gpt-oss-120b": (4, 2)})
+    decision = d.decide(
+        LlmRequest(Tier.BIG, prompt="x" * 4000),
+        Requirement(Tier.BIG),
+        led,
+        "shadow",
+    )
+    assert decision.chosen == local
+    assert not decision.rejected
+    legacy = d.legacy_decision(
+        [Rung(Transport.LOCAL, model="openai/gpt-oss-120b", label="local")],
+        "openai/gpt-oss-120b",
+        led,
+    )
+    assert d.compare(decision, legacy)["agree"] is True
+    # No reachable pool either — the heartbeat miss still rejects.
+    dead = d.decide(
+        LlmRequest(Tier.BIG), Requirement(Tier.BIG), ledger(local), "shadow"
+    )
+    assert dead.chosen is None
+    assert dead.rejected[0].filter == "entitlement"
+    assert dead.rejected[0].reason == "local slot is not live"
+
+
 def test_exact_kind_key_beats_prefix_beats_global(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

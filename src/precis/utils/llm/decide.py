@@ -292,7 +292,19 @@ def _rejection(
         model = account.entitlement.get("models", {}).get(o.model, {})
         if isinstance(model, dict) and model.get("allowed") is False:
             return "entitlement", "model not allowed by account"
-    if o.billing == "local" and o.live is not True:
+    # ``live`` is the heartbeat view of the ``served_by`` host label — an
+    # accounting key the heartbeat probe need not cover (the label may name
+    # no heartbeat-writing machine). The acquirable ``llm:<model>`` pool in
+    # ``ledger.slots`` — the same reachability ``local_serving.acquire``
+    # reserves on — is the dispatcher's own liveness proof; a heartbeat
+    # miss alone cannot retire it (gr622036: a live local lane read "not
+    # live" on every shadow call — 0% agreement over 6,797 claim.verify
+    # calls — while dispatch reserved it fine).
+    if (
+        o.billing == "local"
+        and o.live is not True
+        and ledger.slots.get(o.model, (0, 0))[0] <= 0
+    ):
         return "entitlement", "local slot is not live"
     if req.privacy_class == "local-only" and o.locality != "local":
         return "privacy", "local-only demand requires local offering"
