@@ -2069,6 +2069,34 @@ class DispatchMixin(RuntimeShape):
                 )
             args[key] = extras.pop(key)
 
+    @staticmethod
+    def _hoist_sort_arg(args: dict[str, Any]) -> None:
+        """``args={'sort': …}`` → top-level ``sort=``.
+
+        ``sort=`` is a verb-level ``search`` param — the source-search
+        trigger and the numeric browse knob — never a kind's ``args=``
+        key (no ``ArgsSpec`` declares it). Nested, it is invisible to
+        ``_routes_to_source_search`` and dies at the extras gate as
+        ``keys ['sort'] not accepted by <kind>.search`` on every handler
+        whose ``search`` doesn't redeclare the forwarded kwarg (job —
+        gr593340's 24h ledger — todo, measure, taxon), while the same
+        spelling flattens fine on kinds that do. Hoist it like the cite
+        facets (:meth:`_hoist_source_facet_args`) so the nested call is
+        the top-level call: ``'relevance'``/``'recency'`` fire the
+        source-search route, browse sorts reach the handler's ``sort``
+        kwarg, and kinds that refuse ``sort=`` refuse it with the same
+        error the top-level spelling gets. A ``sort=`` at both levels is
+        ambiguous — refuse it rather than pick a winner."""
+        extras = args.get(_EXTRAS_KEY)
+        if not isinstance(extras, dict) or extras.get("sort") is None:
+            return
+        if args.get("sort") is not None:
+            raise BadInput(
+                "sort= was passed twice — top-level and inside args=",
+                next="pass sort= once, at the top level",
+            )
+        args["sort"] = extras.pop("sort")
+
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
@@ -2100,6 +2128,7 @@ class DispatchMixin(RuntimeShape):
             self._apply_bench_switches(args)
             self._hoist_spray_args(args)
             self._hoist_source_facet_args(args)
+            self._hoist_sort_arg(args)
             # ``q='*'`` is the match-all spelling (gr538071): fold
             # before any routing decision (under= listing,
             # source-search gate) reads it as a real query.

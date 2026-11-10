@@ -461,6 +461,67 @@ def test_dated_job_listing_refusals_do_not_name_job_type(
     assert "job_type-filtered" not in out, out
 
 
+def test_job_search_nested_sort_routes_to_source_search(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr593340: ``search(kind='job', q='…', args={'sort': 'recency'})``
+    is the top-level spelling misfiled inside args= — nested, the
+    routing check never saw it and the extras gate refused it as
+    ``keys ['sort'] not accepted by job.search`` (JobHandler.search
+    forwards ``sort`` instead of declaring it). The hoist makes the
+    nested call the top-level call: it routes to the source-search
+    primitive like ``sort='recency'`` always did."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "q": "zz_no_such_token_zz",
+            "__extras__": {"sort": "recency"},
+        },
+    )
+    assert "[error" not in out, out
+    assert "matches" in out.lower(), out
+    assert "not accepted by job.search" not in out, out
+
+
+def test_nested_sort_reaches_the_kind_browse_path(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The sibling shape (gr593341): a queryless ``args={'sort':
+    'recency'}`` on a browse kind hoists to the handler's own ``sort``
+    kwarg — ``numeric_browse`` keeps it off the source-search route —
+    instead of dying at the extras gate on handlers that forward the
+    kwarg without declaring it (todo) or declare an ``args`` dict
+    without it (``ArgsSpec({'under'})``)."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "todo", "__extras__": {"sort": "recency"}}
+    )
+    assert "[error" not in out, out
+    assert "not accepted by todo.search" not in out, out
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "gripe", "__extras__": {"sort": "drain"}}
+    )
+    assert "[error" not in out, out
+
+
+def test_nested_sort_double_spelling_refused(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``sort=`` at both levels is ambiguous — refuse it rather than
+    pick a winner (same contract as the cite-facet hoist)."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "q": "zz",
+            "sort": "relevance",
+            "__extras__": {"sort": "recency"},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "passed twice" in out, out
+
+
 def test_get_extent_refuses_stray_args(runtime_with_store: PrecisRuntime) -> None:
     """The ``get`` twin of the gripe: ``handler.eye`` takes only
     id/extent/q/ring, so any other payload or args= key was silently
