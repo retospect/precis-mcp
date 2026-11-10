@@ -63,6 +63,7 @@ if [[ ${1:-} == --exec ]]; then
 	tree=$2
 	shift 2
 	for a in "$@"; do case $a in -p | --prompt) kimi_tree_no_prompt ;; esac; done
+	if [[ ! -t 0 ]]; then kimi_tree_no_tty "$tree" "$@"; fi
 	at_exec_relock "$tree"
 	export PATH="$HOME/.kimi-code/bin:$HOME/.local/bin:$PATH"
 	# Same as devin-tree: lane read-only gits (and any hooks the tool

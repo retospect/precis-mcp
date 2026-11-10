@@ -187,6 +187,13 @@ in `scripts/ship` (`scripts/ship`, `scripts/test`, `scripts/lib/*`,
 `pyproject.toml`, migrations and schema are not harness — they qland like
 everything else.
 
+When the operator explicitly assigns gating/release to another toolchain,
+`PRECIS_QLAND_EXTERNAL_GATE=1 scripts/ship --quick` acknowledges that ownership
+for one invocation and admits a harness diff to qland. Normal quick-lane lint,
+secret scan and fast guards still run. This does not run a remote gate, mint
+a gate warrant or deploy; it does not claim an external gate has already
+passed. Without that acknowledgement the default harness refusal remains.
+
 The repo-wide ship lock is narrow: held only for the seconds of fetch →
 squash → CAS push → local-main ff, never across sync, lint, a gate or the CI
 wait. If main moves meanwhile, a tree that adds a migration or touches

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
-# Shared mechanics for scripts/kimi-tree and scripts/devin-tree (sourced).
+# Shared mechanics for scripts/agent-start and the agent-specific entries.
 #
 # A launcher sets `at_label` (its tool name: error prefix `<label>-tree:` and
 # the tmux window name `<label>-NAME`) before sourcing, then calls at_init,
@@ -12,12 +12,13 @@ at_label=${at_label:?set at_label before sourcing agent-tree.sh}
 
 at_init() {
 	at_here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)  # the scripts dir
-	# git wins (a launcher run from inside a worktree must still target the
-	# main checkout's .claude/worktrees); outside any repo — the test gate
+	# Resolve the launcher's repository, never the caller's unrelated cwd.
+	# A launcher inside a worktree still targets main's .claude/worktrees;
+	# outside any repo — the test gate
 	# copies the tree without .git — fall back to the checkout root (the
 	# scripts dir's parent) so argument validation and --dry-run stay
 	# repo-independent (gr531394).
-	at_root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || at_root=""
+	at_root=$(git -C "$at_here/.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || at_root=""
 	at_root=${at_root%/.git}
 	[[ -n $at_root ]] || at_root=$(cd "$at_here/.." && pwd -P)
 }
@@ -36,8 +37,47 @@ at_resolve_tmux() {
 # at_lock TREE: hold the tree under this pid until a --exec re-locks it to the
 # tool's pid, so the reaper never sees a fresh, merged, clean, sessionless tree.
 at_lock() {
-	git -C "$at_root" worktree unlock "$1" >/dev/null 2>&1 || true
+	local list reason holder handoff=${2:-}
+	list=$(git -C "$at_root" worktree list --porcelain)
+	reason=$(awk -v t="worktree $1" '$0==t{f=1} f&&/^locked/{print; exit} f&&/^$/{exit}' <<<"$list")
+	if [[ -n $reason ]]; then
+		holder=${reason#locked pid }
+		case $holder in
+		''|*[!0-9]*) echo "$at_label-tree: refusing non-session lock on $1" >&2; return 1 ;;
+		esac
+		[[ $holder == "$$" ]] && return 0
+		if [[ $holder != "$handoff" ]] && { kill -0 "$holder" 2>/dev/null || ps -p "$holder" -o pid= 2>/dev/null | grep -q '[0-9]'; }; then
+			echo "$at_label-tree: worktree held by live pid $holder: $1" >&2
+			return 1
+		fi
+		git -C "$at_root" worktree unlock "$1"
+	fi
 	git -C "$at_root" worktree lock --reason "pid $$" "$1"
+}
+
+# Never launch in an empty directory, a different repository/branch, or a
+# sparse checkout. Dirty work is preserved; at least one tracked file must
+# actually exist on disk. A missing tree needs explicit recovery, not reset.
+at_validate_tree() {
+	local tree=$1 branch=$2 top common list tracked path found=0
+	top=$(git -C "$tree" rev-parse --show-toplevel) || return 1
+	common=$(git -C "$tree" rev-parse --path-format=absolute --git-common-dir) || return 1
+	list=$(git -C "$at_root" worktree list --porcelain)
+	if [[ $top != "$tree" || $common != "$at_root/.git" ]] ||
+		! grep -Fqx "worktree $tree" <<<"$list" ||
+		[[ $(git -C "$tree" symbolic-ref --quiet --short HEAD) != "$branch" ]] ||
+		[[ $(git -C "$tree" config --bool core.sparseCheckout || true) == true ]]; then
+		echo "$at_label-tree: not the expected full worktree: $tree ($branch)" >&2
+		return 1
+	fi
+	tracked=$(git -C "$tree" ls-files)
+	while IFS= read -r path; do
+		if [[ -n $path && ( -e $tree/$path || -L $tree/$path ) ]]; then found=1; break; fi
+	done <<<"$tracked"
+	if (( !found )); then
+		echo "$at_label-tree: no checked-out tracked files in $tree; recover it before launching" >&2
+		return 1
+	fi
 }
 
 # at_ensure_tree NAME TREE BRANCH PURPOSE: create-or-reuse the worktree from
@@ -48,15 +88,17 @@ at_ensure_tree() {
 	if [[ ! -d $tree ]]; then
 		git -C "$at_root" fetch -q origin main
 		if git -C "$at_root" show-ref -q --verify "refs/heads/$branch"; then
-			git -C "$at_root" worktree add -q "$tree" "$branch"
+			git -C "$at_root" worktree add --lock --reason "pid $$" -q "$tree" "$branch"
 		else
-			git -C "$at_root" worktree add -q -b "$branch" "$tree" origin/main
+			git -C "$at_root" worktree add --lock --reason "pid $$" -q -b "$branch" "$tree" origin/main
 		fi
 	fi
+	at_validate_tree "$tree" "$branch"
+	at_lock "$tree"
 	# A failed seed never blocks the launch (gr514738).
 	"$at_here/seed-worktree-venv" "$tree" "$at_root" \
 		|| echo "$at_label-tree: venv seed failed; first uv run will build it" >&2
-	at_lock "$tree"
+	mkdir -p "$tree/.claude"
 	[[ -n $purpose ]] && printf '%s\n' "$purpose" >"$tree/.claude/purpose"
 	return 0
 }
@@ -64,7 +106,10 @@ at_ensure_tree() {
 # at_exec_relock TREE: the `--exec` half. Re-lock TREE to this pid and cd in;
 # the launcher then sets its env and execs the tool under the same pid.
 at_exec_relock() {
-	at_lock "$1"
+	local handoff=${AT_HANDOFF_PID:-}
+	unset AT_HANDOFF_PID
+	at_validate_tree "$1" "worktree-${1##*/}"
+	at_lock "$1" "$handoff"
 	cd "$1" || exit 1
 }
 
@@ -78,7 +123,7 @@ at_launch() {
 		exec "$self" --exec "$tree" "$@"
 	fi
 	tmux new-window -t "=$session:" -n "$at_label-$name" -c "$tree" \
-		"exec $(printf '%q ' "$self" --exec "$tree" "$@")"
+		"AT_HANDOFF_PID=$$ exec $(printf '%q ' "$self" --exec "$tree" "$@")"
 	local _ reason list
 	for _ in $(seq 50); do
 		# Capture, then scan: an early-exit awk reading a live git pipe can
@@ -87,8 +132,12 @@ at_launch() {
 		list=$(git -C "$at_root" worktree list --porcelain)
 		reason=$(awk -v t="worktree $tree" \
 			'$0==t{f=1} f&&/^locked/{print; exit} f&&/^$/{exit}' <<<"$list")
-		[[ $reason != "locked pid $$" ]] && break
+		[[ -n $reason && $reason != "locked pid $$" ]] && break
 		sleep 0.2
 	done
+	if [[ -z $reason || $reason == "locked pid $$" ]]; then
+		echo "$at_label-tree: tmux session did not take over its worktree lock: $tree" >&2
+		return 1
+	fi
 	echo "$at_label-tree: $name → $tree (tmux $session:$at_label-$name)"
 }

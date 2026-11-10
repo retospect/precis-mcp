@@ -32,16 +32,24 @@ HELPER = REPO / "scripts" / "lib" / "devin_trust.py"
 DEVIN_TREE = REPO / "scripts" / "devin-tree"
 
 FAKE_GIT = """#!/usr/bin/env bash
-while [ "${1:-}" = "-C" ]; do shift 2; done
+git_at=""
+while [ "${1:-}" = "-C" ]; do git_at=$2; shift 2; done
 case "${1:-}" in
-  rev-parse) echo "$FAKE_ROOT/.git" ;;
+  rev-parse)
+    case "$*" in
+      *--show-toplevel*) echo "$git_at" ;;
+      *) echo "$FAKE_ROOT/.git" ;;
+    esac ;;
+  symbolic-ref) echo "worktree-${FAKE_WT##*/}" ;;
+  config) exit 1 ;;
+  ls-files) echo checked-out.txt ;;
   fetch) exit 0 ;;
   show-ref) exit 1 ;;
   worktree)
     case "${2:-}" in
       add)
         for a in "$@"; do
-          case "$a" in */worktrees/*) mkdir -p "$a/.claude" ;; esac
+          case "$a" in */worktrees/*) mkdir -p "$a/.claude"; touch "$a/checked-out.txt" ;; esac
         done ;;
       list) printf 'worktree %s\\nlocked pid 424242\\n\\n' "$FAKE_WT" ;;
       *) exit 0 ;;

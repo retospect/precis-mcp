@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Start a named agent in a verified task checkout, with a durable PID lock.
+# Usage: scripts/agent-start [AGENT NAME] [--purpose TEXT] [--model MODEL]
+#            [--tmux [SESSION]] [--dry-run] [-- NATIVE_ARGS...]
+# AGENT: claude, codex, kimi, devin. NAME is a checkout name, not a prompt.
+# Kimi/Devin retain their existing launcher options and permission defaults.
+# Claude/Codex retain their own configuration; native arguments follow --.
+set -euo pipefail
+self=$(realpath "$0")
+here=$(dirname "$self")
+
+list_agents() {
+	local candidate binary agent
+	printf 'Agents (executable locations; setup checks run at launch):\n'
+	for agent in claude codex kimi devin; do
+		binary=$(command -v "$agent" || true)
+		if [[ $agent == kimi ]]; then
+			for candidate in "${KIMI_BIN:-}" "$binary" "$HOME/.kimi-code/bin/kimi" /Users/deploy/.kimi-code/bin/kimi; do
+				if [[ -n $candidate && -x $candidate ]]; then binary=$candidate; break; fi
+			done
+		fi
+		printf '  %-8s %s\n' "$agent" "${binary:-not installed}"
+	done
+	printf '\nUsage: agent-start AGENT NAME [--purpose TEXT] [--model MODEL]\n'
+	printf '       [--tmux [SESSION]] [--dry-run] [-- NATIVE_ARGS...]\n'
+	printf '\nExample: agent-start codex newpapers\n'
+}
+
+if [[ $# -eq 0 ]]; then list_agents; exit 0; fi
+case $1 in
+--list|--help|-h)
+	[[ $# -eq 1 ]] || { echo 'agent-start: listing takes no additional arguments' >&2; exit 2; }
+	list_agents
+	exit 0 ;;
+esac
+usage() { head -n 7 "$self" >&2; exit 2; }
+[[ $# -ge 2 ]] || usage
+agent=$1
+shift
+case $agent in
+kimi|devin) exec "$here/$agent-tree" "$@" ;;
+claude|codex) ;;
+*) usage ;;
+esac
+at_label=$agent
+. "$here/lib/agent-tree.sh"
+at_init
+
+check_native_args() {
+	local arg
+	for arg in "$@"; do
+		case $arg in
+		-w*|-C*|--worktree|--worktree=*|--cd|--cd=*|--remote|--remote=*)
+			echo "agent-start: $arg can change the checkout; use the launcher NAME instead" >&2
+			exit 2 ;;
+		esac
+	done
+}
+
+if [[ ${1:-} == --exec ]]; then
+	tree=$2
+	shift 2
+	check_native_args "$@"
+	at_exec_relock "$tree"
+	export GIT_OPTIONAL_LOCKS=0
+	exec "$agent" "$@"
+fi
+
+name=$1
+shift
+at_check_name "$name"
+purpose="" tmux_session="" use_tmux=0 dry_run=0
+agent_args=()
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--purpose) [[ $# -ge 2 ]] || usage; purpose=$2; shift 2 ;;
+	--model) [[ $# -ge 2 ]] || usage; agent_args+=(--model "$2"); shift 2 ;;
+	--tmux)
+		use_tmux=1
+		if [[ ${2:-} && ${2:0:1} != - ]]; then tmux_session=$2; shift; fi
+		shift ;;
+	--dry-run) dry_run=1; shift ;;
+	--) shift; agent_args+=("$@"); break ;;
+	*) usage ;;
+	esac
+done
+check_native_args ${agent_args[@]+"${agent_args[@]}"}
+((use_tmux)) && tmux_session=$(at_resolve_tmux "$tmux_session")
+tree=$at_root/.claude/worktrees/$name
+branch=worktree-$name
+if ((dry_run)); then
+	printf 'tree=%s branch=%s tmux=%s agent=%s' "$tree" "$branch" "${tmux_session:--}" "$agent"
+	for arg in ${agent_args[@]+"${agent_args[@]}"}; do printf ' %q' "$arg"; done
+	printf '\n'
+	exit 0
+fi
+command -v "$agent" >/dev/null || { echo "agent-start: $agent is not installed on PATH" >&2; exit 1; }
+at_ensure_tree "$name" "$tree" "$branch" "$purpose"
+at_launch "$here/$agent-tree" "$name" "$tree" "$use_tmux" "$tmux_session" ${agent_args[@]+"${agent_args[@]}"}

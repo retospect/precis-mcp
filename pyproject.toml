@@ -993,6 +993,7 @@ extend-exclude = [
     "scripts/.doi_status.json",
     # Extensionless bash scripts (no suffix for a glob to catch).
     "scripts/_prod-run",
+    "scripts/agent-start",
     "scripts/alchem-diff",
     "scripts/backlog-lint",
     "scripts/bench",
@@ -1007,7 +1008,9 @@ extend-exclude = [
     "scripts/classify/sample-gold",
     "scripts/classify/sample-gold-chunks",
     "scripts/claude-local",
+    "scripts/claude-tree",
     "scripts/cluster-ping",
+    "scripts/codex-tree",
     "scripts/db",
     "scripts/db-own-cutover",
     "scripts/db-own/cutover.sql",

@@ -11,6 +11,13 @@ CLI's pin with the vendor's own installer, smokes it (``--version`` plus one
 headless prompt; ``--no-prompt`` drops the prompt) and reinstalls the previous
 version when the smoke fails, exiting non-zero.
 
+The same update installs/repairs ~/.local/bin/agent-start on each target,
+pointing at committed launcher code in its stable primary checkout. The
+checkout is agent_cli_launcher_checkout in inventory, or discovered from
+existing kimi-wt/devin-wt/agent-start symlinks. Reports show missing or
+drifting commands without writing; ambiguous sources and user-file conflicts
+refuse updates. Ansible --check always uses report mode.
+
 Pins are ``agent_cli_pin_<cli>`` in the inventory overlay (or
 deploy/roles/agent_clis/defaults/main.yml); bumping is one edit plus this
 script. Rollback is restoring the previous pin and running ``--apply`` again.

@@ -11,7 +11,10 @@
 
 - name: Build the agent CLI config
   ansible.builtin.set_fact:
+    agent_cli_effective_mode: "{{ 'report' if ansible_check_mode else agent_cli_mode }}"
     agent_cli_config:
+      launcher:
+        checkout: "{{ agent_cli_launcher_checkout }}"
       only: "{{ agent_cli_only.split(',') | map('trim') | select | list }}"
       smoke_prompt: "{{ agent_cli_smoke_prompt | bool }}"
       clis:
@@ -21,17 +24,17 @@
         kimi: "{{ agent_cli_installers.kimi | combine({'pin': agent_cli_pin_kimi, 'min': agent_cli_min_kimi}) }}"
 
 # check_mode false: a report is read-only and must still run under --check.
-- name: "Agent CLIs: {{ agent_cli_mode }}"
+- name: "Agent CLIs: {{ agent_cli_effective_mode }}"
   ansible.builtin.script:
     cmd: >-
-      agent_cli.py {{ agent_cli_mode }}
+      agent_cli.py {{ agent_cli_effective_mode }}
       {{ '--strict' if (agent_cli_strict | bool) else '' }}
       --config-json {{ agent_cli_config | to_json | quote }}
     executable: python3
   register: agent_cli_out
   check_mode: false
   changed_when: >-
-    agent_cli_mode == 'update' and
+    agent_cli_effective_mode == 'update' and
     (agent_cli_out.stdout | default('')) is search('· (updated|rolled-back)')
   failed_when: false
 

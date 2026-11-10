@@ -108,6 +108,33 @@ def test_harness_diff_refused_by_quick(rig: Rig, path: str) -> None:
     assert not rig.lockdir().exists()
 
 
+@pytest.mark.parametrize("path", ["scripts/lib/new-helper.sh", "scripts/ship"])
+def test_harness_qland_with_explicit_external_gate(rig: Rig, path: str) -> None:
+    wt = _harness_wt(rig, "external", path)
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_QLAND_EXTERNAL_GATE="1")
+    out = _finish(p, log)
+    assert "gate owned by external toolchain" in out
+    assert (rig.lintdir / "external.started").exists(), "quick guards were skipped"
+    assert path in _tree_files(rig)
+    assert "external.txt" in _tree_files(rig)
+    assert not (wt / ".ship-sha").exists(), "external gate must not mint a gate warrant"
+
+
+@pytest.mark.parametrize("acknowledgement", ["0", "yes"])
+def test_harness_external_gate_requires_exact_acknowledgement(
+    rig: Rig, acknowledgement: str
+) -> None:
+    wt = _harness_wt(rig, "unacknowledged", "scripts/lib/new-helper.sh")
+    main0 = rig.origin_ref("main")
+    p, log = rig.ship(
+        wt, "--quick", sleep=1, PRECIS_QLAND_EXTERNAL_GATE=acknowledgement
+    )
+    assert p.wait(timeout=120) != 0
+    assert "touches the landing harness" in log.read_text(encoding="utf-8")
+    assert rig.origin_ref("main") == main0
+    assert not (rig.lintdir / "unacknowledged.started").exists()
+
+
 @pytest.mark.parametrize("path", ["scripts/test", ".github/workflows/check.yml"])
 def test_harness_diff_refused_by_checked(rig: Rig, path: str) -> None:
     wt = rig.worktree("hc", {path: "# harness\n", "hc.txt": "c\n"})

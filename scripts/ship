@@ -2437,6 +2437,8 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     # included — lands --quick under the train, so a non-harness diff on
     # --remote refused a CI cycle it does not need. --release is exempt: its
     # release/** push runs the full matrix itself.
+    # An explicit external-toolchain acknowledgement admits qland while
+    # retaining its lint/secret/fast guards; it never claims a gate verdict.
     HARNESS_DIFF=0
     while IFS= read -r f; do
         case "$f" in
@@ -2444,7 +2446,10 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         esac
     done <<< "$CHANGED"
     if [[ "$HARNESS_DIFF" == 1 && "$QUICK" == 1 && "$RELEASE" != 1 ]]; then
-        die "the diff touches the landing harness (scripts/ship, scripts/test, scripts/lib/, .github/) — --quick/--checked land on main with no suite verdict behind them. Harness keeps its pre-merge gate: land with scripts/ship --remote."
+        if [[ "${PRECIS_QLAND_EXTERNAL_GATE:-0}" != 1 ]]; then
+            die "the diff touches the landing harness (scripts/ship, scripts/test, scripts/lib/, .github/) — --quick/--checked land on main with no suite verdict behind them. Harness keeps its pre-merge gate: land with scripts/ship --remote. When the operator explicitly assigns gating to another toolchain, acknowledge it with PRECIS_QLAND_EXTERNAL_GATE=1."
+        fi
+        say "harness qland — gate owned by external toolchain (PRECIS_QLAND_EXTERNAL_GATE=1); normal quick-lane guards remain enabled"
     fi
     if [[ "$HARNESS_DIFF" == 0 && "$REMOTE" == 1 ]]; then
         die "--remote is for harness diffs (scripts/ship, scripts/test, scripts/lib/, .github/) and this diff touches none of them — the release train lands everything else on --quick. Re-run scripts/ship --quick."

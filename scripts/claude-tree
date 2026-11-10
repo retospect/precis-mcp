@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Compatibility entry: the shared launcher owns checkout and PID lifetime.
+set -euo pipefail
+exec "$(dirname "$(realpath "$0")")/agent-start" claude "$@"

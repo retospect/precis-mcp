@@ -45,7 +45,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 CLIS = ("claude", "codex", "devin", "kimi")
@@ -54,6 +56,14 @@ EXTRA_PATH = ("/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.kimi-co
 INSTALL_TIMEOUT_S = 600.0
 SMOKE_TIMEOUT_S = 120.0
 RESOLVE_TIMEOUT_S = 30.0
+LAUNCHER_FILES = (
+    "scripts/agent-start",
+    "scripts/claude-tree",
+    "scripts/codex-tree",
+    "scripts/kimi-tree",
+    "scripts/devin-tree",
+    "scripts/lib/agent-tree.sh",
+)
 
 
 class Runner(Protocol):
@@ -334,6 +344,139 @@ def render(rows: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def manage_launcher(
+    settings: dict[str, Any], mode: str, *, home: Path | None = None
+) -> dict[str, Any]:
+    """Converge the user command onto committed code in a stable checkout.
+
+    Remote execution uses a temporary uploaded script, so neither cwd nor
+    __file__ identifies the source. Existing wrapper symlinks are discovery
+    hints; an explicit inventory checkout resolves missing/ambiguous hints.
+    Reports never create directories, execute agents or change links.
+    """
+    home = home or Path.home()
+    destination = home / ".local/bin/agent-start"
+    row: dict[str, Any] = {
+        "cli": "agent-start",
+        "path": str(destination),
+        "version": None,
+        "pin": "",
+        "min": "",
+        "status": "missing",
+        "action": "failed",
+        "ok": False,
+        "detail": "",
+    }
+    try:
+        if destination.exists() and not destination.is_symlink():
+            raise ValueError(f"refusing to replace user file/directory: {destination}")
+        explicit = str(settings.get("checkout") or "")
+        if explicit:
+            checkout = Path(explicit).expanduser().resolve(strict=True)
+        else:
+            roots = set()
+            for name, script in (
+                ("kimi-wt", "kimi-tree"),
+                ("devin-wt", "devin-tree"),
+                ("agent-start", "agent-start"),
+            ):
+                wrapper = destination.parent / name
+                if not wrapper.is_symlink():
+                    continue
+                target = wrapper.resolve()
+                root = target.parent.parent
+                if (
+                    target.name == script
+                    and target.parent.name == "scripts"
+                    and (root / ".git").is_dir()
+                ):
+                    roots.add(root)
+            if len(roots) != 1:
+                raise ValueError(
+                    "set agent_cli_launcher_checkout: "
+                    + (
+                        "wrapper checkouts disagree"
+                        if roots
+                        else "no stable wrapper checkout found"
+                    )
+                )
+            checkout = roots.pop()
+        if not (checkout / ".git").is_dir():
+            raise ValueError(
+                "launcher source must be a primary checkout, not a task worktree"
+            )
+        for relative in LAUNCHER_FILES:
+            source = checkout / relative
+            if (
+                source.is_symlink()
+                or not source.is_file()
+                or (
+                    relative != "scripts/lib/agent-tree.sh"
+                    and not os.access(source, os.X_OK)
+                )
+            ):
+                raise ValueError(
+                    f"shipped launcher dependency missing/not executable: {source}"
+                )
+            rc, _ = run_command(
+                [
+                    "git",
+                    "--no-optional-locks",
+                    "-C",
+                    str(checkout),
+                    "cat-file",
+                    "-e",
+                    f"HEAD:{relative}",
+                ],
+                30.0,
+            )
+            if rc:
+                raise ValueError(f"launcher dependency is not committed: {relative}")
+        rc, _ = run_command(
+            [
+                "git",
+                "--no-optional-locks",
+                "-C",
+                str(checkout),
+                "diff",
+                "--quiet",
+                "HEAD",
+                "--",
+                *LAUNCHER_FILES,
+            ],
+            30.0,
+        )
+        if rc:
+            raise ValueError(
+                "launcher source differs from committed code; ship it before installing"
+            )
+        target = checkout / "scripts/agent-start"
+        row["detail"] = f"target={target}"
+        if destination.is_symlink() and destination.resolve() == target:
+            return {**row, "status": "ok", "action": "current", "ok": True}
+        row["status"] = "drift" if destination.is_symlink() else "missing"
+        if mode == "report":
+            return {**row, "action": "needs-update"}
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.is_symlink():
+            # symlink_to fails on a concurrently created user file.
+            destination.symlink_to(target)
+        else:
+            with tempfile.TemporaryDirectory(
+                prefix=".agent-start-", dir=destination.parent
+            ) as scratch:
+                replacement = Path(scratch) / "agent-start"
+                replacement.symlink_to(target)
+                if not destination.is_symlink():
+                    raise ValueError(
+                        f"destination changed during installation: {destination}"
+                    )
+                replacement.replace(destination)
+        return {**row, "status": "ok", "action": "updated", "ok": True}
+    except (OSError, ValueError) as exc:
+        return {**row, "detail": str(exc)}
+
+
 def main(
     argv: list[str] | None = None,
     run: Runner = run_command,
@@ -346,7 +489,19 @@ def main(
     args = ap.parse_args(argv)
     config = json.loads(args.config_json)
     extend_path()
-    rows = (update if args.mode == "update" else report)(config, run, find)
+    launcher = (
+        manage_launcher(config["launcher"], args.mode) if "launcher" in config else None
+    )
+    # Refuse a bad source before running vendor installers. Reporting vendor
+    # state remains useful even when the managed command cannot converge.
+    operation = (
+        update
+        if args.mode == "update" and (launcher is None or launcher["ok"])
+        else report
+    )
+    rows = operation(config, run, find)
+    if launcher is not None:
+        rows.append(launcher)
     lines = [*render(rows), *alerts(rows)]
     print("\n".join(lines))
     print(
@@ -354,7 +509,7 @@ def main(
         + json.dumps({"host": socket.gethostname(), "mode": args.mode, "rows": rows})
     )
     if args.mode == "update":
-        return 0 if all(r["ok"] for r in rows) else 1
+        return 0 if all(r.get("ok", True) for r in rows) else 1
     return 1 if args.strict and any(a.startswith("ALERT") for a in lines) else 0
 
 

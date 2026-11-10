@@ -6,6 +6,10 @@ It reads `CLAUDE.md` and `AGENTS.md` as always-on rules and runs the
 
 ## Launch
 
+The common entry is `scripts/agent-start devin NAME`; see
+[agent-start](agent-start.md) for the shared checkout and lock contract.
+The existing entry below remains supported.
+
 ```
 scripts/devin-tree NAME --purpose "one line" [--prompt-file FILE] \
   [--model swe-2-medium] [--tmux [SESSION]]
