@@ -80,6 +80,7 @@ MEMORY_ACTIONS = {
     "dangling_mention": ("rewrite",),
     "entity_claim_stale": ("rewrite",),
     "grab_bag": ("split",),
+    "griped": ("rewrite", "supersede", "retire", "qualify"),
     "negative_undated": ("rewrite", "qualify", "ask"),
     "restated_claim": ("rewrite",),
     "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
@@ -261,6 +262,23 @@ search has been performed. A date on another line does not date the claim.
 Only propose a supported correction or qualification, with a live anchor
 and date; otherwise reject or ask. Preserve base_sha and evidence spans.
 All three detectors are proposal-only, with no apply or auto-apply path.
+
+griped is a reader-filed project:memory complaint and the candidate is one
+(gripe, memory) pair. evidence.story is the reader's story (Goal, Route,
+claims), evidence.route the recorded calls, evidence.replay each query's
+ranked hits plus the named memories' ranks — a replayable test, not a rank
+target: a circuitous route is fine. Name the disagreement shape from the
+pinned checklist and emit its per-shape fix for THIS memory only. A rewrite
+takes ops whose find and span come verbatim from payload.ops, with the
+replacement text filled (text=null is unresolved, never a delete). A
+supersede must name a live successor among evidence.memories; a retire
+needs every still-true claim already preserved elsewhere. qualify carries
+the caveat; ask only when resolution needs a human. Reject (no-change)
+when the replay already passes: routes still arrive, answers consistent or
+each carrying its scope in title plus edge, no live losing claim, every
+handle resolves. Never retitle to win a query, never restate another node,
+never drop a still-true claim without moving it. Preserve base_sha,
+evidence_sha, the gripe id and the supporting shas.
 """
 
 
@@ -301,6 +319,15 @@ def _excerpt_ids(candidate: GardenCandidate) -> list[int]:
                 successor = parse_handle(str(mention.get("successor") or ""))
                 if successor is not None and not successor[1]:
                     ids.append(successor[2])
+        if candidate.detector == "griped":
+            # The evaluator compares the claims side by side — every named
+            # memory's own text, plus the entity refs it cites (bounded).
+            for entry in candidate.evidence.get("memories", []):
+                if isinstance(entry.get("ref_id"), int):
+                    ids.append(int(entry["ref_id"]))
+            for entry in candidate.evidence.get("entities", [])[:8]:
+                if isinstance(entry.get("ref_id"), int):
+                    ids.append(int(entry["ref_id"]))
     else:
         for key in ("src", "dst", "a", "b"):
             val = candidate.evidence.get(key)

@@ -196,7 +196,13 @@ _DETECTOR_BY_PASS = {
     "tag-sweep": ("untagged",),
     "siblings": ("sibling_confusion",),
     "paper-identity": ("paper_identity",),
-    "memory": ("dangling_mention", "thread_shape", "anchor_rot", "grab_bag"),
+    "memory": (
+        "dangling_mention",
+        "thread_shape",
+        "anchor_rot",
+        "grab_bag",
+        "griped",
+    ),
     "memory-review": (
         "entity_claim_stale",
         "negative_undated",
@@ -261,6 +267,11 @@ class GardenCandidate:
             return f"{key}:{self.detector}"
         if self.detector in {"source_drift", "entity_claim_stale"}:
             return f"{key}:{self.detector}:{self.payload['evidence_sha']}"
+        if self.detector == "griped":
+            # The question a reader gripe asks re-opens whenever its story,
+            # route or named contents move; distinct complaints on one
+            # memory are distinct keys (evidence_sha covers both).
+            return f"{key}:griped:{self.payload.get('evidence_sha') or 'none'}"
         return key
 
 
@@ -2352,6 +2363,433 @@ def entity_claim_stale_candidates(
     )
 
 
+# ---------------------------------------------------------------------------
+# griped — a reader's project:memory gripe is a replayable test (gr561873)
+# ---------------------------------------------------------------------------
+
+#: A live ``project:memory`` gripe carrying none of these STATUS values is
+#: open for the detector — the fixer only replays complaints a reader still
+#: waits on (mirrors the gripe kind's open-listing exclusion).
+_GRIPED_CLOSED_STATUS = ("done", "wontfix", "parked")
+
+#: Hit depth a route replay records per recorded search — the same index-view
+#: page the reader ranked off.
+ROUTE_REPLAY_K = 8
+
+#: Per-candidate evidence bounds: named memories, entity refs and the
+#: sentence-grain rewrite ops the evaluator may resolve.
+GRIPED_MENTION_CAP = 16
+GRIPED_ENTITY_CAP = 16
+GRIPED_OP_CAP = 40
+GRIPED_STORY_CHARS = 1500
+
+#: Upper bound on open ``project:memory`` gripes read per windowed or
+#: targeted pass — far above any realistic backlog; the dispatcher deadline
+#: owns the wall clock either way.
+GRIPED_OPEN_SCAN = 500
+
+
+def _griped_window(store: Store, *, after: int, size: int) -> tuple[list[int], int]:
+    """Open ``project:memory`` gripe ids past ``after`` (ascending), and the
+    cursor to save — the window's last id, or ``0`` when it reached the end
+    (same contract as :func:`_scan_window`)."""
+    with store.pool.connection() as conn:
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT r.ref_id FROM refs r WHERE r.kind = 'gripe' "
+                "AND r.retired_at IS NULL AND r.ref_id > %s "
+                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+                "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
+                "  AND t.namespace = 'OPEN' AND t.value = 'project:memory') "
+                "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+                "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
+                "  AND t.namespace = 'STATUS' AND t.value = ANY(%s)) "
+                "ORDER BY r.ref_id LIMIT %s",
+                (after, list(_GRIPED_CLOSED_STATUS), size),
+            ).fetchall()
+        ]
+    return ids, (ids[-1] if len(ids) >= size else 0)
+
+
+def _gripe_story(
+    store: Store, ids: list[int]
+) -> dict[int, tuple[str, str, dict[str, Any]]]:
+    """``{gripe: (title, story, meta)}`` — body plus comments in chunk
+    order (the reader's whole filing) and meta (``meta.route`` lives
+    there). Content drift is covered by the story text itself, so no
+    separate sha rides along."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, r.meta, "
+            "coalesce((SELECT string_agg(c.text, E'\\n' ORDER BY c.ord, "
+            "  c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
+            "  AND c.chunk_kind IN ('gripe_body', 'gripe_comment') "
+            "  AND c.retired_at IS NULL), '') "
+            "FROM refs r WHERE r.ref_id = ANY(%s) AND r.kind = 'gripe' "
+            "AND r.retired_at IS NULL ORDER BY r.ref_id",
+            (list(ids),),
+        ).fetchall()
+    return {int(r[0]): (str(r[1] or ""), str(r[3] or ""), r[2] or {}) for r in rows}
+
+
+def _live_ref_rows(store: Store, ids: list[int]) -> dict[int, tuple[str, str]]:
+    """``{ref_id: (kind, title)}`` for the given live refs."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, kind, title FROM refs "
+            "WHERE ref_id = ANY(%s) AND retired_at IS NULL",
+            (list(ids),),
+        ).fetchall()
+    return {int(r[0]): (str(r[1]), str(r[2] or "")) for r in rows}
+
+
+def _story_refs(
+    store: Store, story: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(memories, entities)`` — live refs the story's handles resolve to,
+    memory kind first, everything else second (a machine/skill/python/md
+    ref the claims name). Chunk handles resolve through their owning ref."""
+    parsed = {
+        (p[0], p[1], p[2])
+        for m in _MEMORY_HANDLE.finditer(story)
+        if (p := parse_handle(m.group())) is not None and p[2] <= 9223372036854775807
+    }
+    record_ids = [pk for _k, chunk, pk in parsed if not chunk]
+    rows = _live_ref_rows(store, record_ids)
+    owners: dict[int, tuple[int, str]] = {}
+    chunk_ids = [pk for _k, chunk, pk in parsed if chunk]
+    if chunk_ids:
+        with store.pool.connection() as conn:
+            owners = {
+                int(c): (int(r), str(k))
+                for c, r, k in conn.execute(
+                    "SELECT c.chunk_id, r.ref_id, r.kind FROM chunks c "
+                    "JOIN refs r USING (ref_id) WHERE c.chunk_id = ANY(%s) "
+                    "AND r.retired_at IS NULL",
+                    (chunk_ids,),
+                ).fetchall()
+            }
+    seen: dict[int, dict[str, Any]] = {}
+    for kind, is_chunk, pk in parsed:
+        if is_chunk:
+            owner = owners.get(pk)
+            if owner is None:
+                continue
+            ref_id, ref_kind = owner
+            title = _live_ref_rows(store, [ref_id]).get(ref_id, (ref_kind, ""))[1]
+        else:
+            if pk not in rows:
+                continue
+            ref_id, (ref_kind, title) = pk, rows[pk]
+        seen.setdefault(
+            ref_id,
+            {
+                "handle": try_format(ref_kind, ref_id) or f"{ref_kind}:{ref_id}",
+                "ref_id": ref_id,
+                "kind": ref_kind,
+                "title": title,
+            },
+        )
+    refs = sorted(seen.values(), key=lambda r: int(r["ref_id"]))
+    memories = [r for r in refs if r["kind"] == "memory"][:GRIPED_MENTION_CAP]
+    entities = [r for r in refs if r["kind"] != "memory"][:GRIPED_ENTITY_CAP]
+    return memories, entities
+
+
+def _handle_ref_id(value: Any) -> int | None:
+    """A ``get`` call's recorded ``id`` (``me123``, ``memory:me123[~…]``) →
+    its record ref_id, or ``None`` when it names no record handle."""
+    if not isinstance(value, str):
+        return None
+    token = value.strip().split("~", 1)[0]
+    match = _MEMORY_HANDLE.search(token)
+    if match is None:
+        return None
+    parsed = parse_handle(match.group())
+    return int(parsed[2]) if parsed is not None and not parsed[1] else None
+
+
+def _replay_handler(store: Store) -> Any:
+    """The memory search handler with no embedder wired — the replay is the
+    lexical leg only, deterministic and read-only (the salience bump and
+    trace row live in ``_search_inner``, not ``_best_body_hits``)."""
+    from precis.dispatch import Hub
+    from precis.handlers.memory import MemoryHandler
+
+    return MemoryHandler(hub=Hub(store=store))
+
+
+def _replay_hits(
+    store: Store,
+    q: str,
+    *,
+    tags: list[str] | None,
+    mode: str | None,
+    scope: str | None,
+    k: int,
+    handler: Any,
+) -> list[dict[str, Any]]:
+    """One recorded query's ranked memory hits — the index view's own call
+    (``hard_cut`` + fused rerank, which needs a vector and so stays lexical
+    here) minus its render and bookkeeping."""
+    from precis.store import Tag
+    from precis.utils.memory_rulings import hidden_ids
+
+    hits, _total, _fold = handler._best_body_hits(
+        q,
+        Tag.normalize_filter(tags, kind="memory"),
+        k,
+        page=1,
+        mode=mode,
+        exclude_ref_ids=sorted(hidden_ids(store)),
+        chunk_scope=scope,
+        hard_cut=True,
+        rerank=True,
+    )
+    return [
+        {
+            "rank": i,
+            "ref_id": int(ref.id),
+            "handle": try_format("memory", ref.id) or f"memory:{ref.id}",
+            "title": str(ref.title or ""),
+        }
+        for i, (_block, ref, _rank) in enumerate(hits, 1)
+    ]
+
+
+def route_replay(
+    store: Store, route: Any, *, k: int = ROUTE_REPLAY_K
+) -> list[dict[str, Any]]:
+    """Replay a ``project:memory`` gripe's recorded route, read-only and
+    deterministic (no model, no embedder, no ledger or salience writes).
+
+    Each ``search`` row re-runs its recorded ``q`` (plus ``tags``/``mode``/
+    ``scope`` when the masked sample kept them) and records the top-``k``
+    hits — a goal node's rank is its position there, "what outranks it" the
+    hits above. Each ``get`` row records whether the named handle still
+    resolves to a live ref. A row the sample cannot drive (no ``q``, a
+    rejected arg) reports ``not_replayed`` with the reason.
+    """
+    out: list[dict[str, Any]] = []
+    handler = None
+    for row in route or []:
+        if not isinstance(row, dict):
+            continue
+        verb = str(row.get("verb") or "")
+        sample = row.get("arg_sample")
+        sample = sample if isinstance(sample, dict) else {}
+        seq = row.get("seq")
+        if verb == "search":
+            entry: dict[str, Any] = {"seq": seq, "verb": "search", "q": sample.get("q")}
+            tags = sample.get("tags")
+            if isinstance(tags, list) and all(isinstance(t, str) for t in tags):
+                entry["tags"] = tags
+            if isinstance(sample.get("mode"), str):
+                entry["mode"] = sample["mode"]
+            if isinstance(sample.get("scope"), str):
+                entry["scope"] = sample["scope"]
+            q = entry["q"]
+            if not isinstance(q, str) or not q.strip():
+                entry["not_replayed"] = "no recorded query"
+            else:
+                if handler is None:
+                    handler = _replay_handler(store)
+                try:
+                    entry["hits"] = _replay_hits(
+                        store,
+                        q,
+                        tags=entry.get("tags"),
+                        mode=entry.get("mode"),
+                        scope=entry.get("scope"),
+                        k=k,
+                        handler=handler,
+                    )
+                except Exception as exc:
+                    entry["not_replayed"] = f"{type(exc).__name__}: {exc}"
+            out.append(entry)
+        elif verb == "get":
+            entry = {"seq": seq, "verb": "get", "id": sample.get("id")}
+            rid = _handle_ref_id(entry["id"])
+            if rid is not None:
+                entry["ref_id"] = rid
+                entry["resolves"] = rid in _live_ref_rows(store, [rid])
+            else:
+                entry["resolves"] = False
+            out.append(entry)
+    return out
+
+
+def _griped_for_gripe(
+    store: Store,
+    gid: int,
+    title: str,
+    story: str,
+    meta: dict[str, Any],
+    *,
+    only_memory: int | None = None,
+) -> list[GardenCandidate]:
+    """One ``rewrite`` candidate per live memory an open ``project:memory``
+    gripe names (``only_memory`` restricts which target a candidate lands
+    on — evidence always lists every named memory, so an apply re-check
+    re-derives the identical pin).
+
+    The candidate is the whole complaint pinned at once: story, named
+    memories and entity refs, ``meta.route``, the deterministic replay and
+    every named memory's content sha. ``payload.ops`` is the sentence-grain
+    allow-list the evaluator resolves — same contract as the other memory
+    rewrites, models supply replacement text only.
+    """
+    memories, entities = _story_refs(store, story)
+    if not memories:
+        return []
+    route = meta.get("route")
+    route = route if isinstance(route, list) else []
+    replay = route_replay(store, route)
+    mem_ids = [int(m["ref_id"]) for m in memories]
+    shas = _ref_shas(store, mem_ids)
+    bodies = {rid: b for rid, b, _sha in _memory_bodies(store, mem_ids)}
+    listed = [
+        {
+            "handle": m["handle"],
+            "ref_id": m["ref_id"],
+            "title": m["title"],
+            "sha": shas.get(m["ref_id"]),
+        }
+        for m in memories
+    ]
+    for entry in replay:
+        hits = entry.get("hits")
+        if hits is not None:
+            entry["ranks"] = {
+                m["handle"]: next(
+                    (h["rank"] for h in hits if h["ref_id"] == m["ref_id"]), None
+                )
+                for m in memories
+            }
+    common: dict[str, Any] = {
+        "gripe": gid,
+        "gripe_handle": f"gr{gid}",
+        "gripe_title": title,
+        "story": story[:GRIPED_STORY_CHARS],
+        "memories": listed,
+        "entities": entities,
+        "route": route,
+        "replay": replay,
+        "supporting_shas": {
+            m["handle"]: shas[m["ref_id"]] for m in memories if m["ref_id"] in shas
+        },
+    }
+    evidence_sha = hashlib.sha256(
+        json.dumps(common, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    targets = [
+        m for m in memories if only_memory is None or int(m["ref_id"]) == only_memory
+    ]
+    out: list[GardenCandidate] = []
+    for m in targets:
+        rid = int(m["ref_id"])
+        body = bodies.get(rid)
+        if body is None:
+            # DREAM memories stay in the merge lane: no rewrite recheck can
+            # re-derive this candidate, so it must never reach an apply door.
+            continue
+        ops = [
+            {"find": sentence, "text": None, "span": span}
+            for sentence, span in islice(
+                _claim_sentences(body, str(m["title"])), GRIPED_OP_CAP
+            )
+        ]
+        out.append(
+            GardenCandidate(
+                detector="griped",
+                action="rewrite",
+                target_kind="ref",
+                target_id=rid,
+                title=f"gr{gid} names me{rid} in a memory complaint",
+                evidence={**common, "content_sha": shas.get(rid)},
+                payload={
+                    "base_sha": shas.get(rid),
+                    "ops": ops,
+                    "gripe": gid,
+                    "evidence_sha": evidence_sha,
+                },
+            )
+        )
+    return out
+
+
+def _griped_memory_target(
+    store: Store,
+    saved: dict[str, int],
+    *,
+    scan_cap: int,
+    limit: int,
+) -> list[GardenCandidate]:
+    """Apply re-check mode: ``griped:memory`` windows memory ref ids and
+    ``griped:gripe`` pins the story — re-emit the exact candidate for one
+    (gripe, memory) pair so a proposal's evidence can be compared."""
+    window, _nxt = _scan_window(
+        store, "memory", after=saved["griped:memory"], size=scan_cap
+    )
+    only_gripe = saved.get("griped:gripe")
+    gids, _nxt = _griped_window(store, after=0, size=GRIPED_OPEN_SCAN)
+    stories = _gripe_story(store, gids)
+    out: list[GardenCandidate] = []
+    for gid in gids:
+        row = stories.get(gid)
+        if row is None or (only_gripe is not None and gid != only_gripe):
+            continue
+        for rid in window:
+            if memory_handle_mentions(row[1], f"me{rid}"):
+                out.extend(_griped_for_gripe(store, gid, *row, only_memory=rid))
+                if len(out) >= limit:
+                    return out[:limit]
+    return out
+
+
+def griped_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Open ``project:memory`` gripes naming live memories → one candidate
+    per (gripe, memory). Read-only: the route replay runs the recorded
+    searches lexically and pins every named memory's sha.
+
+    A ``griped:memory`` cursor switches to the apply re-check's targeted
+    mode (:func:`_griped_memory_target`); the ordinary ``griped:gripe``
+    cursor windows open complaints like every other wide scan.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    saved = cursors or {}
+    if "griped:memory" in saved:
+        return _griped_memory_target(store, saved, scan_cap=scan_cap, limit=limit)
+    key = "griped:gripe"
+    window, nxt = _griped_window(store, after=saved.get(key, 0), size=scan_cap)
+    stories = _gripe_story(store, window)
+    out: list[GardenCandidate] = []
+    for gid in window:
+        row = stories.get(gid)
+        if row is None:
+            continue
+        out.extend(_griped_for_gripe(store, gid, *row))
+        if len(out) >= limit:
+            nxt = gid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out[:limit]
+
+
 def _kind_count(store: Store, kind: str) -> int:
     return store.count_refs(kind=kind)
 
@@ -3601,6 +4039,7 @@ def run_detectors(
             "anchor_rot",
             "dangling_mention",
             "entity_claim_stale",
+            "griped",
             "negative_undated",
             "review_due",
             "source_drift",
@@ -3612,6 +4051,7 @@ def run_detectors(
                     "anchor_rot": anchor_rot_candidates,
                     "dangling_mention": dangling_mention_candidates,
                     "entity_claim_stale": entity_claim_stale_candidates,
+                    "griped": griped_candidates,
                     "negative_undated": negative_undated_candidates,
                     "review_due": review_due_candidates,
                     "source_drift": source_drift_candidates,
@@ -3720,6 +4160,7 @@ __all__ = [
     "entity_claim_stale_candidates",
     "freshly_considered",
     "grab_bag_candidates",
+    "griped_candidates",
     "memory_expiry_shape",
     "negative_undated_candidates",
     "orphan_taxon_candidates",
@@ -3728,6 +4169,7 @@ __all__ = [
     "redundant_link_candidates",
     "restated_claim_candidates",
     "review_due_candidates",
+    "route_replay",
     "run_detectors",
     "short_sibling_pair",
     "sibling_confusion_candidates",

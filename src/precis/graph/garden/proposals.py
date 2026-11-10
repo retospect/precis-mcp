@@ -72,6 +72,7 @@ MEMORY_APPLY_DETECTORS = {
     "anchor_rot": "anchor_rot_candidates",
     "thread_shape": "thread_shape_candidates",
     "grab_bag": "grab_bag_candidates",
+    "griped": "griped_candidates",
 }
 
 
@@ -134,6 +135,12 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
                 parsed = parse_handle(successor)
                 if parsed is not None and not parsed[1]:
                     ids.append(parsed[2])
+        if proposal.detector == "griped":
+            # The reviewer reads the claims side by side like the evaluator.
+            for section in ("memories", "entities"):
+                for entry in proposal.evidence.get(section, []):
+                    if isinstance(entry, dict) and isinstance(entry.get("ref_id"), int):
+                        ids.append(int(entry["ref_id"]))
     elif proposal.detector == "dangling_mention":
         for mention in proposal.evidence.get("mentions", []):
             successor = parse_handle(str(mention.get("successor") or ""))

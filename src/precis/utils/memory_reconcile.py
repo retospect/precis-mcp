@@ -44,6 +44,7 @@ _MEMORY_DETECTORS = frozenset(
         "dangling_mention",
         "entity_claim_stale",
         "grab_bag",
+        "griped",
         "negative_undated",
         "restated_claim",
         "review_due",

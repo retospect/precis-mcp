@@ -62,6 +62,7 @@ _ASK_LLM_TIERS = {
     "anchor_rot": "opus",
     "dangling_mention": "opus",
     "entity_claim_stale": "opus",
+    "griped": "opus",
     "negative_undated": "opus",
     "restated_claim": "opus",
     "review_due": "opus",
@@ -96,6 +97,15 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
         relation="raises-concern-about",
         set_by="system",
     )
+    if cand.detector == "griped" and isinstance(cand.payload.get("gripe"), int):
+        # The reader follows the complaint's story, not only the node:
+        # the review todo links the filing gripe too.
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=int(cand.payload["gripe"]),
+            relation="raises-concern-about",
+            set_by="system",
+        )
 
 
 ProposerFn = Callable[["Store", GardenCandidate], "Verdict | None"]

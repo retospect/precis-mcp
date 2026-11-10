@@ -1,0 +1,247 @@
+"""The ``griped`` detector: a reader's project:memory gripe is a replayable
+test — dev-DB fixtures, no model or ledger writes beyond the proposal."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Any
+
+from precis.graph.garden import candidates as cand
+from precis.graph.garden import consumer, runner
+from precis.graph.garden.apply import apply_rewrite
+from precis.graph.garden.proposals import (
+    emit_proposal,
+    key_block,
+    pending_proposals,
+    record_rejection,
+)
+from precis.graph.garden.proposer import Verdict
+from precis.store import Store
+from precis.store.types import ChunkInsert, Tag
+from tests._refs import insert_gripe
+from tests.test_garden_memory import _memory
+from tests.test_garden_memory_apply import _body
+
+
+def _gripe(
+    store: Store,
+    body: str,
+    *,
+    status: str = "open",
+    route: list[dict[str, Any]] | None = None,
+    tagged: bool = True,
+) -> int:
+    ref = insert_gripe(store, body.splitlines()[0][:60], status=status)
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "gripe_body"})]
+    )
+    if tagged:
+        store.add_tag(ref.id, Tag.open("project:memory"), set_by="agent")
+    if route is not None:
+        store.update_ref(ref.id, meta_patch={"route": route})
+    return int(ref.id)
+
+
+def _route(*calls: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"seq": i, "kind": "memory", **c} for i, c in enumerate(calls, 1)]
+
+
+def test_griped_joins_the_opt_in_memory_pass() -> None:
+    assert "griped" in cand.detectors_for(("memory",))
+    assert "griped" not in cand.detectors_for(("all",))
+
+
+def test_candidates_per_named_memory_pinned_and_replayed(store: Store) -> None:
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    gid = _gripe(
+        store,
+        f"Goal: the pour policy. Route: me{keeper} and me{loser} disagree.",
+        route=_route(
+            {"verb": "search", "arg_sample": {"q": "pour"}},
+            {"verb": "get", "arg_sample": {"id": f"me{loser}"}},
+        ),
+    )
+    found = cand.griped_candidates(store)
+    assert {c.target_id for c in found} == {keeper, loser}
+    for candidate in found:
+        assert candidate.detector == "griped"
+        assert candidate.action == "rewrite"
+        assert candidate.evidence["gripe"] == gid
+        assert candidate.payload["gripe"] == gid
+        assert candidate.payload["base_sha"] == candidate.evidence["content_sha"]
+        assert candidate.evidence["supporting_shas"][f"me{keeper}"]
+        assert candidate.payload["evidence_sha"]
+        assert [m["ref_id"] for m in candidate.evidence["memories"]] == [
+            keeper,
+            loser,
+        ]
+        searches = [e for e in candidate.evidence["replay"] if e["verb"] == "search"]
+        assert len(searches) == 1 and searches[0]["ranks"]
+        gets = [e for e in candidate.evidence["replay"] if e["verb"] == "get"]
+        assert gets == [
+            {
+                "seq": 2,
+                "verb": "get",
+                "id": f"me{loser}",
+                "ref_id": loser,
+                "resolves": True,
+            }
+        ]
+        assert candidate.payload["ops"], "the evaluator needs a span allow-list"
+        assert all(op["text"] is None for op in candidate.payload["ops"])
+
+
+def test_closed_tagless_and_memoryless_gripes_emit_nothing(store: Store) -> None:
+    _gripe(store, "a complaint without any handles", route=[])
+    _gripe(store, "same, but closed", status="done")
+    _gripe(store, "same, but not project:memory", tagged=False)
+    _gripe(store, "parked gripe", status="parked")
+    assert cand.griped_candidates(store) == []
+
+
+def test_route_replay_records_hits_gets_and_skips(store: Store) -> None:
+    mem = _memory(store, "The interim exception narrows the pour rule.")
+    replay = cand.route_replay(
+        store,
+        _route(
+            {"verb": "search", "arg_sample": {"q": "interim exception"}},
+            {"verb": "search", "arg_sample": {}},
+            {"verb": "get", "arg_sample": {"id": f"me{mem}"}},
+            {"verb": "get", "arg_sample": {"id": "me999999"}},
+        ),
+    )
+    assert replay[0]["hits"] and replay[0]["hits"][0]["ref_id"] == mem
+    assert replay[0]["hits"][0]["rank"] == 1
+    assert replay[1]["not_replayed"]
+    assert replay[2]["resolves"] is True and replay[2]["ref_id"] == mem
+    assert replay[3]["resolves"] is False
+
+
+def test_rewrite_applies_through_the_reviewed_door(store: Store) -> None:
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    _gripe(store, f"me{keeper} and me{loser} disagree on pours.", route=[])
+    candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
+    op = dict(candidate.payload["ops"][0])
+    op["text"] = (
+        "Pours are refused except interim leaf boards since the 2026-11-01 "
+        f"ruling; me{keeper} carries the exception."
+    )
+    resolved = replace(candidate, payload={**candidate.payload, "ops": [op]})
+    review_id = emit_proposal(store, resolved, rationale="same referent, one wrong")
+    assert review_id is not None
+    rec = apply_rewrite(store, review_id, actor="test")
+    assert rec.target == loser
+    assert op["find"] not in _body(store, loser)
+    assert op["text"] in _body(store, loser)
+    # The applied rewrite resolves the proposal row.
+    assert pending_proposals(store, action="rewrite") == []
+
+
+def test_replay_after_apply_closes_the_gripe(store: Store, monkeypatch: Any) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    gid = _gripe(
+        store,
+        f"me{keeper} and me{loser} disagree on pours.",
+        route=_route({"verb": "search", "arg_sample": {"q": "interim"}}),
+    )
+    candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
+    op = dict(candidate.payload["ops"][0])
+    op["text"] = "Pours are refused except interim leaf boards (2026-11-01 ruling)."
+    resolved = replace(candidate, payload={**candidate.payload, "ops": [op]})
+    emit_proposal(store, resolved, rationale="same referent, one wrong")
+    prop = pending_proposals(store, action="rewrite")[0]
+    apply_rewrite(store, prop.review_id, actor="test")
+
+    report = consumer.ConsumeReport()
+    consumer._griped_close(store, prop, report)
+
+    tags = {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
+    assert "done" in tags
+    comments = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(gid)
+        if b.chunk_kind == "gripe_comment"
+    ]
+    assert comments and comments[-1].startswith("resolved:")
+    todos = store.list_refs(kind="todo", tags=["recall-set-review"], limit=10)
+    assert todos, "the proven (query, goal) pairs wait for operator review"
+    pairs = todos[0].meta["recall_set_proposals"]
+    assert pairs and pairs[0]["want"] == f"me{keeper}"
+
+
+def test_pending_sibling_proposals_hold_the_close(store: Store) -> None:
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    gid = _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    for rid in (keeper, loser):
+        candidate = next(c for c in cand.griped_candidates(store) if c.target_id == rid)
+        assert emit_proposal(store, candidate, rationale="pending") is not None
+    prop = next(p for p in pending_proposals(store) if p.target_id == loser)
+    report = consumer.ConsumeReport()
+    consumer._griped_close(store, prop, report)
+    assert "done" not in {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
+
+
+def test_ask_verdict_files_a_gripe_linked_review_todo(store: Store) -> None:
+    """The evaluator's ask becomes the runner's memory-review todo; for a
+    griped candidate it links the filing gripe as well as the memory."""
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    gid = _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
+    runner._file_review_todo(
+        store, candidate, Verdict(accept=False, ask="undecidable, needs a human")
+    )
+    todos = store.list_refs(kind="todo", tags=["memory-review"], limit=10)
+    assert len(todos) == 1
+    dsts = {int(l.dst_ref_id) for l in store.links_for(todos[0].id, direction="out")}
+    assert dsts >= {loser, gid}
+    assert "done" not in {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
+
+
+def test_no_change_rejection_blocks_re_ask_while_evidence_holds(
+    store: Store,
+) -> None:
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    candidate = cand.griped_candidates(store)[0]
+    record_rejection(
+        store,
+        candidate,
+        rationale="the replay already passes — consistent scoped answers",
+        prompt_version="garden-propose.test",
+    )
+    # A proposer rejection blocks only the same prompt version re-asking.
+    assert (
+        key_block(
+            store,
+            "ref",
+            candidate.target_id,
+            candidate.key,
+            prompt_version="garden-propose.test",
+        )
+        == "rejected"
+    )
+    assert (
+        key_block(
+            store,
+            "ref",
+            candidate.target_id,
+            candidate.key,
+            prompt_version="garden-propose.next",
+        )
+        is None
+    )
+
+
+def test_run_detectors_dispatches_griped(store: Store) -> None:
+    mem = _memory(store, "A live claim a reader complained about.")
+    _gripe(store, f"me{mem} is wrong.", route=[])
+    run = cand.run_detectors(store, passes=("memory",), detector_deadline_s=0)
+    assert any(c.detector == "griped" for c in run.candidates)
+    assert "griped" not in run.skipped

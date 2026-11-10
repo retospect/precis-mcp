@@ -124,10 +124,12 @@ from psycopg import OperationalError
 
 from precis.errors import BadInput, NotFound
 from precis.graph.garden.candidates import (
+    _MEMORY_HANDLE,
     HISTORY_KINDS,
     PROVENANCE_RELATIONS,
     SIBLING_REJECT_REASON,
     GardenCandidate,
+    _live_ref_rows,
     short_sibling_pair,
 )
 from precis.graph.garden.paper_gate import (
@@ -877,6 +879,14 @@ def _apply_memory(
         )
         return
     report.applied += 1
+    if prop.detector == "griped":
+        try:
+            _griped_close(store, prop, report)
+        except Exception:
+            # The gripe staying open is safe; a close failure must not undo
+            # the applied fix or abort the tick.
+            log.exception("garden consumer: griped close failed on %s", prop.key)
+            report.errors += 1
 
 
 def _note_memory_apply_failure(
@@ -917,6 +927,143 @@ def _memory_apply_failures(store: Store, prop: GardenProposal) -> tuple[int, str
             if not last_error:
                 last_error = str(attempt.get("error") or "")
     return failures, last_error
+
+
+def _griped_recall_pairs(
+    store: Store, gripe: int, replay: list[dict[str, Any]], named: set[int]
+) -> list[dict[str, str]]:
+    """``(query, goal)`` pairs a passing replay proves — the reader's route
+    queries against the named memories they still recall, for the operator
+    recall-set review todo."""
+    if not named:
+        return []
+    rows = _live_ref_rows(store, sorted(named))
+    pairs: list[dict[str, str]] = []
+    for entry in replay:
+        q = entry.get("q")
+        if not isinstance(q, str):
+            continue
+        for hit in entry.get("hits") or []:
+            if hit.get("ref_id") not in named:
+                continue
+            _kind, title = rows.get(int(hit["ref_id"]), ("memory", ""))
+            pairs.append(
+                {
+                    "query": q,
+                    "want": str(hit["handle"]),
+                    "title": str(hit.get("title") or title),
+                    "hook": "",
+                    "source": "griped",
+                    "why": f"gr{gripe}: reader route replayed after the fix",
+                }
+            )
+    return pairs
+
+
+def _griped_live_handles(store: Store, story: str) -> bool:
+    """Every handle in the story resolves to a live ref — one of the
+    deterministic replay-after checks (a retired handle fails the pass)."""
+    parsed = [
+        p
+        for m in _MEMORY_HANDLE.finditer(story)
+        if (p := parse_handle(m.group())) is not None
+    ]
+    live = _live_ref_rows(
+        store, [int(pk) for _k, is_chunk, pk in parsed if not is_chunk]
+    )
+    return all(is_chunk or int(pk) in live for _k, is_chunk, pk in parsed)
+
+
+def _griped_pass(replay: list[dict[str, Any]], named: set[int]) -> bool:
+    """The deterministic half of the replay-after pass: recorded ``get``s
+    resolve, each ``search`` still returns a named live memory (the routes
+    arrive), and no route row failed to replay. Answer consistency and
+    scope were judged by the reviewer, not here."""
+    for entry in replay:
+        if entry.get("not_replayed"):
+            continue
+        if entry.get("verb") == "get" and not entry.get("resolves"):
+            return False
+        if entry.get("verb") == "search":
+            hits = entry.get("hits") or []
+            if named and not any(h.get("ref_id") in named for h in hits):
+                return False
+    return True
+
+
+def _griped_close(store: Store, prop: GardenProposal, report: ConsumeReport) -> None:
+    """Replay-after and close a reader's ``project:memory`` gripe once no
+    griped proposal for it stays pending — ``resolved:`` comment +
+    ``STATUS:fixed`` like ``fix_gripe``, plus a recall-set review todo for
+    the proven (query, goal) pairs. A failing pass or pending sibling
+    proposals leave the gripe open; never a silent close."""
+    from precis.dispatch import Hub
+    from precis.graph.garden.candidates import (
+        _gripe_story,
+        _story_refs,
+        route_replay,
+    )
+    from precis.handlers.gripe import GripeHandler
+
+    gripe = prop.payload.get("gripe") or prop.evidence.get("gripe")
+    if not isinstance(gripe, int):
+        return
+    row = _gripe_story(store, [gripe]).get(gripe)
+    if row is None:
+        return
+    _title, story, meta = row
+    with store.pool.connection() as conn:
+        still_open = conn.execute(
+            "SELECT 1 FROM refs r WHERE r.ref_id = %s AND r.kind = 'gripe' "
+            "AND r.retired_at IS NULL AND NOT EXISTS (SELECT 1 FROM ref_tags rt "
+            "JOIN tags t USING (tag_id) WHERE rt.ref_id = r.ref_id "
+            "AND t.namespace = 'STATUS' AND t.value IN ('done', 'wontfix', 'parked'))",
+            (gripe,),
+        ).fetchone()
+    if still_open is None:
+        return
+    if any(
+        p.detector == "griped" and p.evidence.get("gripe") == gripe
+        for p in pending_proposals(store, limit=500)
+    ):
+        return  # other named memories still carry pending proposals
+    route = meta.get("route")
+    replay = route_replay(store, route if isinstance(route, list) else [])
+    named = {int(m["ref_id"]) for m in _story_refs(store, story)[0]}
+    if not (_griped_pass(replay, named) and _griped_live_handles(store, story)):
+        return  # the replay still fails — the next tick re-detects it
+    applied = prop.payload.get("applied_sha") or ""
+    GripeHandler(hub=Hub(store=store)).put(
+        id=gripe,
+        text=(
+            f"resolved: garden:griped replay pass — {prop.action} applied on "
+            f"me{prop.target_id} (review {prop.review_id}, sha {applied or 'pinned'}); "
+            "routes still arrive, answers consistent or scoped, handles resolve, "
+            "hub recall preserved"
+        ),
+        tags=["STATUS:fixed"],
+    )
+    pairs = _griped_recall_pairs(store, gripe, replay, named)
+    if pairs:
+        from precis.cli.memory_recall_set import PROPOSALS_KEY
+
+        lines = [
+            "Review griped fixer recall pairs; proposed regression guards, "
+            "not memory corrections.",
+            "Accept all: precis memory recall-set accept <this todo id>",
+            "Accept a subset: precis memory recall-set accept <this todo id> --only 1,3",
+        ]
+        for n, pair in enumerate(pairs, 1):
+            lines.append(
+                f"\n{n}. {pair['title']}\nq: {pair['query']}\n"
+                f"want: {pair['want']}\nwhy: {pair['why']}"
+            )
+        Hub(store=store).sibling("todo").put(
+            text=f"Review {len(pairs)} griped recall pairs for gr{gripe}",
+            body="\n".join(lines),
+            tags=["recall-set-review", "waiting-for:reto"],
+            meta={PROPOSALS_KEY: pairs, "llm_tier": None},
+        )
 
 
 def _hold_memory(
@@ -1159,9 +1306,11 @@ def _memory_sha_pinned(prop: GardenProposal) -> bool:
     anchor_rot pins repository evidence with main_sha instead of ref SHAs.
     An explicit empty supporting map is valid when no supporting ref exists.
     """
-    return prop.detector not in {"dangling_mention", "thread_shape"} or isinstance(
-        prop.evidence.get("supporting_shas"), dict
-    )
+    return prop.detector not in {
+        "dangling_mention",
+        "thread_shape",
+        "griped",
+    } or isinstance(prop.evidence.get("supporting_shas"), dict)
 
 
 def _memory_action_mismatch(store: Store, prop: GardenProposal) -> str | None:
@@ -1169,13 +1318,20 @@ def _memory_action_mismatch(store: Store, prop: GardenProposal) -> str | None:
     from precis.graph.garden import candidates
 
     detect = getattr(candidates, MEMORY_APPLY_DETECTORS[prop.detector])
+    cursors = {f"{prop.detector}:memory": prop.target_id - 1}
+    if prop.detector == "griped" and isinstance(prop.payload.get("gripe"), int):
+        cursors["griped:gripe"] = int(prop.payload["gripe"])
     fresh = detect(
         store,
         scan_cap=1,
         limit=1,
-        cursors={f"{prop.detector}:memory": prop.target_id - 1},
+        cursors=cursors,
     )
     if fresh and fresh[0].target_id == prop.target_id:
+        if prop.detector == "griped":
+            # The action is the evaluator's per-shape choice, not the
+            # detector's; only drifting evidence makes the proposal stale.
+            return "stale" if fresh[0].evidence != prop.evidence else None
         if fresh[0].action != prop.action:
             return "stale" if fresh[0].evidence != prop.evidence else "apply_refused"
     return None
@@ -1555,9 +1711,10 @@ def consume_proposals(
     """All three parts, prune first. Returns the tallies."""
     report = ConsumeReport()
     auto_prune(store, pending_proposals(store, action="prune", limit=500), report)
+    props = pending_proposals(store, limit=500)
     memory_retries = review_pending(
         store,
-        pending_proposals(store, limit=500),
+        props,
         report,
         review=review or consume_llm,
         limit=review_limit,

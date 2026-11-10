@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 from precis.graph.garden.proposals import (
     GARDEN_ACTOR,
     GARDEN_VERSION,
+    MEMORY_APPLY_DETECTORS,
     GardenProposal,
     _parse_note,
     is_memory_action,
@@ -132,7 +133,10 @@ when unsure, reject.
 def _prompt_for(
     proposal: GardenProposal, excerpts: dict[str, str] | None = None
 ) -> str:
-    consumer_action = is_memory_action(proposal.action, proposal.detector)
+    consumer_action = (
+        is_memory_action(proposal.action, proposal.detector)
+        and proposal.detector in MEMORY_APPLY_DETECTORS
+    )
     head = _PROMPT_HEAD.replace(
         "{executor}", "a human or a gated consumer" if consumer_action else "a human"
     )

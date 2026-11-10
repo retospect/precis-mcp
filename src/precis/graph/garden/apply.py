@@ -1187,6 +1187,11 @@ def _memory_dependency_ids(conn: Any, target: int, garden: dict[str, Any]) -> se
     ]
     for mention in evidence.get("mentions", []):
         handles.extend([mention.get("retired_ref"), mention.get("successor")])
+    for entry in evidence.get("memories", []):
+        if isinstance(entry, dict) and isinstance(entry.get("ref_id"), int):
+            ids.add(int(entry["ref_id"]))
+    if isinstance(evidence.get("gripe"), int):
+        ids.add(int(evidence["gripe"]))
     if garden.get("action") == "split":
         handles.append(payload.get("hub"))
         for child in payload.get("children") or []:
@@ -1327,25 +1332,41 @@ def _checked_memory_proposal(
     if recheck is None:
         raise MergeRefused("apply_refused", f"no memory re-check for {detector!r}")
     detect = getattr(candidates, recheck)
-    fresh = detect(
-        store, scan_cap=1, limit=1, cursors={f"{detector}:memory": target - 1}
-    )
+    recheck_cursors: dict[str, int] = {f"{detector}:memory": target - 1}
+    if detector == "griped" and isinstance(payload.get("gripe"), int):
+        # Targeted mode: same gripe, same memory — several open complaints may
+        # name this memory, so the pinned story selects the candidate.
+        recheck_cursors["griped:gripe"] = int(payload["gripe"])
+    fresh = detect(store, scan_cap=1, limit=1, cursors=recheck_cursors)
     if (
         not fresh
         or fresh[0].target_id != target
         or fresh[0].evidence != garden.get("evidence")
     ):
         raise MergeRefused("stale", "the detector predicate or its evidence changed")
-    if fresh[0].action != action:
+    if detector != "griped" and fresh[0].action != action:
         raise MergeRefused(
             "apply_refused",
             "the proposal action differs from the fresh detector action",
         )
     for key in ("shas", "successor", "main_sha"):
+        if detector == "griped" and key == "successor":
+            continue  # the evaluator names it; membership checked below
         if fresh[0].payload.get(key) != payload.get(key):
             raise MergeRefused(
                 "apply_refused",
                 f"the proposal's {key} differs from fresh detector evidence",
+            )
+    if detector == "griped" and action == "supersede":
+        named = {
+            int(e["ref_id"])
+            for e in (garden.get("evidence") or {}).get("memories", [])
+            if isinstance(e, dict) and isinstance(e.get("ref_id"), int)
+        }
+        if successor not in named:
+            raise MergeRefused(
+                "apply_refused",
+                "the supersede successor is not another memory the gripe names",
             )
     if action == "rewrite":
         _check_rewrite_scope(payload, fresh[0].payload)

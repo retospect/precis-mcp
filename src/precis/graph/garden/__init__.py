@@ -125,13 +125,15 @@ Review rows and trust acts retain the original model string.
    (merge repointing, or the reviewed structural write for a relink —
    gr507641).
    With ``PRECIS_GARDEN_MEMORY_APPLY`` enabled, memory rewrite/supersede/retire/split
-   proposals from ``dangling_mention``, ``anchor_rot``, ``grab_bag`` and
-   ``thread_shape`` share this review budget. Eligibility and apply-time re-checks use one
-   detector registry so proposals that cannot apply do not spend a review.
-   The six ``memory-review`` detectors stay pending without consumer review
-   or state changes. ``qualify`` and ``ask`` remain outside that consumer;
-   an ``ask`` verdict files a ``memory-review`` todo from the runner
-   (tiered by smell class), never a proposal.
+   proposals from ``dangling_mention``, ``anchor_rot``, ``grab_bag``,
+   ``griped`` and ``thread_shape`` share this review budget. Eligibility and
+   apply-time re-checks use one detector registry so proposals that cannot
+   apply do not spend a review. The six ``memory-review`` detectors stay
+   pending without consumer review or state changes. ``qualify`` and ``ask``
+   remain outside that consumer; an ``ask`` verdict files a ``memory-review``
+   todo from the runner (tiered by smell class), never a proposal. A
+   ``griped`` apply replays the gripe's route and closes it with a
+   ``resolved:`` comment once the deterministic pass holds (gr561873).
 
 **Memory reconciliation.** Memory candidates (including ``dup_pair``) and the
 interactive ``precis-make-memory`` skill share the packaged memory-help policy
