@@ -41,9 +41,12 @@ Lazy upgrade: bump :data:`KEYWORDS_VERSION` to invalidate every
 existing row's ``keywords_meta.version`` mismatch; the claim query
 re-claims those chunks for re-extraction.
 
-**Claim shape (gr520236 / gr550973).** Three tiered ``FOR UPDATE OF c
-SKIP LOCKED`` queries, newest-first within each: (1) ``conv``/``draft``
-chunks — they jump the whole queue regardless of freshness; (2) the
+**Claim shape (gr520236 / gr550973 / gr563702).** Three tiered ``FOR
+UPDATE OF c SKIP LOCKED`` queries, newest-first within each: (1)
+``conv``/``draft``/``memory`` chunks — the interactive lane, jumping the
+whole queue regardless of freshness and capped at ``limit -
+bulk_reserve(limit)`` (gr563702) so an interactive burst can never
+consume the bulk tiers' whole batch; (2) the
 fresh ``keywords IS NULL`` backlog, ``chunk_id DESC`` so the newest
 ingests get labels first and the ``chunks_keywords_pending_idx``
 partial index (:data:`PENDING_INDEX_DDL` — pre-built on prod by ops,
@@ -128,6 +131,7 @@ from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.db_retry import retry_locked
 from precis.utils.env import env_flag, env_float, env_int
 from precis.utils.rake import extract_keywords as _rake_phrases
+from precis.workers._claim import bulk_reserve
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -373,17 +377,20 @@ def claim_chunks_without_keywords(
     not-yet-embedded head block is walked past, never counted, and the
     rows returned and their order equal the unbounded query's:
 
-    1. ``conv``/``draft`` chunks, fresh or stale. They jump the whole
-       queue: asa_bot's mid-range digest tier renders
-       ``chunks.keywords`` for each turn, and the draft reader's
-       view-slider (keywords / summary) needs them promptly on the
-       actively-edited write-up; without priority both wait behind the
-       paper backlog and render the text fallback for hours. The tier
+    1. ``conv``/``draft``/``memory`` chunks, fresh or stale — the
+       interactive lane. Conv/draft jump the queue because asa_bot's
+       mid-range digest tier renders ``chunks.keywords`` for each turn
+       and the draft reader's view-slider (keywords / summary) needs
+       them promptly on the actively-edited write-up; ``memory`` refs
+       joined the lane under gr563702 — a just-written or edited memory
+       is what an agent needs to recall next, ahead of the paper
+       backlog. The lane is capped at ``limit - bulk_reserve(limit)``
+       so it can never consume a whole batch. The tier
        drives from ``refs``: a materialized ``kw_refs`` CTE (index
        scan on ``refs_kind_idx``) joined to ``chunks_ref_id_idx``, so
        an idle poll costs a handful of index probes — not a
        ``chunks_pkey`` backward walk over 4.7M rows hunting rare
-       conv/draft pending rows.
+       conv/draft/memory pending rows.
     2. Fresh backlog (``keywords IS NULL``) — newest-first so fresh
        ingests get labels promptly, and cheap at any backlog depth:
        the ``chunks_keywords_pending_idx`` partial index
@@ -453,7 +460,7 @@ def claim_chunks_without_keywords(
     # re-checks the same predicates before locking.
     select = """
         WITH kw_refs AS MATERIALIZED (
-            SELECT ref_id FROM refs WHERE kind IN ('conv', 'draft')
+            SELECT ref_id FROM refs WHERE kind IN ('conv', 'draft', 'memory')
         ),
         kw_cand AS MATERIALIZED (
             SELECT c2.chunk_id
@@ -503,8 +510,11 @@ def claim_chunks_without_keywords(
         params: tuple[Any, ...],
         *,
         embedding_fence: str = "",
+        cap: int | None = None,
     ) -> None:
-        remaining = limit - len(out)
+        remaining = (cap if cap is not None else limit) - len(out)
+        if remaining <= 0:
+            return
         shard_params: tuple[Any, ...] = (
             (shard_count, shard_index) if shard_count > 1 else ()
         )
@@ -530,10 +540,16 @@ def claim_chunks_without_keywords(
         for r in rows:
             out.append((int(r[0]), int(r[1]), str(r[2]), r[3]))
 
+    # Tier 1 is the interactive lane (conv/draft/memory refs — gr563702
+    # added ``memory`` so a just-written memory's labels land before the
+    # paper backlog). Its claim is capped at ``limit - bulk_reserve``:
+    # the interactive set is structurally small, and the bound keeps an
+    # interactive burst from ever consuming the bulk tiers' whole batch.
     _claim(
         "JOIN kw_refs kr ON kr.ref_id = c2.ref_id",
         pending,
         (KEYWORDS_VERSION,),
+        cap=limit - bulk_reserve(limit),
     )
     if len(out) < limit:
         _claim(

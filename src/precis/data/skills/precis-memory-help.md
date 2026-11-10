@@ -142,8 +142,15 @@ artifact hashes, and reports the oldest outstanding item's age plus recorded
 artifact/claim timestamps. An edit's old body artifacts do not count. Artifact
 creation times are first insertion times, not last completion times.
 
-`pending` includes queued/running/backoff where the database cannot distinguish
-them. Keywords have no durable claim, failure or completion timestamp. Failed
+Memory work is memory-first by default: every stage claims memory chunks in
+an interactive lane ahead of the paper backlog, so a pending memory is
+normally waiting for a pass tick or a claimed lease — not for papers to
+drain. Each stage line names its `lane=` and, for a queued stage,
+`queue_ahead≈N` chunks in that lane. `phase=queued` means eligible and
+awaiting a worker claim; `phase=claimed`/`phase=attempt-lease` means a
+worker lease is out (executing or abandoned — evidence cannot split those;
+claims re-open on their ~20 min cooldown, axis attempt leases ~60 min).
+`not applicable`/`disabled` is eligibility, not delay. Failed
 embedding/summary rows include the recorded error and an operator next step.
 Dream move categorization has only ref tags, no input revision: an older
 marker is stale; even a newer marker cannot certify current-body completion.
@@ -151,6 +158,10 @@ A matching-version marker can prevent reclassification after an edit; the
 view explains when operator review is needed. Worker switches outside the
 stored evidence are not inferred. This view reads evidence; it schedules or
 retries nothing. It requires one memory id.
+
+A long `queue_ahead` is unusual — the interactive lanes are small — so a
+memory still `queued` minutes after a write is worth a promote request
+(below) or an operator check, not patience.
 
 ## Process a selected memory now
 

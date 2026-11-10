@@ -37,10 +37,12 @@ from precis.workers import ref_lease
 
 __all__ = [
     "BAND_REF_BATCH",
+    "BULK_RESERVE_MAX",
     "RECENT_TOUCH_DAYS",
     "band_batches",
     "band_predicates",
     "band_ref_ids",
+    "bulk_reserve",
     "claim_batch",
     "claim_frontier",
     "drop_band_ids",
@@ -59,6 +61,28 @@ __all__ = [
 #: ``dream_consolidate``'s "touched" notion uses — a write, a human view, or
 #: an agent recall all count.
 RECENT_TOUCH_DAYS = 30
+
+#: Bulk-progress reserve cap (gr563702 — "Workers: prioritize memory
+#: enrichment over paper backlog"): interactive-kind tiers — ``memory``
+#: first, then each stage's draft/conv/finding lanes — drain ahead of the
+#: corpus backlog in every derived-work claim, but never consume a whole
+#: batch: each claim leaves :func:`bulk_reserve` slots for bulk work so
+#: papers keep bounded progress while an interactive burst drains. The
+#: interactive lanes are structurally small (a memory is 1–2 chunks), so
+#: the reserve is a fairness floor, not a rate limit — once the
+#: interactive set drains, bulk claims fill the whole batch as before.
+BULK_RESERVE_MAX = 4
+
+
+def bulk_reserve(limit: int) -> int:
+    """Slots of a ``limit``-sized claim guaranteed to the bulk backlog.
+
+    ``min(BULK_RESERVE_MAX, limit // 8)``: 4 slots of the default 32-chunk
+    embed micro-batch, 2 of a 16-chunk LLM drain batch, nothing when the
+    batch is too small to split — the interactive lane may then take the
+    whole claim, but the next one is bulk's again once it drains.
+    """
+    return min(BULK_RESERVE_MAX, max(0, limit) // 8)
 
 
 def quest_linked_sql(alias: str = "r") -> str:

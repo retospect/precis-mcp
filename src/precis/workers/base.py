@@ -23,6 +23,8 @@ from typing import ClassVar
 
 from psycopg import Connection
 
+from precis.workers._claim import bulk_reserve
+
 
 @dataclass(frozen=True)
 class ClaimedChunk:
@@ -87,6 +89,17 @@ class WorkerHandler(ABC):
     #: "process every chunk regardless of kind."
     skip_chunk_kinds: ClassVar[tuple[str, ...]] = ()
 
+    #: Ref kinds whose chunks claim ahead of the flat corpus FIFO through
+    #: a bounded interactive lane (gr563702 — memory enrichment first).
+    #: Empty tuple — the default — keeps the single flat ``ORDER BY
+    #: c.chunk_id`` claim. When set, the fresh claim first leases chunks
+    #: on refs of these kinds (``c.ref_id, c.ord`` order), capped at
+    #: ``limit - bulk_reserve(limit)`` so the bulk backlog keeps its
+    #: fairness share, then fills the remainder from the corpus FIFO —
+    #: which also excludes the lane's kinds so interactive chunks pending
+    #: over the cap never eat the reserve.
+    priority_ref_kinds: ClassVar[tuple[str, ...]] = ()
+
     #: Per-instance — the model identifier used in the output row
     #: (e.g. ``'bge-m3'``). Set by subclass ``__init__``.
     model_name: str
@@ -131,6 +144,42 @@ class WorkerHandler(ABC):
         return f"AND {alias}.chunk_kind <> ALL(%(skip_kinds)s)", list(skip)
 
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
+        prio = self.priority_ref_kinds
+        if not prio:
+            return self._claim_fresh_rows(conn, limit=limit)
+        # Interactive lane (gr563702): the lane's kinds claim first, capped
+        # so the bulk backlog keeps its reserve; the corpus leg then fills
+        # the remainder and skips the lane's kinds outright — an
+        # over-the-cap interactive backlog may not consume bulk slots.
+        kinds = list(prio)
+        interactive = self._claim_fresh_rows(
+            conn,
+            limit=limit - bulk_reserve(limit),
+            join="JOIN refs r ON r.ref_id = c.ref_id",
+            extra_pred="AND r.kind = ANY(%(prio_kinds)s)",
+            order_by="c.ref_id, c.ord",
+            extra_params={"prio_kinds": kinds},
+        )
+        return interactive + self._claim_fresh_rows(
+            conn,
+            limit=limit - len(interactive),
+            extra_pred=(
+                "AND NOT EXISTS (SELECT 1 FROM refs xr "
+                "WHERE xr.ref_id = c.ref_id AND xr.kind = ANY(%(prio_kinds)s))"
+            ),
+            extra_params={"prio_kinds": kinds},
+        )
+
+    def _claim_fresh_rows(
+        self,
+        conn: Connection,
+        *,
+        limit: int,
+        join: str = "",
+        extra_pred: str = "",
+        order_by: str = "c.chunk_id",
+        extra_params: dict[str, object] | None = None,
+    ) -> list[ClaimedChunk]:
         # A chunk needs work when it has no *current, non-failed* artifact row:
         # no row at all, or a row built against a stale content_sha (re-derive
         # edited `draft` chunks — drafts edit in place; papers leave content_sha NULL so
@@ -138,11 +187,14 @@ class WorkerHandler(ABC):
         # (a poison chunk must not loop) — they count as "done" until a manual
         # DELETE. The second NOT EXISTS skips chunks already
         # leased by a live claim. `meta->>'no_index'` excludes ephemeral chunks.
+        if limit <= 0:
+            return []
         skip_clause, skip_kinds = self._skip_clause("c")
         sql = f"""
             WITH cand AS (
                 SELECT c.chunk_id, c.text
                   FROM chunks c
+                  {join}
                  WHERE NOT EXISTS (
                            SELECT 1 FROM {self.output_table} o
                             WHERE o.chunk_id = c.chunk_id
@@ -156,7 +208,8 @@ class WorkerHandler(ABC):
                        )
                    AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
                    {skip_clause}
-                 ORDER BY c.chunk_id
+                   {extra_pred}
+                 ORDER BY {order_by}
                  LIMIT %(limit)s
                    FOR UPDATE OF c SKIP LOCKED
             ),
@@ -169,7 +222,11 @@ class WorkerHandler(ABC):
             SELECT cand.chunk_id, cand.text
               FROM cand JOIN claimed USING (chunk_id)
         """
-        params: dict[str, object] = {"artifact": self.model_name, "limit": limit}
+        params: dict[str, object] = {
+            "artifact": self.model_name,
+            "limit": limit,
+            **(extra_params or {}),
+        }
         if skip_kinds:
             params["skip_kinds"] = skip_kinds
         rows = conn.execute(sql, params).fetchall()

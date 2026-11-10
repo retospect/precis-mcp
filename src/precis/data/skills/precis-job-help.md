@@ -177,8 +177,16 @@ the processing view; `embeddings` also accepts `embed:<active embedder>`.
 | `categorization` | Refused when applicable: dream move processing has no revision-attested job receipt. |
 
 Ineligible stages report `not applicable`. For a refused stage, inspect the
-processing view and ask the worker operator for targeted support. Default
-scheduling, fairness, service priorities and model routes are unchanged.
+processing view and ask the worker operator for targeted support.
+
+Default scheduling is memory-first (gr563702): embeddings, keywords, RAKE
+and LLM summaries all claim memory chunks in an interactive lane ahead of
+the corpus backlog, and `axis:move` categorizes only memory refs. Every
+claim batch reserves a floor of slots for bulk work, so papers keep bounded
+progress — interactive work reorders, never starves. The processing view's
+`lane=`/`phase=`/`queue_ahead≈` fields show where a pending stage sits; the
+write paths nudge an `embed_batch` job so fresh memories embed within
+seconds. Service priorities and model routes are unchanged.
 
 ## Dark-factory job types — the lanes that run slices
 

@@ -60,7 +60,7 @@ def test_memory_tier_claimed_before_corpus_backlog(store: Store) -> None:
     with store.pool.connection() as conn:
         claimed = [c.chunk_id for c in h.claim_batch(conn, limit=10)]
         conn.commit()
-    assert claimed[:2] == [conv_id, memory_id]
+    assert claimed[:2] == [memory_id, conv_id]
     assert set(claimed) == {memory_id, conv_id, *paper_ids}
 
 

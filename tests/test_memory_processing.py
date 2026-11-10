@@ -114,6 +114,79 @@ def test_new_memory_reports_each_applicable_stage_and_current_revision(
     assert "refs.title + meta.hook" in rendered
 
 
+def test_pending_stage_shows_phase_lane_and_queue_position(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr563702: the view separates eligibility, queueing and execution —
+    a queued stage names its lane and how much work claims ahead of it."""
+    ref_id = id_of(handler.put(text=BODY, title="Lane note").body)
+    rendered = handler.get(id=ref_id, view="processing").body
+    assert "phase=queued" in rendered
+    assert "lane=memory" in rendered
+    assert "queue_ahead≈" in rendered
+    assert "Queue policy" in rendered
+
+
+def test_queued_position_counts_pending_work_ahead(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A second memory's queue_ahead counts the still-pending chunks of the
+    first, which claims before it in lane order (ref_id ascending)."""
+    first = id_of(handler.put(text=BODY, title="First note").body)
+    second = id_of(handler.put(text=BODY, title="Second note").body)
+    report = processing_report(store, second)
+    stage = _stage(report, "embed:", "memory_body")
+    assert stage.state == "pending"
+    assert "phase=queued" in stage.detail
+    match = re.search(r"queue_ahead≈(\d+)", stage.detail)
+    assert match is not None
+    ahead = int(match.group(1))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM chunks c "
+            "WHERE c.ref_id = %s AND c.retired_at IS NULL",
+            (first,),
+        ).fetchone()
+    assert row is not None
+    assert ahead >= int(row[0])
+
+
+def test_claim_lease_marks_execution_phase(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A live chunk_claims row is execution evidence — claimed phase, never
+    distinguishable from abandoned by stored evidence."""
+    ref_id = id_of(handler.put(text=BODY, title="Claim note").body)
+    body_id = _chunks(store, ref_id)["memory_body"]
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_claims (chunk_id, artifact) "
+            "SELECT %s, name FROM embedders WHERE is_default",
+            (body_id,),
+        )
+        conn.commit()
+    stage = _stage(processing_report(store, ref_id), "embed:", "memory_body")
+    assert stage.state == "pending"
+    assert "phase=claimed" in stage.detail
+
+
+def test_put_nudges_an_embed_job_for_the_fresh_chunks(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr563702: the write path queues a small embed_batch so fresh memory
+    vectors land within seconds, not on the materializer cadence."""
+    handler.put(text=BODY, title="Nudge note")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM refs r "
+            "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+            "AND r.meta->>'job_type' = 'embed_batch' "
+            "AND r.meta->>'idem_key' LIKE 'embed-nudge:%' "
+            "ORDER BY r.ref_id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None, "put should nudge a fresh-embed job"
+
+
 def test_ready_memory_requires_both_body_and_header_under_active_embedder(
     handler: MemoryHandler, store: Store
 ) -> None:

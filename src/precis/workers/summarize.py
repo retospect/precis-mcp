@@ -76,6 +76,14 @@ class RakeLemmaHandler(WorkerHandler):
         "scan_geometry",
     )
 
+    # gr563702 (memory-first enrichment): a just-written or edited memory's
+    # chunks claim ahead of the whole corpus FIFO — the flat ``c.chunk_id``
+    # walk would otherwise park them behind the paper backlog. The lane is
+    # capped at ``limit - bulk_reserve(limit)`` so papers keep their share
+    # of every batch. Only ``memory`` rides it today: ``draft``/``conv``
+    # have no rake priority lane (gr262963 tiered the embedder only).
+    priority_ref_kinds: ClassVar[tuple[str, ...]] = ("memory",)
+
     def __init__(
         self,
         *,

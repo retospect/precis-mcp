@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from psycopg import Connection
 
 from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
-from precis.workers._claim import claim_frontier, note_claim_frontier
+from precis.workers._claim import (
+    bulk_reserve,
+    claim_frontier,
+    note_claim_frontier,
+)
 from precis.workers._embed_jobs import targeted_embed_job_sql
 from precis.workers.base import ClaimedChunk, WorkerHandler
 
@@ -30,7 +34,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Fresh-claim priority tiers — draft/conv jump the ~1M-chunk paper backlog
+# Fresh-claim priority tiers — memory first, then finding/draft/conv, all
+# ahead of the ~1M-chunk paper backlog
 # ---------------------------------------------------------------------------
 #
 # See docs/backlog/embed-priority-lane-for-interactive-writes.md (gr262963):
@@ -41,26 +46,35 @@ log = logging.getLogger(__name__)
 # ``chunk_keywords.claim_chunks_needing_keywords`` (a single ``ORDER BY
 # CASE``) and ``llm_summarize._FRESH_TIERS`` (separate per-tier queries, so
 # an empty priority tier costs an index probe on ``refs_kind_idx``, not a
-# sort over the whole candidate set — the shape reused here). Only
-# ``EmbedHandler`` overrides ``_claim_fresh``; ``RakeLemmaHandler`` (the base
-# class's other subclass) keeps the inherited flat order — lifting tiering
-# into the shared base would change its claim order too, out of scope here.
+# sort over the whole candidate set — the shape reused here). gr563702 put
+# ``memory`` at the head of the lanes and capped the interactive share per
+# claim (:func:`precis.workers._claim.bulk_reserve`); ``RakeLemmaHandler``
+# (the base class's other subclass) rides the same policy through the base
+# class's ``priority_ref_kinds`` lane.
 
-#: Ref kinds whose chunks jump the embed queue. ``finding`` leads: a hub's
-#: ``finding_body`` is what the mint-time dedup gate ANN-searches, so an
-#: unembedded hub is invisible to the next mint (gr489243);
-#: :func:`nudge_fresh_embed` makes sure a job is there to claim it.
-#: ``memory`` rides the same lane (gr563669): a just-written or just-split
-#: memory's ``memory_body``/``card_combined`` chunks are what memory
-#: recall searches — until they carry a vector a natural query misses
-#: them entirely (prod lag measured 15–32 min behind the paper backlog).
-_PRIORITY_KINDS = ("finding", "draft", "conv", "memory")
+#: Ref kinds whose chunks jump the embed queue. ``memory`` leads
+#: (gr563702 — Reto's scheduling direction): a fresh or edited memory is
+#: what an agent or person needs to recall next, so its body and header
+#: chunks claim ahead of every other lane — and the memory write paths
+#: also nudge a job (:func:`nudge_fresh_embed`) so the lane is drained
+#: within seconds rather than on the materializer cadence (gr563669:
+#: prod lag measured 15–32 min behind the paper backlog). ``finding``
+#: follows: a hub's ``finding_body`` is what the mint-time dedup gate
+#: ANN-searches, so an unembedded hub is invisible to the next mint
+#: (gr489243). The interactive lanes are capped per claim
+#: (:func:`precis.workers._claim.bulk_reserve`) — the bulk backlog always
+#: keeps a floor of each micro-batch, so interactive work reorders the
+#: queue but can never starve it.
+_PRIORITY_KINDS = ("memory", "finding", "draft", "conv")
 
 #: The corpus-wide predicate shared by the three backlog tiers: every ref
-#: kind that has no priority lane.
-_CORPUS_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'finding', 'memory']))"
+#: kind that has no priority lane. Derived from ``_PRIORITY_KINDS`` so the
+#: two can never drift apart.
+_CORPUS_PRED = (
+    "(r.kind <> ALL(ARRAY[" + ", ".join(f"'{k}'" for k in _PRIORITY_KINDS) + "]))"
+)
 
-#: Fresh-claim tiers, in queue order: finding > draft > conv > memory,
+#: Fresh-claim tiers, in queue order: memory > finding > draft > conv,
 #: then the corpus backlog in value order — paragraph >
 #: table/figure/equation > everything else (gr513749; Reto 2026-10-24:
 #: body prose is what semantic search returns, so it drains first). Each
@@ -68,16 +82,16 @@ _CORPUS_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'finding', 'memory']))"
 #: The priority tiers keep ``c.ref_id, c.ord`` contiguity (small
 #: populations); each corpus tier keeps the base class's flat
 #: ``c.chunk_id`` FIFO (oldest-first — chunk_id order is insertion order)
-#: under its own frontier floor. Three separate statements, not one
-#: ``ORDER BY CASE``: a CASE rank can't carry a per-tier floor (the
-#: high-water is not one ``chunk_id`` once ranks differ) and would sort
-#: the whole unembedded set per 32-chunk micro-batch — the gr506753
-#: claim-cost regression this machinery exists to avoid.
+#: under its own frontier floor. Separate statements, not one ``ORDER BY
+#: CASE``: a CASE rank can't carry a per-tier floor (the high-water is
+#: not one ``chunk_id`` once ranks differ) and would sort the whole
+#: unembedded set per 32-chunk micro-batch — the gr506753 claim-cost
+#: regression this machinery exists to avoid.
 _FRESH_TIERS: dict[str, tuple[str, str]] = {
+    "memory": ("r.kind = 'memory'", "c.ref_id, c.ord"),
     "finding": ("r.kind = 'finding'", "c.ref_id, c.ord"),
     "draft": ("r.kind = 'draft'", "c.ref_id, c.ord"),
     "conv": ("r.kind = 'conv'", "c.ref_id, c.ord"),
-    "memory": ("r.kind = 'memory'", "c.ref_id, c.ord"),
     "paragraph": (
         _CORPUS_PRED + " AND c.chunk_kind = 'paragraph'",
         "c.chunk_id",
@@ -97,6 +111,12 @@ _FRESH_TIERS: dict[str, tuple[str, str]] = {
 #: their own name under ``embed:<model>`` in
 #: :func:`precis.workers._claim.claim_frontier`.
 _FLOORED_TIERS = frozenset({"paragraph", "structured", "other"})
+
+#: Tiers that are NOT floored — the interactive lanes (memory/finding/
+#: draft/conv). Their combined claim in one batch is capped at
+#: ``limit - bulk_reserve(limit)`` (gr563702): the fairness bound that
+#: keeps bulk embedding progressing while an interactive burst drains.
+_INTERACTIVE_TIERS = frozenset(_FRESH_TIERS) - _FLOORED_TIERS
 
 #: Same predicate as ``WorkerHandler._claim_fresh`` (no current, non-failed
 #: artifact row for this model; a stale ``content_sha`` re-derives an edited
@@ -359,7 +379,7 @@ class EmbedHandler(WorkerHandler):
 
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         """Claim fresh (never-embedded or stale-``content_sha``) chunks in
-        queue-priority order: finding > draft > conv > memory > paragraph >
+        queue-priority order: memory > finding > draft > conv > paragraph >
         table/figure/equation > other (see :data:`_FRESH_TIERS`).
 
         Overrides :meth:`WorkerHandler._claim_fresh` — everything else
@@ -373,6 +393,11 @@ class EmbedHandler(WorkerHandler):
         pending. A chunk claimed by an earlier tier is excluded from a later
         one by the fresh ``NOT EXISTS chunk_claims`` (its claim row is
         written in the same statement).
+
+        The interactive tiers (:data:`_INTERACTIVE_TIERS`) are capped
+        collectively at ``limit - bulk_reserve(limit)`` (gr563702): an
+        interactive burst can reorder the queue but never consume a whole
+        batch — every claim leaves the bulk backlog its fairness floor.
 
         Each corpus tier (``_FLOORED_TIERS``) rides the shared per-process
         frontier floor (gr573350,
@@ -388,10 +413,17 @@ class EmbedHandler(WorkerHandler):
         skip_clause, skip_kinds = self._skip_clause("c")
         pass_name = f"embed:{self.model_name}"
         claimed: list[ClaimedChunk] = []
+        interactive_cap = limit - bulk_reserve(limit)
         for tier, (kind_pred, order_by) in _FRESH_TIERS.items():
-            remaining = limit - len(claimed)
+            if tier in _INTERACTIVE_TIERS:
+                # Interactive lanes share one cap; every claim so far is
+                # interactive (they precede the floored tiers), so this is
+                # also the collective ``interactive_cap - claimed`` bound.
+                remaining = interactive_cap - len(claimed)
+            else:
+                remaining = limit - len(claimed)
             if remaining <= 0:
-                break
+                continue
             frontier = None
             if tier in _FLOORED_TIERS:
                 frontier = claim_frontier(pass_name, tier)

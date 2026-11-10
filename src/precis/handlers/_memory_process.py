@@ -7,12 +7,16 @@ only this bounded work order, without changing the scheduler or default scans.
 Other enrichment passes lack the required targeted, revision-aware job contract
 and are explicitly refused. Reader salience is not a processing control.
 
-Queue map: chunk_keywords scans missing/version-stale keywords after body
-embedding, with conv/draft first then newest fresh/stale chunks. RAKE inherits
-WorkerHandler's oldest-chunk scan and abandoned-claim top-up. LLM summaries
-use draft/conv, reader-recency, cold and reclaim tiers; derived_drain cannot
-select one memory. axis:move accepts selected refs internally but stores only
-ref-tag completion, without an input revision. ingest.blocks.fill_embeddings
+Queue map (gr563702 — memory-first): every stage claims memory chunks in an
+interactive lane ahead of the bulk corpus backlog; each claim reserves a
+floor of slots for bulk work so papers keep bounded progress. chunk_keywords
+scans missing/version-stale keywords after body embedding, tier 1
+conv/draft/memory newest-first, then the fresh and stale backlogs. RAKE runs
+the base handler's memory lane, then the corpus FIFO and abandoned-claim
+top-up. LLM summaries use memory, draft/conv, reader-recency, cold and
+reclaim tiers; derived_drain cannot select one memory. axis:move accepts
+selected refs internally but stores only ref-tag completion, without an
+input revision. ingest.blocks.fill_embeddings
 is an in-memory helper, not a scheduling door.
 
 An active request is shared unless recompute would reuse a promote or retry:

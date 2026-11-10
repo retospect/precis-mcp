@@ -81,7 +81,11 @@ from precis.utils.prompt import (
     Profile,
     assemble,
 )
-from precis.workers._claim import claim_frontier, note_claim_frontier
+from precis.workers._claim import (
+    bulk_reserve,
+    claim_frontier,
+    note_claim_frontier,
+)
 
 log = logging.getLogger(__name__)
 
@@ -579,7 +583,9 @@ _LEASE_GC_SQL = """
 """
 
 #: Refs whose chunks jump the queue (see ``claim_chunks_without_summary``).
-_PRIORITY_KINDS = ("conv", "draft")
+#: ``memory`` leads (gr563702): a fresh/edited memory is the enrichment an
+#: agent or person needs ready first.
+_PRIORITY_KINDS = ("memory", "conv", "draft")
 
 #: Recency window for the "hot" fresh tier: an un-summarised chunk whose
 #: ``last_seen`` is newer than this is a document a human recently opened
@@ -588,17 +594,20 @@ _PRIORITY_KINDS = ("conv", "draft")
 #: session is still hot when the trickle reaches it; env-overridable.
 HOT_WINDOW_MIN = int(os.environ.get("PRECIS_SUMMARIZE_HOT_WINDOW_MIN", "1440"))
 
-#: The non-priority kind predicate (everything that isn't conv/draft,
-#: NULL kind included) — shared by the hot + rest tiers so they partition
-#: the same population the two priority tiers leave behind.
-_REST_KIND_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
+#: The non-priority kind predicate (everything that isn't
+#: memory/conv/draft, NULL kind included) — shared by the hot + rest
+#: tiers so they partition the same population the priority tiers leave
+#: behind.
+_REST_KIND_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'memory']) OR r.kind IS NULL)"
 
-#: Fresh-claim tiers, in queue order: draft > conv > hot > rest (the
-#: reader-salience priority). Each is ``(kind_pred, extra_pred, order_by)``
-#: spliced into ``_FRESH_CLAIM_SQL``. The hot tier reorders the rest by
-#: ``last_seen DESC`` inside a recency window; the others keep the
-#: ``ref_id, ord`` contiguity that hits the llama.cpp prefix cache.
+#: Fresh-claim tiers, in queue order: memory > draft > conv > hot > rest
+#: (the reader-salience priority). Each is ``(kind_pred, extra_pred,
+#: order_by)`` spliced into ``_FRESH_CLAIM_SQL``. The hot tier reorders
+#: the rest by ``last_seen DESC`` inside a recency window; the others
+#: keep the ``ref_id, ord`` contiguity that hits the llama.cpp prefix
+#: cache.
 _FRESH_TIERS: dict[str, tuple[str, str, str]] = {
+    "memory": ("r.kind = 'memory'", "TRUE", "c.ref_id, c.ord"),
     "draft": ("r.kind = 'draft'", "TRUE", "c.ref_id, c.ord"),
     "conv": ("r.kind = 'conv'", "TRUE", "c.ref_id, c.ord"),
     "hot": (
@@ -608,6 +617,13 @@ _FRESH_TIERS: dict[str, tuple[str, str, str]] = {
     ),
     "rest": (_REST_KIND_PRED, "TRUE", "c.ref_id, c.ord"),
 }
+
+#: The interactive lanes — fresh/edited writes that jump the queue. Their
+#: combined claim per batch is capped at ``limit - bulk_reserve(limit)``
+#: (gr563702): a burst reorders the queue but cannot consume the bulk
+#: tiers' whole batch. ``hot``/``rest`` are the bulk side (papers and
+#: every other kind).
+_INTERACTIVE_TIERS = frozenset({"memory", "draft", "conv"})
 
 
 def _rows_to_claims(rows: list[tuple[Any, ...]]) -> list[_Claimed]:
@@ -723,11 +739,14 @@ def claim_chunks_without_summary(
        failures + migration-seeded backfill), oldest-first. Reserving it keeps
        a deep fresh backlog (~1M chunks) from starving reclaims for months —
        previously reclaim ran only when fresh work ran dry.
-    2. **Fresh, draft** then **3. Fresh, conv** — actively-edited writes with
-       no summary and no claim. These jump the queue: draft/conv refs have the
-       highest ref_ids (most recent), so a plain ``ref_id, ord`` order would
-       bury an open write-up behind the ~1M-chunk paper backlog and it would
-       never summarise. Split draft-before-conv per the queue order.
+    2. **Fresh, memory** then **3. draft** then **conv** — actively-edited
+       writes with no summary and no claim. These jump the queue:
+       memory/draft/conv refs have the highest ref_ids (most recent), so a
+       plain ``ref_id, ord`` order would bury an open write-up or a
+       just-minted memory (gr563702) behind the ~1M-chunk paper backlog and
+       it would never summarise. The three share an interactive cap of
+       ``limit - bulk_reserve(limit)`` — the bulk tiers always keep a
+       floor of each batch.
     4. **Fresh, hot** — every other never-seen chunk whose ``last_seen`` is
        inside :data:`HOT_WINDOW_MIN` (a document a human just opened in the
        reader, salience-heated via ``bump_salience_for_ref``), ``last_seen
@@ -756,17 +775,29 @@ def claim_chunks_without_summary(
     claimed: list[_Claimed] = []
     if reserve:
         claimed += _claim_reclaim(conn, summarizer=summarizer, limit=reserve)
-    # Fresh tiers in queue order: draft > conv > hot > rest. The hot tier
+    # Fresh tiers in queue order: memory > draft > conv > hot > rest.
+    # ``memory`` leads the interactive lanes (gr563702); the hot tier
     # (a paper a human just opened, salience-heated) jumps ahead of the
-    # cold backlog but sits behind the actively-edited draft/conv writes.
+    # cold backlog but sits behind the actively-edited writes. The
+    # interactive tiers share a cap of ``limit - bulk_reserve(limit)``
+    # so an interactive burst never consumes the bulk tiers' whole
+    # batch — the fairness floor that keeps papers progressing.
     rest_pass = f"summarize:{summarizer}"
-    for tier in ("draft", "conv", "hot", "rest"):
+    interactive_cap = limit - bulk_reserve(limit)
+    interactive_claimed = 0
+    for tier in ("memory", "draft", "conv", "hot", "rest"):
         if len(claimed) >= limit:
             break
         if tier != "rest":
-            claimed += _claim_fresh(
-                conn, summarizer=summarizer, limit=limit - len(claimed), tier=tier
-            )
+            tier_limit = limit - len(claimed)
+            if tier in _INTERACTIVE_TIERS:
+                tier_limit = min(tier_limit, interactive_cap - interactive_claimed)
+            if tier_limit <= 0:
+                continue
+            got = _claim_fresh(conn, summarizer=summarizer, limit=tier_limit, tier=tier)
+            if tier in _INTERACTIVE_TIERS:
+                interactive_claimed += len(got)
+            claimed += got
             continue
         floor = claim_frontier(rest_pass, "rest")
         got = _claim_fresh(
