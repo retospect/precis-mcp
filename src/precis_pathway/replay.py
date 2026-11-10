@@ -512,6 +512,7 @@ def _subprocess_runner(timeout_seconds: float) -> Runner:
             env=dict(env),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout_seconds,
         )
         return {

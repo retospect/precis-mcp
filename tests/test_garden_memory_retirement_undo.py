@@ -23,6 +23,7 @@ from tests.test_garden_memory_apply import (
     _body,
     _links,
     _memory,
+    _review_compaction,
     _reviews,
 )
 
@@ -51,6 +52,8 @@ def _propose(store: Store, target: int, action: str) -> MemoryProposal:
         store, candidate, rationale="Checked every retained claim and route."
     )
     assert review_id is not None
+    if action == "retire":
+        _review_compaction(store, target)
     return MemoryProposal(target, review_id, _body(store, target), candidate)
 
 

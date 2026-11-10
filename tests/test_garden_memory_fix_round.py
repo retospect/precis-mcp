@@ -131,6 +131,13 @@ def test_unresolved_retirement_closes_once_across_three_ticks(
             store.stamp_ref_meta(target, {"superseded_by": f"me{first}"})
     prop = _propose(store, target, "retire")
 
+    def retirement_reviews() -> list[tuple[Any, ...]]:
+        return [
+            row
+            for row in _reviews(store, target)
+            if json.loads(row[3]).get("garden", {}).get("key") == prop.candidate.key
+        ]
+
     reports = []
     for tick in range(3):
         fresh = next(
@@ -142,11 +149,13 @@ def test_unresolved_retirement_closes_once_across_three_ticks(
         reports.append(consumer.consume_proposals(store, review=_never_review))
         assert pending_proposals(store) == []
         assert key_block(store, "ref", target, prop.candidate.key) == "rejected"
-        assert len(_reviews(store, target)) == 2
+        reviews = retirement_reviews()
+        assert len(reviews) == 2
+        assert [row[2] for row in reviews] == ["proposed", "rejected"]
         assert reports[tick].attempts == 0
 
     assert sum(report.rejected for report in reports) == 1
-    assert [row[2] for row in _reviews(store, target)] == ["proposed", "rejected"]
+    assert [row[2] for row in retirement_reviews()] == ["proposed", "rejected"]
     assert store.get_ref(kind="memory", id=target) is not None
 
 

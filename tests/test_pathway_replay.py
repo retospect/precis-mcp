@@ -28,6 +28,7 @@ from precis_pathway import manifest as vm
 from precis_pathway import replay
 from precis_pathway.replay import NetworkAttempt, ReplayRefused
 from precis_pathway.replay import replay as run_replay
+from tests._autocatpath import needs_engine
 
 WEIGHTS_BLOB = b"fake MACE checkpoint"
 WEIGHTS_SHA = hashlib.sha256(WEIGHTS_BLOB).hexdigest()
@@ -81,7 +82,7 @@ def _rehash(bundle: Path, *rels: str) -> None:
     test is the staging/pin check rather than the checksum."""
     lines = [
         ln
-        for ln in (bundle / "MANIFEST.sha256").read_text("utf-8").splitlines()
+        for ln in (bundle / "MANIFEST.sha256").read_text(encoding="utf-8").splitlines()
         if PurePosixPath(ln.split("  ", 1)[1]).as_posix() not in rels
     ]
     for rel in rels:
@@ -247,9 +248,9 @@ def test_staged_inputs_are_read_only_and_shipped_outputs_never_reused(
     # shipped references never reach the entrypoint's working directory
     assert not (seen["out"].parent / "outputs").exists()
     # and the bundle's copy is untouched by the replay
-    assert json.loads((bundle / "outputs" / "results.json").read_text("utf-8")) == (
-        SHIPPED_RESULTS
-    )
+    assert json.loads(
+        (bundle / "outputs" / "results.json").read_text(encoding="utf-8")
+    ) == (SHIPPED_RESULTS)
 
 
 def test_a_tampered_file_refuses_before_any_compute(
@@ -351,13 +352,13 @@ def test_hash_only_weights_stay_unavailable_and_never_fetched(
 ) -> None:
     """A private-engine fetch recipe (hash, no file) cannot be attested
     offline: the leg is said so and the replay proceeds without fetching."""
-    entry = json.loads((bundle / "env" / "weights.json").read_text("utf-8"))
+    entry = json.loads((bundle / "env" / "weights.json").read_text(encoding="utf-8"))
     del entry["file"]
     body = json.dumps(entry).encode("utf-8")
     (bundle / "env" / "weights.json").write_bytes(body)
     lines = [
         ln
-        for ln in (bundle / "MANIFEST.sha256").read_text("utf-8").splitlines()
+        for ln in (bundle / "MANIFEST.sha256").read_text(encoding="utf-8").splitlines()
         if not ln.endswith("env/weights.json")
     ]
     lines.append(f"{hashlib.sha256(body).hexdigest()}  env/weights.json")
@@ -380,7 +381,7 @@ def test_a_missing_dependency_refuses_naming_the_path(
     (bundle / "env" / "uv.lock").unlink()
     lines = [
         ln
-        for ln in (bundle / "MANIFEST.sha256").read_text("utf-8").splitlines()
+        for ln in (bundle / "MANIFEST.sha256").read_text(encoding="utf-8").splitlines()
         if not ln.endswith("env/uv.lock")
     ]
     (bundle / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -465,7 +466,7 @@ def test_malformed_manifests_refuse(bundle: Path) -> None:
 def test_legs_the_replay_did_not_run_stay_named_and_block_coverage(
     bundle: Path, tmp_path: Path
 ) -> None:
-    cov = json.loads((bundle / "coverage.json").read_text("utf-8"))
+    cov = json.loads((bundle / "coverage.json").read_text(encoding="utf-8"))
     cov["claims"].append(
         {
             "claim": "paper-sweep",
@@ -591,7 +592,7 @@ def test_a_bundle_without_a_coverage_table_is_not_complete(
     (bundle / "coverage.json").unlink()
     lines = [
         ln
-        for ln in (bundle / "MANIFEST.sha256").read_text("utf-8").splitlines()
+        for ln in (bundle / "MANIFEST.sha256").read_text(encoding="utf-8").splitlines()
         if not ln.endswith("coverage.json")
     ]
     (bundle / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -607,7 +608,7 @@ def test_a_bundle_without_a_coverage_table_is_not_complete(
 def test_a_claim_without_an_acceptance_test_is_unavailable(
     bundle: Path, tmp_path: Path
 ) -> None:
-    cov = json.loads((bundle / "coverage.json").read_text("utf-8"))
+    cov = json.loads((bundle / "coverage.json").read_text(encoding="utf-8"))
     cov["claims"].append(
         {"claim": "paper-energy", "runs": ["run-1"], "required_legs": ["energies"]}
     )
@@ -656,7 +657,7 @@ def test_the_real_entrypoint_runs_isolated_and_reports_its_log(
         assert report["complete"] is True
     assert "PRECIS_REPLAY_CANARY" not in command["isolation"]
     work = tmp_path / "work"
-    fresh = json.loads((work / "out" / "results.json").read_text("utf-8"))
+    fresh = json.loads((work / "out" / "results.json").read_text(encoding="utf-8"))
     assert fresh["canary"] == "scrubbed"  # the host env did not leak in
     assert fresh["slab_bytes"] == len(b"1\nfixture slab\n")
     assert not (work / "outputs").exists()  # references never staged
@@ -714,7 +715,7 @@ def test_append_report_never_replaces_a_prior_report(
     first = replay.append_report(report, out)
     second = replay.append_report(report, out)
     assert first != second and first.exists() and second.exists()
-    loaded = json.loads(first.read_text("utf-8"))
+    loaded = json.loads(first.read_text(encoding="utf-8"))
     assert loaded["schema"] == "pathway_replay_report"
 
 
@@ -727,10 +728,8 @@ def test_append_report_never_replaces_a_prior_report(
 
 @pytest.fixture
 def engine() -> Any:
-    pytest.importorskip("autocatpath", reason="needs catalyst extra")
-    return pytest.importorskip(
-        "autocatpath.manifest", reason="needs catalyst extra (engine >= 0.38)"
-    )
+    needs_engine()
+    return needs_engine("autocatpath.manifest", note="engine >= 0.38")
 
 
 @pytest.fixture(scope="module")

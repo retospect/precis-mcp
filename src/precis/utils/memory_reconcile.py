@@ -41,6 +41,7 @@ _CHECKLIST_SECTIONS = (
 _MEMORY_DETECTORS = frozenset(
     {
         "anchor_rot",
+        "compact",
         "dangling_mention",
         "entity_claim_stale",
         "grab_bag",

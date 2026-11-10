@@ -106,6 +106,30 @@ def _reviews(store: Store, target: int) -> list[tuple[Any, ...]]:
         ).fetchall()
 
 
+def _review_compaction(store: Store, target: int) -> None:
+    # Retirement/undo fixtures retain their exact chunks and links. Record the
+    # real review decision that those fixture claims need no compaction edits.
+    candidate = next(
+        candidate
+        for candidate in cand.compact_candidates(
+            store, scan_cap=1, limit=1, cursors={"compact:memory": target - 1}
+        )
+        if candidate.target_id == target
+    )
+    review_id = emit_proposal(
+        store, candidate, rationale="Reviewed every fixture claim before retirement."
+    )
+    assert review_id is not None
+    review = resolve_proposal(
+        store,
+        review_id,
+        actor="fixture-compaction-review",
+        verdict="rejected",
+        extra={"why": "Reviewed fixture claim; no compaction edits needed"},
+    )
+    assert review is not None
+
+
 def _proposal(
     store: Store,
     action: str = "rewrite",
@@ -141,6 +165,8 @@ def _proposal(
         change_evidence(candidate.evidence)
     review_id = emit_proposal(store, candidate, rationale="Checked against the source.")
     assert review_id is not None
+    if action == "retire":
+        _review_compaction(store, target)
     return MemoryProposal(target, review_id, body, candidate, successor, retired)
 
 

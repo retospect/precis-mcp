@@ -126,9 +126,10 @@ def test_tampering_fails_before_any_compute(
         info = next(
             i for i in zf.infolist() if i.filename.endswith("outputs/partial.json")
         )
-        with zf.open(info) as fh:
-            fh.read(1)
-            data_start = int(fh.tell() - 1) + info.header_offset
+        # This fixture member is nonempty, so the former one-byte read's
+        # tell() - 1 was zero. ZipFile.read returns bytes without text IO.
+        assert zf.read(info)
+        data_start = info.header_offset
     data[data_start] ^= 0xFF
     tampered = tmp_path / "tampered.zip"
     tampered.write_bytes(bytes(data))
