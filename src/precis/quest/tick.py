@@ -844,6 +844,10 @@ _READ_TEXT_CHARS = 6000
 _READ_MAX_CHUNKS = 8
 #: Distinct section names a read's navigation hint lists.
 _READ_SECTION_NAMES_MAX = 12
+#: Atom labels listed per element on a ``st<id>`` structure read — a slab's
+#: host-element tail is repetition, not information; the count always says
+#: how many were elided.
+_READ_LABELS_PER_ELEMENT = 64
 
 
 def _read_body_chunks(store: Store, ref_id: int) -> list[Any]:
@@ -961,6 +965,72 @@ def _read_cache_ref_text(
     return out
 
 
+def _label_sort_key(label: str) -> tuple[str, int, str]:
+    """Natural order for minted atom labels — ``aPd2`` before ``aPd10``;
+    a label outside the ``a<El><n>`` shape sorts by itself."""
+    m = re.match(r"^(\D+?)(\d+)$", label)
+    if m:
+        return (m.group(1), int(m.group(2)), label)
+    return (label, 0, label)
+
+
+def _structure_read_text(store: Store, ref_id: int) -> str:
+    """The composition + atom-label read-back a ``read`` on an ``st<id>``
+    pulls into the next tick's context (gr584118) — the read-channel form
+    of ``view='atoms'``, which a tick cannot reach (no live ``get``
+    mid-generation).
+
+    The live scene is the truth: ``composition`` counts the element each
+    atom NOW carries, so a ``set_element`` transmutation shows as the new
+    element, and the labels are grouped under that element — a label keeps
+    its mint prefix across ``set_element``, so a substituted Ir atom can
+    wear an ``aPd…`` label and only this grouping reveals it. A stamped
+    ``atom_cost`` rides the head line so the composition can be reconciled
+    against the priced measure the frontier table shows.
+    """
+    try:
+        ref = store.get_ref(kind="structure", id=ref_id)
+        scene, _handles = store.structure_load(ref_id)
+    except Exception:
+        log.info("structure read: load failed for ref %s", ref_id, exc_info=True)
+        return "(the handle resolved but the structure failed to load)"
+    if not scene.atoms:
+        return "(the design has no materialised atoms yet)"
+    comp = scene.composition()
+    formula = "".join(f"{el}{comp[el]}" for el in sorted(comp))
+    slug = str(ref.slug) if ref is not None and ref.slug else f"st{ref_id}"
+    title = (ref.title or "").splitlines()[0].strip() if ref is not None else ""
+    meta = dict(ref.meta or {}) if ref is not None else {}
+    head = slug if not title or title == slug else f"{slug} '{title}'"
+    head += f" — {formula} · {len(scene.atoms)} atoms · {len(scene.bonds)} bonds"
+    if meta.get("version") is not None:
+        head += f" · v{meta['version']}"
+    cost = meta.get("atom_cost")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        head += f" · atom_cost {float(cost):g}"
+        dearest = meta.get("atom_cost_dearest")
+        if dearest:
+            head += f" ({dearest})"
+    lines = [
+        head,
+        "composition: " + ", ".join(f"{el} {comp[el]}" for el in sorted(comp)),
+        "atom labels by element:",
+    ]
+    by_el: dict[str, list[str]] = {}
+    for label, atom in scene.atoms.items():
+        by_el.setdefault(atom.element, []).append(label)
+    for el in sorted(by_el):
+        labels = sorted(by_el[el], key=_label_sort_key)
+        shown = labels[:_READ_LABELS_PER_ELEMENT]
+        more = (
+            f" …+{len(labels) - _READ_LABELS_PER_ELEMENT} more"
+            if len(labels) > _READ_LABELS_PER_ELEMENT
+            else ""
+        )
+        lines.append(f"  {el} ({len(labels)}): {' '.join(shown)}{more}")
+    return "\n".join(lines)
+
+
 def _read_ref_text(
     store: Store, handle: str, *, section: str | None = None, page: int = 1
 ) -> str:
@@ -968,7 +1038,9 @@ def _read_ref_text(
     text for a bare chunk handle (``pc<id>``), the ref's body chunks for a
     record handle (``fi<id>``/``pa<id>``) — bounded at
     :data:`_READ_TEXT_CHARS`. A ``web:<ref_id|slug>`` address reads a
-    fetched page through the cache path (gr573684).
+    fetched page through the cache path (gr573684); a ``st<id>`` structure
+    read takes the inspector branch (:func:`_structure_read_text`) instead
+    of body chunks — composition plus the label→element truth.
 
     Selectors (gr505186/gr507189): ``section`` restricts to body chunks
     whose ``section_path`` mentions the name (case-insensitive substring);
@@ -983,6 +1055,8 @@ def _read_ref_text(
     resolved = store.resolve_handle(ident)
     if resolved is None:
         return "(no longer resolvable — the ref is gone or the handle is wrong)"
+    if resolved.kind == "structure":
+        return _structure_read_text(store, resolved.ref_id)
     if resolved.chunk_id is not None and section is None and page <= 1:
         text = store.chunks.chunk_text_by_id(resolved.chunk_id) or ""
         out = excerpt(
@@ -2183,8 +2257,8 @@ runs>"}}
 derive_from clone>", "why": "<the elementary step this edge measures>"}}
   ],
   "read": [
-    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id> or web:<id> of a held item \
-you want text of>", "why": "<what you are looking for>", "section": \
+    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id> or web:<id> of a held \
+item you want text of>", "why": "<what you are looking for>", "section": \
 "<optional heading name>", "page": "<optional 1-based page>"}}
   ],
   "fetch": [
@@ -2221,14 +2295,17 @@ naming the fix (an endpoint still missing its converged ml relax refuses \
 until it lands). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
-chunk, `[td<id>]` todo or a `web:<id>` fetched page from the context \
-above; the finding claims, abstract snippets and served titles are \
-otherwise all you see, so use this when the detail lives deeper than the \
-snippet. A bare read returns the body's front page — add `"section": \
-"<heading words>"` to jump to a named section ("results", "3.2 kinetics") \
-or `"page": <n>` to page deeper into the body; a `pc` handle with a \
-selector reads its owning paper; a `td` read returns the todo's body and \
-comment timeline. \
+chunk, `[td<id>]` todo, `[st<id>]` structure or a `web:<id>` fetched page \
+from the context above; the finding claims, abstract snippets and served \
+titles are otherwise all you see, so use this when the detail lives \
+deeper than the snippet. A bare read returns the body's front page — add \
+`"section": "<heading words>"` to jump to a named section ("results", \
+"3.2 kinetics") or `"page": <n>` to page deeper into the body; a `pc` \
+handle with a selector reads its owning paper; a `td` read returns the \
+todo's body and comment timeline; a `st` read returns the structure's \
+live composition and atom labels grouped by element — the \
+post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
+atom can wear an `aPd…` label). \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \
@@ -2425,8 +2502,8 @@ does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
 it would unblock>"}}
   ],
   "read": [
-    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id> or web:<id> of a held item \
-you want text of>", "why": "<what you are looking for>", "section": \
+    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id> or web:<id> of a held \
+item you want text of>", "why": "<what you are looking for>", "section": \
 "<optional heading name>", "page": "<optional 1-based page>"}}
   ],
   "fetch": [
@@ -2441,14 +2518,17 @@ If a tool, data source, simulation lane or catalog entry you need does not \
 exist, say so in `needs` instead of guessing around it. \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
-chunk, `[td<id>]` todo or a `web:<id>` fetched page from the context \
-above; the finding claims, abstract snippets and served titles are \
-otherwise all you see, so use this when the detail lives deeper than the \
-snippet. A bare read returns the body's front page — add `"section": \
-"<heading words>"` to jump to a named section ("results", "3.2 kinetics") \
-or `"page": <n>` to page deeper into the body; a `pc` handle with a \
-selector reads its owning paper; a `td` read returns the todo's body and \
-comment timeline. \
+chunk, `[td<id>]` todo, `[st<id>]` structure or a `web:<id>` fetched page \
+from the context above; the finding claims, abstract snippets and served \
+titles are otherwise all you see, so use this when the detail lives \
+deeper than the snippet. A bare read returns the body's front page — add \
+`"section": "<heading words>"` to jump to a named section ("results", \
+"3.2 kinetics") or `"page": <n>` to page deeper into the body; a `pc` \
+handle with a selector reads its owning paper; a `td` read returns the \
+todo's body and comment timeline; a `st` read returns the structure's \
+live composition and atom labels grouped by element — the \
+post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
+atom can wear an `aPd…` label). \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \

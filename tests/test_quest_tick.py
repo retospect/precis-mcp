@@ -4217,6 +4217,66 @@ class TestReadField:
         assert any("read refused" in t and "999999999" in t for t in texts)
         assert any("over the per-tick cap" in t for t in texts)
 
+    def test_read_pulls_a_structure_composition_and_labels(self, store: Any) -> None:
+        # gr584118: the tick's read channel had no structure inspector — no
+        # way to read back a dispatched candidate's live composition, or to
+        # learn a substituted atom's real label after set_element (labels
+        # keep their mint prefix: an Ir dopant can sit in an aPd… label).
+        from precis.structure.cell import Cell
+        from precis.structure.ops import apply_ops
+        from precis.structure.scene import Scene
+
+        qid = _mk_quest(store, "A quest inspecting a doped slab")
+        scene = Scene(cell=Cell(np.eye(3) * 20.0))
+        apply_ops(
+            scene,
+            [
+                {"op": "add_atom", "element": "Pd", "cart": [0.0, 0.0, 0.0]},
+                {"op": "add_atom", "element": "Pd", "cart": [2.75, 0.0, 0.0]},
+                {"op": "add_atom", "element": "Pd", "cart": [1.375, 2.38, 0.0]},
+                {"op": "set_element", "atom": "aPd2", "element": "Ir"},
+            ],
+        )
+        ref, _created = store.structure_save(
+            slug="ir-doped-pd",
+            title="Ir-doped Pd triangle",
+            scene=scene,
+            version=1,
+            card_text="test card",
+        )
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"st{ref.id}", "why": "the real Ir label"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "Requested reads" in prompt
+        # Live-element composition — the transmuted atom counts as Ir.
+        assert "Ir1Pd2" in prompt
+        assert "3 atoms" in prompt
+        # The substituted atom's real label, grouped under its new element.
+        assert "Ir (1): aPd2" in prompt
+        assert "Pd (2): aPd1 aPd3" in prompt
+
+    def test_read_structure_without_atoms_says_so(self, store: Any) -> None:
+        from precis.structure.cell import Cell
+        from precis.structure.scene import Scene
+
+        qid = _mk_quest(store, "A quest inspecting an empty design")
+        ref, _created = store.structure_save(
+            slug="empty-cell",
+            title="A cell with no atoms",
+            scene=Scene(cell=Cell(np.eye(3) * 20.0)),
+            version=1,
+            card_text="test card",
+        )
+        payload = {"logbook": [], "read": [{"ref": f"st{ref.id}"}]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "no materialised atoms" in prompt
+
 
 def _mk_paper_body(store: Any, title: str, sections: list[tuple[str, int]]) -> int:
     """A held paper: ``sections`` = (section_path tail, n_chunks) pairs laid
