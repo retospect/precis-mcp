@@ -2,7 +2,7 @@
 id: precis-check-source-help
 family: evidence
 title: precis — find a passage, read its surrounds, check it supports the point
-summary: reader-side source-checking — locate the passage by chunk handle, read its local context (extent='fisheye', then the needed neighbours in full via ~A..B), judge whether it actually supports the claim, then ground a finding hub on it and cite the hub [fi<id>]
+summary: reader-side source-checking — locate the passage by chunk handle, read its local context (extent='fisheye', then the center and needed neighbours in full via get/~A..B), judge whether it actually supports the claim, then ground a finding hub on it and cite the hub [fi<id>]
 answers:
   - how do I find the passage in a paper that backs a claim I want to cite?
   - how do I read the context around a chunk before citing it?
@@ -63,18 +63,21 @@ the anchor — start the local context straight from the chunk handle:
 
 ```python
 get(id="pc7")  # the hit itself, one block
-get(id="pc7", extent="fisheye")  # the hit in context: verbatim + neighbours previewed
+get(id="pc7", extent="fisheye")  # the hit in context: verbatim (≤4,000 chars) + neighbours previewed
 get(kind="paper", id="<slug>~5..9")  # blocks 5–9: the hit + its surrounds IN FULL
 get(kind="paper", id="<slug>~38")  # a single block by position
 ```
 
-`extent='fisheye'` renders the chunk inside its cluster — the block in
-full, its neighbours as one-line previews, the rest of the paper as a
-map. Orient with it, then fetch every block you will judge evidence
-from **in full** with the `~A..B` **range selector** — *not*
-`view='chunks'`, *not* `args={'chunk_range':…}` (those don't exist).
-Previews and keywords only pick which neighbours to pull; they are not
-citation-grade text themselves.
+`extent='fisheye'` renders the chunk inside its cluster — the block
+verbatim up to a ~4,000-char cap, its neighbours as one-line previews,
+the rest of the paper as a map. It is the orientation read, not the
+evidence read: fetch every block you will judge support from **in
+full**, center included, with `get(id='pc<id>')` or the `~A..B` **range
+selector** — *not* `view='chunks'`, *not* `args={'chunk_range':…}`
+(those don't exist). A center ending in `…` with a
+`… cut: <shown> of <total> chars — full body: …` tail is a long block's
+head, not the block; previews and keywords only pick which neighbours
+to pull. None of it is citation-grade until the full text is in hand.
 
 The hit's own output already names its position — each `#` header and
 search excerpt prints `pc<id> ~<ord>`. When you need the
@@ -157,9 +160,9 @@ including the adversarial search: [[precis-citation-help]].
 
 Search results carry short `excerpt @ ~N:` sub-lines picked for triage
 — they help you decide whether to drill in, but they are clipped. Never
-judge support from the excerpt: fetch the full chunk (`get(id='pc<id>')`,
-its `extent='fisheye'` context, or a `~A..B` range) and read it before
-you cite.
+judge support from the excerpt: fetch the full chunk (`get(id='pc<id>')`
+or a `~A..B` range; a `…`-cut `extent='fisheye'` center is its head, not
+the block) and read it before you cite.
 
 ## Reviewing someone else's citation (the faithfulness check)
 

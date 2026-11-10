@@ -761,7 +761,17 @@ def _fisheye_split(
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
             else:
-                lines.append(f"▸ {h} [{b.chunk_kind}]\n{_cap(b.text, _VERBATIM_CAP)}")
+                body = _cap(b.text, _VERBATIM_CAP)
+                total = len((b.text or "").strip())
+                if total > _VERBATIM_CAP:
+                    # The center is the orientation read, capped like every
+                    # eye body — name the call that returns it whole, or a
+                    # long block's head passes for the block (the marker the
+                    # note eye already prints).
+                    body += "\n" + _cut_marker(
+                        kind, _chunk_handle(kind, b), _VERBATIM_CAP, total
+                    )
+                lines.append(f"▸ {h} [{b.chunk_kind}]\n{body}")
         else:
             sz = size_cell(len((b.text or "").encode("utf-8")))
             row = f"  · {h}  {_chunk_summary(b)}"

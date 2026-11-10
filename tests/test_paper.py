@@ -18,6 +18,7 @@ from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
 from precis.tools.command_parser import parse_command
 from precis.utils import handle_registry
+from precis.utils.eye_render import _CHUNK_SUMMARY_CAP, _HOME_BACK, _HOME_FWD
 from tests.conftest import chunk_handle, record_handle
 from tests.hintcheck import assert_hints_round_trip, extract_hints
 
@@ -326,6 +327,60 @@ def _seed_paper(
             for i, t in enumerate(blocks)
         ],
     )
+    return ref.id
+
+
+def _seed_pa575811_like(store: Store) -> int:
+    """pa575811's shape on prod — gr621056's dogfood paper: 162 body
+    chunks, ~90 kB total (~566 B/chunk), keywords on ~3/4 of chunks, in
+    regimes weak enough that the clusterer folds most of the body into
+    one giant cluster (prod's TOC showed a single ``~21..156 / 74 kB``
+    row). Returns ref_id."""
+    ref = store.insert_ref(
+        kind="paper",
+        slug="moglich-bph",
+        title="Comparative analysis of two paradigm bacteriophytochromes",
+        provider="manual",
+    )
+    topics = [
+        "bacteriophytochrome phytochrome photoreceptor",
+        "DrBphP RpBphP chromophore biliverdin",
+        "red light absorption spectra dark state",
+        "photoconversion Pr Pfr photostationary",
+        "structure crystal dimer PAS GAF PHY",
+        "histidine kinase two-component signalling",
+        "enzymatic activity turnover assay",
+        "discussion comparison paradigm opposite",
+    ]
+    para = (
+        "Purified protein samples were illuminated at the indicated "
+        "wavelength and absorption spectra were recorded between 250 and "
+        "900 nm; reported values are means over three independent "
+        "preparations with standard deviations. The dark-reversion "
+        "kinetics were fitted to a biexponential model and the "
+        "chromophore environment was assessed by site-directed "
+        "mutagenesis of conserved residues in the GAF domain pocket. "
+    )
+    texts = []
+    for i in range(162):
+        body = f"Section paragraph {i} on {topics[(i // 20) % len(topics)]}. " + para
+        if i == 75:
+            body += (
+                "GOLD: DrBphP and RpBphP1 adopt opposite signalling states in "
+                "the dark — DrBphP relaxes to Pfr, RpBphP1 to Pr."
+            )
+        texts.append(body)
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=i, text=t) for i, t in enumerate(texts)]
+    )
+    with store.pool.connection() as conn:
+        for i in range(162):
+            if i % 4 == 3:  # ~1/4 keyword-barren, like prod's 120/162 coverage
+                continue
+            conn.execute(
+                "UPDATE chunks SET keywords = %s WHERE ref_id = %s AND ord = %s",
+                (topics[(i // 20) % len(topics)].split(), ref.id, i),
+            )
     return ref.id
 
 
@@ -944,6 +999,109 @@ class TestChunks:
         nxt = exc.value.next
         assert isinstance(nxt, str)
         assert f"get(id='pa{ref_id}', view='abstract')" in nxt
+
+    def test_fisheye_center_marks_a_long_chunk_cut(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """The chunk fisheye's center is verbatim only up to
+        ``_VERBATIM_CAP`` (4,000 chars) — a longer block's head must not
+        pass for the whole. A cut center tails with the ``cut:`` marker
+        naming the call that returns it whole; ``get(id='pc<id>')`` is
+        that call — the read precis-check-source-help requires before
+        judging evidence."""
+        tail = "LONGCHUNKTAIL only the full read shows this"
+        long_text = "lead paragraph filler. " * 200 + tail
+        _seed_paper(store, blocks=["a", "b", long_text, "d"])
+        pc = chunk_handle(store, "wang2020state", ord=2)
+        out, err = runtime_with_store.dispatch_with_status(
+            "get", {"id": pc, "extent": "fisheye"}
+        )
+        assert not err, out
+        assert f"▸ {pc}" in out
+        assert tail not in out  # the center is a head, not the block
+        assert f"cut: 4000 of {len(long_text)} chars" in out
+        assert f"full body: get(kind='paper', id='{pc}')" in out
+        # The named call is the read the skill requires — it returns the
+        # whole block, tail included.
+        full, err = runtime_with_store.dispatch_with_status("get", {"id": pc})
+        assert not err
+        assert tail in full
+
+    def test_pa575811_reading_eval(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """gr621056 acceptance: the pa575811 dogfood route replayed on a
+        same-shape seeded paper — 162 chunks, ~90 kB of body, keywords on
+        ~3/4 of chunks so the clusterer folds most of the body into one
+        giant cluster (prod showed a single ``~21..156 / 74 kB`` row).
+
+        Two routes through the real dispatcher to the same evidence read:
+
+        * the route the old hints taught (what the dogfood session
+          actually ran): ``get(pc)`` → ``get(pa, view='toc')`` → the
+          ``~73..77`` evidence range;
+        * the route the new hints lead with: ``get(pc,
+          extent='fisheye')`` → the same ``~73..77`` range.
+
+        Meters (context-navigation spec §1): hops = read calls, total
+        result bytes = Σ body bytes. Evidence correctness is held —
+        both routes must surface the gold block's full text. The
+        measured claim: the fisheye route drops the whole-map hop while
+        its neighbourhood stays *bounded* (the in-cluster preview window
+        plus ``⋯ N more ⋯`` collapse tails) — never an unbounded dump
+        traded for the saved TOC call.
+        """
+        ref_id = _seed_pa575811_like(store)
+        pa = f"pa{ref_id}"
+        pc = chunk_handle(store, "moglich-bph", ord=75)
+        gold = "opposite signalling states"
+
+        def run(calls: list[tuple[str, dict[str, Any]]]) -> tuple[int, int, str]:
+            bodies = [runtime_with_store.dispatch(verb, args) for verb, args in calls]
+            return (
+                len(calls),
+                sum(len(b.encode("utf-8")) for b in bodies),
+                "".join(bodies),
+            )
+
+        # The dogfood entry: a scoped search surfaces the hit's pc handle.
+        entry: list[tuple[str, dict[str, Any]]] = [
+            ("search", {"kind": "paper", "q": "phytochrome red light", "scope": pa})
+        ]
+        toc_hops, toc_bytes, toc_out = run(
+            entry
+            + [
+                ("get", {"id": pc}),
+                ("get", {"id": pa, "view": "toc"}),
+                ("get", {"id": f"{pa}~73..77"}),
+            ]
+        )
+        fe_hops, fe_bytes, fe_out = run(
+            entry
+            + [
+                ("get", {"id": pc, "extent": "fisheye"}),
+                ("get", {"id": f"{pa}~73..77"}),
+            ]
+        )
+
+        # Evidence correctness held: the gold block's full text is in both
+        # transcripts — and in the fisheye route it arrives one hop early,
+        # verbatim in the center.
+        assert gold in toc_out
+        assert gold in fe_out
+        # Hops: the TOC detour is the call that goes.
+        assert fe_hops < toc_hops
+        # Bytes: the saved hop is repaid only by the bounded neighbourhood
+        # — at most the preview window the constants allow, never the
+        # whole-cluster dump.
+        bound = (_HOME_BACK + _HOME_FWD + 1) * (_CHUNK_SUMMARY_CAP + 48)
+        assert fe_bytes - toc_bytes <= bound, (
+            f"fisheye route paid {fe_bytes - toc_bytes}B over the toc route; "
+            f"neighbourhood bound is {bound}B"
+        )
+        # And it is a bound: the giant home cluster collapses its far
+        # tails rather than dumping every row.
+        assert "⋯" in fe_out and " more " in fe_out
 
 
 # ---------------------------------------------------------------------------
