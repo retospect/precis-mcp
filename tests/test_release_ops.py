@@ -2234,6 +2234,77 @@ def test_a_kill_restores_the_tooling(
     assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# old\n")
 
 
+def test_the_restore_keeps_added_paths_head_now_tracks(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    """The HEAD at restore time can differ from the HEAD the refresh
+    saw — here the staged state was committed, advancing HEAD onto one
+    of the added paths. Dropping the whole saved ``added`` list stages
+    the deletion of a file HEAD now legitimately tracks; the restore
+    deletes only what the current HEAD still does not."""
+    root = stale_checkout["root"]
+    work = stale_checkout["work"]
+    for name in ("y.py", "z.py"):
+        (work / "scripts" / "lib" / name).write_text(
+            f"NEW = '{name}'\n", encoding="utf-8"
+        )
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "add lib files")
+    _g(work, "push", "-q", str(stale_checkout["origin"]), "main")
+    _label, added = rc.refresh_tooling(root)
+    assert added == ["scripts/lib/y.py", "scripts/lib/z.py"]
+    # HEAD advances over the staging, but only onto y.py.
+    _g(root, "commit", "-q", "-m", "take y.py", "--", "scripts/lib/y.py")
+    rc.restore_tooling(root, added)
+    assert _g(root, "status", "--porcelain") == ""
+    assert _g(root, "ls-files", "--error-unmatch", "--", "scripts/lib/y.py") == (
+        "scripts/lib/y.py"
+    )
+    assert (root / "scripts" / "lib" / "y.py").read_text(
+        encoding="utf-8"
+    ) == "NEW = 'y.py'\n"
+    assert not (root / "scripts" / "lib" / "z.py").exists()
+
+
+def test_a_refresh_error_after_checkout_keeps_the_cleanup_owed(
+    store: Store, stale_checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception after the checkout applied (the dropped-paths diff
+    timing out) must not answer ``added=None`` — that strands the staged
+    tooling. The handler undoes the partial apply itself; when even the
+    undo fails, the returned ``added`` keeps the obligation for the
+    end-of-run restore."""
+    root = stale_checkout["root"]
+    work = stale_checkout["work"]
+    (work / "scripts" / "lib" / "y.py").write_text("NEW = 2\n", encoding="utf-8")
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "add lib file")
+    _g(work, "push", "-q", str(stale_checkout["origin"]), "main")
+
+    real = rc._tooling_paths_diff
+
+    def flaky(root_: Path, filt: str, sha: str) -> list[str]:
+        if filt == "D":
+            raise subprocess.TimeoutExpired(["git"], 120)
+        return real(root_, filt, sha)
+
+    monkeypatch.setattr(rc, "_tooling_paths_diff", flaky)
+    label, added = rc.refresh_tooling(root)
+    assert added is None and label.startswith("working tree (TimeoutExpired")
+    assert _g(root, "status", "--porcelain") == ""
+    assert not (root / "scripts" / "lib" / "y.py").exists()
+
+    # The undo itself fails: the obligation survives in the answer.
+    def wedged(root_: Path, _files: list[str]) -> None:
+        raise OSError("index locked")
+
+    monkeypatch.setattr(rc, "restore_tooling", wedged)
+    label, added = rc.refresh_tooling(root)
+    assert label.startswith("working tree (TimeoutExpired")
+    assert added == ["scripts/lib/y.py"]
+    assert "A  scripts/lib/y.py" in _g(root, "status", "--porcelain")
+
+
 # ── the deploy is pinned to the cut's host and checkout ──────────────
 
 

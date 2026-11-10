@@ -650,12 +650,23 @@ def restore_tooling(root: Path, added: list[str]) -> None:
     back to HEAD for the tooling paths — ``checkout HEAD --`` restores
     what HEAD tracks, ``added`` drops what it does not — so the deploy
     checkout's next ``merge --ff-only`` is not refused on the staged
-    leftovers. Paths carrying unstaged worktree edits are left alone: the
-    refresh's own never-overwrite rule."""
+    leftovers. The saved ``added`` list is filtered against the HEAD at
+    restore time, not the HEAD the refresh saw: a HEAD that advanced in
+    between may now track one of those paths (the staging committed, or a
+    fast-forward carried it), and a blind ``git rm`` stages the deletion
+    of a legitimate file. Paths carrying unstaged worktree edits are left
+    alone: the refresh's own never-overwrite rule."""
     if _tooling_git(root, ["diff", "--quiet", "--", *_TOOLING_PATHS]).returncode:
         return
     _tooling_git(root, ["checkout", "HEAD", "--", *_TOOLING_PATHS])
     files = [f for f in added if f]
+    if files:
+        out = _tooling_git(
+            root, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", *files]
+        )
+        if out.returncode == 0:
+            tracked = set(out.stdout.split("\0"))
+            files = [f for f in files if f not in tracked]
     if files:
         _tooling_git(root, ["rm", "-q", "-f", "--ignore-unmatch", "--", *files])
 
@@ -709,7 +720,10 @@ def refresh_tooling(root: Path) -> tuple[str, list[str] | None]:
     leftovers — so the job restores them when the run ends. Every failure
     — fetch, an unreadable ref, unstaged local edits to those paths (never
     overwritten), the checkout — falls back to the working tree and names
-    why."""
+    why. A failure after the checkout ran still owes the undo: the
+    handler restores the partial apply itself, and answers the ``added``
+    list when even that fails — ``None`` would strand the staging."""
+    staged: list[str] | None = None
     try:
         fetched = _tooling_git(
             root,
@@ -740,6 +754,7 @@ def refresh_tooling(root: Path) -> tuple[str, list[str] | None]:
                 None,
             )
         added = _tooling_paths_diff(root, "A", sha)
+        staged = added  # from here the checkout may leave a partial apply
         out = _tooling_git(root, ["checkout", sha, "--", *_TOOLING_PATHS])
         if out.returncode != 0:
             why = (out.stderr.strip().splitlines() or ["git checkout failed"])[-1]
@@ -750,7 +765,15 @@ def refresh_tooling(root: Path) -> tuple[str, list[str] | None]:
             _tooling_git(root, ["rm", "-q", "-f", "--ignore-unmatch", "--", *dropped])
         return sha[:9], added
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"working tree ({type(exc).__name__}: {str(exc)[:120]})", None
+        label = f"working tree ({type(exc).__name__}: {str(exc)[:120]})"
+        if staged is None:
+            return label, None
+        try:
+            restore_tooling(root, staged)
+        except Exception:
+            log.warning("%s: refresh undo failed", NAME, exc_info=True)
+            return label, staged
+        return label, None
 
 
 def _tooling_label(ctx: Any) -> tuple[str, list[str] | None]:
