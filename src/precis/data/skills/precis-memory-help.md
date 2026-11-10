@@ -97,8 +97,11 @@ transcript, not landed history (those live in `git log` and the docs).
    `search(kind='memory', q='<the question you
    will ask next time>', view='index')`. If the new `me<N>` is not
    listed, rewrite `title=` / `meta.hook` with those task words — the
-   index view applies a hard 0.42 recall cut, so a memory without them
-   silently never comes back. Retrieval keys and field fallbacks:
+   index view cuts semantic-only hits past a query-relative gap (best
+   hit's distance + 0.15, capped at the 0.65 corpus floor; the fixed
+   0.42 memory floor applies only under the
+   `PRECIS_SEARCH_FIXED_FLOORS=1` fallback), so a memory without them
+   can silently never come back. Retrieval keys and field fallbacks:
    `precis-firstline-help`.
 5. **Link it in.** One `part-of` to a hub (or to a summary node for a
    detail node) plus 0–3 typed edges — more belongs in the body as
@@ -359,9 +362,12 @@ get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # on the best hit
 memory mirrors a topic file; the hook is `meta.hook`, else the body's first
 line. `q=` is required. The second call opens the hit with its linked
 neighbours and the nearest unlinked memories in the same `SPACE:`
-(`precis-fisheye-help`). `view='index'` applies the same hard 0.42
-recall cut as the write-section round-trip check — a memory whose
-title/hook lacks the task words never lists. The semantically nearest
+(`precis-fisheye-help`). `view='index'` applies the same recall cut as
+the write-section round-trip check: semantic-only hits past a
+query-relative gap (best hit's distance + 0.15, capped at the 0.65
+corpus floor; the fixed 0.42 memory floor applies only under the
+`PRECIS_SEARCH_FIXED_FLOORS=1` fallback) — a memory whose title/hook
+lacks the task words can miss the list. The semantically nearest
 hit keeps a slot even with no word match, recently touched nodes rank a
 little higher, and when no gotcha made the page the best matching
 `section:gotchas` node is added as one extra line. Shell form: `precis memory

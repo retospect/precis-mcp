@@ -213,6 +213,7 @@ from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.timeutil import as_utc
+from precis.workers.embed import nudge_fresh_embed
 
 #: Heading line that opens a memory-body section — the ``~<slug>``
 #: selector grammar (``me<id>~<section>``) splits on these.
@@ -1618,6 +1619,9 @@ class MemoryHandler(NumericRefHandler):
             if self.autolink_mentions:
                 facts_deferred = self._sync_mention_links(ref.id, body, conn=conn)
             self.store.chunks.sync_header_card(ref.id, conn=conn)
+            # Embed the new body + header card within seconds so a split's
+            # children are recallable immediately (gr563669).
+            nudge_fresh_embed(self.store, conn=conn, reason="put memory")
         # Attribute the new memory's body chunk to the current agent run
         # (Slice B provenance) — a no-op unless PRECIS_CURRENT_AGENTLOG is
         # set (e.g. the dream pass), so a dream's own memories walk back to
@@ -2337,6 +2341,9 @@ class MemoryHandler(NumericRefHandler):
                             ref.id, new_title, source="agent", conn=conn
                         )
                     self.store.chunks.sync_header_card(ref.id, conn=conn)
+                    # The re-emitted header card carries a new chunk id —
+                    # nudge so its vector lands within seconds (gr563669).
+                    nudge_fresh_embed(self.store, conn=conn, reason="edit memory meta")
                     checked = self._shape_after_write(ref.id, shape, conn=conn)
                     self._apply_shape_tags(ref.id, checked, conn=conn)
                     final_shape[:] = [checked]
@@ -2695,6 +2702,10 @@ class MemoryHandler(NumericRefHandler):
                 self._apply_shape_tags(ref_id, checked, conn=conn)
                 if shape_out is not None:
                     shape_out[:] = [checked]
+                # The replacement body chunk is semantically invisible
+                # until it carries a vector — embed it within seconds so a
+                # trimmed/split body stays recallable (gr563669).
+                nudge_fresh_embed(self.store, conn=conn, reason="edit memory body")
             return old_body
 
         return self._write_retried(ref_id, "body edit", _do)
@@ -4622,6 +4633,9 @@ class MemoryHandler(NumericRefHandler):
                     mid, {"superseded_by": survivor.id}, conn=conn
                 )
                 self.store.retire_ref(mid, conn=conn)
+            # The survivor's fresh body + header card embed within seconds,
+            # like any other memory write (gr563669).
+            nudge_fresh_embed(self.store, conn=conn, reason="supersede memory")
 
         merged = ", ".join(str(m) for m in ids)
         return self._with_attribution_advisory(

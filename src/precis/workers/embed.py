@@ -50,29 +50,34 @@ log = logging.getLogger(__name__)
 #: ``finding_body`` is what the mint-time dedup gate ANN-searches, so an
 #: unembedded hub is invisible to the next mint (gr489243);
 #: :func:`nudge_fresh_embed` makes sure a job is there to claim it.
-_PRIORITY_KINDS = ("finding", "draft", "conv")
+#: ``memory`` rides the same lane (gr563669): a just-written or just-split
+#: memory's ``memory_body``/``card_combined`` chunks are what memory
+#: recall searches — until they carry a vector a natural query misses
+#: them entirely (prod lag measured 15–32 min behind the paper backlog).
+_PRIORITY_KINDS = ("finding", "draft", "conv", "memory")
 
 #: The corpus-wide predicate shared by the three backlog tiers: every ref
 #: kind that has no priority lane.
-_CORPUS_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'finding']))"
+_CORPUS_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft', 'finding', 'memory']))"
 
-#: Fresh-claim tiers, in queue order: finding > draft > conv, then the
-#: corpus backlog in value order — paragraph > table/figure/equation >
-#: everything else (gr513749; Reto 2026-10-24: body prose is what
-#: semantic search returns, so it drains first). Each is
-#: ``(kind_pred, order_by)`` spliced into ``_TIERED_FRESH_CLAIM_SQL``. The
-#: priority tiers keep ``c.ref_id, c.ord`` contiguity (small populations);
-#: each corpus tier keeps the base class's flat ``c.chunk_id`` FIFO
-#: (oldest-first — chunk_id order is insertion order) under its own
-#: frontier floor. Three separate statements, not one ``ORDER BY CASE``:
-#: a CASE rank can't carry a per-tier floor (the high-water is
-#: not one ``chunk_id`` once ranks differ) and would sort the whole
-#: unembedded set per 32-chunk micro-batch — the gr506753 claim-cost
-#: regression this machinery exists to avoid.
+#: Fresh-claim tiers, in queue order: finding > draft > conv > memory,
+#: then the corpus backlog in value order — paragraph >
+#: table/figure/equation > everything else (gr513749; Reto 2026-10-24:
+#: body prose is what semantic search returns, so it drains first). Each
+#: is ``(kind_pred, order_by)`` spliced into ``_TIERED_FRESH_CLAIM_SQL``.
+#: The priority tiers keep ``c.ref_id, c.ord`` contiguity (small
+#: populations); each corpus tier keeps the base class's flat
+#: ``c.chunk_id`` FIFO (oldest-first — chunk_id order is insertion order)
+#: under its own frontier floor. Three separate statements, not one
+#: ``ORDER BY CASE``: a CASE rank can't carry a per-tier floor (the
+#: high-water is not one ``chunk_id`` once ranks differ) and would sort
+#: the whole unembedded set per 32-chunk micro-batch — the gr506753
+#: claim-cost regression this machinery exists to avoid.
 _FRESH_TIERS: dict[str, tuple[str, str]] = {
     "finding": ("r.kind = 'finding'", "c.ref_id, c.ord"),
     "draft": ("r.kind = 'draft'", "c.ref_id, c.ord"),
     "conv": ("r.kind = 'conv'", "c.ref_id, c.ord"),
+    "memory": ("r.kind = 'memory'", "c.ref_id, c.ord"),
     "paragraph": (
         _CORPUS_PRED + " AND c.chunk_kind = 'paragraph'",
         "c.chunk_id",
@@ -354,7 +359,7 @@ class EmbedHandler(WorkerHandler):
 
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         """Claim fresh (never-embedded or stale-``content_sha``) chunks in
-        queue-priority order: finding > draft > conv > paragraph >
+        queue-priority order: finding > draft > conv > memory > paragraph >
         table/figure/equation > other (see :data:`_FRESH_TIERS`).
 
         Overrides :meth:`WorkerHandler._claim_fresh` — everything else
@@ -666,9 +671,10 @@ def failed_embedding_count(conn: Connection, *, ref_id: int) -> int:
 # cannot see it. Priority alone can't fix that (no job exists to reorder); the
 # nudge creates one. job_inproc claims an ``embed_batch`` in p50 1.4 s / p90
 # 4.6 s, and the ``finding`` tier in ``_FRESH_TIERS`` makes that job (or any
-# already-running one, at its next micro-batch) take the hub first. The embed
-# itself still runs in the worker: the hub write only queues a job and never
-# calls the embedder.
+# already-running one, at its next micro-batch) take the hub first; memory
+# writes share the mechanism through the ``memory`` tier (gr563669). The
+# embed itself still runs in the worker: the write only queues a job and
+# never calls the embedder.
 
 #: ``params.limit`` of a nudge job: enough for a burst of hubs, small enough
 #: to finish in seconds and free the embedder slot for the materializer.
@@ -683,11 +689,13 @@ _NUDGE_BUCKET_S = 10
 
 
 def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | None:
-    """Queue a small high-priority ``embed_batch`` so a just-written hub chunk
-    is embedded within seconds. Returns the new job's ref id, or ``None``
-    when a bulk ``embed_batch`` is already queued (it claims the ``finding``
-    tier first) or the nudge failed. A targeted memory job cannot claim the
-    finding and therefore cannot coalesce this nudge.
+    """Queue a small high-priority ``embed_batch`` so a just-written
+    interactive chunk (a hub's ``finding_body``, a memory's
+    ``memory_body``/``card_combined``) is embedded within seconds. Returns
+    the new job's ref id, or ``None`` when a bulk ``embed_batch`` is
+    already queued (it claims the priority tiers first) or the nudge
+    failed. A targeted memory job cannot claim the finding and therefore
+    cannot coalesce this nudge.
 
     Runs on the caller's ``conn`` inside a savepoint, so the job commits with
     the hub. A failure is logged and swallowed: the materializer's age trigger

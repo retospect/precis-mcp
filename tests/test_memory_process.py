@@ -58,10 +58,14 @@ def _state(receipt: str) -> str:
 
 
 def _jobs(store: Store) -> list[int]:
+    """Process-minted jobs only — a put/edit now also queues an
+    ``embed-nudge`` bulk job (gr563669), which is not a work order these
+    assertions count."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'job' "
-            "AND meta->>'job_type' = 'embed_batch' ORDER BY ref_id"
+            "AND meta->>'job_type' = 'embed_batch' "
+            "AND meta->'params' ? 'memory_target' ORDER BY ref_id"
         ).fetchall()
     return [int(row[0]) for row in rows]
 
