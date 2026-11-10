@@ -388,6 +388,7 @@ def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
         "precis-get-help",
         "precis-edit-help",
         "precis-startup-skills-help",
+        "precis-repo-dev-start-help",
     ],
 )
 def test_real_skill_slugs_resolve(slug: str) -> None:

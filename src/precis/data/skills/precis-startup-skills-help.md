@@ -96,7 +96,9 @@ get(kind="skill", view="usage")  # maintenance: coldest skills first, last read 
 
 Pin the skills agents in this deployment will hit first and most
 often — typically `precis-search-help` plus the one or two `kind`
-helpers central to the workspace.
+helpers central to the workspace. On a repo-dev deployment the first
+pin is [[precis-repo-dev-start-help]] — the fixed start page every
+coding session loads once.
 
 ## Writing skills — authoring a new skill file is a repo-dev task, not this
 
@@ -110,4 +112,5 @@ what this MCP session can do. Use the `scaffold` agent, or read
 
 - [[precis-overview]] — verbs and kinds
 - [[precis-search-help]] — default cold-start action
+- [[precis-repo-dev-start-help]] — the repo-dev start page worth pinning
 - [[precis-kinds-disabled-help]] — PRECIS_KINDS_DISABLED sibling env var

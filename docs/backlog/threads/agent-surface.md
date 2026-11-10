@@ -47,7 +47,14 @@ description budgets, then Drive.
 4. **Coding-agent start page** (gr564575, design in its comment 1, Reto
    2026-11-05) — `CLAUDE.md`/`AGENTS.md` shrink to the hard rules, one
    load line and a fallback path; a short start skill points to skills,
-   memory hubs and repo docs; the SessionStart hook prints it. Waits on
+   memory hubs and repo docs; the SessionStart hook prints it.
+   The start skill landed as `precis-repo-dev-start-help` (fixed slug,
+   index-only, ratcheted by `tests/test_repo_dev_start_page.py`; it
+   routes to soul index me563907, rulings hub me489895, vocabulary root
+   tn559460 and the checkout docs). Still to land: the load line +
+   fallback path in `AGENTS.md`/`CLAUDE.md`, the SessionStart hook
+   print, the `PRECIS_STARTUP_SKILLS` pin — the pin text already
+   recommends it in `precis-startup-skills-help`. Waits on
    Reto's yes/no for the conduct sentences (gr572704); a skill renders no
    linked neighbours yet (gr572706). Filed by the 2026-11-05
    surface-review pass on this surface: gr570088, gr570089, gr572707,
