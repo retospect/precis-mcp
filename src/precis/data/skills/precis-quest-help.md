@@ -285,7 +285,11 @@ what varies) rather than band. It renders the compact agent table
 prompt embeds — "what the next tick would see now". `view='results'`
 and `view='frontier'` are **budgeted** like the tick's copy (2500
 tokens; rows drop from the tail, never the newest ten; the body says
-`(+K … rows omitted)`); `args={'budget': 8000}` widens it. On an
+`(+K … rows omitted)`); `args={'budget': 8000}` widens it. The measure
+columns are the pathway axes plus the quest's declared **objective**
+columns — for a quest with no `meta.rubric_objectives` that is `energy`,
+so a completed structure relax shows its converged result instead of an
+empty row. On an
 `inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
 says the body has no Pareto frontier — it never proposes, so nothing
 converges.

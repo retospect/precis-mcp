@@ -1125,16 +1125,27 @@ def _results_table_section(
     banded one-liner digest, not a replacement for it.
 
     ``fr`` reuses the tick's already-computed frontier (same threading
-    convention as :func:`_frontier_summary`/:func:`_champion`). Returns
+    convention as :func:`_frontier_summary`/:func:`_champion`); it also
+    supplies the declared-objective columns (``energy`` for a no-rubric
+    quest) the rows carry — completed relax results must be visible here,
+    not only in the logbook (gr567692). Returns
     ``""`` (section omitted entirely) when the quest has no candidates yet —
     an empty table would just be noise ahead of the axis notes.
     """
-    from precis.quest.results_table import build_results_rows, render_results_table
+    from precis.quest.results_table import (
+        build_results_rows,
+        render_results_table,
+        results_columns,
+    )
 
+    if fr is None:
+        from precis.quest.frontier import quest_frontier
+
+        fr = quest_frontier(store, quest_id)
     rows = build_results_rows(store, quest_id, fr=fr)
     if not rows:
         return ""
-    table = render_results_table(rows)
+    table = render_results_table(rows, columns=results_columns(fr.objectives))
     return (
         "\n## Results so far (one row per evaluated candidate — read this "
         "BEFORE proposing)\n"

@@ -2121,10 +2121,10 @@ class QuestHandler(NumericRefHandler):
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
-            RESULTS_COLUMNS,
             build_results_rows,
             fit_rows_to_budget,
             render_results_table,
+            results_columns,
         )
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
@@ -2135,13 +2135,18 @@ class QuestHandler(NumericRefHandler):
                 f"# results — quest {ref.id}: {head}\n\n"
                 "no candidate structures serve this quest yet."
             )
-        schema = list(RESULTS_COLUMNS)
+        # The declared objectives (energy by default) extend the fixed base
+        # columns — a completed relax result must be visible here, not only
+        # in the logbook (gr567692).
+        schema = list(results_columns(fr.objectives))
         # The text copy is measured against the plain fixed-width table —
         # ``fit_rows_to_budget``'s default render — not
         # ``render_results_table`` itself, which trims internally and would
         # hide drops from ``omitted``.
         if fmt == "text":
-            kept, omitted = fit_rows_to_budget(rows, token_budget=budget)
+            kept, omitted = fit_rows_to_budget(
+                rows, token_budget=budget, columns=schema
+            )
         else:
             kept, omitted = fit_rows_to_budget(
                 rows,
@@ -2158,7 +2163,8 @@ class QuestHandler(NumericRefHandler):
             return (
                 f"# results — quest {ref.id}: {head}\n\n"
                 "## text table (as embedded in the tick prompt)\n"
-                f"{render_results_table(kept, token_budget=budget)}{note}"
+                f"{render_results_table(kept, token_budget=budget, columns=schema)}"
+                f"{note}"
             )
         return (
             f"# results — quest {ref.id}: {head}\n\n"

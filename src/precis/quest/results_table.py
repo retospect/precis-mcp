@@ -25,11 +25,19 @@ the quest's declared slab element (``meta.reaction_config.slab.element``) —
 best-effort: an undeliverable structure load, an unstamped params dict, or an
 ambiguous site geometry degrades to ``'-'``/``'?'`` rather than raising or
 guessing hard.
+
+The measure block ends with the quest's **declared objective keys**
+(``fr.objectives`` — :class:`precis.quest.frontier.FrontierResult`) not
+already among the fixed pathway columns. For a quest with no
+``meta.rubric_objectives`` that is ``energy``: the converged-relax result a
+dopant-stability ranking actually ranks on (gr567692 — without it, a
+completed structure relax showed ``beaten`` with every measure cell ``-``
+and the tick could not confirm a frontier position from the table at all).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import reaction_graph as analysis
@@ -318,6 +326,29 @@ def _measure_str(
     return f"≈{s}" if key in untrusted_keys else s
 
 
+def _objective_str(
+    measures: dict[str, float], untrusted_keys: frozenset[str], key: str
+) -> str:
+    """Like :func:`_measure_str` but ``%.6g`` (the leaderboard/frontier
+    summary convention) — an objective value is the number the quest ranks
+    on, so a hundred-eV relax energy keeps its decimals instead of
+    collapsing to 3 significant figures."""
+    v = measures.get(key)
+    if not isinstance(v, (int, float)):
+        return "-"
+    s = f"{v:g}"
+    return f"≈{s}" if key in untrusted_keys else s
+
+
+def results_columns(objectives: Sequence[tuple[str, str]]) -> tuple[str, ...]:
+    """The render column order for a quest's results table: the fixed
+    :data:`_COLUMNS` plus the quest's declared objective keys not already
+    among them, in declared order (gr567692 — the default ``energy``
+    objective must be visible or a completed relax result reads as an
+    empty row)."""
+    return tuple(dict.fromkeys([*_COLUMNS, *(k for k, _ in objectives)]))
+
+
 def build_results_rows(
     store: Store, quest_id: int, *, fr: FrontierResult | None = None
 ) -> list[dict[str, Any]]:
@@ -336,6 +367,12 @@ def build_results_rows(
     on each row (dropped by both renderers' explicit column lists) so
     :func:`render_results_table` can identify the newest candidates a
     budget truncation must never drop.
+
+    Besides the fixed :data:`_COLUMNS` keys, each row carries its value for
+    every declared objective key not already among them (``energy`` for a
+    quest with no ``meta.rubric_objectives``) — the measure the quest ranks
+    on, ``'-'`` when unmeasured, ``≈`` when provisional-untrusted
+    (gr567692). Renderers that want them pass :func:`results_columns`.
     """
     from precis.quest.frontier import quest_frontier
 
@@ -379,6 +416,12 @@ def build_results_rows(
             "blocker": _blocker_display(candidate),
             "worst_problem": str(candidate.flags.get("worst_problem") or "-"),
         }
+        # The quest's declared objective keys not already fixed columns
+        # (today: energy for a no-rubric quest) — the value the quest
+        # actually ranks on, or '-' when unmeasured (gr567692).
+        for key, _sense in fr.objectives:
+            if key not in _COLUMNS:
+                row[key] = _objective_str(measures, untrusted, key)
         sort_key = (dopant, n_dopant, h_count, o_count, candidate.ref_id)
         built.append((sort_key, row))
 
@@ -395,33 +438,44 @@ def _cell(col: str, row: dict[str, Any]) -> str:
     return s
 
 
-def _render_table(rows: list[dict[str, Any]]) -> str:
-    widths = {col: len(col) for col in _COLUMNS}
+def _render_table(
+    rows: list[dict[str, Any]], *, columns: Sequence[str] = _COLUMNS
+) -> str:
+    widths = {col: len(col) for col in columns}
     for r in rows:
-        for col in _COLUMNS:
+        for col in columns:
             widths[col] = max(widths[col], len(_cell(col, r)))
-    header = "  ".join(col.ljust(widths[col]) for col in _COLUMNS)
+    header = "  ".join(col.ljust(widths[col]) for col in columns)
     lines = [header]
     for r in rows:
-        lines.append("  ".join(_cell(col, r).ljust(widths[col]) for col in _COLUMNS))
+        lines.append("  ".join(_cell(col, r).ljust(widths[col]) for col in columns))
     return "\n".join(lines)
 
 
 def render_results_table(
-    rows: list[dict[str, Any]], *, token_budget: int = _RESULTS_TABLE_TOKEN_BUDGET
+    rows: list[dict[str, Any]],
+    *,
+    token_budget: int = _RESULTS_TABLE_TOKEN_BUDGET,
+    columns: Sequence[str] = _COLUMNS,
 ) -> str:
     """A fixed-width aligned text table over ``rows`` (:func:`build_results_rows`
     order — lineage, not band), for the tick prompt.
 
-    Truncates from the END of the lineage order when over ``token_budget``
-    (chars/4) — but never drops one of the newest :data:`_KEEP_NEWEST`
-    candidates by ``ref_id``, since those are the ones most likely to be
-    re-discovered — appending ``"(+K rows omitted)"`` when it does.
+    ``columns`` defaults to the fixed pathway block; callers that have the
+    quest's objectives (the tick, ``view='results'``) pass
+    :func:`results_columns` so the declared-objective columns the rows carry
+    actually render (gr567692). Truncates from the END of the lineage order
+    when over ``token_budget`` (chars/4) — but never drops one of the newest
+    :data:`_KEEP_NEWEST` candidates by ``ref_id``, since those are the ones
+    most likely to be re-discovered — appending ``"(+K rows omitted)"`` when
+    it does.
     """
     if not rows:
         return "(no candidates yet)"
-    working, omitted = fit_rows_to_budget(rows, token_budget=token_budget)
-    text = _render_table(working)
+    working, omitted = fit_rows_to_budget(
+        rows, token_budget=token_budget, columns=columns
+    )
+    text = _render_table(working, columns=columns)
     if omitted:
         text += f"\n(+{omitted} rows omitted)"
     return text
@@ -431,16 +485,22 @@ def fit_rows_to_budget(
     rows: list[dict[str, Any]],
     *,
     token_budget: int,
-    render: Callable[[list[dict[str, Any]]], str] = _render_table,
+    render: Callable[[list[dict[str, Any]]], str] | None = None,
+    columns: Sequence[str] = _COLUMNS,
 ) -> tuple[list[dict[str, Any]], int]:
     """``(kept_rows, omitted)`` — drop rows from the END of ``rows`` (lineage
     order) until ``render(kept)`` fits ``token_budget`` (chars/4), never
     dropping one of the newest :data:`_KEEP_NEWEST` candidates by ``ref_id``
     (the ones most likely to be re-discovered). ``render`` is the text the
-    budget is measured against — the tick's fixed-width table by default;
-    the handler's ``view='results'`` passes its own TOON renderer so the
-    budget covers what it actually returns (gr345353).
+    budget is measured against — the tick's fixed-width table (over
+    ``columns``) by default; the handler's ``view='results'`` passes its own
+    TOON renderer so the budget covers what it actually returns (gr345353).
     """
+    if render is None:
+
+        def render(rs: list[dict[str, Any]]) -> str:
+            return _render_table(rs, columns=columns)
+
     working = list(rows)
     keep_ids = {
         r["ref_id"]
@@ -464,8 +524,9 @@ def fit_rows_to_budget(
     return working, omitted
 
 
-#: Public column order — the handler's ``view='results'`` TOON rendering
-#: uses this as its explicit ``toon.dump`` schema (dropping the internal
+#: The fixed base column order. The handler's ``view='results'`` TOON
+#: rendering uses :func:`results_columns` as its explicit schema — these
+#: columns plus the quest's declared objective keys (dropping the internal
 #: ``ref_id`` ordering/truncation key every row also carries).
 RESULTS_COLUMNS: tuple[str, ...] = _COLUMNS
 
@@ -629,4 +690,5 @@ __all__ = [
     "build_series",
     "render_results_table",
     "render_series",
+    "results_columns",
 ]

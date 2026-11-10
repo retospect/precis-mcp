@@ -708,3 +708,111 @@ def test_quest_frontier_still_agrees_with_results_bands(store: Any) -> None:
     assert len(rows) == len(fr.frontier) + len(fr.dominated) + len(
         fr.provisional
     ) + len(fr.unevaluated)
+
+
+# ── declared-objective columns (gr567692) ─────────────────────────────────
+#
+# The fixed pathway columns never showed the quest's own objective measure:
+# a no-rubric dopant-stability quest ranks on ``energy``, and a completed
+# structure relax (a converged energy, no pathway yet) rendered ``beaten``
+# with every measure cell ``-`` — the tick could not confirm a frontier
+# position from the table at all and filed a needs-tool gripe.
+
+
+class TestObjectiveColumns:
+    def _energy_quest(
+        self, store: Any, text: str = "A dopant-stability striving"
+    ) -> int:
+        """A quest with NO ``meta.rubric_objectives`` — the default
+        ``energy (min)`` objective applies."""
+        resp = QuestHandler(hub=Hub(store=store)).put(text=text)
+        m = re.search(r"\bqu(\d+)\b", resp.body)
+        assert m is not None, resp.body
+        qid = int(m.group(1))
+        store.stamp_ref_meta(qid, {"reaction_config": {"slab": {"element": "Pd"}}})
+        return qid
+
+    def test_results_columns_appends_objectives_not_already_columns(
+        self,
+    ) -> None:
+        from precis.quest.results_table import results_columns
+
+        assert results_columns([]) == RESULTS_COLUMNS
+        cols = results_columns([("barrier", "min"), ("energy", "min")])
+        # barrier is already a fixed column — no duplicate; energy appends.
+        assert cols == (*RESULTS_COLUMNS, "energy")
+
+    def test_default_energy_objective_shows_the_converged_relax(
+        self, store: Any
+    ) -> None:
+        qid = self._energy_quest(store)
+        winner = _mk_candidate(store, qid, "ReSub", _dopant_ops("Ag", 1))
+        _converge(store, winner, energy=-137.984)
+        pd = _mk_candidate(store, qid, "PdSub", _dopant_ops("Cu", 1))
+        _converge(store, pd, energy=-132.04336773213768)
+        waiting = _mk_candidate(store, qid, "AuSub", _dopant_ops("Zn", 1))
+
+        fr = quest_frontier(store, qid)
+        rows = build_results_rows(store, qid, fr=fr)
+        by_sid = {r["ref_id"]: r for r in rows}
+        # the converged relax result is the row's objective value — %.6g,
+        # the leaderboard/frontier-summary precision, not the 3-fig measure
+        # shorthand that would collapse -132.043 to -132.
+        assert by_sid[pd]["energy"] == "-132.043"
+        assert by_sid[pd]["band"] == "beaten"  # ReSub's relax is lower
+        assert by_sid[winner]["energy"] == "-137.984"
+        assert by_sid[winner]["band"] == "frontier"
+        # never measured → '-', not a fabricated zero
+        assert by_sid[waiting]["energy"] == "-"
+
+        from precis.quest.results_table import render_results_table, results_columns
+
+        text = render_results_table(rows, columns=results_columns(fr.objectives))
+        assert "energy" in text.splitlines()[0]
+        assert "-132.043" in text
+        assert "-137.984" in text
+
+    def test_tick_prompt_results_table_carries_the_energy(self, store: Any) -> None:
+        qid = self._energy_quest(store)
+        pd = _mk_candidate(store, qid, "PdSub", _dopant_ops("Ag", 1))
+        _converge(store, pd, energy=-132.04336773213768)
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "## Results so far" in prompt
+        assert "energy" in prompt
+        assert "-132.043" in prompt
+
+    def test_view_results_toon_includes_the_objective_column(self, store: Any) -> None:
+        qid = self._energy_quest(store)
+        pd = _mk_candidate(store, qid, "PdSub", _dopant_ops("Ag", 1))
+        _converge(store, pd, energy=-132.04336773213768)
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="results").body
+        assert "energy" in body
+        assert "-132.043" in body
+        text = (
+            QuestHandler(hub=Hub(store=store))
+            .get(id=qid, view="results", args={"format": "text"})
+            .body
+        )
+        assert "text table (as embedded in the tick prompt)" in text
+        assert "-132.043" in text
+
+    def test_declared_rubric_objective_not_among_fixed_columns(
+        self, store: Any
+    ) -> None:
+        """A rubric objective that isn't one of the fixed pathway columns
+        (log_tof for a kinetics quest) gets its own column too."""
+        qid = self._energy_quest(store, "A kinetics striving")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "log_tof", "sense": "max"}]}
+        )
+        sid = _mk_candidate(store, qid, "active", _dopant_ops("Ag", 1))
+        _converge(store, sid)
+        store.stamp_ref_meta(sid, {"log_tof": 3.7, "kinetics_trusted": True})
+
+        fr = quest_frontier(store, qid)
+        assert fr.objectives == [("log_tof", "max")]
+        rows = build_results_rows(store, qid, fr=fr)
+        assert rows[0]["log_tof"] == "3.7"
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="results").body
+        assert "log_tof" in body and "3.7" in body
