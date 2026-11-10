@@ -1345,6 +1345,10 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # (:func:`apply_network_demotion`), never measures.
         "network_basis",
         "network_basis_by_key",
+        # The append-only audit list ``put(kind='structure', mode='trust')``
+        # stamps per trust-stamp correction (gr592893) — a list of dicts,
+        # already dropped by ``_numeric``; listed for clarity.
+        "trust_stamp_log",
         # substrate-variant provenance (docs/backlog/pd-hydride-substrate.md):
         # the bare candidate this one was derived from (a ref id — numeric,
         # so it would otherwise rank as a measure) and the substrate level

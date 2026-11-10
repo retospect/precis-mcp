@@ -659,4 +659,35 @@ delete(
     kind="structure", id="pd111"
 )  # soft-retire the whole design (atoms/bonds retired, recoverable)
 ```
+
+## Correct a harvested trust stamp — `put(mode='trust')`
+
+The quest harvest stamps bool trust verdicts onto a candidate's meta
+(`barrier_trusted`, `selectivity_trusted`, `kinetics_trusted`) and the
+frontier re-reads them every pass. When a stamp is wrong — e.g. a barrier
+shows trusted while its pathway gate says BLOCKED — correct it through
+this audited door (gr592893); `edit` ops, `tag` and unrestricted meta
+writes cannot touch these keys:
+
+```python
+put(
+    kind="structure",
+    id="st337119",
+    mode="trust",
+    args={
+        "stamp": {
+            "barrier_trusted": False,   # one *_trusted key per call, bool only
+            "reason": "pathway gate BLOCKED despite trusted stamp",
+            "evidence": "pw339066",      # optional handle/citation, verbatim
+        }
+    },
+)
 ```
+
+The call stamps the key (no geometry write, no version bump), appends a
+`{key, from, to, reason, evidence, at}` record to the structure's
+append-only `meta.trust_stamp_log`, and writes one `decision` entry to
+each serving quest's logbook. The ack prints the exact reverse call —
+re-stamping the old value with a reason is the reversal. A later harvest
+with new evidence may legitimately re-stamp the key; the audit log keeps
+the history.

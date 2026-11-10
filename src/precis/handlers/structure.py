@@ -5,7 +5,9 @@ A ``structure`` design is a slug-addressed ref: a periodic cell (on
 LLM authors it as typed *ops* and reads it via *probes*, never pixels. Maps onto
 the seven-verb surface:
 
-- ``put``    — create/replace from a JSON spec ``{cell, ops}`` (``id=`` slug).
+- ``put``    — create/replace from a JSON spec ``{cell, ops}`` (``id=`` slug),
+  or a mode: ``rerun`` (quest replay), ``neb`` / ``md`` (queue compute),
+  ``trust`` (an audited harvest trust-stamp correction, no geometry write).
 - ``edit``   — apply more ops to an existing design (``ops=`` or ``text=`` JSON).
 - ``get``    — list designs, a design's TOC (``id=slug``), a probe
   (``view='atom'|'neighborhood'|'bonds'|'find'|'validate'`` — the hard-reject
@@ -50,6 +52,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
@@ -924,6 +927,30 @@ def _op_bad_input(exc: OpError) -> BadInput:
     )
 
 
+#: Harvest trust-stamp keys ``put(mode='trust')`` may correct (gr592893) —
+#: exactly the ``*_trusted`` bool verdict stamps the quest harvest writes
+#: onto a candidate's meta (``quest.compute.harvest_measures`` →
+#: ``store.stamp_ref_meta``; the frontier re-reads them via
+#: ``frontier._candidate_from_structure``). The door corrects ONE key per
+#: call; geometry ops, ``tag`` and unrestricted meta writes stay unable to
+#: touch these, so a correction is always an explicit, reasoned act.
+_TRUST_STAMP_KEYS: frozenset[str] = frozenset(
+    {"barrier_trusted", "selectivity_trusted", "kinetics_trusted"}
+)
+
+#: Meta key of the append-only audit list each correction extends — one
+#: ``{key, from, to, reason, evidence, at}`` record per call (``at`` is a
+#: UTC ``Z`` timestamp). A list of dicts, so the frontier's ``_numeric``
+#: filter never ranks it; listed in ``frontier._META_NON_MEASURE`` for
+#: clarity like the other structured stamps.
+_TRUST_STAMP_LOG_KEY = "trust_stamp_log"
+
+#: Bounds on the authored parts of a correction, so one call can't bloat
+#: the audit log or a logbook chunk.
+_TRUST_REASON_MAX = 2000
+_TRUST_EVIDENCE_MAX = 500
+
+
 class StructureHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
@@ -976,6 +1003,10 @@ class StructureHandler(Handler):
                 "rdf_rmax_A",
                 "rdf_nbins",
                 "seed",
+                # mode='trust' (gr592893): the stamp payload
+                # {'<trust_key>': bool, 'reason': ..., 'evidence': ...} —
+                # the audited harvest trust-stamp correction door.
+                "stamp",
             }
         ),
         "edit": ArgsSpec({"ops"}),
@@ -1095,7 +1126,10 @@ class StructureHandler(Handler):
         # mode='neb' queues one CI-NEB edge between two gated endpoints
         # (gr512126 slice 3) — _put_neb. mode='md' queues one NVT
         # Langevin MD run on the design (gr606465) — _put_md.
-        modes=("rerun", "neb", "md"),
+        # mode='trust' corrects one harvested trust stamp on the design's
+        # meta, audited on the structure + the serving quest's logbook
+        # (gr592893) — _put_trust.
+        modes=("rerun", "neb", "md", "trust"),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -1134,6 +1168,11 @@ class StructureHandler(Handler):
         compute lane for a deliberate replay of this candidate's autocatpath
         evaluation (:func:`precis.quest.compute.request_rerun`).
 
+        ``mode='trust'`` corrects one harvested trust stamp on the design's
+        meta (``barrier_trusted`` & co.) — an audited, reversible bookkeeping
+        act that never touches geometry, bumps the version or writes a
+        revision; see :meth:`_put_trust`.
+
         ``args={'derive_from': '<parent>', 'ops': [...]}`` branches a NEW
         design (``id=``) off ``<parent>`` with the ops applied and the
         parent's atom labels kept — the label-matched-endpoint door
@@ -1144,6 +1183,8 @@ class StructureHandler(Handler):
             return self._put_neb(id=id, args=args)
         if mode == "md":
             return self._put_md(id=id, args=args)
+        if mode == "trust":
+            return self._put_trust(id=id, args=args)
         a = args or {}
         if a.get("derive_from") is not None:
             return self._put_derive(id=id, title=title, args=a)
@@ -1302,6 +1343,176 @@ class StructureHandler(Handler):
             seeds=(args or {}).get("seeds"),
         )
         return Response(body=note)
+
+    # ── mode='trust' ─────────────────────────────────────────────────
+    def _put_trust(
+        self, *, id: str | int | None, args: dict[str, Any] | None
+    ) -> Response:
+        """``put(id=<slug-or-handle>, mode='trust', args={'stamp': {...}})`` —
+        the audited door for harvest trust-stamp corrections (gr592893).
+
+        The quest harvest stamps bool verdicts (``barrier_trusted`` and its
+        selectivity/kinetics siblings) onto a candidate structure's
+        ``refs.meta``; the frontier reads them on its next pass, so a
+        correction here takes effect immediately. Before this door the only
+        routes to fix a wrong stamp were a prod SQL write (denied to
+        sessions) or waiting for a repair job: ``edit`` takes geometry/bond
+        ops only, ``tag`` cannot set meta, and an unrestricted meta write
+        is refused at the dispatch gate.
+
+        The stamp payload names ONE :data:`_TRUST_STAMP_KEYS` key with a
+        bool value, a required ``reason`` and an optional ``evidence``
+        string (e.g. a pathway handle like ``pw339066``), recorded verbatim.
+        Every call:
+
+        * stamps the key via :meth:`Store.stamp_ref_meta` (no geometry
+          write, no version bump, no revision row — the design itself is
+          untouched, so an imported reference config may be corrected too);
+        * appends one ``{key, from, to, reason, evidence, at}`` record to
+          the structure's append-only ``meta.trust_stamp_log`` — the audit
+          trail that makes the act reversible (re-stamp the old value with
+          a new reason; the receipt prints the exact reverse call);
+        * appends one ``decision`` entry to the logbook of every quest the
+          structure serves (best-effort, isolated per quest — the structure
+          audit lands even when a logbook append fails).
+
+        This is deliberately NOT ``edit(mode='trust')``: that dispatch door
+        is the generic graph trust state (confidence/origin on the ref, via
+        revision trust_acts); these harvest stamps are a different axis —
+        quest bookkeeping on meta, no revision.
+        """
+        call = (
+            "put(kind='structure', id=<slug>, mode='trust', "
+            "args={'stamp': {'barrier_trusted': False, 'reason': 'why', "
+            "'evidence': 'pw<N>'}})"
+        )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure', mode='trust') requires id= (the "
+                "design slug or st<N> handle)",
+                next=call,
+            )
+        ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        payload = (args or {}).get("stamp")
+        if not isinstance(payload, dict):
+            raise BadInput(
+                "mode='trust' needs args={'stamp': {...}} — one trust key, "
+                "a reason, optional evidence",
+                next=call,
+            )
+        unknown = sorted(set(payload) - _TRUST_STAMP_KEYS - {"reason", "evidence"})
+        if unknown:
+            raise BadInput(
+                f"stamp payload keys {unknown!r} not accepted",
+                options=[*_TRUST_STAMP_KEYS, "reason", "evidence"],
+            )
+        keys = [k for k in payload if k in _TRUST_STAMP_KEYS]
+        if not keys:
+            raise BadInput(
+                "mode='trust' names one trust-stamp key to correct",
+                options=sorted(_TRUST_STAMP_KEYS),
+                next=call,
+            )
+        if len(keys) > 1:
+            raise BadInput(
+                f"one trust-stamp key per call, got {sorted(keys)}",
+                next="issue one mode='trust' call per key",
+            )
+        key = keys[0]
+        value = payload[key]
+        if not isinstance(value, bool):
+            raise BadInput(
+                f"{key} is a bool trust verdict, got {value!r}",
+                next=call,
+            )
+        reason = str(payload.get("reason") or "").strip()
+        if not reason:
+            raise BadInput(
+                "a trust-stamp correction is an explicit act: give a reason",
+                next=call,
+            )
+        if len(reason) > _TRUST_REASON_MAX:
+            raise BadInput(
+                f"reason runs {len(reason)} chars (max {_TRUST_REASON_MAX})",
+                next="state the decisive evidence in a sentence",
+            )
+        evidence = str(payload.get("evidence") or "").strip() or None
+        if evidence is not None and len(evidence) > _TRUST_EVIDENCE_MAX:
+            raise BadInput(
+                f"evidence runs {len(evidence)} chars (max {_TRUST_EVIDENCE_MAX})",
+                next="pass a handle or short citation, e.g. 'pw339066'",
+            )
+
+        handle = handle_registry.try_format("structure", ref.id, chunk=False) or str(
+            ref.slug
+        )
+        name = (ref.title or "").splitlines()[0] if ref.title else handle
+        meta = dict(ref.meta or {})
+        prior = meta.get(key)
+        prior_log = meta.get(_TRUST_STAMP_LOG_KEY)
+        entries = list(prior_log) if isinstance(prior_log, list) else []
+        at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        entries.append(
+            {
+                "key": key,
+                "from": prior if isinstance(prior, bool) else None,
+                "to": value,
+                "reason": reason,
+                "evidence": evidence,
+                "at": at,
+            }
+        )
+        self.store.stamp_ref_meta(ref.id, {key: value, _TRUST_STAMP_LOG_KEY: entries})
+
+        ev_txt = f" (evidence: {evidence})" if evidence else ""
+        logbook_line = (
+            f"trust-stamp correction on [{handle}] ({name}): "
+            f"{key} {prior!r} -> {value} — {reason}{ev_txt}"
+        )
+        logged: list[str] = []
+        from precis.quest.logbook import append_entry
+
+        for link in self.store.links_for(ref.id, direction="out", relation="serves"):
+            quest_id = int(link.dst_ref_id)
+            try:
+                entry_no = append_entry(
+                    self.store,
+                    quest_id,
+                    text=logbook_line,
+                    entry_type="decision",
+                    by="agent",
+                )
+                logged.append(f"qu{quest_id}~{entry_no - 1}")
+            except Exception:
+                log.exception(
+                    "mode='trust': quest %s logbook append failed for st%s",
+                    quest_id,
+                    ref.id,
+                )
+        lines = [
+            f"trust-stamp: {handle} {key}: {prior!r} -> {value}",
+            f"reason: {reason}{ev_txt}",
+            f"audit: {_TRUST_STAMP_LOG_KEY} entry #{len(entries)} at {at}",
+        ]
+        if logged:
+            lines.append(f"quest logbook: {', '.join(logged)} (decision)")
+        else:
+            lines.append(
+                "quest logbook: no serving quest linked — the structure audit "
+                f"({_TRUST_STAMP_LOG_KEY}) carries the record"
+            )
+        if isinstance(prior, bool):
+            lines.append(
+                f"reverse: put(kind='structure', id={handle!r}, mode='trust', "
+                f"args={{'stamp': {{{key!r}: {prior!r}, 'reason': 'why'}}}})"
+            )
+        else:
+            lines.append(
+                f"reverse: delete the {key} key — it was unset before this "
+                "correction (re-stamp the old value with mode='trust' if a "
+                "later harvest rewrites it)"
+            )
+        return Response(body="\n".join(lines))
 
     def _put_cif(
         self,
