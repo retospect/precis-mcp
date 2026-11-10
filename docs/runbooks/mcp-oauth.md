@@ -66,6 +66,29 @@ converges the 8443 mapping to tailnet-only. To stop the listener and remove
 exposure, the operator must explicitly unload that unit and remove its mapping;
 `precis_mcp_public_enabled: false` skips management rather than deleting services.
 
+### Web database identity
+
+After the database ownership cutover, the web login uses `precis_ingress`;
+the dedicated public MCP stays `agent_rw`. General agent principals must
+not read `web_users.password_hash`. Granting password access to `agent_rw`
+would break the credential boundary.
+
+Before rendering the web plist, both the full role and
+`--tags precis-web-config` run a read-only `SELECT ... LIMIT 0` against
+those three credential columns. The probe uses the template's exact web DSN,
+the deployed venv and the daemon's `deploy` user/`.pgpass`; it reads no
+credential rows and suppresses connection output. Failure stops before the
+plist changes and names the identity/connection repair.
+
+An anonymous health response or Basic 401 does not prove login works: neither
+requires a credential-column read. Verify the configured principal and an
+authenticated read before retrying Claude sign-in. If ownership cutover is
+verified but the gateway's private cutover flag is absent, restore the narrow
+gateway override `precis_web_db_user: precis_ingress` after checking that
+principal's connection credentials. Do not flip the fleet-wide cutover flag
+as a shortcut; it also controls worker and migration identities. Reapply the
+configuration-only web play and leave the MCP principal unchanged.
+
 Register additional public clients through `PRECIS_OAUTH_CLIENTS`:
 
 ```json

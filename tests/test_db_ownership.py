@@ -294,6 +294,18 @@ def test_ingress_reads_the_hash_for_login(prod_like: psycopg.Connection) -> None
     _as(prod_like, "agent_ro", "SELECT count(*) FROM web_users")
 
 
+def test_deployed_web_credential_preflight_requires_ingress_after_cutover(
+    prod_like: psycopg.Connection,
+) -> None:
+    from tests.test_deploy_db_dsn_cutover import _web_credential_preflight_sql
+
+    _cutover(prod_like)
+    statement = _web_credential_preflight_sql()
+    # LIMIT 0 checks actual column privileges without returning hashes or salts.
+    _denied(prod_like, "agent_rw", statement)
+    assert _as(prod_like, "precis_ingress", statement) == []
+
+
 def test_agent_rw_cannot_ddl_or_become_owner(prod_like: psycopg.Connection) -> None:
     _cutover(prod_like)
     c = prod_like

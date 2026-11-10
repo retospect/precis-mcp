@@ -1,8 +1,10 @@
 """Regression for the r235 deploy failure (td575694): commit b2383e574 (db-own)
 pointed every pre-cutover DSN at ``precis_system``, a login role that does not
 exist in prod until ``scripts/db-own-cutover`` runs and the overlay supplies its
-password. The migrate-first play connected as it and died. Every DSN stays on
-``agent_rw`` until ``precis_db_own_cutover_done`` is true.
+password. The migrate-first play connected as it and died. Default DSNs stay on
+``agent_rw`` until ``precis_db_own_cutover_done`` is true. An explicit gateway
+web identity survives narrower config-only plays; its credential-access probe
+must pass before the working daemon configuration is replaced.
 
 The expressions are rendered (jinja2, ansible's ``bool`` filter stubbed) from the
 real role defaults and playbook vars, so a rewrite that drops the guard fails here.
@@ -10,6 +12,7 @@ real role defaults and playbook vars, so a rewrite that drops the guard fails he
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from typing import Any
@@ -124,6 +127,179 @@ def test_worker_dsns_switch_to_precis_system_after_the_cutover(
 
 
 _WEB = "roles/precis_web/defaults/main.yml"
+
+
+def _web_credential_preflight() -> dict[str, Any]:
+    tasks = yaml.safe_load(
+        (_DEPLOY / "roles/precis_web/tasks/main.yml").read_text(encoding="utf-8")
+    )
+    matches = [
+        task
+        for task in tasks
+        if "PRECIS_WEB_PREFLIGHT_DSN" in task.get("environment", {})
+    ]
+    assert len(matches) == 1, "web deployment needs one credential-access preflight"
+    return matches[0]
+
+
+def _web_credential_preflight_sql() -> str:
+    script = _web_credential_preflight()["ansible.builtin.command"]["argv"][2]
+    statements = [
+        ast.literal_eval(node.args[0])
+        for node in ast.walk(ast.parse(script))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "execute"
+    ]
+    assert len(statements) == 1
+    return str(statements[0])
+
+
+@pytest.mark.parametrize("extra", [{}, {"precis_db_own_cutover_done": False}])
+def test_explicit_gateway_web_identity_survives_missing_cutover_vars(
+    extra: dict[str, object],
+) -> None:
+    from tests.test_deploy_public_mcp import _render
+
+    # A gateway already using ingress must not silently fall back during a
+    # config-only play that does not load the global cutover flag/passwords.
+    web_dsn = _render_dsn(
+        _WEB, "precis_web_dsn", precis_web_db_user="precis_ingress", **extra
+    )
+    public_dsn = _render_dsn(
+        _WEB, "precis_mcp_public_dsn", precis_web_db_user="precis_ingress", **extra
+    )
+    assert _user(web_dsn) == "precis_ingress"
+    assert _user(public_dsn) == "agent_rw"
+    assert (
+        _render(precis_web_dsn=web_dsn)["EnvironmentVariables"]["PRECIS_DATABASE_URL"]
+        == web_dsn
+    )
+    public = _render(
+        precis_web_dsn=web_dsn,
+        precis_web_daemon_label="com.precis.mcp-public",
+        precis_web_daemon_dsn=public_dsn,
+    )
+    assert public["EnvironmentVariables"]["PRECIS_DATABASE_URL"] == public_dsn
+
+
+@pytest.mark.parametrize(
+    "override", [None, "postgresql://precis_ingress@203.0.113.10:6432/custom_web"]
+)
+def test_credential_preflight_uses_the_same_dsn_as_the_web_daemon(
+    override: str | None,
+) -> None:
+    from tests.test_deploy_public_mcp import _render
+
+    context = {"precis_web_dsn": "postgresql://precis_ingress@db/precis_prod"}
+    if override is not None:
+        context["precis_web_daemon_dsn"] = override
+    configured = _render(**context)["EnvironmentVariables"]["PRECIS_DATABASE_URL"]
+    preflight = _web_credential_preflight()
+    checked = (
+        _env()
+        .from_string(preflight["environment"]["PRECIS_WEB_PREFLIGHT_DSN"])
+        .render(**context)
+    )
+    assert checked == configured
+
+
+def test_web_auth_preflight_fails_closed_before_replacing_configuration() -> None:
+    tasks = yaml.safe_load(
+        (_DEPLOY / "roles/precis_web/tasks/main.yml").read_text(encoding="utf-8")
+    )
+    preflight = _web_credential_preflight()
+    registered = preflight["register"]
+    guard = next(
+        task
+        for task in tasks
+        if registered in str(task.get("ansible.builtin.assert", {}).get("that", []))
+    )
+    template = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.template", {}).get("dest")
+        == "/Library/LaunchDaemons/com.precis.web.plist"
+    )
+    for selected in (
+        tasks,
+        [task for task in tasks if "precis-web-config" in task.get("tags", [])],
+    ):
+        assert (
+            selected.index(preflight) < selected.index(guard) < selected.index(template)
+        )
+    assert preflight["no_log"] is True
+    assert preflight["become"] is True
+    assert preflight["become_user"] == "deploy"
+    assert preflight["changed_when"] is False
+    assert preflight["failed_when"] is False
+    assert preflight["check_mode"] is False
+    assert preflight["environment"]["HOME"] == "/Users/deploy"
+    for task in (preflight, guard):
+        condition = _env().compile_expression(task["when"])
+        assert condition(os_family="darwin")
+        assert not condition(os_family="linux")
+    conditions = guard["ansible.builtin.assert"]["that"]
+    for result, expected in (({"rc": 0}, True), ({"rc": 1}, False), ({}, False)):
+        assert (
+            all(
+                _env().compile_expression(expression)(**{registered: result})
+                for expression in conditions
+            )
+            is expected
+        )
+    message = guard["ansible.builtin.assert"]["fail_msg"]
+    assert "precis_web_db_user=precis_ingress" in message
+    assert "Do not grant credential access to agent_rw" in message
+
+
+def test_web_auth_preflight_reads_no_credential_rows_and_has_no_output() -> None:
+    script = _web_credential_preflight()["ansible.builtin.command"]["argv"][2]
+    tree = ast.parse(script)
+    sql = " ".join(_web_credential_preflight_sql().split())
+    assert sql == (
+        "SELECT password_hash, password_salt, password_algo "
+        "FROM public.web_users LIMIT 0"
+    )
+    connect = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "connect"
+    )
+    options = {
+        keyword.arg: ast.literal_eval(keyword.value) for keyword in connect.keywords
+    }
+    assert "options" not in options  # PgBouncer rejects unsupported startup options.
+    assert 0 < options["connect_timeout"] <= 10
+    connection_block = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.With) and node.items[0].context_expr is connect
+    )
+    binding = connection_block.items[0].optional_vars
+    assert isinstance(binding, ast.Name)
+    read_only = connection_block.body[0]
+    assert isinstance(read_only, ast.Assign)
+    assert len(read_only.targets) == 1
+    target = read_only.targets[0]
+    assert isinstance(target, ast.Attribute)
+    assert isinstance(target.value, ast.Name) and target.value.id == binding.id
+    assert target.attr == "read_only"
+    assert ast.literal_eval(read_only.value) is True
+    # Even a successful credential-access check must never emit credential data.
+    assert not any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "print")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"fetchone", "fetchall", "fetchmany", "write"}
+            )
+        )
+        for node in ast.walk(tree)
+    )
 
 
 def test_migrate_and_web_dsns_stay_on_agent_rw_before_the_cutover() -> None:

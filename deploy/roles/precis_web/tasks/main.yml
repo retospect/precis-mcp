@@ -65,6 +65,51 @@
     fail_msg: Set canonical OAuth issuer/resource URLs in the private gateway inventory.
   tags: [precis-web-config, precis-mcp-public]
 
+# Anonymous health and login challenges do not read credential columns.
+# Refuse an unusable login identity before replacing a working daemon config.
+- name: Check configured web database credential access
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    argv:
+      - "{{ precis_web_venv }}/bin/python"
+      - -c
+      - |
+        import os
+        import psycopg
+        with psycopg.connect(
+            os.environ["PRECIS_WEB_PREFLIGHT_DSN"],
+            connect_timeout=10,
+        ) as conn:
+            conn.read_only = True
+            conn.execute(
+                "SELECT password_hash, password_salt, password_algo "
+                "FROM public.web_users LIMIT 0"
+            )
+  environment:
+    HOME: /Users/deploy
+    PRECIS_WEB_PREFLIGHT_DSN: "{{ precis_web_daemon_dsn | default(precis_web_dsn) }}"
+  become: true
+  become_user: deploy
+  register: _precis_web_credential_preflight
+  no_log: true
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [precis-web-config]
+
+- name: Require web database credential access before changing configuration
+  when: os_family == "darwin"
+  ansible.builtin.assert:
+    that:
+      - _precis_web_credential_preflight.rc | default(1) | int == 0
+    fail_msg: >-
+      The configured web database principal cannot read login credentials.
+      After the ownership cutover, restore precis_web_db_user=precis_ingress
+      in the private gateway inventory and verify its connection credentials.
+      Do not grant credential access to agent_rw. The web daemon configuration
+      has not been replaced.
+  tags: [precis-web-config]
+
 - name: Ensure precis-web LaunchDaemon plist
   when: os_family == "darwin"
   ansible.builtin.template:

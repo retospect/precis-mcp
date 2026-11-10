@@ -20,7 +20,8 @@ effort: high
 Independent per-user app connections are implemented in `precis.oauth`,
 including the authorized full MCP write access. Deployment uses an opt-in
 dedicated listener with persistent Funnel mapping; browser login protects
-authorization-state capacity (gr626742). Left: live Claude acceptance,
+authorization-state capacity (gr626742). The web role checks login credential
+access before replacing its configuration (gr627746). Left: live Claude acceptance,
 including independent connection revocation, using
 [the OAuth runbook](../../runbooks/mcp-oauth.md).
 
