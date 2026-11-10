@@ -58,6 +58,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.routes.asks import _ask_value
 from precis_web.timefmt import abs_ts, age_seconds, duration, span_seconds
 
 if TYPE_CHECKING:
@@ -1070,6 +1071,37 @@ def _focus_deps(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
     ]
 
 
+def _focus_ask(store: Store, focus_row: dict[str, Any]) -> dict[str, Any] | None:
+    """The pending ``ask-user`` on the focused todo, for the inline answer box.
+
+    The focus page is where the operator lands to read a todo (gr570259):
+    when it waits on a human, the question and its answer form belong on
+    this page, not behind the 🔔 hop to /asks. Two ask shapes surface:
+    a structured ``meta.ask`` (``kind`` / ``options`` / ``blocks`` /
+    ``context`` — the question itself is the todo's title) and legacy
+    ``ask-user:<question>`` tags, whose values resolve through
+    :func:`precis_web.routes.asks._ask_value` so a ``see-chunk-N``
+    overflow reads as the real prose. ``None`` when the todo isn't
+    waiting on a human.
+    """
+    tags = [
+        t
+        for t in focus_row.get("tags", [])
+        if t == "ask-user" or t.startswith("ask-user:")
+    ]
+    meta = focus_row.get("meta")
+    ask = meta.get("ask") if isinstance(meta, dict) else None
+    if not tags and not isinstance(ask, dict):
+        return None
+    return {
+        "tags": tags,
+        "questions": [
+            q for t in tags if (q := _ask_value(store, int(focus_row["id"]), t))
+        ],
+        "ask": ask if isinstance(ask, dict) else None,
+    }
+
+
 def _build_rows(
     store: Store, *, precis_root: Path | None = None
 ) -> list[dict[str, Any]]:
@@ -1298,6 +1330,9 @@ def _build_rows(
                 # sits on the todo — the ▶ start button shows in place of ⏹.
                 "halted": any(t == "halt" or t.startswith("halt:") for t in row_tags),
                 "tags": row_tags,
+                # ``meta.ask`` is what _focus_ask reads for the inline
+                # answer box on the focused row.
+                "meta": node.get("meta"),
                 "child_failures": child_failures,
                 "attention_icons": attention_icons,
                 "note": note,
@@ -1498,6 +1533,7 @@ async def dashboard(
         focus_deps = _focus_deps(
             store, [r["id"] for r in focused_rows if r["kind"] == "todo"]
         )
+    focus_ask = _focus_ask(store, focus_row) if focus_row is not None else None
 
     # Mermaid tree: built only when the operator explicitly opted in
     # (``?tree=N``) and we have a focus. Validate against the closed
@@ -1530,6 +1566,7 @@ async def dashboard(
             "focus_id": focus,
             "focus_row": focus_row,
             "focus_deps": focus_deps,
+            "focus_ask": focus_ask,
             "serves_id": serves_id,
             "breadcrumb": breadcrumb,
             "show_jobs": show_jobs,

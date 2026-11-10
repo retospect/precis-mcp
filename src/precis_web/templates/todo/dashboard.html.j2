@@ -154,6 +154,50 @@
     {% if focus_id and focus_row %}
     <section class="mb-3 rounded-lg border border-line bg-surface p-3">
       <div class="mb-2 text-sm font-semibold" data-node-title>{{ focus_row.title }}</div>
+      {% if focus_ask %}
+      {# A todo waiting on a human is answered right here: the question
+         text on top, a box underneath whose submit posts to the shared
+         /asks answer route — no detour through the Asks tab (gr570259). #}
+      <div class="mb-3" data-focus-ask>
+        <div class="mb-1 text-xs font-semibold uppercase tracking-wide text-warning-deep">Waiting on your answer</div>
+        {% for q in focus_ask.questions %}
+        <div class="mb-1 text-sm text-fg-secondary bg-warning-subtle border-l-4 border-warning-strong px-3 py-2 rounded whitespace-pre-line break-words">{{ q | linkify_refs }}</div>
+        {% endfor %}
+        {% if focus_ask.ask %}
+        <div class="mb-1 text-xs text-fg-secondary space-y-1" data-ask-meta>
+          <div>
+            <span class="rounded-full bg-surface-muted px-2 py-0.5 font-mono text-[10px]">{{ focus_ask.ask.kind }}</span>
+            {% if focus_ask.ask.blocks and focus_ask.ask.blocks != 'nothing' %}
+            <span class="text-danger">blocks</span>
+            <a href="/r/todo/{{ focus_ask.ask.blocks[2:] }}" class="font-mono hover:text-success-strong hover:underline">{{ focus_ask.ask.blocks }}</a>
+            {% endif %}
+          </div>
+          {% if focus_ask.ask.context %}<div class="break-words">{{ focus_ask.ask.context | linkify_refs }}</div>{% endif %}
+          {% if focus_ask.ask.options %}
+          <ol class="list-decimal ml-5">
+            {% for o in focus_ask.ask.options %}<li class="break-words">{{ o | linkify_refs }}</li>{% endfor %}
+          </ol>
+          {% endif %}
+        </div>
+        {% elif not focus_ask.questions %}
+        <div class="mb-1 text-xs text-fg-faint">
+          tagged <span class="font-mono">ask-user</span> (no question text)
+        </div>
+        {% endif %}
+        <form method="post" action="/asks/{{ focus_id }}/answer">
+          {% for tag in focus_ask.tags %}
+          <input type="hidden" name="remove" value="{{ tag }}"/>
+          {% endfor %}
+          <input type="hidden" name="next" value="/todo{{ state_qs(focus_id) }}"/>
+          <div class="flex items-start gap-2">
+            <textarea name="response" required rows="2"
+                      placeholder="Your answer…"
+                      class="flex-1 rounded border-line-strong text-sm border px-2 py-1"></textarea>
+            <button class="shrink-0 rounded bg-success-solid text-on-solid text-sm px-3 py-1 hover:bg-success-solid-strong">Submit answer</button>
+          </div>
+        </form>
+      </div>
+      {% endif %}
       <form method="post" action="/todo/{{ focus_id }}/children" class="flex items-start gap-2">
         {{ filter_inputs() }}
         <textarea name="text" required rows="2" placeholder="Add a child under #{{ focus_id }}…"

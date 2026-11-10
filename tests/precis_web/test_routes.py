@@ -1851,6 +1851,45 @@ def test_ask_terminate_closes_and_clears_tags(client, runtime) -> None:
     assert args["remove"] == ["ask-user:which one?", "ask-user"]
 
 
+def test_todo_focus_page_shows_meta_ask_answer_box(client, runtime) -> None:
+    """gr570259: a focused todo carrying ``meta.ask`` renders the question
+    plus an inline answer form (posting to /asks/<id>/answer and returning
+    to this focus page) — no detour through the Asks tab."""
+    from .conftest import make_ref
+
+    runtime.store.todos.append(
+        make_ref(
+            id=7,
+            kind="todo",
+            title="Raise the cap, shard it, or hold that half?",
+            parent_id=None,
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["raise the cap", "shard it", "hold that half"],
+                    "blocks": "nothing",
+                    "context": "ran long twice this week",
+                }
+            },
+        )
+    )
+    resp = client.get("/todo?focus=7")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Raise the cap, shard it, or hold that half?" in html
+    assert 'action="/asks/7/answer"' in html
+    assert "Submit answer" in html
+    assert 'name="next" value="/todo?focus=7"' in html
+    assert "ruling" in html
+    assert "raise the cap" in html
+
+
+def test_todo_focus_page_without_ask_shows_no_answer_box(client) -> None:
+    html = client.get("/todo?focus=1").text
+    assert 'action="/asks/' not in html
+    assert "Submit answer" not in html
+
+
 def test_move_dispatches_parent_link(client, runtime) -> None:
     resp = client.post(
         "/todo/2/move", data={"new_parent_id": "1"}, follow_redirects=False

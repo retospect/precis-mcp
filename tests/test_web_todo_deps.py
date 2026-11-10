@@ -77,3 +77,55 @@ def test_focus_page_without_links_shows_no_table(
     html = client.get(f"/todo?focus={root}").text
     assert "Dependencies" not in html
     assert 'data-dep="' not in html
+
+
+def test_focus_page_renders_ask_question_and_answer_box(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    """gr570259: a focused todo waiting on a human shows the question near
+    the top with an answer box underneath — no detour through /asks."""
+    q = "Nightly macOS test-other needs ~120 min against its 90 min timeout?"
+    ask = id_of(
+        handler.put(
+            text="raise the cap, shard it, or hold that half?",
+            tags=[f"ask-user:{q}"],
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["raise the cap", "shard it", "hold that half"],
+                    "blocks": "nothing",
+                    "context": "ran long twice this week",
+                }
+            },
+        ).body
+    )
+
+    resp = client.get(f"/todo?focus={ask}")
+    assert resp.status_code == 200
+    html = resp.text
+    # The question text, above an answer form posting to the shared
+    # /asks answer route and returning to this focus page.
+    assert q in html
+    assert f'action="/asks/{ask}/answer"' in html
+    assert "Submit answer" in html
+    assert f'name="next" value="/todo?focus={ask}"' in html
+    # The ask's stored tags (long questions redirect to see-chunk-N)
+    # ride as hidden remove inputs so submit unlocks the todo.
+    ask_tags = [str(t) for t in store.tags_for(ask) if str(t).startswith("ask-user")]
+    assert ask_tags
+    for t in ask_tags:
+        assert f'name="remove" value="{t}"' in html
+    # The structured meta.ask (kind / options / context) renders too.
+    assert "ruling" in html
+    assert "raise the cap" in html
+    assert "ran long twice this week" in html
+
+
+def test_focus_page_without_ask_shows_no_answer_box(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    root = id_of(handler.put(text="A plain root.", meta={"rotation_root": True}).body)
+
+    html = client.get(f"/todo?focus={root}").text
+    assert 'action="/asks/' not in html
+    assert "Submit answer" not in html
