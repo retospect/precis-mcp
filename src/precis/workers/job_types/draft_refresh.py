@@ -456,7 +456,22 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         research_text=research_text,
         sentinel=_SENTINEL,
     )
-    res = llm_dispatch(LlmRequest(tier=Tier.BIG, prompt=prompt, source="draft_refresh"))
+    # tools_needed=True lands this on the free-text claude_agent rung, not
+    # the tool-less claude_p judge — the output contract below is prose +
+    # the _SENTINEL line, so a rung that demands a parseable JSON block
+    # structurally drops every correct reply (gr622034: 5/10 dispatches
+    # failed "no parseable JSON block" on the model doing exactly what the
+    # prompt asked). --tools "" keeps the agent rung one-shot text — no
+    # built-ins advertised (quest_tick's _NO_TOOLS_ARGS idiom).
+    res = llm_dispatch(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt=prompt,
+            source="draft_refresh",
+            tools_needed=True,
+            extra_args=("--tools", ""),
+        )
+    )
     if res.error:
         # A window-scoped pause (quota taper, dollar cap) parks the job for
         # the retry instant instead of failing — this job is minted once per

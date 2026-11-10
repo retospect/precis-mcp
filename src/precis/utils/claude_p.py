@@ -26,6 +26,13 @@ Conservative on the parse: if no JSON block is present, raises
 only after the cheaper ones fail (gr570522): ``strict=False`` strings, a
 comma directly before a closer, a whole-reply JSON string decoded once
 more — never a truncation salvage (a cut object has no complete block).
+One structured-output retry (gr622034): a clean reply that still yields
+no block is resampled once with ``--json-schema {"type": "object"}`` —
+the CLI validates the answer server-side and lands it on the envelope's
+``structured_output`` field, so a format flake converts to a parseable
+object instead of a dropped result. The retry is skipped when the caller
+already constrained the call itself, and any retry failure surfaces the
+original unparseable error unchanged.
 
 Knobs (all overridable per call, project defaults via env):
 
@@ -85,6 +92,103 @@ _DEFAULT_MAX_USD = 0.10
 # Default wall-clock timeout. Haiku turns ≤ 30 s in practice; the
 # extra headroom absorbs container-cold-start + retry latency.
 _DEFAULT_TIMEOUT_S = 120
+
+#: The schema handed to the one structured-output retry (gr622034): an
+#: OPEN object — the prompt's own hint still picks the keys; the
+#: constraint only guarantees the resampled reply IS a JSON object, the
+#: exact thing the last-block scan demands. ``--json-schema`` validates
+#: the answer server-side and lands it on the envelope's
+#: ``structured_output`` field (the ``result`` text stays a summary), so
+#: a prose flake converts into a parseable object instead of a dropped
+#: result.
+_OBJECT_SCHEMA_JSON = '{"type": "object"}'
+
+
+def _invoke_args(
+    binary: str,
+    model: str,
+    max_usd: float,
+    *,
+    bare: bool,
+    extra_args: tuple[str, ...],
+    prompt: str,
+) -> list[str]:
+    """The ``claude -p`` argv — factored so the schema retry rebuilds the
+    identical invocation with a modified ``extra_args``."""
+    return [
+        binary,
+        "-p",
+        "--model",
+        model,
+        "--max-budget-usd",
+        str(max_usd),
+        # Metering, not formatting. Without this, ``claude -p`` prints bare
+        # text and the only cost signal is a stderr ``Cost: $N.NN`` line that
+        # modern Claude Code no longer emits — so ``cost_usd`` came back
+        # ``None`` on *every* call this helper has ever made, and the whole
+        # claude_p lane (quest_tick, figure) was invisible to
+        # ``PRECIS_DAILY_COST_CEILING``, which sums ``llm_call_log.billed_usd``
+        # (migration 0272; ``cost_usd`` on a billed login feeds it).
+        # The ``json`` envelope carries ``total_cost_usd`` alongside the
+        # assistant text. Sibling of ``LlmRequest.output_format`` defaulting to
+        # ``stream-json`` on the claude_agent lane — same bug, same fix.
+        "--output-format",
+        "json",
+        # No persistent session per call — worker passes are stateless.
+        "--no-session-persistence",
+        # Bypass interactive permission prompts; the worker has no TTY.
+        "--permission-mode",
+        "bypassPermissions",
+        # This lane is one-shot text completion — no tool may ever run. The
+        # bare "*" deny removes every tool definition from the system prompt
+        # (not just execution), so the model cannot even attempt one. Without
+        # it, newer CLI/model combos answered by *calling harness tools*
+        # (ReportFindings, observed verbatim in salvaged output) instead of
+        # emitting the requested text, which surfaced as the 88-100%
+        # "unparseable model output" failure rate on every claude_p consumer
+        # (quest_tick gr244061; finding_chase's taproot verdicts gr277659).
+        "--disallowedTools",
+        "*",
+        # Strips keychain reads (plus hooks/LSP/plugin sync/CLAUDE.md
+        # auto-discovery), so auth falls to ANTHROPIC_API_KEY — see the
+        # ``bare`` arg and _bare_auth_env below.
+        *(("--bare",) if bare else ()),
+        *extra_args,
+        # ``--`` end-of-options sentinel, prompt last and positional: a prompt
+        # that begins with ``-`` (tex/paper text, a template edge) must never
+        # be parsed by claude's Commander.js CLI as a flag. Same hardening as
+        # claude_agent._resolve_agent_args (the agentic lane). Keep the prompt
+        # the final token, right after ``--``.
+        "--",
+        prompt,
+    ]
+
+
+def _drop_max_turns(extra_args: tuple[str, ...]) -> tuple[str, ...]:
+    """``--max-turns <n>``/``--max-turns=<n>`` pairs, removed — for the
+    schema retry only.
+
+    ``--json-schema`` extracts the answer through the CLI's own
+    structured-output tool call, a turn the caller's one-shot cap does
+    not budget (card_describe pins ``--max-turns 1`` — the retry would
+    die ``error_max_turns`` before the validated object lands). The cap's
+    safety purpose — keeping the rung one-shot — is already guaranteed by
+    ``--disallowedTools "*"``, which stays.
+    """
+    out: list[str] = []
+    skip_value = False
+    for arg in extra_args:
+        if skip_value:
+            skip_value = False
+            continue
+        if arg == "--max-turns":
+            skip_value = True
+            continue
+        if arg.startswith("--max-turns="):
+            continue
+        out.append(arg)
+    return tuple(out)
+
 
 # (The old regex approach here only matched braces nested ≤2 deep, so a
 # payload with a deeper structure — e.g. a quest tick's
@@ -307,7 +411,11 @@ def call_claude_p(
             ``MAX_THINKING_TOKENS`` budget still applies.
 
     Returns:
-        :class:`ClaudePResult` with the parsed dict.
+        :class:`ClaudePResult` with the parsed dict. On a clean format
+        flake (the reply carried no JSON block) the call is resampled
+        once under ``--json-schema`` before the error path — see
+        :func:`_schema_retry` — and the returned result's cost/usage then
+        cover BOTH runs.
 
     Raises:
         ClaudePError: when the subprocess exits non-zero, times out,
@@ -325,53 +433,9 @@ def call_claude_p(
         timeout_env = os.environ.get("PRECIS_CLAUDE_TIMEOUT_S")
         timeout_s = float(timeout_env) if timeout_env else _DEFAULT_TIMEOUT_S
 
-    args = [
-        binary,
-        "-p",
-        "--model",
-        model,
-        "--max-budget-usd",
-        str(max_usd),
-        # Metering, not formatting. Without this, ``claude -p`` prints bare
-        # text and the only cost signal is a stderr ``Cost: $N.NN`` line that
-        # modern Claude Code no longer emits — so ``cost_usd`` came back
-        # ``None`` on *every* call this helper has ever made, and the whole
-        # claude_p lane (quest_tick, figure) was invisible to
-        # ``PRECIS_DAILY_COST_CEILING``, which sums ``llm_call_log.billed_usd``
-        # (migration 0272; ``cost_usd`` on a billed login feeds it).
-        # The ``json`` envelope carries ``total_cost_usd`` alongside the
-        # assistant text. Sibling of ``LlmRequest.output_format`` defaulting to
-        # ``stream-json`` on the claude_agent lane — same bug, same fix.
-        "--output-format",
-        "json",
-        # No persistent session per call — worker passes are stateless.
-        "--no-session-persistence",
-        # Bypass interactive permission prompts; the worker has no TTY.
-        "--permission-mode",
-        "bypassPermissions",
-        # This lane is one-shot text completion — no tool may ever run. The
-        # bare "*" deny removes every tool definition from the system prompt
-        # (not just execution), so the model cannot even attempt one. Without
-        # it, newer CLI/model combos answered by *calling harness tools*
-        # (ReportFindings, observed verbatim in salvaged output) instead of
-        # emitting the requested text, which surfaced as the 88-100%
-        # "unparseable model output" failure rate on every claude_p consumer
-        # (quest_tick gr244061; finding_chase's taproot verdicts gr277659).
-        "--disallowedTools",
-        "*",
-        # Strips keychain reads (plus hooks/LSP/plugin sync/CLAUDE.md
-        # auto-discovery), so auth falls to ANTHROPIC_API_KEY — see the
-        # ``bare`` arg and _bare_auth_env below.
-        *(("--bare",) if bare else ()),
-        *extra_args,
-        # ``--`` end-of-options sentinel, prompt last and positional: a prompt
-        # that begins with ``-`` (tex/paper text, a template edge) must never
-        # be parsed by claude's Commander.js CLI as a flag. Same hardening as
-        # claude_agent._resolve_agent_args (the agentic lane). Keep the prompt
-        # the final token, right after ``--``.
-        "--",
-        prompt,
-    ]
+    args = _invoke_args(
+        binary, model, max_usd, bare=bare, extra_args=extra_args, prompt=prompt
+    )
 
     # Bootstrap the OAuth token into the subprocess env. call_claude_p is
     # spawned from launchd daemons (the figure web canvas via precis-web,
@@ -464,6 +528,26 @@ def call_claude_p(
 
     data = _parse_last_json_block(payload)
     if data is None:
+        # One structured-output retry (gr622034): a clean ``success`` reply
+        # with no JSON block is a format flake — resample the identical call
+        # under ``--json-schema`` so the CLI validates the answer into the
+        # envelope's ``structured_output`` instead of dropping the result.
+        retried = _schema_retry(
+            prompt,
+            binary=binary,
+            model=model,
+            max_usd=max_usd,
+            timeout_s=timeout_s,
+            extra_args=extra_args,
+            bare=bare,
+            proc_env=proc_env,
+            stdin_kwargs=stdin_kwargs,
+            first_cost=cost,
+            first_usage=usage,
+            first_stderr=res.stderr or "",
+        )
+        if retried is not None:
+            return retried
         if cost is None:
             # Same legacy fallback as the success path below: a stub
             # binary or an older CLI that printed bare text may still
@@ -495,6 +579,126 @@ def call_claude_p(
         output_tokens=usage["output_tokens"],
         cache_read_tokens=usage["cache_read_tokens"],
         cache_creation_tokens=usage["cache_creation_tokens"],
+    )
+
+
+def _schema_retry(
+    prompt: str,
+    *,
+    binary: str,
+    model: str,
+    max_usd: float,
+    timeout_s: float,
+    extra_args: tuple[str, ...],
+    bare: bool,
+    proc_env: dict[str, str],
+    stdin_kwargs: dict[str, Any],
+    first_cost: float | None,
+    first_usage: dict[str, int | None],
+    first_stderr: str,
+) -> ClaudePResult | None:
+    """One ``--json-schema`` resample of the identical call (gr622034).
+
+    Reached only from the parse-failure path — a *clean* reply whose text
+    carried no JSON block anywhere (envelope failures raise before this).
+    The retry constrains the answer to a JSON object via ``--json-schema``:
+    the CLI validates the output itself and lands it on the envelope's
+    ``structured_output`` field (the ``result`` text stays a summary), so
+    the flake converts to a parseable object rather than a dropped result
+    — card_describe / quest_tick / draft_refresh's "no parseable JSON
+    block" rows. Caller pins that would break the extraction turn are
+    lifted for this one run (:func:`_drop_max_turns`); the
+    ``--disallowedTools "*"`` no-tools guarantee is untouched.
+
+    Telemetry merges BOTH runs — the flaked call's spend/tokens are real
+    and must stay billed to the caller, not just the retry's. ``None`` on
+    any retry failure (subprocess raise, a retry envelope declaring
+    error, still no object): the caller then raises the FIRST call's
+    unparseable error unchanged, so the classification/logging contract
+    is exactly today's. A caller that already passed ``--json-schema``
+    gets no retry — it is already constrained, so its flake is a
+    validation failure, not a format one.
+    """
+    if any(
+        arg == "--json-schema" or arg.startswith("--json-schema=") for arg in extra_args
+    ):
+        return None
+    args = _invoke_args(
+        binary,
+        model,
+        max_usd,
+        bare=bare,
+        extra_args=_drop_max_turns(extra_args) + ("--json-schema", _OBJECT_SCHEMA_JSON),
+        prompt=prompt,
+    )
+    try:
+        res = run_claude(
+            args,
+            binary=binary,
+            label="claude -p",
+            timeout_s=timeout_s,
+            error_cls=ClaudePError,
+            env=proc_env,
+            **stdin_kwargs,
+        )
+    except ClaudeProcessError as exc:
+        # A retry-side transport failure (timeout, non-zero exit, an old CLI
+        # that doesn't know --json-schema) is not the caller's flake —
+        # surface the original error, unchanged.
+        log.warning(
+            "claude_p: --json-schema retry raised (%s); "
+            "surfacing the original parse failure",
+            exc,
+        )
+        return None
+    env = _envelope_dict(res.stdout or "")
+    structured: Any = None
+    if env is None:
+        payload, cost2, usage2 = res.stdout or "", None, dict(_EMPTY_USAGE)
+    else:
+        subtype = _subtype_of(env)
+        payload, cost2, usage2, is_error2 = _unwrap_envelope(env)
+        if is_error2 or (subtype is not None and subtype != "success"):
+            log.warning(
+                "claude_p: --json-schema retry's envelope declared failure "
+                "(is_error=%s subtype=%s); surfacing the original parse failure",
+                is_error2,
+                subtype,
+            )
+            return None
+        structured = env.get("structured_output")
+    data = (
+        structured if isinstance(structured, dict) else _parse_last_json_block(payload)
+    )
+    if data is None:
+        return None
+    if cost2 is None:
+        cost2 = extract_cost_usd(res.stderr or "")
+    cost1 = first_cost if first_cost is not None else extract_cost_usd(first_stderr)
+    total_cost = (
+        None if cost1 is None and cost2 is None else (cost1 or 0.0) + (cost2 or 0.0)
+    )
+    merged = {
+        key: (
+            None
+            if first_usage.get(key) is None and usage2.get(key) is None
+            else (first_usage.get(key) or 0) + (usage2.get(key) or 0)
+        )
+        for key in _EMPTY_USAGE
+    }
+    log.warning(
+        "claude_p: reply carried no parseable JSON block; "
+        "--json-schema retry recovered the answer"
+    )
+    return ClaudePResult(
+        data=data,
+        raw_stdout=res.stdout,
+        cost_usd=total_cost,
+        text=payload,
+        input_tokens=merged["input_tokens"],
+        output_tokens=merged["output_tokens"],
+        cache_read_tokens=merged["cache_read_tokens"],
+        cache_creation_tokens=merged["cache_creation_tokens"],
     )
 
 

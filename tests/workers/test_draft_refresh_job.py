@@ -303,6 +303,37 @@ def test_dispatch_questless_draft_applies_without_process_memory(
     assert [c.text for c in new_body] == ["New para, tightened."]
 
 
+def test_dispatch_requests_the_free_text_lane(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr622034: the rewrite's contract is prose + the sentinel, so the
+    dispatch must ask for a tool-capable (``claude_agent``) rung — the
+    tool-less ``claude_p`` judge demands a trailing JSON block and drops
+    every correct reply."""
+    draft = DraftHandler(hub=hub)
+    seeded = _seed_section_draft(draft, hub, paras=("Old para about a topic.",))
+
+    seen: list[Any] = []
+    result = _rewrite_result("Tightened.", "Section A", ["New para, tightened."])
+
+    def _spy(_req: Any) -> Any:
+        seen.append(_req)
+        return result
+
+    monkeypatch.setattr("precis.utils.llm.router.route", _spy)
+
+    ctx = _FakeCtx(
+        store=store, meta={"params": {"draft": "nt", "scope": seeded["sec"]}}
+    )
+    _spec().dispatch(ctx, _spec())
+
+    assert not ctx.failures, ctx.failures
+    assert len(seen) == 1
+    req = seen[0]
+    assert req.tools_needed is True
+    assert req.extra_args == ("--tools", "")
+
+
 # ── dispatch: growth-gate refusal (section left unchanged) ─────────────────
 
 
