@@ -81,7 +81,7 @@ except ImportError:
 _ToolReturn = Any  # documents runtime: str on success, CallToolResult on error.
 
 # Runtime access - these will be imported when needed
-_runtime = None
+_runtime: PrecisRuntime | None = None
 # Serializes first-build (see _get_runtime's thread-safety note).
 _runtime_build_lock = threading.Lock()
 

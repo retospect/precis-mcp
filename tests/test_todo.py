@@ -748,6 +748,58 @@ def test_get_missing_raises_not_found(handler: TodoHandler) -> None:
         handler.get(id=99999)
 
 
+def test_get_absent_id_offers_recent_and_search(handler: TodoHandler) -> None:
+    """gr593339: a truly-absent id keeps the plain ``NotFound`` head
+    but the ``next=`` now leads with the ``/recent`` listing — the
+    zero-input enumeration a caller holding a stale id needs —
+    alongside the semantic-search door."""
+    with pytest.raises(NotFound) as ei:
+        handler.get(id=99999)
+    nxt = str(ei.value.next)
+    assert "id='/recent'" in nxt
+    assert "search(kind='todo'" in nxt
+
+
+def test_get_foreign_id_names_the_real_kind(handler: TodoHandler) -> None:
+    """gr593339: ids share one global ref space — a bare ``get`` on a
+    *live ref of another kind* read as a bare "not found", so the
+    caller repeated the identical call after the error. The miss now
+    names the real kind and hands back the working get for it."""
+    mem = handler.store.insert_ref(kind="memory", slug=None, title="m")
+    with pytest.raises(NotFound) as ei:
+        handler.get(id=mem.id)
+    assert "not found" in ei.value.cause
+    assert "'memory'" in ei.value.cause
+    nxt = str(ei.value.next)
+    assert f"get(kind='memory', id={mem.id})" in nxt
+
+
+def test_get_foreign_tombstone_raises_gone(handler: TodoHandler) -> None:
+    """A soft-deleted ref of another kind is ``Gone`` — it existed and
+    was deleted — with the ``view='retired'`` tombstone read as the
+    door, matching the same-kind soft-delete envelope split."""
+    mem = handler.store.insert_ref(kind="memory", slug=None, title="m")
+    handler.store.retire_ref(mem.id)
+    with pytest.raises(Gone) as ei:
+        handler.get(id=mem.id)
+    assert "soft-deleted" in ei.value.cause
+    assert "'memory'" in ei.value.cause
+    assert "view='retired'" in str(ei.value.next)
+
+
+def test_tree_view_miss_names_the_real_kind(handler: TodoHandler) -> None:
+    """``view='tree'`` shared the bare "todo id=N not found" head —
+    the same miss classifier applies there (foreign id named, absent
+    id pointed at ``/recent`` + search)."""
+    mem = handler.store.insert_ref(kind="memory", slug=None, title="m")
+    with pytest.raises(NotFound) as ei:
+        handler.get(id=mem.id, view="tree")
+    assert "'memory'" in ei.value.cause
+    with pytest.raises(NotFound) as ei2:
+        handler.get(id=99999, view="tree")
+    assert "id='/recent'" in str(ei2.value.next)
+
+
 def test_list_recent(handler: TodoHandler) -> None:
     handler.put(text="a")
     handler.put(text="b")

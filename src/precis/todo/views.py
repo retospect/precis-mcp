@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis._result_budget import size_cell
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput
 from precis.response import Response
 from precis.store._tag_filter import build_tag_filter
 from precis.store._todo_sql import (  # noqa: F401  (re-export)
@@ -31,6 +31,7 @@ from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.todo.guards import todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
+from precis.utils.ref_miss import raise_ref_miss
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -740,10 +741,10 @@ def render_tree(store: Store, root_id: int) -> Response:
     """
     rows = _fetch_subtree(store, root_id)
     if not rows:
-        raise NotFound(
-            f"todo id={root_id} not found",
-            next="get(kind='todo', id='/recent') to find an existing id",
-        )
+        # Same miss family as the base get (gr593339): a foreign or
+        # tombstoned id names what it actually is, an absent one gets
+        # the /recent + search doors.
+        raise_ref_miss(store, kind="todo", ref_id=root_id, list_view="recent")
     # Tag bundles for each ref so we can mark claimed / waiting / level.
     ref_ids = [r["id"] for r in rows]
     statuses = _status_of_many(store, ref_ids)

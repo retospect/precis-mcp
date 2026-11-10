@@ -92,6 +92,7 @@ from precis.utils.link_target import mint_lazy_link_target, parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.ref_hybrid import fused_ref_hits
+from precis.utils.ref_miss import raise_ref_miss
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import (
     SearchHit,
@@ -793,9 +794,18 @@ class NumericRefHandler(Handler):
                 "(row retained for audit; no MCP undo)",
                 next=(f"search(kind={self.kind!r}, q={words!r}{tags_bit})\n{sql_note}"),
             )
-        raise NotFound(
-            f"{self._sense()} id={ref_id} not found",
-            next=f"search(kind={self.kind!r}, q='...') to find existing",
+        # Third probe, in the shared miss classifier (gr593339): the
+        # id space is global across kinds, so the miss may be a
+        # foreign id (another kind's ref, live or tombstoned) rather
+        # than a missing row — a bare "not found" there has the
+        # caller repeat the identical call. The helper names the
+        # real kind; a truly-absent id gets the list/search doors.
+        raise_ref_miss(
+            self.store,
+            kind=self.kind,
+            ref_id=ref_id,
+            sense=self._sense(),
+            list_view=("recent" if "recent" in self._supported_list_views() else None),
         )
 
     def _live_kind_of(self, ref_id: int) -> str | None:
