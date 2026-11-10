@@ -7,7 +7,9 @@ shebangs are allowed:
 - ``STDLIB``: stdlib-only scripts (all hooks) — no venv, fast, works in a
   worktree that has none. Unquoted ``>=3.12``: ``env -S`` passes quotes
   through to uv literally, which once broke every hook in a session.
-- ``VENV``: scripts that import ``precis`` or third-party packages.
+  It may name small third-party packages with ``--with <pkg>`` (no project
+  venv needed); the script may import only those beyond the stdlib.
+- ``VENV``: scripts that import ``precis`` or the project's dependencies.
 """
 
 from __future__ import annotations
@@ -24,6 +26,22 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 STDLIB = "#!/usr/bin/env -S uv run --no-project --python >=3.12 python"
 VENV = "#!/usr/bin/env -S uv run python"
+STDLIB_WITH = re.compile(
+    r"#!/usr/bin/env -S uv run --no-project((?: --with [\w.-]+(?:[<>=~!]=?[\w.]+)?)*)"
+    r" --python >=3\.12 python"
+)
+
+
+def _with_packages(shebang: str) -> set[str] | None:
+    """The ``--with`` package names of a STDLIB-form shebang, else None."""
+    m = STDLIB_WITH.fullmatch(shebang)
+    if m is None:
+        return None
+    return {
+        re.split(r"[<>=~!]", arg)[0].replace("-", "_")
+        for arg in m.group(1).split(" --with ")
+        if arg
+    }
 
 
 def _python_scripts() -> list[tuple[Path, str]]:
@@ -49,7 +67,9 @@ SCRIPT_SHEBANGS = _python_scripts()
     ids=[str(p.relative_to(REPO)) for p, _ in SCRIPT_SHEBANGS],
 )
 def test_python_script_shebang_runs_through_uv(path: Path, shebang: str) -> None:
-    assert shebang in (STDLIB, VENV), f"{path}: {shebang!r}"
+    assert shebang == VENV or _with_packages(shebang) is not None, (
+        f"{path}: {shebang!r}"
+    )
 
 
 def _imported_roots(path: Path) -> set[str]:
@@ -80,15 +100,27 @@ def _non_stdlib_imports(path: Path, seen: set[Path]) -> set[str]:
     return bad
 
 
-STDLIB_SCRIPTS = [p for p, s in SCRIPT_SHEBANGS if s == STDLIB]
+STDLIB_SCRIPTS = [
+    (p, pkgs) for p, s in SCRIPT_SHEBANGS if (pkgs := _with_packages(s)) is not None
+]
 
 
 @pytest.mark.parametrize(
-    "path", STDLIB_SCRIPTS, ids=[str(p.relative_to(REPO)) for p in STDLIB_SCRIPTS]
+    ("path", "allowed"),
+    STDLIB_SCRIPTS,
+    ids=[str(p.relative_to(REPO)) for p, _ in STDLIB_SCRIPTS],
 )
-def test_no_project_scripts_import_only_stdlib(path: Path) -> None:
-    bad = _non_stdlib_imports(path, set())
-    assert not bad, f"{path} imports {sorted(bad)}; use {VENV!r}"
+def test_no_project_scripts_import_only_stdlib(path: Path, allowed: set[str]) -> None:
+    bad = _non_stdlib_imports(path, set()) - allowed
+    assert not bad, f"{path} imports {sorted(bad)}; use {VENV!r} or --with"
+
+
+def test_stdlib_shebang_forms() -> None:
+    assert _with_packages(STDLIB) == set()
+    assert _with_packages(
+        STDLIB.replace("--python", "--with tomlkit>=0.13 --python")
+    ) == {"tomlkit"}
+    assert _with_packages(STDLIB.replace(">=3.12", '">=3.12"')) is None
 
 
 def test_settings_hooks_call_scripts_directly() -> None:
