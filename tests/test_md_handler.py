@@ -15,10 +15,12 @@ from typing import Any
 
 import pytest
 
-from precis.dispatch import Hub
+from precis.config import PrecisConfig
+from precis.dispatch import Hub, boot
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.md import MdHandler, _parse_id
 from precis.md_index import MdVectorCache
+from precis.runtime import PrecisRuntime
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -440,6 +442,34 @@ def test_get_batch_over_cap_refuses_with_split_next(
     with pytest.raises(BadInput, match="at most 50") as exc:
         handler.get(id=ids)
     assert "id=['r/readme.md'" in str(exc.value.next)
+
+
+def test_get_batch_over_cap_split_next_keeps_view_and_q(
+    handler: MdHandler,
+) -> None:
+    """td627804: the split hint re-issues the call verbatim — ``view=``
+    and ``q=`` ride along, not just the id chunks."""
+    ids: list[str | int] = ["r/readme.md"] * 51
+    with pytest.raises(BadInput, match="at most 50") as exc:
+        handler.get(id=ids, view="source", q="readme")
+    nxt = str(exc.value.next)
+    assert "view='source'" in nxt and "q='readme'" in nxt
+
+
+def test_get_batch_find_routes_through_dispatch(repo: Path) -> None:
+    """td627804 review: the dispatcher routes a get's ``q`` to
+    ``find_in_ref`` before ``get``, so ``get(kind='md', id=[...],
+    q='…')`` died in find_preflight's one-ref-at-a-time refusal —
+    the batch find is what must run."""
+    rt = PrecisRuntime(config=PrecisConfig(), hub=boot(md_roots=f"r:{repo}"))
+    body = rt.dispatch(
+        "get",
+        {"kind": "md", "id": ["r/docs/guide.md", "r/readme.md"], "q": "paragraph"},
+    )
+    assert "[error" not in body
+    assert "# 2 md ids (batch, q='paragraph')" in body
+    assert "Intro paragraph about the guide" in body
+    assert "Top-level readme paragraph" in body
 
 
 def test_get_batch_non_address_element_refuses(handler: MdHandler) -> None:

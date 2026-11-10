@@ -319,9 +319,19 @@ class MdHandler(Handler):
         """``get(id='<alias>/<file>.md', q='…')`` — passages inside one file.
 
         A ``~selector`` narrows the scan to that section (heading +
-        nested blocks), the same grammar the plain get uses.
+        nested blocks), the same grammar the plain get uses. ``id=[...]``
+        is the batch find — the dispatcher routes ``q`` here ahead of
+        ``get``'s own list door.
         """
         from precis.handlers._find_in_ref import find_preflight, find_response
+
+        # The dispatcher routes ``get``+``q`` here before ``get``'s
+        # ``id=[...]`` door, so a batch find arrives as a list in this
+        # shape — the same per-id fan-out ``_get_batch`` gives a view
+        # (td627804: a list used to die in find_preflight's
+        # one-ref-at-a-time refusal).
+        if isinstance(id, (list, tuple)):
+            return self._get_batch(list(id), view=view, q=q)
 
         readings: list[str] = []
         mapped = self._abs_path_id(id) if isinstance(id, str) else None
@@ -470,7 +480,11 @@ class MdHandler(Handler):
                 "id=[] is empty",
                 next="get(kind='md', id=['<alias>/<file>.md', ...])",
             )
-        extra = f", q={str(q).strip()!r}" if q is not None else ""
+        # The split hints re-issue the call verbatim — ``view=`` and
+        # ``q=`` ride along, same order the batch header prints them.
+        extra = (f", view={view!r}" if view is not None else "") + (
+            f", q={str(q).strip()!r}" if q is not None else ""
+        )
         if len(ids) > BATCH_ID_CAP:
             raise BadInput(
                 f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
@@ -509,10 +523,7 @@ class MdHandler(Handler):
         if rest:
             body += (
                 f"\n\n{len(rest)} more — next: get(kind='md', "
-                f"id=[{', '.join(repr(a) for a in rest)}]"
-                + (f", view={view!r}" if view is not None else "")
-                + extra
-                + ")"
+                f"id=[{', '.join(repr(a) for a in rest)}]{extra})"
             )
         return Response(body=body, result_count=len(shown))
 
