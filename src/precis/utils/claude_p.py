@@ -32,7 +32,9 @@ the CLI validates the answer server-side and lands it on the envelope's
 ``structured_output`` field, so a format flake converts to a parseable
 object instead of a dropped result. The retry is skipped when the caller
 already constrained the call itself, and any retry failure surfaces the
-original unparseable error unchanged.
+original unparseable error — carrying BOTH runs' cost/usage, since a
+retry that could not recover the answer still spent real money
+(td623635).
 
 Knobs (all overridable per call, project defaults via env):
 
@@ -225,8 +227,10 @@ class ClaudePUnparseableError(ClaudePError):
     the metering envelope's payload and telemetry that were parsed BEFORE
     the JSON-block extraction failed — the spend and the model's actual
     answer must stay visible on the error row even though the call failed
-    (gr543828). ``None``/empty only when raised by a caller that never
-    unwrapped an envelope (tests, legacy constructions).
+    (gr543828). When raised after a spent ``--json-schema`` retry,
+    ``cost_usd``/``usage`` sum BOTH runs — the retry's spend is billed
+    too (td623635). ``None``/empty only when raised by a caller that
+    never unwrapped an envelope (tests, legacy constructions).
     """
 
     def __init__(
@@ -422,7 +426,10 @@ def call_claude_p(
             the result envelope declares failure (``is_error`` or a
             non-``success`` ``subtype`` —
             :class:`ClaudePEnvelopeError`), or the reply contains no
-            parseable JSON block (:class:`ClaudePUnparseableError`).
+            parseable JSON block (:class:`ClaudePUnparseableError`). A
+            format-flake error raised AFTER a spent ``--json-schema``
+            retry still carries the combined cost/usage of both runs —
+            the retry's spend is billed, never dropped (td623635).
     """
     binary = resolve_binary()
     model = model or os.environ.get("PRECIS_CLAUDE_MODEL", _DEFAULT_MODEL)
@@ -532,7 +539,7 @@ def call_claude_p(
         # with no JSON block is a format flake — resample the identical call
         # under ``--json-schema`` so the CLI validates the answer into the
         # envelope's ``structured_output`` instead of dropping the result.
-        retried = _schema_retry(
+        outcome = _schema_retry(
             prompt,
             binary=binary,
             model=model,
@@ -546,21 +553,15 @@ def call_claude_p(
             first_usage=usage,
             first_stderr=res.stderr or "",
         )
-        if retried is not None:
-            return retried
-        if cost is None:
-            # Same legacy fallback as the success path below: a stub
-            # binary or an older CLI that printed bare text may still
-            # account on stderr — the failed call's spend stays visible
-            # either way (gr543828).
-            cost = extract_cost_usd(res.stderr or "")
+        if outcome.result is not None:
+            return outcome.result
         raise ClaudePUnparseableError(
             "claude -p returned no parseable JSON block",
             stdout=res.stdout,
             stderr=res.stderr,
             reply=payload,
-            cost_usd=cost,
-            usage=usage,
+            cost_usd=outcome.cost_usd,
+            usage=outcome.usage,
             is_error=is_error,
             subtype=subtype,
         )
@@ -582,6 +583,73 @@ def call_claude_p(
     )
 
 
+@dataclass(frozen=True)
+class _SchemaRetryOutcome:
+    """What the one ``--json-schema`` resample left behind.
+
+    ``result`` is the recovered :class:`ClaudePResult` — ``None`` on any
+    retry failure, when the caller raises the FIRST call's unparseable
+    error. ``cost_usd``/``usage`` merge BOTH runs' telemetry either way:
+    a retry that could not recover the answer still spent real money, so
+    it must ride the raised error into ``llm_call_log`` and the daily
+    cost ceiling rather than going dark (td623635).
+    """
+
+    result: ClaudePResult | None
+    cost_usd: float | None
+    usage: dict[str, int | None]
+
+
+def _merged_retry_outcome(
+    result: ClaudePResult | None,
+    *,
+    first_cost: float | None,
+    first_usage: dict[str, int | None],
+    first_stderr: str,
+    cost2: float | None,
+    usage2: dict[str, int | None],
+) -> _SchemaRetryOutcome:
+    """Sum the flaked call's and the retry's telemetry into one outcome.
+
+    ``None + None`` stays ``None`` — never a false ``0`` — matching the
+    "no telemetry" shape the rest of this module and the router's
+    ``_error_result`` rely on. ``first_cost`` falls back to the first
+    call's stderr ``Cost:`` line, the same legacy accounting the main
+    path applies.
+    """
+    cost1 = first_cost if first_cost is not None else extract_cost_usd(first_stderr)
+    total = None if cost1 is None and cost2 is None else (cost1 or 0.0) + (cost2 or 0.0)
+    merged = {
+        key: (
+            None
+            if first_usage.get(key) is None and usage2.get(key) is None
+            else (first_usage.get(key) or 0) + (usage2.get(key) or 0)
+        )
+        for key in _EMPTY_USAGE
+    }
+    return _SchemaRetryOutcome(result, total, merged)
+
+
+def _salvage_retry_telemetry(
+    stdout: str, stderr: str
+) -> tuple[float | None, dict[str, int | None]]:
+    """Best-effort ``(cost, usage)`` off a dead retry's captured streams.
+
+    A ``claude -p`` that exits non-zero or times out can still leave a
+    metering envelope on its partial stdout or a ``Cost:`` line on
+    stderr — spend the caller is billed for whether or not the retry
+    produced an answer.
+    """
+    env = _envelope_dict(stdout)
+    if env is not None:
+        _, cost, usage, _ = _unwrap_envelope(env)
+    else:
+        cost, usage = None, dict(_EMPTY_USAGE)
+    if cost is None:
+        cost = extract_cost_usd(stderr)
+    return cost, usage
+
+
 def _schema_retry(
     prompt: str,
     *,
@@ -596,7 +664,7 @@ def _schema_retry(
     first_cost: float | None,
     first_usage: dict[str, int | None],
     first_stderr: str,
-) -> ClaudePResult | None:
+) -> _SchemaRetryOutcome:
     """One ``--json-schema`` resample of the identical call (gr622034).
 
     Reached only from the parse-failure path — a *clean* reply whose text
@@ -611,18 +679,27 @@ def _schema_retry(
     ``--disallowedTools "*"`` no-tools guarantee is untouched.
 
     Telemetry merges BOTH runs — the flaked call's spend/tokens are real
-    and must stay billed to the caller, not just the retry's. ``None`` on
-    any retry failure (subprocess raise, a retry envelope declaring
-    error, still no object): the caller then raises the FIRST call's
-    unparseable error unchanged, so the classification/logging contract
-    is exactly today's. A caller that already passed ``--json-schema``
-    gets no retry — it is already constrained, so its flake is a
-    validation failure, not a format one.
+    and must stay billed to the caller, and so is the retry's: on any
+    retry failure (subprocess raise, a retry envelope declaring error,
+    still no object) the outcome's ``result`` is ``None`` but its
+    ``cost_usd``/``usage`` still sum both runs, so the raised
+    :class:`ClaudePUnparseableError` bills the retry's spend to
+    ``llm_call_log`` and the daily ceiling instead of discarding it
+    (td623635). A caller that already passed ``--json-schema`` gets no
+    retry — it is already constrained, so its flake is a validation
+    failure, not a format one.
     """
     if any(
         arg == "--json-schema" or arg.startswith("--json-schema=") for arg in extra_args
     ):
-        return None
+        return _merged_retry_outcome(
+            None,
+            first_cost=first_cost,
+            first_usage=first_usage,
+            first_stderr=first_stderr,
+            cost2=None,
+            usage2=dict(_EMPTY_USAGE),
+        )
     args = _invoke_args(
         binary,
         model,
@@ -644,13 +721,22 @@ def _schema_retry(
     except ClaudeProcessError as exc:
         # A retry-side transport failure (timeout, non-zero exit, an old CLI
         # that doesn't know --json-schema) is not the caller's flake —
-        # surface the original error, unchanged.
+        # surface the original error, with whatever spend the dead
+        # subprocess still reported.
         log.warning(
             "claude_p: --json-schema retry raised (%s); "
             "surfacing the original parse failure",
             exc,
         )
-        return None
+        cost2, usage2 = _salvage_retry_telemetry(exc.stdout or "", exc.stderr or "")
+        return _merged_retry_outcome(
+            None,
+            first_cost=first_cost,
+            first_usage=first_usage,
+            first_stderr=first_stderr,
+            cost2=cost2,
+            usage2=usage2,
+        )
     env = _envelope_dict(res.stdout or "")
     structured: Any = None
     if env is None:
@@ -665,40 +751,57 @@ def _schema_retry(
                 is_error2,
                 subtype,
             )
-            return None
+            if cost2 is None:
+                cost2 = extract_cost_usd(res.stderr or "")
+            return _merged_retry_outcome(
+                None,
+                first_cost=first_cost,
+                first_usage=first_usage,
+                first_stderr=first_stderr,
+                cost2=cost2,
+                usage2=usage2,
+            )
         structured = env.get("structured_output")
     data = (
         structured if isinstance(structured, dict) else _parse_last_json_block(payload)
     )
-    if data is None:
-        return None
     if cost2 is None:
         cost2 = extract_cost_usd(res.stderr or "")
-    cost1 = first_cost if first_cost is not None else extract_cost_usd(first_stderr)
-    total_cost = (
-        None if cost1 is None and cost2 is None else (cost1 or 0.0) + (cost2 or 0.0)
-    )
-    merged = {
-        key: (
-            None
-            if first_usage.get(key) is None and usage2.get(key) is None
-            else (first_usage.get(key) or 0) + (usage2.get(key) or 0)
+    if data is None:
+        return _merged_retry_outcome(
+            None,
+            first_cost=first_cost,
+            first_usage=first_usage,
+            first_stderr=first_stderr,
+            cost2=cost2,
+            usage2=usage2,
         )
-        for key in _EMPTY_USAGE
-    }
+    outcome = _merged_retry_outcome(
+        None,
+        first_cost=first_cost,
+        first_usage=first_usage,
+        first_stderr=first_stderr,
+        cost2=cost2,
+        usage2=usage2,
+    )
     log.warning(
         "claude_p: reply carried no parseable JSON block; "
         "--json-schema retry recovered the answer"
     )
-    return ClaudePResult(
-        data=data,
-        raw_stdout=res.stdout,
-        cost_usd=total_cost,
-        text=payload,
-        input_tokens=merged["input_tokens"],
-        output_tokens=merged["output_tokens"],
-        cache_read_tokens=merged["cache_read_tokens"],
-        cache_creation_tokens=merged["cache_creation_tokens"],
+    merged = outcome.usage
+    return _SchemaRetryOutcome(
+        ClaudePResult(
+            data=data,
+            raw_stdout=res.stdout,
+            cost_usd=outcome.cost_usd,
+            text=payload,
+            input_tokens=merged["input_tokens"],
+            output_tokens=merged["output_tokens"],
+            cache_read_tokens=merged["cache_read_tokens"],
+            cache_creation_tokens=merged["cache_creation_tokens"],
+        ),
+        outcome.cost_usd,
+        merged,
     )
 
 

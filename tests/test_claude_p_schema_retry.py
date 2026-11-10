@@ -239,6 +239,128 @@ def test_retry_envelope_error_surfaces_original(monkeypatch: Any) -> None:
     assert len(calls) == 2
 
 
+def test_retry_envelope_error_still_bills_the_retry(monkeypatch: Any) -> None:
+    """td623635: a retry whose envelope declares failure still SPENT —
+    the raised error carries both runs' cost and token usage so
+    ``llm_call_log``/the daily ceiling see the real bill."""
+    calls = _stub_calls(
+        monkeypatch,
+        [
+            (
+                _envelope(
+                    "prose one",
+                    cost=0.011,
+                    usage={"input_tokens": 100, "output_tokens": 40},
+                ),
+                "",
+            ),
+            (
+                _envelope(
+                    "validation failed",
+                    cost=0.007,
+                    subtype="error_max_structured_output_retries",
+                    is_error=True,
+                    usage={"input_tokens": 90, "output_tokens": 30},
+                ),
+                "",
+            ),
+        ],
+    )
+    with pytest.raises(claude_p.ClaudePUnparseableError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    assert len(calls) == 2
+    exc = ei.value
+    assert exc.cost_usd == pytest.approx(0.018)
+    assert exc.usage == {
+        "input_tokens": 190,
+        "output_tokens": 70,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+    }
+
+
+def test_retry_still_unparseable_bills_both_runs(monkeypatch: Any) -> None:
+    """td623635: a second prose reply under the schema flag ends the lane,
+    but the retry's spend/token telemetry still rides the raised error."""
+    calls = _stub_calls(
+        monkeypatch,
+        [
+            (
+                _envelope(
+                    "prose one",
+                    cost=0.011,
+                    usage={"input_tokens": 100, "output_tokens": 40},
+                ),
+                "",
+            ),
+            (
+                _envelope(
+                    "prose two",
+                    cost=0.009,
+                    usage={"input_tokens": 80, "output_tokens": 35},
+                ),
+                "",
+            ),
+        ],
+    )
+    with pytest.raises(claude_p.ClaudePUnparseableError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    assert len(calls) == 2
+    exc = ei.value
+    assert exc.reply == "prose one"  # the FIRST call's answer, unchanged
+    assert exc.cost_usd == pytest.approx(0.02)
+    assert exc.usage == {
+        "input_tokens": 180,
+        "output_tokens": 75,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+    }
+
+
+def test_retry_unparseable_cost_falls_back_to_retry_stderr(
+    monkeypatch: Any,
+) -> None:
+    """A retry with no metering envelope still bills its ``Cost:`` line."""
+    calls = _stub_calls(
+        monkeypatch,
+        [
+            (_envelope("prose", cost=0.011), ""),
+            ("still prose, no envelope", "Cost: $0.0042"),
+        ],
+    )
+    with pytest.raises(claude_p.ClaudePUnparseableError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    assert len(calls) == 2
+    assert ei.value.cost_usd == pytest.approx(0.0152)
+
+
+def test_retry_transport_failure_bills_reported_spend(
+    monkeypatch: Any,
+) -> None:
+    """td623635: a retry that died non-zero can still leave spend on its
+    captured streams — a metering envelope on stdout or the ``Cost:``
+    stderr line — and the raised error bills it."""
+    calls = _stub_calls(
+        monkeypatch,
+        [
+            (_envelope("prose, no JSON", cost=0.012), ""),
+            claude_p.ClaudePError(
+                "claude -p exited 1",
+                stderr="Cost: $0.003",
+                returncode=1,
+            ),
+        ],
+    )
+    with pytest.raises(claude_p.ClaudePUnparseableError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    assert len(calls) == 2
+    assert ei.value.cost_usd == pytest.approx(0.015)
+
+
 def test_retry_falls_back_to_parsing_the_payload(monkeypatch: Any) -> None:
     """``structured_output`` absent but the reply text now carries a JSON
     block — the ordinary tolerant scan still recovers it."""
