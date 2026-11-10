@@ -87,11 +87,16 @@ Review rows and trust acts retain the original model string.
    retirement also requires compaction review. No edits occur at detection.
    ``compact`` (gr561025) fires on expiry, 90-day-cold reads, a
    half-history body or any pending retire proposal: the evaluator owes a
-   per-sentence plan (keep / move-to related / mint atomic / drop only as
-   history or restatement) that ``apply_compact`` runs as one unit with a
-   single reversal record; ``undo_compact`` restores every touched body,
-   retires the minted children and un-retires the shell. The retire door
-   refuses while a compact proposal is pending or undecided.
+   per-sentence plan (keep / move-to related — hub family, qualifies,
+   ``+recall`` neighbours, restated_claim matches / mint atomic / drop
+   only as history or restatement) accounting for every detector
+   sentence; ``apply_compact`` runs it as one unit with a single
+   reversal record only through ``precis garden apply`` — the consumer
+   reviews but never auto-applies it. ``undo_compact`` un-retires the
+   shell, then restores every touched body, then retires the minted
+   children. Both retirement doors refuse while a compact proposal is
+   pending or while the detector fires on content no completed
+   compaction covers — a rejected plan preserves nothing.
    Git ancestry on origin/prod is deliberately untested: the DB has no
    general ancestry oracle and thread_shape needs no network or git.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call

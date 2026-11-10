@@ -270,18 +270,26 @@ All three detectors are proposal-only, with no apply or auto-apply path.
 
 compact owes a per-sentence plan before its memory may retire or drop a
 claim. For every sentence in evidence.sentences decide one of: keep (it
-stays with the shell), move to an existing related node (evidence.related
-lists the only allowed refs: hub parents, hub siblings, qualifies targets,
-recall neighbours), mint a new atomic node, or drop — and drop is only for
-history or restatement, never a still-true claim living nowhere else.
+stays with the shell — only when the shell keeps), move to an existing
+related node (evidence.related lists the only allowed refs: hub parents,
+hub siblings, qualifies targets, recall neighbours, restated_claim
+matches), mint a new atomic node, or drop — and drop is only for history
+or restatement, never a still-true claim living nowhere else.
 Supply the plan as payload_overrides.plan:
 {"edits": [{"ref": <related me id or handle>, "ops": [{"find": ..., "text":
 ...}], "reason": "why this claim belongs there"}],
  "puts": [{"title": "the claim as a ~12-word title", "body": "...",
    "section": "section:<type>", "qualifies": [<live ref>],
    "links": [{"dst": <live ref>, "relation": "..."}]}],
+ "sentences": [{"disposition": "keep"}
+   | {"disposition": "move", "ref": <related me id or handle>}
+   | {"disposition": "mint", "put": <index into plan.puts>}
+   | {"disposition": "drop", "reason": "history"|"restatement"}],
  "shell": {"fate": "retire", "successor": <hub parent me id | {"put": i}>}
        or {"fate": "keep", "summary": "<=3 lines", "expires_days": N}}
+plan.sentences carries exactly one disposition per evidence.sentences
+entry, in order (optionally echoing its "span"); every move names a node a
+plan edit actually touches and every mint a valid put index.
 Accept only with a complete plan: every sentence accounted for, every move
 landing where the claim belongs, the shell retired only with a successor
 (its hub or a minted child) or kept as a <=3-line live-state summary with

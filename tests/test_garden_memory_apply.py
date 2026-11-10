@@ -150,6 +150,16 @@ def _proposal(
         body = "Dated snapshot: the campaign started.\n"
         target = _memory(store, body, origin=origin)
         store.add_tag(target, Tag.open("section:threads"), set_by="system")
+        if action == "retire":
+            # The compact-first gate: a pending retire proposal is itself a
+            # compact trigger, so an apply needs completed preservation —
+            # here a garden_compact record covering this exact content.
+            state = store.trust_state("ref", target)
+            assert state is not None
+            store.stamp_ref_meta(
+                target,
+                {"garden_compact": {"shell": {"edit": {"applied_sha": state.sha}}}},
+            )
         if action == "supersede":
             successor = _memory(
                 store, "Left: finish campaign\nEarlier: campaign started."

@@ -188,6 +188,18 @@ on, the consumer leaves them pending, unreviewed and unchanged because
 they have no apply-time detector checks. `qualify` and `ask` stay outside
 consumer review.
 
+## Compaction before retirement
+
+The `compact` detector fires on expiry, 90-day-cold reads, a
+half-history body or any pending retire proposal. The evaluator's plan
+accounts for every detector sentence: keep on a kept shell, move into a
+related node (hub family, qualifies targets, `+recall` neighbours,
+restated_claim matches), mint an atomic child, or drop only as
+`history`/`restatement`. A reviewed plan applies only through
+`precis garden apply <review_id>` — the consumer never auto-applies it.
+Both retirement doors refuse while a compact proposal is pending or
+while the detector fires on content no applied compaction covers.
+
 ## Memory undo
 
 An approved rewrite applies anchored edits with

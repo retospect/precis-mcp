@@ -67,6 +67,9 @@ both run by the ``graph_garden`` job right after its tick
    proposals retryably. After ``MAX_UNRESOLVED_AGE``, mixed rewrites close and
    re-propose only resolved ops for fresh review; wholly unresolved text gets
    a visible hold rather than silently occupying the pending window.
+   A ``compact`` proposal is reviewed but never auto-applied: an approval is
+   recorded and the proposal held for the explicit door,
+   ``precis garden apply <review_id>``.
 
 **Griped close** (gr561873). An applied ``griped`` proposal replays the
    complaint's recorded route once no sibling proposal stays pending:
@@ -217,6 +220,7 @@ REJECT_REASONS: dict[str, str] = {
     "human_edge": "the edge is human-authored — a machine consumer does not prune it",
     "apply_refused": "the apply door refused the approved action",
     "cycle": "the edge would close a cycle",
+    "compact_first": "a completed compaction must precede this retirement",
     "undone": "a human undid the applied action",
     "apply_error": "the apply door raised an unexpected error — left pending",
     # The paper gate's refusals (gr512125); its hold reasons
@@ -771,13 +775,25 @@ def _apply_memory(
     """Apply a reviewed memory proposal, holding protected nodes on drift."""
     from precis.graph.garden.apply import (
         MergeRefused,
-        apply_compact,
         apply_retire,
         apply_rewrite,
         apply_split,
         apply_supersede,
     )
 
+    if prop.action == "compact":
+        # A compaction plan is never auto-applied: the recorded approval
+        # stands and a human reads the plan, then runs the explicit door.
+        _hold_memory(
+            store,
+            prop,
+            report,
+            reason="explicit_apply",
+            why=f"approved ({verdict.why}); a compaction applies only "
+            "through the explicit door",
+            apply=f"precis garden apply {prop.review_id}",
+        )
+        return
     try:
         failures, last_error = _memory_apply_failures(store, prop)
     except Exception as exc:
@@ -813,15 +829,6 @@ def _apply_memory(
                 verdict_extra=extra,
             )
             report.rewrites.append(record.rewrite_id)
-        elif prop.action == "compact":
-            crec = apply_compact(
-                store,
-                prop.review_id,
-                actor=CONSUMER_ACTOR,
-                model=verdict.model,
-                verdict_extra=extra,
-            )
-            report.rewrites.append(crec["compact_id"])
         elif prop.action == "split":
             split = apply_split(
                 store,
@@ -858,7 +865,7 @@ def _apply_memory(
             why=f"approved ({verdict.why}) but at apply: {exc}",
             model=verdict.model,
             report=report,
-            retryable=exc.reason == "stale",
+            retryable=exc.reason in {"stale", "compact_first"},
         )
         return
     except (BadInput, NotFound) as exc:
@@ -1213,10 +1220,11 @@ def _hold_memory(
     *,
     reason: str,
     why: str,
+    apply: str | None = None,
 ) -> None:
     """A failed hold must not abort the tick or skip recorded relink applies."""
     try:
-        _hold_for_human(store, prop, reason=reason, why=why, identity=None)
+        _hold_for_human(store, prop, reason=reason, why=why, identity=None, apply=apply)
     except Exception:
         log.exception("garden consumer: memory hold failed on %s", prop.key)
         report.errors += 1
@@ -1344,6 +1352,7 @@ def _hold_for_human(
     reason: str,
     why: str,
     identity: dict[str, Any] | None,
+    apply: str | None = None,
 ) -> None:
     """Leave a protected memory or ambiguous paper merge pending for a human.
 
@@ -1369,7 +1378,8 @@ def _hold_for_human(
                     "loser": prop.payload.get("loser"),
                     "winner": prop.payload.get("winner"),
                     "identity": identity,
-                    "apply": (
+                    "apply": apply
+                    or (
                         "by hand (apply failed; fix the error, then reject to retry)"
                         if reason == "apply_error"
                         else "by hand (human protection or unresolved evidence)"

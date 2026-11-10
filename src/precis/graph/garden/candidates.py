@@ -1922,14 +1922,23 @@ def _pending_retire_proposals(store: Store, ids: list[int]) -> dict[int, list[in
 def _compact_related(store: Store, ids: list[int]) -> dict[int, dict[str, list[int]]]:
     """The live-memory neighbourhood a compaction may move claims into.
 
-    Hub parents and their live children, qualifies targets and the
-    remaining outgoing-edge neighbours — the refs the writer's fisheye
-    reaches. Bounded per node; the apply door refuses plan edits to refs
-    outside this set. Sentence-level restated_claim matches are the
-    embedding pass's own finding, not duplicated here.
+    Hub parents and their live children, qualifies targets, the remaining
+    outgoing-edge neighbours, ``+recall`` card neighbours inside the
+    recall floor, and pending ``restated_claim`` matches — every
+    destination the compaction brief names. Bounded per node; the apply
+    door refuses plan edits to refs outside this set, and only live
+    memory refs ever enter it (``_checked_compact_plan`` requires the
+    whole set live).
     """
     related: dict[int, dict[str, list[int]]] = {
-        rid: {"parents": [], "siblings": [], "qualifies": [], "neighbours": []}
+        rid: {
+            "parents": [],
+            "siblings": [],
+            "qualifies": [],
+            "neighbours": [],
+            "recall": [],
+            "restated": [],
+        }
         for rid in ids
     }
     if not ids:
@@ -1965,9 +1974,70 @@ def _compact_related(store: Store, ids: list[int]) -> dict[int, dict[str, list[i
             "AND r.kind = 'memory' AND r.retired_at IS NULL",
             (ids,),
         ).fetchall()
+        # Undecided restated_claim proposals pair a restating memory with
+        # the keeper holding its claim — either side is a named match.
+        restated_rows = conn.execute(
+            "SELECT p.target_id, p.note::jsonb #>> '{garden,payload,keeper}' "
+            "FROM reviews p WHERE p.verdict = 'proposed' "
+            "AND p.note LIKE %(det)s AND (p.target_id = ANY(%(ids)s) OR "
+            "p.note::jsonb #>> '{garden,payload,keeper}' = ANY(%(keepers)s)) "
+            "AND NOT EXISTS (SELECT 1 FROM reviews d WHERE d.note LIKE "
+            "%(res)s AND d.note ~ ('\"resolves\": ' || p.review_id || '[^0-9]'))",
+            {
+                "det": '%"detector": "restated_claim"%',
+                "ids": ids,
+                "keepers": [f"me{i}" for i in ids],
+                "res": '%"resolves"%',
+            },
+        ).fetchall()
+        partners = {int(t) for t, _ in restated_rows}
+        for _t, keeper_raw in restated_rows:
+            parsed = parse_handle(str(keeper_raw or ""))
+            if parsed is not None and not parsed[1]:
+                partners.add(int(parsed[2]))
+        outside = partners - set(ids)  # scanned refs are already known live
+        live_partners = partners & set(ids)
+        if outside:
+            live_partners |= {
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+                    "AND kind = 'memory' AND retired_at IS NULL",
+                    (sorted(outside),),
+                ).fetchall()
+            }
     for src, dst, relation in edge_rows:
         bucket = "qualifies" if str(relation) == "qualifies" else "neighbours"
         related[int(src)][bucket].append(int(dst))
+    for target_id, keeper_raw in restated_rows:
+        parsed = parse_handle(str(keeper_raw or ""))
+        keeper = int(parsed[2]) if parsed is not None and not parsed[1] else None
+        if int(target_id) in related and keeper in live_partners:
+            related[int(target_id)]["restated"].append(keeper)
+        if keeper in related and int(target_id) in live_partners:
+            related[keeper]["restated"].append(int(target_id))
+    # ``+recall`` neighbours — the card-index rung the writer's fisheye
+    # already lists: top-k card neighbours inside the recall floor.
+    vecs = _card_vectors(store, ids)
+    tops = _top_k_card_neighbours(store, set(ids), vecs, k=PRUNE_TOP_K)
+    recall_ids = sorted({n for ns in tops.values() for n in ns})
+    if recall_ids:
+        with store.pool.connection() as conn:
+            live_cards = {
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+                    "AND kind = 'memory' AND retired_at IS NULL",
+                    (recall_ids,),
+                ).fetchall()
+            }
+        neigh_vecs = _card_vectors(store, sorted(live_cards))
+        for rid, ns in tops.items():
+            for n in ns:
+                if n in neigh_vecs and _cosine(vecs[rid], neigh_vecs[n]) <= (
+                    PRUNE_MAX_DISTANCE
+                ):
+                    related[rid]["recall"].append(n)
     for rel in related.values():
         for bucket, values in rel.items():
             rel[bucket] = sorted(set(values))[:COMPACT_RELATED_CAP]

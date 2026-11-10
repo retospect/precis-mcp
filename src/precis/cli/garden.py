@@ -10,11 +10,14 @@ acts:
   ``stale`` when the target has drifted past the sha the proposal was
   written against. Consumer holds show their reason and follow-up.
 * ``precis garden apply <review_id>`` — the explicit apply door.
-  v1 supports ``action=merge`` proposals only: the loser's links
-  repoint onto the winner, the loser retires as an alias, and the
-  proposal flips to ``approved`` (the second bar) — all one
-  transaction. Relink proposals apply through the consumer's reviewed
-  door (gr507641), not this verb; other actions are still manual work.
+  For ``action=merge`` proposals the loser's links repoint onto the
+  winner, the loser retires as an alias, and the proposal flips to
+  ``approved`` (the second bar) — all one transaction. For
+  ``action=compact`` proposals it runs the reviewed per-sentence plan
+  as one undoable unit — the only door a compaction applies through;
+  the consumer never applies one itself. Relink proposals apply through
+  the consumer's reviewed door (gr507641), not this verb; other actions
+  are still manual work.
 * ``precis garden undo <apply_id>`` — reverse an applied
   merge from the reversal record on the loser (``meta.garden_merge``),
   or delete the edge a relink wrote (``links.meta.garden_relink``,
@@ -72,6 +75,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "rewrite",
             "supersede",
             "retire",
+            "compact",
         ],
         default=None,
         help="Show only proposals of one action kind.",
@@ -82,7 +86,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     for name, helptext, arg in (
         (
             "apply",
-            "Apply an accepted proposal (v1: merge proposals only).",
+            "Apply an accepted proposal (merge or compact).",
             "review_id",
         ),
         (
@@ -211,11 +215,23 @@ def _apply(args: argparse.Namespace, store: Store) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+    if prop.action == "compact":
+        from precis.graph.garden.apply import apply_compact
+
+        compact = apply_compact(store, review_id, actor=_actor(args))
+        print(
+            f"compacted ref {compact['target']} ({compact['compact_id']}) — "
+            f"{len(compact['edits'])} edit(s), "
+            f"{len(compact['puts'])} minted child(ren), "
+            f"shell {compact['shell']['fate']}; "
+            f"`precis garden undo {compact['compact_id']}` reverses"
+        )
+        return
     if prop.action != "merge":
         print(
             f"review {review_id} is a {prop.action!r} proposal — the apply "
-            "door handles merges only in v1; carry it out by hand or "
-            f"`precis garden reject {review_id}`.",
+            "door handles merges and compaction plans only; carry it out "
+            f"by hand or `precis garden reject {review_id}`.",
             file=sys.stderr,
         )
         sys.exit(2)

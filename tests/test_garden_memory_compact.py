@@ -12,14 +12,23 @@ from typing import Any
 
 import pytest
 
+from precis.embedder import MockEmbedder
 from precis.errors import BadInput
 from precis.graph.garden import apply as doors
 from precis.graph.garden import candidates as cand
 from precis.graph.garden.apply import MergeRefused
-from precis.graph.garden.proposals import emit_proposal
+from precis.graph.garden.consumer import ConsumerVerdict, consume_proposals
+from precis.graph.garden.proposals import (
+    emit_proposal,
+    pending_proposals,
+    resolve_proposal,
+)
 from precis.store import Store
 from precis.store.revision_context import revision_context
 from precis.store.types import ChunkInsert, Tag
+
+_EMB = MockEmbedder(dim=1024)
+_EMBEDDER = "bge-m3"  # the migration-seeded default embedder
 
 
 def _memory(
@@ -72,16 +81,40 @@ def _compact_candidate(store: Store, target: int) -> cand.GardenCandidate:
     return found[0]
 
 
+def _dispositions(
+    candidate: cand.GardenCandidate, *entries: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """One plan.sentences entry per evidence sentence, echoing its span."""
+    sentences = candidate.evidence["sentences"]
+    assert len(entries) == len(sentences)
+    return [
+        dict(entry, span=s["span"]) for entry, s in zip(entries, sentences, strict=True)
+    ]
+
+
+def _card(store: Store, ref_id: int, text: str) -> None:
+    """A ``card_combined`` chunk plus its default-embedder vector."""
+    cid = store.chunks.upsert_card_combined(ref_id, text)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, "
+            "attempts) VALUES (%s, %s, %s, 'ok', 1)",
+            (cid, _EMBEDDER, _EMB.embed_one(text)),
+        )
+
+
 def _proposal(
     store: Store,
     body: str,
     *,
     meta: dict[str, Any] | None = None,
-    plan: dict[str, Any] | None = None,
+    plan: Any = None,
 ) -> tuple[int, int, cand.GardenCandidate]:
     target = _memory(store, body, meta=meta)
     candidate = _compact_candidate(store, target)
     assert candidate.action == "compact"
+    if callable(plan):
+        plan = plan(candidate)
     if plan is not None:
         candidate.payload["plan"] = plan
     review_id = emit_proposal(store, candidate, rationale="Checked the node.")
@@ -186,6 +219,15 @@ def test_compact_apply_put_retire_then_undo_round_trip(store: Store) -> None:
                 "links": [{"dst": sibling, "relation": "related-to"}],
             }
         ],
+        "sentences": _dispositions(
+            candidate,
+            {"disposition": "move", "ref": sibling},
+            {"disposition": "mint", "put": 0},
+            {"disposition": "drop", "reason": "restatement"},
+            {"disposition": "drop", "reason": "history"},
+            {"disposition": "drop", "reason": "history"},
+            {"disposition": "drop", "reason": "history"},
+        ),
         "shell": {"fate": "retire", "successor": {"put": 0}},
     }
     review_id = emit_proposal(store, candidate, rationale="compact the shell")
@@ -240,13 +282,18 @@ def _review_rows(store: Store, target: int) -> list[tuple[Any, ...]]:
 
 def test_compact_keep_summary_rearms_expiry_and_undoes(store: Store) -> None:
     body = "Live state: the campaign is still running.\nMore context lines.\n"
-    target, review_id, candidate = _proposal(
+    target, review_id, _candidate = _proposal(
         store,
         body,
         meta={"expires": "2020-01-01T00:00:00+00:00"},
-        plan={
+        plan=lambda c: {
             "edits": [],
             "puts": [],
+            "sentences": _dispositions(
+                c,
+                {"disposition": "keep"},
+                {"disposition": "keep"},
+            ),
             "shell": {
                 "fate": "keep",
                 "summary": "Live state: the campaign is still running.\nOwner: ops.",
@@ -277,7 +324,7 @@ def test_compact_refuses_edit_outside_related(store: Store) -> None:
         store,
         SHELL_BODY,
         meta={"expires": "2020-01-01T00:00:00+00:00"},
-        plan={
+        plan=lambda c: {
             "edits": [
                 {
                     "ref": outsider,
@@ -285,6 +332,15 @@ def test_compact_refuses_edit_outside_related(store: Store) -> None:
                 }
             ],
             "puts": [],
+            "sentences": _dispositions(
+                c,
+                {"disposition": "keep"},
+                {"disposition": "keep"},
+                {"disposition": "keep"},
+                {"disposition": "drop", "reason": "history"},
+                {"disposition": "drop", "reason": "history"},
+                {"disposition": "drop", "reason": "history"},
+            ),
             "shell": {"fate": "keep", "summary": "Summary.", "expires_days": 7},
         },
     )
@@ -346,3 +402,257 @@ def test_apply_retire_refuses_pending_compact(store: Store) -> None:
             store, review_id, actor="garden-consumer", model="fixture-reviewer"
         )
     assert _refs_row(store, target)[0] is False
+
+
+def _keep_plan(c: cand.GardenCandidate) -> dict[str, Any]:
+    return {
+        "edits": [],
+        "puts": [],
+        "sentences": _dispositions(
+            c, *({"disposition": "keep"} for _ in c.evidence["sentences"])
+        ),
+        "shell": {"fate": "keep", "summary": "Summary.", "expires_days": 7},
+    }
+
+
+def test_compact_plan_needs_full_sentence_accounting(store: Store) -> None:
+    """Empty edits/puts plus a summary cannot silently discard claims."""
+    _t1, review_id, _c = _proposal(
+        store,
+        SHELL_BODY,
+        meta={"expires": "2020-01-01T00:00:00+00:00"},
+        plan=lambda c: {
+            "edits": [],
+            "puts": [],
+            "shell": {"fate": "keep", "summary": "Summary.", "expires_days": 7},
+        },
+    )
+    with pytest.raises(BadInput, match="well-formed payload.plan"):
+        doors.apply_compact(store, review_id, actor="fixture")
+
+    _t2, review_id, _c = _proposal(
+        store,
+        SHELL_BODY,
+        meta={"expires": "2020-01-01T00:00:00+00:00"},
+        plan=lambda c: {
+            "edits": [],
+            "puts": [],
+            "sentences": _dispositions(
+                c,
+                *({"disposition": "drop", "reason": "history"} for _ in range(5)),
+                {"disposition": "drop"},
+            ),
+            "shell": {"fate": "keep", "summary": "Summary.", "expires_days": 7},
+        },
+    )
+    with pytest.raises(BadInput, match="drops need reason"):
+        doors.apply_compact(store, review_id, actor="fixture")
+
+    _t3, review_id, _c = _proposal(
+        store,
+        SHELL_BODY,
+        meta={"expires": "2020-01-01T00:00:00+00:00"},
+        plan=lambda c: {
+            "edits": [],
+            "puts": [],
+            "sentences": [{"disposition": "keep"}],
+            "shell": {"fate": "keep", "summary": "Summary.", "expires_days": 7},
+        },
+    )
+    with pytest.raises(BadInput, match="one plan.sentences disposition"):
+        doors.apply_compact(store, review_id, actor="fixture")
+
+
+def test_compact_rejected_plan_is_not_preservation(store: Store) -> None:
+    """A rejected compaction decides a question; it preserves nothing."""
+    target = _memory(store, SHELL_BODY, meta={"expires": "2020-01-01T00:00:00+00:00"})
+    review_id = emit_proposal(
+        store, _compact_candidate(store, target), rationale="try it"
+    )
+    assert review_id is not None
+    assert (
+        resolve_proposal(store, review_id, actor="reviewer", verdict="rejected")
+        is not None
+    )
+    store.add_tag(target, Tag.open("section:threads"), set_by="system")
+    retire = next(
+        c
+        for c in cand.thread_shape_candidates(store)
+        if c.target_id == target and c.action == "retire"
+    )
+    retire_id = emit_proposal(store, retire, rationale="stale thread snapshot")
+    assert retire_id is not None
+    with pytest.raises(MergeRefused, match="compaction"):
+        doors.apply_retire(
+            store, retire_id, actor="garden-consumer", model="fixture-reviewer"
+        )
+    assert _refs_row(store, target)[0] is False
+
+
+def test_apply_supersede_also_requires_completed_compaction(store: Store) -> None:
+    """A supersede is a retirement: the compact-first gate covers it too."""
+    target = _memory(store, "Dated snapshot: the campaign started.\n")
+    store.add_tag(target, Tag.open("section:threads"), set_by="system")
+    successor = _memory(store, "Left: finish campaign\nEarlier: campaign started.")
+    store.add_tag(successor, Tag.open("section:threads"), set_by="system")
+    store.add_link(src_ref_id=target, dst_ref_id=successor, relation="part-of")
+    sup = next(
+        c
+        for c in cand.thread_shape_candidates(store)
+        if c.target_id == target and c.action == "supersede"
+    )
+    review_id = emit_proposal(store, sup, rationale="ancestor holds the line")
+    assert review_id is not None
+    # A pending retire proposal is itself a compact trigger — the supersede
+    # may not retire the node before that question is answered.
+    emit_proposal(
+        store,
+        cand.GardenCandidate(
+            detector="thread_shape",
+            action="retire",
+            target_kind="ref",
+            target_id=target,
+            title="fixture retire trigger",
+            evidence={"content_sha": "x"},
+            payload={"base_sha": sup.payload.get("base_sha")},
+        ),
+        rationale="fixture",
+    )
+    with pytest.raises(MergeRefused, match="compaction"):
+        doors.apply_supersede(
+            store, review_id, actor="garden-consumer", model="fixture-reviewer"
+        )
+    assert _refs_row(store, target)[0] is False
+
+
+def test_completed_compact_permits_retire(store: Store) -> None:
+    """An applied compaction covering the current content is preservation."""
+    target, compact_id, _candidate = _proposal(
+        store,
+        SHELL_BODY,
+        meta={"expires": "2020-01-01T00:00:00+00:00"},
+        plan=_keep_plan,
+    )
+    rec = doors.apply_compact(store, compact_id, actor="garden-consumer")
+    assert rec["shell"]["fate"] == "keep"
+    store.add_tag(target, Tag.open("section:threads"), set_by="system")
+    retire = next(
+        c
+        for c in cand.thread_shape_candidates(store)
+        if c.target_id == target and c.action == "retire"
+    )
+    review_id = emit_proposal(store, retire, rationale="stale thread snapshot")
+    assert review_id is not None
+    out = doors.apply_retire(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+    assert out["target"] == target
+    assert _refs_row(store, target)[0] is True
+
+
+def test_compact_undo_restores_hub_edited_and_retired_into(store: Store) -> None:
+    """Edit the hub, retire into it: undo must reverse in dependency order."""
+    hub_body = "Hub index.\nThe standing gotcha lives here.\n"
+    hub = _memory(store, hub_body)
+    target = _memory(store, SHELL_BODY, meta={"expires": "2020-01-01T00:00:00+00:00"})
+    store.add_link(src_ref_id=target, dst_ref_id=hub, relation="part-of")
+    candidate = _compact_candidate(store, target)
+    assert hub in candidate.evidence["related"]["parents"]
+    candidate.payload["plan"] = {
+        "edits": [
+            {
+                "ref": hub,
+                "ops": [
+                    {
+                        "find": "The standing gotcha lives here.",
+                        "text": "The standing gotcha lives here. "
+                        "The cache must be flushed after every schema "
+                        "migration.",
+                    }
+                ],
+                "reason": "the claim belongs on the hub",
+            }
+        ],
+        "puts": [],
+        "sentences": _dispositions(
+            candidate,
+            {"disposition": "move", "ref": hub},
+            {"disposition": "drop", "reason": "restatement"},
+            {"disposition": "drop", "reason": "restatement"},
+            {"disposition": "drop", "reason": "history"},
+            {"disposition": "drop", "reason": "history"},
+            {"disposition": "drop", "reason": "history"},
+        ),
+        "shell": {"fate": "retire", "successor": hub},
+    }
+    review_id = emit_proposal(store, candidate, rationale="fold into the hub")
+    assert review_id is not None
+
+    rec = doors.apply_compact(store, review_id, actor="garden-consumer")
+    assert "schema\nmigration." in _body(store, hub) or "schema migration." in _body(
+        store, hub
+    )
+    retired, superseded_by, _meta = _refs_row(store, target)
+    assert retired is True
+    assert superseded_by == f"me{hub}"
+
+    counts = doors.undo_compact(store, rec["compact_id"], actor="fixture")
+    assert counts["edits_restored"] == 1
+    retired, superseded_by, _meta = _refs_row(store, target)
+    assert retired is False
+    assert _body(store, target) == SHELL_BODY
+    assert _body(store, hub) == hub_body
+
+
+def test_compact_related_includes_recall_and_restated(store: Store) -> None:
+    """The brief's move destinations: +recall neighbours, restated matches."""
+    keeper = _memory(store, "The keeper holds the claim.\n")
+    target = _memory(store, SHELL_BODY, meta={"expires": "2020-01-01T00:00:00+00:00"})
+    neighbour = _memory(store, "A neighbouring memory body.\n")
+    _card(store, target, "the same card text")
+    _card(store, neighbour, "the same card text")
+    rid = emit_proposal(
+        store,
+        cand.GardenCandidate(
+            detector="restated_claim",
+            action="rewrite",
+            target_kind="ref",
+            target_id=target,
+            other_id=keeper,
+            title=f"me{target} restates a claim in me{keeper}",
+            evidence={"hub": "me0", "matches": []},
+            payload={"base_sha": "x", "keeper": f"me{keeper}", "ops": []},
+        ),
+        rationale="sentence match",
+    )
+    assert rid is not None
+    candidate = _compact_candidate(store, target)
+    assert neighbour in candidate.evidence["related"]["recall"]
+    assert keeper in candidate.evidence["related"]["restated"]
+
+
+def test_compact_consumer_approves_but_never_applies(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The consumer records the approval and holds for the explicit door."""
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    target, review_id, _candidate = _proposal(
+        store,
+        SHELL_BODY,
+        meta={"expires": "2020-01-01T00:00:00+00:00"},
+        plan=_keep_plan,
+    )
+
+    def approve(_store: Store, _prop: Any) -> ConsumerVerdict:
+        return ConsumerVerdict(
+            verdict="approve", why="the plan preserves every claim", model="fx"
+        )
+
+    report = consume_proposals(store, review=approve)
+    assert report.applied == 0
+    assert report.held == 1
+    assert {p.review_id for p in pending_proposals(store)} == {review_id}
+    retired, _sup, meta = _refs_row(store, target)
+    assert retired is False
+    assert "garden_compact" not in meta
+    assert _body(store, target) == SHELL_BODY

@@ -2231,13 +2231,20 @@ def apply_supersede(
     model: str | None = None,
     verdict_extra: dict[str, Any] | None = None,
 ) -> dict[str, int]:
-    """Record the successor and retire through the existing memory delete door."""
+    """Record the successor and retire through the existing memory delete door.
+
+    The compact-first gate (gr561025) applies here too: a supersede is a
+    retirement, so a pending or unasked-and-triggered compaction on the
+    node completes first — only an applied compaction counts as
+    preservation.
+    """
     from precis.dispatch import Hub
 
     with store.atomic() as conn:
         target, garden, _body = _checked_memory_proposal(
             store, conn, review_id, "supersede"
         )
+        _compact_first(store, conn, target)
         successor = _memory_successor(garden["payload"])
         assert successor is not None
         rec = _retirement_snapshot(
@@ -2340,6 +2347,7 @@ def compact_plan_shape(plan: Any) -> bool:
     return (
         isinstance(plan.get("edits") or [], list)
         and isinstance(plan.get("puts") or [], list)
+        and isinstance(plan.get("sentences"), list)
         and isinstance(shell, dict)
         and shell.get("fate") in {"retire", "keep"}
     )
@@ -2509,7 +2517,91 @@ def _checked_compact_plan(
             raise BadInput(
                 f"a kept shell re-arms expires: expires_days 1..{COMPACT_MAX_EXPIRES_DAYS}"
             )
+    _checked_compact_sentences(plan, evidence, shell, edits, puts, editable)
     return {"edits": edits, "puts": puts, "shell": shell}
+
+
+#: The only dispositions that may drop a sentence — every other sentence is
+#: kept on a kept shell, moved into a related node, or minted atomic.
+COMPACT_DROP_REASONS = frozenset({"history", "restatement"})
+
+
+def _checked_compact_sentences(
+    plan: dict[str, Any],
+    evidence: dict[str, Any],
+    shell: dict[str, Any],
+    edits: list[dict[str, Any]],
+    puts: list[dict[str, Any]],
+    editable: set[int],
+) -> None:
+    """Per-sentence accounting: every detector sentence gets a disposition.
+
+    No sentence silently drops with a replacement summary (gr561025): the
+    plan must name one disposition per ``evidence.sentences`` entry, in
+    order — ``keep`` (only on a kept shell), ``move`` onto a related node
+    that a plan edit actually touches, ``mint`` into a named put, or
+    ``drop`` with its allowed reason. A sentence-capped body cannot be
+    accounted for at all: it splits or shrinks first.
+    """
+    if evidence.get("sentences_capped"):
+        raise BadInput(
+            "compact evidence is sentence-capped; split or shorten the body "
+            "before a per-sentence plan can account for it"
+        )
+    sentences = evidence.get("sentences") or []
+    dispositions = plan.get("sentences")
+    if not isinstance(dispositions, list) or len(dispositions) != len(sentences):
+        raise BadInput(
+            "compact requires one plan.sentences disposition per "
+            "evidence.sentences entry, in order"
+        )
+    edited = {int(edit["ref"]) for edit in edits}
+    for i, entry in enumerate(dispositions):
+        if not isinstance(entry, dict):
+            raise BadInput(f"plan.sentences[{i}] must be an object")
+        span = entry.get("span")
+        expected = (
+            (sentences[i] or {}).get("span") if isinstance(sentences[i], dict) else None
+        )
+        if span is not None and span != expected:
+            raise BadInput(
+                f"plan.sentences[{i}].span must echo evidence.sentences[{i}].span"
+            )
+        disp = entry.get("disposition")
+        if disp == "keep":
+            if shell["fate"] != "keep":
+                raise BadInput(
+                    f"plan.sentences[{i}] keeps a sentence on a shell that retires"
+                )
+        elif disp == "move":
+            ref = _plan_ref(entry.get("ref"))
+            if ref is None or ref not in editable:
+                raise BadInput(
+                    f"plan.sentences[{i}].ref must name a related live memory"
+                )
+            if ref not in edited:
+                raise BadInput(
+                    f"plan.sentences[{i}] moves to me{ref} but no plan edit lands there"
+                )
+        elif disp == "mint":
+            idx = entry.get("put")
+            if (
+                not isinstance(idx, int)
+                or isinstance(idx, bool)
+                or not 0 <= idx < len(puts)
+            ):
+                raise BadInput(f"plan.sentences[{i}].put must index a plan put")
+        elif disp == "drop":
+            if entry.get("reason") not in COMPACT_DROP_REASONS:
+                raise BadInput(
+                    f"plan.sentences[{i}] drops need reason in "
+                    f"{sorted(COMPACT_DROP_REASONS)} — a still-true claim moves, "
+                    "it does not drop"
+                )
+        else:
+            raise BadInput(
+                f"plan.sentences[{i}].disposition must be keep|move|mint|drop"
+            )
 
 
 def _compact_body_row(conn: Any, ref_id: int) -> tuple[Any, ...]:
@@ -2844,15 +2936,15 @@ def _pending_compact_proposal(conn: Any, target: int) -> bool:
 
 
 def _compact_first(store: Store, conn: Any, target: int) -> None:
-    """The retire door's compact-first gate (gr561025).
+    """The compact-first gate both retirement doors share (gr561025).
 
     A retirement may not apply while a compact proposal is pending on the
-    node, or while the compact detector still files an undecided
-    candidate — an approved or rejected compaction answers the question;
-    an unasked one must be asked first.
+    node, or while the compact detector still fires on a node whose last
+    completed compaction does not cover its current content. Only an
+    applied ``garden_compact`` record is completed preservation — a
+    rejected plan decided a question, it preserved nothing.
     """
     from precis.graph.garden import candidates
-    from precis.graph.garden.proposals import key_block
 
     if _pending_compact_proposal(conn, target):
         raise MergeRefused(
@@ -2863,16 +2955,20 @@ def _compact_first(store: Store, conn: Any, target: int) -> None:
     fresh = candidates.compact_candidates(
         store, scan_cap=1, limit=1, cursors={"compact:memory": target - 1}
     )
-    if (
-        fresh
-        and fresh[0].target_id == target
-        and key_block(store, "ref", target, fresh[0].key) is None
-    ):
-        raise MergeRefused(
-            "apply_refused",
-            "this memory owes a per-sentence compaction plan before retiring",
-            next="run the memory garden pass to file the compact proposal",
-        )
+    if not fresh or fresh[0].target_id != target:
+        return
+    row = conn.execute(
+        "SELECT meta->'garden_compact'->'shell'->'edit'->>'applied_sha', "
+        "precis_target_sha('ref', %s) FROM refs WHERE ref_id = %s",
+        (target, target),
+    ).fetchone()
+    if row is not None and row[0] is not None and row[0] == row[1]:
+        return  # a completed compaction already preserved this content
+    raise MergeRefused(
+        "compact_first",
+        "this memory owes a per-sentence compaction plan before retiring",
+        next="run the memory garden pass to file the compact proposal",
+    )
 
 
 def _restore_compact_body(
@@ -3049,12 +3145,12 @@ def undo_compact(store: Store, compact_id: str, *, actor: str) -> dict[str, int]
         }
         with revision_context(reason, actor=actor):
             apply_revision_context(conn, clear=True)
-            for edit in rec["edits"]:
-                out = _restore_compact_body(
-                    store, conn, edit, actor=actor, reason=reason
-                )
-                counts["edits_restored"] += 1
-                counts["links_deleted"] += out["deleted"]
+            # Dependent mutations reverse in apply's reverse order: the
+            # shell's retirement pins its endpoints' post-apply shas —
+            # including any node the plan edited and retired into — so it
+            # un-retires first, edits restore second, and the minted
+            # children retire last (their edges may be the successor
+            # twins the retirement undo expects to find unchanged).
             shell = rec["shell"]
             if shell.get("fate") == "retire":
                 ret = _restore_compact_retirement(
@@ -3076,6 +3172,12 @@ def undo_compact(store: Store, compact_id: str, *, actor: str) -> dict[str, int]
                     )
                 else:
                     store.stamp_ref_meta(target, {"expires": prior_expires}, conn=conn)
+            for edit in rec["edits"]:
+                out = _restore_compact_body(
+                    store, conn, edit, actor=actor, reason=reason
+                )
+                counts["edits_restored"] += 1
+                counts["links_deleted"] += out["deleted"]
             handler = Hub(store=store).sibling("memory")
             for put in rec["puts"]:
                 store.delete_links(
