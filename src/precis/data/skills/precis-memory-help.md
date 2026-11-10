@@ -95,14 +95,17 @@ transcript, not landed history (those live in `git log` and the docs).
    its job and processing view until current body and title/hook embeddings
    are ready before judging recall quality. Then
    `search(kind='memory', q='<the question you
-   will ask next time>', view='index')`. If the new `me<N>` is not
-   listed, rewrite `title=` / `meta.hook` with those task words — the
-   index view cuts semantic-only hits past a query-relative gap (best
-   hit's distance + 0.15, capped at the 0.65 corpus floor; the fixed
-   0.42 memory floor applies only under the
-   fixed-floors fallback), so a memory without them
-   can silently never come back. Retrieval keys and field fallbacks:
-   `precis-firstline-help`.
+   will ask next time>', view='index')`. A miss is not yet a rewrite:
+   compare first — the three-way check frozen in
+   `tests/workers/test_embed_fresh_memory.py` (natural question, exact
+   title via `scope='title'`, tag-scoped query). Exact-title and scoped
+   hit but the paraphrase misses → the title/hook lacks the task words —
+   rewrite `title=` / `meta.hook` with them: `view='index'` cuts
+   semantic-only hits past a query-relative gap (see "Recall what I
+   already know"), so a memory without them can silently never come
+   back. Exact-title or scoped also misses → a recall regression —
+   report it (a gripe), never rewrite the claim to chase rank.
+   Retrieval keys and field fallbacks: `precis-firstline-help`.
 5. **Link it in.** One `part-of` to a hub (or to a summary node for a
    detail node) plus 0–3 typed edges — more belongs in the body as
    `[handle]` mentions (`precis-relations`, the memory↔memory block).

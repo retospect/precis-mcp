@@ -35,6 +35,11 @@ BODY = (
     "fab check — a split child note that must recall on a paraphrase, "
     "not only on its own title."
 )
+TITLE = "TAZ thermal via note"
+TAG = "topic:taz-pcb"
+# A paraphrase of BODY, not a copy of TITLE — the gr563669 failure mode
+# was recall missing exactly this shape of query.
+NATURAL_QUESTION = "is via-in-pad on the TAZ board allowed for heat?"
 
 
 @pytest.fixture
@@ -123,3 +128,39 @@ def test_put_memory_embedded_by_the_nudged_batch(
             (ref_id,),
         ).fetchall()
     assert rows == [("card_combined", "ok", True), ("memory_body", "ok", True)]
+
+
+def test_fresh_memory_recall_comparisons_after_readiness(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Frozen recall comparisons after readiness (review td625147 of
+    td625146): once the nudged batch has embedded the fresh memory, a
+    natural question, the exact title and a tag-scoped query must each
+    bring it back — it is the only memory in the corpus, so each search
+    returns exactly it.
+
+    The expectations are frozen on purpose. A miss is a recall
+    regression in the write/embed pipeline or the index view's recall
+    cut: report it as such. Never fix a red comparison by rewriting the
+    claim's title/hook to chase rank — that hides the regression and
+    corrupts the record.
+    """
+    _patch_embedder(monkeypatch, make_mock_bge_m3())
+    seed_chunks(store, [f"backlog {i}" for i in range(NUDGE_LIMIT + 8)])
+
+    ref_id = id_of(handler.put(text=BODY, title=TITLE, tags=[TAG]).body)
+    [(_job, _prio, meta, status)] = _nudge_jobs(store)
+    assert status == "queued"
+
+    ctx = _mk_ctx(store, params=meta["params"])
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+    assert ctx.failures == []
+
+    natural = handler.search(q=NATURAL_QUESTION, view="index")
+    exact_title = handler.search(q=TITLE, scope="title", view="index")
+    scoped = handler.search(q=NATURAL_QUESTION, tags=[TAG], view="index")
+    for resp in (natural, exact_title, scoped):
+        # The seeded backlog is all papers: this memory is the corpus's
+        # only memory, so each comparison must return exactly its bullet.
+        assert resp.body.count(f"me{ref_id}") == 1
+        assert f"- {TITLE} (me{ref_id}" in resp.body
