@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from precis import settings as psettings
 from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
@@ -149,8 +150,11 @@ def test_plan_root_is_tagged_but_not_linked(store: Store) -> None:
     # (land_slice._plan_gripe) — a rescue link would misfile it
     assert _links(store, root) == []
     assert _comments(store, root, "todo_comment")
-    # the unlinked signature gripe still never dispatches: backdated and
-    # fix:code-tagged, the missing filed_by keeps it out of candidates
+    # the unlinked signature gripe still never dispatches under the
+    # ``filer`` trust rule: backdated and fix:code-tagged, the missing
+    # filed_by keeps it out of candidates (``all``, the default since
+    # 2026-11-10, skips that check on purpose)
+    psettings.set_setting(gd.TRUST_KEY, "filer", store=store)
     store.add_tag(res.gripe_id, Tag.open("fix:code"), set_by="agent")
     with store.pool.connection() as conn:
         conn.execute(
@@ -163,7 +167,10 @@ def test_plan_root_is_tagged_but_not_linked(store: Store) -> None:
             "AND t.namespace = 'OPEN' AND t.value = 'fix:code'",
             (res.gripe_id,),
         )
-    assert res.gripe_id not in {c.gripe_id for c in gd.candidates(store, 50)}
+    try:
+        assert res.gripe_id not in {c.gripe_id for c in gd.candidates(store, 50)}
+    finally:
+        psettings.invalidate(gd.TRUST_KEY)
 
 
 def test_evidence_comment_has_branch_head_sha_and_40_line_cap(

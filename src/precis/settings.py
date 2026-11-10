@@ -547,6 +547,20 @@ REGISTRY: dict[str, SettingSpec] = {
             "turns on by default; the coordinator flips it after E1 is "
             "deployed.",
         ),
+        SettingSpec(
+            key="factory.gripe_trust",
+            type="str",
+            env_var=None,
+            default="all",
+            doc="DB-only. Filer-trust rule of the gripe_dispatch intake "
+            "(precis.workers.gripe_dispatch). 'all' (default; Reto "
+            "2026-11-10: legacy gripes are all trusted for now) skips the "
+            "filer check; 'filer' keeps the earlier rule — only a Claude "
+            "Code client, a human account, or a ci_watch ci.sig gripe is "
+            "dispatched. Hold tags, a live linked todo, the age floor "
+            "and lane capacity apply either way. An unrecognised value "
+            "reads as 'filer'.",
+        ),
     )
 }
 

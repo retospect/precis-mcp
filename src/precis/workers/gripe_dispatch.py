@@ -25,21 +25,30 @@ Each fire:
   minus held slots — one tick may fill every free build slot, and a
   chain whose build never lands holds its slot.
 * **Candidates** (:func:`candidates`): live gripes, STATUS ``open`` or
-  ``triaged``, tagged ``fix:code``, waiting :data:`_MIN_AGE_MINUTES`
-  since the latest ``STATUS:triaged`` or ``fix:code`` attachment (filing
+  ``triaged``, tagged any of :data:`FIX_CLASS_TAGS` (``fix:code``,
+  ``fix:skill``, ``fix:docs``, ``fix:web``, ``fix:mcp``; Reto
+  2026-11-10), waiting :data:`_MIN_AGE_MINUTES`
+  since the latest ``STATUS:triaged`` or fix-class attachment (filing
   time only if neither timestamp is known), with no live todo
   ``related-to`` them (a chain, hand-minted or ours, already exists — a
   linked todo carrying a terminal STATUS is closed work and no longer
   holds the gripe out, gr609044), none
   of the hold tags (``fix:reto``, ``reto:ask``, ``disagreement``,
   ``flood``, ``hold:no-dispatch``, ``hold:no-autoclose``,
-  ``rescue:intake``), and **filed by a Claude Code client or a human
-  account, or machine-filed with a ``ci.sig``** — BUILDER's
-  condition (2026-11-04): the gripe
+  ``rescue:intake``), and the **filer-trust rule** below.
+* **Filer trust** (setting :data:`TRUST_KEY` = ``factory.gripe_trust``).
+  ``all`` (the default) skips the filer check: every filer is trusted
+  (Reto 2026-11-10: "This is a legacy issue, they are all trusted for
+  now, let them go. We turn on more serious trust in a bit."); the hold
+  tags, the live-linked-todo check, the age floor and the lane capacity
+  still apply. ``filer`` restores BUILDER's condition (2026-11-04): only
+  a gripe **filed by a Claude Code client or a human account, or
+  machine-filed with a ``ci.sig``** is a candidate, because the gripe
   text rides the build body verbatim and lands on main with no triage in
   front, so a reader-intake or worker-filed gripe never reaches a lane by
   this door. ``meta.filed_by`` carries the stamp
-  (:mod:`precis.filing_origin`); a gripe without one is skipped. The
+  (:mod:`precis.filing_origin`); under ``filer`` a gripe without one is
+  skipped. An unrecognised value reads as ``filer`` (fail closed). The
   ``ci.sig`` exception is the ci_watch door: a gripe carrying
   ``meta.ci.sig`` and the worker stamp ``filed_by.principal =
   worker:ci_watch`` is machine-filed from the repo's own CI output about
@@ -72,6 +81,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from precis import settings as psettings
 from precis.corpus_layout import host_name
 from precis.plans import lanes as _lanes
 from precis.plans.templates import mint_gripe_fix_direct
@@ -92,7 +102,22 @@ _MIN_AGE_MINUTES = 15
 #: Repositories the factory can land; untagged gripes belong to precis.
 _LANDABLE_PROJECTS: frozenset[str] = frozenset({"precis"})
 _PROJECT_SKIP_PREFIX = "dispatch: skipped unsupported project:"
+#: Gripe tags that mark fixable work: code, skill, docs, web or MCP-surface
+#: changes (Reto 2026-11-10). All of them land through the same
+#: ``gripe-fix-direct`` chain and its repo-wide ``scripts/ship`` land.
+FIX_CLASS_TAGS: tuple[str, ...] = (
+    "fix:code",
+    "fix:skill",
+    "fix:docs",
+    "fix:web",
+    "fix:mcp",
+)
 #: Task class the chain's build carries (templates leave it unset → code).
+#: Every :data:`FIX_CLASS_TAGS` class mints it: a ``docs`` class fits only
+#: the kimi lane (and ``*`` lanes), while a ``code`` build fits every
+#: code lane (devin, kimi, claude-sub), so mapping fix:docs/fix:skill to
+#: ``docs`` would narrow capacity and starve them. Slot supply and
+#: demand stay on the one class.
 _BUILD_TASK_CLASS = "code"
 #: ``meta.op`` types whose live node holds a build slot — the slice run
 #: itself and its land (gr584410). The chain tail — the ``sha-in-prod``
@@ -128,6 +153,26 @@ _AGENT_CLIENT_PREFIX = "claude-code/"
 #: ``meta.filed_by.actor`` prefix of a human account
 #: (:mod:`precis.acting_user`).
 _HUMAN_ACTOR_PREFIX = "user:"
+#: Registry key of the filer-trust switch (:func:`gripe_trust`).
+TRUST_KEY = "factory.gripe_trust"
+#: ``factory.gripe_trust`` values: ``all`` skips the filer check,
+#: ``filer`` keeps the Claude Code / human / ``ci.sig`` rule.
+TRUST_ALL = "all"
+TRUST_FILER = "filer"
+
+
+def gripe_trust(store: Store) -> str:
+    """The resolved ``factory.gripe_trust`` mode: :data:`TRUST_ALL` (the
+    registry default) or :data:`TRUST_FILER`. An unrecognised stored
+    value reads as ``filer`` — a typo tightens the rule, never loosens it."""
+    raw = psettings.get_str(TRUST_KEY, store=store)
+    mode = (raw or TRUST_ALL).strip().lower()
+    if mode in (TRUST_ALL, TRUST_FILER):
+        return mode
+    log.warning(
+        "gripe_dispatch: %s=%r unrecognised; using %r", TRUST_KEY, raw, TRUST_FILER
+    )
+    return TRUST_FILER
 
 
 def gripe_dispatch_enabled(
@@ -243,15 +288,15 @@ def _candidate_picks(
                           WHERE tt.ref_id = r.ref_id
                             AND ((t.namespace = 'STATUS' AND t.value = 'triaged')
                                  OR (t.namespace IN ('OPEN', 'FLAG')
-                                     AND t.value = 'fix:code'))),
+                                     AND t.value = ANY(%s)))),
                         r.created_at) < now() - %s * interval '1 minute'
-           AND (r.meta->'filed_by'->>'client' LIKE %s
+           AND (%s OR r.meta->'filed_by'->>'client' LIKE %s
                 OR r.meta->'filed_by'->>'actor' LIKE %s
                 OR (r.meta->'ci'->>'sig' IS NOT NULL
                     AND r.meta->'filed_by'->>'principal' = %s))
            AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags f ON f.tag_id = ft.tag_id
                         WHERE ft.ref_id = r.ref_id AND f.namespace IN ('OPEN', 'FLAG')
-                          AND f.value = 'fix:code')
+                          AND f.value = ANY(%s))
            AND COALESCE((SELECT bool_and(substr(p.value, 9) = ANY(%s))
                            FROM ref_tags pt JOIN tags p ON p.tag_id = pt.tag_id
                           WHERE pt.ref_id = r.ref_id AND p.namespace IN ('OPEN', 'FLAG')
@@ -273,15 +318,20 @@ def _candidate_picks(
          ORDER BY {_dscore.score_sql()} DESC, r.created_at, r.ref_id
          LIMIT %s
     """
+    trust_all = gripe_trust(store) == TRUST_ALL
+    fix_tags = list(FIX_CLASS_TAGS)
     with store.pool.connection() as conn:
         rows = conn.execute(
             sql,
             (
                 list(_DISPATCH_STATUSES),
+                fix_tags,
                 _MIN_AGE_MINUTES,
+                trust_all,
                 _AGENT_CLIENT_PREFIX + "%",
                 _HUMAN_ACTOR_PREFIX + "%",
                 _CI_WATCH_PRINCIPAL,
+                fix_tags,
                 sorted(_LANDABLE_PROJECTS),
                 "precis" in _LANDABLE_PROJECTS,
                 supported_projects,
@@ -480,11 +530,14 @@ def _rescue_intake(
 
 
 __all__ = [
+    "FIX_CLASS_TAGS",
     "HOLD_TAGS",
     "SERVICE_NAME",
+    "TRUST_KEY",
     "DispatchPick",
     "candidates",
     "gripe_dispatch_enabled",
+    "gripe_trust",
     "lane_capacity",
     "open_chain_count",
     "run_gripe_dispatch_pass",

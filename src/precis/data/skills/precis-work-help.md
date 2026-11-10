@@ -289,11 +289,11 @@ the gripe text verbatim and picks its lane at dispatch (cheapest fit,
 free before paid; codex, which cannot reach the test gate's docker, is
 never offered `code`); the land writes `resolved: <sha>` on the gripe.
 It picks the hottest `prio` then the oldest among gripes that are `open`
-or `triaged`, tagged `fix:code`, 15+ minutes past the latest `STATUS:triaged` or `fix:code` tag
-(filing time if neither is known), with no live todo `related-to` them, and filed by a Claude Code session or a human account
-(`meta.filed_by`). Reader-intake and worker-filed gripes never enter a
-lane this way, nor does a never-close gripe (`hold:no-autoclose`: a land
-would write `resolved:` on it). Keep a gripe out with any of `fix:reto`,
+or `triaged`, tagged `fix:` code/skill/docs/web/mcp (a `code` build),
+15+ minutes past the latest `STATUS:triaged` or fix tag, with no live
+todo `related-to` them. Setting `factory.gripe_trust`: `all` (default)
+takes any filer; `filer` only Claude Code, human or ci_watch filers.
+A `hold:no-autoclose` gripe never enters a lane. Keep a gripe out with any of `fix:reto`,
 `reto:ask`, `disagreement`, `flood`, or
 
 ```python

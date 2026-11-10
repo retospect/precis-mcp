@@ -98,6 +98,14 @@ class Cadence:
     so the fire stays claimable by a lit host (gr518089: a fleet-wide
     ``*`` light must not let a host an operator dimmed win the tick).
 
+    ``claim_when_dark`` (with ``service``) relaxes that skip for a service
+    dark FLEET-WIDE: a host resolving to 0 still skips while some
+    ``service_config`` row lights the service (a lit host takes the fire,
+    none is burnt as a dark no-op), but when no row anywhere is lit the
+    host claims, so the lease keeps advancing and health_digest's
+    cadence-staleness check does not read a deliberately dark service as
+    "stopped firing" (al567129).
+
     ``spends`` marks a cadence whose work bills an LLM, so it is gated on the
     global daily ceiling — see :func:`_over_daily_budget`."""
 
@@ -109,6 +117,26 @@ class Cadence:
     resolve_interval: Callable[[Any], int] | None = None
     service: str | None = None
     spends: bool = False
+    claim_when_dark: bool = False
+
+
+def _service_lit_anywhere(store: Store, service: str) -> bool:
+    """True iff some ``service_config`` row (any host, ``*`` included)
+    lights ``service`` (prio > 0). A read blip answers True: the
+    ``claim_when_dark`` caller then skips this fire rather than burn it."""
+    try:
+        with store.pool.connection() as conn:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM service_config WHERE service = %s AND prio > 0 "
+                    "LIMIT 1",
+                    (service,),
+                ).fetchone()
+                is not None
+            )
+    except Exception:
+        log.warning("scheduler: service_config lit check failed", exc_info=True)
+        return True
 
 
 def _run_cron_tick(store: Store, batch_size: int) -> None:
@@ -348,8 +376,8 @@ def _run_transcript_audit(store: Store, batch_size: int) -> None:
 
 def _run_gripe_dispatch(store: Store, batch_size: int) -> None:
     """One gripe dispatch tick (dark factory intake, td564019 cut 3): mint
-    a ``gripe-fix-direct`` chain for the hottest agent- or human-filed
-    ``fix:code`` gripes, as many as the code lanes have free slots. Dark
+    a ``gripe-fix-direct`` chain for the hottest ``fix:code`` / ``fix:skill``
+    / ``fix:docs`` / ``fix:web`` / ``fix:mcp`` gripes, as many as the code lanes have free slots. Dark
     unless ``service_config`` lights ``gripe_dispatch`` for this host.
     ``batch_size`` is unused — the lane caps are the throttle. No model
     call: spends=False."""
@@ -1317,20 +1345,25 @@ CADENCES: tuple[Cadence, ...] = (
     ),
     # Dark factory intake (td564019 cut 3): every 10 minutes, mint a
     # gripe-fix-direct chain per free code-lane slot for the hottest
-    # agent- or human-filed fix:code gripe. `service` gates the claim on
+    # fix:code/skill/docs/web/mcp gripe. `service` gates the claim on
     # the host's resolved gripe_dispatch prio (Reto lights it); no
     # `eligible` probe — the pass only writes todos, the build picks its
     # own lane at dispatch. spends=False: no model call.
-    # Ships DISABLED: the cadence fires and the lease advances, but the pass
-    # no-ops until a `service_config` row lights `gripe_dispatch` (prio > 0)
-    # for the host — `precis service prio melchior gripe_dispatch 1`. No
-    # `service=` gate on the cadence on purpose (al567129): that gate leaves
-    # the lease unclaimed while dark, which health_digest's cadence-staleness
-    # check reports as "stopped firing" forever.
+    # Ships DISABLED: the pass no-ops until a `service_config` row lights
+    # `gripe_dispatch` (prio > 0) for the host — `precis service prio
+    # melchior gripe_dispatch 1`. The cadence is `service=`-gated with
+    # `claim_when_dark`: a host with no live row skips WITHOUT claiming
+    # while another host is lit (a lit host takes the fire; 6 of 18 fires
+    # over 3 h were burnt as dark no-ops on a row-less host), but with no
+    # lit row anywhere the host still claims, so the lease advances and
+    # health_digest's cadence-staleness check does not read a deliberately
+    # dark service as "stopped firing" (al567129).
     Cadence(
         name="gripe_dispatch",
         interval_s=10 * 60,
         run=_run_gripe_dispatch,
+        service="gripe_dispatch",
+        claim_when_dark=True,
     ),
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
     # none' first lines, nodes another live memory supersedes, and nodes
@@ -1669,7 +1702,9 @@ def _scheduler_pass(
                 from precis.workers.service_config import ServiceConfigResolver
 
                 svc_resolver = ServiceConfigResolver(store, host)
-            if not svc_resolver.enabled(cad.service, default_on=False):
+            if not svc_resolver.enabled(cad.service, default_on=False) and not (
+                cad.claim_when_dark and not _service_lit_anywhere(store, cad.service)
+            ):
                 continue
         interval_s = cad.interval_s
         if cad.resolve_interval is not None:

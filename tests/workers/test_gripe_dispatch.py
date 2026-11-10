@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from psycopg.types.json import Jsonb
 
+from precis import settings as psettings
 from precis.plans.lanes import ANY_CLASS, Lane
 from precis.store import Store
 from precis.store.types import Tag
@@ -57,9 +58,9 @@ def _age_dispatch_tags(store: Store, ref_id: int, minutes: float) -> None:
         conn.execute(
             "UPDATE ref_tags rt SET created_at = now() - make_interval(secs => %s) "
             "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
-            "AND ((t.namespace IN ('OPEN', 'FLAG') AND t.value = 'fix:code') "
+            "AND ((t.namespace IN ('OPEN', 'FLAG') AND t.value = ANY(%s)) "
             "OR (t.namespace = 'STATUS' AND t.value = 'triaged'))",
-            (minutes * 60, ref_id),
+            (minutes * 60, ref_id, list(gd.FIX_CLASS_TAGS)),
         )
 
 
@@ -71,6 +72,19 @@ def _tag_age(store: Store, ref_id: int, value: str, minutes: float) -> None:
             "AND t.value = %s",
             (minutes * 60, ref_id, value),
         )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_trust_cache() -> Any:
+    """``factory.gripe_trust`` rides the 60 s settings cache; keep one
+    test's value out of the next."""
+    psettings.invalidate(gd.TRUST_KEY)
+    yield
+    psettings.invalidate(gd.TRUST_KEY)
+
+
+def _trust(store: Store, mode: str) -> None:
+    psettings.set_setting(gd.TRUST_KEY, mode, store=store)
 
 
 def _light(store: Store, prio: int = 1, host: str = "*") -> None:
@@ -139,6 +153,8 @@ def test_lane_capacity_sums_enabled_code_fit_caps(two_lanes: Any) -> None:
 
 
 def test_candidates_filter_and_order(store: Store, two_lanes: Any) -> None:
+    """``filer`` mode: today's rule (Claude Code / human / ci.sig only)."""
+    _trust(store, "filer")
     hot = _gripe(store, "hot", prio=2)
     old = _gripe(store, "old", age_minutes=600)
     newer = _gripe(store, "newer", age_minutes=61)
@@ -146,7 +162,7 @@ def test_candidates_filter_and_order(store: Store, two_lanes: Any) -> None:
     _gripe(store, "too young", age_minutes=5)
     _gripe(store, "worker-filed", meta=_WORKER, prio=1)
     _gripe(store, "no provenance", meta={}, prio=1)
-    _gripe(store, "not code", tags=("fix:docs",))
+    _gripe(store, "not code", tags=("fix:infra",))
     _gripe(store, "held", tags=("fix:code", "hold:no-dispatch"))
     _gripe(store, "never-close", tags=("fix:code", "hold:no-autoclose"))
     _gripe(store, "reto's", tags=("fix:code", "fix:reto"))
@@ -158,6 +174,92 @@ def test_candidates_filter_and_order(store: Store, two_lanes: Any) -> None:
     assert titles == ["human", "hot", "old", "newer"]
     assert [c.gripe_id for c in picks][1:] == [hot, old, newer]
     assert gd.candidates(store, 0) == []
+
+
+def test_gripe_trust_default_is_all(store: Store) -> None:
+    assert gd.gripe_trust(store) == "all"
+    _trust(store, "filer")
+    assert gd.gripe_trust(store) == "filer"
+    _trust(store, " ALL ")
+    assert gd.gripe_trust(store) == "all"
+    _trust(store, "bogus")  # a typo tightens, never loosens
+    assert gd.gripe_trust(store) == "filer"
+
+
+def test_trust_all_skips_only_the_filer_check(store: Store, two_lanes: Any) -> None:
+    """``all`` (the default): worker-filed and unstamped gripes dispatch;
+    every other filter still applies."""
+    assert gd.gripe_trust(store) == "all"
+    _gripe(store, "agent", prio=1)
+    _gripe(store, "worker-filed", meta=_WORKER, prio=2)
+    _gripe(store, "no provenance", meta={}, prio=3)
+    _gripe(store, "too young", meta=_WORKER, age_minutes=5, prio=9)
+    _gripe(store, "held", meta=_WORKER, tags=("fix:code", "hold:no-dispatch"))
+    _gripe(store, "never-close", meta=_WORKER, tags=("fix:code", "hold:no-autoclose"))
+    _gripe(store, "reto's", meta=_WORKER, tags=("fix:code", "fix:reto"))
+    _gripe(store, "not code", meta=_WORKER, tags=("fix:infra",))
+    _gripe(store, "closed", meta=_WORKER, status="done")
+    linked = _gripe(store, "already chained", meta=_WORKER, prio=9)
+    gd.mint_gripe_fix_direct(store, gripe_id=linked)
+    titles = [c.title for c in gd.candidates(store, 10)]
+    assert titles == ["agent", "worker-filed", "no provenance"]
+
+    _trust(store, "filer")
+    assert [c.title for c in gd.candidates(store, 10)] == ["agent"]
+
+
+@pytest.mark.parametrize(
+    "tag", ["fix:code", "fix:skill", "fix:docs", "fix:web", "fix:mcp"]
+)
+def test_each_fix_class_mints_a_code_class_build(
+    store: Store, two_lanes: Any, tag: str
+) -> None:
+    """Every fix class is a candidate and mints the same chain: the build
+    carries no task_class override, so it resolves to ``code``."""
+    _light(store)
+    gid = _gripe(store, f"a {tag} gripe", tags=(tag,))
+    assert [c.gripe_id for c in gd.candidates(store, 5)] == [gid]
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    [root] = _roots_for(store, gid)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT COALESCE(bn.meta->>'task_class', 'code') FROM refs bn "
+            "JOIN ref_tags bpt ON bpt.ref_id = bn.ref_id "
+            "JOIN tags bp ON bp.tag_id = bpt.tag_id "
+            "AND bp.namespace = 'OPEN' AND bp.value = 'plan:' || %s::text "
+            "WHERE bn.kind = 'todo' "
+            "AND COALESCE(bn.meta->'op'->>'type', bn.meta->>'op') = ANY(%s)",
+            (root, list(gd._BUILD_OPS)),
+        ).fetchall()
+    # one build (code) plus the validate run_slice; nothing is docs-classed
+    assert sorted(r[0] for r in rows) == ["code", "validate"]
+    # the minted chain holds a lane slot like a fix:code one (capacity
+    # count and the build's class agree)
+    assert gd.open_chain_count(store) == 1
+
+
+def test_non_fix_classes_stay_out(store: Store, two_lanes: Any) -> None:
+    _gripe(store, "infra", tags=("fix:infra",))
+    _gripe(store, "untagged", tags=())
+    _gripe(store, "unknown", tags=("fix:other",))
+    assert gd.candidates(store, 10) == []
+
+
+def test_mixed_classes_share_the_one_code_capacity(
+    store: Store, two_lanes: Any
+) -> None:
+    """Capacity 3 (codex 1 + claude-sub 2): a fix:docs chain holds a slot
+    against fix:code ones — one pool, not a per-class split."""
+    _light(store)
+    for i, tag in enumerate(("fix:docs", "fix:skill", "fix:web", "fix:code")):
+        _gripe(store, f"g{i}", tags=(tag,), prio=i + 1)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["lane_capacity"] == 3 and res.extra["slots"] == 3
+    assert (res.claimed, res.ok) == (3, 3)
+    assert gd.open_chain_count(store) == 3
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["slots"] == 0 and res.claimed == 0
 
 
 def test_pass_mints_within_free_slots_and_is_idempotent(
@@ -576,9 +678,11 @@ def test_cadence_and_service_spec() -> None:
 
     cad = next(c for c in CADENCES if c.name == "gripe_dispatch")
     assert cad.interval_s == 10 * 60
-    # No service= gate: a dark pass must still win its lease, else the
-    # cadence-staleness check reads it as "stopped firing" (al567129).
-    assert cad.service is None and cad.spends is False
+    # service-gated so a row-less host leaves the fire to a lit one, with
+    # claim_when_dark so a fleet-wide dark pass still wins its lease, else
+    # the cadence-staleness check reads it as "stopped firing" (al567129).
+    assert cad.service == "gripe_dispatch" and cad.claim_when_dark is True
+    assert cad.spends is False
     spec = SERVICES_BY_NAME["gripe_dispatch"]
     assert spec.kind is ServiceKind.PASS
     assert not spec.default_profiles and spec.ref_pass is False
@@ -715,6 +819,7 @@ def test_mcp_put_handler_cannot_forge_the_ci_door(
     future handler must hit if it starts accepting ``put_meta`` — the
     ci_watch door key would then be re-ruled against that surface, not
     silently widened."""
+    _trust(store, "filer")  # the filer-door rule these tests pin
     from precis.handlers.gripe import GripeHandler
     from precis.workers.job_types import ci_watch
 
@@ -746,6 +851,7 @@ def test_worker_cli_with_ci_sig_is_not_a_candidate(
     """A ``worker:cli``-stamped gripe carrying ``meta.ci.sig`` is NOT a
     candidate — the old ``actor = 'agent'`` clause is gone: the
     agent-declared actor no longer opens the door."""
+    _trust(store, "filer")  # the filer-door rule these tests pin
     from precis.workers.job_types import ci_watch
 
     gid = _gripe(
@@ -767,5 +873,6 @@ def test_worker_cli_with_ci_sig_is_not_a_candidate(
 def test_worker_gripe_without_ci_sig_is_not_a_candidate(
     store: Store, two_lanes: Any
 ) -> None:
+    _trust(store, "filer")  # the filer-door rule these tests pin
     gid = _gripe(store, "worker-filed gripe", meta=_WORKER)
     assert gid not in [c.gripe_id for c in gd.candidates(store, 10)]

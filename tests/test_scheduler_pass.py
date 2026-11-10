@@ -216,6 +216,45 @@ def test_service_gated_cadence_resolves_prio_per_host(store) -> None:
     assert ran == ["fired"]
 
 
+def test_claim_when_dark_skips_only_while_another_host_is_lit(store) -> None:
+    """A ``claim_when_dark`` service cadence: a host with no live row
+    leaves the fire to a lit host (no burnt dark no-op), but when no row
+    anywhere is lit it still claims, so the lease keeps advancing."""
+    from precis.workers.service_config import set_service_prio
+
+    def mk(service: str, ran: list[str]) -> Cadence:
+        # A fresh lease per phase: a due-ness skip must not mask the gate.
+        return Cadence(
+            name=f"c-{uuid4().hex}",
+            interval_s=3600,
+            run=lambda s, b: ran.append("fired"),
+            service=service,
+            claim_when_dark=True,
+        )
+
+    # Dark fleet-wide: the row-less host claims and fires (the pass no-ops).
+    ran: list[str] = []
+    r = run_scheduler_pass(store, host="h", cadences=(mk("svc_cwd_a", ran),))
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0) and ran == ["fired"]
+
+    # melchior lit: the row-less host skips without claiming, and the
+    # lit host then takes the same fire.
+    set_service_prio(store, "melchior", "svc_cwd_b", 1)
+    ran = []
+    cad = mk("svc_cwd_b", ran)
+    r2 = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r2.claimed, r2.ok, r2.failed) == (0, 0, 0) and ran == []
+    r3 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    assert (r3.claimed, r3.ok, r3.failed) == (1, 1, 0) and ran == ["fired"]
+
+    # A `*` light dimmed on one host: that host skips, the fleet is lit.
+    set_service_prio(store, "*", "svc_cwd_c", 1)
+    set_service_prio(store, "balthazar", "svc_cwd_c", 0)
+    ran = []
+    r4 = run_scheduler_pass(store, host="balthazar", cadences=(mk("svc_cwd_c", ran),))
+    assert r4.claimed == 0 and ran == []
+
+
 def test_resolved_interval_keeps_its_own_spacing_across_passes(store) -> None:
     """gr518038 round 2 — the dream_agent shape: ``resolve_interval``
     returns a live value (3600) different from the static ``interval_s``

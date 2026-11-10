@@ -1660,7 +1660,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="health",
         kind=ServiceKind.PASS,
         one_line="10-minute tick that mints a gripe-fix-direct chain per free "
-        "code-lane slot for the hottest agent- or human-filed fix:code gripe "
+        "code-lane slot for the hottest fix:code/skill/docs/web/mcp gripe "
         "with no chain yet; dark until service_config lights it.",
         doc_skill="precis-work-help",
     ),
