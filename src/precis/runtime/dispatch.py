@@ -1653,6 +1653,35 @@ class DispatchMixin(RuntimeShape):
                                 body = candidate
                     except Exception:
                         log.debug("memory complaint hint skipped", exc_info=True)
+                if (
+                    verb == "search"
+                    and self.store is not None
+                    and args.get("kind") == "memory"
+                    and args.get("view") in (None, "index")
+                    and response.result_count
+                    and not memory_batch
+                    and not budget_fitted
+                ):
+                    # gr564017: recall is where a stale or contradicted node
+                    # is first used — the exact-get pointer above never
+                    # fires for a session that only searches. One offer per
+                    # session, on the default and index listing views only.
+                    from precis.runtime.handle_deref import memory_search_gripe_hint
+
+                    try:
+                        hint = memory_search_gripe_hint()
+                        if hint is not None:
+                            # The optional line never takes space from the result.
+                            cap = _env_cap(
+                                "PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES
+                            )
+                            if fold:
+                                cap = min(cap, result_context_cap())
+                            candidate = f"{body}\n{hint}"
+                            if len(candidate.encode("utf-8")) <= cap:
+                                body = candidate
+                    except Exception:
+                        log.debug("memory search gripe hint skipped", exc_info=True)
                 if verb == "get" and self.store is not None:
                     from precis.runtime.handle_deref import record_exact_read
 
@@ -1703,7 +1732,11 @@ class DispatchMixin(RuntimeShape):
                         f"internal error in {verb}: {type(e).__name__} "
                         "(see server log)",
                         next=self._schema_drift_note(e)
-                        or "file a gripe naming this call; it is a server bug",
+                        or (
+                            "this is a server bug — file one gripe naming this "
+                            "call; get(kind='skill', id='precis-gripe-help') "
+                            "shows the filing shape"
+                        ),
                     )
                 )
                 self._record_tool_call(verb, args, body, True, started)

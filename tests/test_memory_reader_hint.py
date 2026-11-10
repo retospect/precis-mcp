@@ -298,3 +298,162 @@ def test_hint_absent_for_other_views(
         )
     assert not failed, result
     assert result == original
+
+
+# ── gr564017: the complaint pointer also rides the first memory search ──
+#
+# Recall is where a stale or contradicted node is first *used* — the
+# exact-get hint above never fires for a session that only searches, which
+# is how the soul/bootstrap trial consumed memory.
+
+
+def _searchable_memory(store: Store) -> None:
+    ref = store.insert_ref(kind="memory", slug=None, title="soulbootstrap marker")
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text="A soulbootstrap marker claim with evidence.",
+                meta={"chunk_kind": "memory_body"},
+            )
+        ],
+    )
+
+
+def test_search_hint_first_search_only_per_session(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    _searchable_memory(store)
+    # Hold the session objects: plain object() has no weakref, so the
+    # ledger sid falls back to id() — an inline object() can be recycled
+    # across blocks and alias the dead session's receipts.
+    sess1 = object()
+    sess2 = object()
+    with serve_ledger.session_scope(sess1):
+        first = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "soulbootstrap"}
+        )
+        assert MEMORY_GRIPE_HINT in first
+        second = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "soulbootstrap"}
+        )
+        assert MEMORY_GRIPE_HINT not in second
+    with serve_ledger.session_scope(sess2):
+        another = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "soulbootstrap"}
+        )
+        assert MEMORY_GRIPE_HINT in another
+
+
+def test_search_hint_absent_without_session(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    _searchable_memory(store)
+    result = runtime_with_store.dispatch(
+        "search", {"kind": "memory", "q": "soulbootstrap"}
+    )
+    assert "soulbootstrap marker" in result
+    assert MEMORY_GRIPE_HINT not in result
+
+
+def test_search_hint_absent_for_empty_result(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    _searchable_memory(store)
+    with serve_ledger.session_scope(object()):
+        result = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "no-such-token-xyz"}
+        )
+    assert MEMORY_GRIPE_HINT not in result
+
+
+def test_search_hint_absent_for_other_kind_and_views(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _searchable_memory(store)
+    paper = store.insert_ref(kind="paper", slug="search-hint-paper", title="Paper")
+    with serve_ledger.session_scope(object()):
+        other = runtime_with_store.dispatch("search", {"kind": "paper", "q": "Paper"})
+        counted = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "soulbootstrap", "view": "count"}
+        )
+        plain = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "soulbootstrap"}
+        )
+    assert MEMORY_GRIPE_HINT not in other
+    assert MEMORY_GRIPE_HINT not in counted
+    # The excluded calls above must not have consumed the session's offer.
+    assert MEMORY_GRIPE_HINT in plain
+
+
+def test_search_hint_does_not_consume_the_node_read_receipt(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The session-once search marker (``ref_id=-1``) and the per-node
+    exact-get receipt are different keys: a search first does not suppress
+    the pointer on a later exact get of a node, and vice versa."""
+    ref_id = _memory(store)
+    with serve_ledger.session_scope(object()):
+        searched = runtime_with_store.dispatch(
+            "search", {"kind": "memory", "q": "dated"}
+        )
+        got = runtime_with_store.dispatch("get", {"id": f"me{ref_id}"})
+    assert MEMORY_GRIPE_HINT in searched
+    assert MEMORY_GRIPE_HINT in got
+
+
+@pytest.mark.parametrize("slack", [-1, 0])
+def test_search_hint_uses_only_spare_bytes(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    slack: int,
+) -> None:
+    original = "soulbootstrap result line\n"
+    monkeypatch.setattr(
+        runtime_with_store,
+        "_dispatch_with_retry",
+        lambda *a, **kw: Response(body=original, result_count=1),
+    )
+    candidate = f"{original}\n{MEMORY_GRIPE_HINT}"
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", str(len(candidate.encode()) + slack))
+    record = Mock()
+    monkeypatch.setattr(runtime_with_store, "_record_tool_call", record)
+    with serve_ledger.session_scope(object()):
+        result, failed = runtime_with_store.dispatch_with_status(
+            "search", {"kind": "memory", "q": "x"}
+        )
+        assert not failed, result
+        expected = candidate if slack == 0 else original
+        assert result.encode("utf-8") == expected.encode("utf-8")
+        assert record.call_args.args[2] == result
+        # Like the get path, the offer records on return: a cap that
+        # refused the append still counts as offered for the session.
+        retry = runtime_with_store.dispatch("search", {"kind": "memory", "q": "x"})
+    assert retry == original
+
+
+def test_search_hint_failure_preserves_response(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _searchable_memory(store)
+    monkeypatch.setattr(
+        runtime_with_store,
+        "_dispatch_with_retry",
+        lambda *a, **kw: Response(body="result line\n", result_count=1),
+    )
+    record = Mock()
+    monkeypatch.setattr(runtime_with_store, "_record_tool_call", record)
+    broken = Mock(side_effect=RuntimeError("hint unavailable"))
+    monkeypatch.setattr(handle_deref, "memory_search_gripe_hint", broken)
+    with serve_ledger.session_scope(object()):
+        result, failed = runtime_with_store.dispatch_with_status(
+            "search", {"kind": "memory", "q": "x"}
+        )
+    broken.assert_called_once()
+    assert not failed, result
+    assert result == "result line\n"
+    assert record.call_args.args[2] == result

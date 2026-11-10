@@ -6,7 +6,10 @@ leaves expanded content in the tool-call audit arguments.
 
 Memory complaint hints share these receipts: first sight is per node and
 session, independent of the requested view. Numeric memory ids normalize to
-the same receipt as their universal handle.
+the same receipt as their universal handle. The search variant
+(:func:`memory_search_gripe_hint`) is coarser by design — offered once per
+session, marked with a ``ref_id=-1`` identity that cannot collide with a
+live node — because a search result has no single node to key on.
 """
 
 from __future__ import annotations
@@ -57,6 +60,19 @@ class DereferencedText:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _SearchHintMarker:
+    """Receipt identity for the session-once search pointer.
+
+    ``ref_id=-1`` can never collide with a live memory ref, so the
+    marker shares the receipts table without shadowing a real node.
+    """
+
+    kind: str = "memory"
+    ref_id: int = -1
+    chunk_id: None = None
+
+
 class _ReadReceipts:
     def __init__(self) -> None:
         self._entries: OrderedDict[tuple[str, _Identity], float] = OrderedDict()
@@ -69,7 +85,9 @@ class _ReadReceipts:
         while len(self._entries) > _RECEIPT_MAX:
             self._entries.popitem(last=False)
 
-    def record(self, session_id: str, resolved: ResolvedHandle) -> None:
+    def record(
+        self, session_id: str, resolved: ResolvedHandle | _SearchHintMarker
+    ) -> None:
         identity = (resolved.kind, resolved.ref_id, resolved.chunk_id)
         with self._lock:
             now = time.monotonic()
@@ -78,7 +96,9 @@ class _ReadReceipts:
             self._entries[key] = now + _RECEIPT_TTL_S
             self._entries.move_to_end(key)
 
-    def contains(self, session_id: str, resolved: ResolvedHandle) -> bool:
+    def contains(
+        self, session_id: str, resolved: ResolvedHandle | _SearchHintMarker
+    ) -> bool:
         identity = (resolved.kind, resolved.ref_id, resolved.chunk_id)
         key = (session_id, identity)
         with self._lock:
@@ -130,6 +150,27 @@ def memory_gripe_hint(
         return None
     if _RECEIPTS.contains(session_id, resolved):
         return None
+    return MEMORY_GRIPE_HINT
+
+
+def memory_search_gripe_hint() -> str | None:
+    """The complaint pointer rides the first memory search result of a session.
+
+    Recall is where a stale or contradicted node is first *used* — the
+    exact-get pointer (gr561869) never fires for a session that only
+    searches, which is how the soul/bootstrap trial consumed memory
+    (gr564017). Offered at most once per session; the marker records on
+    return, so a caller that loses the append to a byte cap behaves like
+    the get path (the read receipt records regardless there too). No
+    session → None, same as the get variant.
+    """
+    session_id, _ = current_session_key()
+    if session_id is None:
+        return None
+    marker = _SearchHintMarker()
+    if _RECEIPTS.contains(session_id, marker):
+        return None
+    _RECEIPTS.record(session_id, marker)
     return MEMORY_GRIPE_HINT
 
 

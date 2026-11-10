@@ -57,6 +57,24 @@ def test_unknown_kind(runtime: PrecisRuntime) -> None:
     assert "next:" in out
 
 
+def test_internal_error_names_the_gripe_procedure(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    """gr564017: the opaque Internal fallback is the one envelope that
+    names a server bug — its ``next:`` must point at the selectively
+    loaded filing procedure (the gripe skill), not just say "file a
+    gripe" with no route to the shape."""
+
+    def boom(*a, **kw):
+        raise RuntimeError("mystery failure")
+
+    monkeypatch.setattr(runtime_with_store, "_dispatch_with_retry", boom)
+    out = runtime_with_store.dispatch("get", {"kind": "memory", "id": "me1"})
+    assert "[error:Internal]" in out
+    assert "server bug" in out
+    assert "get(kind='skill', id='precis-gripe-help')" in out
+
+
 def test_unsupported_verb_for_kind(runtime: PrecisRuntime) -> None:
     out = runtime.dispatch("put", {"kind": "calc", "mode": "replace", "text": "x"})
     assert "[error:Unsupported]" in out
