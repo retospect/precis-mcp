@@ -541,3 +541,42 @@ def test_axis_material_recipe_family(monkeypatch: pytest.MonkeyPatch) -> None:
         "default",
         "recipe",
     )
+
+
+def test_quest_tick_lane_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr572099: the commit ladder's ``quest_tick_commit`` and the
+    growth-ratchet's ``quest_tick_narrative_compress`` — the two
+    unregistered tick-lane sources — each resolve through the exact
+    rows migration 0302 seeds, so neither refiles the recipe-gap gripe."""
+    sql = (
+        Path(__file__).parents[1]
+        / "src/precis/migrations/0301_task_recipes_quest_tick.sql"
+    ).read_text(encoding="utf-8")
+    seeded = re.findall(
+        r"^    \('([^']+)', '([^']+)', '([^']+)', '([^']+)', (true|false)\)",
+        sql,
+        flags=re.MULTILINE,
+    )
+    rows = {
+        src: Recipe(
+            src,
+            kind,
+            lane_class=lane,
+            consequence=cons,
+            classify=flag == "true",
+        )
+        for src, kind, lane, cons, flag in seeded
+    }
+    assert set(rows) == {"quest_tick_commit", "quest_tick_narrative_compress"}
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    for source in rows:
+        recipe = recipes.lookup(source)
+        assert recipe is not None
+        assert (recipe.task_kind, recipe.consequence) == ("plan.tick", "medium")
+        assert recipes.lookup(f"{source}:local") == recipe
+        assert recipes.resolve(source) == (
+            "plan.tick",
+            "medium",
+            "default",
+            "recipe",
+        )
