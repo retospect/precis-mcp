@@ -444,6 +444,39 @@ def _coerce_word_target(
     return (lo, hi)
 
 
+def _cell_write_value(cell: Any, text: Any, dc: str) -> Any:
+    """The new value a ``cell=`` write carries — ``text=``, or ``'value'``
+    inside the ``{'row','col','value'}`` dict (gr592840). Both given
+    refuse (the write would be ambiguous); neither given refuses. A
+    non-scalar dict ``'value'`` refuses here rather than inside
+    :func:`set_cell`'s normalise — that refusal gets re-aimed at stored
+    offenders by :func:`_stored_ctrl_hint`, which would misname this
+    one. One gate for both edit paths: the canonical write uses the
+    returned value, the LaTeX-source conversion calls it for the
+    refusal alone — an invalid call must be refused BEFORE that lossy
+    write lands, not after."""
+    if isinstance(cell, dict) and "value" in cell:
+        if text is not None:
+            raise BadInput(
+                "the new value was supplied twice — 'value' inside "
+                "the cell dict and text=; pass one",
+                next=f"edit(kind='draft', id={dc!r}, "
+                "cell={'row': '<row-id>', 'col': '<col-id>', "
+                "'value': '…'})",
+            )
+        cell_scalar(cell["value"])  # validates; set_cell applies it again
+        return cell["value"]
+    if text is None:
+        raise BadInput(
+            "cell= addresses one field and needs its new value "
+            "— text=, or 'value' inside the cell dict",
+            next=f"edit(kind='draft', id={dc!r}, "
+            "cell={'row': '<row-id>', 'col': '<col-id>', "
+            "'value': '…'})",
+        )
+    return str(text)
+
+
 def _stored_ctrl_hint(
     exc: BadInput, cur_table: Any, dc: str, *, skip: Any = None
 ) -> BadInput:
@@ -4740,21 +4773,18 @@ class DraftHandler(Handler):
                         next=f"edit(kind='draft', id={chunk.dc!r}, cell=…, "
                         "text='…')  # then caption=/regen= separately",
                     )
-                # Cheap syntax gate BEFORE the lossy conversion: an A1
+                # Cheap gates BEFORE the lossy conversion: an A1
                 # ('B2') or otherwise malformed address can never match
-                # the ids about to be minted — refuse while nothing is
-                # written, rather than converting first and refusing
-                # after (conversion is reserved for a well-formed
-                # address that names no minted id). The dict spelling
-                # (gr592840) is well-formed here; its 'value' key
-                # supplies the new content the same way text= does.
+                # the ids about to be minted — and a missing, doubled
+                # or non-scalar new value is invalid on ANY table.
+                # Refuse while nothing is written, rather than
+                # converting first and refusing after (conversion is
+                # reserved for a well-formed call that names no minted
+                # id). The dict spelling (gr592840) is well-formed
+                # here; its 'value' key supplies the new content the
+                # same way text= does.
                 split_cell_address(cell)
-                if text is None and not (isinstance(cell, dict) and "value" in cell):
-                    raise BadInput(
-                        "cell= addresses one field and needs its new "
-                        "value — text=, or 'value' inside the cell dict",
-                        next=f"edit(kind='draft', id={chunk.dc!r}, cell=…, text='…')",
-                    )
+                _cell_write_value(cell, text, chunk.dc)
                 norm_conv = cur_table
                 cap_c = cur.get("caption") or recovered_caption or None
                 md_conv = table_to_markdown(norm_conv, caption=cap_c)
@@ -4967,31 +4997,7 @@ class DraftHandler(Handler):
                 # Shape gate first — a typo'd key (``'valu'``) names
                 # itself rather than reading back as "needs value".
                 split_cell_address(cell)
-            new_value: Any
-            if isinstance(cell, dict) and "value" in cell:
-                if text is not None:
-                    raise BadInput(
-                        "the new value was supplied twice — 'value' inside "
-                        "the cell dict and text=; pass one",
-                        next=f"edit(kind='draft', id={chunk.dc!r}, "
-                        "cell={'row': '<row-id>', 'col': '<col-id>', "
-                        "'value': '…'})",
-                    )
-                new_value = cell["value"]
-                # Fail the non-scalar BEFORE set_cell's normalise raise —
-                # that refusal is re-aimed at stored offenders by the
-                # stored-ctrl hint below, which would misname this one.
-                cell_scalar(new_value)
-            elif text is None:
-                raise BadInput(
-                    "cell= addresses one field and needs its new value "
-                    "— text=, or 'value' inside the cell dict",
-                    next=f"edit(kind='draft', id={chunk.dc!r}, "
-                    "cell={'row': '<row-id>', 'col': '<col-id>', "
-                    "'value': '…'})",
-                )
-            else:
-                new_value = str(text)
+            new_value = _cell_write_value(cell, text, chunk.dc)
             if not cur_table:
                 raise no_data_err
             try:

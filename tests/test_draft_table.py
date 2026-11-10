@@ -934,6 +934,45 @@ def test_edit_table_cell_on_latex_source_converts_then_refuses_with_ids(
     assert meta3["table"]["rows"][0][1] == 2
 
 
+def test_edit_table_cell_invalid_value_on_latex_source_touches_nothing(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The write-then-refuse conversion door is for a VALID ``cell=``
+    call only — an invalid one must refuse with the chunk untouched.
+    The value gate used to sit after the conversion, so a non-scalar
+    dict ``'value'`` or a double supply (``'value'`` + ``text=``)
+    dropped the raw LaTeX layout and minted ``meta.table`` on a call
+    that could never land — damage no retry could undo. Both now hit
+    the canonical gate first: flag intact, raw text byte-identical."""
+    tc = _flagged_latex_chunk(draft, hub, _RAW_TABULAR)
+    before_meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    before_chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before_chunk is not None
+
+    with pytest.raises(BadInput, match="JSON scalar"):
+        draft.edit(id=tc.dc, cell={"row": "r1", "col": "c1", "value": [1]})
+    with pytest.raises(BadInput, match="supplied twice"):
+        draft.edit(
+            id=tc.dc,
+            cell={"row": "r1", "col": "c1", "value": "x"},
+            text="y",
+        )
+
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta == before_meta
+    assert not meta.get("table")  # no canonical grid was minted
+    assert meta["flag"] == "needs-table-review"
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert chunk.text == before_chunk.text
+    assert "\\toprule" in chunk.text  # raw LaTeX layout kept
+
+    # A well-formed dict call still takes the conversion door.
+    with pytest.raises(BadInput, match="DID convert"):
+        draft.edit(id=tc.dc, cell={"row": "r1", "col": "c1", "value": "x"})
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+
+
 def test_edit_table_find_replace_patches_flagged_latex_chunk_in_place(
     draft: DraftHandler, hub: Hub
 ) -> None:
