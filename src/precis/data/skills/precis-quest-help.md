@@ -215,6 +215,12 @@ get(
     kind="quest", id=7, view="logbook",
     args={"since": "7d", "limit": 20}
 )  # bounded window: ISO or relative ('7d','12h','2w') since=/until=, entry limit
+get(
+    kind="quest", id=7, view="logbook",
+    args={"q": "trusted anchor"}
+)  # ranked matching entries (ql handles), composes with since=/until=/limit
+search(kind="quest", q="trusted anchor", scope="qu7")  # same retrieval
+# rendered as a hit list — also args={"within": "qu7"}
 get(kind="quest", id=7, view="pourbaix")  # per-candidate surface-Pourbaix validity maps
 get(
     kind="quest", id=7, view="log"

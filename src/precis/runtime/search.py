@@ -1090,6 +1090,19 @@ class SearchMixin(RuntimeShape):
                 (h := self.hub.handler_for(resolved)) and h.owns_under
             ):
                 return False
+            if resolved == "quest" and (
+                args.get("scope") is not None
+                or (
+                    isinstance(args.get("__extras__"), dict)
+                    and args["__extras__"].get("within") is not None
+                )
+            ):
+                # gr592279: a within-one-quest logbook search is the
+                # kind's own scope= path — source search has no way to
+                # apply it and would silently search the whole corpus.
+                # Any since=/until=/sort= the call also carries reaches
+                # the handler, which refuses what it cannot apply.
+                return False
             q = args.get("q")
             if (
                 resolved == "job"

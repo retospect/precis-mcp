@@ -85,8 +85,11 @@ from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.revision_context import current_revision_context
 from precis.store.types import _KIND_STATUS_VALUES, ChunkRow
-from precis.utils import handle_registry
+from precis.utils import handle_registry, search_trace
+from precis.utils.embed_query import query_vec_for
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
+from precis.utils.search_header import format_search_headline
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
 #: never completes (``quest-layer`` (git-only)). STATUS is a shared union
@@ -887,6 +890,9 @@ class QuestHandler(NumericRefHandler):
                 "trials",
                 "seed",
                 "top_frac",
+                # view='logbook' text filter (gr592279) — kept out of the
+                # top-level q= kwarg, which is find-in-ref's door.
+                "q",
             }
         ),
     }
@@ -1187,6 +1193,285 @@ class QuestHandler(NumericRefHandler):
         return Response(
             body=f"logged {entry_type} on {self._sense()} id={ref.id}{deed} ({block}){links}"
         )
+
+    # ── search: title search + scope= inside one logbook ───────────
+
+    def search(
+        self,
+        *,
+        q: str | None = None,
+        scope: str | int | None = None,
+        within: str | int | None = None,
+        chunk_scope: str | None = None,
+        mode: str | None = None,
+        view: str | None = None,
+        sort: str | None = None,
+        page_size: int = 10,
+        page: int = 1,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        **kw: Any,
+    ) -> Response:
+        """``scope='qu<N>'`` — ranked hits inside ONE quest's logbook
+        (gr592279).
+
+        Without a scope this is the base numeric-ref search (the striving
+        statement, one row per quest). With one, the hits are the
+        ``quest_log`` *entries* (``ql<cid>`` handles), ranked by ``q`` —
+        the read ``view='logbook'`` can't give on a 2,653-entry notebook.
+        ``args={'within': 'qu<N>'}`` is the same door in args= spelling,
+        and a ``chunk_scope`` value naming a quest resolves to it too
+        (the shape agents reached for first).
+        """
+        q = fold_match_all_q(q)
+        if within is not None:
+            if scope is not None and str(scope).strip() != str(within).strip():
+                raise BadInput(
+                    f"scope={scope!r} and args={{'within': {within!r}}} disagree",
+                    next="pass one — they are the same door",
+                )
+            scope = within
+        if scope is None and isinstance(chunk_scope, str):
+            parsed_scope = handle_registry.parse(chunk_scope.strip())
+            if parsed_scope is not None and parsed_scope[0] == self.kind:
+                # ``args={'chunk_scope': 'qu<N>'}`` — memory's title/body
+                # scope knob re-aimed at one quest. This kind has no
+                # title/body split, so treat it as the within-scope it
+                # names; 'title'/'body' still fold away below.
+                scope = chunk_scope
+                chunk_scope = None
+        if scope is None:
+            return super().search(
+                q=q,
+                chunk_scope=chunk_scope,
+                mode=mode,
+                view=view,
+                sort=sort,
+                page_size=page_size,
+                page=page,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                **kw,
+            )
+        # The scope pins the ref; every filter that selects *refs*
+        # (tags=/status=/link=, id range, the browse sorts, a dated
+        # window, the count/group_by facets) is unanswerable inside one
+        # logbook. Refuse them loudly rather than drop them — the
+        # silent-drop version of this call is the gripe.
+        unapplied = sorted(
+            [k for k, v in kw.items() if v not in (None, "", [], {})]
+            + (["chunk_scope"] if chunk_scope not in (None, "") else [])
+        )
+        if unapplied:
+            raise BadInput(
+                f"{unapplied} {'is' if len(unapplied) == 1 else 'are'} not "
+                f"applied by a scoped {self._sense()} search — scope= already "
+                "pins the ref",
+                next=(
+                    "search(kind='quest', q='…', scope='qu<id>') — the "
+                    "dated/bounded listing is get(kind='quest', id=<id>, "
+                    "view='logbook', args={'since': '7d', 'until': …, 'limit': N})"
+                ),
+            )
+        if view not in (None, "ids", "list"):
+            raise BadInput(
+                f"unknown view {view!r} for a scoped {self._sense()} search",
+                options=["ids", "list"],
+                next="search(kind='quest', q='…', scope='qu<id>', view='ids')",
+            )
+        if sort not in (None, "relevance", "recency"):
+            raise BadInput(
+                f"sort={sort!r} is not applied by a scoped {self._sense()} "
+                "search — hits rank by q=; 'recency' re-orders them newest-first",
+                options=["relevance", "recency"],
+                next="search(kind='quest', q='…', scope='qu<id>')",
+            )
+        ref = self._resolve_logbook_scope(scope)
+        if q is None or not q.strip():
+            raise BadInput(
+                f"scope={scope!r} narrows the search to {self._sense()} "
+                f"{ref.id}'s logbook — it still needs q=",
+                next=(
+                    f"search(kind='quest', q='…', scope='qu{ref.id}') — or the "
+                    f"bounded listing: get(kind='quest', id={ref.id}, "
+                    "view='logbook', args={'since': '7d'})"
+                ),
+            )
+        try:
+            offset = max(0, (int(page) - 1) * int(page_size))
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"page=/page_size= must be integers, got page={page!r}, "
+                f"page_size={page_size!r}",
+                next="search(kind='quest', q='…', scope='qu<id>', page_size=20)",
+            ) from None
+        hits = self.store.chunks.search_chunks(
+            q=q,
+            query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
+            mode=mode,
+            kind=self.kind,
+            scope_ref_id=ref.id,
+            chunk_kinds=[_LOG_KIND],
+            limit=int(page_size),
+            offset=offset,
+            # Same lift as paper's scope= (gr510534): inside one logbook
+            # "the closest entries this quest has" IS an honest answer —
+            # a natural-language query must not come back empty while
+            # keywords hit.
+            max_distance=None,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+        )
+        if sort == "recency":
+            hits = sorted(
+                hits,
+                key=lambda h: (
+                    _utc_aware(h[0].created_at)
+                    if h[0].created_at
+                    else datetime.min.replace(tzinfo=UTC)
+                ),
+                reverse=True,
+            )
+        total = max(
+            self.store.chunks.count_chunks_lexical(
+                q=q,
+                kind=self.kind,
+                scope_ref_id=ref.id,
+                chunk_kinds=[_LOG_KIND],
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+            ),
+            len(hits),
+        )
+        search_trace.page([f"ql{block.id}" for block, _ref, _s in hits], rendered=True)
+        return self._render_logbook_hits(ref, hits, q=q, total=total, view=view)
+
+    def _resolve_logbook_scope(self, scope: str | int) -> Ref:
+        """``scope=`` → the live quest whose logbook is searched.
+
+        Accepts the record handle (``qu<N>``), a logbook-entry handle
+        (``ql<N>`` → its owning quest), ``quest:<id>``, or a bare int —
+        the same spellings the eye + logbook prints emit.
+        """
+        if isinstance(scope, str):
+            s = scope.strip()
+            resolved = self.store.resolve_handle(s)
+            if resolved is not None:
+                if resolved.kind != self.kind:
+                    raise BadInput(
+                        f"scope={scope!r} resolves to a {resolved.kind} — a "
+                        "scoped logbook search names one quest",
+                        next="search(kind='quest', q='…', scope='qu<id>')",
+                    )
+                return self._resolve_live_ref(resolved.ref_id)
+            if handle_registry.parse(s) is not None:
+                # Well-formed handle naming no live row — NotFound like
+                # paper's scope= (gr340059), not a slug-shaped BadInput.
+                raise NotFound(
+                    f"quest handle {s!r} not found",
+                    next="search(kind='quest', q='…') to find one",
+                )
+        return self._resolve_live_ref(self._coerce_id(scope))
+
+    def _logbook_hits(
+        self,
+        ref_id: int,
+        q: str,
+        *,
+        limit: int,
+    ) -> list[tuple[ChunkRow, float]]:
+        """Ranked ``quest_log`` chunk hits inside one quest — the shared
+        retrieval behind ``search(scope=)`` and ``view='logbook'``'s
+        ``args={'q': …}`` (gr592279)."""
+        return [
+            (block, score)
+            for block, _ref, score in self.store.chunks.search_chunks(
+                q=q,
+                query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, None),
+                kind=self.kind,
+                scope_ref_id=ref_id,
+                chunk_kinds=[_LOG_KIND],
+                limit=limit,
+                max_distance=None,
+            )
+        ]
+
+    @staticmethod
+    def _logbook_entry_head(block: ChunkRow) -> str:
+        """The ``### ql<cid> ~<ord> · <etype> · <stamp> · <by>`` hit line —
+        the plain logbook header plus the entry's linkable handle."""
+        bmeta = block.meta or {}
+        etype = bmeta.get("entry_type", "note")
+        by = bmeta.get("by", "?")
+        stamp = (
+            _utc_aware(block.created_at).strftime("%Y-%m-%d %H:%MZ")
+            if block.created_at
+            else "?"
+        )
+        cost = bmeta.get("cost")
+        cost_s = f" cost={cost:g}" if cost else ""
+        handle = handle_registry.chunk_head_label("quest", block.id, block.ord, None)
+        return f"### {handle} · {etype} · {stamp} · {by}{cost_s}"
+
+    def _render_logbook_hits(
+        self,
+        ref: Ref,
+        hits: list[tuple[ChunkRow, Ref, float]],
+        *,
+        q: str,
+        total: int,
+        view: str | None,
+    ) -> Response:
+        """Render the scoped logbook hits: headline + one block per entry."""
+        if not hits:
+            body = f"no logbook entries in {self._sense()} {ref.id} match {q!r}"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='quest', q='broader term', scope='qu{ref.id}')",
+                        "loosen the query",
+                    ),
+                    (
+                        f"get(kind='quest', id={ref.id}, q={q!r})",
+                        "literal find-in-ref instead",
+                    ),
+                    (
+                        f"get(kind='quest', id={ref.id}, view='logbook')",
+                        "page the notebook newest-first",
+                    ),
+                ]
+            )
+            return Response(body=body, result_count=0)
+        lines = [
+            format_search_headline(
+                n_returned=len(hits),
+                total=total,
+                noun=f"{self._sense()} {ref.id} logbook match",
+                query=q,
+            )
+        ]
+        if view == "ids":
+            lines.extend(f"ql{block.id}" for block, _r, _s in hits)
+        elif view == "list":
+            for block, _r, _s in hits:
+                first = next(
+                    (
+                        ln.strip()
+                        for ln in (block.text or "").splitlines()
+                        if ln.strip()
+                    ),
+                    "",
+                )
+                lines.append(
+                    f"ql{block.id} ~{block.ord} — {self._snippet(first, max_chars=100)}"
+                )
+        else:
+            for block, _r, score in hits:
+                lines.append(
+                    f"\n{self._logbook_entry_head(block)}  (score={score:.4f})\n"
+                    f"{self._snippet(block.text)}"
+                )
+        return Response(body="\n".join(lines), result_count=len(hits))
 
     # ── edit: in-place rewrite of the founding striving statement ────
 
@@ -2321,8 +2606,20 @@ class QuestHandler(NumericRefHandler):
         window holds older entries than the page shows, the trailer's
         ``next:`` names the call that shows them — the same view with
         ``until`` pinned at the page's oldest shown entry.
+
+        ``args={'q': '…'}`` (gr592279) swaps the newest-first page for the
+        entries *matching* a query — the same ranked retrieval
+        ``search(kind='quest', scope='qu<N>', q='…')`` runs, windowed the
+        same way and rendered with each entry's ``ql<cid>`` handle.
         """
         args = args if isinstance(args, dict) else {}
+        q_raw = args.get("q")
+        q_text = str(q_raw).strip() if q_raw is not None else ""
+        if q_raw is not None and not q_text:
+            raise BadInput(
+                "args={'q': …} on view='logbook' is empty",
+                next="args={'q': 'words to find'} — or drop it for the paged listing",
+            )
         now = datetime.now(UTC)
         since_dt = _logbook_bound(args.get("since"), "since", now=now)
         until_dt = _logbook_bound(args.get("until"), "until", now=now)
@@ -2340,7 +2637,6 @@ class QuestHandler(NumericRefHandler):
             )
 
         window = [b for b in entries if _in_window(b)]
-        shown = window[-limit:]
         lines = self._render_header(ref, tags, entries)
         spec: list[str] = []
         if since_dt is not None:
@@ -2348,6 +2644,32 @@ class QuestHandler(NumericRefHandler):
         if until_dt is not None:
             spec.append(f"until {_iso_z(until_dt)}")
         spec.append(f"limit {limit}")
+        if q_text:
+            in_window = {b.id for b in window}
+            # Fetch the whole ranked pool, not just ``limit`` — out-of-window
+            # matches would otherwise crowd the window's own hits out of it.
+            matched = [
+                b
+                for b, _s in self._logbook_hits(
+                    ref.id, q_text, limit=max(len(entries), 1)
+                )
+                if b.id in in_window
+            ]
+            shown = matched[:limit]
+            lead = f"{len(shown)} of {len(matched)} entries match"
+            if len(matched) < len(window):
+                lead += f" ({len(window)} in window)"
+            lines.append(f"\nwindow: {lead} · {' · '.join(spec)}")
+            for b in shown:
+                lines.append(f"\n{self._logbook_entry_head(b)}")
+                lines.append(b.text)
+            if len(matched) > len(shown):
+                lines.append(
+                    f"\n… {len(matched) - len(shown)} more matching "
+                    "entries — raise args={'limit': N}"
+                )
+            return "\n".join(lines)
+        shown = window[-limit:]
         lead = (
             f"newest {len(shown)} of {len(window)} entries"
             if len(shown) < len(window)
