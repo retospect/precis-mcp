@@ -1733,6 +1733,9 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
                     # The rung dispatch tries first IS what the tier routes to now.
                     "active_model": rungs[0]["model"] if rungs else "—",
                     "active_placement": rungs[0]["placement"] if rungs else "—",
+                    # A cloud-only tier says so — the local rung a fleet model
+                    # serves on may live on an op pin instead (gr623033).
+                    "has_local": any(g["placement"] == "local" for g in rungs),
                     "source": "operator chain" if has_override else "default",
                     "rungs": rungs,
                 }
@@ -1741,6 +1744,122 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
     except Exception:
         log.warning("status: _active_routing_ctx failed", exc_info=True)
         return {"active_routing": [], "active_backend": "—"}
+
+
+# `Any`, not `Store`: same `_FakeStore` (list_refs-only) as
+# `_active_routing_ctx`, which this forwards `store` into unchanged.
+def _llm_op_pins_ctx(store: Any) -> dict[str, Any]:
+    """The per-operation ``llm.op.<source>`` pins ``/llm/chain`` lists beside
+    the tier cards (gr623033). A source steered by an operator op row walks
+    its own ladder in place of the tier chain, so the local rung that row
+    pins (e.g. castor's gpt-oss-120b serving whole lanes) never appears on a
+    ``resolve_chain``-only page — without this section a cloud-only tier
+    card hides where local capacity actually lands.
+
+    Mirrors :func:`~precis.utils.llm.router.route`'s resolution: the op's
+    tier remap + model pin (:func:`~precis.utils.llm.operations.resolve_op`)
+    then its own ``chain``
+    (:func:`~precis.utils.llm.operations.resolve_op_chain`; ``None`` ⇒ the
+    tier chain). A ``<op>:local`` local-first source keeps only its
+    LOCAL-transport rungs — the dedicated arm dispatch walks
+    (:func:`~precis.utils.llm.router._local_first_chain`) — and an emptied
+    arm is a refusal, not a tier fallback. Only ops whose override touches
+    routing (``tier``/``model``/``chain``) list; a ``quota_fallback``-only
+    row leaves the ladder untouched. Degrades to an empty list on any
+    surprise.
+    """
+    try:
+        from precis.budget import meter
+        from precis.utils.llm import live_config, operations
+        from precis.utils.llm.router import (
+            Backend,
+            Transport,
+            _rung_is_cloud,
+            resolve_backend,
+            resolve_chain,
+            resolve_model,
+        )
+
+        meter.bind_store(store)
+        try:
+            backend = resolve_backend()
+        except Exception:
+            backend = Backend.ANTHROPIC
+
+        pins: list[dict[str, Any]] = []
+        for source in sorted(operations.LLM_OPERATIONS):
+            try:
+                override = live_config.op_override(source)
+            except Exception:
+                override = None
+            if not override or not any(
+                k in override for k in ("tier", "model", "chain")
+            ):
+                continue
+            try:
+                resolved = operations.resolve_op(source)
+                default = operations.op_default(source)
+                if resolved is None or default is None:
+                    continue
+                op_tier, op_model = resolved
+                local_first = (
+                    source.endswith(":local")
+                    and source.removesuffix(":local") in operations.LOCAL_FIRST_OPS
+                )
+                # The op's own chain is shown as configured
+                # (``tools_needed=False``): the tools filter is per-call,
+                # not per-op, and filtering here would hide the local
+                # completion rungs this section exists to surface (a BIG-
+                # tier op pinned to a LOCAL wire would list as its tier
+                # chain instead). The tier fallback keeps the tier card's
+                # representative flag so the two agree when no op chain
+                # is set.
+                own = operations.resolve_op_chain(
+                    source, tools_needed=False, backend=backend
+                )
+                tools = _TIER_TOOLS.get(op_tier.value, False)
+                if local_first:
+                    # The dedicated local arm refuses rather than inherit a
+                    # tier chain — show exactly what it would walk.
+                    ladder = [r for r in (own or []) if r.transport is Transport.LOCAL]
+                    chain_name = "local-first chain"
+                else:
+                    ladder = own or resolve_chain(
+                        op_tier, tools_needed=tools, backend=backend
+                    )
+                    chain_name = "op chain" if own else f"{op_tier.value} chain"
+                primary = op_model or resolve_model(op_tier)
+                rungs = [
+                    {
+                        "model": r.model or primary,
+                        "transport": r.transport.value,
+                        "placement": "cloud" if _rung_is_cloud(r) else "local",
+                    }
+                    for r in ladder
+                ]
+                pins.append(
+                    {
+                        "source": source,
+                        "label": default.label,
+                        "tier": op_tier.value,
+                        "chain_name": chain_name,
+                        "local_first": local_first,
+                        "model_pin": override.get("model"),
+                        "override_json": json.dumps(override, indent=2),
+                        "rungs": rungs,
+                        "has_local": any(g["placement"] == "local" for g in rungs),
+                    }
+                )
+            except Exception:
+                log.warning(
+                    "status: _llm_op_pins_ctx op %s failed", source, exc_info=True
+                )
+        # Local rungs first — the section exists to surface them.
+        pins.sort(key=lambda p: (not p["has_local"], p["source"]))
+        return {"op_pins": pins}
+    except Exception:
+        log.warning("status: _llm_op_pins_ctx failed", exc_info=True)
+        return {"op_pins": []}
 
 
 #: Cloud tiers, strongest first — the sort order for the Models sub-tab's

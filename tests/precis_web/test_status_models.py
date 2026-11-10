@@ -15,6 +15,7 @@ from typing import Any
 from precis_web.routes.status import (
     _active_routing_ctx,
     _llm_card_view,
+    _llm_op_pins_ctx,
     _models_ctx,
 )
 
@@ -283,6 +284,164 @@ def test_active_routing_ctx_resolves_default_chain_per_tier() -> None:
         # rung-0 IS the advertised active model.
         assert r["rungs"][0]["model"] == r["active_model"]
         assert r["rungs"][0]["placement"] == r["active_placement"]
+
+
+def test_active_routing_ctx_marks_a_chain_with_no_local_rung(
+    monkeypatch,
+) -> None:
+    """gr623033 — the card flags ``has_local`` so a cloud-only chain can
+    say so. SMALL carries an all-cloud operator chain here."""
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    monkeypatch.setattr(
+        live_config,
+        "chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-4.7-flash",
+                    "transport": "openai_compat",
+                }
+            ]
+            if tier is Tier.SMALL
+            else None
+        ),
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    rows = {r["tier"]: r for r in _active_routing_ctx(_FakeStore([]))["active_routing"]}
+    assert rows["small"]["has_local"] is False
+    for r in rows.values():
+        assert r["has_local"] == any(g["placement"] == "local" for g in r["rungs"])
+
+
+def test_llm_op_pins_ctx_empty_without_routing_overrides() -> None:
+    # No ``llm.op.*`` rows reachable → nothing to list (the fake store has
+    # no app_settings; ``quota_fallback``-only rows would be skipped too).
+    assert _llm_op_pins_ctx(_FakeStore([])) == {"op_pins": []}
+
+
+def test_llm_op_pins_ctx_lists_a_local_op_chain(monkeypatch) -> None:
+    """gr623033 — an ``llm.op.<source>`` chain carrying a local rung must
+    surface even when no ``llm.chain.<tier>`` has one: this is how the
+    fleet's local gpt-oss-120b serves ``chase:verify``."""
+    from precis.utils.llm import live_config
+
+    chain = [
+        {"placement": "local", "model": "gpt-oss-120b", "transport": "local"},
+        {
+            "placement": "cloud",
+            "model": "z-ai/glm-4.7",
+            "transport": "openai_compat",
+            "profile": "oss",
+        },
+    ]
+    monkeypatch.setattr(
+        live_config,
+        "op_override",
+        lambda s: {"chain": chain} if s == "chase:verify" else None,
+    )
+    pins = {p["source"]: p for p in _llm_op_pins_ctx(_FakeStore([]))["op_pins"]}
+    pin = pins["chase:verify"]
+    assert pin["chain_name"] == "op chain"
+    assert pin["has_local"] is True
+    # chase:verify is a BIG-tier op — the local completion rung must still
+    # list (the tools filter is per-call, not per-op).
+    assert [(g["model"], g["placement"]) for g in pin["rungs"]] == [
+        ("gpt-oss-120b", "local"),
+        ("z-ai/glm-4.7", "cloud"),
+    ]
+    # Local-carrying pins sort ahead of cloud-only ones.
+    assert _llm_op_pins_ctx(_FakeStore([]))["op_pins"][0]["has_local"] is True
+
+
+def test_llm_op_pins_ctx_local_first_keeps_only_local_rungs(monkeypatch) -> None:
+    """A ``<op>:local`` local-first arm walks only LOCAL-transport rungs
+    (router._local_first_chain) — the page shows that arm, not the raw op
+    chain."""
+    from precis.utils.llm import live_config
+
+    source = "survey_extract:table_recipe:local"
+    chain = [
+        {"placement": "local", "model": "gpt-oss-120b", "transport": "local"},
+        {
+            "placement": "cloud",
+            "model": "claude-haiku-4-5",
+            "transport": "claude_p",
+        },
+    ]
+    monkeypatch.setattr(
+        live_config,
+        "op_override",
+        lambda s: {"chain": chain} if s == source else None,
+    )
+    pins = {p["source"]: p for p in _llm_op_pins_ctx(_FakeStore([]))["op_pins"]}
+    pin = pins[source]
+    assert pin["local_first"] is True
+    assert pin["chain_name"] == "local-first chain"
+    assert [(g["model"], g["placement"], g["transport"]) for g in pin["rungs"]] == [
+        ("gpt-oss-120b", "local", "local")
+    ]
+
+
+def test_llm_op_pins_ctx_local_first_with_no_local_rung_is_a_refusal(
+    monkeypatch,
+) -> None:
+    """A local-first arm whose op chain has no LOCAL rung refuses at
+    dispatch — the page must show the empty arm, not the cloud rungs the
+    chain configured."""
+    from precis.utils.llm import live_config
+
+    source = "survey_extract:table_recipe:local"
+    chain = [
+        {
+            "placement": "cloud",
+            "model": "claude-haiku-4-5",
+            "transport": "claude_p",
+        }
+    ]
+    monkeypatch.setattr(
+        live_config,
+        "op_override",
+        lambda s: {"chain": chain} if s == source else None,
+    )
+    pin = {p["source"]: p for p in _llm_op_pins_ctx(_FakeStore([]))["op_pins"]}[source]
+    assert pin["rungs"] == []
+    assert pin["has_local"] is False
+
+
+def test_llm_op_pins_ctx_model_pin_rides_the_tier_chain(monkeypatch) -> None:
+    """An ``llm.op.<source>`` model pin (no chain) rides the op's tier
+    chain — listed so the pin's resolved ladder is visible, with the
+    pinned model filling rungs that carry none of their own."""
+    from precis.utils.llm import live_config
+
+    monkeypatch.setattr(
+        live_config,
+        "op_override",
+        lambda s: {"model": "gpt-oss-120b"} if s == "classify" else None,
+    )
+    pin = {p["source"]: p for p in _llm_op_pins_ctx(_FakeStore([]))["op_pins"]}[
+        "classify"
+    ]
+    assert pin["tier"] == "small"  # registry default, un-remapped
+    assert pin["chain_name"] == "small chain"
+    assert pin["model_pin"] == "gpt-oss-120b"
+    assert pin["rungs"]  # the resolved SMALL ladder, verbatim
+
+
+def test_llm_op_pins_ctx_skips_quota_fallback_only_rows(monkeypatch) -> None:
+    """A ``quota_fallback``-only override doesn't touch the ladder — not a
+    routing pin, not listed."""
+    from precis.utils.llm import live_config
+
+    monkeypatch.setattr(
+        live_config,
+        "op_override",
+        lambda s: {"quota_fallback": False} if s == "classify" else None,
+    )
+    assert _llm_op_pins_ctx(_FakeStore([])) == {"op_pins": []}
 
 
 def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:

@@ -60,6 +60,10 @@
       {% else %}
       <div class="mt-1 text-[11px] font-mono text-fg-faint">{{ r.rungs[0].transport if r.rungs else '—' }}</div>
       {% endif %}
+      {% if r.rungs and not r.has_local %}
+      <div class="mt-1 text-[10px] uppercase tracking-wide text-fg-ghost"
+           title="every rung on this chain is cloud — a call on this tier can only land on the fleet through a per-op pin (see /llm/chain) or a placement='local' request">no local rung</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

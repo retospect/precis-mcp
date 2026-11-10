@@ -2,7 +2,8 @@
    fetched via htmx on page load: the per-tier resolve_chain /
    resolve_model walks and the operator-override reads are the
    page's cost, so the shell paints first (gr518162). Context:
-   precis_web.routes.status._active_routing_ctx + _llm_chain_ctx. #}
+   precis_web.routes.status._active_routing_ctx + _llm_chain_ctx
+   + _llm_op_pins_ctx (the per-op llm.op.* pins, gr623033). #}
 
 {% if llm_chains %}
 <div class="mb-4 flex items-center gap-2">
@@ -50,6 +51,10 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if r.rungs and not r.has_local %}
+    <p class="mt-2 text-[10px] uppercase tracking-wide text-fg-faint"
+       title="every rung on this chain is cloud — a call on this tier can only land on the fleet through a per-op pin (below) or a placement='local' request">no local rung</p>
+    {% endif %}
     {% set ov = (llm_chains.tiers | selectattr('tier', 'equalto', r.tier) | first) if llm_chains else none %}
     {% if ov and ov.chain_json %}
     <details class="mt-2 pt-2 border-t border-line-subtle">
@@ -60,6 +65,70 @@
   </div>
   {% endfor %}
 </div>
+
+{# ── Per-operation pins — llm.op.<source> rows that steer a source off
+   its tier chain (gr623033). A local rung here serves even when no tier
+   card above carries one; this is where a fleet-served model actually
+   lands when the ops table steers work to it. #}
+{% if op_pins %}
+<div class="mt-6">
+  <div class="flex items-baseline gap-2 mb-2">
+    <h2 class="text-sm font-semibold">Per-operation pins</h2>
+    <span class="text-xs text-fg-faint">
+      <code class="font-mono">llm.op.&lt;source&gt;</code> overrides — a source
+      steered this way walks the rungs below, not the tier card
+    </span>
+  </div>
+  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    {% for p in op_pins %}
+    <div class="rounded-lg border border-line bg-surface p-4">
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-mono text-[11px] text-fg truncate" title="{{ p.source }} · {{ p.label }}">{{ p.source }}</span>
+        <span class="text-[10px] rounded px-1.5 py-0.5 shrink-0
+          {% if p.local_first %}bg-success-subtle text-success-strong
+          {% elif p.chain_name == 'op chain' %}bg-warning-subtle text-warning-strong
+          {% else %}bg-surface-subtle text-fg-faint{% endif %}"
+          title="{% if p.local_first %}a dedicated local arm — no local rung means calls refuse, never fall back to a tier chain{% elif p.chain_name == 'op chain' %}this op carries its own chain (llm.op.{{ p.source }}){% else %}rides the {{ p.chain_name }}{% if p.model_pin %} with model pinned to {{ p.model_pin }}{% endif %}{% endif %}">{{ p.chain_name }}</span>
+      </div>
+      <table class="mt-2 w-full text-[11px]">
+        <thead class="text-[10px] uppercase tracking-wide text-fg-faint">
+          <tr>
+            <th class="text-left font-medium">slot</th>
+            <th class="text-left font-medium">model</th>
+            <th class="text-left font-medium">placement</th>
+            <th class="text-left font-medium">transport</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line-subtle">
+          {% for rung in p.rungs %}
+          <tr>
+            <td class="pr-2 tabular-nums text-fg-faint">{{ loop.index }}</td>
+            <td class="pr-2 font-mono truncate" title="{{ rung.model }}">{{ rung.model }}</td>
+            <td class="pr-2 {% if rung.placement == 'cloud' %}text-warning{% else %}text-success{% endif %}">{{ rung.placement }}</td>
+            <td class="font-mono text-fg-subtle">{{ rung.transport }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-fg-faint">—</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if p.local_first and not p.rungs %}
+      <p class="mt-2 text-[10px] uppercase tracking-wide text-warning-strong"
+         title="a local-first source with no local rung refuses every call">no local rung — calls refuse</p>
+      {% elif p.rungs and not p.has_local %}
+      <p class="mt-2 text-[10px] uppercase tracking-wide text-fg-faint"
+         title="every rung this op walks is cloud">no local rung</p>
+      {% endif %}
+      <details class="mt-2 pt-2 border-t border-line-subtle">
+        <summary class="text-[10px] uppercase tracking-wide text-fg-faint cursor-pointer">llm.op.{{ p.source }}</summary>
+        <pre class="mt-1 text-[10px] font-mono text-fg-subtle whitespace-pre-wrap">{{ p.override_json }}</pre>
+      </details>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if not active_routing %}
 <p class="text-sm text-fg-faint">No routing information available.</p>
 {% endif %}

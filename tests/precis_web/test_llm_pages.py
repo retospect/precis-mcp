@@ -61,6 +61,28 @@ def test_llm_chain_shows_rungs(llm_client: TestClient) -> None:
         assert tier in resp.text
 
 
+def test_llm_chain_panel_lists_per_op_local_pins(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr623033 — an ``llm.op.<source>`` chain's local rung must appear on
+    the chain page: a fleet-served model that no ``llm.chain.<tier>``
+    carries still serves calls wherever an op pin steers them."""
+    from precis.utils.llm import live_config
+
+    chain = [{"placement": "local", "model": "gpt-oss-120b", "transport": "local"}]
+    monkeypatch.setattr(
+        live_config,
+        "op_override",
+        lambda s: {"chain": chain} if s == "chase:verify" else None,
+    )
+    resp = client.get("/llm/chain/panel")
+    assert resp.status_code == 200
+    assert "Per-operation pins" in resp.text
+    assert "chase:verify" in resp.text
+    assert "gpt-oss-120b" in resp.text
+    assert "op chain" in resp.text
+
+
 def test_llm_nav_links_never_404(client: TestClient) -> None:
     """Walk every ``/llm`` href the chrome + section pages emit."""
     seen: set[str] = set()

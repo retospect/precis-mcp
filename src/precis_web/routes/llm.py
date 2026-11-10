@@ -16,7 +16,9 @@ paths that ever existed were the ``/factory`` editor's POST endpoints,
 so the guessed GETs 404'd. ``/llm/chain`` renders the same live rung
 table as the Models tab header (``_active_routing_ctx`` — resolved via
 the same ``resolve_chain``/``resolve_model`` dispatch walks, so it can't
-drift) plus the operator-override JSON; ``/llm/op`` the per-operation
+drift) plus the operator-override JSON and the per-op ``llm.op.*`` pins
+that put a source on its own ladder (``_llm_op_pins_ctx``, gr623033);
+``/llm/op`` the per-operation
 routing rollup (``_llm_ops_ctx``). The chain table lazy-loads — the
 shell paints, htmx fetches ``/llm/chain/panel`` (gr518162). Editing
 stays on ``/status?tab=services`` — these pages link there.
@@ -44,6 +46,7 @@ from precis_web.deps import get_store, templates
 from precis_web.routes.status import (
     _active_routing_ctx,
     _llm_chain_ctx,
+    _llm_op_pins_ctx,
     _llm_ops_ctx,
 )
 
@@ -111,11 +114,15 @@ async def llm_chain_panel(request: Request) -> HTMLResponse:
     """The chain cards themselves (htmx fragment): every rung's slot,
     model, transport and placement, as ``dispatch`` would walk them
     right now (``_active_routing_ctx``) — plus the cloud dial and any
-    operator ``llm.chain.<tier>`` override JSON (``_llm_chain_ctx``)."""
+    operator ``llm.chain.<tier>`` override JSON (``_llm_chain_ctx``),
+    and the per-operation ``llm.op.<source>`` pins (``_llm_op_pins_ctx``)
+    so a local rung an op steers to — which appears on no tier chain —
+    shows where it actually serves (gr623033)."""
     store = get_store(request)
     ctx: dict[str, Any] = {}
     ctx.update(await asyncio.to_thread(_active_routing_ctx, store))
     ctx.update(await asyncio.to_thread(_llm_chain_ctx, store))
+    ctx.update(await asyncio.to_thread(_llm_op_pins_ctx, store))
     return templates.TemplateResponse(request, "llm/_chain_panel.html.j2", ctx)
 
 
