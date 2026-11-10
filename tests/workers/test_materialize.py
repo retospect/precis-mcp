@@ -442,9 +442,12 @@ def test_targeted_memory_job_does_not_cover_paper_backlog(
     )
     source = next(src for src in m._BACKLOG_SOURCES if src.job_type == "embed_batch")
 
-    assert m._materialize_one(store, source) == 1
-    assert _queued_job_count(store, "embed_batch") == 2
-    assert m._live_jobs(store, "embed_batch") == 1
+    # 1,000 paper + 2 memory chunks pending; the targeted job covers none of
+    # the bulk backlog, so the bulk mint sizes to the whole of it.
+    minted = -(-1002 // m._DEFAULT_BATCH_LIMIT)
+    assert m._materialize_one(store, source) == minted
+    assert _queued_job_count(store, "embed_batch") == minted + 1
+    assert m._live_jobs(store, "embed_batch") == minted
     assert m._materialize_one(store, source) == 0
 
 
@@ -1137,3 +1140,12 @@ def test_age_threshold_env_override(
     _seed_chunk_aged(store, minutes=1)
 
     assert m.run_materialize_pass(store).claimed == 1
+
+
+def test_embed_batch_default_limit_stays_short_and_in_sync() -> None:
+    """gr622922: an in-line embed_batch job holds the serial rotation for
+    its whole run (~4-6 chunks/s), so the minted size and the job's own
+    default stay at 500 (~1.5-2 min), not the old 2000 (350-485 s)."""
+    from precis.workers.job_types import embed_batch
+
+    assert m._DEFAULT_BATCH_LIMIT == embed_batch._DEFAULT_LIMIT == 500

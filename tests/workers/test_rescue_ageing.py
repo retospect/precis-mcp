@@ -242,3 +242,55 @@ def test_chunk_keywords_drain_wait_is_bounded_under_flood(
         should_stop=lambda: sim.now >= horizon_s,
     )
     assert _max_gap(runs, horizon_s) <= _DEFAULT_BUDGET_S + 36 * _MIN
+
+
+def test_minter_runs_ahead_of_slow_background_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr622922: the ``dispatch`` minter (``_minter_pass``, service
+    ``minter``) sat behind 8-10 min in-line jobs and the background tail, so
+    the factory's control ticks waited 24 min to be minted. It is
+    interleaved now: once overdue it runs between two slow passes instead of
+    waiting for its rotation slot after the second one."""
+    sim = _SimTime()
+    monkeypatch.setattr(runner, "time", sim)
+    monkeypatch.delenv("PRECIS_WORKER_RESCUE_BUDGET_S", raising=False)
+    events: list[tuple[str, float]] = []
+
+    def _slow(name: str) -> RefPass:
+        inner = _pass(name, sim, 10 * _MIN, 1)
+
+        def fn(batch_size: int) -> BatchResult:
+            events.append((name, sim.now))
+            return inner(batch_size)
+
+        fn.__name__ = f"_{name}_pass"
+        return fn
+
+    minter_runs: list[float] = []
+    minter = _rescue("minter", sim, minter_runs)
+
+    def _logged_minter(batch_size: int) -> BatchResult:
+        events.append(("minter", sim.now))
+        return minter(batch_size)
+
+    _logged_minter.__name__ = "_minter_pass"
+    run_loop(
+        [],
+        store=_NO_STORE,
+        # Rotation order: both slow passes, then the minter (strict
+        # rotation would mint at t=20 min).
+        ref_passes=[_slow("slow_a"), _slow("slow_b"), _logged_minter],
+        should_stop=lambda: sim.now >= 60 * _MIN,
+    )
+    # slow_a (10 min) outlasts the 5 min budget -> minter runs before
+    # slow_b gets its first slot.
+    assert [name for name, _ in events[:3]] == ["slow_a", "minter", "slow_b"]
+    assert events[1][1] == pytest.approx(10 * _MIN)
+
+
+def test_minter_is_interleaved_but_not_a_rescue_service() -> None:
+    """``minter`` ages to the front but stays out of the rescue-gap alert
+    set (``conditions._RESCUE_HANDLERS``)."""
+    assert "minter" in runner.INTERLEAVED_SERVICES
+    assert "minter" not in runner.RESCUE_SERVICES

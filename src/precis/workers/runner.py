@@ -84,11 +84,18 @@ RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile"
 #: rotation. Safe to interleave only because the pass now bounds itself
 #: (~60 s wall cap) and its single-runner advisory lock makes a peer
 #: host's overdue trigger a graceful no-op.
+#: ``minter`` (gr622922): the ``dispatch`` pass that mints the factory's
+#: control ticks (release_poll, factory_rescue_tick, ci_watch,
+#: gripe_validate) sits at PLANNER band 10, behind the in-line JOB lane, so
+#: it waited out 8-10 min embed_batch / derived_drain jobs and the whole
+#: background tail (24 min to mint). Bounded by ``run_dispatch_pass``'s
+#: own limit; not a rescue pass, so it stays out of the rescue-gap set.
 INTERLEAVED_SERVICES: tuple[str, ...] = (
     *RESCUE_SERVICES,
     "job_coordinator",
     "wake_runner",
     "chunk_keywords",
+    "minter",
 )
 
 #: Env var overriding :data:`DEFAULT_RESCUE_BUDGET_S`; ``0`` turns the

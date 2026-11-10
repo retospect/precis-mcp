@@ -77,7 +77,7 @@ _DEFAULT_BACKLOG_HIGH = 500
 #: high-water before :func:`_materialize_age_trigger` mints a single job.
 _DEFAULT_BACKLOG_AGE_MINUTES = 30
 _DEFAULT_MAX_JOBS = 4
-_DEFAULT_BATCH_LIMIT = 2000  # mirrors embed_batch's own params.limit default
+_DEFAULT_BATCH_LIMIT = 500  # mirrors embed_batch's own params.limit default
 
 #: A FAILED embed_batch job within this many minutes suppresses re-minting
 #: — the mint-fail-loop guard (§F cycle a acceptance).

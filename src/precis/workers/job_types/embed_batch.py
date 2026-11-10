@@ -80,8 +80,10 @@ DESCRIPTION = (
 
 #: params.limit default — mirrors the master proposal's "mint the next
 #: 5000" shape at a more conservative size; PRECIS_EMBED_BATCH_MAX_JOBS ×
-#: this is the materializer's per-tick mint ceiling.
-_DEFAULT_LIMIT = 2000
+#: this is the materializer's per-tick mint ceiling. 500 chunks is ~1.5-2
+#: min at 4-6 chunks/s; 2000 ran 350-485 s in-line and held the serial
+#: rotation (gr622922).
+_DEFAULT_LIMIT = 500
 
 #: Chunks claimed per handler.claim_batch() call inside the loop — mirrors
 #: the worker CLI's --batch-size default (cli/worker.py).
