@@ -3,6 +3,8 @@ descendants of a ref on the ``part-of`` tree."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.cli.memory import SPACE_TAG, _created_id
@@ -96,6 +98,68 @@ def test_under_scopes_the_queryless_tag_listing(tree: _Tree) -> None:
     assert "Pump detail" in out
     assert "Direct gotcha" in out
     assert "Stray gotcha" not in out
+
+
+def _tool_text(out: Any) -> str:
+    """A verb/slim result: str, or a CallToolResult whose text we want."""
+    content = getattr(out, "content", None)
+    return content[0].text if content else str(out)
+
+
+def test_bare_under_default_view_lists_the_subtree(tree: _Tree) -> None:
+    """gr623799: search(kind='memory', under=<handle>) with no q=/tags=/
+    view= must list the subtree, not BadInput 'search requires q='."""
+    out = tree.rt.dispatch("search", {"kind": "memory", "under": _h(tree.hub)})
+    assert "search requires q=" not in out
+    assert "Pump detail" in out
+    assert "Stray gotcha" not in out
+
+
+def test_bare_under_through_full_verb(
+    tree: _Tree, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failing client shape (gr623799): codex-mcp-client called the
+    search verb with kind=memory, page_size=100, under=<handle> and no
+    q=/tags=/link=. The full verb schema declares under=, so it reaches
+    dispatch; a strict-schema client's undeclared page= is dropped by
+    FastMCP before this layer."""
+    from precis.tools import core as tools_core
+
+    monkeypatch.setattr(tools_core, "_runtime", tree.rt)
+    out = tools_core.search(kind="memory", page_size=100, under=_h(tree.hub))
+    text = _tool_text(out)
+    assert "search requires q=" not in text
+    assert "Pump detail" in text
+    assert "Stray gotcha" not in text
+
+
+def test_bare_under_through_slim_door(
+    tree: _Tree, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr623799 through the advertised slim schema, both spellings: under=
+    is not a core param, so the slim door either receives it top-level
+    (filed into args= with a deprecation note, then promoted back — the
+    memory handler declares it) or nested inside args= already. Both must
+    list the subtree, not raise 'search requires q='."""
+    from precis.tools import core as tools_core
+    from precis.tools.mcp_slim import make_slim_verb
+
+    monkeypatch.setattr(tools_core, "_runtime", tree.rt)
+    slim = make_slim_verb("search", tools_core.search)
+
+    top = slim(kind="memory", page_size=100, under=_h(tree.hub))
+    top_text = _tool_text(top)
+    assert "search requires q=" not in top_text
+    assert "Pump detail" in top_text
+    assert "Stray gotcha" not in top_text
+    assert "top-level under is deprecated" in top_text
+
+    nested = slim(kind="memory", args={"under": _h(tree.hub), "page_size": 100})
+    nested_text = _tool_text(nested)
+    assert "search requires q=" not in nested_text
+    assert "Pump detail" in nested_text
+    assert "Stray gotcha" not in nested_text
+    assert "deprecated" not in nested_text
 
 
 def test_under_scopes_the_queryless_link_listing(tree: _Tree) -> None:
