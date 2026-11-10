@@ -282,6 +282,7 @@ def _payload_files(
     frozen: bool,
     claims: list[dict[str, Any]],
     artifact_bytes: dict[str, bytes],
+    methods: str | None = None,
 ) -> tuple[dict[str, bytes], dict[str, str]]:
     """The staged ``{relpath: bytes}`` map minus ``ro-crate-metadata.json``
     and ``MANIFEST.sha256`` (the two files that close over the rest), plus
@@ -315,6 +316,19 @@ def _payload_files(
     if manifest_rec is not None:
         files["manifest/validation_manifest.json"] = canonical_bytes(manifest_rec)
     files["manifest/pathway_snapshot.json"] = canonical_bytes(pathway_meta)
+    methods_record: dict[str, Any] = {
+        "path": "manifest/methods.md",
+        "source": "pathway ref retained body chunk (chunk_kind="
+        "'pathway_body'), restamped by persist_result from the engine's "
+        "methods.md — a mutable pathway record, not a seed-job output",
+        "staged": methods is not None,
+    }
+    if methods is not None:
+        raw_methods = methods.encode("utf-8")
+        files["manifest/methods.md"] = raw_methods
+        methods_record.update(
+            bytes=len(raw_methods), sha256=hashlib.sha256(raw_methods).hexdigest()
+        )
     files["env/platform.json"] = canonical_bytes(
         {
             "schema": "precis_repro_platform",
@@ -353,9 +367,14 @@ def _payload_files(
             "pathway_context": envelope["pathway_context"],
             "timestamps": _timestamps(job_meta),
             "finding": pathway_meta.get("finding_ref") or pathway_meta.get("nanopub"),
+            "methods": methods_record,
         }
     )
     archive_missing = dict(_ARCHIVE_MISSING_BASE)
+    if methods is None:
+        archive_missing["manifest/methods.md"] = (
+            "no retained methods body chunk on the pathway ref"
+        )
     if not (pathway_meta.get("finding_ref") or pathway_meta.get("nanopub")):
         archive_missing["provenance/finding"] = (
             "no finding/nanopub link stamped on the pathway snapshot"
@@ -605,6 +624,17 @@ def _crate_bytes(
 
     crate = ROCrate()
     crate.metadata.append_to("conformsTo", {"@id": PROCESS_RUN_PROFILE})
+    # The profile URI must resolve to an in-graph entity — RO-Crate's
+    # conformsTo MUST reference prof:Profile entities and the Process Run
+    # Crate check wants a CreativeWork, so it is typed as both.
+    crate.add_jsonld(
+        {
+            "@id": PROCESS_RUN_PROFILE,
+            "@type": ["CreativeWork", "http://www.w3.org/ns/dx/prof/Profile"],
+            "name": "Process Run Crate",
+            "version": PROCESS_RUN_PROFILE.rsplit("/", 1)[-1],
+        }
+    )
     root = crate.root_dataset
     root["conformsTo"] = {"@id": PROCESS_RUN_PROFILE}
     root["name"] = title or slug
@@ -617,10 +647,20 @@ def _crate_bytes(
     root["identifier"] = f"precis:pathway:{pathway_id}"
     if preliminary:
         root["creativeWorkStatus"] = "preliminary"
+    stamps = _timestamps(job_meta)
     # ro-crate-py stamps datePublished with the wall clock — a build-time
-    # stamp the deterministic archive cannot carry (captured timestamps are
-    # inputs; the run's own stamps live in provenance/run.json).
+    # stamp the deterministic archive cannot carry. The profile REQUIRES a
+    # datePublished, so it rides the run's own recorded stamps (the
+    # record's stamps are inputs, never a clock read); a snapshot with no
+    # stamps stays absent — an input gap, not an invention.
     del root["datePublished"]
+    published = (
+        stamps.get("finished_at")
+        or stamps.get("started_at")
+        or stamps.get("created_at")
+    )
+    if published is not None:
+        root["datePublished"] = published
 
     data_entities = {}
     for rel, data in sorted(files.items()):
@@ -648,40 +688,74 @@ def _crate_bytes(
     engine_ver = pathway_meta.get("autocatpath_version") or (
         (rec.get("code") or {}).get("autocatpath_version")
     )
-    engine_props: dict[str, Any] = {"name": "autocatpath"}
+    # The pathway's engine stamp is mutable related context — bundle.py's
+    # execution_binding is "unproven". The version stays on the instrument
+    # (the profile REQUIRES it) but its provenance is declared on the
+    # entity, and the stamp files it came from sit under #pathway-context,
+    # never in the action's object/result.
+    engine_props: dict[str, Any] = {
+        "name": "autocatpath",
+        "url": "https://pypi.org/project/autocatpath/",
+        "description": "engine identity; the version is the pathway ref's "
+        "recorded stamp — whether this seed ran under it is unproven "
+        "(envelope.json: pathway_context.execution_binding)",
+    }
     if engine_ver:
         engine_props["version"] = str(engine_ver)
     engine = crate.add(
         SoftwareApplication(crate, "#autocatpath", properties=engine_props)
     )
-    crate.add(SoftwareApplication(crate, "#precis", properties={"name": "precis"}))
-    objects = [
-        data_entities[p]
+    context_parts = [
+        p
         for p in sorted(files)
-        if p.startswith(("inputs/", "env/")) or p == "seeds.json"
+        if p.startswith(("manifest/", "env/")) or p == "seeds.json"
     ]
+    crate.add_jsonld(
+        {
+            "@id": "#pathway-context",
+            "@type": "Dataset",
+            "name": "pathway stamps — related context",
+            "description": "records stamped on the pathway's mutable "
+            "snapshot at export time (engine version, environment pins, "
+            "validation manifest, methods body, aggregate seeds): the seed "
+            "envelope marks this binding 'unproven' — pathway stamps do "
+            "not attest to the selected run's execution environment "
+            "(envelope.json: pathway_context.execution_binding).",
+            "hasPart": [{"@id": p} for p in context_parts],
+        }
+    )
+    objects = [data_entities[p] for p in sorted(files) if p.startswith("inputs/")]
     results = [
         data_entities[p]
         for p in sorted(files)
-        if p.startswith(("outputs/", "artifacts/")) or p == "envelope.json"
+        if p.startswith(("outputs/", "artifacts/"))
     ]
     action_props: dict[str, Any] = {
         "name": f"autocatpath_seed job {job_id}",
         "description": "the stored autocatpath_seed run this bundle freezes; "
-        "recorded evidence, not a re-execution",
+        "recorded evidence, not a re-execution. Pathway stamps "
+        "(#pathway-context) are related context, not proof of this run's "
+        "execution environment.",
     }
-    stamps = _timestamps(job_meta)
     if "started_at" in stamps:
         action_props["startTime"] = stamps["started_at"]
     if "finished_at" in stamps:
         action_props["endTime"] = stamps["finished_at"]
-    crate.add_action(
+    action = crate.add_action(
         engine,
         identifier=f"#seed-run-{job_id}",
         object=objects,
         result=results,
         properties=action_props,
     )
+    # The root MUST hasPart every data entity — the file entities plus the
+    # MANIFEST descriptor and the pathway-context group (its members are
+    # linked transitively through it).
+    root["hasPart"] = [{"@id": rel} for rel in sorted(data_entities)] + [
+        {"@id": _MANIFEST_NAME},
+        {"@id": "#pathway-context"},
+    ]
+    root["mentions"] = [action, {"@id": "#pathway-context"}]
     metadata = crate.metadata.generate()
     return (
         json.dumps(metadata, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
@@ -729,6 +803,7 @@ def _gather(
     frozen: bool,
     claims: list[dict[str, Any]],
     read_artifact: ArtifactReader | None,
+    methods: str | None,
 ) -> tuple[dict[str, bytes], dict[str, Any], dict[str, str], str]:
     """Envelope + staged payload — the shared body of plan and build."""
     artifact_bytes: dict[str, bytes] = {}
@@ -764,6 +839,7 @@ def _gather(
         frozen=frozen,
         claims=claims,
         artifact_bytes=artifact_bytes,
+        methods=methods,
     )
     return files, envelope, missing, safe
 
@@ -778,6 +854,7 @@ def plan_archive(
     title: str | None = None,
     frozen: bool = False,
     read_artifact: ArtifactReader | None = None,
+    methods: str | None = None,
 ) -> dict[str, Any]:
     """The ``view='bundle-plan'`` preview: the exact staged inventory the
     export would write (paths, byte counts, sha256 pins), the disclosed
@@ -793,6 +870,7 @@ def plan_archive(
         frozen=frozen,
         claims=[],
         read_artifact=read_artifact,
+        methods=methods,
     )
     inventory = [
         {
@@ -851,8 +929,15 @@ def build_archive(
     read_artifact: ArtifactReader | None = None,
     frozen: bool = False,
     claims: list[dict[str, Any]] | None = None,
+    methods: str | None = None,
 ) -> ArchiveResult:
     """Stage, gate, manifest and zip the archive into ``out_dir``.
+
+    ``methods`` is the pathway ref's retained body chunk (the frozen
+    methods prose ``persist_result`` writes from the engine's
+    ``methods.md``); it is staged under ``manifest/`` with its source
+    recorded, and disclosed as missing when absent — never an output of
+    the seed run itself.
 
     Returns the :class:`ArchiveResult` carrying ``bundle_id`` (the sha256 of
     ``MANIFEST.sha256`` — the citable identity) and writes
@@ -869,6 +954,7 @@ def build_archive(
         frozen=frozen,
         claims=claims or [],
         read_artifact=read_artifact,
+        methods=methods,
     )
     files[_CRATE_NAME] = _crate_bytes(
         files,

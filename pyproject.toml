@@ -397,8 +397,8 @@ struct-search = ["agox>=3.11,<4"]
 # Process Run Crate 0.6 metadata the archive ships. Lazy-imported at export
 # time — a minimal install still boots; the export itself refuses with a
 # next= naming this extra. The validator (roc-validator) stays out of the
-# install surface deliberately: profile validation is a dev/CI concern, not
-# a bundle-writer dependency.
+# runtime install surface deliberately: profile validation is a dev/CI
+# concern (pinned in ``dev`` below), not a bundle-writer dependency.
 repro = ["rocrate>=0.16.0,<0.17"]
 # NOTE: [external] and [patent] were promoted into core (2026-08-16) —
 # light pure-Python network clients; see the promotion note in
@@ -685,6 +685,10 @@ dev = [
     # pathway bundle tests exercise the real RO-Crate path — pinned exact,
     # the archive is a byte-determinism golden (tests/test_pathway_archive.py).
     "rocrate==0.16.0",
+    # The validator, likewise pinned exact: tests/test_pathway_archive.py
+    # runs the produced crate through the real RO-Crate 1.3 / Process Run
+    # profiles — the writer/validator proof the spec asks for.
+    "roc-validator==0.13.1",
 ]
 
 # autocatpath is release-gated off PyPI past 0.13.0; resolve it from the
@@ -1289,6 +1293,10 @@ module = [
     # no py.typed marker; imported lazily inside the export call.
     "rocrate",
     "rocrate.*",
+    # ro-crate-validator (dev pin, tests/test_pathway_archive.py) ships no
+    # py.typed marker; imported lazily inside the test.
+    "rocrate_validator",
+    "rocrate_validator.*",
     # present in every install transitively (core dep ase requires it);
     # ships no stubs for scipy.spatial (precis_se/atomic/clearance.py).
     "scipy",

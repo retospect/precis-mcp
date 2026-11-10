@@ -45,7 +45,8 @@ unavailable; scientific support remains with the evidence/review gates.
 run's repro archive (MANIFEST.sha256 + RO-Crate + offline index) from a
 frozen ``{job_id, job_meta, pathway_id, pathway_meta}`` snapshot — the same
 inputs ``precis_pathway.bundle.build_envelope`` consumes, plus optional
-``slug``/``title``/``frozen``/``claims``. Needs the ``repro`` extra for the
+``slug``/``title``/``frozen``/``claims``/``methods`` (the pathway's
+retained methods body chunk). Needs the ``repro`` extra for the
 RO-Crate writer; artifact bytes resolve through the job-artifact store, so a
 host without the mount exports 'unavailable' pins rather than failing.
 
@@ -161,7 +162,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "frozen inputs/outputs/artifacts/env pins that exist, recorded "
             "checks and an offline index.html. --record is a JSON snapshot "
             "{job_id, job_meta, pathway_id, pathway_meta} plus optional "
-            "slug/title/frozen/claims. No DB, engine or compute; the "
+            "slug/title/frozen/claims/methods. No DB, engine or compute; the "
             "rocrate writer comes from the 'repro' extra."
         ),
     )
@@ -242,6 +243,7 @@ def _bundle(args: argparse.Namespace) -> None:
             title=snapshot.get("title"),
             frozen=bool(snapshot.get("frozen")),
             claims=claims,
+            methods=snapshot.get("methods"),
         )
     except KeyError as exc:
         raise SystemExit(f"pathway bundle: snapshot lacks {exc}") from exc

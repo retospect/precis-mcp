@@ -816,6 +816,19 @@ class PathwayHandler(Handler):
             )
         return jobs[0]
 
+    @staticmethod
+    def _methods_body(store: Store, ref: Any) -> str | None:
+        """The pathway's retained methods body — the ``pathway_body``
+        chunk ``persist_result`` restamps from the engine's methods.md,
+        exactly as ``view='methods'`` serves the stored half (the computed
+        conditions overlay is a view-time render, not a stored record, so
+        it does not ride the archive). ``None`` when no body is retained."""
+        from . import persist as pw_persist
+
+        blocks = store.chunks.list_chunks_for_ref_by_kind(ref.id, pw_persist.BODY_KIND)
+        text = "\n\n".join(b.text for b in blocks if b.text)
+        return text or None
+
     def _export(self, ident: str | int | None, args: dict[str, Any] | None) -> Response:
         """``mode='export'``: write the stored seed run's repro bundle —
         MANIFEST.sha256 + RO-Crate + offline index — into ``args['dir']``.
@@ -857,6 +870,7 @@ class PathwayHandler(Handler):
             title=ref.title,
             frozen=frozen,
             claims=claims,
+            methods=self._methods_body(store, ref),
         )
         body = (
             f"bundle written: {result.archive}\n"
@@ -898,6 +912,7 @@ class PathwayHandler(Handler):
             slug=ref.slug,
             title=ref.title,
             frozen=frozen,
+            methods=self._methods_body(store, ref),
         )
         lines = [
             f"bundle plan for '{ref.slug or ref.id}' — seed job {job_id}, "
