@@ -3392,6 +3392,74 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (Jsonb(updates), ref_id))
 
+    def trust_stamp_correct(
+        self,
+        ref_id: int,
+        key: str,
+        value: bool | None,
+        *,
+        log_key: str,
+        reason: str,
+        evidence: str | None,
+        at: str,
+        conn: Connection | None = None,
+    ) -> tuple[Any, int]:
+        """Atomically apply one harvest trust-stamp correction (gr592893).
+
+        Reads the ref's ``meta`` under a row lock (``SELECT … FOR UPDATE``)
+        and writes the stamp + audit append in the same transaction, so
+        the recorded ``from`` value and the ``log_key`` append both reflect
+        the latest committed state: two concurrent corrections serialize
+        instead of the second overwriting the audit log from a stale
+        snapshot (td625122 review of td625121). ``value`` is the new bool
+        verdict; ``None`` performs an audited unset — the key is removed
+        and the log entry's ``to`` is ``None`` — the only door restoring a
+        stamp to absence. An unset on a key that isn't currently stamped
+        refuses (:class:`BadInput`), decided under the lock so it can't
+        race a concurrent correction. Returns ``(prior, entry_count)``:
+        ``prior`` is the stamped bool or ``None`` when absent, and
+        ``entry_count`` the audit log's length after the append.
+        """
+        sql_lock = "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE"
+        sql_update = "UPDATE refs SET meta = %s, updated_at = now() WHERE ref_id = %s"
+
+        def _apply(c: Connection) -> tuple[Any, int]:
+            row = c.execute(sql_lock, (ref_id,)).fetchone()
+            if row is None:
+                raise NotFound(f"ref id={ref_id} not found")
+            meta = dict(row[0] or {})
+            prior = meta.get(key)
+            if value is None and not isinstance(prior, bool):
+                raise BadInput(
+                    f"{key} is not stamped on this design — nothing to unset",
+                    next=f"put(kind='structure', id=<slug>, mode='trust', "
+                    f"args={{'stamp': {{{key!r}: <bool>, 'reason': 'why'}}}})",
+                )
+            prior_log = meta.get(log_key)
+            entries = list(prior_log) if isinstance(prior_log, list) else []
+            entries.append(
+                {
+                    "key": key,
+                    "from": prior if isinstance(prior, bool) else None,
+                    "to": value,
+                    "reason": reason,
+                    "evidence": evidence,
+                    "at": at,
+                }
+            )
+            if value is None:
+                meta.pop(key, None)
+            else:
+                meta[key] = value
+            meta[log_key] = entries
+            c.execute(sql_update, (Jsonb(meta), ref_id))
+            return prior, len(entries)
+
+        if conn is not None:
+            return _apply(conn)
+        with self.pool.connection() as c, c.transaction():
+            return _apply(c)
+
     def set_ref_owner(
         self,
         ref_id: int,

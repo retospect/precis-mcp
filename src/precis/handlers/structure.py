@@ -1004,8 +1004,9 @@ class StructureHandler(Handler):
                 "rdf_nbins",
                 "seed",
                 # mode='trust' (gr592893): the stamp payload
-                # {'<trust_key>': bool, 'reason': ..., 'evidence': ...} —
-                # the audited harvest trust-stamp correction door.
+                # {'<trust_key>': bool|null, 'reason': ..., 'evidence': ...} —
+                # the audited harvest trust-stamp correction door (null
+                # performs an audited unset).
                 "stamp",
             }
         ),
@@ -1169,9 +1170,10 @@ class StructureHandler(Handler):
         evaluation (:func:`precis.quest.compute.request_rerun`).
 
         ``mode='trust'`` corrects one harvested trust stamp on the design's
-        meta (``barrier_trusted`` & co.) — an audited, reversible bookkeeping
-        act that never touches geometry, bumps the version or writes a
-        revision; see :meth:`_put_trust`.
+        meta (``barrier_trusted`` & co.) — or unsets it with an audited
+        ``None`` — a row-locked, reversible bookkeeping act that never
+        touches geometry, bumps the version or writes a revision; see
+        :meth:`_put_trust`.
 
         ``args={'derive_from': '<parent>', 'ops': [...]}`` branches a NEW
         design (``id=``) off ``<parent>`` with the ops applied and the
@@ -1360,21 +1362,29 @@ class StructureHandler(Handler):
         ops only, ``tag`` cannot set meta, and an unrestricted meta write
         is refused at the dispatch gate.
 
-        The stamp payload names ONE :data:`_TRUST_STAMP_KEYS` key with a
-        bool value, a required ``reason`` and an optional ``evidence``
-        string (e.g. a pathway handle like ``pw339066``), recorded verbatim.
-        Every call:
+        The stamp payload names ONE :data:`_TRUST_STAMP_KEYS` key whose
+        value is a bool verdict — or ``None`` for an audited unset (below) —
+        a required ``reason`` and an optional ``evidence`` string (e.g. a
+        pathway handle like ``pw339066``), recorded verbatim. Every call:
 
-        * stamps the key via :meth:`Store.stamp_ref_meta` (no geometry
-          write, no version bump, no revision row — the design itself is
-          untouched, so an imported reference config may be corrected too);
+        * stamps the key via :meth:`Store.trust_stamp_correct` — one
+          row-locked read/append/stamp, so concurrent corrections serialize
+          instead of overwriting each other's audit entries from stale
+          snapshots (td625122 review). No geometry write, no version bump,
+          no revision row — the design itself is untouched, so an imported
+          reference config may be corrected too;
         * appends one ``{key, from, to, reason, evidence, at}`` record to
           the structure's append-only ``meta.trust_stamp_log`` — the audit
-          trail that makes the act reversible (re-stamp the old value with
-          a new reason; the receipt prints the exact reverse call);
+          trail that makes the act reversible (the receipt prints the exact
+          reverse call);
+        * with ``value=None``, performs the audited **unset**: the key is
+          removed from meta (restoring absence — the reverse of stamping a
+          previously unset key) and the log records ``to: None``. An unset
+          on a key that isn't stamped refuses;
         * appends one ``decision`` entry to the logbook of every quest the
           structure serves (best-effort, isolated per quest — the structure
-          audit lands even when a logbook append fails).
+          audit lands even when a logbook append fails, and the receipt
+          names the failed quests instead of reporting "no serving quest").
 
         This is deliberately NOT ``edit(mode='trust')``: that dispatch door
         is the generic graph trust state (confidence/origin on the ref, via
@@ -1420,9 +1430,10 @@ class StructureHandler(Handler):
             )
         key = keys[0]
         value = payload[key]
-        if not isinstance(value, bool):
+        unset = value is None
+        if not unset and not isinstance(value, bool):
             raise BadInput(
-                f"{key} is a bool trust verdict, got {value!r}",
+                f"{key} takes a bool trust verdict, or null to unset — got {value!r}",
                 next=call,
             )
         reason = str(payload.get("reason") or "").strip()
@@ -1447,29 +1458,26 @@ class StructureHandler(Handler):
             ref.slug
         )
         name = (ref.title or "").splitlines()[0] if ref.title else handle
-        meta = dict(ref.meta or {})
-        prior = meta.get(key)
-        prior_log = meta.get(_TRUST_STAMP_LOG_KEY)
-        entries = list(prior_log) if isinstance(prior_log, list) else []
         at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        entries.append(
-            {
-                "key": key,
-                "from": prior if isinstance(prior, bool) else None,
-                "to": value,
-                "reason": reason,
-                "evidence": evidence,
-                "at": at,
-            }
+        # One row-locked transaction: prior + append + stamp can't interleave.
+        prior, entry_count = self.store.trust_stamp_correct(
+            ref.id,
+            key,
+            value,
+            log_key=_TRUST_STAMP_LOG_KEY,
+            reason=reason,
+            evidence=evidence,
+            at=at,
         )
-        self.store.stamp_ref_meta(ref.id, {key: value, _TRUST_STAMP_LOG_KEY: entries})
 
+        to_txt = "unset" if unset else repr(value)
         ev_txt = f" (evidence: {evidence})" if evidence else ""
         logbook_line = (
             f"trust-stamp correction on [{handle}] ({name}): "
-            f"{key} {prior!r} -> {value} — {reason}{ev_txt}"
+            f"{key} {prior!r} -> {to_txt} — {reason}{ev_txt}"
         )
         logged: list[str] = []
+        failed: list[str] = []
         from precis.quest.logbook import append_entry
 
         for link in self.store.links_for(ref.id, direction="out", relation="serves"):
@@ -1489,28 +1497,35 @@ class StructureHandler(Handler):
                     quest_id,
                     ref.id,
                 )
+                failed.append(f"qu{quest_id}")
         lines = [
-            f"trust-stamp: {handle} {key}: {prior!r} -> {value}",
+            f"trust-stamp: {handle} {key}: {prior!r} -> {to_txt}",
             f"reason: {reason}{ev_txt}",
-            f"audit: {_TRUST_STAMP_LOG_KEY} entry #{len(entries)} at {at}",
+            f"audit: {_TRUST_STAMP_LOG_KEY} entry #{entry_count} at {at}",
         ]
         if logged:
             lines.append(f"quest logbook: {', '.join(logged)} (decision)")
-        else:
+        if failed:
+            lines.append(
+                f"quest logbook: append FAILED for {', '.join(failed)} (see server "
+                f"log) — the structure audit ({_TRUST_STAMP_LOG_KEY}) carries "
+                "the record"
+            )
+        if not logged and not failed:
             lines.append(
                 "quest logbook: no serving quest linked — the structure audit "
                 f"({_TRUST_STAMP_LOG_KEY}) carries the record"
             )
-        if isinstance(prior, bool):
+        if unset or isinstance(prior, bool):
             lines.append(
                 f"reverse: put(kind='structure', id={handle!r}, mode='trust', "
                 f"args={{'stamp': {{{key!r}: {prior!r}, 'reason': 'why'}}}})"
             )
         else:
             lines.append(
-                f"reverse: delete the {key} key — it was unset before this "
-                "correction (re-stamp the old value with mode='trust' if a "
-                "later harvest rewrites it)"
+                f"reverse: put(kind='structure', id={handle!r}, mode='trust', "
+                f"args={{'stamp': {{{key!r}: None, 'reason': 'why'}}}}) — "
+                "unsets the key"
             )
         return Response(body="\n".join(lines))
 

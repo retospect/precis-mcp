@@ -9,10 +9,14 @@ gate — leaving prod SQL (denied to sessions) or a not-yet-existing repair
 job as the only routes.
 
 The door corrects ONE ``*_trusted`` key per call with a required reason and
-optional evidence, stamps it via ``store.stamp_ref_meta`` (no geometry
-write, no version bump, no revision row), appends an append-only audit
-record to ``meta.trust_stamp_log``, and writes one ``decision`` entry to
-each serving quest's logbook.
+optional evidence via ``store.trust_stamp_correct`` — a row-locked
+read/append/stamp in one transaction (td625122 review of td625121: a
+handler-side read + ``stamp_ref_meta`` merge let concurrent corrections
+overwrite ``trust_stamp_log`` from stale snapshots). Stamping a previously
+unset key records ``from: None`` and is reversible through the audited
+unset (``"key": None`` removes the key, recording ``to: None``; unsetting
+an unstamped key refuses). The receipt reports quest-logbook append
+failures by name instead of folding them into "no serving quest linked".
 """
 
 from __future__ import annotations
@@ -189,7 +193,7 @@ def test_trust_stamp_on_unstamped_key_records_from_none(structure, store):
     structure.put(id="pd_pair", text=_PD)
     ref_id = _ref_id(store)
 
-    structure.put(
+    resp = structure.put(
         id="pd_pair",
         mode="trust",
         args={"stamp": {"kinetics_trusted": False, "reason": "solve exploded"}},
@@ -200,6 +204,141 @@ def test_trust_stamp_on_unstamped_key_records_from_none(structure, store):
     (entry,) = meta["trust_stamp_log"]
     assert entry["from"] is None and entry["to"] is False
     assert entry["evidence"] is None
+    # The reverse of stamping a previously unset key is the audited unset.
+    assert "'kinetics_trusted': None" in resp.body
+    assert "unsets the key" in resp.body
+
+
+# ── audited unset ────────────────────────────────────────────────────
+
+
+def test_trust_stamp_unset_removes_key_and_audits(structure, store):
+    structure.put(id="pd_pair", text=_PD)
+    ref_id = _ref_id(store)
+    store.stamp_ref_meta(ref_id, {"barrier_trusted": True})
+
+    resp = structure.put(
+        id="pd_pair",
+        mode="trust",
+        args={"stamp": {"barrier_trusted": None, "reason": "harvest misfire"}},
+    )
+
+    meta = _meta(store, ref_id)
+    assert "barrier_trusted" not in meta
+    (entry,) = meta["trust_stamp_log"]
+    assert entry["from"] is True and entry["to"] is None
+    assert entry["reason"] == "harvest misfire"
+    assert "-> unset" in resp.body
+    # The reverse of an unset is re-stamping the removed value.
+    assert "'barrier_trusted': True" in resp.body
+    assert "unsets the key" not in resp.body
+
+
+def test_trust_stamp_unset_on_unstamped_key_refuses(structure, store):
+    structure.put(id="pd_pair", text=_PD)
+
+    with pytest.raises(BadInput, match="not stamped"):
+        structure.put(
+            id="pd_pair",
+            mode="trust",
+            args={"stamp": {"barrier_trusted": None, "reason": "x"}},
+        )
+
+    meta = _meta(store, _ref_id(store))
+    assert "barrier_trusted" not in meta
+    assert "trust_stamp_log" not in meta
+
+
+def test_trust_stamp_unset_frontier_rereads_absence(structure, store):
+    from precis.quest.frontier import _candidate_from_structure
+
+    structure.put(id="pd_pair", text=_PD)
+    ref_id = _ref_id(store)
+    store.stamp_ref_meta(ref_id, {"barrier_trusted": True})
+
+    structure.put(
+        id="pd_pair",
+        mode="trust",
+        args={"stamp": {"barrier_trusted": None, "reason": "harvest misfire"}},
+    )
+
+    candidate = _candidate_from_structure(
+        store, store.get_ref(kind="structure", id="pd_pair")
+    )
+    assert "barrier_trusted" not in candidate.flags
+
+
+# ── atomicity + logbook failure reporting (td625122 review) ──────────
+
+
+def test_trust_stamp_concurrent_corrections_both_audit(structure, store):
+    """Two overlapping corrections must serialize: both audit entries
+    survive and the second records the first's result as its ``from`` —
+    the stale-snapshot overwrite this regression test guards."""
+    import threading
+
+    structure.put(id="pd_pair", text=_PD)
+    ref_id = _ref_id(store)
+    store.stamp_ref_meta(ref_id, {"barrier_trusted": True})
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def correct(new_value: bool) -> None:
+        try:
+            barrier.wait(timeout=30)
+            structure.put(
+                id="pd_pair",
+                mode="trust",
+                args={"stamp": {"barrier_trusted": new_value, "reason": "race"}},
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=correct, args=(v,)) for v in (False, True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads)
+    assert not errors
+
+    meta = _meta(store, ref_id)
+    first, second = sorted(meta["trust_stamp_log"], key=lambda e: e["at"])
+    assert first["from"] is True
+    assert second["from"] == first["to"]
+    assert meta["barrier_trusted"] == second["to"]
+
+
+def test_trust_stamp_logbook_failure_named_not_misreported(
+    structure, store, monkeypatch
+):
+    from tests.workers._helpers import seed_ref
+
+    structure.put(id="pd_pair", text=_PD)
+    ref_id = _ref_id(store)
+    quest_id = seed_ref(store, kind="quest", title="A NO->NH3 catalyst")
+    store.add_link(src_ref_id=ref_id, dst_ref_id=quest_id, relation="serves")
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("logbook down")
+
+    monkeypatch.setattr("precis.quest.logbook.append_entry", _boom)
+
+    resp = structure.put(
+        id="pd_pair",
+        mode="trust",
+        args={"stamp": {"barrier_trusted": False, "reason": "wrong stamp"}},
+    )
+
+    # The failure is named, not folded into "no serving quest linked"…
+    assert f"append FAILED for qu{quest_id}" in resp.body
+    assert "no serving quest linked" not in resp.body
+    # …and the structure audit still landed.
+    meta = _meta(store, ref_id)
+    assert meta["barrier_trusted"] is False
+    assert len(meta["trust_stamp_log"]) == 1
 
 
 # ── refusals ─────────────────────────────────────────────────────────

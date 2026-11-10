@@ -676,7 +676,7 @@ put(
     mode="trust",
     args={
         "stamp": {
-            "barrier_trusted": False,   # one *_trusted key per call, bool only
+            "barrier_trusted": False,   # one *_trusted key per call: bool, or null to unset
             "reason": "pathway gate BLOCKED despite trusted stamp",
             "evidence": "pw339066",      # optional handle/citation, verbatim
         }
@@ -687,7 +687,19 @@ put(
 The call stamps the key (no geometry write, no version bump), appends a
 `{key, from, to, reason, evidence, at}` record to the structure's
 append-only `meta.trust_stamp_log`, and writes one `decision` entry to
-each serving quest's logbook. The ack prints the exact reverse call —
-re-stamping the old value with a reason is the reversal. A later harvest
-with new evidence may legitimately re-stamp the key; the audit log keeps
-the history.
+each serving quest's logbook. The read/append/stamp is one row-locked
+operation: concurrent corrections serialize instead of overwriting each
+other's audit entries from stale snapshots. The ack prints the exact
+reverse call — re-stamping the old value with a reason is the reversal.
+
+Passing `null` as the value performs an **audited unset** — the only way
+to restore a stamp to absence:
+
+```python
+args={"stamp": {"barrier_trusted": None, "reason": "harvest misfire"}}
+```
+
+The key is removed from meta and the log records `to: null`; an unset on
+a key that isn't currently stamped refuses. A later harvest with new
+evidence may legitimately re-stamp the key; the audit log keeps the
+history.
