@@ -299,6 +299,39 @@ def test_strict_markdown_table_whole_text_only() -> None:
     assert strict_markdown_table("just prose") is None
 
 
+def test_strict_markdown_table_escaped_pipes_are_content() -> None:
+    """td628285 review — ``split_row``'s ``strip('|')`` ate escaped pipes
+    at the row edge: ``|a\\||`` silently stored the cell ``a\\``. Only the
+    structural delimiters go: ``\\|`` is cell content, and a ``\\\\``
+    (escaped backslash) does not shield a real delimiter."""
+    t = strict_markdown_table("| h |\n|---|\n|a\\||")
+    assert t == {"header": ["h"], "rows": [["a|"]], "caption": None}
+    t2 = strict_markdown_table("| x | y |\n|---|---|\n|a\\\\|b|")
+    assert t2 == {"header": ["x", "y"], "rows": [["a\\", "b"]], "caption": None}
+    p = parse_markdown_table("| h |\n|---|\n|a\\||")
+    assert p is not None and p["rows"] == [["a|"]]  # read-side fallback too
+
+
+def test_put_table_markdown_escaped_pipe_cell_lands(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The text= write path stores the escaped trailing pipe as cell
+    content — the silent ``a\\|`` → ``a\\`` corruption reached stored
+    data, not just the parse result."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        text="| k | v |\n|---|---|\n| a\\| | 2 |",
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"] == [["a|", 2]]
+    assert "a\\|" in tc.text  # derived markdown re-escapes it
+
+
 # ── edit ──────────────────────────────────────────────────────────────
 
 

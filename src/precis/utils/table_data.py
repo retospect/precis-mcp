@@ -811,8 +811,30 @@ def parse_markdown_table(text: str) -> dict[str, Any] | None:
         return None
 
     def split_row(s: str) -> list[str]:
-        s = s.strip().strip("|")
-        return [_uncell_md(c) for c in re.split(r"(?<!\\)\|", s)]
+        s = s.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        # Split on unescaped pipes: ``|`` after an odd backslash run is
+        # escaped cell content — consume ``\x`` pairs so ``a\\|`` still
+        # splits (the ``\\`` is one escaped backslash). ``strip('|')``
+        # ate the escaped trailing pipe of ``|a\||``, silently storing
+        # the cell ``a\``.
+        cells: list[list[str]] = [[]]
+        i = 0
+        while i < len(s):
+            if s[i] == "\\" and i + 1 < len(s):
+                cells[-1] += s[i : i + 2]
+                i += 2
+            elif s[i] == "|":
+                cells.append([])
+                i += 1
+            else:
+                cells[-1].append(s[i])
+                i += 1
+        raw = ["".join(c) for c in cells]
+        if len(raw) > 1 and raw[-1] == "":
+            raw.pop()  # the closing ``|`` left an empty last cell
+        return [_uncell_md(c) for c in raw]
 
     sep = pipe_lines[1]
     is_sep = bool(sep) and set(sep) <= set("|-: ")
