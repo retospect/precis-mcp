@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -990,16 +990,87 @@ def _bench_pages(blocks: list[str]) -> list[tuple[int, int]]:
     return pages or [(0, 0)]
 
 
-def _read_bench_text(ident: str, *, section: str | None = None, page: int = 1) -> str:
+#: The reserved ``bench:`` read ``section`` that pages a run's
+#: ``tool_calls`` ledger rows — the raw MCP-log records the results
+#: file's per-call ``tokens`` are spot-checked against (gr618517) —
+#: instead of its results rows. Checked before the arm/task vocabulary;
+#: a task literally named ``calls`` would be shadowed (none exist).
+_BENCH_CALLS_SECTION = "calls"
+
+
+def _bench_ledger_text(store: Store, results: Mapping[str, Any], *, page: int) -> str:
+    """The ``calls`` section of a ``bench:<stem>`` read — a bounded window
+    of the raw MCP-log records (``tool_calls`` rows) the run's dispatches
+    wrote: the ``result_tokens_est`` field the results file's own
+    ``tokens`` estimate is meant to be spot-checked against. A schema-3
+    file names its correlation tag in ``header.tool_calls.source``; an
+    older file's window falls back to ``started_at``–``ended_at`` and says
+    so, since a shared DB can interleave unrelated untagged calls."""
+    from precis.bench import raw as bench_raw
+
+    h = results["header"]
+    corr = h.get("tool_calls")
+    source = corr.get("source") if isinstance(corr, Mapping) else None
+    started = h.get("started_at")
+    ended = h.get("ended_at")
+    if not source and not (started and ended):
+        return (
+            "(no MCP-log records reach this run — it carries no "
+            "header.tool_calls tag and no started/ended window)"
+        )
+    limit = bench_raw.LEDGER_PAGE
+    try:
+        recs, total = bench_raw.fetch_ledger(
+            store,
+            source=source,
+            started_at=None if source else started,
+            ended_at=None if source else ended,
+            offset=(page - 1) * limit,
+            limit=limit,
+        )
+    except Exception as exc:
+        return f"(tool_calls ledger unreachable — {exc})"
+    h_set = h.get("set", "?")
+    caller = h.get("caller", {}).get("name", "?")
+    if total == 0:
+        corr_s = f"source {source!r}" if source else "the run window"
+        return f"(no tool_calls rows under {corr_s} — the run's ledger is elsewhere or pruned)"
+    pages = max(1, -(-total // limit))
+    if page > pages:
+        return f"(page {page} out of {pages} — {total} calls logged)"
+    start = (page - 1) * limit
+    end = min(start + limit, total)
+    out = (
+        f"# mcp log {h_set} (caller {caller}) — tool_calls rows "
+        f"{start + 1}-{end} of {total}"
+    )
+    if source:
+        out += f"\ncorrelated by tool_calls.source {source!r}"
+    else:
+        out += (
+            f"\ncorrelated by run window {started}–{ended}, untagged rows "
+            "only — a shared DB may interleave unrelated calls"
+        )
+    out += "\n\n" + "\n".join(bench_raw.call_line(r) for r in recs)
+    hint = f"page {page}/{pages}; {end}/{total} calls"
+    hint += ' — "page": <n> reads further; drop "section" for the results rows'
+    return out + f"\n\n({hint})"
+
+
+def _read_bench_text(
+    store: Store, ident: str, *, section: str | None = None, page: int = 1
+) -> str:
     """The ``bench:<stem>`` read (gr618517) — a bounded window of one
     benchmark results file's raw log: the file's ``# raw log`` header,
     one :func:`precis.bench.raw.row_block` per selected row, and the
     nav trailer naming how to read on. The selectors are the body's own
     ``read`` vocabulary: ``section`` names an arm (or, failing that, a
-    task id) and ``page`` windows the long table, so the quest's inquiry
-    step reaches every arm and per-call token log the truncated views
-    could not show — with no shell access (its only tool channel is the
-    JSON payload)."""
+    task id — or the reserved ``calls``, which pages the run's
+    ``tool_calls`` ledger rows instead, the raw MCP-log records carrying
+    ``result_tokens_est``; :func:`_bench_ledger_text`) and ``page``
+    windows the long table, so the quest's inquiry step reaches every
+    arm and per-call token log the truncated views could not show —
+    with no shell access (its only tool channel is the JSON payload)."""
     from precis.bench import raw as bench_raw
     from precis.bench import runner as bench_runner
 
@@ -1021,6 +1092,8 @@ def _read_bench_text(ident: str, *, section: str | None = None, page: int = 1) -
     task_sel: str | None = None
     if section:
         needle = " ".join(str(section).lower().split())
+        if needle == _BENCH_CALLS_SECTION:
+            return _bench_ledger_text(store, results, page=page)
         arm_hits = [a for a in arms if needle in a.lower()]
         if arm_hits:
             arm_sel = arm_hits
@@ -1038,7 +1111,8 @@ def _read_bench_text(ident: str, *, section: str | None = None, page: int = 1) -
                 listing = ", ".join(arms[:_READ_SECTION_NAMES_MAX]) or "(none)"
                 return (
                     f"(no arm or task matching {section!r} — arms: "
-                    f'{listing}; "page": <n> windows the whole log)'
+                    f'{listing}; "calls" pages the tool_calls ledger; '
+                    f'"page": <n> windows the whole log)'
                 )
         sel = bench_raw.select_rows(results, arms=arm_sel, task=task_sel)
     blocks = [bench_raw.row_block(r) for r in sel]
@@ -1068,7 +1142,7 @@ def _read_bench_text(ident: str, *, section: str | None = None, page: int = 1) -
             hint += "; arms: " + ", ".join(shown)
             if len(arms) > _READ_SECTION_NAMES_MAX:
                 hint += f", +{len(arms) - _READ_SECTION_NAMES_MAX} more"
-    hint += ' — "page": <n> or "section": "<arm or task id>" reads further'
+    hint += ' — "page": <n> or "section": "<arm, task id or calls>" reads further'
     return out + f"\n\n({hint})"
 
 
@@ -1162,7 +1236,7 @@ def _read_ref_text(
     if ident.lower().startswith("web:"):
         return _read_cache_ref_text(store, "web", ident[4:], section=section, page=page)
     if ident.lower().startswith("bench:"):
-        return _read_bench_text(ident[6:], section=section, page=page)
+        return _read_bench_text(store, ident[6:], section=section, page=page)
     resolved = store.resolve_handle(ident)
     if resolved is None:
         return "(no longer resolvable — the ref is gone or the handle is wrong)"
@@ -2421,7 +2495,9 @@ post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
 atom can wear an `aPd…` label). A `bench:<stem>` read (the stem is the \
 results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
 per-arm rows with their per-call token logs — on it `"section"` names an \
-arm or a task id, and a refused `bench:` read answers with the stems \
+arm, a task id, or `calls` for the run's raw `tool_calls` log records \
+(the ledger's per-call `result_tokens_est`, for spot-checking the file's \
+`tokens` estimates), and a refused `bench:` read answers with the stems \
 held. \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
@@ -2650,7 +2726,9 @@ post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
 atom can wear an `aPd…` label). A `bench:<stem>` read (the stem is the \
 results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
 per-arm rows with their per-call token logs — on it `"section"` names an \
-arm or a task id, and a refused `bench:` read answers with the stems \
+arm, a task id, or `calls` for the run's raw `tool_calls` log records \
+(the ledger's per-call `result_tokens_est`, for spot-checking the file's \
+`tokens` estimates), and a refused `bench:` read answers with the stems \
 held. \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \

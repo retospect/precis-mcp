@@ -43,7 +43,7 @@ need an LLM; the dev DB does not have them, and the header says so.
 
 | key | meaning |
 |---|---|
-| `schema` | results schema version (2; 1 = no per-row `call_log`, runs #1–#3) |
+| `schema` | results schema version (3; 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
 | `tier` | `scripted` (the model-free caller; LLM tier is a later cut) |
 | `set`, `corpus_sha256` | fixture set and its hash from `bench/corpus/manifest.json` |
 | `tasks_file`, `tasks_sha256`, `tasks` | QASPER task file, its sha256, and counts (`qasper`, `planted`, `abstention`, `skipped`) |
@@ -57,6 +57,7 @@ need an LLM; the dev DB does not have them, and the header says so.
 | `layer_coverage` | what the DB holds of each layer (see below) |
 | `fill` | claimed/ok/failed counts of the embed and keyword passes run by this invocation |
 | `machine`, `started_at`, `ended_at` | host python/platform; UTC `Z` timestamps |
+| `tool_calls` | `source` — the `tool_calls.source` tag (`bench:<stem>`) every dispatch of the measured matrix carried, so the run's raw MCP-log records are addressable (schema 3, gr618517) |
 
 ### layer coverage and vacuous arms
 
@@ -128,6 +129,16 @@ A quest tick reaches the same log without a shell: its `read` field takes a
 next tick's Requested reads renders a bounded page of the same row blocks —
 `"section"` selecting an arm or task id, `"page"` windowing the rows
 (gr618517).
+
+The reserved section `calls` instead pages the run's raw MCP-log records:
+the `tool_calls` ledger rows its dispatches wrote, correlated by the
+`header.tool_calls.source` tag (schema 3) or, for older files, by the
+`started_at`–`ended_at` window over untagged rows (labelled, since a shared
+DB can interleave unrelated calls). Each line carries the ledger's own
+`result_tokens_est` — the `mcp_call` line's `response_tokens_est`
+(migration 0297) — which is the field a spot check verifies; the results
+file's own `tokens` figures are the caller-side estimate and cannot verify
+it.
 
 ## What counts as found
 

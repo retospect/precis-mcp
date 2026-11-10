@@ -97,8 +97,11 @@ from precis.bench import switches as bench_switches
 from precis.bench.switches import ARMS
 
 #: 2 adds ``call_log`` to every row (the per-call token log; schema-1 files,
-#: runs #1–#3, carry no call lines — the raw reader tolerates both).
-RESULTS_SCHEMA = 2
+#: runs #1–#3, carry no call lines — the raw reader tolerates both). 3 adds
+#: ``header.tool_calls.source`` — the ``PRECIS_CURRENT_SOURCE`` tag the
+#: measured matrix's dispatches carry on their ``tool_calls`` ledger rows,
+#: so the run's raw MCP-log records are addressable (gr618517).
+RESULTS_SCHEMA = 3
 
 PLANTED_SEED = 7
 PLANTED_N = 40
@@ -1381,6 +1384,7 @@ def run_cli(
     caller: str = DEFAULT_CALLER,
 ) -> Path:
     """Everything behind ``scripts/bench run``. Returns the results path."""
+    from precis import agentlog
     from precis.bench import corpus, layers, planted_ingest, qasper_tasks
     from precis.config import PrecisConfig
     from precis.dispatch import boot
@@ -1396,6 +1400,10 @@ def run_cli(
     if "all-on" not in arm_list:
         arm_list.insert(0, "all-on")  # every delta and the vacuity check need it
     started = utc_stamp()
+    sha, dirty = git_sha()
+    path = out or default_results_dir() / results_filename(
+        started, sha, set_name, caller
+    )
     manifest = corpus.load_manifest(manifest_path)
     records = manifest[set_name]
     corpus_hash = manifest["corpus_sha256"][set_name]
@@ -1441,21 +1449,33 @@ def run_cli(
         tasks, skipped = select_tasks(qasper_rows + planted_rows, gold_text)
         if not tasks:
             raise BenchRunError("no runnable tasks")
-        rows = run_matrix(
-            store,
-            runtime,
-            embedder,
-            tasks,
-            arm_list,
-            budget=budget,
-            progress=lambda m: print(m, file=sys.stderr),
-            caller=caller,
-        )
+        # Tag every dispatch the measured matrix makes with the results
+        # file's stem (``tool_calls.source``), so the run's raw MCP-log
+        # records are addressable against the file that claims their
+        # tokens (gr618517 — the ``calls`` section of a ``bench:`` read).
+        call_tag = f"bench:{path.stem}"
+        prev_source = os.environ.get(agentlog.SOURCE_ENV_VAR)
+        os.environ[agentlog.SOURCE_ENV_VAR] = call_tag
+        try:
+            rows = run_matrix(
+                store,
+                runtime,
+                embedder,
+                tasks,
+                arm_list,
+                budget=budget,
+                progress=lambda m: print(m, file=sys.stderr),
+                caller=caller,
+            )
+        finally:
+            if prev_source is None:
+                os.environ.pop(agentlog.SOURCE_ENV_VAR, None)
+            else:
+                os.environ[agentlog.SOURCE_ENV_VAR] = prev_source
     finally:
         store.close()
 
     ended = utc_stamp()
-    sha, dirty = git_sha()
     emb_id = getattr(embedder, "model", embedder_name)
     meaningful = not layers.hash_embedder(emb_id)
     arms_block = arm_table(arm_list, cov, rows, embedder_id=emb_id)
@@ -1512,6 +1532,10 @@ def run_cli(
             "stop": "first rendered chunk overlapping gold, else budget or hits exhausted",
         },
         "switches_env": bench_switches.ENV_VAR,
+        # The ``tool_calls.source`` tag the measured matrix's dispatches
+        # carried — the correlation a ``calls`` read uses to reach the
+        # run's raw MCP-log records (``result_tokens_est``).
+        "tool_calls": {"source": call_tag},
         "arms": arms_block,
         "layer_coverage": cov,
         "fill": fill_totals,
@@ -1538,9 +1562,6 @@ def run_cli(
             "results are not meaningful",
             file=sys.stderr,
         )
-    path = out or default_results_dir() / results_filename(
-        started, sha, set_name, caller
-    )
     return write_results(build_results(header=header, rows=rows), path)
 
 

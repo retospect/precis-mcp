@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import numpy as np
 
+from precis.bench import raw as bench_raw
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
@@ -4734,7 +4735,7 @@ class TestUrlFetchField:
         assert "$0.25/1M" in prompt
 
 
-def _bench_results(stem: str, dir_path: Any) -> str:
+def _bench_results(stem: str, dir_path: Any, **header_extra: Any) -> str:
     """A small results file on disk — the ``bench:<stem>`` read target."""
     rows = [
         {
@@ -4775,10 +4776,9 @@ def _bench_results(stem: str, dir_path: Any) -> str:
         for a in ("all-on", "no-kwd")
     ]
     path = dir_path / f"{stem}.json"
+    header = {"set": "quick", "caller": {"name": "triage"}, **header_extra}
     path.write_text(
-        json.dumps(
-            {"header": {"set": "quick", "caller": {"name": "triage"}}, "rows": rows}
-        ),
+        json.dumps({"header": header, "rows": rows}),
         encoding="utf-8",
     )
     return stem
@@ -4885,3 +4885,163 @@ class TestBenchRead:
             store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
         )
         assert "bench:<run-stem>" in prompt
+
+
+def _ledger_rows(store: Any, tag: str | None, ts: str | None = None) -> None:
+    """``tool_calls`` rows as a bench run's dispatches would write them —
+    ``tag`` on ``source`` is the schema-3 correlation (``None`` = an
+    untagged row, what a pre-schema-3 run's window falls back to)."""
+    with store.pool.connection() as conn:
+        for i, (verb, tok) in enumerate((("search", 100), ("get", 25))):
+            conn.execute(
+                "INSERT INTO tool_calls (verb, kind, outcome, source, ts, "
+                "result_bytes, result_tokens_est, latency_ms, arg_sample) "
+                "VALUES (%s, %s, 'ok', %s, COALESCE(%s, now()), %s, %s, %s, "
+                "%s::jsonb)",
+                (
+                    verb,
+                    "paper" if i == 0 else None,
+                    tag,
+                    ts,
+                    tok * 4,
+                    tok,
+                    40 + i,
+                    json.dumps({"q": f"zork call {i}"}),
+                ),
+            )
+
+
+class TestBenchCallsRead:
+    """gr618517 follow-up (td628047): the results file's ``call_log.tokens``
+    is the caller-side estimate — the spot check the brief asked for needs
+    the raw MCP-log records' ``result_tokens_est`` (the ``mcp_call`` line's
+    ``response_tokens_est``). ``bench:<stem>`` + ``"section": "calls"``
+    pages those ``tool_calls`` rows into the next tick's Requested reads."""
+
+    def test_calls_section_pages_the_ledger(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results(
+            "20261110Z-abc1234-quick-triage",
+            tmp_path,
+            tool_calls={"source": "bench:20261110Z-abc1234-quick-triage"},
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        _ledger_rows(store, f"bench:{stem}")
+        qid = _mk_quest(store, "A striving spot-checking the token log")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": f"bench:{stem}", "section": "calls"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "# mcp log quick (caller triage)" in prompt
+        assert f"correlated by tool_calls.source 'bench:{stem}'" in prompt
+        assert "search paper ok — 100 tok" in prompt
+        assert "get ok — 25 tok" in prompt
+        assert "page 1/1; 2/2 calls" in prompt
+
+    def test_calls_section_pages_and_bounds(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results(
+            "20261110Z-abc1234-quick-triage",
+            tmp_path,
+            tool_calls={"source": "bench:20261110Z-abc1234-quick-triage"},
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        monkeypatch.setattr(bench_raw, "LEDGER_PAGE", 1)
+        _ledger_rows(store, f"bench:{stem}")
+        qid = _mk_quest(store, "A striving paging the call ledger")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": f"bench:{stem}", "section": "calls", "page": 2},
+                    {"ref": f"bench:{stem}", "section": "calls", "page": 99},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        blocks = prompt.split("### ")
+        p2 = next(b for b in blocks if "page 2" in b.splitlines()[0])
+        assert "tool_calls rows 2-2 of 2" in p2
+        assert "get ok — 25 tok" in p2
+        assert "search paper ok" not in p2
+        assert "page 99 out of 2 — 2 calls logged" in prompt
+
+    def test_calls_section_windows_pre_tag_files(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A results file written before schema 3 carries no
+        ``tool_calls.source`` tag — the read falls back to the run's
+        started/ended window over untagged rows and says so."""
+        stem = _bench_results(
+            "20261109Z-0123456-quick-triage",
+            tmp_path,
+            started_at="2001-01-01T00:00:00Z",
+            ended_at="2001-01-01T02:00:00Z",
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        _ledger_rows(store, None, ts="2001-01-01T00:30:00Z")
+        qid = _mk_quest(store, "A striving checking an old run's calls")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": f"bench:{stem}", "section": "calls"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "correlated by run window" in prompt
+        assert "may interleave unrelated calls" in prompt
+        assert "search paper ok — 100 tok" in prompt
+
+    def test_calls_section_without_correlation_says_so(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results("20261109Z-0123456-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving asking for calls never logged")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": f"bench:{stem}", "section": "calls"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "no MCP-log records reach this run" in prompt
+
+    def test_calls_section_is_still_a_bench_read(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """``apply_reads`` accepts ``section: "calls"`` on a held stem —
+        the ledger read queues like any other ``bench:`` read."""
+        stem = _bench_results(
+            "20261110Z-abc1234-quick-triage",
+            tmp_path,
+            tool_calls={"source": "bench:20261110Z-abc1234-quick-triage"},
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        _ledger_rows(store, f"bench:{stem}")
+        qid = _mk_quest(store, "A striving queuing a calls read")
+        payload = {
+            "logbook": [],
+            "read": [
+                {
+                    "ref": f"bench:{stem}",
+                    "section": "calls",
+                    "why": "spot-check response_tokens_est",
+                }
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "# mcp log quick (caller triage)" in prompt

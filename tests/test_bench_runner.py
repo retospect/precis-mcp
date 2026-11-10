@@ -528,6 +528,134 @@ def test_arm_and_task_vocabularies_come_from_the_rows():
 
 
 # ---------------------------------------------------------------------------
+# pure: the ledger line (the run's raw MCP-log records, gr618517)
+# ---------------------------------------------------------------------------
+
+
+def test_call_line_is_the_ledger_shape_of_a_call_log_entry():
+    line = raw.call_line(
+        {
+            "call_id": 1042,
+            "ts": None,
+            "verb": "get",
+            "kind": "paper",
+            "outcome": "ok",
+            "error_type": None,
+            "latency_ms": 96,
+            "result_bytes": 2048,
+            "result_tokens_est": 512,
+            "arg_sample": {"id": "pc88", "extent": "verbatim"},
+        }
+    )
+    assert line.startswith("  1042 get paper ok — ")
+    assert "512 tok" in line  # the ledger's own estimate, not the file's
+    assert "2048B" in line
+    assert "96ms" in line
+    assert '"extent": "verbatim"' in line and '"id": "pc88"' in line
+
+
+def test_call_line_marks_errors_and_unmeasured_calls():
+    err = raw.call_line(
+        {
+            "call_id": 7,
+            "ts": None,
+            "verb": "get",
+            "kind": None,
+            "outcome": "error",
+            "error_type": "BadInput",
+            "latency_ms": None,
+            "result_bytes": None,
+            "result_tokens_est": None,
+            "arg_sample": None,
+        }
+    )
+    assert "7 get error (BadInput)" in err
+    assert "- tok" in err
+
+
+# ---------------------------------------------------------------------------
+# DB: the tool_calls ledger read (gr618517)
+# ---------------------------------------------------------------------------
+
+
+def _insert_tool_calls(store, rows: list[dict[str, Any]]) -> None:
+    """tool_calls rows as ``record_call`` would write them — only the
+    columns the ledger read renders need to be set."""
+    with store.pool.connection() as conn:
+        for r in rows:
+            conn.execute(
+                "INSERT INTO tool_calls (verb, kind, outcome, error_type, "
+                "source, ts, latency_ms, result_bytes, result_tokens_est, "
+                "arg_sample) VALUES (%s, %s, %s, %s, %s, COALESCE(%s, now()), "
+                "%s, %s, %s, %s::jsonb)",
+                (
+                    r.get("verb", "get"),
+                    r.get("kind"),
+                    r.get("outcome", "ok"),
+                    r.get("error_type"),
+                    r.get("source"),
+                    r.get("ts"),
+                    r.get("latency_ms"),
+                    r.get("result_bytes"),
+                    r.get("result_tokens_est"),
+                    json.dumps(r["arg_sample"]) if r.get("arg_sample") else None,
+                ),
+            )
+
+
+def test_fetch_ledger_correlates_by_source_tag(store):
+    tag = "bench:20261110Z-abc1234-quick-triage"
+    _insert_tool_calls(
+        store,
+        [
+            {
+                "verb": "search",
+                "kind": "paper",
+                "source": tag,
+                "result_bytes": 400,
+                "result_tokens_est": 100,
+                "arg_sample": {"kind": "paper", "q": "zork1"},
+            },
+            {"verb": "get", "source": tag, "result_tokens_est": 20},
+            {"verb": "get", "result_tokens_est": 999},  # untagged — another caller
+            {"verb": "get", "source": "bench:other-run", "result_tokens_est": 3},
+        ],
+    )
+    recs, total = raw.fetch_ledger(store, source=tag)
+    assert total == 2
+    assert [r["verb"] for r in recs] == ["search", "get"]
+    assert recs[0]["result_tokens_est"] == 100
+    assert raw.call_line(recs[0]).count("100 tok") == 1
+    page, total = raw.fetch_ledger(store, source=tag, offset=1, limit=1)
+    assert total == 2 and len(page) == 1 and page[0]["verb"] == "get"
+    assert raw.fetch_ledger(store, source="bench:no-such-run") == ([], 0)
+
+
+def test_fetch_ledger_window_keeps_untagged_rows_in_bounds(store):
+    _insert_tool_calls(
+        store,
+        [
+            {"verb": "get", "ts": "2001-01-01T00:30:00Z", "result_tokens_est": 11},
+            {
+                "verb": "get",
+                "ts": "2001-01-01T00:40:00Z",
+                "source": "bench:tagged-run",
+                "result_tokens_est": 13,
+            },
+            {"verb": "get", "ts": "2001-01-02T00:00:00Z", "result_tokens_est": 17},
+        ],
+    )
+    recs, total = raw.fetch_ledger(
+        store,
+        started_at="2001-01-01T00:00:00Z",
+        ended_at="2001-01-01T02:00:00Z",
+    )
+    assert total == 1  # in-window AND untagged; the tagged row never leaks in
+    assert recs[0]["result_tokens_est"] == 11
+    assert raw.fetch_ledger(store) == ([], 0)
+
+
+# ---------------------------------------------------------------------------
 # DB: the caller, the baselines, the coverage guard
 # ---------------------------------------------------------------------------
 

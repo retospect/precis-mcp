@@ -18,13 +18,25 @@ against the results dir (:func:`precis.bench.runner.default_results_dir`,
 into next tick's Requested reads (gr618517 — the CLI alone was unreachable
 from a model that outputs one JSON payload).
 
+The same read channel also reaches the run's raw MCP-log records — the
+``tool_calls`` ledger rows its dispatches wrote — through a reserved
+``calls`` section (:func:`fetch_ledger`, :func:`call_line`). The ledger's
+``result_tokens_est`` is the ``mcp_call`` line's ``response_tokens_est``
+(migration 0297, gr604903): the independent per-call estimate the
+results file's own ``tokens`` figures get spot-checked against — the
+caller-side estimate alone verifies nothing.
+
 Runs written before the per-call log (results schema 1) carry no
 ``call_log`` on their rows; their summary lines still print, without call
-lines.
+lines. Runs written before schema 3 carry no ``header.tool_calls`` tag;
+the ``calls`` section then falls back to the run's ``started_at``–
+``ended_at`` window (untagged rows only — labelled, since a shared DB
+can interleave unrelated calls).
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -32,6 +44,10 @@ from typing import Any
 from precis.utils.next_block import render_next_section
 
 DEFAULT_LIMIT = 50
+
+#: ``tool_calls`` rows per ``calls``-section page — the window one spot
+#: check reads at a time.
+LEDGER_PAGE = 60
 
 
 def select_rows(
@@ -182,3 +198,92 @@ def raw_markdown(
             )
         )
     return "\n".join(out) + "\n"
+
+
+# ── the run's raw MCP-log records (tool_calls, migration 0297) ──────────
+
+_LEDGER_COLS = (
+    "call_id",
+    "ts",
+    "verb",
+    "kind",
+    "outcome",
+    "error_type",
+    "latency_ms",
+    "result_bytes",
+    "result_tokens_est",
+    "arg_sample",
+)
+
+
+def fetch_ledger(
+    store: Any,
+    *,
+    source: str | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+    offset: int = 0,
+    limit: int = LEDGER_PAGE,
+) -> tuple[list[Mapping[str, Any]], int]:
+    """One bounded window of a bench run's ``tool_calls`` rows — oldest
+    first — plus the run's total.
+
+    Correlation: a schema-3 results file names its tag in
+    ``header.tool_calls.source`` (``runner.run_cli`` sets
+    ``PRECIS_CURRENT_SOURCE`` for the measured matrix, so every dispatch
+    it made carries ``tool_calls.source = 'bench:<stem>'``). An older
+    file falls back to its ``started_at``–``ended_at`` window over the
+    UNTAGGED rows (``source IS NULL`` — rows a tagged run owns never leak
+    into a windowed read; unrelated untagged calls in the window still
+    can, and the read says so). No correlation at all answers ``([], 0)``.
+    """
+    params: tuple[str, ...]
+    if source:
+        where, params = "source = %s", (source,)
+    elif started_at and ended_at:
+        where, params = (
+            "ts >= %s AND ts <= %s AND source IS NULL",
+            (started_at, ended_at),
+        )
+    else:
+        return [], 0
+    cols = ", ".join(_LEDGER_COLS)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"SELECT count(*) FROM tool_calls WHERE {where}", params
+        ).fetchone()
+        total = int(row[0]) if row else 0
+        rows = conn.execute(
+            f"SELECT {cols} FROM tool_calls WHERE {where} "
+            "ORDER BY call_id LIMIT %s OFFSET %s",
+            (*params, limit, offset),
+        ).fetchall()
+    return [dict(zip(_LEDGER_COLS, r, strict=True)) for r in rows], total
+
+
+def call_line(rec: Mapping[str, Any]) -> str:
+    """One ``tool_calls`` row as a one-line log record — the raw form of a
+    results-file ``call_log`` entry: the same call shape (verb, kind, the
+    bounded arg sample), but the token figure is the ledger's own
+    ``result_tokens_est`` — the ``mcp_call`` line's ``response_tokens_est``
+    — not the caller-side estimate the results file records."""
+    head = f"{rec['call_id']} {rec['verb']}"
+    if rec.get("kind"):
+        head += f" {rec['kind']}"
+    head += f" {rec['outcome']}"
+    if rec.get("error_type"):
+        head += f" ({rec['error_type']})"
+    est = rec.get("result_tokens_est")
+    bits = [f"{est} tok" if est is not None else "- tok"]
+    if rec.get("result_bytes") is not None:
+        bits.append(f"{rec['result_bytes']}B")
+    if rec.get("latency_ms") is not None:
+        bits.append(f"{rec['latency_ms']}ms")
+    ts = rec.get("ts")
+    if ts is not None:
+        bits.append(ts.strftime("%H:%M:%SZ") if hasattr(ts, "strftime") else str(ts))
+    sample = rec.get("arg_sample")
+    if sample:
+        s = json.dumps(sample, ensure_ascii=False, sort_keys=True)
+        bits.append(s[:120] + ("…" if len(s) > 120 else ""))
+    return f"  {head} — {' · '.join(bits)}"
