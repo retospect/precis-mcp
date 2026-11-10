@@ -626,13 +626,14 @@ class PcbIR:
 
     #: Per-instance provenance of :attr:`inst_body_bbox` — one of
     #: ``"authored"`` (a designer-authored courtyard claim), ``"catalog"``
-    #: (a vendor row with no explicit marker — conservative unknown
-    #: handling keeps it a claim), ``"graphic_hint"`` (an inferred EasyEDA
-    #: graphic envelope: silk/TRACK outline extrema, not a verified body
-    #: claim), ``"pad_extent"`` (the box equals the pads' own extent —
-    #: nothing beyond the pads is claimed), or ``None`` where the instance
-    #: has no body entry. Hydrated at the same seam by
-    #: :func:`footprint_body_provenances`. :func:`verified_bodied_refdes`
+    #: (an unmarked catalog row whose pads do not parse — the conservative
+    #: unknown reading), ``"graphic_hint"`` (an inferred EasyEDA graphic
+    #: envelope: silk/TRACK outline extrema, not a verified body claim —
+    #: stamped by :mod:`precis.pcb.easyeda` at write time or re-derived on
+    #: read for a pre-marker cache row), ``"pad_extent"`` (the box equals
+    #: the pads' own extent — nothing beyond the pads is claimed), or
+    #: ``None`` where the instance has no body entry. Hydrated at the same
+    #: seam by :func:`footprint_body_provenances`. :func:`verified_bodied_refdes`
     #: excludes the two inferred markers from proven-collision grading;
     #: the keep-out reservation itself is unchanged either way.
     inst_body_provenance: tuple[str | None, ...] = ()
@@ -3257,11 +3258,21 @@ def _body_claims(
     provenance half records WHAT the box claims. An explicit row marker
     (``courtyard.provenance`` — :mod:`precis.pcb.easyeda` stamps its
     inferred envelopes ``"graphic_hint"``/``"pad_extent"``) always wins
-    over the derived-fallback equality check; a row with no marker gets
-    ``"catalog"`` (vendor data, unknown provenance — conservative unknown
-    handling keeps today's reading) or ``"authored"`` (a design-local
-    courtyard that differs from the pad extent — the designer's own body
-    claim).
+    over the derived-fallback equality check; a design-local row with no
+    marker gets ``"authored"`` (a courtyard that differs from the pad
+    extent — the designer's own body claim).
+
+    A catalog row (the C-number cache) with no marker is a pre-marker
+    EasyEDA cache row: the cache is populated only from
+    :mod:`precis.pcb.easyeda`, whose producer derives every courtyard
+    from the pads widened by silk-outline extrema and stamps the marker
+    at write time (:func:`precis.pcb.easyeda._courtyard`). Rows cached
+    before the marker existed carry none, so the marker is RE-DERIVED on
+    read with the producer's own rule — bbox differing from
+    :func:`_pads_extent_bbox` is the inferred ``"graphic_hint"`` envelope
+    (gr565552's X1 C18213028 decoration box), equal is ``"pad_extent"``.
+    Only an un-derivable row (pads that do not parse) keeps the
+    conservative unknown reading ``"catalog"``.
     """
     if not footprints:
         return ()
@@ -3290,12 +3301,30 @@ def _body_claims(
                 if not (pins_of.get(inst_id, set()) - labels):
                     row_prov = raw_court.get("provenance")
                     row_prov = row_prov if isinstance(row_prov, str) else None
-                    authored = refdes in catalog
+                    catalog_row = refdes in catalog
+                    if catalog_row and row_prov is None:
+                        # Pre-marker EasyEDA cache row: the producer
+                        # (:mod:`precis.pcb.easyeda`) derives the box from
+                        # the pads plus silk-outline extrema, so re-stamp
+                        # the marker it would write now. Unparseable pads
+                        # keep the conservative "catalog" reading.
+                        pads_bbox = _pads_extent_bbox(raw_pads)
+                        if pads_bbox is not None:
+                            row_prov = (
+                                "graphic_hint"
+                                if any(
+                                    abs(a - b) > _BODY_DERIVED_TOL_MM
+                                    for a, b in zip(bbox, pads_bbox, strict=True)
+                                )
+                                else "pad_extent"
+                            )
+                    authored = catalog_row
                     if not authored and row_prov is None:
-                        # No explicit marker: the derived-fallback equality
-                        # check is the only signal — an explicit marker
-                        # wins over it (a round-tripped graphic hint stays
-                        # a hint even where it differs from the pad extent).
+                        # Design-local row, no marker: the derived-fallback
+                        # equality check is the only signal — an explicit
+                        # marker wins over it (a round-tripped graphic hint
+                        # stays a hint even where it differs from the pad
+                        # extent).
                         pads_bbox = _pads_extent_bbox(raw_pads)
                         authored = pads_bbox is not None and any(
                             abs(a - b) > _BODY_DERIVED_TOL_MM
@@ -3303,9 +3332,7 @@ def _body_claims(
                         )
                     if authored or row_prov is not None:
                         body = bbox
-                        prov = row_prov or (
-                            "catalog" if refdes in catalog else "authored"
-                        )
+                        prov = row_prov or ("catalog" if catalog_row else "authored")
         out.append((body, prov))
     return tuple(out)
 
@@ -3330,13 +3357,14 @@ def footprint_body_bboxes(
     A catalog row (``catalog_refdes`` — the refdeses
     :func:`precis.pcb.session.footprints_by_refdes` resolved through the
     C-number cache rather than a design-local row) always qualifies: its
-    courtyard is vendor data even when it equals the pad bbox. Any other
-    row qualifies only when its courtyard is NOT the pad-derived
-    fallback — recognised by equality within :data:`_BODY_DERIVED_TOL_MM`
-    of :func:`_pads_extent_bbox` — or when the row carries an explicit
-    ``courtyard.provenance`` marker. An authored courtyard on a
-    design-local row (a supercap's authored span) applies the same way;
-    the auto-derived one an authored comb gets never does.
+    courtyard is the cached footprint's extent claim even when it equals
+    the pad bbox. Any other row qualifies only when its courtyard is NOT
+    the pad-derived fallback — recognised by equality within
+    :data:`_BODY_DERIVED_TOL_MM` of :func:`_pads_extent_bbox` — or when
+    the row carries an explicit ``courtyard.provenance`` marker. An
+    authored courtyard on a design-local row (a supercap's authored span)
+    applies the same way; the auto-derived one an authored comb gets
+    never does.
 
     The box is a keep-out RESERVATION whatever its provenance: an
     inferred EasyEDA graphic envelope still keeps the placer out (a
@@ -3360,7 +3388,11 @@ def footprint_body_provenances(
     """Per-instance provenance of :func:`footprint_body_bboxes`'s boxes —
     ``"authored"``, ``"catalog"``, ``"graphic_hint"`` or ``"pad_extent"``
     where a body was claimed, else ``None`` (see
-    :attr:`PcbIR.inst_body_provenance` for the vocabulary)."""
+    :attr:`PcbIR.inst_body_provenance` for the vocabulary). An unmarked
+    catalog row is re-derived on read as the EasyEDA hint the producer
+    would stamp now (``"graphic_hint"``/``"pad_extent"``); ``"catalog"``
+    survives only where the pads do not parse and the re-derivation has
+    nothing to compare."""
     return tuple(prov for _, prov in _body_claims(ir, footprints, catalog_refdes))
 
 
@@ -3417,17 +3449,19 @@ def bodied_refdes(ir: PcbIR) -> frozenset[str]:
 def verified_bodied_refdes(ir: PcbIR) -> frozenset[str]:
     """Subset of :func:`bodied_refdes` whose body extent is a VERIFIED
     body/assembly claim — a designer-authored courtyard (``"authored"``)
-    or a vendor row with no explicit marker (``"catalog"``: conservative
-    unknown handling, the pre-gr565552 reading). Boxes marked INFERRED
-    (:data:`_INFERRED_BODY_PROVENANCE` — an EasyEDA graphic envelope,
-    ``"graphic_hint"``, or the pads' own extent, ``"pad_extent"``) keep
-    their keep-out reservation in :attr:`PcbIR.inst_body_bbox` but are
-    excluded here: silkscreen-decoration extrema are not a certified
-    mechanical contract, so an overlap reaching them is graded a margin
-    shortfall, not a proven collision. ``inst_body_provenance`` shorter
-    than ``inst_body_bbox`` (a hand-built IR hydrated before provenance
-    existed) falls back to treating every body as verified — the same
-    conservative-unknown reading."""
+    or an unmarked catalog row whose pads do not parse (``"catalog"``:
+    the conservative unknown reading, all that is left once an unmarked
+    EasyEDA cache row's marker is re-derived on read). Boxes marked
+    INFERRED (:data:`_INFERRED_BODY_PROVENANCE` — an EasyEDA graphic
+    envelope, ``"graphic_hint"``, or the pads' own extent,
+    ``"pad_extent"``) keep their keep-out reservation in
+    :attr:`PcbIR.inst_body_bbox` but are excluded here: silkscreen-
+    decoration extrema are not a certified mechanical contract, so an
+    overlap reaching them is graded a margin shortfall, not a proven
+    collision. ``inst_body_provenance`` shorter than ``inst_body_bbox``
+    (a hand-built IR hydrated before provenance existed) falls back to
+    treating every body as verified — the same conservative-unknown
+    reading."""
     provs = ir.inst_body_provenance
     if len(provs) != len(ir.inst_body_bbox):
         provs = ()

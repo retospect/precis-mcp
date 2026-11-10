@@ -505,16 +505,23 @@ def test_graphic_hint_body_reserves_but_does_not_prove_a_collision() -> None:
     assert findings[0].severity == "warn", findings[0].detail
 
 
-def test_unmarked_catalog_body_still_proves_the_collision() -> None:
-    """Conservative unknown handling: the identical geometry with NO
-    provenance marker keeps today's reading — a catalog courtyard is
-    vendor data and the pair grades as a proven collision (ERROR)."""
+def test_unmarked_easyeda_cache_row_is_reclassified_as_hint_on_read() -> None:
+    """Review td625107 finding 1: a cache row written before
+    ``courtyard.provenance`` existed carries no marker, but the C-number
+    cache is populated only from EasyEDA, whose producer derives the box
+    from the pads plus silk-outline extrema — a pre-marker row IS that
+    inferred envelope (gr565552's X1 C18213028 decoration box), not
+    vendor-authored body data. On read the marker is re-derived with the
+    producer's own rule: wider than the pad extent -> ``"graphic_hint"``
+    — the keep-out reservation stands, but :func:`verified_bodied_refdes`
+    excludes it and DRC grades an overlap reaching it a WARN, not a
+    proven collision."""
     from precis.pcb.drc import check_courtyard_overlap
     from precis.pcb.ir import verified_bodied_refdes
 
     ir = _body_ir({"PV1": _wide_body_fp()}, footprint_sources={"PV1": "catalog"})
-    assert ir.inst_body_provenance[0] == "catalog"
-    assert verified_bodied_refdes(ir) == frozenset({"PV1"})
+    assert ir.inst_body_provenance[0] == "graphic_hint"
+    assert verified_bodied_refdes(ir) == frozenset()
     courtyards, bodies, pads = _pv1_l1_overlap_inputs(ir)
     findings = check_courtyard_overlap(
         courtyards,
@@ -525,7 +532,236 @@ def test_unmarked_catalog_body_still_proves_the_collision() -> None:
         bodied=verified_bodied_refdes(ir),
     )
     assert findings
-    assert findings[0].severity == "error"
+    assert findings[0].severity == "warn", findings[0].detail
+
+
+def test_unmarked_cache_row_matching_the_pad_extent_is_pad_extent() -> None:
+    """The producer's other stamp: a pre-marker row whose box equals the
+    pads' own extent is ``"pad_extent"`` on read — the reservation
+    stands (the box still keeps the placer out) but it claims nothing
+    beyond the pads, so it is not a verified body either."""
+    from precis.pcb.ir import verified_bodied_refdes
+
+    fp = _wide_body_fp()
+    fp["courtyard"] = {"bbox": [-12.2, -4.0, 12.2, 4.0]}  # == pad extent
+    ir = _body_ir({"PV1": fp}, footprint_sources={"PV1": "catalog"})
+    assert ir.inst_body_bbox[0] == (-12.2, -4.0, 12.2, 4.0)
+    assert ir.inst_body_provenance[0] == "pad_extent"
+    assert verified_bodied_refdes(ir) == frozenset()
+
+
+def test_unmarked_cache_row_with_unparseable_pads_stays_conservative() -> None:
+    """The re-derivation needs the pads' extent to compare against; a row
+    whose pads do not parse gives no signal, so the conservative unknown
+    reading ``"catalog"`` survives and the body stays verified."""
+    from precis.pcb.ir import footprint_body_bboxes, footprint_body_provenances
+
+    ir = from_graph(_body_graph(), stackup=DEFAULT_STACKUP)
+    bad = {
+        "pads": [
+            {"number": "1", "shape": "RECT", "x": 0.0, "y": 0.0, "w": "fat", "h": 8.0},
+            {"number": "2", "shape": "RECT", "x": 1.0, "y": 0.0, "w": 3.0, "h": 8.0},
+        ],
+        "pin_map": {},
+        "courtyard": {"bbox": [-12.2, -4.064, 12.2, 4.064]},
+    }
+    assert footprint_body_bboxes(ir, {"PV1": bad}, catalog_refdes={"PV1"})[0] == (
+        -12.2,
+        -4.064,
+        12.2,
+        4.064,
+    )
+    assert (
+        footprint_body_provenances(ir, {"PV1": bad}, catalog_refdes={"PV1"})[0]
+        == "catalog"
+    )
+
+
+def _authored_wide_body_fp() -> dict[str, Any]:
+    """PV1's row as a VERIFIED claim — the designer-authored courtyard
+    marker — the mixed-provenance grading tests' verified half."""
+    fp = _wide_body_fp()
+    fp["courtyard"] = {
+        "bbox": [-12.2, -4.064, 12.2, 4.064],
+        "provenance": "authored",
+    }
+    return fp
+
+
+def _hinted_l1_fp() -> dict[str, Any]:
+    """L1's row: a small two-pad part whose courtyard box is an INFERRED
+    graphic-hint envelope (the producer's stamp) extending toward PV1 —
+    never a verified body claim."""
+    return {
+        "pads": [_pad("1", 0.0, 0.0), _pad("2", 0.8, 0.0)],
+        "pin_map": {},
+        "courtyard": {"bbox": [-2.0, -0.7, 0.3, 0.5], "provenance": "graphic_hint"},
+    }
+
+
+def _mixed_pair_ir(l1_x: float):
+    """The shared geometry for the mixed-provenance grading tests: PV1
+    (verified authored body, world x 37.8–62.2, y 45.936–54.064 around
+    its (50, 50) anchor) beside L1 at ``l1_x``, whose hint envelope
+    reaches back toward PV1."""
+    graph = _body_graph()
+    graph["instances"][1]["x"] = l1_x
+    graph["instances"][1]["y"] = 50.0
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    apply_real_pin_offsets(ir, {"PV1": _authored_wide_body_fp(), "L1": _hinted_l1_fp()})
+    return ir
+
+
+def _mixed_pair_inputs(ir):
+    from precis.pcb.ir import world_courtyard_polygons
+
+    courtyards = [
+        (str(ir.instance_refdes[i]), p)
+        for i, p in enumerate(world_courtyard_polygons(ir, clearance_mm=0.4))
+        if p
+    ]
+    bodies = [
+        (str(ir.instance_refdes[i]), p)
+        for i, p in enumerate(world_courtyard_polygons(ir, clearance_mm=0.0))
+        if p
+    ]
+    return courtyards, bodies
+
+
+def test_mixed_pair_hint_reservation_beside_verified_body_is_a_warn() -> None:
+    """Review td625107 finding 2: body grading used to activate when
+    EITHER part was verified and then treat both occupied unions as
+    authoritative, so the inferred hint envelope of a part beside a
+    verified one produced a spurious ERROR. The hint cannot prove a
+    collision: here L1's pads sit clear of PV1 (both parts' copper
+    clears) and only L1's hint reservation reaches PV1's courtyard
+    margin — a shortfall (WARN) naming the inferred reservation, while
+    the reservation itself still reports (the pair is not silent)."""
+    from precis.pcb.drc import check_courtyard_overlap
+    from precis.pcb.ir import verified_bodied_refdes
+
+    ir = _mixed_pair_ir(63.2)
+    assert verified_bodied_refdes(ir) == frozenset({"PV1"})
+    pads = [
+        {
+            "refdes": "PV1",
+            "layer": "F.Cu",
+            "net": "IN",
+            "shape": "rect",
+            "x": 50.0 - 10.7,
+            "y": 50.0,
+            "w": 3.0,
+            "h": 8.0,
+        },
+        {
+            "refdes": "PV1",
+            "layer": "F.Cu",
+            "net": "OUT",
+            "shape": "rect",
+            "x": 50.0 + 10.7,
+            "y": 50.0,
+            "w": 3.0,
+            "h": 8.0,
+        },
+        {
+            "refdes": "L1",
+            "layer": "F.Cu",
+            "net": "IN",
+            "shape": "rect",
+            "x": 63.2,
+            "y": 50.0,
+            "w": 0.6,
+            "h": 0.4,
+        },
+        {
+            "refdes": "L1",
+            "layer": "F.Cu",
+            "net": "OUT",
+            "shape": "rect",
+            "x": 64.0,
+            "y": 50.0,
+            "w": 0.6,
+            "h": 0.4,
+        },
+    ]
+    courtyards, bodies = _mixed_pair_inputs(ir)
+    findings = check_courtyard_overlap(
+        courtyards,
+        bottom_by_refdes={},
+        clearance_mm=0.4,
+        pads=pads,
+        bodies=bodies,
+        bodied=verified_bodied_refdes(ir),
+    )
+    assert findings, "the reservation overlap must still report"
+    assert findings[0].severity == "warn", findings[0].detail
+    assert "inferred (unverified) body reservation" in findings[0].detail
+
+
+def test_mixed_pair_verified_body_against_real_lands_is_still_an_error() -> None:
+    """The other half of the mixed pair: the hint status of L1's body
+    does not shield a REAL proximity — L1's lands sit within the margin
+    of PV1's verified body, so the overlap fills with geometry both
+    sides stand behind and the pair stays a proven collision (ERROR)."""
+    from precis.pcb.drc import check_courtyard_overlap
+    from precis.pcb.ir import verified_bodied_refdes
+
+    ir = _mixed_pair_ir(62.4)
+    assert verified_bodied_refdes(ir) == frozenset({"PV1"})
+    pads = [
+        {
+            "refdes": "PV1",
+            "layer": "F.Cu",
+            "net": "IN",
+            "shape": "rect",
+            "x": 50.0 - 10.7,
+            "y": 50.0,
+            "w": 3.0,
+            "h": 8.0,
+        },
+        {
+            "refdes": "PV1",
+            "layer": "F.Cu",
+            "net": "OUT",
+            "shape": "rect",
+            "x": 50.0 + 10.7,
+            "y": 50.0,
+            "w": 3.0,
+            "h": 8.0,
+        },
+        {
+            "refdes": "L1",
+            "layer": "F.Cu",
+            "net": "IN",
+            "shape": "rect",
+            "x": 62.4,
+            "y": 50.0,
+            "w": 0.6,
+            "h": 0.4,
+        },
+        {
+            "refdes": "L1",
+            "layer": "F.Cu",
+            "net": "OUT",
+            "shape": "rect",
+            "x": 63.2,
+            "y": 50.0,
+            "w": 0.6,
+            "h": 0.4,
+        },
+    ]
+    courtyards, bodies = _mixed_pair_inputs(ir)
+    findings = check_courtyard_overlap(
+        courtyards,
+        bottom_by_refdes={},
+        clearance_mm=0.4,
+        pads=pads,
+        bodies=bodies,
+        bodied=verified_bodied_refdes(ir),
+    )
+    assert findings
+    assert findings[0].severity == "error", findings[0].detail
+    assert "PV1's occupied area sits inside L1's courtyard" in findings[0].detail
 
 
 def test_explicit_provenance_marker_wins_over_the_equality_check() -> None:

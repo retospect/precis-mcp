@@ -123,7 +123,7 @@ from typing import Any
 from shapely import box as shapely_box
 from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import nearest_points
+from shapely.ops import nearest_points, unary_union
 from shapely.strtree import STRtree
 
 from precis.finding_id import finding_hash
@@ -2818,12 +2818,22 @@ def check_courtyard_overlap(
     grading set; :func:`precis.pcb.ir.bodied_refdes` is the wider
     keep-out reservation, inferred graphic hints included, which does not
     grade collisions by itself, gr565552). Given both, a pair in which a
-    modelled body participates is graded on real geometry, not the
-    over-approximation argument: an overlap that reaches either part's
-    occupied region is a proven collision — ERROR; an overlap living
-    only in the two routing margins stays a WARN naming the occupied
-    gap. A pair with no modelled body keeps the land-hull grading —
-    the pad-union rings of two body-less parts still prove nothing.
+    verified body participates is graded on real geometry, not the
+    over-approximation argument: an overlap that reaches a VERIFIED
+    part's occupied region is a proven collision — ERROR — only when the
+    geometry filling the overlap on the other side is one that part
+    stands behind: its occupied union where that union is verified too,
+    its real lands (from ``pads``) where it only carries an INFERRED
+    graphic-hint envelope. A hint can overstate the part's real body, so
+    an overlap that reaches the hint reservation alone — or lives only
+    in the two routing margins — stays a WARN naming the occupied gap
+    (mixed-provenance pairs, review of td625106). A pair with no
+    verified body keeps the land-hull grading — the pad-union rings of
+    two body-less parts still prove nothing. Without ``pads`` there is
+    no way to separate a hint envelope from the lands, so a mixed pair
+    keeps the union-based reading (every legacy caller); without
+    ``clearance_mm`` the inflation that built the courtyards is unknown
+    for the same reason.
     ``bodied`` without ``bodies`` is inert (there is nothing to
     measure); ``bodies`` without ``bodied`` leaves every pair on the
     legacy path, so the same ``bodies`` list the edge rules already
@@ -2945,26 +2955,50 @@ def check_courtyard_overlap(
                 and occ_j is not None
                 and (courtyards[i][0] in bodied_set or courtyards[j][0] in bodied_set)
             )
+            proven: list[tuple[str, str]] = []
+            reservation: list[tuple[str, str]] = []
             if body_graded and occ_i is not None and occ_j is not None:
-                # A modelled body is in the pair, so grade the overlap on
-                # REAL occupied area (pads + authored body), not the
-                # deflated-hull approximation: an occupied region inside
-                # the other's courtyard is a proven collision, a
-                # margin-only overlap stays a warn (round-2 ruling).
-                inside_i = overlap.intersection(occ_i).area > _EPS
-                inside_j = overlap.intersection(occ_j).area > _EPS
-                if inside_i or inside_j:
-                    who = []
-                    if inside_i:
-                        who.append(
-                            f"{courtyards[i][0]}'s occupied area sits inside "
-                            f"{courtyards[j][0]}'s courtyard"
+                # A verified body is in the pair: grade the overlap on
+                # real geometry, not the deflated-hull approximation.
+                # A proven collision needs the OTHER side to stand behind
+                # the geometry that fills the overlap: its occupied union
+                # where that union is verified, its real LANDS where the
+                # union only carries an INFERRED graphic-hint envelope
+                # (the keep-out reservation, gr565552). An overlap
+                # reaching only the hint envelope or the routing margins
+                # is a shortfall, not proof — the hint can overstate the
+                # part's real body, so it cannot make a verified part's
+                # occupied area a proven collision.
+                for ref, occ, other, occ_other in (
+                    (courtyards[i][0], occ_i, courtyards[j][0], occ_j),
+                    (courtyards[j][0], occ_j, courtyards[i][0], occ_i),
+                ):
+                    if ref not in bodied_set:
+                        continue
+                    reach = overlap.intersection(occ)
+                    if reach.area <= _EPS:
+                        continue
+                    if other in bodied_set or clearance_mm is None:
+                        proven_hit = True
+                    elif pads:
+                        other_lands = lands.get(other)
+                        proven_hit = bool(other_lands) and (
+                            reach.intersection(
+                                unary_union(other_lands).buffer(clearance_mm)
+                            ).area
+                            > _EPS
                         )
-                    if inside_j:
-                        who.append(
-                            f"{courtyards[j][0]}'s occupied area sits inside "
-                            f"{courtyards[i][0]}'s courtyard"
-                        )
+                    else:
+                        # No pad geometry to separate the hint envelope
+                        # from the lands: keep the union as the best
+                        # available truth (every legacy caller).
+                        proven_hit = True
+                    (proven if proven_hit else reservation).append((ref, other))
+                if proven:
+                    who = [
+                        f"{ref}'s occupied area sits inside {other}'s courtyard"
+                        for ref, other in proven
+                    ]
                     detail += " — " + " and ".join(who)
                 else:
                     severity = "warn"
@@ -2973,11 +3007,23 @@ def check_courtyard_overlap(
                         if clearance_mm is not None
                         else "the routing margins"
                     )
-                    detail += (
-                        f" — the parts' occupied areas (pads and bodies) "
-                        f"clear by {occ_i.distance(occ_j):.3f}mm; only "
-                        f"{margin_txt} overlap, not a proven collision"
-                    )
+                    if reservation:
+                        detail += (
+                            " — "
+                            + " and ".join(
+                                f"{ref}'s occupied area reaches only {other}'s "
+                                "inferred (unverified) body reservation"
+                                for ref, other in reservation
+                            )
+                            + f"; only {margin_txt} overlap — "
+                            "not a proven collision"
+                        )
+                    else:
+                        detail += (
+                            f" — the parts' occupied areas (pads and bodies) "
+                            f"clear by {occ_i.distance(occ_j):.3f}mm; only "
+                            f"{margin_txt} overlap — not a proven collision"
+                        )
             # Only a courtyard built from real lands can be deflated back
             # to them: with `pads` supplied (non-empty), a part that has no land in it
             # (a pinless mounting hole or fiducial, whose courtyard is the

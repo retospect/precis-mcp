@@ -925,10 +925,11 @@ def apply_real_pin_offsets(
     (:func:`precis.pcb.ir.footprint_body_provenances`) — WHAT each body
     box claims. An explicit row marker (``courtyard.provenance``;
     :mod:`precis.pcb.easyeda` stamps its inferred envelopes) wins over
-    the catalog/authored inference; unmarked rows keep today's reading
-    via conservative unknown handling. The box is a keep-out reservation
-    either way — only proven-collision grading
-    (:func:`precis.pcb.ir.verified_bodied_refdes`) consults the
+    the catalog/authored inference; an unmarked catalog row is a
+    pre-marker EasyEDA cache row whose hint marker is re-derived on
+    read, leaving ``"catalog"`` only where the pads do not parse. The
+    box is a keep-out reservation either way — only proven-collision
+    grading (:func:`precis.pcb.ir.verified_bodied_refdes`) consults the
     provenance.
     """
     ir.footprint_pads = pcb_ir.footprint_pad_set(ir, footprints)
