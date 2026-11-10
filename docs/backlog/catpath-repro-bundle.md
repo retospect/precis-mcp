@@ -370,3 +370,49 @@ community; which compound goes first.
 - advisory: model tier: not declared; this is new-abstraction work (bundle format, RO-Crate) - set `model: opus`.
 - advisory: viewer "no network references" test must define the check (regex over http(s):// excluding xmlns/doc links?).
 - note: blocked-by not declared; sibling specs exist (catpath-wheel-version-reuse, kinetics-engine-v2, claim-publication-nanopub-ots) and were checked. Split: slices 1 and 2 are separable (2 depends on 1's manifest; both fine as separate items), but 1 itself hinges on the persistence decision above.
+
+## External replay acceptance (gr564215, 2026-11-04)
+
+The acceptance contract (fresh external runner, staged pinned inputs, D10
+judgment, negative tests, coverage table) is implemented reader-side as
+`src/precis_pathway/replay.py` — the external runner's engine, consuming an
+exported bundle directory with no precis checkout, store, MCP or credentials:
+
+- integrity: `sha256sum -c` semantics over `MANIFEST.sha256` before any
+  compute; undeclared files and mismatches refuse naming the path.
+- staging: declared files copy into a fresh read-only-inputs work dir;
+  `env/weights.json` files hash-verify (a mismatch refuses naming both
+  digests, never substitutes; hash-only private-engine records stay
+  `unavailable`, never silently fetched) and the staged `env/uv.lock` must
+  hash-match the D10 record's pin.
+- execution: the declared entrypoint runs under a socket guard (an
+  undeclared access fails naming the address), index/cache-isolation env,
+  immutable inputs and a new `out/`; shipped `outputs/` are never handed to
+  the entrypoint, so they cannot be reused as fresh results.
+- numerical agreement: fresh observables judged by the engine's D10
+  `autocatpath.manifest.compare` against `manifest/validation_manifest.json`
+  tolerances (same/cross-platform column by platform) — no second tolerance
+  policy anywhere in the repo.
+- report: `pathway_replay_report` JSON with bundle/manifest ids, image
+  digest (`provenance/build.json`), code/lock/weight ids, commands, exit
+  codes, logs, per-leg status, tolerances; integrity, execution, numerical
+  agreement and scientific support stay distinct scopes, claim support
+  always `unavailable`.
+- coverage: `coverage.json` carries claim/run/required-leg/acceptance-test
+  rows; legs the replay did not run stay `not-run` (named, with why) and
+  block their claims — one fixture cannot read as paper-wide coverage.
+
+`tests/test_pathway_replay.py` covers all of it engine-free on a synthetic
+CPU fixture (the always-run packaging check) and replays the pw455722 case
+under the real D10 judge where the `catalyst` extra is installed. Legs the
+replay did not produce (GPU/HPC energies, sweep, TPD) stay `not-run`.
+
+Recorded blockers, not weakened: the catpath repo is private, so a
+hash-only engine/weights record fails the full external-reproduction
+acceptance (inspection yes, independent replay no) until an
+outsider-accessible engine/weights distribution exists; and the container
+build leg of contract point 1 (pinned base-image build from the archive
+alone, empty caches, `--network none`) still needs the archive writer
+(slice 1) to produce a real bundle — this harness consumes it and is tested
+against synthetic fixtures until then. This item does not authorize
+publishing private code or weights.
