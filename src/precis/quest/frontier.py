@@ -1814,6 +1814,47 @@ def _merge_provisional_measures(
     return merged, frozenset(untrusted_keys)
 
 
+#: The affirmative trust verdicts :func:`_candidate_from_structure` lifts off
+#: a candidate's meta — the ``*_trusted`` stamps the harvest writes. A
+#: flipped one marks the candidate untrusted; an absent one stays "unknown,
+#: rides through" (the harvest's own convention — see the
+#: ``barrier_trusted`` gating comment above), never affirmative.
+_TRUST_FLAG_KEYS: tuple[str, ...] = (
+    "barrier_trusted",
+    "selectivity_trusted",
+    "kinetics_trusted",
+)
+
+
+def candidate_trusted(c: Candidate) -> bool | None:
+    """The candidate's trust verdict as a tri-state (gr592277).
+
+    ``False`` when anything carries an unconfirmed mark: a flipped
+    ``*_trusted`` verdict, an :func:`apply_network_demotion`
+    ``network_stale`` flag, or a raw value in a ``*_untrusted_value``
+    stash — even a non-objective one ("the trusted candidate" shows no
+    unconfirmed numbers). ``True`` when at least one ``*_trusted`` stamp
+    is affirmative and nothing is unconfirmed. ``None`` when the
+    candidate carries no trust signal at all — the "unknown, rides
+    through" rows: not *untrusted*, but not the affirmative "trusted AND
+    best" the views' ``args={'trusted': true}`` filter keeps either.
+    The results table's ``trusted`` column prints the three states
+    ``yes`` / ``no`` / ``-``.
+    """
+    flags = c.flags
+    if (
+        flags.get("network_stale")
+        or any(flags.get(k) is False for k in _TRUST_FLAG_KEYS)
+        or any(
+            isinstance(k, str) and k.endswith(_UNTRUSTED_VALUE_SUFFIX) for k in flags
+        )
+    ):
+        return False
+    if any(flags.get(k) is True for k in _TRUST_FLAG_KEYS):
+        return True
+    return None
+
+
 #: Competitor-set measures: each ranks the main route against OTHER species
 #: the reaction network contains, so its value depends on WHICH network was
 #: built (a ``parked`` network has fewer competitors than ``coadsorbed``, so
@@ -2162,7 +2203,10 @@ TIER_GLYPH: dict[str, str] = {"screening": "○", "neb": "◐", "verify": "●"}
 
 
 def leaderboard(
-    fr: FrontierResult, *, graduated: frozenset[int] | set[int] = frozenset()
+    fr: FrontierResult,
+    *,
+    graduated: frozenset[int] | set[int] = frozenset(),
+    sort: tuple[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Rows + TOON schema for the **by-total** design leaderboard (§7.3).
 
@@ -2170,7 +2214,11 @@ def leaderboard(
     ``band`` (``frontier``/``dominated``/``provisional``/``awaiting``), and
     a graduation flag. Ordered frontier → dominated → provisional →
     awaiting, sorted within each band by the primary objective (best
-    first). A provisional row shows merged measures with ``≈`` on each
+    first) — or by ``sort`` ``(key, sense)`` when given (the handler's
+    ``args={'sort': k}``, gr592277); a sort key outside the declared
+    objectives still ranks the rows and appends its own column, so the
+    number sorted on stays visible. A provisional row shows merged
+    measures with ``≈`` on each
     unconfirmed value and its exclusion reasons in ``quality`` — measured
     but not confirmed, never ranked against confirmed bands. A ``$/rate``
     column (:func:`_rate_readout`: ``atom_cost - log_tof``, log10 $ per
@@ -2182,7 +2230,11 @@ def leaderboard(
     sibling pathways, not this.
     """
     obj_keys = [k for k, _ in fr.objectives]
-    primary = fr.objectives[0] if fr.objectives else None
+    primary = sort or (fr.objectives[0] if fr.objectives else None)
+    col_keys = [
+        *obj_keys,
+        *([sort[0]] if sort is not None and sort[0] not in obj_keys else []),
+    ]
 
     def _sort_key(c: Candidate) -> float:
         if primary is None:
@@ -2213,7 +2265,7 @@ def leaderboard(
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": band,
             }
-            for key in obj_keys:
+            for key in col_keys:
                 v = c.measures.get(key)
                 row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
             row["$/rate"] = _rate_readout(c.measures) or "—"
@@ -2254,7 +2306,7 @@ def leaderboard(
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": "provisional",
             }
-            for key in obj_keys:
+            for key in col_keys:
                 v = pc.measures.get(key)
                 if not isinstance(v, (int, float)):
                     row[key] = "—"
@@ -2296,7 +2348,7 @@ def leaderboard(
         "design",
         "name",
         "tier",
-        *obj_keys,
+        *col_keys,
         "$/rate",
         "band",
         "graduated",
@@ -2630,6 +2682,7 @@ __all__ = [
     "axis_label_for",
     "better_arrow_for",
     "build_frontier_scatter",
+    "candidate_trusted",
     "current_network_basis",
     "leaderboard",
     "pareto_split",

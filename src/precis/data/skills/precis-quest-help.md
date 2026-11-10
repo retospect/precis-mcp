@@ -299,6 +299,17 @@ empty row. On an
 `inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
 says the body has no Pareto frontier — it never proposes, so nothing
 converges.
+`results`, `leaderboard` and `frontier` also take
+`args={'trusted': true}` — only candidates carrying an affirmative
+trust verdict (the rows the `trusted` column reads `yes`: no flipped
+`*_trusted` flag, no `*_untrusted_value` stash, no network-stale mark)
+— and `args={'sort': '<measure>'}`, ranking rows by any carried
+measure on its declared objective sense (`min` when undeclared,
+unmeasured last). "Which candidate is trusted AND best" is
+`args={'trusted': true, 'sort': 'barrier'}`. When the confirmed
+frontier is empty because everything measured is unconfirmed, the
+headline's per-axis counts name the ≤10 handles that DO carry it
+trusted (`barrier ×252 (trusted: st123)`).
 `view='series'` re-cuts the same rows as **controlled comparisons**: one
 block per set of candidates that share a base and differ in exactly one
 axis (`dopant · n_dopant · site · coads`), so a difference down a block is
@@ -317,6 +328,8 @@ paper. "Best" follows the taxon's `higher_is_better`; a group without it
 reports its row count and no best. Rows that are ambiguous, flagged
 (`meta.escalation`), anchor-lost or distrusted are left out — never compared
 across groups. See `precis-measure-help`.
+
+## Read a quest's numbers — Pourbaix maps and staircase points
 
 `view='pourbaix'` is the resting-state surface-Pourbaix validity map per
 candidate structure serving the quest: stored `surface_coverage_scan`

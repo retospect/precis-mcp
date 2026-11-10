@@ -43,6 +43,7 @@ import json
 import math
 import re
 from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
@@ -712,6 +713,116 @@ def _results_format_arg(args: dict[str, Any] | None) -> str:
     return str(raw)
 
 
+def _trusted_arg(args: dict[str, Any] | None) -> bool:
+    """``args['trusted']`` for ``view='frontier'``/``'leaderboard'``/
+    ``'results'`` — ``true`` keeps only candidates carrying an
+    affirmative trust verdict (gr592277)."""
+    if not isinstance(args, dict) or "trusted" not in args:
+        return False
+    raw = args["trusted"]
+    if not isinstance(raw, bool):
+        raise BadInput(
+            f"args={{'trusted': {raw!r}}}: trusted must be a bool",
+            next="get(kind='quest', id=N, view='results', args={'trusted': true})",
+        )
+    return raw
+
+
+def _sort_arg(args: dict[str, Any] | None) -> str | None:
+    """``args['sort']`` for the same views — a measure key to rank rows
+    by (gr592277); :func:`_sort_spec_for` resolves it to ``(key, sense)``
+    against the frontier."""
+    if not isinstance(args, dict) or "sort" not in args:
+        return None
+    raw = args["sort"]
+    if not isinstance(raw, str) or not raw.strip():
+        raise BadInput(
+            f"args={{'sort': {raw!r}}}: sort must name a measure key",
+            next="get(kind='quest', id=N, view='leaderboard', "
+            "args={'sort': 'barrier'})",
+        )
+    return raw.strip()
+
+
+def _sort_spec_for(fr: Any, key: str | None) -> tuple[str, str] | None:
+    """``args['sort']`` → ``(key, sense)``: the declared objective sense
+    when ``key`` is one, ``min`` for any other measure a candidate
+    carries; BadInput naming the carried keys when none does (gr592277)."""
+    if key is None:
+        return None
+    carried = sorted(
+        {k for c in (*fr.frontier, *fr.dominated, *fr.unevaluated) for k in c.measures}
+        | {k for pc in fr.provisional for k in pc.measures}
+    )
+    if key not in carried:
+        raise BadInput(
+            f"args={{'sort': {key!r}}}: no candidate carries that measure",
+            options=carried,
+            next=(
+                f"get(kind='quest', id=N, view='leaderboard', "
+                f"args={{'sort': '{carried[0]}'}})"
+                if carried
+                else None
+            ),
+        )
+    return key, next((s for k, s in fr.objectives if k == key), "min")
+
+
+def _shape_fr(fr: Any, *, trusted: bool, sort: tuple[str, str] | None) -> Any:
+    """The candidate views' shared ``args={'trusted': true, 'sort': key}``
+    transform (gr592277).
+
+    ``trusted`` drops every candidate without an affirmative trust
+    verdict (:func:`precis.quest.frontier.candidate_trusted` —
+    provisional rows are judged on their wrapped candidate, whose flags
+    carry the ``*_untrusted_value`` stash). ``sort`` orders each band
+    best-first on its declared sense; unmeasured sinks to the band's
+    tail. Bands themselves never re-split — the filter and the sort
+    re-cut the rows, not the Pareto partition.
+    """
+    from precis.quest.frontier import candidate_trusted
+
+    if trusted:
+        fr = replace(
+            fr,
+            frontier=[c for c in fr.frontier if candidate_trusted(c) is True],
+            dominated=[c for c in fr.dominated if candidate_trusted(c) is True],
+            provisional=[
+                pc for pc in fr.provisional if candidate_trusted(pc.candidate) is True
+            ],
+            unevaluated=[c for c in fr.unevaluated if candidate_trusted(c) is True],
+        )
+    if sort is not None:
+        key, sense = sort
+
+        def _sk(measures: dict[str, float]) -> tuple[bool, float]:
+            v = measures.get(key)
+            if not isinstance(v, (int, float)):
+                return (True, 0.0)
+            return (False, v if sense == "min" else -v)
+
+        fr = replace(
+            fr,
+            frontier=sorted(fr.frontier, key=lambda c: _sk(c.measures)),
+            dominated=sorted(fr.dominated, key=lambda c: _sk(c.measures)),
+            provisional=sorted(fr.provisional, key=lambda pc: _sk(pc.measures)),
+            unevaluated=sorted(fr.unevaluated, key=lambda c: _sk(c.measures)),
+        )
+    return fr
+
+
+def _view_args_line(*, trusted: bool, sort: tuple[str, str] | None) -> str | None:
+    """The ``filter:`` note the candidate views print when
+    ``trusted``/``sort`` shaped the listing — the answer to "trusted AND
+    best" names its own args (gr592277)."""
+    bits = []
+    if trusted:
+        bits.append("trusted only")
+    if sort is not None:
+        bits.append(f"sorted by {sort[0]} ({sort[1]})")
+    return "filter: " + " · ".join(bits) if bits else None
+
+
 #: Default ``view='logbook'`` page size. At the measured ~280 B/entry of
 #: qu164903's 1302-entry, 362 kB notebook (gr537834) fifty entries lands
 #: near 14 kB — well under the 24 kB transport cap; ``args={'limit': N}``
@@ -774,6 +885,11 @@ def _iso_z(dt: datetime) -> str:
     return _utc_aware(dt).isoformat().replace("+00:00", "Z")
 
 
+#: ``_frontier_empty_lines``'s cap on the per-axis trusted-complement
+#: handle list — past it the count alone prints (gr592277).
+_TRUSTED_NAMES_CAP = 10
+
+
 def _frontier_empty_lines(fr: Any) -> list[str]:
     """Why the confirmed frontier is empty — the headline under the band.
 
@@ -782,7 +898,11 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
     a quest ranking on an axis the candidates don't carry yet (qu164903's
     13 trusted barriers with no ``span_at_Uopt``, gr345354) read as no
     results. Name the missing required axes with counts, and the optional
-    ones so the reader knows which flag already relaxes the split.
+    ones so the reader knows which flag already relaxes the split. Where a
+    required axis fails on TRUST rather than presence, each count names its
+    complement — the converged candidates that DO carry it trusted — while
+    few enough to read (gr592277: "barrier ×252" alone never said which
+    one candidate carried a barrier worth believing).
     """
     # A converged candidate that lacks a required key sits in ``provisional``
     # (measured, unconfirmed — reasons name the gap) or, with no measures at
@@ -795,6 +915,7 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
     required = [k for k, _ in fr.objectives if k not in optional]
     missing: Counter[str] = Counter()
     untrusted: Counter[str] = Counter()
+    trusted: dict[str, list[str]] = {}
     for c in converged:
         for k in required:
             if c.measures.get(k) is None:
@@ -805,6 +926,8 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
                 untrusted[k] += 1
             elif pc.measures.get(k) is None:
                 missing[k] += 1
+            else:
+                trusted.setdefault(k, []).append(pc.candidate.handle)
     n = len(converged) + len(provisional)
     why: list[str] = []
     if missing:
@@ -813,10 +936,17 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
             + " · ".join(f"{k} ×{c}" for k, c in missing.most_common())
         )
     if untrusted:
-        why.append(
-            "carry it untrusted: "
-            + " · ".join(f"{k} ×{c}" for k, c in untrusted.most_common())
-        )
+        bits = []
+        for k, c in untrusted.most_common():
+            handles = trusted.get(k, [])
+            if not handles:
+                suffix = " (trusted: none)"
+            elif len(handles) <= _TRUSTED_NAMES_CAP:
+                suffix = f" (trusted: {', '.join(handles)})"
+            else:
+                suffix = f" (trusted: {len(handles)} candidates)"
+            bits.append(f"{k} ×{c}{suffix}")
+        why.append("carry it untrusted: " + " · ".join(bits))
     # split invariant: converged + every required key present ⇒ evaluated
     if not why:  # pragma: no cover
         return ["  (none evaluated yet)"]
@@ -893,6 +1023,9 @@ class QuestHandler(NumericRefHandler):
                 # view='logbook' text filter (gr592279) — kept out of the
                 # top-level q= kwarg, which is find-in-ref's door.
                 "q",
+                # candidate-view trust filter + measure sort (gr592277)
+                "trusted",
+                "sort",
             }
         ),
     }
@@ -921,7 +1054,10 @@ class QuestHandler(NumericRefHandler):
             "view='results' a lineage-ordered results table (one row per "
             "candidate across every band, dopant/site/co-adsorbate columns; "
             "args={'format': 'text'} prints the tick prompt's fixed-width "
-            "copy instead); "
+            "copy instead); those three take args={'trusted': true} (only "
+            "affirmatively-trusted candidates) and args={'sort': '<measure>'} "
+            "(rank rows by any carried measure, on its declared objective "
+            "sense); "
             "view='series' the controlled series among them (one axis varied "
             "per block); view='measures' the best live measured value per "
             "measurand over everything serving it; view='pourbaix' the "
@@ -1774,10 +1910,21 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_dossier(ref))
         if view == "frontier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_frontier(ref, budget=_budget_arg(args)))
+            return Response(
+                body=self._render_frontier(
+                    ref,
+                    budget=_budget_arg(args),
+                    trusted=_trusted_arg(args),
+                    sort=_sort_arg(args),
+                )
+            )
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_leaderboard(ref))
+            return Response(
+                body=self._render_leaderboard(
+                    ref, trusted=_trusted_arg(args), sort=_sort_arg(args)
+                )
+            )
         if view == "results" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(
@@ -1785,6 +1932,8 @@ class QuestHandler(NumericRefHandler):
                     ref,
                     budget=_budget_arg(args),
                     fmt=_results_format_arg(args),
+                    trusted=_trusted_arg(args),
+                    sort=_sort_arg(args),
                 )
             )
         if view == "series" and concrete:
@@ -2239,7 +2388,14 @@ class QuestHandler(NumericRefHandler):
             )
         return "\n".join(lines)
 
-    def _render_frontier(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
+    def _render_frontier(
+        self,
+        ref: Ref,
+        *,
+        budget: int = _DEFAULT_VIEW_BUDGET,
+        trusted: bool = False,
+        sort: str | None = None,
+    ) -> str:
         """`view='frontier'` — the Pareto frontier of candidate materials.
 
         Budgeted to ``budget`` tokens (chars/4; default = the tick's results
@@ -2247,6 +2403,13 @@ class QuestHandler(NumericRefHandler):
         the LAST band first (awaiting-a-sim → provisional → dominated →
         frontier), each band keeping an ``(+K omitted)`` line, so the
         confirmed frontier is the last thing to lose a row (gr345353).
+
+        ``args={'trusted': true}`` keeps only candidates with an
+        affirmative trust verdict and ``args={'sort': '<measure>'}``
+        orders each band by it on its declared sense — the "trusted AND
+        best" read (gr592277). Both print a ``filter:`` note; a filter
+        that empties the confirmed band says so under it rather than
+        misreading as "none evaluated".
 
         An ``inquiry``-body quest (docs/backlog/quest-bodies-inquiry.md) has
         no candidate materials AND NEVER WILL — it reads, reasons, and
@@ -2281,13 +2444,24 @@ class QuestHandler(NumericRefHandler):
         from precis.quest import frontier as frontier_mod
         from precis.quest import protocol as protocol_mod
 
-        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
+        sort_spec = _sort_spec_for(raw_fr, sort)
+        had_candidates = bool(
+            raw_fr.frontier
+            or raw_fr.dominated
+            or raw_fr.provisional
+            or raw_fr.unevaluated
+        )
+        fr = _shape_fr(raw_fr, trusted=trusted, sort=sort_spec)
         lines = [
             f"# frontier — quest {ref.id}: {head}",
-            _objective_line(fr, meta),
+            _objective_line(raw_fr, meta),
             *protocol_mod.protocol_lines(self.store, ref.id),
-            "",
         ]
+        note = _view_args_line(trusted=trusted, sort=sort_spec)
+        if note:
+            lines.append(note)
+        lines.append("")
 
         def _fmt(c: frontier_mod.Candidate) -> str:
             ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
@@ -2309,12 +2483,34 @@ class QuestHandler(NumericRefHandler):
             return f"  {c.handle} {c.name} — {ms}{star}{reasons}"
 
         if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
-            lines.append("no candidate structures serve this quest yet.")
+            if had_candidates:
+                lines.append(
+                    "no candidates pass the trusted filter — none carries an "
+                    "affirmative trust verdict (drop args={'trusted': true} "
+                    "for the full set)."
+                )
+            else:
+                lines.append("no candidate structures serve this quest yet.")
             return "\n".join(lines)
+        frontier_rows = [_fmt(c) for c in fr.frontier]
+        if not frontier_rows:
+            if raw_fr.frontier:
+                # The unfiltered frontier is non-empty — the trusted
+                # filter alone emptied it; say that, not "none
+                # evaluated" (gr592277).
+                frontier_rows = [
+                    f"  ({len(raw_fr.frontier)} frontier candidate(s) "
+                    "failed the trusted filter — drop args={'trusted': true})"
+                ]
+            else:
+                # The empty-frontier explanation reads the UNFILTERED
+                # split — its untrusted counts + trusted-complement
+                # names are exactly what the filter hides.
+                frontier_rows = _frontier_empty_lines(raw_fr)
         bands: list[tuple[str, list[str]]] = [
             (
                 f"── Pareto frontier ({len(fr.frontier)}) — current best ──",
-                [_fmt(c) for c in fr.frontier] or _frontier_empty_lines(fr),
+                frontier_rows,
             )
         ]
         if fr.dominated:
@@ -2340,11 +2536,16 @@ class QuestHandler(NumericRefHandler):
             )
         return _fit_bands(lines, bands, budget=budget)
 
-    def _render_leaderboard(self, ref: Ref) -> str:
+    def _render_leaderboard(
+        self, ref: Ref, *, trusted: bool = False, sort: str | None = None
+    ) -> str:
         """`view='leaderboard'` — the by-total design leaderboard as a TOON table.
 
         One row per candidate design (identity · objective vector · Pareto band ·
-        graduation flag), sorted best-first per band. This is the LLM-legible
+        graduation flag), sorted best-first per band — by the primary
+        objective, or by ``args={'sort': '<measure>'}`` on its declared
+        sense (gr592277). ``args={'trusted': true}`` keeps only candidates
+        carrying an affirmative trust verdict. This is the LLM-legible
         counterpart of ``view='frontier'`` (which is the banded human summary);
         both render the same :func:`quest_frontier`, so there is no second
         ranking to drift.
@@ -2352,20 +2553,35 @@ class QuestHandler(NumericRefHandler):
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
 
-        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
+        sort_spec = _sort_spec_for(raw_fr, sort)
+        had_candidates = bool(
+            raw_fr.frontier
+            or raw_fr.dominated
+            or raw_fr.provisional
+            or raw_fr.unevaluated
+        )
+        fr = _shape_fr(raw_fr, trusted=trusted, sort=None)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
-        obj_line = _objective_line(fr, ref.meta or {})
-        if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
+        obj_line = _objective_line(raw_fr, ref.meta or {})
+        if not had_candidates:
             return (
                 f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
                 "no candidate structures serve this quest yet."
+            )
+        if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
+            return (
+                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
+                "no candidates pass the trusted filter — none carries an "
+                "affirmative trust verdict (drop args={'trusted': true} "
+                "for the full set)."
             )
         graduated = {
             c.ref_id
             for c in (*fr.frontier, *fr.dominated, *fr.unevaluated)
             if any(str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id))
         }
-        rows, schema = frontier_mod.leaderboard(fr, graduated=graduated)
+        rows, schema = frontier_mod.leaderboard(fr, graduated=graduated, sort=sort_spec)
         body = render_agent_table(rows, schema=schema)
         from precis.quest import protocol as protocol_mod
 
@@ -2377,9 +2593,11 @@ class QuestHandler(NumericRefHandler):
             f"{glyph} {tier}" for tier, glyph in frontier_mod.TIER_GLYPH.items()
         )
         proto_block = "\n".join(protocol) + "\n" if protocol else ""
+        note = _view_args_line(trusted=trusted, sort=sort_spec)
+        filter_block = note + "\n" if note else ""
         return (
             f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
-            f"{proto_block}tier: {tier_legend}\n\n{body}"
+            f"{proto_block}tier: {tier_legend}\n{filter_block}\n{body}"
         )
 
     def _render_results(
@@ -2388,6 +2606,8 @@ class QuestHandler(NumericRefHandler):
         *,
         budget: int = _DEFAULT_VIEW_BUDGET,
         fmt: str = "toon",
+        trusted: bool = False,
+        sort: str | None = None,
     ) -> str:
         """`view='results'` — the lineage-ordered results table
         (:mod:`precis.quest.results_table`): one row per candidate across
@@ -2398,6 +2618,13 @@ class QuestHandler(NumericRefHandler):
         embeds — "what would the tick see right now". The text copy is
         opt-in since gr592661: printing both doubled the payload inside
         the 24 kB response cap, starving the rows.
+
+        ``args={'trusted': true}`` keeps only rows whose ``trusted``
+        column reads ``yes`` — an affirmative trust verdict with no
+        unconfirmed flags (:func:`precis.quest.frontier.candidate_trusted`)
+        — and ``args={'sort': '<measure>'}`` orders the rows best-first by
+        any carried measure on its declared objective sense, unmeasured
+        last (gr592277).
 
         Budgeted to ``budget`` tokens over the rendered table (default =
         the tick's own 2500; ``args={'budget': N}`` overrides), dropping
@@ -2412,13 +2639,24 @@ class QuestHandler(NumericRefHandler):
             results_columns,
         )
 
-        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
+        sort_spec = _sort_spec_for(raw_fr, sort)
+        had_candidates = bool(
+            raw_fr.frontier
+            or raw_fr.dominated
+            or raw_fr.provisional
+            or raw_fr.unevaluated
+        )
+        fr = _shape_fr(raw_fr, trusted=trusted, sort=None)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
-        rows = build_results_rows(self.store, ref.id, fr=fr)
+        rows = build_results_rows(self.store, ref.id, fr=fr, sort=sort_spec)
         if not rows:
-            return (
-                f"# results — quest {ref.id}: {head}\n\n"
-                "no candidate structures serve this quest yet."
+            return f"# results — quest {ref.id}: {head}\n\n" + (
+                "no candidates pass the trusted filter — none carries an "
+                "affirmative trust verdict (drop args={'trusted': true} "
+                "for the full set)."
+                if had_candidates
+                else "no candidate structures serve this quest yet."
             )
         # The declared objectives (energy by default) extend the fixed base
         # columns — a completed relax result must be visible here, not only
@@ -2444,15 +2682,17 @@ class QuestHandler(NumericRefHandler):
             if omitted
             else ""
         )
+        args_note = _view_args_line(trusted=trusted, sort=sort_spec)
+        args_block = args_note + "\n" if args_note else ""
         if fmt == "text":
             return (
-                f"# results — quest {ref.id}: {head}\n\n"
+                f"# results — quest {ref.id}: {head}\n{args_block}\n"
                 "## text table (as embedded in the tick prompt)\n"
                 f"{render_results_table(kept, token_budget=budget, columns=schema)}"
                 f"{note}"
             )
         return (
-            f"# results — quest {ref.id}: {head}\n\n"
+            f"# results — quest {ref.id}: {head}\n{args_block}\n"
             f"{render_agent_table(kept, schema=schema)}{note}"
         )
 

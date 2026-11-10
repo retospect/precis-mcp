@@ -291,12 +291,14 @@ def _rls_display(pw_meta: dict[str, Any] | None) -> str:
 
 
 def _trusted_str(candidate: Candidate) -> str:
-    v = candidate.flags.get("barrier_trusted")
-    if v is True:
-        return "yes"
-    if v is False:
-        return "no"
-    return "-"
+    """The row's trust verdict — ``yes`` / ``no`` / ``-``, the same
+    tri-state the views' ``args={'trusted': true}`` filter reads
+    (:func:`precis.quest.frontier.candidate_trusted`): ``no`` on any
+    unconfirmed flag or stashed value, ``yes`` on an affirmative stamp
+    with none, ``-`` on no trust signal at all (gr592277)."""
+    from precis.quest.frontier import candidate_trusted
+
+    return {True: "yes", False: "no", None: "-"}[candidate_trusted(candidate)]
 
 
 def _blocker_display(candidate: Candidate) -> str:
@@ -354,7 +356,11 @@ def results_columns(objectives: Sequence[tuple[str, str]]) -> tuple[str, ...]:
 
 
 def build_results_rows(
-    store: Store, quest_id: int, *, fr: FrontierResult | None = None
+    store: Store,
+    quest_id: int,
+    *,
+    fr: FrontierResult | None = None,
+    sort: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """One row per candidate across ALL four Pareto bands, lineage-ordered.
 
@@ -362,6 +368,12 @@ def build_results_rows(
     FrontierResult` (the tick threads its own — see :mod:`precis.quest.tick`)
     instead of a second live-candidate scan; ``None`` (default, every unit
     test) computes one fresh.
+
+    ``sort`` is a ``(measure key, sense)`` pair — the handler's
+    ``args={'sort': k}`` (gr592277): rows then order best-first by that
+    measure (a provisional row's merged, untrusted-marked value included),
+    an unmeasured row sinks to the tail, and ties keep the lineage order.
+    ``None`` keeps the lineage grouping outright:
 
     Ordering groups rows by base composition (the quest's slab element is
     constant, so effectively by dopant), then by what varies within that
@@ -396,7 +408,7 @@ def build_results_rows(
     ]
     entries += [(c, "awaiting", c.measures, frozenset()) for c in fr.unevaluated]
 
-    built: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    built: list[tuple[tuple[Any, ...], float | None, dict[str, Any]]] = []
     for candidate, band, measures, untrusted in entries:
         atoms = _structure_atoms(store, candidate.ref_id)
         dopant, n_dopant, site = _dopant_and_site(candidate, slab_element, atoms)
@@ -433,10 +445,23 @@ def build_results_rows(
             if key not in _COLUMNS:
                 row[key] = _objective_str(measures, untrusted, key)
         sort_key = (dopant, n_dopant, h_count, o_count, candidate.ref_id)
-        built.append((sort_key, row))
+        mval = measures.get(sort[0]) if sort is not None else None
+        built.append((sort_key, mval if isinstance(mval, (int, float)) else None, row))
 
     built.sort(key=lambda t: t[0])
-    return [row for _key, row in built]
+    if sort is not None:
+        _key, sense = sort
+
+        def _mval(
+            item: tuple[tuple[Any, ...], float | None, dict[str, Any]],
+        ) -> tuple[bool, float]:
+            v = item[1]
+            if v is None:
+                return (True, 0.0)
+            return (False, v if sense == "min" else -v)
+
+        built.sort(key=_mval)
+    return [row for _sk, _mv, row in built]
 
 
 def _cell(col: str, row: dict[str, Any]) -> str:

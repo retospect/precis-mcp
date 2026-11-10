@@ -828,3 +828,313 @@ class TestObjectiveColumns:
         assert rows[0]["log_tof"] == "3.7"
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="results").body
         assert "log_tof" in body and "3.7" in body
+
+
+# ── trusted filter + measure sort (gr592277) ──────────────────────────────
+#
+# gr592277: no quest view answered "which candidate is trusted AND best" —
+# trust was a per-row prose flag with no filter, and the leaderboard sorted
+# by the primary objective only. The fix: a shared tri-state verdict
+# (:func:`precis.quest.frontier.candidate_trusted`), ``args={'trusted':
+# true}`` on frontier/leaderboard/results, ``args={'sort': '<measure>'}``
+# ranking by any carried measure, and the empty-frontier headline naming
+# the trusted-complement handles per axis.
+
+
+class TestCandidateTrusted:
+    """The tri-state verdict the views' ``trusted`` filter and the results
+    ``trusted`` column share."""
+
+    @staticmethod
+    def _cand(flags: dict[str, Any]) -> Any:
+        from precis.quest.frontier import Candidate
+
+        return Candidate(
+            ref_id=1,
+            handle="st1",
+            name="x",
+            measures={},
+            converged=True,
+            flags=flags,
+        )
+
+    def test_no_signal_is_unknown_not_untrusted(self) -> None:
+        from precis.quest.frontier import candidate_trusted
+
+        assert candidate_trusted(self._cand({})) is None
+
+    def test_affirmative_stamp_is_trusted(self) -> None:
+        from precis.quest.frontier import candidate_trusted
+
+        assert candidate_trusted(self._cand({"barrier_trusted": True})) is True
+        assert candidate_trusted(self._cand({"kinetics_trusted": True})) is True
+
+    def test_any_unconfirmed_mark_is_untrusted(self) -> None:
+        from precis.quest.frontier import candidate_trusted
+
+        for flags in (
+            {"barrier_trusted": False},
+            {"selectivity_trusted": False},
+            {"kinetics_trusted": False},
+            {"barrier_trusted": True, "kinetics_trusted": False},
+            {"network_stale": True},
+            {"P_side_untrusted_value": 0.4},
+            {"U_L_abs_untrusted_value": 0.9},
+        ):
+            assert candidate_trusted(self._cand(flags)) is False, flags
+
+    def test_unbounded_flag_is_not_an_untrusted_stash(self) -> None:
+        """``span_at_Uopt_unbounded``/``U_opt_unbounded`` end in
+        ``_unbounded``, not ``_untrusted_value`` — a window-clamped axis
+        still rides as trusted."""
+        from precis.quest.frontier import candidate_trusted
+
+        assert (
+            candidate_trusted(
+                self._cand({"barrier_trusted": True, "span_at_Uopt_unbounded": 1.2})
+            )
+            is True
+        )
+
+
+class TestFrontierEmptyComplement:
+    """The empty-frontier headline names, per untrusted axis, the converged
+    handles that DO carry it trusted (≤10 — the qu164903 question)."""
+
+    @staticmethod
+    def _pc(sid: int, measures: dict[str, float], untrusted: frozenset[str]) -> Any:
+        from precis.quest.frontier import Candidate, ProvisionalCandidate
+
+        return ProvisionalCandidate(
+            candidate=Candidate(
+                ref_id=sid,
+                handle=f"st{sid}",
+                name=f"c{sid}",
+                measures={},
+                converged=True,
+            ),
+            measures=measures,
+            untrusted_keys=untrusted,
+            reasons=[],
+        )
+
+    def test_names_the_trusted_complement(self) -> None:
+        from precis.handlers.quest import _frontier_empty_lines
+        from precis.quest.frontier import FrontierResult
+
+        fr = FrontierResult(
+            objectives=[("barrier", "min"), ("U_L_abs", "min")],
+            provisional=[
+                self._pc(
+                    1,
+                    {"barrier": 0.5, "U_L_abs": 0.9},
+                    frozenset({"barrier", "U_L_abs"}),
+                ),
+                # st2's barrier is trusted — it sits provisional only
+                # because its U_L_abs is unconfirmed.
+                self._pc(2, {"barrier": 0.7, "U_L_abs": 0.8}, frozenset({"U_L_abs"})),
+            ],
+        )
+        line = _frontier_empty_lines(fr)[0]
+        assert "barrier ×1 (trusted: st2)" in line
+        assert "U_L_abs ×2 (trusted: none)" in line
+
+    def test_complement_over_cap_counts_instead(self) -> None:
+        from precis.handlers.quest import _TRUSTED_NAMES_CAP, _frontier_empty_lines
+        from precis.quest.frontier import FrontierResult
+
+        fr = FrontierResult(
+            objectives=[("barrier", "min")],
+            provisional=[
+                self._pc(1, {"barrier": 0.5}, frozenset({"barrier"})),
+                *(
+                    self._pc(10 + i, {"barrier": 0.6 + i * 0.01}, frozenset())
+                    for i in range(_TRUSTED_NAMES_CAP + 1)
+                ),
+            ],
+        )
+        line = _frontier_empty_lines(fr)[0]
+        assert f"(trusted: {_TRUSTED_NAMES_CAP + 1} candidates)" in line
+        assert "st10" not in line
+
+
+class TestLeaderboardSortArg:
+    """``leaderboard(fr, sort=(key, sense))`` — the within-band sort key
+    the handler's ``args={'sort': k}`` resolves to."""
+
+    def _fr(self) -> Any:
+        from precis.quest.frontier import Candidate, FrontierResult
+
+        return FrontierResult(
+            objectives=[("barrier", "min")],
+            frontier=[
+                Candidate(
+                    ref_id=1,
+                    handle="st1",
+                    name="a",
+                    measures={"barrier": 0.3, "energy": -1.0},
+                    converged=True,
+                ),
+                Candidate(
+                    ref_id=2,
+                    handle="st2",
+                    name="b",
+                    measures={"barrier": 0.9, "energy": -5.0},
+                    converged=True,
+                ),
+            ],
+        )
+
+    def test_sort_param_reorders_and_keeps_the_column_visible(self) -> None:
+        from precis.quest.frontier import leaderboard
+
+        rows, schema = leaderboard(self._fr())
+        assert [r["design"] for r in rows] == ["st1", "st2"]  # barrier min
+        assert "energy" not in schema
+
+        rows, schema = leaderboard(self._fr(), sort=("energy", "min"))
+        assert [r["design"] for r in rows] == ["st2", "st1"]
+        assert "energy" in schema  # sorted-on measure stays visible
+
+    def test_sort_sense_max_orders_descending(self) -> None:
+        from precis.quest.frontier import leaderboard
+
+        fr = self._fr()
+        fr.frontier[0].measures["log_tof"] = 3.7
+        fr.frontier[1].measures["log_tof"] = 5.1
+        rows, _schema = leaderboard(fr, sort=("log_tof", "max"))
+        assert [r["design"] for r in rows] == ["st2", "st1"]
+
+
+class TestTrustedSortViews:
+    """``args={'trusted': true, 'sort': '<measure>'}`` on the three
+    candidate views — the "trusted AND best" read (gr592277)."""
+
+    def _mixed_quest(self, store: Any) -> tuple[int, dict[str, int]]:
+        """One frontier-trusted candidate, one untrusted provisional, one
+        unmeasured awaiting (rubric: barrier min)."""
+        qid = _mk_quest(store)
+        good = _mk_candidate(store, qid, "Ag good", _dopant_ops("Ag", 1))
+        _converge(store, good)
+        store.stamp_ref_meta(good, {"barrier": 0.4, "barrier_trusted": True})
+        bad = _mk_candidate(store, qid, "Cu bad", _dopant_ops("Cu", 1))
+        _converge(store, bad)
+        store.stamp_ref_meta(bad, {"barrier": 0.3, "barrier_trusted": False})
+        waiting = _mk_candidate(store, qid, "Zn wait", _dopant_ops("Zn", 1))
+        return qid, {"good": good, "bad": bad, "waiting": waiting}
+
+    @staticmethod
+    def _handle(sid: int) -> str:
+        from precis.utils import handle_registry
+
+        h = handle_registry.try_format("structure", sid)
+        assert h is not None
+        return h
+
+    def test_results_trusted_filter_keeps_only_yes_rows(self, store: Any) -> None:
+        qid, sids = self._mixed_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        handles = {name: self._handle(sid) for name, sid in sids.items()}
+        body = h.get(id=qid, view="results", args={"trusted": True}).body
+        assert "filter: trusted only" in body
+        assert handles["good"] in body
+        assert handles["bad"] not in body
+        assert handles["waiting"] not in body  # "-" rows are not "yes"
+
+    def test_trusted_filter_applies_to_all_views(self, store: Any) -> None:
+        qid, sids = self._mixed_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        good_h = self._handle(sids["good"])
+        bad_h = self._handle(sids["bad"])
+        for view in ("frontier", "leaderboard"):
+            body = h.get(id=qid, view=view, args={"trusted": True}).body
+            assert "trusted only" in body, view
+            assert good_h in body, view
+            assert bad_h not in body, view
+
+    def test_all_filtered_out_says_why(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        sid = _mk_candidate(store, qid, "Cu bad", _dopant_ops("Cu", 1))
+        _converge(store, sid)
+        store.stamp_ref_meta(sid, {"barrier": 0.3, "barrier_trusted": False})
+        h = QuestHandler(hub=Hub(store=store))
+        handle = self._handle(sid)
+        for view in ("results", "leaderboard", "frontier"):
+            body = h.get(id=qid, view=view, args={"trusted": True}).body
+            assert "no candidates pass the trusted filter" in body, view
+        # and the unfiltered views still show the candidate
+        assert handle in h.get(id=qid, view="results").body
+
+    def test_results_sort_orders_rows_by_measure(self, store: Any) -> None:
+        """Lineage order groups by dopant (Ag before Cu); sorting by
+        barrier must re-order numerically — the untrusted ≈0.3 ahead of
+        the trusted 0.4, the unmeasured row last."""
+        qid, sids = self._mixed_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        handles = {name: self._handle(sid) for name, sid in sids.items()}
+        body = h.get(
+            id=qid, view="results", args={"sort": "barrier", "budget": 100_000}
+        ).body
+        assert "sorted by barrier (min)" in body
+        positions = {name: body.index(h) for name, h in handles.items()}
+        assert positions["bad"] < positions["good"] < positions["waiting"]
+
+    def test_sort_declared_max_sense_orders_descending(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "log_tof", "sense": "max"}]}
+        )
+        a = _mk_candidate(store, qid, "Ag", _dopant_ops("Ag", 1))
+        _converge(store, a)
+        store.stamp_ref_meta(a, {"log_tof": 3.7, "kinetics_trusted": True})
+        b = _mk_candidate(store, qid, "Cu", _dopant_ops("Cu", 1))
+        _converge(store, b)
+        store.stamp_ref_meta(b, {"log_tof": 5.1, "kinetics_trusted": True})
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(id=qid, view="results", args={"sort": "log_tof"}).body
+        assert "sorted by log_tof (max)" in body
+        a_pos = body.index(self._handle(a))
+        b_pos = body.index(self._handle(b))
+        assert b_pos < a_pos
+
+    def test_bad_args_raise_bad_input(self, store: Any) -> None:
+        from precis.errors import BadInput
+
+        qid, _sids = self._mixed_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        with pytest.raises(BadInput):
+            h.get(id=qid, view="results", args={"trusted": "yes"})
+        with pytest.raises(BadInput):
+            h.get(id=qid, view="leaderboard", args={"sort": 5})
+        with pytest.raises(BadInput) as exc_info:
+            h.get(id=qid, view="frontier", args={"sort": "nosuchaxis"})
+        # the refusal names the measures a candidate actually carries
+        assert "barrier" in str(exc_info.value)
+
+    def test_empty_frontier_headline_names_trusted_handles(self, store: Any) -> None:
+        """The qu164903 shape: every converged candidate fails a required
+        axis — the per-axis untrusted counts name the complement (the
+        trusted-carrying handles)."""
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "barrier", "sense": "min"},
+                    {"key": "U_L_abs", "sense": "min"},
+                ]
+            },
+        )
+        # Trusted barrier, never measured U_L_abs → provisional on the
+        # missing axis; it is the trusted-barrier complement.
+        a = _mk_candidate(store, qid, "Ag half", _dopant_ops("Ag", 1))
+        _converge(store, a)
+        store.stamp_ref_meta(a, {"barrier": 0.4, "barrier_trusted": True})
+        b = _mk_candidate(store, qid, "Cu bad", _dopant_ops("Cu", 1))
+        _converge(store, b)
+        store.stamp_ref_meta(
+            b, {"barrier": 0.5, "U_L_abs": 0.9, "barrier_trusted": False}
+        )
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert f"barrier ×1 (trusted: {self._handle(a)})" in body
+        assert "U_L_abs ×1 (trusted: none)" in body
