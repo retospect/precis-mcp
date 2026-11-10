@@ -1,9 +1,11 @@
 # Memory-ablation results
 
 `scripts/bench run --set quick` writes one file per run here,
-`<YYYYMMDD>Z-<shortsha>-<set>.json` (UTC date, short precis git sha). The
-files are gitignored; this README is the committed description of their
-schema. `scripts/bench report <file>` prints the markdown tables.
+`<YYYYMMDD>Z-<shortsha>-<set>-<caller>.json` (UTC date, short precis git sha,
+caller `triage` or `ladder`). The files are gitignored; this README is the
+committed description of their schema. `scripts/bench report <file> [<file>…]`
+prints the markdown tables, and with several files (one per caller) a side by
+side comparison.
 
 Design and slices: `docs/backlog/memory-ablation-bench.md` (§Ablation matrix,
 §Metrics per task, §Reproducibility). Code: `src/precis/bench/runner.py`
@@ -15,9 +17,15 @@ Design and slices: `docs/backlog/memory-ablation-bench.md` (§Ablation matrix,
 ```
 scripts/bench ingest --set quick      # QASPER fixture -> dev DB (pinned archive)
 scripts/bench fill --embedder bge-m3  # embeddings + keywords (free, local; once)
-scripts/bench run --set quick         # the scripted tier, all arms
-scripts/bench report bench/results/<file>.json
+scripts/bench run --set quick         # the scripted tier, all arms, caller triage
+scripts/bench run --set quick --caller ladder   # the old whole-ladder caller, for comparison
+scripts/bench report bench/results/<triage>.json bench/results/<ladder>.json
 ```
+
+`scripts/test` tears down this worktree's compose project, dev DB included (the
+cause of gr613540's empty `precis_dev`). `pg_dump` the DB to `.scratch/` before
+a run, do not run `scripts/test` or `scripts/ship` while a run is in flight, and
+restore from the dump rather than re-embedding if the DB is empty.
 
 `run` also ingests the planted-fact documents and memory nodes (idempotent) and
 fills their embeddings/keywords, so `fill` beforehand only saves wall time.
@@ -43,8 +51,8 @@ need an LLM; the dev DB does not have them, and the header says so.
 | `embedder` | `name`, `model`, `backend`, `dim`, `meaningful` (`false` for the hash/mock embedder), `stored` (embedder -> chunk count in the DB) |
 | `models`, `judge` | `null` on the scripted tier |
 | `token_estimator`, `token_budget` | `chars/4` of the rendered dispatch body; per-task budget |
-| `caller` | search shape, `read_k`, the extent `ladder`, `recall_ks`, stop rule |
-| `arms` | per arm: `switches_off`, `vacuous` + `reason`, `degenerate`, `embedder_note`, `identical_to_all_on_frac` |
+| `caller` | `name` (`triage` or `ladder`), search shape, `read_k`, the extent `ladder`, for `triage` the `threshold` and `score`, `recall_ks`, stop rule |
+| `arms` | per arm: `switches_off`, `vacuous` + `reason`, `degenerate`, `embedder_note`, `identical_to_all_on_frac`, `known_defect` (a defect of the code under test that bends this arm, with its gripe) |
 | `layer_coverage` | what the DB holds of each layer (see below) |
 | `fill` | claimed/ok/failed counts of the embed and keyword passes run by this invocation |
 | `machine`, `started_at`, `ended_at` | host python/platform; UTC `Z` timestamps |
@@ -73,12 +81,14 @@ effect.
 |---|---|
 | `task`, `type`, `source` | task id, gold type (`lookup`, `grounding`, `k-hop`, `stance`, `memory`), `qasper` or `planted` |
 | `arm` | `all-on`, `no-kwd`, `no-summary`, `no-categorizer`, `no-fisheye`, `no-recall`, `lexical-only`, `semantic-only`, `chunk-rag`, `whole-paper` |
+| `caller` | `triage` or `ladder` for the scripted arms; `null` for the two baselines (they have no caller) |
 | `abstention` | unanswerable task: no gold, `found` and `tokens_to_first_gold` are `null`, only `tokens_total`/`calls` are meaningful |
 | `applicable` | `false` where the arm cannot run the task (`whole-paper` on a `memory` task, which has no document) |
 | `found`, `censored`, `stop` | gold rendered within the budget; `censored` = not reached, `stop` is `found`, `budget`, `exhausted` or `n/a` |
 | `tokens_to_first_gold` | estimated tokens rendered up to and including the call that first rendered a gold-overlapping chunk; a censored task carries the budget; `whole-paper` is the full document cost (never censored) |
 | `tokens_total`, `calls` | tokens and dispatch calls the whole sequence rendered/issued |
-| `errors`, `refusals` | failed calls; and calls the server refused because the arm switched that rung/filter off (`BadInput` naming `PRECIS_BENCH_SWITCHES`) |
+| `verbatim_opens` | `get(extent='verbatim')` calls issued (chunks read whole) |
+| `errors`, `refusals` | failed calls; and calls the server refused because the arm switched that rung/filter off (`BadInput` naming `PRECIS_BENCH_SWITCHES`). `triage` never asks for a removed rung, so its `refusals` is 0 for every arm; `ladder` counts them |
 | `recall_at_{1,3,5,10}` | share of the task's gold items touched by a chunk among the top k search hits; `null` without gold and for `whole-paper` |
 | `transcript_sha256` | hash of the normalised call/output stream (drives the vacuity check); `null` for the baselines |
 | `wall_s` | wall time; the only non-deterministic field |
@@ -97,17 +107,96 @@ flagged `VACUOUS` and its delta is not a layer effect.
 
 ## What counts as found
 
-The scripted caller (`search` -> `get` up the ladder `kwd`, `summary`,
-`verbatim`, `fisheye`, `+recall` for each of the top 5 hits) stops at the first
-call whose output renders a chunk whose **whole text** appears in the output and
-whose character offsets overlap a gold span
-(`precis.bench.gold.spans_overlap_chunk`, document-aware). A truncated preview
-does not count. It always climbs the whole ladder: it has no relevance judgement
-with which to skip a rung, so an arm that refuses a rung is cheaper by the
-refused call, not by a better decision. A caller that decides which rung to
-spend is the LLM tier. Planted `memory` tasks are found when the output contains
-the planted fact sentence. Re-running with unchanged code, data and seed
-reproduces every field except `wall_s`.
+Both scripted callers stop at the first call whose output renders a chunk whose
+**whole text** appears in the output and whose character offsets overlap a gold
+span (`precis.bench.gold.spans_overlap_chunk`, document-aware), or at the token
+budget. A truncated preview does not count. Planted `memory` tasks are found when
+the output contains the planted fact sentence. Re-running with unchanged code,
+data and seed reproduces every field except `wall_s`.
+
+### The two callers
+
+`triage` (default): `search` the question (top 10). Read the cheapest rung the
+arm has for every hit (`kwd`, else `summary`, else none) and score the hit by the
+share of the question's content words found in that rung's rendered text (the
+planted generator's tokeniser and stopwords). Open `verbatim` for hits whose
+score is at least the threshold, best score first, ties in search rank, at most 5
+opens. With no cheap rung every hit scores alike and is opened in search rank
+order, which is what having no cheap rung costs. If the gold is still not
+rendered: `fisheye` once on the best opened hit if that rung is on, then
+`+recall` once on it if on. It asks `switches.current()` first and never
+requests a removed rung, so `refusals` is 0 for every arm; a removed rung is
+paid for as a missing signal (the hit goes unscored) and not as a cheaper
+refused call.
+
+`ladder` (the first cut): for each of the top 5 hits, `kwd`, `summary`,
+`verbatim`, `fisheye`, `+recall` in turn, whatever it saw. It has no relevance
+judgement with which to skip a rung, so an arm that refuses a rung is cheaper by
+the refused call and a cheap rung can never show value. Kept only to compare.
+
+### The triage threshold
+
+`runner.TRIAGE_THRESHOLD` is one constant for every arm, chosen by
+`scripts/bench sweep` on the planted dev seeds 1, 2, 3 (3 x 40 tasks; seed 7 is
+the reported run and QASPER is never used). The sweep plants the three seeds into a throwaway DB (`precis_dev_sweep`,
+a restore of the run's DB so the reported run's DB gets no extra distractors),
+runs `triage` at each threshold and picks the one with the lowest mean tokens to
+gold over the two arms swept (`all-on`, whose cheap rung is `kwd`, and `no-kwd`,
+whose cheap rung is `summary`), a task that did not reach the gold counting as the
+budget, ties to the lower threshold. Run 2026-11-09 (bge-m3, 12000 token budget):
+
+| arm | threshold | n | found | mean tok→gold (miss = budget) | mean opens | mean calls |
+|---|---:|---:|---:|---:|---:|---:|
+| all-on | 0 | 120 | 0.967 | 1149 | 1.04 | 10.3 |
+| all-on | 0.1 – 0.6 | 120 | 0.150 | 10232 | 0.00 | 9.2 |
+| no-kwd | 0 | 120 | 0.917 | 5439 | 1.52 | 10.9 |
+| no-kwd | 0.1 | 120 | 0.617 | 7207 | 1.04 | 10.6 |
+| no-kwd | 0.2 | 120 | 0.567 | 7531 | 0.97 | 10.6 |
+| no-kwd | 0.25 | 120 | 0.508 | 7944 | 0.86 | 10.4 |
+| no-kwd | 0.3 | 120 | 0.392 | 8667 | 0.59 | 10.1 |
+| no-kwd | 0.4 | 120 | 0.342 | 9015 | 0.53 | 10.0 |
+| no-kwd | 0.5 | 120 | 0.333 | 9067 | 0.47 | 9.9 |
+| no-kwd | 0.6 | 120 | 0.267 | 9493 | 0.27 | 9.6 |
+
+The pick is 0: no cut. The reason is in the rungs, not the policy. The `kwd` rung
+renders only the paper's header line (`pa1 [paper] <title>`, about 90
+characters), so for the planted documents (titled "Planted document NN") every
+hit scores 0 and any positive threshold opens nothing (found 0.15 is the memory
+tasks, which the search body already renders). The `summary` rung does carry the
+hit's and its neighbours' keywords and does score above 0, but at every positive
+threshold it throws away more gold than it saves tokens on paraphrased
+questions. So with the layers as the dev DB holds them, the cheap rungs give
+`triage` no usable signal: at threshold 0 it opens the hits in search rank order
+and a cheap rung's cost is pure overhead. That is a finding about these rungs on
+this corpus; a policy that scores something richer (the chunk keywords already
+printed in the search rows, a relative cut against the best score) is a
+different caller.
+
+### Known defect: `semantic-only`
+
+`search(kind='paper', mode='semantic')` returns its top-N chunks farthest-first
+(gr613850: the paper handler's retraction re-sort ranks by `-score`, and a
+semantic score is a distance). `semantic-only` is therefore measured on ranks
+6-10 of the nearest N and carries `known_defect` in the header and the report. The
+other arms are not affected: the hybrid score and the lexical rank are
+larger-is-better.
+
+### `lexical-only` is hybrid's lexical leg
+
+Checked 2026-11-09 against `store.chunks`: hybrid's lexical leg
+(`search_chunks_fused`, CTE `lex`) and `mode='lexical'`
+(`search_chunks_lexical`) build the same query, `websearch_to_tsquery('english',
+q)` (every term ANDed, stopwords dropped), rank by `ts_rank_cd DESC, chunk_id`,
+and take the same filters. So the arm removes the semantic leg and nothing else.
+The low `lexical-only` recall is that leg alone: on the first 25 QASPER questions
+the AND query matches nothing at all for 11 of 25 (14 had at least one match), because a natural-language question
+needs every content word in one chunk. In hybrid that leg contributes only where
+it matches and the semantic leg ranks the rest. The test
+`test_lexical_only_is_the_lexical_leg_of_hybrid_and_nothing_else` pins it. Two
+differences exist and neither reaches the bench DB: the fused leg rewrites the
+query through the canon taxonomy (`canon.lexical_q`) when taxa match, and
+`mode='lexical'` does not; a single-paper `scope=` adds an OR retry that the
+bench never uses.
 
 `chunk-rag` is plain top-10 chunk retrieval (one call, full chunk text, no
 graph); `whole-paper` renders the whole canonical text of the task's documents.

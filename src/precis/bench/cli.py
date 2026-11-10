@@ -86,9 +86,42 @@ def _parser() -> argparse.ArgumentParser:
         help="skip the embeddings/keywords pass over chunks that lack them",
     )
     run.add_argument("--limit", type=int, default=None, help="first N QASPER tasks")
+    run.add_argument(
+        "--caller",
+        choices=runner.CALLERS,
+        default=runner.DEFAULT_CALLER,
+        help="scripted caller: triage (default) or ladder (the whole-ladder climb)",
+    )
 
-    rep = sub.add_parser("report", help="print the markdown table for a results file")
-    rep.add_argument("results", type=Path)
+    swp = sub.add_parser(
+        "sweep",
+        help="pick the triage threshold on planted dev seeds (use a throwaway DB of its own)",
+    )
+    swp.add_argument(
+        "--set", dest="set_name", choices=sorted(corpus.SET_SIZES), default="quick"
+    )
+    swp.add_argument(
+        "--seeds",
+        default=",".join(str(s) for s in runner.SWEEP_SEEDS),
+        help="comma list of planted dev seeds (not the reported seed)",
+    )
+    swp.add_argument(
+        "--thresholds",
+        default=",".join(f"{t:g}" for t in runner.SWEEP_THRESHOLDS),
+        help="comma list of triage thresholds",
+    )
+    swp.add_argument("--embedder", default="bge-m3")
+    swp.add_argument("--manifest", type=Path, default=None)
+    swp.add_argument("--tasks", type=Path, default=None)
+    swp.add_argument("--planted", type=int, default=runner.PLANTED_N)
+    swp.add_argument("--budget", type=int, default=runner.TOKEN_BUDGET)
+
+    rep = sub.add_parser(
+        "report",
+        help="print the markdown table for a results file; several files "
+        "(one per caller) are also compared side by side",
+    )
+    rep.add_argument("results", type=Path, nargs="+")
     return ap
 
 
@@ -207,13 +240,36 @@ def _run(args: argparse.Namespace) -> int:
         limit=args.limit,
         dsn=_dsn(),
         fill=not args.no_fill,
+        caller=args.caller,
     )
     print(f"wrote {path}")
     return 0
 
 
+def _sweep(args: argparse.Namespace) -> int:
+    os.environ.setdefault("PRECIS_SEARCH_TRACES", "0")
+    print(
+        runner.sweep_cli(
+            set_name=args.set_name,
+            seeds=[int(s) for s in args.seeds.split(",") if s.strip()],
+            thresholds=[float(t) for t in args.thresholds.split(",") if t.strip()],
+            embedder_name=args.embedder,
+            manifest_path=args.manifest,
+            tasks_path=args.tasks,
+            planted_n=args.planted,
+            budget=args.budget,
+            dsn=_dsn(),
+        )
+    )
+    return 0
+
+
 def _report(args: argparse.Namespace) -> int:
-    print(runner.report_markdown(runner.load_results(args.results)))
+    runs = [runner.load_results(p) for p in args.results]
+    for run in runs:
+        print(runner.report_markdown(run))
+    if len(runs) > 1:
+        print(runner.compare_markdown(runs))
     return 0
 
 
@@ -226,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             return _fill(args)
         if args.cmd == "run":
             return _run(args)
+        if args.cmd == "sweep":
+            return _sweep(args)
         if args.cmd == "report":
             return _report(args)
         return _ingest(args) if args.cmd == "ingest" else _manifest(args)

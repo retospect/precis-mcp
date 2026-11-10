@@ -6,20 +6,41 @@ so every server-side switch (:mod:`precis.bench.switches`) and every renderer
 applies exactly as for a real agent. Per task and arm the caller issues a
 fixed call sequence and records what it cost and whether it reached the gold.
 
-Call sequence (paper-backed tasks)
-----------------------------------
-1. ``search(kind='paper', q=<question>, unique_per='chunk', page_size=10)``;
-2. for each of the top :data:`READ_K` hits, climb the extent ladder
-   :data:`LADDER` (``kwd`` -> ``summary`` -> ``verbatim`` -> ``fisheye`` ->
-   ``+recall``) with ``get(id=<chunk handle>, extent=<rung>)``;
-3. stop at the first call whose output renders a chunk overlapping the gold
-   (:func:`precis.bench.gold.spans_overlap_chunk`), or when the cumulative
-   tokens reach the budget, or when the hits are exhausted.
+Callers
+-------
+Two deterministic, model-free callers (``caller`` on every results row):
 
+``triage`` (the default) reads what the arm leaves it and spends verbatim
+reads where a cheap read says the hit is relevant:
+
+1. ``search(kind='paper', q=<question>, unique_per='chunk', page_size=10)``;
+2. for every hit, read the cheapest rung the arm has (``kwd`` if on, else
+   ``summary`` if on, else none) and score the hit by
+   :func:`overlap_score` (share of the question's content words found in that
+   rung's rendered text);
+3. open ``verbatim`` for hits whose score is at least :data:`TRIAGE_THRESHOLD`,
+   best score first (ties in search rank), at most :data:`READ_K` opens, until
+   a rendered chunk overlaps the gold
+   (:func:`precis.bench.gold.spans_overlap_chunk`) or the budget is spent.
+   With no cheap rung every hit scores alike and is opened in search rank order:
+   that is what having no cheap rung costs;
+4. if the gold is still not rendered: ``fisheye`` once on the best opened hit
+   (if that rung is on), then ``+recall`` once on it (if on).
+
+The caller reads :func:`precis.bench.switches.current` and never requests a
+rung the arm switched off, so ``refusals`` is zero for every arm.
+
+``ladder`` (kept for comparison) climbs the whole extent ladder :data:`LADDER`
+(``kwd`` -> ``summary`` -> ``verbatim`` -> ``fisheye`` -> ``+recall``) on each of
+the top :data:`READ_K` hits whatever it saw, and asks for switched-off rungs;
+the server refuses those (``BadInput``), counted in ``refusals``. A refused
+rung is not rendered, so under ``ladder`` an arm looks cheaper by the refused
+call: do not read its token deltas as layer effects.
+
+Both stop at the first call whose output renders a gold-overlapping chunk, or
+when the cumulative tokens reach the budget, or when the hits are exhausted.
 ``memory``-type planted tasks run the same sequence with ``kind='memory'``;
 their gold is the fact sentence, found by containment in the rendered output.
-A rung a switch removes is refused by the server with ``BadInput``; the caller
-counts the refusal (``refusals``) and goes on to the next rung.
 
 What counts as "rendered": a chunk is *rendered* only when its whole text
 (whitespace-normalised) occurs in a call's output. A truncated preview line
@@ -65,7 +86,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from precis.bench import gold
+from precis.bench import gold, planted
 from precis.bench import switches as bench_switches
 from precis.bench.switches import ARMS
 
@@ -84,6 +105,26 @@ SEARCH_K = 10
 READ_K = 5
 RECALL_KS = (1, 3, 5, 10)
 LADDER = ("kwd", "summary", "verbatim", "fisheye", "+recall")
+
+CALLERS = ("triage", "ladder")
+DEFAULT_CALLER = "triage"
+#: ``triage`` opens a hit's verbatim only when :func:`overlap_score` of its
+#: cheap-rung text is at least this. One constant for every arm; chosen by the
+#: sweep on the planted dev seeds recorded in ``bench/results/README.md``
+#: (``scripts/bench sweep``), never on QASPER.
+TRIAGE_THRESHOLD = 0.0
+#: Planted seeds the threshold sweep may use. The reported run uses
+#: :data:`PLANTED_SEED`, which is not among them.
+SWEEP_SEEDS = (1, 2, 3)
+
+#: Known defects of the code under test that bend one arm's numbers; shown as
+#: a flag on the arm in the header and the report.
+KNOWN_DEFECTS = {
+    "semantic-only": (
+        "gr613850: search(mode='semantic') on papers returns the nearest "
+        "chunks farthest-first, so its top-5 is ranks 6-10"
+    ),
+}
 
 BASELINES = ("chunk-rag", "whole-paper")
 ALL_ARMS = ("all-on", *ARMS, *BASELINES)
@@ -123,6 +164,22 @@ def tokens_of(text: str) -> float:
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
+
+
+def overlap_score(question: str, text: str) -> float:
+    """Share of the question's content words that occur in ``text`` (0..1).
+
+    Content words and stopwords are the planted-fact generator's
+    (:func:`precis.bench.planted.content_words`), the same tokenisation its
+    ``overlap`` field uses. Coverage of the question rather than Jaccard: the
+    Jaccard denominator grows with the length of the rung's rendered text, so
+    one threshold would mean different things for a one-line ``kwd`` read and
+    a 2 kB ``summary`` read; coverage does not depend on the text's length.
+    """
+    q = planted.content_words(question)
+    if not q:
+        return 0.0
+    return len(q & planted.content_words(text)) / len(q)
 
 
 def arm_flags(arm: str) -> dict[str, bool]:
@@ -363,13 +420,22 @@ class Session:
     calls: int = 0
     errors: int = 0
     refusals: int = 0
+    #: ``get(extent='verbatim')`` calls issued (a chunk read whole).
+    opens: int = 0
     digest: Any = field(default_factory=hashlib.sha256)
+
+    def switches(self) -> bench_switches.Switches:
+        """The switches in force for this arm's calls (what the server sees)."""
+        with bench_switches.applied(**self.flags):
+            return bench_switches.current()
 
     def call(self, verb: str, args: dict[str, Any]) -> tuple[str, bool]:
         with bench_switches.applied(**self.flags):
             text, is_error = self.runtime.dispatch_with_status(verb, args, fold=True)
         body = normalise_volatile(text)
         self.calls += 1
+        if verb == "get" and args.get("extent") == "verbatim":
+            self.opens += 1
         self.tokens += tokens_of(body)
         if is_error:
             if bench_switches.ENV_VAR in body:
@@ -456,6 +522,8 @@ def _result(
     transcript: str | None,
     wall_s: float,
     applicable: bool = True,
+    caller: str | None = None,
+    opens: int = 0,
 ) -> dict[str, Any]:
     abstain = task.abstain
     censored = (not abstain) and applicable and not found
@@ -470,6 +538,7 @@ def _result(
         "type": task.row["type"],
         "source": task.source,
         "arm": arm,
+        "caller": caller,
         "abstention": abstain,
         "found": None if (abstain or not applicable) else found,
         "censored": censored,
@@ -478,6 +547,7 @@ def _result(
         "tokens_to_first_gold": first,
         "tokens_total": round(tokens_total, 2),
         "calls": calls,
+        "verbatim_opens": opens,
         "errors": errors,
         "refusals": refusals,
         **{f"recall_at_{k}": recall.get(k) for k in RECALL_KS},
@@ -495,8 +565,13 @@ def run_scripted(
     budget: int = TOKEN_BUDGET,
     search_k: int = SEARCH_K,
     read_k: int = READ_K,
+    caller: str = DEFAULT_CALLER,
+    threshold: float | None = None,
 ) -> dict[str, Any]:
-    """The scripted caller for one task under one switch arm."""
+    """The scripted caller (``triage`` or ``ladder``) for one task under one
+    switch arm. ``threshold`` overrides :data:`TRIAGE_THRESHOLD` (the sweep)."""
+    if caller not in CALLERS:
+        raise BenchRunError(f"unknown caller {caller!r}; known: {', '.join(CALLERS)}")
     t0 = time.monotonic()
     s = Session(runtime, arm_flags(arm), budget)
     body, _ = s.call("search", _search_args(task, search_k))
@@ -507,16 +582,17 @@ def run_scripted(
     if task.has_gold and rendered_gold(task, body, catalog):
         found_at = s.tokens
     if found_at is None:
-        for handle in hits[:read_k]:
-            for rung in LADDER:
-                if s.out_of_budget:
-                    break
-                out, _ = s.call("get", {"id": handle, "extent": rung})
-                if task.has_gold and rendered_gold(task, out, catalog):
-                    found_at = s.tokens
-                    break
-            if found_at is not None or s.out_of_budget:
-                break
+        if caller == "ladder":
+            found_at = _ladder(s, task, catalog, hits, read_k)
+        else:
+            found_at = _triage(
+                s,
+                task,
+                catalog,
+                hits,
+                read_k,
+                TRIAGE_THRESHOLD if threshold is None else threshold,
+            )
         if found_at is None and s.out_of_budget:
             stop = "budget"
     if found_at is not None:
@@ -535,7 +611,81 @@ def run_scripted(
         recall=recall,
         transcript=s.digest.hexdigest(),
         wall_s=time.monotonic() - t0,
+        caller=caller,
+        opens=s.opens,
     )
+
+
+def _ladder(
+    s: Session,
+    task: BenchTask,
+    catalog: Catalog,
+    hits: Sequence[str],
+    read_k: int,
+) -> float | None:
+    """The ``ladder`` caller: every rung on each of the top ``read_k`` hits.
+    Returns the token count when the gold was first rendered, else ``None``."""
+    for handle in hits[:read_k]:
+        for rung in LADDER:
+            if s.out_of_budget:
+                return None
+            out, _ = s.call("get", {"id": handle, "extent": rung})
+            if task.has_gold and rendered_gold(task, out, catalog):
+                return s.tokens
+        if s.out_of_budget:
+            return None
+    return None
+
+
+def _triage(
+    s: Session,
+    task: BenchTask,
+    catalog: Catalog,
+    hits: Sequence[str],
+    read_k: int,
+    threshold: float,
+) -> float | None:
+    """The ``triage`` caller (module docstring). Rungs the arm removed are
+    never requested: it asks :func:`precis.bench.switches.current` first."""
+    sw = s.switches()
+    cheap = "kwd" if sw.kwd else ("summary" if sw.summary else None)
+    scored: list[tuple[float, int, str]] = []
+    for rank, handle in enumerate(hits):
+        if cheap is None:
+            scored.append((0.0, rank, handle))
+            continue
+        if s.out_of_budget:
+            return None
+        out, _ = s.call("get", {"id": handle, "extent": cheap})
+        if task.has_gold and rendered_gold(task, out, catalog):
+            return s.tokens
+        scored.append((overlap_score(task.question, out), rank, handle))
+    if cheap is None:
+        # no cheap rung: nothing to rank by, so search rank order, no cut
+        order = scored
+    else:
+        order = sorted(
+            (x for x in scored if x[0] >= threshold), key=lambda x: (-x[0], x[1])
+        )
+    opened: list[str] = []
+    for _score, _rank, handle in order[:read_k]:
+        if s.out_of_budget:
+            return None
+        out, _ = s.call("get", {"id": handle, "extent": "verbatim"})
+        opened.append(handle)
+        if task.has_gold and rendered_gold(task, out, catalog):
+            return s.tokens
+    if not opened:
+        return None
+    best = opened[0]  # the best-scoring opened hit (search rank when unscored)
+    follow = [x for x, on in (("fisheye", sw.fisheye), ("+recall", sw.recall)) if on]
+    for rung in follow:
+        if s.out_of_budget:
+            return None
+        out, _ = s.call("get", {"id": best, "extent": rung})
+        if task.has_gold and rendered_gold(task, out, catalog):
+            return s.tokens
+    return None
 
 
 def run_chunk_rag(
@@ -639,6 +789,7 @@ def run_matrix(
     *,
     budget: int = TOKEN_BUDGET,
     progress: Any = None,
+    caller: str = DEFAULT_CALLER,
 ) -> list[dict[str, Any]]:
     """The long table: one row per task x arm."""
     catalog = Catalog(store)
@@ -652,7 +803,11 @@ def run_matrix(
             elif arm == "whole-paper":
                 rows.append(run_whole_paper(catalog, task, budget=budget))
             else:
-                rows.append(run_scripted(runtime, catalog, task, arm, budget=budget))
+                rows.append(
+                    run_scripted(
+                        runtime, catalog, task, arm, budget=budget, caller=caller
+                    )
+                )
         if progress is not None and (n % 10 == 0 or n == len(tasks)):
             progress(f"{n}/{len(tasks)} tasks")
     return rows
@@ -695,6 +850,8 @@ def arm_table(
             "switches_off": sorted(arm_flags(arm)),
             **layers.arm_vacuity(arm, cov, embedder_id=embedder_id),
         }
+        if arm in KNOWN_DEFECTS:
+            info["known_defect"] = KNOWN_DEFECTS[arm]
         if arm in same:
             info["identical_to_all_on_frac"] = same[arm]
             if same[arm] >= 1.0 and not info["vacuous"]:
@@ -736,9 +893,12 @@ def git_sha() -> tuple[str, bool | None]:
         return "unknown", None
 
 
-def results_filename(started: str, sha: str, set_name: str) -> str:
+def results_filename(
+    started: str, sha: str, set_name: str, caller: str | None = None
+) -> str:
     day = started[:10].replace("-", "")
-    return f"{day}Z-{sha[:7]}-{set_name}.json"
+    tail = f"-{caller}" if caller else ""
+    return f"{day}Z-{sha[:7]}-{set_name}{tail}.json"
 
 
 def default_results_dir() -> Path:
@@ -809,6 +969,9 @@ def aggregate(
         "median_tokens": statistics.median(toks) if toks else None,
         "censored": sum(1 for r in sel if r["censored"]),
         "calls": _mean([r["calls"] for r in sel]),
+        "opens": _mean(
+            [r["verbatim_opens"] for r in sel if r.get("verbatim_opens") is not None]
+        ),
         "refusals": sum(r["refusals"] for r in sel),
         "errors": sum(r["errors"] for r in sel),
     }
@@ -829,8 +992,8 @@ def _table(results: Mapping[str, Any], *, source: str | None, title: str) -> lis
         f"### {title}",
         "",
         "| arm | n | recall@5 | median tok→gold (reached) | censored | mean calls "
-        "| refusals | Δ recall@5 | Δ median tok | flags |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| mean opens | refusals | Δ recall@5 | Δ median tok | flags |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for arm in present:
         a = aggregate(rows, arm, source=source)
@@ -850,10 +1013,12 @@ def _table(results: Mapping[str, Any], *, source: str | None, title: str) -> lis
             flags.append("degenerate")
         if meta.get("embedder_note"):
             flags.append(meta["embedder_note"])
+        if meta.get("known_defect"):
+            flags.append(f"KNOWN DEFECT ({meta['known_defect']})")
         lines.append(
             f"| {arm} | {a['n']} | {_fmt(a['recall_at_5'])} | "
             f"{_fmt(a['median_tokens'], 0)} | {a['censored']} | "
-            f"{_fmt(a['calls'], 1)} | {a['refusals']} | "
+            f"{_fmt(a['calls'], 1)} | {_fmt(a['opens'], 1)} | {a['refusals']} | "
             f"{_fmt(d_r, 3, True)} | {_fmt(d_t, 0, True)} | {'; '.join(flags)} |"
         )
     return lines
@@ -885,11 +1050,16 @@ def report_markdown(results: Mapping[str, Any]) -> str:
     h = results["header"]
     cov = h.get("layer_coverage", {})
     emb = h.get("embedder", {})
+    caller = h.get("caller", {})
+    caller_line = f"- caller `{caller.get('name', 'ladder')}`" + (
+        f" · triage threshold {caller['threshold']}" if "threshold" in caller else ""
+    )
     out = [
         f"## Memory-ablation run {h.get('set')} — precis {str(h.get('precis_sha', ''))[:9]}"
         f"{' (dirty)' if h.get('git_dirty') else ''}",
         "",
         f"- started {h.get('started_at')} · ended {h.get('ended_at')}",
+        caller_line,
         f"- corpus_sha256 `{str(h.get('corpus_sha256', ''))[:16]}…` · tasks_sha256 "
         f"`{str(h.get('tasks_sha256', ''))[:16]}…` · planted seed {h.get('planted', {}).get('seed')}",
         f"- embedder {emb.get('name')} ({'meaningful' if emb.get('meaningful') else 'hash, not meaningful'}) "
@@ -917,6 +1087,46 @@ def report_markdown(results: Mapping[str, Any]) -> str:
             "the layer. Do not read it as a layer effect.",
         ]
     return "\n".join(out) + "\n"
+
+
+def compare_markdown(runs: Sequence[Mapping[str, Any]]) -> str:
+    """The same arms under several callers side by side: per source, one row
+    per arm and, per caller (the results files in the order given), recall@5,
+    median tokens to gold over the tasks that reached it, censored count, mean
+    calls, mean verbatim opens and refusals."""
+    names = [str(r["header"].get("caller", {}).get("name", "ladder")) for r in runs]
+    out: list[str] = []
+    for src, title in (
+        (None, "All answerable tasks"),
+        ("qasper", "QASPER only"),
+        ("planted", "Planted only"),
+    ):
+        present = [
+            a
+            for a in ALL_ARMS
+            if any(a == row["arm"] for r in runs for row in r["rows"])
+        ]
+        head = "| arm |" + "".join(
+            f" {n}: recall@5 | median tok | cens. | calls | opens | refus. |"
+            for n in names
+        )
+        sep = "|---|" + "---:|" * (6 * len(names))
+        block = [f"### {title}", "", head, sep]
+        for arm in present:
+            cells = []
+            n_any = 0
+            for r in runs:
+                a = aggregate(r["rows"], arm, source=src)
+                n_any += a["n"]
+                cells.append(
+                    f" {_fmt(a['recall_at_5'])} | {_fmt(a['median_tokens'], 0)} | "
+                    f"{a['censored']} | {_fmt(a['calls'], 1)} | {_fmt(a['opens'], 1)} | "
+                    f"{a['refusals']} |"
+                )
+            if n_any:
+                block.append(f"| {arm} |" + "".join(cells))
+        out += block + [""]
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -949,6 +1159,48 @@ def _planted_sha(rows: Sequence[Mapping[str, Any]], side: Mapping[str, Any]) -> 
     return hashlib.sha256(blob).hexdigest()
 
 
+def _plant(
+    runtime: Any,
+    conn: Any,
+    qasper_refs: Sequence[int],
+    qasper_task_rows: Sequence[Mapping[str, Any]],
+    *,
+    seed: int,
+    n: int,
+    n_docs: int,
+    per_doc: int,
+) -> tuple[list[dict[str, Any]], dict[str, tuple[str, ...]], list[int], dict[str, Any]]:
+    """Generate and ingest one seed's planted facts (documents and memory
+    nodes; idempotent). Returns ``(task rows, memory gold text, planted ref
+    ids, header block)``."""
+    from precis.bench import planted_ingest
+
+    hosts = planted_ingest.pick_hosts(
+        conn,
+        qasper_refs,
+        protected=planted_ingest.evidence_units(qasper_task_rows),
+        seed=seed,
+        n_docs=n_docs,
+        per_doc=per_doc,
+    )
+    built, side = planted.build(hosts, seed, n, at=PLANTED_AT)
+    rows = [gold.from_planted(r, side["docs"]) for r in built]
+    for r in rows:
+        gold.validate_row(r)
+    doc_refs = planted_ingest.ingest_docs(conn, side["docs"], seed=seed, at=PLANTED_AT)
+    planted_ingest.ingest_memory(runtime, conn, side["memory_nodes"])
+    gold_text = planted_ingest.gold_sentences(rows, side["memory_nodes"])
+    meta = {
+        "seed": seed,
+        "n": len(rows),
+        "at": PLANTED_AT,
+        "docs": len(side["docs"]),
+        "memory_nodes": len(side["memory_nodes"]),
+        "sha256": _planted_sha(built, side),
+    }
+    return rows, gold_text, list(doc_refs.values()), meta
+
+
 def run_cli(
     *,
     set_name: str,
@@ -965,15 +1217,18 @@ def run_cli(
     fill: bool = True,
     host_docs: int | None = None,
     host_paras: int | None = None,
+    caller: str = DEFAULT_CALLER,
 ) -> Path:
     """Everything behind ``scripts/bench run``. Returns the results path."""
-    from precis.bench import corpus, layers, planted, planted_ingest, qasper_tasks
+    from precis.bench import corpus, layers, planted_ingest, qasper_tasks
     from precis.config import PrecisConfig
     from precis.dispatch import boot
     from precis.embedder import make_embedder
     from precis.runtime import PrecisRuntime
     from precis.store import Store
 
+    if caller not in CALLERS:
+        raise BenchRunError(f"unknown caller {caller!r}; known: {', '.join(CALLERS)}")
     arm_list = list(arms) if arms else list(ALL_ARMS)
     for a in arm_list:
         arm_flags(a)  # validates
@@ -1003,34 +1258,16 @@ def run_cli(
             qasper_refs = _quick_ref_ids(conn, [r["qasper_id"] for r in records])
             planted_refs: list[int] = []
             if planted_n > 0:
-                hosts = planted_ingest.pick_hosts(
+                planted_rows, gold_text, planted_refs, planted_meta = _plant(
+                    runtime,
                     conn,
                     qasper_refs,
-                    protected=planted_ingest.evidence_units(all_qasper_rows),
+                    all_qasper_rows,
                     seed=seed,
+                    n=planted_n,
                     n_docs=host_docs or planted_ingest.HOST_DOCS,
                     per_doc=host_paras or planted_ingest.HOST_PARAS_PER_DOC,
                 )
-                built, side = planted.build(hosts, seed, planted_n, at=PLANTED_AT)
-                planted_rows = [gold.from_planted(r, side["docs"]) for r in built]
-                for r in planted_rows:
-                    gold.validate_row(r)
-                doc_refs = planted_ingest.ingest_docs(
-                    conn, side["docs"], seed=seed, at=PLANTED_AT
-                )
-                planted_refs = list(doc_refs.values())
-                planted_ingest.ingest_memory(runtime, conn, side["memory_nodes"])
-                gold_text = planted_ingest.gold_sentences(
-                    planted_rows, side["memory_nodes"]
-                )
-                planted_meta = {
-                    "seed": seed,
-                    "n": len(planted_rows),
-                    "at": PLANTED_AT,
-                    "docs": len(side["docs"]),
-                    "memory_nodes": len(side["memory_nodes"]),
-                    "sha256": _planted_sha(built, side),
-                }
         if fill:
             print("fill: embeddings + keywords for anything missing …", file=sys.stderr)
             fill_totals = layers.fill(store, embedder)
@@ -1051,6 +1288,7 @@ def run_cli(
             arm_list,
             budget=budget,
             progress=lambda m: print(m, file=sys.stderr),
+            caller=caller,
         )
     finally:
         store.close()
@@ -1090,9 +1328,18 @@ def run_cli(
         "token_estimator": TOKEN_ESTIMATOR,
         "token_budget": budget,
         "caller": {
+            "name": caller,
             "search": {"unique_per": "chunk", "page_size": SEARCH_K},
             "read_k": READ_K,
             "ladder": list(LADDER),
+            **(
+                {
+                    "threshold": TRIAGE_THRESHOLD,
+                    "score": "question content-word coverage",
+                }
+                if caller == "triage"
+                else {}
+            ),
             "recall_ks": list(RECALL_KS),
             "stop": "first rendered chunk overlapping gold, else budget or hits exhausted",
         },
@@ -1123,5 +1370,177 @@ def run_cli(
             "results are not meaningful",
             file=sys.stderr,
         )
-    path = out or default_results_dir() / results_filename(started, sha, set_name)
+    path = out or default_results_dir() / results_filename(
+        started, sha, set_name, caller
+    )
     return write_results(build_results(header=header, rows=rows), path)
+
+
+# ---------------------------------------------------------------------------
+# triage threshold sweep (planted dev seeds only)
+# ---------------------------------------------------------------------------
+
+
+class _MemoRuntime:
+    """A runtime whose dispatches are memoised per (verb, args, switches), so a
+    sweep that re-runs the same task at many thresholds pays each distinct call
+    once. The calls are deterministic (the point of the harness)."""
+
+    def __init__(self, runtime: Any) -> None:
+        self._runtime = runtime
+        self._memo: dict[tuple[str, str, Any], tuple[str, bool]] = {}
+
+    def dispatch_with_status(
+        self, verb: str, args: dict[str, Any], fold: bool = True
+    ) -> tuple[str, bool]:
+        key = (verb, json.dumps(args, sort_keys=True), bench_switches.current())
+        if key not in self._memo:
+            self._memo[key] = self._runtime.dispatch_with_status(verb, args, fold=fold)
+        return self._memo[key]
+
+
+SWEEP_THRESHOLDS = (0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6)
+SWEEP_ARMS = ("all-on", "no-kwd")
+
+
+def sweep_threshold(
+    runtime: Any,
+    catalog: Catalog,
+    tasks: Sequence[BenchTask],
+    thresholds: Sequence[float] = SWEEP_THRESHOLDS,
+    arms: Sequence[str] = SWEEP_ARMS,
+    *,
+    budget: int = TOKEN_BUDGET,
+) -> list[dict[str, Any]]:
+    """The ``triage`` caller at each threshold on ``tasks`` (answerable ones
+    only): per (arm, threshold) the share of tasks that reached the gold, the
+    mean tokens to gold (a task that did not carries the budget) and the mean
+    verbatim opens and calls."""
+    memo = _MemoRuntime(runtime)
+    answerable = [t for t in tasks if not t.abstain and t.has_gold]
+    out: list[dict[str, Any]] = []
+    for arm in arms:
+        for th in thresholds:
+            rows = [
+                run_scripted(
+                    memo, catalog, t, arm, budget=budget, caller="triage", threshold=th
+                )
+                for t in answerable
+            ]
+            n = len(rows)
+            out.append(
+                {
+                    "arm": arm,
+                    "threshold": th,
+                    "n": n,
+                    "found_rate": sum(1 for r in rows if r["found"]) / n if n else None,
+                    "mean_tokens": _mean([r["tokens_to_first_gold"] for r in rows]),
+                    "mean_opens": _mean([r["verbatim_opens"] for r in rows]),
+                    "mean_calls": _mean([r["calls"] for r in rows]),
+                }
+            )
+    return out
+
+
+def pick_threshold(sweep: Sequence[Mapping[str, Any]]) -> float:
+    """The threshold with the lowest mean tokens to gold averaged over the
+    swept arms (a task that never reached the gold carries the budget, so
+    losing recall is paid for); ties go to the lower threshold."""
+    by_th: dict[float, list[float]] = {}
+    for r in sweep:
+        by_th.setdefault(float(r["threshold"]), []).append(float(r["mean_tokens"]))
+    return min(by_th, key=lambda th: (statistics.fmean(by_th[th]), th))
+
+
+def sweep_markdown(sweep: Sequence[Mapping[str, Any]], *, seeds: Sequence[int]) -> str:
+    lines = [
+        f"Triage threshold sweep, planted dev seeds {', '.join(map(str, seeds))} "
+        f"(not the reported seed {PLANTED_SEED}, not QASPER).",
+        "",
+        "| arm | threshold | n | found | mean tok→gold (miss = budget) | mean opens | mean calls |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for r in sweep:
+        lines.append(
+            f"| {r['arm']} | {r['threshold']:g} | {r['n']} | {_fmt(r['found_rate'])} | "
+            f"{_fmt(r['mean_tokens'], 0)} | {_fmt(r['mean_opens'], 2)} | "
+            f"{_fmt(r['mean_calls'], 1)} |"
+        )
+    lines += [
+        "",
+        f"Picked threshold (lowest mean tok→gold over the arms): {pick_threshold(sweep):g}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def sweep_cli(
+    *,
+    set_name: str,
+    seeds: Sequence[int],
+    thresholds: Sequence[float],
+    embedder_name: str,
+    manifest_path: Path | None,
+    tasks_path: Path | None,
+    planted_n: int,
+    budget: int,
+    dsn: str,
+    host_docs: int | None = None,
+    host_paras: int | None = None,
+) -> str:
+    """Everything behind ``scripts/bench sweep``: plant each dev seed's facts
+    into the (throwaway) DB, fill their embeddings and keywords, run the
+    ``triage`` caller over those tasks at every threshold. Returns markdown.
+
+    Use a DB of its own (``precis_dev_sweep``): the planted documents of every
+    seed in ``seeds`` stay in it and would otherwise sit among the reported
+    run's distractors."""
+    from precis.bench import corpus, layers, planted_ingest, qasper_tasks
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import make_embedder
+    from precis.runtime import PrecisRuntime
+    from precis.store import Store
+
+    if PLANTED_SEED in seeds:
+        raise BenchRunError(
+            f"seed {PLANTED_SEED} is the reported run's seed; sweep on dev seeds "
+            f"({', '.join(map(str, SWEEP_SEEDS))})"
+        )
+    manifest = corpus.load_manifest(manifest_path)
+    records = manifest[set_name]
+    t_path = tasks_path or qasper_tasks.default_tasks_path(set_name)
+    qasper_rows = gold.load_tasks(t_path)
+    store = Store.connect(dsn)
+    try:
+        embedder = make_embedder(embedder_name, dim=store.embedding_dim())
+        embedder.warmup()
+        runtime = PrecisRuntime(
+            config=PrecisConfig(),
+            hub=boot(store=store, embedder=embedder, boot_writes=False),
+        )
+        all_rows: list[dict[str, Any]] = []
+        gold_text: dict[str, tuple[str, ...]] = {}
+        with store.pool.connection() as conn:
+            qasper_refs = _quick_ref_ids(conn, [r["qasper_id"] for r in records])
+            for seed in seeds:
+                rows, gt, _refs, _meta = _plant(
+                    runtime,
+                    conn,
+                    qasper_refs,
+                    qasper_rows,
+                    seed=seed,
+                    n=planted_n,
+                    n_docs=host_docs or planted_ingest.HOST_DOCS,
+                    per_doc=host_paras or planted_ingest.HOST_PARAS_PER_DOC,
+                )
+                all_rows += rows
+                gold_text.update(gt)
+        print("fill: embeddings + keywords for anything missing …", file=sys.stderr)
+        layers.fill(store, embedder)
+        tasks, _skipped = select_tasks(all_rows, gold_text)
+        sweep = sweep_threshold(
+            runtime, Catalog(store), tasks, thresholds, SWEEP_ARMS, budget=budget
+        )
+    finally:
+        store.close()
+    return sweep_markdown(sweep, seeds=list(seeds))

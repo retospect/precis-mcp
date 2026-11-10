@@ -288,6 +288,7 @@ def _row(task: str, arm: str, sha: str | None, **kw: Any) -> dict[str, Any]:
         "type": "lookup",
         "source": "qasper",
         "arm": arm,
+        "caller": "triage",
         "abstention": False,
         "found": True,
         "censored": False,
@@ -296,6 +297,7 @@ def _row(task: str, arm: str, sha: str | None, **kw: Any) -> dict[str, Any]:
         "tokens_to_first_gold": 100.0,
         "tokens_total": 150.0,
         "calls": 4,
+        "verbatim_opens": 1,
         "errors": 0,
         "refusals": 0,
         "recall_at_1": 1.0,
@@ -374,11 +376,11 @@ def test_report_markdown_has_one_row_per_arm_and_deltas_vs_all_on():
         if line.startswith("| ") and "arm" not in line.split("|")[1]:
             lines.setdefault(line.split("|")[1].strip(), line)
     # all-on: n=2, recall@5 mean 0.5, median of (100, 300) = 200; no delta shown
-    assert "| 2 | 0.500 | 200 | 0 | 4.0 | 0 | — | — |" in lines["all-on"]
+    assert "| 2 | 0.500 | 200 | 0 | 4.0 | 1.0 | 0 | — | — |" in lines["all-on"]
     # no-kwd: n=2, median over the one task that reached gold = 60 (the censored
     # task, carrying the 8000 budget, is counted in "censored" and not averaged
     # in), 1 censored, refusals 2; delta vs all-on's 200
-    assert "| 2 | 0.500 | 60 | 1 | 4.5 | 2 | +0.000 | -140 |" in lines["no-kwd"]
+    assert "| 2 | 0.500 | 60 | 1 | 4.5 | 1.0 | 2 | +0.000 | -140 |" in lines["no-kwd"]
     assert "VACUOUS" in lines["no-kwd"]
     assert "| 1 | — | 5000 |" in lines["whole-paper"]
     assert "Unanswerable tasks" in md and "| all-on | 1 | 900 |" in md
@@ -389,6 +391,12 @@ def test_results_filename_pins_date_and_short_sha():
     assert (
         runner.results_filename("2026-11-09T21:03:11Z", "0123456789abcdef", "quick")
         == "20261109Z-0123456-quick.json"
+    )
+    assert (
+        runner.results_filename(
+            "2026-11-09T21:03:11Z", "0123456789abcdef", "quick", "triage"
+        )
+        == "20261109Z-0123456-quick-triage.json"
     )
 
 
@@ -446,11 +454,18 @@ def test_tiny_budget_censors_the_task(world):
     assert r["calls"] <= 2  # the search, at most one get: the budget stops the rest
 
 
-def test_a_switched_off_rung_is_a_counted_refusal_not_a_silent_skip(world):
+def test_the_ladder_caller_asks_for_a_switched_off_rung_and_is_refused(world):
     task = _by_question(world["rows"], "What did the quasar1x2 instrument")
-    base = runner.run_scripted(world["runtime"], world["catalog"], task, "all-on")
-    nokwd = runner.run_scripted(world["runtime"], world["catalog"], task, "no-kwd")
-    nosum = runner.run_scripted(world["runtime"], world["catalog"], task, "no-summary")
+    run = dict(caller="ladder")
+    base = runner.run_scripted(
+        world["runtime"], world["catalog"], task, "all-on", **run
+    )
+    nokwd = runner.run_scripted(
+        world["runtime"], world["catalog"], task, "no-kwd", **run
+    )
+    nosum = runner.run_scripted(
+        world["runtime"], world["catalog"], task, "no-summary", **run
+    )
     assert base["refusals"] == 0
     assert nokwd["refusals"] >= 1 and nosum["refusals"] >= 1
     assert nokwd["errors"] == 0 and nosum["errors"] == 0  # refusals are not errors
@@ -764,3 +779,259 @@ def test_run_cli_is_deterministic_apart_from_wall_time(
     assert [_comparable(r) for r in a["rows"]] == [_comparable(r) for r in b["rows"]]
     assert a["header"]["planted"] == b["header"]["planted"]
     assert copy.deepcopy(a["header"]["arms"]) == b["header"]["arms"]
+
+
+# ---------------------------------------------------------------------------
+# the triage caller (stub runtime: scripted rung texts, no DB)
+# ---------------------------------------------------------------------------
+
+
+class _StubCatalog:
+    def chunks(self, ids):
+        return {}
+
+
+class _StubRuntime:
+    """``search`` returns fixed hits; ``get`` returns scripted text per
+    (handle, extent). Refuses a switched-off ``kwd`` / ``summary`` rung the way
+    the server does (an error naming the switches variable)."""
+
+    def __init__(self, hits: list[str], texts: dict[tuple[str, str], str]) -> None:
+        self.hits, self.texts = hits, texts
+        self.log: list[tuple[str, str]] = []
+
+    def dispatch_with_status(self, verb, args, fold=True):
+        from precis.bench import switches
+
+        if verb == "search":
+            rows = "\n".join(f"{h}\tkw" for h in self.hits)
+            return f"# hits\n{rows}\nNext:\n x", False
+        handle, ext = args["id"], args["extent"]
+        sw = switches.current()
+        if (ext == "kwd" and not sw.kwd) or (ext == "summary" and not sw.summary):
+            return f"refused: {switches.ENV_VAR}", True
+        self.log.append((handle, ext))
+        return self.texts.get((handle, ext), f"{handle} {ext}"), False
+
+
+def _stub_task() -> runner.BenchTask:
+    return runner.BenchTask(
+        {
+            "id": "t1",
+            "labelled_by": "qasper",
+            "question": "How does alpha beta gamma work?",
+            "docs": [],
+            "answer_kind": "extractive",
+            "type": "lookup",
+            "evidence": [{"doc": "d", "unit": "p0", "span": [0, 1]}],
+        }
+    )
+
+
+#: question content words: alpha beta gamma work. kwd coverage per hit:
+#: pc1 .25, pc2 0, pc3 1.0, pc4 .5, pc5 0; the gold is in pc4's verbatim.
+_HITS = ["pc1", "pc2", "pc3", "pc4", "pc5"]
+_KWD = {
+    ("pc1", "kwd"): "pa1 [paper] gamma",
+    ("pc2", "kwd"): "pa1 [paper] unrelated",
+    ("pc3", "kwd"): "pa1 [paper] alpha beta gamma work",
+    ("pc4", "kwd"): "pa1 [paper] alpha beta",
+    ("pc5", "kwd"): "pa1 [paper] nothing",
+    ("pc4", "verbatim"): "the GOLD chunk",
+}
+
+
+@pytest.fixture
+def stub_gold(monkeypatch):
+    monkeypatch.setattr(runner, "rendered_gold", lambda task, text, cat: "GOLD" in text)
+
+
+def _stub_run(arm: str, caller: str, **kw: Any):
+    rt = _StubRuntime(list(_HITS), dict(_KWD))
+    row = runner.run_scripted(
+        rt, _StubCatalog(), _stub_task(), arm, caller=caller, **kw
+    )
+    return row, rt
+
+
+def _verbatims(rt: _StubRuntime) -> list[str]:
+    return [h for h, ext in rt.log if ext == "verbatim"]
+
+
+def test_overlap_score_is_question_content_word_coverage():
+    q = "How does alpha beta gamma work?"
+    assert runner.overlap_score(q, "alpha beta gamma work") == 1.0
+    assert runner.overlap_score(q, "pa1 [paper] alpha beta") == 0.5
+    assert runner.overlap_score(q, "nothing here") == 0.0
+    assert runner.overlap_score("the of a", "the of a") == 0.0  # no content words
+    # coverage does not shrink as the rung text grows (Jaccard would)
+    assert runner.overlap_score(q, "alpha beta " + "filler " * 200) == 0.5
+
+
+def test_triage_is_deterministic(stub_gold):
+    a, rt_a = _stub_run("all-on", "triage", threshold=0.5)
+    b, rt_b = _stub_run("all-on", "triage", threshold=0.5)
+    assert _comparable(a) == _comparable(b) and rt_a.log == rt_b.log
+    assert a["caller"] == "triage"
+
+
+def test_triage_opens_by_score_above_the_threshold_and_fewer_than_ladder(stub_gold):
+    tri, rt_t = _stub_run("all-on", "triage", threshold=0.5)
+    lad, rt_l = _stub_run("all-on", "ladder")
+    # kwd read on every hit, then verbatim for the scores >= 0.5, best first:
+    # pc3 (1.0) then pc4 (0.5, gold). pc1 (rank 1, score .25) is never opened.
+    assert [h for h, e in rt_t.log if e == "kwd"] == _HITS
+    assert _verbatims(rt_t) == ["pc3", "pc4"]
+    assert tri["found"] is True and tri["stop"] == "found"
+    # the ladder climbs every hit down to the gold in rank order
+    assert _verbatims(rt_l) == ["pc1", "pc2", "pc3", "pc4"]
+    assert lad["found"] is True and lad["caller"] == "ladder"
+    assert tri["verbatim_opens"] == 2 < lad["verbatim_opens"] == 4
+    assert tri["tokens_to_first_gold"] < lad["tokens_to_first_gold"]
+
+
+def test_triage_threshold_cuts_what_it_opens(stub_gold):
+    row, rt = _stub_run("all-on", "triage", threshold=0.9)
+    assert _verbatims(rt) == ["pc3"]  # only pc3 clears 0.9; the gold (pc4) is missed
+    assert row["found"] is False and row["censored"] is True
+    # nothing cleared: nothing opened, and no fisheye / +recall on an unopened hit
+    row0, rt0 = _stub_run("all-on", "triage", threshold=1.1)
+    assert _verbatims(rt0) == [] and row0["verbatim_opens"] == 0
+    assert [e for _h, e in rt0.log if e in ("fisheye", "+recall")] == []
+
+
+def test_triage_follows_a_miss_with_fisheye_then_recall_on_the_best_opened_hit(
+    stub_gold,
+):
+    texts = {k: v for k, v in _KWD.items() if k != ("pc4", "verbatim")}
+    rt = _StubRuntime(list(_HITS), texts)  # no gold anywhere
+    row = runner.run_scripted(
+        rt, _StubCatalog(), _stub_task(), "all-on", caller="triage", threshold=0.5
+    )
+    assert row["found"] is False
+    assert rt.log[-2:] == [("pc3", "fisheye"), ("pc3", "+recall")]
+    # each once, on the best-scoring opened hit
+    assert [e for _h, e in rt.log].count("fisheye") == 1
+
+
+def test_triage_without_cheap_rungs_opens_verbatim_in_rank_order(stub_gold):
+    rt = _StubRuntime(list(_HITS), dict(_KWD))
+    flags = {"kwd": False, "summary": False}
+    s = runner.Session(rt, flags, runner.TOKEN_BUDGET)
+    found = runner._triage(
+        s, _stub_task(), _StubCatalog(), list(_HITS), runner.READ_K, threshold=0.99
+    )
+    # no kwd / summary read, no score, no cut: rank order, up to the gold (pc4)
+    assert [e for _h, e in rt.log if e in ("kwd", "summary")] == []
+    assert _verbatims(rt) == ["pc1", "pc2", "pc3", "pc4"]
+    assert found is not None and s.refusals == 0
+    # a miss in rank order caps at READ_K opens, then fisheye / +recall on the first
+    texts = {k: v for k, v in _KWD.items() if k != ("pc4", "verbatim")}
+    rt2 = _StubRuntime(list(_HITS) + ["pc6", "pc7"], texts)
+    s2 = runner.Session(rt2, flags, runner.TOKEN_BUDGET)
+    assert (
+        runner._triage(s2, _stub_task(), _StubCatalog(), rt2.hits, runner.READ_K, 0.0)
+        is None
+    )
+    assert _verbatims(rt2) == _HITS and rt2.log[-2:] == [
+        ("pc1", "fisheye"),
+        ("pc1", "+recall"),
+    ]
+
+
+def test_triage_never_requests_a_rung_the_arm_switched_off(stub_gold):
+    for arm in ("all-on", *ARMS):
+        row, _rt = _stub_run(arm, "triage", threshold=0.0)
+        assert row["refusals"] == 0 and row["errors"] == 0, arm
+    # contrast: the ladder asks and is refused
+    assert _stub_run("no-kwd", "ladder")[0]["refusals"] >= 1
+    # no-kwd: the cheap read moves to summary; no-fisheye / no-recall skip those reads
+    _row, rt = _stub_run("no-kwd", "triage", threshold=0.0)
+    assert {e for _h, e in rt.log} <= {"summary", "verbatim", "fisheye", "+recall"}
+    rt_nf = _StubRuntime(list(_HITS), {})  # no gold: the follow-ups run
+    runner.run_scripted(
+        rt_nf,
+        _StubCatalog(),
+        _stub_task(),
+        "no-fisheye",
+        caller="triage",
+        threshold=0.0,
+    )
+    assert "fisheye" not in {e for _h, e in rt_nf.log}
+    assert ("pc1", "+recall") in rt_nf.log
+    rt_nr = _StubRuntime(list(_HITS), {})
+    runner.run_scripted(
+        rt_nr, _StubCatalog(), _stub_task(), "no-recall", caller="triage", threshold=0.0
+    )
+    assert "+recall" not in {e for _h, e in rt_nr.log}
+    assert ("pc1", "fisheye") in rt_nr.log
+
+
+# ---------------------------------------------------------------------------
+# DB: the real runtime under the triage caller, and the lexical-only arm
+# ---------------------------------------------------------------------------
+
+
+def test_triage_is_deterministic_and_refusal_free_on_the_real_runtime(world):
+    tasks, _ = runner.select_tasks(world["rows"])
+    for arm in ("all-on", *ARMS):
+        first = [
+            runner.run_scripted(world["runtime"], world["catalog"], t, arm)
+            for t in tasks
+        ]
+        again = [
+            runner.run_scripted(world["runtime"], world["catalog"], t, arm)
+            for t in tasks
+        ]
+        assert [_comparable(r) for r in first] == [_comparable(r) for r in again], arm
+        assert all(r["refusals"] == 0 and r["errors"] == 0 for r in first), arm
+        assert all(r["caller"] == "triage" for r in first)
+    assert runner.DEFAULT_CALLER == "triage"
+
+
+def test_lexical_only_is_the_lexical_leg_of_hybrid_and_nothing_else(world):
+    """The arm removes the semantic leg. What is left must be the candidates
+    and order hybrid's own lexical leg produces: the same websearch_to_tsquery
+    AND query, ts_rank_cd order, chunk_id tie-break. Hybrid's leg is read from
+    the search trace (each fused row's lexical_rank)."""
+    from precis.embedder import MockEmbedder
+    from precis.mesh_eval.retrieval import extract_chunk_handles
+    from precis.utils import search_trace
+    from precis.utils.embed_query import query_vec_for
+
+    store = world["store"]
+    with store.pool.connection() as conn:
+        default = conn.execute(
+            "SELECT name FROM embedders WHERE is_default = TRUE"
+        ).fetchone()[0]
+    # vectors stored under the DB's default embedder name: a real semantic leg
+    embedder = MockEmbedder(dim=store.embedding_dim(), model=default)
+    layers.fill(store, embedder, keywords=False)
+    q = "study number laboratory"  # AND-matches every body chunk of both papers
+
+    def traced(**call: Any) -> list[dict[str, Any]]:
+        trace = search_trace.SearchTrace()
+        token = search_trace.CURRENT.set(trace)
+        try:
+            store.chunks.search_chunks(
+                q=q, limit=50, kind="paper", card_kinds=("card_combined",), **call
+            )
+        finally:
+            search_trace.CURRENT.reset(token)
+        return list(trace.candidates.values())
+
+    def lex_leg(cands: list[dict[str, Any]]) -> list[str]:
+        ranked = [c for c in cands if c["lexical_rank"]]
+        return [c["handle"] for c in sorted(ranked, key=lambda c: c["lexical_rank"])]
+
+    vec = query_vec_for(embedder, q, "hybrid")
+    hybrid = traced(query_vec=vec, mode="hybrid")
+    assert any(c["semantic_distance"] is not None for c in hybrid)  # sem leg ran
+    hybrid_leg = lex_leg(hybrid)
+    assert len(hybrid_leg) == 24 and hybrid_leg == lex_leg(traced(mode="lexical"))
+    # and through the dispatched search the arm runs
+    s = runner.Session(world["runtime"], runner.arm_flags("lexical-only"), 10**9)
+    body, _ = s.call(
+        "search", {"kind": "paper", "q": q, "unique_per": "chunk", "page_size": 10}
+    )
+    assert extract_chunk_handles(body.split("\nNext:", 1)[0]) == hybrid_leg[:10]
