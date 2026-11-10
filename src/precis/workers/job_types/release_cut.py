@@ -53,13 +53,18 @@ detached submit/poll pair under ``ssh_node``:
   now quoting the line.
 
 Before any launch :func:`submit` runs :func:`refresh_tooling`: fetch
-origin/main and check ``scripts/release``, ``scripts/round`` and
-``scripts/lib`` out of it into the checkout (those paths only; staged, so
-a later fast-forward is not refused), so a tooling fix that landed on main
-reaches the cut even when the checkout's tree is older (r263 refused four
-times on a stale ``scripts/round``). The job records ``tooling: <sha9>``
-(``meta.tooling``, the summary); a failed fetch, or unstaged local edits
-to those paths, runs the working tree and the label says so.
+origin/main and mirror ``scripts/release``, ``scripts/round`` and
+``scripts/lib`` out of it into the checkout (those paths only; staged
+against HEAD, and a file main deleted goes too), so a tooling fix that
+landed on main reaches the cut even when the checkout's tree is older
+(r263 refused four times on a stale ``scripts/round``). The staged state
+is owed back (:func:`restore_tooling`, gr620480): it lasts exactly the
+launch — a failed launch, a finished or a killed run puts the paths back
+at HEAD — or a later ``merge --ff-only`` in the deploy checkout is
+refused on the leftovers once main moves them again. The job records
+``tooling: <sha9>`` (``meta.tooling``, the summary); a failed fetch, or
+unstaged local edits to those paths, runs the working tree and the label
+says so.
 
 Before ``--cut-only`` launches, :func:`submit` clears the checkout's
 stale local round when three preflight conditions hold: the clone's own
@@ -177,6 +182,15 @@ _HOLDING_RE = re.compile(r"(?:^|\s)holding: ")
 _REFUSED_RE = re.compile(r"cut refused|^scripts/(?:release|round): ")
 _REFUSAL_LINE_CAP = 300
 
+#: The class a refusal-shaped line takes, most specific first — applied
+#: to ONE line at a time by :func:`classify_cut_refusal`.
+_REFUSAL_CLASSES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (REFUSAL_TIP_ONLY, _TIP_ONLY_RE),
+    (REFUSAL_GATED_BEHIND, _GATED_BEHIND_RE),
+    (REFUSAL_IN_FLIGHT, _IN_FLIGHT_RE),
+    (REFUSAL_HOLDING, _HOLDING_RE),
+)
+
 
 def classify_cut_refusal(log_text: str) -> dict[str, str]:
     """``{"class", "line"}`` for a failed ``--cut-only`` log — the refusal
@@ -186,19 +200,17 @@ def classify_cut_refusal(log_text: str) -> dict[str, str]:
     :data:`REFUSAL_IN_FLIGHT`,
     :data:`REFUSAL_HOLDING`, else :data:`REFUSAL_UNCLASSIFIED` — whose line
     is the last refusal-shaped line, else the last non-empty line). The
-    newest matching line of the most specific class wins: a log can carry
-    earlier lines of the cut's own retries."""
+    LAST refusal-shaped line wins (gr620480): a log can carry earlier
+    refusal-shaped echoes of the cut's own retries — ``scripts/release``'s
+    lost-race "exists on origin" before the retry dies on a different
+    refusal — and classing the whole log by class priority would call the
+    later refusal ``in-flight`` (attempt-free re-mints, and the hour-long
+    ask quoting the wrong line)."""
     lines = [ln.strip() for ln in log_text.splitlines() if ln.strip()]
-    for cls, pat in (
-        (REFUSAL_TIP_ONLY, _TIP_ONLY_RE),
-        (REFUSAL_GATED_BEHIND, _GATED_BEHIND_RE),
-        (REFUSAL_IN_FLIGHT, _IN_FLIGHT_RE),
-        (REFUSAL_HOLDING, _HOLDING_RE),
-    ):
-        for ln in reversed(lines):
-            if pat.search(ln):
-                return {"class": cls, "line": ln[:_REFUSAL_LINE_CAP]}
     for ln in reversed(lines):
+        cls = next((c for c, pat in _REFUSAL_CLASSES if pat.search(ln)), None)
+        if cls is not None:
+            return {"class": cls, "line": ln[:_REFUSAL_LINE_CAP]}
         if _REFUSED_RE.search(ln):
             return {"class": REFUSAL_UNCLASSIFIED, "line": ln[:_REFUSAL_LINE_CAP]}
     return {
@@ -379,12 +391,12 @@ def kill(ctx: Any, handle: Any) -> None:
     if not isinstance(handle, dict):
         return
     pgid = int(handle.get("pgid") or handle.get("pid") or 0)
-    if pgid <= 1:
-        return
-    try:
-        _rs._signal_group(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    if pgid > 1:
+        try:
+            _rs._signal_group(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    _undo_handle_tooling(handle)
 
 
 def run_host(params: dict[str, Any]) -> str | None:
@@ -610,28 +622,94 @@ def _tooling_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str
     )
 
 
-def refresh_tooling(root: Path) -> str:
+def _tooling_paths_diff(root: Path, filt: str, sha: str) -> list[str]:
+    """Tooling paths whose state differs between HEAD and ``sha`` under
+    ``--diff-filter=<filt>``: ``A`` is what sha has and HEAD does not —
+    what a refresh stages that :func:`restore_tooling` must delete;
+    ``D`` is what HEAD has and sha dropped — what the refresh mirrors
+    away. ``--no-renames`` keeps a rename legible as delete+add."""
+    out = _tooling_git(
+        root,
+        [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            f"--diff-filter={filt}",
+            "HEAD",
+            sha,
+            "--",
+            *_TOOLING_PATHS,
+        ],
+    )
+    return out.stdout.split("\0")[:-1] if out.returncode == 0 else []
+
+
+def restore_tooling(root: Path, added: list[str]) -> None:
+    """Undo a :func:`refresh_tooling` apply (gr620480): index and worktree
+    back to HEAD for the tooling paths — ``checkout HEAD --`` restores
+    what HEAD tracks, ``added`` drops what it does not — so the deploy
+    checkout's next ``merge --ff-only`` is not refused on the staged
+    leftovers. Paths carrying unstaged worktree edits are left alone: the
+    refresh's own never-overwrite rule."""
+    if _tooling_git(root, ["diff", "--quiet", "--", *_TOOLING_PATHS]).returncode:
+        return
+    _tooling_git(root, ["checkout", "HEAD", "--", *_TOOLING_PATHS])
+    files = [f for f in added if f]
+    if files:
+        _tooling_git(root, ["rm", "-q", "-f", "--ignore-unmatch", "--", *files])
+
+
+def _undo_tooling(added: Any, *, root: Any = None) -> None:
+    """Restore the tooling paths after a launch — a finished, failed or
+    killed run owes the checkout its HEAD state back (gr620480). Best
+    effort, never the job's verdict."""
+    if not isinstance(added, list):
+        return
+    try:
+        restore_tooling(
+            Path(str(root)) if root else _rs.slice_root(), [str(p) for p in added]
+        )
+    except Exception:
+        log.warning("%s: tooling restore failed", NAME, exc_info=True)
+
+
+def _undo_handle_tooling(handle: Any) -> None:
+    """``_undo_tooling`` off a launch handle's ``tooling_added``/``root``."""
+    if isinstance(handle, dict):
+        _undo_tooling(handle.get("tooling_added"), root=handle.get("root"))
+
+
+def refresh_tooling(root: Path) -> tuple[str, list[str] | None]:
     """Make the checkout's ``scripts/release``, ``scripts/round`` and
-    ``scripts/lib`` match origin/main, and answer the tooling label the
-    job records: the 9-char origin/main sha, else ``working tree (<why>)``.
+    ``scripts/lib`` match origin/main, and answer ``(label, added)`` —
+    the tooling label the job records (the 9-char origin/main sha, else
+    ``working tree (<why>)``) and the paths the refresh staged that HEAD
+    does not track, which :func:`restore_tooling` deletes on top of its
+    ``checkout HEAD --`` after the launch. ``added`` is ``None`` when the
+    tree was left alone: nothing is owed.
 
     The cut runs the checkout's own working tree
     (:func:`run_slice.slice_root`), which can be older than origin/main —
     a fix to ``scripts/round`` then never reaches the cut (r263 refused
     four times on a tip-only rule the tree predated). The refresh is
     ``git fetch origin main`` plus ``git checkout origin/main -- <paths>``
-    for those paths only: HEAD, the branch and every other file stay as
-    they are, and the paths read as staged against HEAD — an index equal
-    to origin/main's, so a later fast-forward onto it is not refused as
-    overwriting local changes. It runs in place, not from an export of
-    origin/main: both scripts resolve their ``ROOT`` from their own
-    location, and the ``PRECIS_ROUND_ROOT`` override that would redirect an
-    export also switches off their shared-row reads and writes ("a foreign
-    checkout"), so only the in-place copy keeps the cut's round state,
-    ``.release-owner`` marker and shared-row sync as they are today. Every
-    failure — fetch, an unreadable ref, unstaged local edits to those
-    paths (never overwritten), the checkout — falls back to the working
-    tree and names why."""
+    for those paths only, then ``git rm`` of what HEAD tracks and sha
+    dropped — a mirror, not an overlay (gr620480: a deleted lib file must
+    go too). HEAD, the branch and every other file stay as they are, and
+    the paths read as staged against HEAD, which also protects the running
+    cut from a concurrent fast-forward. It runs in place, not from an
+    export of origin/main: both scripts resolve their ``ROOT`` from their
+    own location, and the ``PRECIS_ROUND_ROOT`` override that would
+    redirect an export also switches off their shared-row reads and writes
+    ("a foreign checkout"), so only the in-place copy keeps the cut's
+    round state, ``.release-owner`` marker and shared-row sync as they are
+    today. The staged state must not outlive the launch — once main moves
+    those paths again a later ``merge --ff-only`` is refused on the
+    leftovers — so the job restores them when the run ends. Every failure
+    — fetch, an unreadable ref, unstaged local edits to those paths (never
+    overwritten), the checkout — falls back to the working tree and names
+    why."""
     try:
         fetched = _tooling_git(
             root,
@@ -639,45 +717,58 @@ def refresh_tooling(root: Path) -> str:
         )
         if fetched.returncode != 0:
             why = (fetched.stderr.strip().splitlines() or ["git fetch failed"])[-1]
-            return f"working tree (fetch of origin/main failed: {why[:120]})"
+            return f"working tree (fetch of origin/main failed: {why[:120]})", None
         head = _tooling_git(
             root, ["rev-parse", "--verify", "-q", "refs/remotes/origin/main^{commit}"]
         )
         sha = head.stdout.strip()
         if head.returncode != 0 or not sha:
-            return "working tree (origin/main unreadable after the fetch)"
+            return "working tree (origin/main unreadable after the fetch)", None
         if (
             _tooling_git(
                 root, ["diff", "--quiet", sha, "--", *_TOOLING_PATHS]
             ).returncode
             == 0
         ):
-            return sha[:9]  # already matches: touch nothing
+            # Already matches: touch nothing — but name what restore must
+            # still drop (a cut that never got to restore left its
+            # staging behind, and this run's restore cleans it too).
+            return sha[:9], _tooling_paths_diff(root, "A", sha)
         if _tooling_git(root, ["diff", "--quiet", "--", *_TOOLING_PATHS]).returncode:
-            return "working tree (tooling paths carry local edits; not refreshed)"
+            return (
+                "working tree (tooling paths carry local edits; not refreshed)",
+                None,
+            )
+        added = _tooling_paths_diff(root, "A", sha)
         out = _tooling_git(root, ["checkout", sha, "--", *_TOOLING_PATHS])
         if out.returncode != 0:
             why = (out.stderr.strip().splitlines() or ["git checkout failed"])[-1]
-            return f"working tree (refresh failed: {why[:120]})"
-        return sha[:9]
+            restore_tooling(root, added)  # drop any partial writes
+            return f"working tree (refresh failed: {why[:120]})", None
+        dropped = _tooling_paths_diff(root, "D", sha)
+        if dropped:
+            _tooling_git(root, ["rm", "-q", "-f", "--ignore-unmatch", "--", *dropped])
+        return sha[:9], added
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"working tree ({type(exc).__name__}: {str(exc)[:120]})"
+        return f"working tree ({type(exc).__name__}: {str(exc)[:120]})", None
 
 
-def _tooling_label(ctx: Any) -> str:
+def _tooling_label(ctx: Any) -> tuple[str, list[str] | None]:
     """Refresh the tooling for this job's launches and record it on the
-    job (``meta.tooling``, a ``job_event``): the label, ``working tree
-    (...)`` when the checkout cannot be resolved or refreshed."""
+    job (``meta.tooling``, a ``job_event``): ``(label, added)`` — the
+    ``added`` :func:`restore_tooling` drops after the run, ``None`` for
+    ``working tree (...)`` (the checkout cannot be resolved or refreshed;
+    nothing applied, nothing owed)."""
     try:
-        label = refresh_tooling(_rs.slice_root())
+        label, added = refresh_tooling(_rs.slice_root())
     except RuntimeError as exc:
-        label = f"working tree ({str(exc)[:120]})"
+        label, added = f"working tree ({str(exc)[:120]})", None
     except Exception as exc:  # never the cut's verdict: run the tree as is
         log.warning("%s: tooling refresh raised", NAME, exc_info=True)
-        label = f"working tree ({type(exc).__name__})"
+        label, added = f"working tree ({type(exc).__name__})", None
     ctx.set_meta(tooling=label)
     ctx.append_chunk("job_event", f"{NAME}: tooling: {label}")
-    return label
+    return label, added
 
 
 # ── release_cut ────────────────────────────────────────────────────
@@ -782,6 +873,48 @@ def _gated_retarget(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     return sha, None  # the hold stays: a cut clears it (_clear_retarget)
 
 
+def _stale_vs_gated(store: Any, todo_id: Any) -> str:
+    """The recorded first-cut target's compare/gated verdict —
+    ``behind`` sends the cut through :func:`_gated_retarget` — else
+    ``""``: no recorded target, no repo or an unreadable GitHub (fail
+    open: the script's own fast-forward guard still refuses it). The
+    verdict is cached on the target (``meta.release_target.vs_gated``):
+    the sha is fixed at mint and origin/gated only moves forward, so a
+    ``behind`` never un-happens and a stale ``ahead`` degenerates to one
+    doomed launch whose ``gated-behind`` refusal re-targets anyway —
+    re-checking every first-cut validate tick would only spend the
+    shared unauthenticated api.github.com budget (gr620480)."""
+    if not isinstance(todo_id, int):
+        return ""
+    target = _release.release_target_of(store, todo_id)
+    if target is None:
+        return ""
+    ref = store.get_ref(kind="todo", id=_release.plan_root(store, todo_id))
+    raw = (ref.meta or {}).get("release_target") if ref is not None else None
+    if isinstance(raw, dict) and raw.get("vs_gated"):
+        return str(raw["vs_gated"])
+    repo = pr_class.resolve_repo(store, None)
+    if not repo:
+        return ""
+    try:
+        verdict = _vs_gated(repo, target["sha"])
+    except pr_class.GitHubUnreadable:
+        return ""
+    try:
+        store.stamp_ref_meta(
+            _release.plan_root(store, todo_id),
+            {
+                "release_target": {
+                    **(raw if isinstance(raw, dict) else target),
+                    "vs_gated": verdict,
+                }
+            },
+        )
+    except Exception:
+        log.warning("%s: vs_gated stamp failed", NAME, exc_info=True)
+    return verdict
+
+
 def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     """``(sha, refusal)`` — the sha ``scripts/release --cut-only --sha``
     cuts, ``None`` for a tip cut, or ``(None, refusal)`` while the
@@ -807,21 +940,17 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     strict ancestor of origin/gated (a later --remote land moved gated past
     it) is dropped up front, as is one whose cut was refused
     ``gated-behind``: :func:`_gated_retarget` recomputes it, so
-    ``scripts/round``'s fast-forward guard never has to refuse it."""
+    ``scripts/round``'s fast-forward guard never has to refuse it. The
+    compare/gated read runs once per target and caches on it
+    (:func:`_stale_vs_gated`) — a per-tick call would spend the shared
+    unauthenticated api.github.com budget (gr620480)."""
     rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
     mark = None if rel is not None else _retarget_marker(store, todo_id)
     if mark is not None and (paced := _paced(mark)) is not None:
         return None, paced
     mode = str(mark["class"]) if mark else None
-    if rel is None and mode is None and isinstance(todo_id, int):
-        stale = _release.release_target_of(store, todo_id)
-        repo = pr_class.resolve_repo(store, None) if stale is not None else None
-        if stale is not None and repo:
-            try:
-                if _vs_gated(repo, stale["sha"]) == "behind":
-                    mode = REFUSAL_GATED_BEHIND
-            except pr_class.GitHubUnreadable:
-                pass  # fail open: the script's own guard still refuses it
+    if rel is None and mode is None and _stale_vs_gated(store, todo_id) == "behind":
+        mode = REFUSAL_GATED_BEHIND
     if mode == REFUSAL_GATED_BEHIND:
         return _gated_retarget(store, todo_id)
     if rel is not None or mode is not None:
@@ -885,6 +1014,21 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _handle_tooling(
+    handle: dict[str, Any] | None, *, tooling: str, added: list[str] | None
+) -> dict[str, Any] | None:
+    """Carry the tooling state onto a launched handle — ``tooling`` and
+    ``tooling_added`` for the restore when the run ends. A failed launch
+    never gets polled: it owes the checkout the undo now."""
+    if not isinstance(handle, dict):
+        _undo_tooling(added)
+        return None
+    handle["tooling"] = tooling
+    if added is not None:
+        handle["tooling_added"] = added
+    return handle
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
@@ -924,7 +1068,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         ctx.record_failure(f"{NAME}: {refusal}")
         return None
     argv = ["--cut-only"] + (["--sha", sha] if sha else [])
-    tooling = _tooling_label(ctx)
+    tooling, added = _tooling_label(ctx)
     if ctx.store is not None:
         n = _stale_supersede_n(ctx)
         if n is not None:
@@ -941,8 +1085,8 @@ def submit(ctx: Any, spec: Any) -> Any:
                 env={"PRECIS_GRIPE_NOTE": "0"},
             )
             if isinstance(handle, dict):
-                handle.update(phase="supersede", n=n, cut_argv=argv, tooling=tooling)
-            return handle
+                handle.update(phase="supersede", n=n, cut_argv=argv)
+            return _handle_tooling(handle, tooling=tooling, added=added)
         dead = _dead_open_round_n(ctx)
         if dead is not None:
             # gr612091: the shared row already retired this release —
@@ -959,8 +1103,8 @@ def submit(ctx: Any, spec: Any) -> Any:
                 env={"PRECIS_GRIPE_NOTE": "0"},
             )
             if isinstance(handle, dict):
-                handle.update(phase="abandon", n=dead, cut_argv=argv, tooling=tooling)
-            return handle
+                handle.update(phase="abandon", n=dead, cut_argv=argv)
+            return _handle_tooling(handle, tooling=tooling, added=added)
         gone = _gone_open_round_n(ctx)
         if gone is not None:
             # The record's origin branch is gone and it never deployed
@@ -975,14 +1119,10 @@ def submit(ctx: Any, spec: Any) -> Any:
                 env={"PRECIS_GRIPE_NOTE": "0"},
             )
             if isinstance(handle, dict):
-                handle.update(
-                    phase="abandon_gone", n=gone, cut_argv=argv, tooling=tooling
-                )
-            return handle
+                handle.update(phase="abandon_gone", n=gone, cut_argv=argv)
+            return _handle_tooling(handle, tooling=tooling, added=added)
     handle = launch_script(ctx, NAME, argv)
-    if isinstance(handle, dict):
-        handle["tooling"] = tooling
-    return handle
+    return _handle_tooling(handle, tooling=tooling, added=added)
 
 
 #: The retire phases' printed verb, note and meta key — ``supersede``
@@ -1021,6 +1161,7 @@ def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
     exit_code, log_text = done
     n = handle.get("n")
     if exit_code != 0:
+        _undo_handle_tooling(handle)
         fail_with_tail(
             ctx,
             f"{NAME}: scripts/round {verb_t.format(n=n)} exit "
@@ -1036,13 +1177,17 @@ def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
     if handle.get("phase") == "abandon_gone":
         ctx.set_meta(preflight=f"abandoned r{n}")
     if fresh is None:
+        _undo_handle_tooling(handle)
         return True  # the launch failure is recorded; no cut
     tooling = handle.get("tooling")
+    added = handle.get("tooling_added")
     handle.clear()
     handle.update(fresh)
     handle["notes"] = [note]
     if tooling:
         handle["tooling"] = tooling
+    if added is not None:
+        handle["tooling_added"] = added
     ctx.set_meta(
         compute_handle=handle,
         compute_handle_released=False,
@@ -1096,6 +1241,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     done = finish_run(ctx, handle, NAME)
     if done is None:
         return not isinstance(handle, dict)
+    _undo_handle_tooling(handle)
     exit_code, log_text = done
     cut = _release.parse_cut(log_text)
     if exit_code != 0 or cut is None:

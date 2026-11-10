@@ -3649,6 +3649,11 @@ def test_a_first_cut_hold_past_an_hour_files_one_ask(
     assert any(f"td{ask}" in n for n in res.notes)
     text = _todo_text(store, ask)
     assert f"cut refused ({cls}): {line}" in text
+    # gr620480: never suggested `cut --abandon` — the pass cut nothing
+    # yet, so the abandon would land on the other, live release; the ask
+    # may only name it to warn against it.
+    assert "or `scripts/round cut --abandon`" not in text
+    assert "would abandon the other, live release" in text
     rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=90))
     assert _stuck_ask_ids(store, tag) == [ask]  # deduped
 
@@ -3683,7 +3688,9 @@ def test_a_recut_hold_past_an_hour_files_one_ask(
     res = rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=31))
     [ask] = _stuck_ask_ids(store, tag)
     assert any(f"td{ask}" in n for n in res.notes)
-    assert "td43" in _todo_text(store, ask)
+    text = _todo_text(store, ask)
+    assert "td43" in text
+    assert "`scripts/round cut --abandon`" in text  # the re-cut's own release
     rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=45))
     assert _stuck_ask_ids(store, tag) == [ask]
     rp.note_cut_hold(store, mint.ids["cut"], None)

@@ -906,7 +906,7 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(rc, "origin_repo", lambda root: "o/r")
     # The real refresh fetches origin and rewrites scripts/: the
     # tooling tests below put it back over a real git repo.
-    monkeypatch.setattr(rc, "refresh_tooling", lambda root: "abc123def")
+    monkeypatch.setattr(rc, "refresh_tooling", lambda root: ("abc123def", []))
     # The gone-branch preflight lists origin's branches: off unless a test says.
     monkeypatch.setattr(rc, "_origin_branch_gone", lambda root, branch: False)
     seen["root"] = root
@@ -2058,6 +2058,7 @@ def stale_checkout(
     _g(work, "push", "-q", str(origin), "main")
     checkout["tip"] = _g(work, "rev-parse", "HEAD")
     checkout["origin"] = origin
+    checkout["work"] = work
     monkeypatch.setattr(rc, "refresh_tooling", _REAL_REFRESH_TOOLING)
     monkeypatch.setattr(
         rc._factory_git, "git_auth_env", lambda base=None: dict(os.environ)
@@ -2104,9 +2105,10 @@ def test_release_cut_tooling_refresh_is_idempotent(
     store: Store, stale_checkout: dict[str, Any]
 ) -> None:
     root = stale_checkout["root"]
-    first = rc.refresh_tooling(root)
+    label, added = rc.refresh_tooling(root)
     index = _g(root, "write-tree")
-    assert rc.refresh_tooling(root) == first == stale_checkout["tip"][:9]
+    assert rc.refresh_tooling(root) == (label, added)
+    assert label == stale_checkout["tip"][:9] and added == []
     assert _g(root, "write-tree") == index
 
 
@@ -2136,11 +2138,100 @@ def test_release_cut_tooling_never_overwrites_local_edits(
     (root / "scripts" / "round").write_text(
         "#!/bin/sh\n# hand edit\n", encoding="utf-8"
     )
-    label = rc.refresh_tooling(root)
+    label, added = rc.refresh_tooling(root)
     assert label == "working tree (tooling paths carry local edits; not refreshed)"
+    assert added is None
     assert (
         (root / "scripts" / "round").read_text(encoding="utf-8").endswith("hand edit\n")
     )
+
+
+def test_the_refresh_mirrors_what_main_deleted(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    """gr620480: the refresh is a mirror, not an overlay — a lib file main
+    deleted goes too; the restore drops the files the refresh added and
+    leaves the checkout exactly at HEAD."""
+    root = stale_checkout["root"]
+    work = stale_checkout["work"]
+    _g(work, "rm", "-q", "scripts/lib/x.py")
+    (work / "scripts" / "lib").mkdir(parents=True, exist_ok=True)
+    (work / "scripts" / "lib" / "y.py").write_text("NEW = 2\n", encoding="utf-8")
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "swap")
+    _g(work, "push", "-q", str(stale_checkout["origin"]), "main")
+    tip = _g(work, "rev-parse", "HEAD")
+    label, added = rc.refresh_tooling(root)
+    assert label == tip[:9] and added == ["scripts/lib/y.py"]
+    assert not (root / "scripts" / "lib" / "x.py").exists()
+    assert (root / "scripts" / "lib" / "y.py").read_text(
+        encoding="utf-8"
+    ) == "NEW = 2\n"
+    rc.restore_tooling(root, added)
+    assert _g(root, "status", "--porcelain") == ""
+    assert (root / "scripts" / "lib" / "x.py").read_text(
+        encoding="utf-8"
+    ) == "OLD = 1\n"
+    assert not (root / "scripts" / "lib" / "y.py").exists()
+
+
+def test_the_tooling_refresh_is_undone_when_the_run_ends(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    """gr620480: the staged tooling state must not outlive the launch —
+    the finished run puts the paths back at HEAD, and a main that moved
+    them again still fast-forwards (no ``merge --ff-only`` refusal on the
+    leftovers)."""
+    root = stale_checkout["root"]
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None and handle["tooling_added"] == []
+    _exit(stale_checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert _g(root, "status", "--porcelain") == ""
+    assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# old\n")
+    work = stale_checkout["work"]
+    (work / "scripts" / "round").write_text("#!/bin/sh\n# NEWER\n", encoding="utf-8")
+    _g(work, "commit", "-q", "-am", "newer")
+    _g(work, "push", "-q", str(stale_checkout["origin"]), "main")
+    _g(root, "fetch", "-q", "origin", "main")
+    _g(root, "merge", "--ff-only", "origin/main")  # not refused on leftovers
+
+
+def test_a_failed_launch_restores_the_tooling(
+    store: Store, stale_checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launch that never starts never gets polled: the undo happens at
+    once."""
+    root = stale_checkout["root"]
+    mint = T.mint_release_pass(store)
+
+    def boom(argv: list[str], **kw: Any) -> int:
+        raise OSError("exec failed")
+
+    monkeypatch.setattr(rc, "_launch", boom)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert ctx.failures
+    assert _g(root, "status", "--porcelain") == ""
+
+
+def test_a_kill_restores_the_tooling(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    """A wall-clock kill restores the paths too — a run that never gets
+    polled again must not leave its staging behind."""
+    root = stale_checkout["root"]
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None
+    assert _g(root, "diff", "--cached", "--name-only") != ""
+    rc.kill(ctx, handle)
+    assert _g(root, "status", "--porcelain") == ""
+    assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# old\n")
 
 
 # ── the deploy is pinned to the cut's host and checkout ──────────────
@@ -4168,6 +4259,19 @@ _UNCLASSIFIED_LINE = (
             "scripts/release: cannot read origin's branches",
             False,
         ),
+        # gr620480: the LAST refusal-shaped line classes the refusal —
+        # scripts/release's lost-race "exists on origin" echo before a
+        # retry must not class the later, different refusal as in-flight.
+        (
+            1,
+            f"scripts/release: release branch release/r262 exists on origin\n"
+            f"{_UNCLASSIFIED_LINE}\n",
+            "unclassified",
+            _UNCLASSIFIED_LINE,
+            False,
+        ),
+        (1, f"{_BRANCH_LINE}\n{_TIP_LINE}\n", "tip-only", _TIP_LINE, True),
+        (1, f"{_TIP_LINE}\n{_BRANCH_LINE}\n", "in-flight", _BRANCH_LINE, True),
     ],
 )
 def test_release_cut_classifies_a_refusal(
@@ -4296,6 +4400,36 @@ def test_a_recorded_target_behind_gated_is_dropped_and_recomputed(
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     assert rc.submit(ctx, None) is not None
     assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+    assert _meta(store, mint.root_id)["release_target"]["vs_gated"] == "behind"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_the_first_cut_gated_check_runs_once_not_per_tick(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr620480: the recorded target's compare/gated verdict is cached on
+    ``meta.release_target.vs_gated`` — a first-cut validate tick does not
+    spend the shared unauthenticated api.github.com budget."""
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    gated_calls: list[str] = []
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        if "/compare/gated..." in url:
+            gated_calls.append(url)
+            data: Any = {"status": "ahead"}
+        else:
+            data = {}
+        return SimpleNamespace(status_code=200, json=lambda: data)
+
+    monkeypatch.setattr(P, "_http_get", get)
+    monkeypatch.setattr(P, "resolve_repo", lambda *a, **k: "o/r")
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
+    assert len(gated_calls) == 1
+    assert _meta(store, mint.root_id)["release_target"]["vs_gated"] == "ahead"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")

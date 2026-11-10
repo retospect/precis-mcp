@@ -198,10 +198,20 @@ _STAGE_VERBS = {
     '`scripts/round supersede --partial --reason "<why>"`',
     # Not a ``release.round`` state: the re-cut held below origin/main
     # (:func:`note_cut_hold`, gr611217) — the holding land's review or
-    # its ``release-review-wait:`` answer moves it.
+    # its ``release-review-wait:`` answer moves it. The FIRST cut's hold
+    # asks with ``_FIRST_CUT_HOLD_VERBS`` instead (gr620480).
     "recut-hold": "answer a holding land's `release-review-wait:` ask, "
     "finish its review, or `scripts/round cut --abandon`",
 }
+
+#: The hand verbs a FIRST cut's ``recut-hold`` ask names — never
+#: ``cut --abandon``: the pass cut nothing yet, so the abandon would land
+#: on the other, live release the hold is waiting on (gr620480).
+_FIRST_CUT_HOLD_VERBS = (
+    "answer a holding land's `release-review-wait:` ask or finish its "
+    "review — not `scripts/round cut --abandon`: the pass never cut, so "
+    "it would abandon the other, live release instead"
+)
 
 #: A re-cut held below origin/main this long files one stuck ask
 #: naming the holding units (gr611217) — the hold itself never lifts.
@@ -781,6 +791,7 @@ def _file_stuck_ask(
     capped: bool = False,
     detail: str = "",
     label: str | None = None,
+    verbs: str | None = None,
 ) -> str:
     """The one write the watchdog makes: an ``ask-user`` ruling todo,
     deduped by its ``release-stuck:r<N>:<stage>`` tag over todos in any
@@ -795,13 +806,15 @@ def _file_stuck_ask(
     ``detail`` is one more line for the body and context (the re-cut
     hold's holding units, gr611217). ``label`` replaces ``r<n>`` in the
     tag and the text for a pass with no release number yet (a first cut
-    held before it cut: ``td<root>``)."""
+    held before it cut: ``td<root>``). ``verbs`` overrides the stage's
+    hand verbs — the first-cut hold's, which must not name
+    ``cut --abandon`` (gr620480)."""
     from precis.workers.job_types import run_slice
 
     tok = label or f"r{n}"
     disp = f"pass {label}" if label else f"r{n}"
     tag = f"{_STUCK_TAG_PREFIX}:{tok}:{stage}"
-    verbs = _STAGE_VERBS[stage]
+    verbs = _STAGE_VERBS[stage] if verbs is None else verbs
     head_txt = (
         f"{run_head12}, the head the newest run on release/r{n} ran on — "
         f"it may differ from the record's base {head12}"
@@ -2649,6 +2662,7 @@ def _cut_hold_ask(
         return None
     lines = [str(ln) for ln in hold.get("lines") or []]
     detail = "holding: " + ("; ".join(lines) or "unrecorded")
+    verbs = None
     if isinstance(rel, dict):
         m = re.fullmatch(r"r(\d+)", str(rel.get("rN") or ""))
         if m is None:
@@ -2659,12 +2673,15 @@ def _cut_hold_ask(
     elif isinstance(retarget, dict):
         # A first cut a refusal held (``release_cut._note_refusal``): no
         # release number yet, so the ask keys on the pass root and quotes
-        # the refusal that started the hold.
+        # the refusal that started the hold — and never names
+        # ``cut --abandon``: it would land on the other, live release
+        # (gr620480).
         n, label, head12 = 0, f"td{root_id}", "unrecorded"
         clock = f"first-cut hold since {hold.get('since')}"
         detail = (
             f"cut refused ({retarget.get('class')}): {retarget.get('line')}; " + detail
         )
+        verbs = _FIRST_CUT_HOLD_VERBS
     else:
         return None
     return _file_stuck_ask(
@@ -2679,6 +2696,7 @@ def _cut_hold_ask(
         clock_txt=clock,
         detail=detail,
         label=label,
+        verbs=verbs,
     )
 
 
