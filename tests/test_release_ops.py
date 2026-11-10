@@ -202,6 +202,65 @@ def test_store_verdict_rows_match_the_script_shape(store: Store) -> None:
     assert R.record_ci_verdict(store, SHA, RNG, "maybe").endswith("not green|red")
 
 
+def test_a_red_never_overwrites_a_waived_row_but_a_green_does() -> None:
+    """Store twin of the scripts/release waiver rule (td626990): the
+    waiver row is a standing decision — a red poll on the same sha (a
+    poll that could not read the waiver, a retried poll) leaves it; a
+    fresh green replaces it; other shas and plain rows behave as
+    before."""
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+    waived = {
+        "sha": SHA[:12],
+        "range": RNG,
+        "verdict": "green",
+        "run_id": "31",
+        "at": "2026-11-10T11:00:00Z",
+        "waived": {"gripe": 77, "tests": ["tests/t.py::a"]},
+    }
+    other = {"sha": "1" * 12, "verdict": "red", "run_id": "1", "at": "x"}
+    prev: list[dict[str, Any]] = [other, waived]
+    assert R.ci_verdict_rows(SHA, RNG, "red", "99", prev, now) == prev
+    rows = R.ci_verdict_rows(SHA, RNG, "green", "99", prev, now)
+    assert [r["verdict"] for r in rows] == ["red", "green"]
+    assert "waived" not in rows[-1] and rows[-1]["run_id"] == "99"
+    # a red on a different sha, or over a plain row, records as ever
+    rows = R.ci_verdict_rows("2" * 40, RNG, "red", "5", prev, now)
+    assert rows[:2] == prev and rows[-1]["sha"] == "2" * 12
+    plain = {**waived}
+    del plain["waived"]
+    rows = R.ci_verdict_rows(SHA, RNG, "red", "99", [plain], now)
+    assert [(r["verdict"], r["run_id"]) for r in rows] == [("red", "99")]
+
+
+def test_record_ci_verdict_red_keeps_the_waived_row_and_the_gate_open(
+    store: Store,
+) -> None:
+    """Through the writer itself (the ci_verdict_poll path): a red on a
+    waived sha records nothing, so ``tests-green`` keeps reading the
+    standing green-waived row."""
+    psettings.set_setting(
+        gates.CI_VERDICTS_KEY,
+        json.dumps(
+            [
+                {
+                    "sha": SHA[:12],
+                    "range": RNG,
+                    "verdict": "green",
+                    "run_id": "31",
+                    "at": "2026-11-10T11:00:00Z",
+                    "waived": {"gripe": 77, "tests": ["tests/t.py::a"]},
+                }
+            ]
+        ),
+        store=store,
+    )
+    line = R.record_ci_verdict(store, SHA, RNG, "red", "99")
+    assert line == f"ci verdict recorded: {SHA[:9]} red"
+    rows = gates.read_ci_verdicts(store)
+    assert len(rows) == 1 and rows[0]["verdict"] == "green"
+    assert rows[0]["waived"] == {"gripe": 77, "tests": ["tests/t.py::a"]}
+
+
 def test_store_prod_head_merges_landed(store: Store) -> None:
     R.record_prod_head(store, "a" * 40, ["b" * 12])
     R.record_prod_head(store, "d" * 40, ["e" * 12])

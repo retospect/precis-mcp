@@ -1101,7 +1101,9 @@ def ci_verdict_rows(
 ) -> list[dict[str, Any]]:
     """``previous`` plus ``{sha, range, verdict, run_id, at (UTC Z)}``,
     deduped by sha keeping the newest, capped at :data:`MAX_CI_VERDICTS`.
-    Shas are abbreviated to :data:`LANDED_SHA_LEN` (gates match by prefix)."""
+    Shas are abbreviated to :data:`LANDED_SHA_LEN` (gates match by prefix).
+    A red never replaces a ``waived`` row on the same sha — the waiver is
+    a standing decision only a fresh green supersedes."""
     row = {
         "sha": sha[:LANDED_SHA_LEN],
         "range": rng,

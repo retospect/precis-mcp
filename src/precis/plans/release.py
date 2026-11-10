@@ -23,7 +23,10 @@ what lives here:
 - **CI verdict and prod head writers**, store-side twins of
   ``scripts/release``'s ``record_ci_verdict`` / ``record_prod_head`` (the
   script cannot import this package; the row shapes are the same, so the
-  gates in :mod:`precis.plans.gates` read either writer's rows).
+  gates in :mod:`precis.plans.gates` read either writer's rows). On
+  either side a red verdict never replaces a ``waived`` row on the same
+  sha — the red-test waiver is a standing decision only a fresh green
+  supersedes (:func:`ci_verdict_rows`).
 - **The shared round record** (:func:`record_round` / :func:`read_round`),
   store-side twins of ``scripts/round``'s publish: ``release.round`` holds
   the active release's row (``{n, branch, base, state, owner, cut_at,
@@ -702,7 +705,9 @@ def ci_verdict_rows(
     now: datetime,
 ) -> list[dict[str, Any]]:
     """``previous`` plus ``{sha, range, verdict, run_id, at}``, deduped by
-    sha keeping the newest, capped (``scripts/release.ci_verdict_rows``)."""
+    sha keeping the newest, capped (``scripts/release.ci_verdict_rows``).
+    A red never replaces a ``waived`` row on the same sha — the waiver is
+    a standing decision only a fresh green supersedes."""
     row = {
         "sha": sha[:LANDED_SHA_LEN],
         "range": rng,
@@ -710,6 +715,16 @@ def ci_verdict_rows(
         "run_id": str(run_id or ""),
         "at": _stamp(now),
     }
+    if verdict == "red" and any(
+        isinstance(r.get("waived"), dict)
+        for r in previous
+        if str(r.get("sha", ""))[:LANDED_SHA_LEN] == row["sha"]
+    ):
+        # The red-test waiver (precis.plans.red_waiver) is a standing
+        # decision on this sha: a red read after it (a poll that could
+        # not read the waiver, a retried poll) must not erase the row.
+        # Only a fresh green replaces it.
+        return list(previous)
     kept = [r for r in previous if str(r.get("sha", ""))[:LANDED_SHA_LEN] != row["sha"]]
     return [*kept, row][-MAX_CI_VERDICTS:]
 
