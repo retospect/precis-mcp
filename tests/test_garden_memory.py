@@ -524,9 +524,13 @@ def test_landed_ancestor_is_skipped_as_supersede_target(
 
 
 def test_unavailable_prod_ref_keeps_sha_not_checked(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cand, "ProdAncestry", lambda: _anchors.ProdAncestry(None))
+    # A root that is not None must be genuinely absent: ProdAncestry(None)
+    # falls back to the configured main root, which checks real ancestry.
+    monkeypatch.setattr(
+        cand, "ProdAncestry", lambda: _anchors.ProdAncestry(tmp_path / "absent")
+    )
     _thread(store, "Left: verify deploy 04ef78736 on prod")
     assert cand.thread_shape_candidates(store) == []
 

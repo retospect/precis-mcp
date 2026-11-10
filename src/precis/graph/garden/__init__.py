@@ -105,8 +105,6 @@ Review rows and trust acts retain the original model string.
    children. Both retirement doors refuse while a compact proposal is
    pending or while the detector fires on content no completed
    compaction covers — a rejected plan preserves nothing.
-   Git ancestry on origin/prod is deliberately untested: the DB has no
-   general ancestry oracle and thread_shape needs no network or git.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate returns structured ``accept``/rationale. Memory detectors'
    body candidates receive fisheye+1hop and verbatim

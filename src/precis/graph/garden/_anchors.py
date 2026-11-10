@@ -287,7 +287,7 @@ def is_commit_token(target: str) -> bool:
 
 #: The deployed ref — ``scripts/deploy`` moves it only after a completed
 #: deploy, so ancestry against it is the landed-on-prod proof (the same
-#: ref gripe tririage-adjacent code uses, with the same "no bare HEAD"
+#: ref gripe triage-adjacent code uses, with the same "no bare HEAD"
 #: caution as gripe triage's ``origin/prod`` candidates).
 PROD_REF = "origin/prod"
 
