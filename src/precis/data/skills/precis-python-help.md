@@ -136,8 +136,11 @@ search(
 registration. Host paths use the worktree registry's configured
 `PRECIS_PYTHON_GITDIR_MAP`: the path relative to that mount must identify the
 same checkout. Exact server paths also work; unknown mount prefixes are not
-guessed, and a different tree still refuses. On mismatch,
-inspect the alias with `get(kind='python', id='<alias>')` without `expected_root`,
+guessed, and a different tree still refuses. On mismatch the ack's `next`
+names the alias that does resolve to the expected root — substituted into
+your id/scope as a callable `get`/`search` — when one exists (worktree
+aliases included); otherwise inspect the alias with
+`get(kind='python', id='<alias>')` without `expected_root`,
 or use local Grep/Read for your tree. Roots are
 registered at server construction; there is no request-time arbitrary-path fallback. Do not bind
 production to an unreviewed mutable task checkout or edit through another root.

@@ -542,7 +542,9 @@ class PythonHandler(Handler):
                     next="get(kind='python', id='<repo-alias>') — the index "
                     "view alone cannot be scoped",
                 )
-            self._check_expected_root(_parse_id(str(id)).alias, expected_root)
+            self._check_expected_root(
+                _parse_id(str(id)).alias, expected_root, selector=str(id)
+            )
 
         # Index — no id, or "/" sentinel.
         if id is None or id == "/" or id == "":
@@ -882,7 +884,7 @@ class PythonHandler(Handler):
                     next=f"search(kind='python', q={q!r}, scope='<repo-alias>')",
                 )
             alias = scope.split("::", 1)[0].split("/", 1)[0]
-            self._check_expected_root(alias, expected_root)
+            self._check_expected_root(alias, expected_root, selector=scope, q=q)
         roots = self._roots_for_scope(scope)
         if not roots:
             raise NotFound(
@@ -2184,7 +2186,23 @@ class PythonHandler(Handler):
 
     # ── helpers ────────────────────────────────────────────────────
 
-    def _check_expected_root(self, alias: str, expected_root: str) -> None:
+    def _check_expected_root(
+        self,
+        alias: str,
+        expected_root: str,
+        *,
+        selector: str | None = None,
+        q: str | None = None,
+    ) -> None:
+        """Refuse when ``alias`` resolves to a different root than asserted.
+
+        On mismatch the ack names the alias that *does* resolve to the
+        expected root — substituted into the caller's own selector — as a
+        callable ``next`` (gr613471: the bare "inspect the configured
+        checkout" hint gave worktree callers no recovery path). ``selector``
+        is the caller's full ``id=`` (get) or ``scope=`` (search); ``q``
+        marks the search verb.
+        """
         root = self._resolve_alias(alias)
         expected = Path(expected_root).expanduser()
         if root == expected.resolve():
@@ -2193,14 +2211,37 @@ class PythonHandler(Handler):
         # Reuse discovery's configured prefix map, never guess from a basename.
         if self.worktrees is not None:
             expected = self.worktrees.translate_path(str(expected))
-        if root != expected.resolve():
-            raise BadInput(
-                f"Python root mismatch: alias={alias!r}, configured={str(root)!r}, "
-                f"expected={expected_root!r}; available aliases={list(self.roots)!r}",
-                next=f"get(kind='python', id={alias!r}) without expected_root "
-                "to inspect the configured checkout, or Grep/Read in your own tree; "
-                "expected_root grants no access or registration",
+        if root == expected.resolve():
+            return
+        hint = (
+            f"get(kind='python', id={alias!r}) without expected_root "
+            "to inspect the configured checkout, or Grep/Read in your own tree; "
+            "expected_root grants no access or registration"
+        )
+        match = self._alias_for_root(expected.resolve())
+        if match is not None and match != alias and selector is not None:
+            target = f"{match}{selector[len(alias) :]}"
+            call = (
+                f"search(kind='python', q={q!r}, scope={target!r})"
+                if q is not None
+                else f"get(kind='python', id={target!r})"
             )
+            hint = f"{call} — alias {match!r} resolves to the expected root; " + hint
+        raise BadInput(
+            f"Python root mismatch: alias={alias!r}, configured={str(root)!r}, "
+            f"expected={expected_root!r}; available aliases={list(self.roots)!r}",
+            next=hint,
+        )
+
+    def _alias_for_root(self, root: Path) -> str | None:
+        """The alias (static root or live worktree) that resolves to ``root``."""
+        for alias, path in self.roots.items():
+            if path == root:
+                return alias
+        for alias, path in self._worktree_listing().items():
+            if path == root:
+                return alias
+        return None
 
     def _index(self, alias: str, root: Path) -> RepoIndex:
         try:

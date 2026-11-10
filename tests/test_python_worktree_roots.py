@@ -140,6 +140,44 @@ def test_expected_root_refuses_different_tree_before_indexing(
     assert h.cache.known_roots() == []
 
 
+def test_expected_root_mismatch_names_the_alias_matching_expected(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    """gr613471: the ack's next names the alias that resolves to expected_root."""
+    h, _, _ = _make(env, ("alpha", "beta"))
+
+    def forbidden(root: Path) -> None:
+        raise AssertionError("a root mismatch must not build an index")
+
+    monkeypatch.setattr(h.cache, "get", forbidden)
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        h.get(id="wt-alpha::m.f", expected_root=f"{HOST}/wts/beta")
+    hint = str(caught.value.next)
+    assert "get(kind='python', id='wt-beta::m.f')" in hint
+    assert "resolves to the expected root" in hint
+    # The generic recovery tail is preserved.
+    assert "get(kind='python', id='wt-alpha') without expected_root" in hint
+    assert h.cache.known_roots() == []
+
+
+def test_expected_root_mismatch_search_names_the_matching_scope(env):
+    h, _, _ = _make(env, ("alpha", "beta"))
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        h.search(q="f", scope="wt-alpha::m", expected_root=f"{HOST}/wts/beta")
+    hint = str(caught.value.next)
+    assert "search(kind='python', q='f', scope='wt-beta::m')" in hint
+
+
+def test_expected_root_mismatch_names_static_alias_match(env):
+    """Addressing main while expecting a worktree points at the wt- alias."""
+    _, wts, _ = env
+    h, _, _ = _make(env)
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        h.get(id="main::m.f", expected_root=str(wts / "alpha"))
+    hint = str(caught.value.next)
+    assert "get(kind='python', id='wt-alpha::m.f')" in hint
+
+
 def test_expected_root_refuses_parent_escape_before_mount_translation(
     env, monkeypatch: pytest.MonkeyPatch
 ):
