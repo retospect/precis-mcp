@@ -745,9 +745,14 @@ class TestObjectiveColumns:
         from precis.quest.results_table import results_columns
 
         assert results_columns([]) == RESULTS_COLUMNS
-        cols = results_columns([("barrier", "min"), ("energy", "min")])
-        # barrier is already a fixed column — no duplicate; energy appends.
-        assert cols == (*RESULTS_COLUMNS, "energy")
+        # barrier and energy are fixed columns — dedup'd in place, not
+        # re-appended after the fixed block.
+        assert results_columns([("barrier", "min"), ("energy", "min")]) == (
+            RESULTS_COLUMNS
+        )
+        # an objective outside the fixed block appends after it.
+        cols = results_columns([("log_tof", "max")])
+        assert cols == (*RESULTS_COLUMNS, "log_tof")
 
     def test_default_energy_objective_shows_the_converged_relax(
         self, store: Any

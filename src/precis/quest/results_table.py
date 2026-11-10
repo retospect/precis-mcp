@@ -26,13 +26,16 @@ best-effort: an undeliverable structure load, an unstamped params dict, or an
 ambiguous site geometry degrades to ``'-'``/``'?'`` rather than raising or
 guessing hard.
 
-The measure block ends with the quest's **declared objective keys**
+``energy`` is one of the fixed columns, rendered at objective precision
+(:func:`_objective_str`, ``%g``) — a quest with no
+``meta.rubric_objectives`` ranks on it, so the converged-relax result a
+dopant-stability ranking actually ranks on keeps its decimals instead of
+collapsing to 3 significant figures (gr567692 — without it, a completed
+structure relax showed ``beaten`` with every measure cell ``-`` and the
+tick could not confirm a frontier position from the table at all). The
+block ends with the quest's other **declared objective keys**
 (``fr.objectives`` — :class:`precis.quest.frontier.FrontierResult`) not
-already among the fixed pathway columns. For a quest with no
-``meta.rubric_objectives`` that is ``energy``: the converged-relax result a
-dopant-stability ranking actually ranks on (gr567692 — without it, a
-completed structure relax showed ``beaten`` with every measure cell ``-``
-and the tick could not confirm a frontier position from the table at all).
+already among the fixed pathway columns, appended in declared order.
 """
 
 from __future__ import annotations
@@ -370,10 +373,12 @@ def build_results_rows(
     budget truncation must never drop.
 
     Besides the fixed :data:`_COLUMNS` keys, each row carries its value for
-    every declared objective key not already among them (``energy`` for a
-    quest with no ``meta.rubric_objectives``) — the measure the quest ranks
-    on, ``'-'`` when unmeasured, ``≈`` when provisional-untrusted
-    (gr567692). Renderers that want them pass :func:`results_columns`.
+    every declared objective key not already among them (e.g. ``log_tof``
+    for a kinetics quest) — the measure the quest ranks on, ``'-'`` when
+    unmeasured, ``≈`` when provisional-untrusted (gr567692). ``energy``
+    renders at objective precision (:func:`_objective_str`) since a
+    no-rubric quest ranks on it. Renderers that want the appended columns
+    pass :func:`results_columns`.
     """
     from precis.quest.frontier import quest_frontier
 
@@ -408,7 +413,10 @@ def build_results_rows(
             "coads": coads,
             "tier": str(candidate.flags.get("tier") or "-"),
             "seeds": _seeds_display(pw_meta),
-            "energy": _measure_str(measures, untrusted, "energy"),
+            # Objective precision, not the 3-fig measure shorthand: a
+            # no-rubric quest ranks on energy, so -132.043 must not
+            # collapse to -132 (gr567692).
+            "energy": _objective_str(measures, untrusted, "energy"),
             "barrier": _measure_str(measures, untrusted, "barrier"),
             "span_at_Uopt": _measure_str(measures, untrusted, "span_at_Uopt"),
             "U_L": _measure_str(measures, untrusted, "U_L"),
@@ -419,7 +427,7 @@ def build_results_rows(
             "worst_problem": str(candidate.flags.get("worst_problem") or "-"),
         }
         # The quest's declared objective keys not already fixed columns
-        # (today: energy for a no-rubric quest) — the value the quest
+        # (e.g. log_tof for a kinetics quest) — the value the quest
         # actually ranks on, or '-' when unmeasured (gr567692).
         for key, _sense in fr.objectives:
             if key not in _COLUMNS:
