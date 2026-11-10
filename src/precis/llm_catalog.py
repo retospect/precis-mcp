@@ -1038,6 +1038,24 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
             "long-context-recall": 3,
         },
     ),
+    # The fleet's BIG-tier local workhorse (castor serves it; ``llm.op.*``
+    # chains pin it for claim.verify and the other local verify passes). Its
+    # floor must cover the demand the pins place on it — a ``medium`` floor
+    # had the shadow decide reject the lane legacy dispatches on every call
+    # (gr622036).
+    (
+        "openai/gpt-oss-120b",
+        "big",
+        131_072,
+        0.037,
+        0.17,
+        {
+            "code": 3,
+            "reasoning-convergence": 3,
+            "tool-structured": 3,
+            "long-context-recall": 2,
+        },
+    ),
     # ── medium — Haiku-class fast/cheap triage, still tool-capable ────────
     (
         "qwen/qwen3.6-flash",
@@ -1076,19 +1094,6 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
             "reasoning-convergence": 3,
             "tool-structured": 3,
             "long-context-recall": 3,
-        },
-    ),
-    (
-        "openai/gpt-oss-120b",
-        "medium",
-        131_072,
-        0.037,
-        0.17,
-        {
-            "code": 3,
-            "reasoning-convergence": 3,
-            "tool-structured": 3,
-            "long-context-recall": 2,
         },
     ),
     (

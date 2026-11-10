@@ -1227,6 +1227,10 @@ class TestSeed:
             if m.get("model_id") in model_ids
         }
         assert {"frontier", "big", "medium"} <= floors
+        # The fleet's BIG-tier local lane must declare the floor the op pins
+        # demand (gr622036): a ``medium`` floor let the shadow decide reject
+        # the gpt-oss-120b lane legacy runs on every claim.verify call.
+        assert by_id["openai/gpt-oss-120b"]["tier_floor"] == "big"
         glm = by_id["z-ai/glm-5.2"]
         off = glm["offerings"][0]
         assert off["transport"] == "openai_compat"
