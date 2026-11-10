@@ -394,6 +394,39 @@ def test_axis_recipe_family(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_axis_family_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr572093: every ``axis:<id>`` source resolves via the ``axis:``
+    prefix family seeded by migration 0300."""
+    from precis.workers.axis_pass import discover_axis_ids
+
+    sql = (
+        Path(__file__).parents[1]
+        / "src/precis/migrations/0299_task_recipes_axis_family.sql"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"\('axis:',\s*'([^']+)',\s*'([^']+)',\s*'([^']+)',\s*(true|false)\)",
+        sql,
+    )
+    assert match, "migration must seed the axis: prefix-family recipe"
+    kind, lane, consequence, classify = match.groups()
+    rows = {
+        "axis:": Recipe(
+            "axis:",
+            kind,
+            lane_class=lane,
+            consequence=consequence,
+            classify=classify == "true",
+        )
+    }
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    ids = discover_axis_ids()
+    assert "open-question" in ids
+    for axis_id in ids:
+        resolution = recipes.resolve(f"axis:{axis_id}")
+        assert resolution.task_kind == kind
+        assert resolution.origin == "recipe"
+
+
 @pytest.mark.db
 def test_gap_daily_and_open_dedupe(store: Store) -> None:
     """Exercise the real SQL, including closure and the UTC-day boundary."""
