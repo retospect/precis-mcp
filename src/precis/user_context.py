@@ -6,8 +6,10 @@ environment variable or wire argument never supplies a personal owner.
 The account and optional token are rechecked for each operation so a
 long-lived MCP session cannot outlive revocation. ContextVar scopes reset
 on every exit and travel through anyio's worker-thread context copy.
-Personal MCP dispatch permits only learning and the exact learning-help
-read. It maps the live account to its current legacy revision actor before
+Personal API tokens permit learning and the exact learning-help read. OAuth
+connections carry separately revocable app grants and explicit capabilities;
+their IDs never share the API-token namespace. Dispatch maps the live account
+to its current legacy revision actor before
 checking scope, preserving revocation and attribution without claiming
 that an agent's writes were typed by a human. Trusted in-process web routes
 may bind an account directly without entering the MCP scope gate.
@@ -24,6 +26,7 @@ from typing import TYPE_CHECKING
 from precis.errors import Denied, Upstream
 
 if TYPE_CHECKING:
+    from precis.oauth.store import OAuthIdentity
     from precis.store import Store
 
 
@@ -33,6 +36,7 @@ class Principal:
 
     user_id: int
     token_id: int | None = None
+    oauth: OAuthIdentity | None = None
 
 
 _PRINCIPAL: ContextVar[Principal | None] = ContextVar("precis_user", default=None)
@@ -44,19 +48,25 @@ def current_principal() -> Principal | None:
 
 
 @contextmanager
-def user_scope(user_id: int | None, token_id: int | None = None) -> Iterator[None]:
+def user_scope(
+    user_id: int | None,
+    token_id: int | None = None,
+    *,
+    oauth: OAuthIdentity | None = None,
+) -> Iterator[None]:
     """Bind a trusted owner; ``None`` explicitly clears any ambient owner."""
     if user_id is not None and (
         type(user_id) is not int
         or user_id <= 0
         or (token_id is not None and (type(token_id) is not int or token_id <= 0))
+        or (oauth is not None and (oauth.user_id != user_id or token_id is not None))
     ):
         raise Denied(
             "invalid authenticated user identity",
             next="authenticate with a personal MCP token from /account",
         )
     token = _PRINCIPAL.set(
-        Principal(user_id, token_id) if user_id is not None else None
+        Principal(user_id, token_id, oauth) if user_id is not None else None
     )
     try:
         yield
@@ -77,6 +87,17 @@ def _require_account(store: Store | None) -> tuple[int, str]:
             "personal data requires an authenticated user",
             next="mint a personal MCP token at /account and use it as the bearer token",
         )
+    if principal.oauth is not None:
+        from precis.oauth.config import OAuthConfig
+        from precis.oauth.store import revalidate_identity
+
+        config = OAuthConfig.from_env()
+        if store is None or config is None:
+            raise Denied(
+                "OAuth connections are unavailable",
+                next="ask the deployment owner to enable OAuth, then reconnect",
+            )
+        return principal.user_id, revalidate_identity(store, principal.oauth, config)
     sql = "SELECT id, abbrev FROM web_users WHERE id = %s AND disabled_at IS NULL"
     params: tuple[int, ...] = (principal.user_id,)
     if principal.token_id is not None:

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 SCOPE_USER_ID = "precis.authenticated_user_id"
 SCOPE_TOKEN_ID = "precis.authenticated_token_id"
+SCOPE_OAUTH_IDENTITY = "precis.authenticated_oauth_identity"
 TOKEN_PREFIX = "precis_user_"
 _TOKEN_SHAPE = re.compile(r"precis_user_[A-Za-z0-9_-]{43,128}\Z")
 

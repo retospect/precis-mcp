@@ -70,6 +70,14 @@ stores revocable per-user bearer digests. The `learning` handler and web page
 share that store. `runtime.learning` bypasses shared payload ledgers and
 continuation caches; learning events record engagement, never concept mastery.
 
+`precis.oauth` adds independently revocable user/app grants backed by the same
+account IDs. Web routes own consent and token exchange; `oauth_transport`
+publishes MCP resource discovery. Request identity and dispatch revalidation
+keep OAuth grants separate from personal-token IDs and infrastructure callers.
+Capabilities distinguish explicit full MCP access (including writes and shared
+services) from learning-only connections. User identity does not create
+per-document ACLs for the shared corpus.
+
 ```
   precis add <input>
         │  ingest/{marker,pipeline,text_chunker,db_writer}.py

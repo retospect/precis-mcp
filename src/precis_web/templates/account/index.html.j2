@@ -80,6 +80,9 @@
 </div>
 
 <h2 class="text-sm font-semibold text-fg-secondary mb-2">Personal MCP tokens</h2>
+{% if request.app.state.oauth_config %}
+<p class="mb-3 text-sm"><a href="/account/connections" class="text-link hover:underline">Manage connected apps</a> — view and revoke apps authorized through OAuth.</p>
+{% endif %}
 <div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
   <p class="text-xs text-fg-subtle mb-3">
     Use a personal bearer token to let an MCP client access your private learning

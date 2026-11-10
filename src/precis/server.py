@@ -1982,12 +1982,16 @@ def _install_token_auth(
     slice_dir: Any = None,
     store: Any = None,
     personal_path: str | None = "/mcp",
+    oauth_config: Any = None,
 ) -> None:
     """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
     ``streamable_http_app()``) with a bearer-token gate.
 
-    Every HTTP request carries an install, slice or personal bearer.
-    Only personal tokens stamp stable owner/token IDs, and those stamps
+    Every content request carries an install, slice, personal or OAuth bearer.
+    Configured OAuth discovery is public. OAuth requests bind their user and
+    app grant separately from API-token IDs; session ownership includes the
+    grant, and dispatch rechecks live credentials and consented capabilities.
+    Personal and OAuth tokens stamp stable owner/credential IDs; these stamps
     are cleared before checking each request. No authority lives in a
     middleware ContextVar. The SDK's authenticated-user owner map binds
     server-issued streamable session IDs to an immutable identity and
@@ -2016,6 +2020,8 @@ def _install_token_auth(
     from starlette.types import ASGIApp, Receive, Send
 
     from precis import mcp_identity, principal, slice_tokens
+    from precis.oauth import store as oauth_store
+    from precis.oauth_transport import challenge, metadata, metadata_path
 
     class _TokenAuthMiddleware:
         def __init__(self, app: ASGIApp) -> None:
@@ -2029,6 +2035,7 @@ def _install_token_auth(
             for key in (
                 mcp_identity.SCOPE_USER_ID,
                 mcp_identity.SCOPE_TOKEN_ID,
+                mcp_identity.SCOPE_OAUTH_IDENTITY,
                 slice_tokens.SCOPE_SLICE_ID,
                 slice_tokens.SCOPE_AGENTLOG_ID,
                 slice_tokens.SCOPE_GRANT_SCOPE,
@@ -2038,6 +2045,18 @@ def _install_token_auth(
                 "auth",
             ):
                 scope.pop(key, None)
+            if (
+                oauth_config is not None
+                and personal_path is not None
+                and scope.get("method") in {"GET", "HEAD"}
+                and scope.get("path")
+                in {
+                    "/.well-known/oauth-protected-resource",
+                    metadata_path(oauth_config),
+                }
+            ):
+                await JSONResponse(metadata(oauth_config))(scope, receive, send)
+                return
             header = Headers(scope=scope).get("authorization")
             if _check_bearer_token(header, token):
                 scope[principal.SCOPE_INSTALL] = True
@@ -2058,7 +2077,9 @@ def _install_token_auth(
             if store is not None and header and header.startswith("Bearer "):
                 raw = header.removeprefix("Bearer ")
                 if (
-                    raw.startswith(mcp_identity.TOKEN_PREFIX)
+                    raw.startswith(
+                        (mcp_identity.TOKEN_PREFIX, oauth_store.ACCESS_PREFIX)
+                    )
                     and not self.ownership_supported
                 ):
                     response = JSONResponse(
@@ -2071,6 +2092,39 @@ def _install_token_auth(
                     )
                     await response(scope, receive, send)
                     return
+                if oauth_config is not None and raw.startswith(
+                    oauth_store.ACCESS_PREFIX
+                ):
+                    try:
+                        oauth_identity = await anyio.to_thread.run_sync(
+                            oauth_store.resolve_access_token, store, raw, oauth_config
+                        )
+                    except Exception:
+                        await JSONResponse(
+                            {"error": "authentication unavailable"},
+                            status_code=503,
+                            headers={"Cache-Control": "no-store"},
+                        )(scope, receive, send)
+                        return
+                    if oauth_identity is not None:
+                        if personal_path is None or scope.get("path") != personal_path:
+                            await JSONResponse(
+                                {
+                                    "error": "OAuth tokens require the streamable HTTP endpoint"
+                                },
+                                status_code=403,
+                                headers={"Cache-Control": "no-store"},
+                            )(scope, receive, send)
+                            return
+                        scope[mcp_identity.SCOPE_OAUTH_IDENTITY] = oauth_identity
+                        await self._authorized(
+                            scope,
+                            receive,
+                            send,
+                            f"precis-oauth:{oauth_identity.client_id}",
+                            subject=f"{oauth_identity.user_id}:{oauth_identity.grant_id}",
+                        )
+                        return
                 try:
                     identity = await anyio.to_thread.run_sync(
                         mcp_identity.resolve_user_token, store, raw
@@ -2104,7 +2158,12 @@ def _install_token_auth(
                         subject=str(identity.user_id),
                     )
                     return
-            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            headers = {"Cache-Control": "no-store"}
+            if oauth_config is not None and personal_path is not None:
+                headers["WWW-Authenticate"] = challenge(oauth_config)
+            response = JSONResponse(
+                {"error": "unauthorized"}, status_code=401, headers=headers
+            )
             await response(scope, receive, send)
 
         async def _authorized(
@@ -2312,12 +2371,19 @@ def _run_network_transport(
 
     mcp.settings.host = host
     mcp.settings.port = port
+    from precis.oauth.config import OAuthConfig
+    from precis.oauth_transport import configure_transport
+
+    oauth_config = OAuthConfig.from_env()
+    if oauth_config is not None:
+        configure_transport(mcp, oauth_config)
     app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
     from precis import slice_tokens
 
     _install_token_auth(
         app,
         token=token,
+        oauth_config=oauth_config,
         store=getattr(_runtime, "store", None),
         personal_path=(
             mcp.settings.streamable_http_path

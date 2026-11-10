@@ -1,0 +1,29 @@
+{% extends "base.html.j2" %}
+{% block title %}Connected apps{% endblock %}
+{% block content %}
+<section class="mx-auto max-w-3xl py-6">
+  <a href="/account" class="text-sm text-link hover:underline">Back to account</a>
+  <h1 class="text-xl font-semibold mt-3 mb-2">Connected apps</h1>
+  <p class="text-sm text-fg-muted mb-5">These connections belong to {{ user.login }}. Revoking one stops that app's access immediately; your other connections keep working.</p>
+  {% for connection in connections %}
+  <article class="rounded border border-stroke p-4 mb-3">
+    <h2 class="font-semibold">{{ connection.label }}</h2>
+    <p class="text-sm text-fg-muted">{{ connection.client_name }}</p>
+    <ul class="list-disc pl-5 text-sm my-2">
+      {% for scope in connection.scopes %}<li>{{ scope_labels.get(scope, scope) }}</li>{% endfor %}
+    </ul>
+    <p class="text-xs text-fg-muted">Connected {{ connection.created_at.strftime('%Y-%m-%d %H:%M UTC') }} · Expires {{ connection.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+    {% if connection.revoked_at %}
+    <p class="text-sm text-fg-muted mt-2">Revoked {{ connection.revoked_at.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+    {% else %}
+    <form method="post" action="/account/connections/revoke" class="mt-3">
+      <input type="hidden" name="grant_id" value="{{ connection.id }}" />
+      <button type="submit" class="rounded border border-stroke px-3 py-1 text-sm">Revoke connection</button>
+    </form>
+    {% endif %}
+  </article>
+  {% else %}
+  <p class="text-sm text-fg-muted">No connected apps yet.</p>
+  {% endfor %}
+</section>
+{% endblock %}

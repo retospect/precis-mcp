@@ -99,6 +99,10 @@ PLUGIN_TABLE_PREFIXES: tuple[str, ...] = ("se_",)
 #: keep/promote/index judgment is docs/backlog/jsonb-column-review.md.
 JSONB_COLUMNS: frozenset[str] = frozenset(
     {
+        # 0296: bounded, ten-minute SDK AuthorizationParams snapshot, validated
+        # again on load and never queried by JSON key. Durable grant identity,
+        # scopes, resource and token lifecycle fields use typed columns.
+        "mcp_oauth_requests.params",
         # 0264: per-call snapshot of what autoskill injected / what the
         # session used (slug and memory-id lists, variable length); read
         # whole for attribution reports, never queried by key.

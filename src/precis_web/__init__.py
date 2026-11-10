@@ -70,9 +70,10 @@ row stores only the podcast token digest, so the vault is the other source.
 Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
 deletes the session cookie.
 
-**Access logs / Secrets.** Detail in ``access_log.py`` and
-``routes/secrets.py`` docstrings: ``t`` query values are masked in access
-logs; secret controls are write-only.
+**OAuth.** ``precis.oauth`` owns grants; ``routes.oauth`` covers consent and connections.
+
+**Access logs / Secrets.** ``access_log.py`` masks ``t`` queries;
+``routes/secrets.py`` provides write-only controls.
 
 PCB component selection (``pcb_design.py``) uses exact instance IDs in
 same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat

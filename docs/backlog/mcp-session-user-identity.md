@@ -64,19 +64,21 @@ Three classes of bearer secret exist or should:
    URL-embedded where the client cannot set headers. Scope is a per-token
    allow-list of kinds and verbs. Filed as gr595554.
 
-Open before building: whether the claude.ai custom connector can send a
-custom `Authorization` header or requires OAuth; if OAuth, the capability
-token is the bearer the authorisation server issues. After the gripe: an
-ask-user todo for Reto to mint the token and configure the connector.
+Reto authorized OAuth for multiple per-user app connections on 2026-11-10
+(gr621409), with full MCP access including writes. `precis.oauth` implements
+independent grants and per-user browser consent; manual personal tokens keep
+their learning-only boundary. The [runbook](../runbooks/mcp-oauth.md) and
+packaged MCP-connections manual carry setup instructions. This item still
+owns the per-kind adoption work below.
 
 ## In scope (still open)
 
 Orchestrator proposal, inside Reto's ruling (not yet reviewed by Reto):
 
-1. **Widen the scope gate.** `_personal_call_allowed` admits only
-   `learning`; per-user kinds beyond it (mailbox, library link, per-user vault
-   names) need an allow-list decision per kind. A personal principal calling
-   anything else is refused by `_require_personal_scope` ("personal MCP
+1. **Widen the manual-token scope gate.** `_personal_call_allowed` admits only
+   `learning` for personal API tokens; per-user kinds beyond it (mailbox,
+   library link, per-user vault names) need an allow-list decision per kind.
+   Such a token calling anything else is refused by `_require_personal_scope` ("personal MCP
    tokens permit learning calls and learning help only"). An anonymous call
    to a per-user feature already refuses naming `/account`
    (`user_context.py::_require_account`).
@@ -94,8 +96,7 @@ Orchestrator proposal, inside Reto's ruling (not yet reviewed by Reto):
 ## Explicitly NOT in scope
 
 - Per-tool ACLs beyond the identity binding (who may call which verb/kind).
-- SSO / OAuth / external IdPs; the web side stays basic auth
-  (`web-basic-auth-users.md`).
+- External IdPs; OAuth in `precis.oauth` reuses the existing web login.
 - Replacing the install bearer token or the shared `agent_rw` DB role.
 - Defining the per-name vault ACL (`vault.acl`, designed in
   `email-per-user-credentials.md`); this item only supplies the key it checks.

@@ -591,7 +591,12 @@ class BasicAuthMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if path in _OPEN_PATHS or _is_self_auth(path):
+        # OAuth machine endpoints validate their own credentials and protocol;
+        # consent and account pages still use this authenticated browser gate.
+        oauth_paths = getattr(
+            getattr(scope.get("app"), "state", None), "oauth_protocol_paths", ()
+        )
+        if path in _OPEN_PATHS or _is_self_auth(path) or path in oauth_paths:
             await self.app(scope, receive, send)
             return
 

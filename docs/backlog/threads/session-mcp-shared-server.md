@@ -15,6 +15,13 @@ effort: high
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
+## OAuth app connections (gr621409)
+
+Independent per-user app connections are implemented in `precis.oauth`,
+including the authorized full MCP write access. Left: gated release,
+operator configuration and live Claude acceptance using
+[the OAuth runbook](../../runbooks/mcp-oauth.md).
+
 ## Thread context
 
 **Status:** ends when every Claude Code session on this machine talks to one

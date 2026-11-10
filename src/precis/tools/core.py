@@ -9,6 +9,8 @@ for each dispatch, including an explicit anonymous scope for stdio and
 unbound callers. Session state, wire metadata and revision attribution
 cannot authorize personal records. Learning calls never log payloads.
 Personal tokens reach only learning calls and the exact learning-help read.
+OAuth app grants either preserve that narrow boundary or explicitly consent
+to full MCP tool access, while keeping their account and app attribution.
 Their live account and legacy revision actor are still revalidated before
 the scope check; install, slice and in-process callers retain their scope.
 """
@@ -328,7 +330,8 @@ def _asgi_scope(ctx: Context | None) -> dict[str, Any]:
     middleware stamps identities (personal user/token ids, slice grant
     id, agentlog id, grant scope/refs). Trusted: server-set only, never
     caller input. ``{}`` outside a request, on stdio, or on a context
-    whose request carries no scope."""
+    whose request carries no scope. OAuth carries a distinct validated identity
+    object, not a PAT token ID."""
     try:
         request = ctx.request_context.request if ctx is not None else None
         scope = request.scope if request is not None else {}
@@ -339,10 +342,14 @@ def _asgi_scope(ctx: Context | None) -> dict[str, Any]:
 
 def _ctx_user_scope(ctx: Context | None) -> contextlib.AbstractContextManager[None]:
     """Read only trusted transport stamps; an MCP session carries no owner."""
-    from precis.mcp_identity import SCOPE_TOKEN_ID, SCOPE_USER_ID
+    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_TOKEN_ID, SCOPE_USER_ID
+    from precis.oauth.store import OAuthIdentity
     from precis.user_context import user_scope
 
     scope = _asgi_scope(ctx)
+    oauth = scope.get(SCOPE_OAUTH_IDENTITY)
+    if isinstance(oauth, OAuthIdentity):
+        return user_scope(oauth.user_id, oauth=oauth)
     user_id, token_id = scope.get(SCOPE_USER_ID), scope.get(SCOPE_TOKEN_ID)
     if type(user_id) is int and user_id > 0 and type(token_id) is int and token_id > 0:
         return user_scope(user_id, token_id)
@@ -487,7 +494,26 @@ def _dispatch_as_user(
 
 
 def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
-    """Allow only calls whose runtime route stays in private learning."""
+    """Apply PAT's private-learning boundary or an OAuth app's capabilities."""
+    owner = current_principal()
+    oauth = owner.oauth if owner is not None else None
+    if oauth is not None:
+        if "mcp:full" in oauth.scopes:
+            return verb in {"get", "search", "put", "edit", "delete", "tag", "link"}
+        if is_learning_call(payload):
+            return "learning" in oauth.scopes and verb in {
+                "get",
+                "search",
+                "put",
+                "edit",
+                "delete",
+                "tag",
+                "link",
+            }
+        return verb == "get" and payload in (
+            {"kind": "skill", "id": "precis-learning-help"},
+            {"kind": "skill", "id": "precis-oauth-help"},
+        )
     if verb in {
         "get",
         "search",
@@ -514,6 +540,12 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
     if current_principal() is not None and not _personal_call_allowed(verb, payload):
         from precis.errors import Denied
 
+        owner = current_principal()
+        if owner is not None and owner.oauth is not None:
+            raise Denied(
+                "this operation is outside the OAuth connection's permissions",
+                next="review the connection at /account/connections and reconnect with the required permissions",
+            )
         raise Denied(
             "personal MCP tokens permit learning calls and learning help only",
             next="get(kind='learning'); get(kind='skill', id='precis-learning-help')",
@@ -875,11 +907,15 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     ``worker:<source>`` in-process stamp.
     """
     from precis import slice_tokens
-    from precis.mcp_identity import SCOPE_TOKEN_ID
+    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_TOKEN_ID
+    from precis.oauth.store import OAuthIdentity
 
     scope = _asgi_scope(ctx)
     if scope.get(principal.SCOPE_INSTALL):
         return "install"
+    oauth = scope.get(SCOPE_OAUTH_IDENTITY)
+    if isinstance(oauth, OAuthIdentity):
+        return f"oauth:{oauth.grant_id}"
     slice_id = scope.get(slice_tokens.SCOPE_SLICE_ID)
     if slice_id:
         # A scoped grant's role IS the scope the mint wrote (reader /
