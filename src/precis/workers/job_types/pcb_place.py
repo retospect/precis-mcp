@@ -1,5 +1,5 @@
 """``pcb_place`` job_type — the enqueued, out-of-line half of ``op='place'``
-(docs/backlog/pcb-guided-place-route.md, "Tool surface" + Slice 10).
+(the retired pcb-guided-place-route spec — "Tool surface" + Slice 10).
 
 Heavy compute (the annealer, measured at ~880 moves/s on a synthetic 30-
 component board — minutes, not milliseconds) must never run inline in an

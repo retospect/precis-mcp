@@ -1,6 +1,7 @@
 """ONE cost function (:func:`evaluate_cost`), refined by level-dependent
-estimators, hardened by a schedule-dependent penalty shape — see
-docs/backlog/pcb-guided-place-route.md §"The cost function".
+estimators, hardened by a schedule-dependent penalty shape — see the
+retired ``pcb-guided-place-route`` spec §"The cost function" (deleted
+2026-11; git history).
 
 **Three axes, kept separate** (conflating them thrashes the optimizer):
 

@@ -42,8 +42,9 @@ stored footprint-local and only mapped to world through :mod:`~precis.pcb.pose`
 (mirror-X for bottom, rotate clockwise, translate); never persist a part-owned
 absolute position, or the part moves and it stays behind.
 
-Map, in pipeline order (design doc:
-``docs/backlog/pcb-guided-place-route.md``):
+Map, in pipeline order (design spec ``pcb-guided-place-route`` retired
+2026-10-25, deleted 2026-11 — git history; open items
+``docs/backlog/pcb-place-route-residuals.md``):
 
 * **IR** — :mod:`~precis.pcb.ir` (L0-L5 enrichment levels, per-net rules
   via :mod:`~precis.pcb.rules`, objective vectors in

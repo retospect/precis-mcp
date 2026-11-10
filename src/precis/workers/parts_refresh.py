@@ -2,8 +2,9 @@
 
 Prod ``parts`` was EMPTY: :func:`precis.pcb.catalog.refresh_parts_from_sqlite`
 existed but had zero callers, and there was no worker pass / CLI verb that
-called it. See ``docs/backlog/pcb-guided-place-route.md`` "Footprint +
-catalog reality" (the PREREQUISITE bullet) for the full context — everything
+called it. See the retired ``pcb-guided-place-route`` spec (deleted
+2026-11; git history) "Footprint + catalog reality" (the PREREQUISITE
+bullet) for the full context — everything
 downstream (part selection, live-stock verification, the ``datasheet_url``
 a later slice ingests from) is dead until this table is populated.
 

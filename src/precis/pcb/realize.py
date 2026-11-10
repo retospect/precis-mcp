@@ -128,8 +128,8 @@ class RealizedVia:
     both stackup-index ints, inclusive, ``layer_lo <= layer_hi``), never a
     scalar layer (module docstring — this is the exact shape a prior
     scalar-layer regression made invisible to every layer's clearance
-    candidate set; see ``docs/backlog/pcb-guided-place-route.md``'s "Bugs
-    this build produced" #5). :func:`to_gerber_model` is the ONE place
+    candidate set; see the retired ``pcb-guided-place-route`` spec's "Bugs
+    this build produced" #5 — deleted 2026-11, git history). :func:`to_gerber_model` is the ONE place
     these ints become the ``span`` layer-NAME pair :mod:`precis.pcb.drc`/
     :mod:`precis.pcb.gerber` read (the IR's own "layers are integer
     indexes, names are an export concern only" discipline)."""

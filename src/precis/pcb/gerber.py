@@ -1,7 +1,7 @@
 """Gerber X2 (RS-274X) + Excellon writer — the copper sibling of
 :mod:`precis.pcb.export`.
 
-Slice 4 of ``docs/backlog/pcb-guided-place-route.md`` **replaces the
+Slice 4 of the retired ``pcb-guided-place-route`` spec **replaces the
 ``.kicad_pcb`` writer as the critical path** (user decision 2026-08-27):
 routing through a version-brittle s-expression board format so an external
 binary (``kicad-cli``) can flatten it into gerbers is backwards. RS-274X is

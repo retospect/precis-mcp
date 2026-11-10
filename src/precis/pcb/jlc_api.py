@@ -11,7 +11,8 @@ Auth — spike-verified 2026-08-27 against ``open.jlcpcb.com`` (**not**
 ``api.jlcpcb.com``, which 404s: that host is the portal SPA). Per-request
 HMAC-SHA256 signing, no token-issuance endpoint, so there is nothing here to
 cache or refresh — see :func:`sign_request`. Do not re-derive this; it is
-recorded in ``docs/backlog/pcb-guided-place-route.md`` (Export + order).
+recorded in the retired ``pcb-guided-place-route`` spec (deleted
+2026-11; git history), "Export + order" section.
 
 Every outbound call funnels through :meth:`JlcApiClient._call`, which wraps
 the wire send in :func:`precis.pcb._http.with_backoff` — 401/403 are never

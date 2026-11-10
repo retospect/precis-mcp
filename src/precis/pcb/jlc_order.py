@@ -262,8 +262,8 @@ class JlcOrderClient(jlc_api.JlcApiClient):
 
     def audit(self, key: str, *, language: int | None = None) -> dict[str, Any]:
         """``pcb/audit/get`` — JLC's engineering/DFM read on an uploaded
-        file (the gerber-preflight oracle
-        ``docs/backlog/pcb-guided-place-route.md`` planned around)."""
+        file (the gerber-preflight oracle the retired
+        ``pcb-guided-place-route`` spec planned around)."""
         body: dict[str, Any] = {"key": key}
         if language is not None:
             body["language"] = int(language)

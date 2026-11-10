@@ -68,12 +68,12 @@ REGISTRY: dict[str, Evaluator] = {
     "child_job_succeeded": child_job_succeeded.evaluate,
     "derived_job_succeeded": derived_job_succeeded.evaluate,
     "all_child_findings_resolved": all_child_findings_resolved.evaluate,
-    # pcb-guided-place-route Slice 10 (docs/backlog/pcb-guided-place-route.md)
-    # — the phase-machine gates.
+    # pcb-guided-place-route Slice 10 (retired spec — git history) — the
+    # phase-machine gates.
     "placement_legal": placement_legal.evaluate,
     "route_complete": route_complete.evaluate,
-    # pcb-guided-place-route Slice 8 (docs/backlog/pcb-guided-place-route.md)
-    # — reads the latest persisted geometric-DRC run (precis.pcb.drc),
+    # pcb-guided-place-route Slice 8 (retired spec — git history) —
+    # reads the latest persisted geometric-DRC run (precis.pcb.drc),
     # never recomputes it.
     "netlist_drc_clean": netlist_drc_clean.evaluate,
     # checklist-kind slice 2 (docs/backlog/checklist-kind.md) — every

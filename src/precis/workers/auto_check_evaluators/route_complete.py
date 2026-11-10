@@ -13,7 +13,7 @@ named in ``pcb_routes.fail``, never ``'realized'`` — so "latest status is
 realized" already means "this net actually routed cleanly."
 
 Feeds the pcb-guided-place-route phase machine's routing gate (Slice 10 of
-docs/backlog/pcb-guided-place-route.md; ADR 0042 Slice 9's
+the retired pcb-guided-place-route spec; ADR 0042 Slice 9's
 "route_complete" wording, superseded in shape by that spec's slice 10).
 
 Spec

@@ -13,7 +13,7 @@ been recorded for this board, or the latest predates its last edit —
 "not yet checked" is not "clean".
 
 Feeds the pcb-guided-place-route phase machine's final gate (Slice 10 of
-docs/backlog/pcb-guided-place-route.md), alongside ``placement_legal`` and
+the retired pcb-guided-place-route spec), alongside ``placement_legal`` and
 ``route_complete``. This evaluator never RUNS DRC itself (no shapely
 import, no geometry) — it only reads the durable record a prior
 ``put(kind='pcb', args={'op':'check'})`` (or ``op='review'``) recorded —

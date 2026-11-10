@@ -1,5 +1,5 @@
 """Shared IR<->DB session glue for the ``pcb_place``/``pcb_route`` worker
-jobs (docs/backlog/pcb-guided-place-route.md Slice 10 — the phase-machine
+jobs (retired pcb-guided-place-route spec Slice 10 — the phase-machine
 gate hookup needs the tool surface to actually RUN ``optimize.py``/
 ``realize.py``, not just unit-test them).
 

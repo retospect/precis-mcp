@@ -1,6 +1,6 @@
 """ESP32-C3 acceptance vehicle — end-to-end place + stored-DRC ratchet.
 
-``docs/backlog/pcb-guided-place-route.md``'s acceptance vehicle
+The retired ``pcb-guided-place-route`` spec's acceptance vehicle
 (``tests/fixtures/pcb/esp32c3_reference.json``, structurally pinned
 DB-free by ``tests/test_pcb_reference_design.py``) driven for real here:
 author the design, ``put(op='place')`` -> drain the enqueued ``pcb_place``

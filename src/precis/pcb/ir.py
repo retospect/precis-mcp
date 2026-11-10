@@ -1,6 +1,7 @@
 """The PCB intermediate representation — ONE structure, six progressive
-enrichment levels (L0-L5). See docs/backlog/pcb-guided-place-route.md
-§"The IR: one progressively-enriched structure" for the design rationale;
+enrichment levels (L0-L5). See the retired ``pcb-guided-place-route``
+spec §"The IR: one progressively-enriched structure" (deleted 2026-11;
+git history) for the design rationale;
 this module is the "read the spec before coding" foundation slice 3 exists
 to ship.
 

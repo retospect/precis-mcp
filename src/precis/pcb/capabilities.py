@@ -1,6 +1,7 @@
 """JLCPCB fab-capability rules, as **versioned data**, not Python constants.
 
-Per ``docs/backlog/pcb-guided-place-route.md`` "Export + order": a rule
+Per the retired ``pcb-guided-place-route`` spec (deleted 2026-11; git
+history), "Export + order": a rule
 table holding JLC's *published minimum* and our *house default* at a
 deliberate margin above it, per (process/stackup) row. Two tiers make the
 margin legible — a DRC digest can say "JLC min 3.5 mil, house default 6,

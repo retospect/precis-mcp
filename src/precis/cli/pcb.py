@@ -18,8 +18,8 @@ Subcommands:
 * ``refresh-parts`` — load/refresh the ``parts`` catalog (gr264357: prod
   ``parts`` was EMPTY — the parsing layer in ``precis.pcb.catalog`` existed
   but nothing ever called it; there was no CLI verb and no worker pass).
-  See ``docs/backlog/pcb-guided-place-route.md`` "Footprint + catalog
-  reality" for the full context.
+  See the retired spec ``pcb-guided-place-route.md`` (deleted 2026-11;
+  git history) "Footprint + catalog reality" for the full context.
 * ``link-parts`` — backfill every live board's ``contains`` → part edges
   (one per placed C-number, refdes and qty on the edge), minting part refs
   on first use (``precis.handlers.part`` docstring). ``pcb_apply`` keeps

@@ -164,8 +164,8 @@ _KNOWN_UNWIRED: dict[str, str] = {
     ),
     "src/precis/pcb/jlc_order.py::JlcOrderClient.audit": (
         "62f4634c8 (p3-order): JLC's DFM read on an uploaded file, the "
-        "gerber-preflight oracle docs/backlog/pcb-guided-place-route.md "
-        "plans around; no preflight caller yet"
+        "gerber-preflight oracle the retired pcb-guided-place-route "
+        "spec planned around; no preflight caller yet"
     ),
     "src/precis/pcb/mech2d.py::export_mechanical": (
         "b898944ce (gr451662): the EWOD cut-sheet export, deliberately its "
@@ -327,8 +327,8 @@ _KNOWN_UNWIRED: dict[str, str] = {
     ),
     "src/precis/pcb/tiling.py::expansion_rate_from_objective": (
         "Slice 5's copper-tiling engine (module docstring) -- not yet "
-        "invoked from realize.py's copper-generation path (docs/backlog/"
-        "pcb-guided-place-route.md)"
+        "invoked from realize.py's copper-generation path (retired spec "
+        "pcb-guided-place-route; git history)"
     ),
     "src/precis/pcb/tiling.py::grow_tiles": "same Slice 5 tiling engine, not yet wired",
     "src/precis/pcb/tiling.py::find_acute_angles": (

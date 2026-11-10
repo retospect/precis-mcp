@@ -1935,7 +1935,7 @@ def test_feasibility_view(pcb):
 
 
 # ── boards / net_classes / domain / route-status (pcb-guided-place-route
-#    Slice 1, docs/backlog/pcb-guided-place-route.md) ───────────────────
+#    Slice 1, retired spec — git history) ──────────────────────────────
 
 
 def test_put_creates_default_board(pcb):

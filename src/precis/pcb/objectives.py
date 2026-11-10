@@ -1,7 +1,7 @@
 """Per-connection OBJECTIVE VECTORS — the mechanism that replaces every
-bespoke "decap near its IC" / "affinity edge" special case. See
-docs/backlog/pcb-guided-place-route.md §"Connections carry OBJECTIVE
-VECTORS".
+bespoke "decap near its IC" / "affinity edge" special case. See the
+retired ``pcb-guided-place-route`` spec §"Connections carry OBJECTIVE
+VECTORS" (deleted 2026-11; git history).
 
 **Why this beats special-casing.** "Decap near its IC" is not a rule here;
 it's a *consequence* of the decap's two terminals each carrying a `low

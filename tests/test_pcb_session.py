@@ -485,7 +485,7 @@ def test_build_ir_ignores_malformed_group_and_pattern_entries():
     assert math.isnan(float(ir.inst_group_offset_dx[5]))
 
 
-# --- pre-route DRC gate (docs/backlog/pcb-guided-place-route.md; gr451052) ---
+# --- pre-route DRC gate (retired pcb-guided-place-route spec; gr451052) ---
 # The bug these close: drc.run_geometric_drc had exactly ONE caller (the
 # view='drc' path), so neither pcb_place nor pcb_route ran any geometric
 # check and an already-illegal placement (authored escape vias inside a

@@ -1,7 +1,7 @@
 """The ESP32-C3 reference design fixture — the acceptance vehicle.
 
-``docs/backlog/pcb-guided-place-route.md`` specifies it (user decision,
-2026-08-27): "acceptance vehicle = a synthetic ESP32-C3 reference design
+The retired ``pcb-guided-place-route`` spec (deleted 2026-11; git
+history) specified it (user decision, 2026-08-27): "acceptance vehicle = a synthetic ESP32-C3 reference design
 (~30 components: MCU + I2C sensor + regulator + decoupling + headers),
 authored as slice-3 scope, reused by every later slice's tests."
 

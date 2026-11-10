@@ -1,5 +1,6 @@
 """Joint place+route optimizer: one engine, one (placement, sketch) state,
-per docs/backlog/pcb-guided-place-route.md §"Joint place+route optimizer".
+per the retired ``pcb-guided-place-route`` spec §"Joint place+route
+optimizer" (deleted 2026-11; git history).
 Slice 6 restricts the move set to placement (translate, rotate 90°,
 swap-pair); slice 7 adds topology/layer/pin-swap moves as new
 :data:`MOVE_GENERATORS` entries — the state, cost plumbing and SA loop

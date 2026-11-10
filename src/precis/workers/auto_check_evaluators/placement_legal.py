@@ -13,7 +13,7 @@ anneal) and resolves ``True`` when:
    through it), not re-checked here by diffing against a prior snapshot.
 
 Feeds the pcb-guided-place-route phase machine's placement gate (Slice 10
-of docs/backlog/pcb-guided-place-route.md; ADR 0042 Slice 9's
+of the retired pcb-guided-place-route spec; ADR 0042 Slice 9's
 "placement_legal" wording, superseded in shape by that spec's slice 10).
 
 Spec

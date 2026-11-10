@@ -1791,8 +1791,9 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # slowly). Dark (clean no-op) without JLCPCB Open API credentials —
         # the community jlcparts-dump bulk load stays the manual
         # `precis pcb refresh-parts --from-sqlite` CLI verb, not this pass.
-        # See docs/backlog/pcb-guided-place-route.md "Footprint + catalog
-        # reality" (the PREREQUISITE bullet) for the full context.
+        # See the retired pcb-guided-place-route spec (deleted 2026-11;
+        # git history) "Footprint + catalog reality" (the PREREQUISITE
+        # bullet) for the full context.
         name="parts_refresh",
         label="JLCPCB catalog refresh (Open API cursor walk)",
         category="acquisition",
