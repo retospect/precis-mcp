@@ -672,3 +672,71 @@ def test_unresolved_chunk_handle_names_the_chunk_space(
     assert is_error
     assert "[error:NotFound]" in out
     assert "chunk handle" in out
+
+
+# --- gr593338: a numeric-kind chunk handle (``jc<N>``) routes to its owner ---
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_job_chunk_handle_reads_owning_job(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr593338: ``get(kind='job', id='jc<N>')`` conflates the chunk code
+    with a job id — but the handle pins exactly one readable thing, the
+    owning job, so dispatch routes there (with the rewrite named)."""
+    ref = store.insert_ref(kind="job", slug=None, title="jc owner", meta={})
+    chunk_id = _insert_chunk(store, ref.id)
+    h = handle_registry.format_handle("job", chunk_id, chunk=True)
+    assert h[:2] == "jc"
+
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "job", "id": h}
+    )
+    assert not is_error, out
+    assert f"# job {ref.id}" in out
+    assert "owning ref" in out
+    assert "must be an integer" not in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_bare_job_chunk_handle_also_routes(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """Same owner routing without an explicit ``kind=``."""
+    ref = store.insert_ref(kind="job", slug=None, title="jc owner", meta={})
+    chunk_id = _insert_chunk(store, ref.id)
+    h = handle_registry.format_handle("job", chunk_id, chunk=True)
+
+    out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
+    assert not is_error, out
+    assert f"# job {ref.id}" in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_delete_job_chunk_handle_still_refuses(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``delete`` never redirects a handle silently — ``jc<N>`` keeps the
+    honest refusal instead of deleting the owning job."""
+    ref = store.insert_ref(kind="job", slug=None, title="keep me", meta={})
+    chunk_id = _insert_chunk(store, ref.id)
+    h = handle_registry.format_handle("job", chunk_id, chunk=True)
+
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "delete", {"kind": "job", "id": h}
+    )
+    assert is_error
+    assert "must be an integer" in out
+    assert store.get_ref(kind="job", id=ref.id) is not None
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_get_unknown_job_chunk_handle_is_not_found(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A ``jc<N>`` with no live chunk keeps the honest chunk-space miss."""
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "job", "id": "jc999999999"}
+    )
+    assert is_error
+    assert "chunk" in out

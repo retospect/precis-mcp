@@ -4562,10 +4562,8 @@ class DispatchMixin(RuntimeShape):
             return True
         if resolved.chunk_id is not None:
             # Chunk handle → per-kind chunk selector. Slug-document kinds take
-            # ``slug~ord`` (ChunkRow.ord == chunks.ord). Numeric-chunk kinds
-            # (gripe/message/…) have no ``~ord`` selector yet, so fall through
-            # (a chunk handle has no slug match → natural NotFound). A chunk
-            # handle takes no further selector.
+            # ``slug~ord`` (ChunkRow.ord == chunks.ord). A chunk handle takes
+            # no further selector.
             if (
                 suffix
                 or resolved.chunk_ord is None
@@ -4584,6 +4582,25 @@ class DispatchMixin(RuntimeShape):
                 ):
                     args["kind"] = resolved.kind
                     args["id"] = ident
+                    return True
+                # A numeric-chunk kind's ``jc<N>``/``gc<N>`` names exactly
+                # one readable thing — the owning ref — so route it there
+                # (gr593338) rather than falling through to a bare "id must
+                # be an integer" that can't say WHICH ref owns the chunk.
+                # Two carve-outs keep old behaviour: ``delete`` never
+                # redirects a handle silently (see
+                # ``_refuse_superseded_delete``), and a selector suffix
+                # (``jc<N>~2``) selects nothing on a chunk.
+                if not suffix and resolved.chunk_ord is not None and verb != "delete":
+                    from precis.hints import chunk_owner_hint
+
+                    args["kind"] = resolved.kind
+                    args["id"] = resolved.public_id
+                    owner = (
+                        handle_registry.try_format(resolved.kind, resolved.ref_id)
+                        or f"{resolved.kind}:{resolved.ref_id}"
+                    )
+                    self.store.emit_hint(chunk_owner_hint(ident, owner))
                     return True
                 return False
             args["kind"] = resolved.kind

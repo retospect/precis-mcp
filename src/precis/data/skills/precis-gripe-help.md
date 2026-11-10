@@ -372,7 +372,8 @@ job card (status, `wall_s`, and the `job_summary` chunk holding the
 run's counters, e.g. `proposals=`/`dropped=`). A `kind=` that
 disagrees with the handle's code is refused with `get(id='<handle>')`
 named as the fix. Chunk handles of the numeric kinds (`gc<N>`,
-`jc<N>`, …) have no direct read — their owning ref's views list them.
+`jc<N>`, …) have no chunk-level read — `get(id='jc<N>')` reads the
+owning ref instead, whose views list the chunks.
 
 ## Add context to an existing gripe
 ## Comment on a gripe

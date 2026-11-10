@@ -56,6 +56,22 @@ def merged_redirect_hint(old: str, new: str) -> Hint:
     )
 
 
+def chunk_owner_hint(handle: str, owner: str) -> Hint:
+    """A ``<code><id>`` chunk handle of a kind with no per-chunk read
+    (``jc<N>``, ``gc<N>`` — the numeric-chunk kinds) routed to its owning
+    ref — the only readable thing the handle names (gr593338)."""
+    return Hint(
+        text=f"resolved {handle} -> {owner} (its owning ref)",
+        topic=f"handle.redirect.{handle}",
+        level="info",
+        required=True,
+        read_text=(
+            f"{handle} is a chunk handle — read as its owning ref "
+            f"{owner} (the chunk itself has no direct read)."
+        ),
+    )
+
+
 def converted_redirect_hint(old: str, new: str) -> Hint:
     """Non-breaking nudge after a kind convert — the ref kept its
     ``ref_id``, so the old-kind handle (``pa<id>`` after paper →
