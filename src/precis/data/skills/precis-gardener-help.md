@@ -39,7 +39,8 @@ action restrictions and existing audited apply/undo paths still govern.
 
 One bounded tick per minted job (`job_inproc` executor), `params.pass`
 selects the detector subset (`merge|split|relink|prune|tag-sweep|
-siblings|paper-identity|memory|memory-review`, one name or a list, default `all`):
+siblings|paper-identity|memory|memory-review|host-facts`, one name or a
+list, default `all`):
 
 - **merge** — same-kind node pairs that look like one term minted
   twice. taxon/concept compare their `card_combined` embeddings and
@@ -67,6 +68,17 @@ siblings|paper-identity|memory|memory-review`, one name or a list, default `all`
   retirement requires preservation review. Section hubs are excluded.
   SHA ancestry on `origin/prod` is not checked: there is no general ancestry
   oracle in the DB.
+- **host-facts** — opt-in one-off (gr560767): after the operator refreshes
+  the machine census (`put(kind='machine', mode='sync')` plus hand-added
+  hosts), `host_facts` scans live memory bodies for sentences naming a
+  census host with a state verb and neither an ISO date nor a machine
+  handle — current-state claims, where the one-fact-one-ref rule puts the
+  host's role/status on the `machine` ref and leaves a dated event plus
+  the `ma_<host>` handle in prose. One proposal per memory carries the
+  anchored rewrite ops (the evaluator writes the dated-event text) and,
+  for hosts whose ref fact is older than the memory, the named
+  `put(kind='machine', ...)` that moves the verified fact onto the ref.
+  Machine details: [[precis-gardener-memory-help]] §Host facts.
 
 The independent opt-in `memory-review` pass runs `entity_claim_stale`,
 `negative_undated`, `restated_claim`, `review_due`, `source_drift` and
@@ -132,10 +144,11 @@ only: a paper merge is a human decision.
 ## Scan windows and budget
 
 **Scan windows.** The wide scans (merge, tag-sweep, redundant_link,
-paper-identity, memory, memory-review) resume from saved windows, starting past a
+paper-identity, memory, memory-review, host-facts) resume from saved windows, starting past a
 cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
 `untagged:<kind>`, `redundant_link`, `paper_identity`,
-`dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`, plus
+`dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`,
+`host_facts:memory`, plus
 each memory-review detector's own cursor keys). The next run
 starts where the last stopped and wraps at the end, so successive runs
 cover every kind; a run over fewer kinds carries the other cursors

@@ -60,7 +60,9 @@ put(kind='machine', id='gamma', args={'platform': 'Linux', 'role': 'worker', 'gp
 `sync` refreshes `platform`/`release` from the reporter and preserves
 hand-set `role`/`gpu`. The single-host form is the upsert for facts the
 collector can't see. Nothing runs sync for you — call it when the fleet
-changes.
+changes. Host role/status claims found in memory prose are the gardener's
+`host-facts` pass (gr560767): it proposes the fact moved onto this ref
+plus the memory sentence rewritten to a dated event plus your handle.
 
 ## Link to it
 

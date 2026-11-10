@@ -57,6 +57,7 @@ _PASS_CHOICES = (
     "paper-identity",
     "memory",
     "memory-review",
+    "host-facts",
     "all",
 )
 

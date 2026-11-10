@@ -74,6 +74,7 @@ MEMORY_APPLY_DETECTORS = {
     "compact": "compact_candidates",
     "grab_bag": "grab_bag_candidates",
     "griped": "griped_candidates",
+    "host_facts": "host_facts_candidates",
 }
 
 

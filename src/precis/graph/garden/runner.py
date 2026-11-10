@@ -65,6 +65,7 @@ _ASK_LLM_TIERS = {
     "dangling_mention": "opus",
     "entity_claim_stale": "opus",
     "griped": "opus",
+    "host_facts": "opus",
     "negative_undated": "opus",
     "restated_claim": "opus",
     "review_due": "opus",

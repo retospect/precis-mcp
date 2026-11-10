@@ -124,6 +124,29 @@ in `not_checked`. Unverifiable-only bodies produce no proposal. The evaluator
 compares the claim with the new text and rejects unchanged meaning or dated
 history. Both detectors propose rewrites only; neither adds an apply path.
 
+## Host facts
+
+The opt-in `host-facts` pass (gr560767) runs `host_facts` after the
+operator refreshes the machine census — `put(kind='machine', mode='sync')`
+plus hand-added hosts that never heartbeat, with `role`/`gpu` set by hand;
+see [[precis-machine-help]]. Only live `machine` refs are matched: a
+hostname matches as a whole word (`ma_spark` and `sparkle` never match
+`spark`), and a sentence already carrying a machine handle or an ISO date
+is a dated event, not a current-state claim — the scan never re-flags its
+own output. One proposal per memory carries at most 20 anchored rewrite
+ops (`text=null`; the evaluator writes the dated-event-plus-handle
+replacement, verified against the machine ref's current role fact).
+
+The one-fact-one-ref rule: a host's current role/status lives on the
+`machine` ref; a memory keeps dated events plus the `ma_<host>` handle.
+So each proposal also names, per host whose memory is newer than the
+ref's fact, the `put(kind='machine', id='<host>', args={'role': …})` that
+moves the verified fact onto the ref — the reviewer fills the role from
+the verified current truth, never from the stale sentence. The reviewed
+rewrite door re-runs this detector's predicate before applying; a census
+fact change produces a new `evidence_sha` and a fresh proposal. The spark
+case (a retired claim versus the ref's compute role) is the fixture.
+
 ## The memory-body evaluator
 
 Memory-body candidates are judged as bodies, not structural pairs
@@ -151,9 +174,10 @@ writes no proposal at all.
 The memory apply gate defaults **off**. While off, the consumer
 leaves `rewrite`, `supersede` and `retire` proposals pending without a
 reviewer call, write or row-state change. Enabling the flag admits only
-`dangling_mention`, `anchor_rot` and `thread_shape` to the existing bounded
-Opus review pass; it does not bypass review. The sampled reviewer and
-Fable cross-check remain non-terminal. The no-model
+detectors with an apply-time re-check (`dangling_mention`, `anchor_rot`,
+`thread_shape`, `compact`, `grab_bag`, `griped`, `host_facts`) to the
+existing bounded Opus review pass; it does not bypass review. The sampled
+reviewer and Fable cross-check remain non-terminal. The no-model
 `dangling_mention` auto-apply is deferred to gr564554.
 
 Before a memory action applies, its door checks that the proposal is

@@ -212,11 +212,15 @@ _DETECTOR_BY_PASS = {
         "source_drift",
         "title_shape",
     ),
+    # One-off host pass (gr560767): the census sync is the operator's
+    # hand step, then this pass rewrites host prose to dated events.
+    "host-facts": ("host_facts",),
 }
 
 #: Passes ``all`` skips. Memory detectors spend proposer calls, so a job
-#: must name their pass explicitly; memory-review is independent of memory.
-OPT_IN_PASSES: frozenset[str] = frozenset({"memory", "memory-review"})
+#: must name their pass explicitly; memory-review is independent of memory;
+#: host-facts is a one-off hand-run pass over the machine census.
+OPT_IN_PASSES: frozenset[str] = frozenset({"memory", "memory-review", "host-facts"})
 
 #: Job ``params.pass`` values → detectors. ``all`` runs everything not opt-in.
 PASS_CHOICES: tuple[str, ...] = tuple(_DETECTOR_BY_PASS) + ("all",)
@@ -273,6 +277,10 @@ class GardenCandidate:
             # route or named contents move; distinct complaints on one
             # memory are distinct keys (evidence_sha covers both).
             return f"{key}:griped:{self.payload.get('evidence_sha') or 'none'}"
+        if self.detector == "host_facts":
+            # A census fact changing (the sync, a hand put) is new evidence
+            # on the same body — a distinct proposal question.
+            return f"{key}:host_facts:{self.payload.get('evidence_sha') or 'none'}"
         return key
 
 
@@ -2710,6 +2718,198 @@ def entity_claim_stale_candidates(
 
 
 # ---------------------------------------------------------------------------
+# host_facts — host role/status claims in memory prose belong on the ref (gr560767)
+# ---------------------------------------------------------------------------
+
+#: Per-candidate bound on matched host sentences (one memory can name
+#: several hosts); the ops list is the allow-list the reviewed apply door
+#: re-verifies, so it cannot grow without bound.
+HOST_FACTS_MATCH_CAP = 20
+
+#: Host state predicates. A census hostname plus one of these in one
+#: sentence is a current-state claim — the one-fact-one-ref rule's target.
+#: Broad on purpose: the evaluator gate filters domain collisions (a
+#: "spark" analytics-engine sentence carries no host claim); narrowing
+#: here would hide real host state words.
+_HOST_STATE_VERB = re.compile(
+    r"\b(?:"
+    r"retired|decommissioned|rejoin\w*|join\w*|left|migrat\w*|replac\w*|reviv\w*"
+    r"|offline|online|live|down|gone|dead|active|quiet"
+    r"|compute|gpu|worker|storage|database|serving|hosting|heartbeat"
+    r")\b",
+    re.IGNORECASE,
+)
+
+#: A sentence already carrying a machine handle or an ISO date is a dated
+#: event (or this pass's own rewrite output), not a current-state claim —
+#: the scan must never re-flag its own work.
+_HOST_FACTS_DATED = re.compile(r"\b(?:ma_[\w-]+|mh\d+|20\d{2}-\d{2}(?:-\d{2})?)\b")
+
+
+def _machine_hosts(store: Store) -> list[dict[str, Any]]:
+    """Live ``machine`` refs — the census prose is matched against.
+
+    ``meta.host`` is matched as a whole word, so ``ma_spark`` and
+    ``sparkle`` never match ``spark``. Facts stay read-only here; the
+    census refresh (``put(kind='machine', mode='sync')`` plus hand-added
+    hosts) is the operator's step before this pass runs.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.meta, r.updated_at, "
+            "(SELECT i.id_value FROM ref_identifiers i WHERE i.ref_id = r.ref_id "
+            "AND i.id_kind = 'cite_key' LIMIT 1) "
+            "FROM refs r WHERE r.kind = 'machine' AND r.retired_at IS NULL "
+            "ORDER BY r.ref_id"
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for rid, meta, updated, slug in rows:
+        meta = meta or {}
+        host = str(meta.get("host") or "").strip()
+        if not host:
+            continue
+        out.append(
+            {
+                "ref_id": int(rid),
+                "host": host,
+                "handle": try_format("machine", int(rid)) or f"ma_{slug}",
+                "role": meta.get("role"),
+                "ref_updated_at": updated,
+                "pattern": re.compile(
+                    rf"(?<![\w-]){re.escape(host)}(?![\w-])", re.IGNORECASE
+                ),
+            }
+        )
+    return out
+
+
+def host_facts_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Host role/status claims in memory prose belong on the machine ref (gr560767).
+
+    One candidate per live memory carrying every sentence that names a
+    census host (a live ``machine`` ref) with a state verb and neither an
+    ISO date nor a machine handle — those are current-state claims; dated
+    events and handle-bearing sentences are records and stay untouched.
+    Each matched sentence is an anchored rewrite op (``text=None``: the
+    evaluator writes the dated-event-plus-handle replacement). For hosts
+    whose ref fact is older than the memory, ``payload.machine_put`` names
+    the ``put(kind='machine', id='<host>', args={'role': …})`` that moves
+    the verified fact onto the ref. The reviewed rewrite door re-runs this
+    predicate before applying.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    machines = _machine_hosts(store)
+    if not machines:
+        return []
+    key = "host_facts:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    out: list[GardenCandidate] = []
+    for rid, body, sha, touched in _drift_bodies(store, window):
+        sentences = list(_claim_sentences(body, "", min_words=3))
+        matches: list[tuple[dict[str, Any], str, list[int]]] = []
+        capped = False
+        for machine in machines:
+            for text, span in sentences:
+                if len(matches) >= HOST_FACTS_MATCH_CAP:
+                    capped = True
+                    break
+                if machine["pattern"].search(text) is None:
+                    continue
+                if not _HOST_STATE_VERB.search(text):
+                    continue
+                if _HOST_FACTS_DATED.search(text):
+                    continue  # a dated event or already handle-bearing
+                matches.append((machine, text, span))
+            if capped:
+                break
+        if not matches:
+            continue
+        hosts_evidence: list[dict[str, Any]] = []
+        ops: list[dict[str, Any]] = []
+        machine_put: list[dict[str, Any]] = []
+        by_host: dict[int, dict[str, Any]] = {}
+        for machine, text, span in matches:
+            entry = by_host.get(machine["ref_id"])
+            if entry is None:
+                updated = machine["ref_updated_at"]
+                entry = {
+                    "host": machine["host"],
+                    "handle": machine["handle"],
+                    "ref_id": machine["ref_id"],
+                    "role": machine["role"],
+                    "ref_updated_at": updated.isoformat() if updated else None,
+                    "memory_touched": touched.isoformat() if touched else None,
+                    "newer_than_ref": bool(
+                        updated is not None
+                        and touched is not None
+                        and touched > updated
+                    ),
+                    "sentences": [],
+                }
+                by_host[machine["ref_id"]] = entry
+                hosts_evidence.append(entry)
+                if entry["newer_than_ref"]:
+                    machine_put.append(
+                        {
+                            "id": machine["host"],
+                            "args": {"role": None},
+                            "why": (
+                                "the memory is newer than the ref's fact — "
+                                "fill role from the verified current truth"
+                            ),
+                        }
+                    )
+            entry["sentences"].append(
+                {
+                    "text": text,
+                    "span": span,
+                    "context": body[max(0, span[0] - 300) : span[1] + 300],
+                }
+            )
+            ops.append({"find": text, "text": None, "span": span})
+        evidence_sha = hashlib.sha256(
+            json.dumps(hosts_evidence, ensure_ascii=False, sort_keys=True).encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
+        payload: dict[str, Any] = {
+            "base_sha": sha,
+            "ops": ops,
+            "evidence_sha": evidence_sha,
+            "matches_capped": capped,
+        }
+        if machine_put:
+            payload["machine_put"] = machine_put
+        out.append(
+            GardenCandidate(
+                detector="host_facts",
+                action="rewrite",
+                target_kind="ref",
+                target_id=rid,
+                title=f"me{rid} states a host's role/status in prose",
+                evidence={"hosts": hosts_evidence, "content_sha": sha},
+                payload=payload,
+            )
+        )
+        if len(out) >= limit:
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
+
+
+# ---------------------------------------------------------------------------
 # griped — a reader's project:memory gripe is a replayable test (gr561873)
 # ---------------------------------------------------------------------------
 
@@ -4387,6 +4587,7 @@ def run_detectors(
             "dangling_mention",
             "entity_claim_stale",
             "griped",
+            "host_facts",
             "negative_undated",
             "review_due",
             "source_drift",
@@ -4400,6 +4601,7 @@ def run_detectors(
                     "dangling_mention": dangling_mention_candidates,
                     "entity_claim_stale": entity_claim_stale_candidates,
                     "griped": griped_candidates,
+                    "host_facts": host_facts_candidates,
                     "negative_undated": negative_undated_candidates,
                     "review_due": review_due_candidates,
                     "source_drift": source_drift_candidates,
@@ -4510,6 +4712,7 @@ __all__ = [
     "freshly_considered",
     "grab_bag_candidates",
     "griped_candidates",
+    "host_facts_candidates",
     "memory_expiry_shape",
     "negative_undated_candidates",
     "orphan_taxon_candidates",

@@ -29,6 +29,7 @@ MEMORY_DETECTORS = (
     "source_drift",
     "entity_claim_stale",
     "restated_claim",
+    "host_facts",
 )
 RECENT_DAYS = 30
 

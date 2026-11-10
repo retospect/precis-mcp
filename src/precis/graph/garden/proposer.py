@@ -86,6 +86,7 @@ MEMORY_ACTIONS = {
     # it, so a griped qualify proposal would sit pending forever. A scoped
     # repair is a rewrite; a repair the ops cannot express is ``ask``.
     "griped": ("rewrite", "supersede", "retire"),
+    "host_facts": ("rewrite",),
     "negative_undated": ("rewrite", "qualify", "ask"),
     "restated_claim": ("rewrite",),
     "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
@@ -214,6 +215,20 @@ to base_sha; text=null means unresolved, never delete. A successor alone
 does not prove that it supports the sentence. Dated history may legitimately
 name retired refs. Preserve the SHA and spans; never turn this into a merge
 or prune. Accept only a supported rewrite; otherwise reject.
+
+host_facts finds a fleet host's name in a current-state sentence (a state
+verb, no ISO date, no machine handle) — the one-fact-one-ref rule
+(gr560767): a host's current role/status lives on its machine ref; a memory
+keeps dated events plus the handle. The rewrite turns the sentence into a
+dated event plus the ma_<host> handle, verified against the ref's current
+fact; a dated sentence or one already carrying the handle is a record,
+never a claim, and the detector does not flag it. evidence.hosts carries
+each named machine ref's current role fact and both timestamps: when the
+memory is newer than the ref's fact, payload.machine_put names the
+put(kind='machine', ...) that moves the verified fact onto the ref — fill
+its role from the verified current truth, never from the stale sentence.
+text=null is unresolved, never delete. Preserve base_sha, evidence_sha and
+spans; never refine to merge or prune.
 
 thread_shape proposes supersede by an ancestor with a current Left: line,
 else retire. This proposer applies neither action; the gated consumer uses
@@ -364,6 +379,12 @@ def _excerpt_ids(candidate: GardenCandidate) -> list[int]:
             for entry in candidate.evidence.get("entities", [])[:8]:
                 if isinstance(entry.get("ref_id"), int):
                     ids.append(int(entry["ref_id"]))
+        if candidate.detector == "host_facts":
+            # The evaluator verifies the claim against the machine ref's
+            # own card — its current role fact is the ref's side.
+            for entry in candidate.evidence.get("hosts", []):
+                if isinstance(entry.get("ref_id"), int):
+                    ids.append(int(entry["ref_id"]))
     else:
         for key in ("src", "dst", "a", "b"):
             val = candidate.evidence.get(key)
@@ -456,6 +477,7 @@ def _prompt_for(
         "anchor_rot",
         "compact",
         "dangling_mention",
+        "host_facts",
         "thread_shape",
     }:
         head += (
