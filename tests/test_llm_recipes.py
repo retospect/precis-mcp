@@ -467,3 +467,40 @@ def test_gap_cadence() -> None:
     cadence = next(c for c in CADENCES if c.name == "recipe_gap")
     assert cadence.interval_s == 6 * 3600
     assert not cadence.spends
+
+
+def test_axis_material_recipe_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr572092: ``axis:material`` resolves through the ``axis:``
+    prefix-family recipe (the ``review:`` mechanism), so this axis — and
+    the next enabled one — does not refile the gripe."""
+    sql = (
+        Path(__file__).parents[1]
+        / "src/precis/migrations/0300_task_recipe_axis_family.sql"
+    ).read_text(encoding="utf-8")
+    seeded = re.findall(
+        r"^    \('([^']+)', '([^']+)', '([^']+)', '([^']+)', (true|false)\)",
+        sql,
+        flags=re.MULTILINE,
+    )
+    rows = {
+        src: Recipe(
+            src,
+            kind,
+            lane_class=lane,
+            consequence=cons,
+            classify=flag == "true",
+        )
+        for src, kind, lane, cons, flag in seeded
+    }
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    recipe = recipes.lookup("axis:material")
+    assert recipe is not None
+    assert (recipe.task_kind, recipe.consequence) == ("chunk.classify", "low")
+    assert recipes.lookup("axis:domain") == recipe
+    assert recipes.lookup("axis:material:local") == recipe
+    assert recipes.resolve("axis:material") == (
+        "chunk.classify",
+        "low",
+        "default",
+        "recipe",
+    )
