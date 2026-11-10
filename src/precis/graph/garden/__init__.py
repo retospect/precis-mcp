@@ -86,25 +86,13 @@ Review rows and trust acts retain the original model string.
    ``thread_shape`` covers tagged thread children too: missing ``Left:``,
    terminal todo/gripe work, or a Left-line commit sha confirmed on
    ``origin/prod`` proposes supersede by the nearest live ancestor with a
-   current ``Left:``, else retire. A supersede proposal requires
-   preserving needed figures in the ancestor's ``Earlier:`` line;
-   retirement also requires compaction review. No edits occur at
-   detection. Sha-on-prod verdicts come from ``git merge-base
-   --is-ancestor`` in the configured main checkout; when the main root or
-   the prod ref is unavailable every sha stays ``not_checked`` and no
-   landed-work claim is made.
-   ``compact`` (gr561025) fires on expiry, 90-day-cold reads, a
-   half-history body or any pending retire proposal: the evaluator owes a
-   per-sentence plan (keep / move-to related — hub family, qualifies,
-   ``+recall`` neighbours, restated_claim matches / mint atomic / drop
-   only as history or restatement) accounting for every detector
-   sentence; ``apply_compact`` runs it as one unit with a single
-   reversal record only through ``precis garden apply`` — the consumer
-   reviews but never auto-applies it. ``undo_compact`` un-retires the
-   shell, then restores every touched body, then retires the minted
-   children. Both retirement doors refuse while a compact proposal is
-   pending or while the detector fires on content no completed
-   compaction covers — a rejected plan preserves nothing.
+   current ``Left:``, else retire. No edits occur at detection; the
+   sha-on-prod check is documented in ``precis-gardener-help``.
+   ``compact`` (gr561025) owes a per-sentence plan; ``apply_compact`` runs
+   it as one unit with a single reversal record only through
+   ``precis garden apply`` — the consumer reviews but never auto-applies
+   it. ``undo_compact`` reverses it. The compaction rules live in
+   ``precis-gardener-memory-help``.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate returns structured ``accept``/rationale. Memory detectors'
    body candidates receive fisheye+1hop and verbatim

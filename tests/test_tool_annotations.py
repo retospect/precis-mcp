@@ -18,7 +18,7 @@ def _tool(name: str):
     return tool
 
 
-@pytest.mark.parametrize("verb", ["get", "search", "more"])
+@pytest.mark.parametrize("verb", ["get", "search"])
 def test_read_only_verbs(verb: str) -> None:
     ann = _tool(verb).annotations
     assert ann is not None

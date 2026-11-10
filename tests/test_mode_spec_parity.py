@@ -156,6 +156,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
         "recompute_kinetics",
         "verify",
         "measure_modes",
+        "export",
     ),
     # -- put: structure's recognised modes are the deliberate-rerun
     #    door (put(id=<slug-or-handle>, mode='rerun')) onto the quest
@@ -167,9 +168,10 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     # -- put: job's recognised modes are the retry surface
     #    (put(id=N, mode='retry')), the queued-pin move (mode='retarget')
     #    and the audited claim.* override door (mode='setting', gr556919);
-    #    every other value is rejected — a real vocabulary, not the
-    #    reject-all `()` shape (gr343755) --------------------------------
-    ("job", "put"): ("retry", "retarget", "setting", "wake"),
+    #    the audited wall/deadline extension door (mode='extend',
+    #    td626662); every other value is rejected — a real vocabulary,
+    #    not the reject-all `()` shape (gr343755) -------------------------
+    ("job", "put"): ("retry", "retarget", "setting", "wake", "extend"),
     # -- fleet: put is the collector report only; edit rewrites the
     #    coordinator-owned fields (assigned/slice/note) -----------------
     ("fleet", "put"): ("report",),
@@ -354,7 +356,7 @@ def test_job_retry_and_message_reject_all_are_distinct_sentinels(
     other."""
     job = full_hub.handlers["job"].spec
     message = full_hub.handlers["message"].spec
-    assert job.modes == ("retry", "retarget", "setting", "wake")
+    assert job.modes == ("retry", "retarget", "setting", "wake", "extend")
     assert message.modes == ()
     assert job.modes is not None
     assert message.modes is not None

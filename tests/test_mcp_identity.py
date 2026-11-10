@@ -357,9 +357,6 @@ _PUBLIC_TOOL_ARGS: dict[str, dict[str, Any]] = {
     "delete": {"id": "PRIVATE_SCOPE_SENTINEL"},
     "tag": {"id": "PRIVATE_SCOPE_SENTINEL", "add": ["test"]},
     "link": {"id": "PRIVATE_SCOPE_SENTINEL", "target": "memory:me1"},
-    # ``more`` takes the footer cursor, not kind= — the cursor names the
-    # continued read (and carries the sentinel inside it).
-    "more": {"cursor": "get(kind='memory', id='PRIVATE_SCOPE_SENTINEL')"},
 }
 
 
@@ -393,12 +390,7 @@ def test_registered_tools_scope_personal_tokens_only(
     assert names == expected, "every registered tool must be covered by scope tests"
     app = mcp.streamable_http_app()
     server._install_token_auth(app, token="install", store=store, slice_dir=tmp_path)
-    tool_args = {"kind": "memory", **_PUBLIC_TOOL_ARGS[verb]}
-    if verb == "more":
-        # ``more`` takes the footer cursor, not kind= — the cursor names
-        # the continued read.
-        tool_args = dict(_PUBLIC_TOOL_ARGS[verb])
-    arguments = tool_args
+    arguments = {"kind": "memory", **_PUBLIC_TOOL_ARGS[verb]}
     name = verb
     if profile == "command":
         command_args = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
@@ -437,7 +429,10 @@ def test_registered_tools_scope_personal_tokens_only(
     with caplog.at_level(logging.INFO, logger="precis.tools.mcp_calls"):
         asyncio.run(exercise())
     with user_scope(alice.id, _token_id):
-        assert getattr(core, verb)(**tool_args) == "handler reached"
+        assert (
+            getattr(core, verb)(kind="memory", **_PUBLIC_TOOL_ARGS[verb])
+            == "handler reached"
+        )
         assert current_principal() == Principal(alice.id, _token_id)
     assert dispatched.call_count == 3
     assert current_principal() is None

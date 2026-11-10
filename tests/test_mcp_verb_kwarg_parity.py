@@ -192,6 +192,12 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # tools/core.py::put now declares + forwards it (the handler has
         # accepted it since 47671907).
         ("job", "put", "select"),
+        # mode='extend' (td626662): seconds=/under= ride args= by design —
+        # ``args={'seconds': …, 'reason': …}`` / ``args={'under': …}``
+        # (precis-job-help); operator-only audited door, two rarely-used
+        # params not worth schema weight in every agent's tools/list.
+        ("job", "put", "seconds"),
+        ("job", "put", "under"),
         # -- put: llm catalog mint (the whole variant-precise surface) ---
         ("llm", "put", "capability"),
         ("llm", "put", "model_id"),

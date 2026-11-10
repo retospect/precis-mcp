@@ -1,7 +1,7 @@
 ---
 name: navigator
 description: "Haiku read-only repo-code orientation (not the product): answers where/how, cites file:line."
-tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
+tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__put, mcp__precis__tag
 model: haiku
 ---
 

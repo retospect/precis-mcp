@@ -60,7 +60,7 @@ list, default `all`):
   handles, even when no mention edge remains. A `rewrite` proposal pins
   the target SHA, exact spans, retire dates and any successor. Null
   replacement text needs evaluation; it is never a deletion instruction.
-  A mention whose successor is a verified duplicate (merge-made redirect,
+  A mention whose recorded successor is a verified duplicate (merge-made redirect,
   or a same-title `supersedes` target) applies with no model call,
   recorded `garden.applied='mention'` (gr564554); other successors stay
   reviewed. DREAM memories are excluded. `thread_shape` scans tagged

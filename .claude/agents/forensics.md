@@ -1,7 +1,7 @@
 ---
 name: forensics
 description: "Sonnet log/job-transcript miner: ranked findings summary; read-only except its own gripe."
-tools: Bash, Read, Grep, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
+tools: Bash, Read, Grep, mcp__precis__get, mcp__precis__search, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 

@@ -274,7 +274,7 @@ def _server_with_profile(
 
 
 def test_typed_profile_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``PRECIS_MCP_PROFILE`` unset keeps the typed tool surface."""
+    """``PRECIS_MCP_PROFILE`` unset keeps the seven-tool typed surface."""
     with _server_with_profile(monkeypatch, None) as server:
         names = {tool.name for tool in server.mcp._tool_manager.list_tools()}
     assert names == {
@@ -285,7 +285,6 @@ def test_typed_profile_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
         "delete",
         "tag",
         "link",
-        "more",
     }
 
 
@@ -328,7 +327,7 @@ def test_command_profile_tools_list_under_byte_budget(
 
 @pytest.mark.parametrize(
     "verb",
-    ["get", "search", "put", "edit", "delete", "tag", "link", "more"],
+    ["get", "search", "put", "edit", "delete", "tag", "link"],
 )
 def test_per_verb_description_under_budget(verb: str) -> None:
     """No single verb description should exceed 1 KB.
