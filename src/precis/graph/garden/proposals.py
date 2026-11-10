@@ -64,14 +64,24 @@ GARDEN_ACTOR = "graph-garden"
 GARDEN_VERSION = "garden.v1"
 
 #: Shared with the consumer so reviewer evidence needs no consumer import.
-MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire"})
+MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire", "split"})
 
 #: Candidate re-checks shared by consumer eligibility and the memory apply door.
 MEMORY_APPLY_DETECTORS = {
     "dangling_mention": "dangling_mention_candidates",
     "anchor_rot": "anchor_rot_candidates",
     "thread_shape": "thread_shape_candidates",
+    "grab_bag": "grab_bag_candidates",
 }
+
+
+def is_memory_action(action: str, detector: str) -> bool:
+    """Whether a proposal is a memory action — ``split`` is the one
+    ambiguous action: a polysemy taxon/concept split stays a legacy graph
+    proposal, so only a memory apply detector may emit a memory split."""
+    return action in MEMORY_APPLY_ACTIONS and (
+        action != "split" or detector in MEMORY_APPLY_DETECTORS
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +110,14 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
         val = proposal.payload.get(key)
         if isinstance(val, int):
             ids.append(val)
-    if proposal.action in MEMORY_APPLY_ACTIONS:
+    if is_memory_action(proposal.action, proposal.detector):
+        hub = proposal.payload.get("hub")
+        if isinstance(hub, int):
+            ids.append(hub)
+        elif isinstance(hub, str):
+            parsed_hub = parse_handle(hub)
+            if parsed_hub is not None and not parsed_hub[1]:
+                ids.append(parsed_hub[2])
         successors = [
             proposal.payload.get("successor"),
             proposal.payload.get("delete_successor"),
@@ -729,6 +746,7 @@ __all__ = [
     "GardenProposal",
     "MergeLedgerEntry",
     "emit_proposal",
+    "is_memory_action",
     "key_block",
     "memory_retirement_drift",
     "memory_successor_refusal",

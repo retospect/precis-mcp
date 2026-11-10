@@ -79,6 +79,7 @@ MEMORY_ACTIONS = {
     "anchor_rot": ("rewrite",),
     "dangling_mention": ("rewrite",),
     "entity_claim_stale": ("rewrite",),
+    "grab_bag": ("split",),
     "negative_undated": ("rewrite", "qualify", "ask"),
     "restated_claim": ("rewrite",),
     "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
@@ -227,6 +228,21 @@ Replace only the redundant sentence with a pointer to that keeper's live me
 handle; retain surrounding facts. Preserve both SHA pins, both evidence spans
 and the anchored rewrite ops. Reject if ownership or equivalence is unclear.
 This is proposal-only: never merge, retire, apply, or treat not_checked as proof.
+
+grab_bag reports a memory carrying many independent claims: recall cuts on
+title/hook words, so most of a grab-bag's content is unfindable under one
+card. Propose action "split" through payload_overrides.children: 2..12
+atomic children, each {"title": <the claim as a sūtra, ≤80 chars>,
+"section": gotchas|reference|rulings|runbooks|workflow (a trap is gotchas,
+a fact reference, a ruling rulings), "spans": [[start,end]…] naming only
+evidence.sentences spans — every span joins exactly one child — plus
+optional "links": [{"target": <handle>, "relation": …}] to the subsystem
+refs the claim is about and "qualifies": [<thread handle>…]. parent_fate:
+"retire" (default; history sentences drop, the tombstone carries
+meta.split_into and redirects to the hub) or "keep" with keep_body, a
+≤3-line summary — only when other nodes reference the parent as a whole.
+Preserve base_sha and hub. Never synthesize a claim not in the spans;
+never refine to merge or prune.
 
 review_due is review debt, not proof of an incorrect claim. Expiry is a
 read-time default or explicit meta.expires, never a deletion instruction.

@@ -68,7 +68,13 @@ Review rows and trust acts retain the original model string.
    siblings one classification run can't tell apart).
    The ``memory`` pass adds ``dangling_mention``: one handle scan over
    live memory bodies joined to retired refs, since mention edges only
-   target live refs and disappear after retirement. Rewrite proposals pin
+   target live refs and disappear after retirement. ``grab_bag`` flags a
+   memory carrying many independent claims — a multi-claim title smell,
+   or >=4 top-level items whose sentence embeddings cluster into >=3
+   groups — and the evaluator proposes atomic children pinned to the
+   detector's sentence spans; the reviewed split door mints them, then
+   retires the parent (tombstone carries ``meta.split_into``) or shrinks
+   it to a <=3-line summary. Rewrite proposals pin
    the content SHA and spans, with tombstone/edge successors as evidence.
    Unresolved replacement text stays null and outside consumer review;
    DREAMs are excluded.
@@ -118,9 +124,9 @@ Review rows and trust acts retain the original model string.
    proposals, and an approve applies through the undoable door
    (merge repointing, or the reviewed structural write for a relink —
    gr507641).
-   With ``PRECIS_GARDEN_MEMORY_APPLY`` enabled, memory rewrite/supersede/retire
-   proposals from ``dangling_mention``, ``anchor_rot`` and ``thread_shape``
-   share this review budget. Eligibility and apply-time re-checks use one
+   With ``PRECIS_GARDEN_MEMORY_APPLY`` enabled, memory rewrite/supersede/retire/split
+   proposals from ``dangling_mention``, ``anchor_rot``, ``grab_bag`` and
+   ``thread_shape`` share this review budget. Eligibility and apply-time re-checks use one
    detector registry so proposals that cannot apply do not spend a review.
    The six ``memory-review`` detectors stay pending without consumer review
    or state changes. ``qualify`` and ``ask`` remain outside that consumer;

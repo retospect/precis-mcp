@@ -44,10 +44,9 @@ from typing import TYPE_CHECKING, Any
 from precis.graph.garden.proposals import (
     GARDEN_ACTOR,
     GARDEN_VERSION,
-    MEMORY_APPLY_ACTIONS,
-    MEMORY_APPLY_DETECTORS,
     GardenProposal,
     _parse_note,
+    is_memory_action,
     memory_retirement_drift,
     memory_successor_refusal,
     proposal_ref_ids,
@@ -133,10 +132,7 @@ when unsure, reject.
 def _prompt_for(
     proposal: GardenProposal, excerpts: dict[str, str] | None = None
 ) -> str:
-    consumer_action = (
-        proposal.action in MEMORY_APPLY_ACTIONS
-        and proposal.detector in MEMORY_APPLY_DETECTORS
-    )
+    consumer_action = is_memory_action(proposal.action, proposal.detector)
     head = _PROMPT_HEAD.replace(
         "{executor}", "a human or a gated consumer" if consumer_action else "a human"
     )
@@ -149,7 +145,7 @@ def _prompt_for(
             if uses_memory_policy(
                 proposal.detector, proposal.evidence, proposal.payload
             )
-            or proposal.action in MEMORY_APPLY_ACTIONS
+            or is_memory_action(proposal.action, proposal.detector)
             else ""
         )
         + "\nProposal:\n"
@@ -194,7 +190,7 @@ def _routed_verdict(
     excerpts = (
         ref_excerpts(store, proposal_ref_ids(proposal))
         if uses_memory_policy(proposal.detector, proposal.evidence, proposal.payload)
-        or proposal.action in MEMORY_APPLY_ACTIONS
+        or is_memory_action(proposal.action, proposal.detector)
         else None
     )
     result = route(
@@ -342,7 +338,7 @@ def _call_verdict(
     call: ModelCall, store: Store, prop: GardenProposal
 ) -> ReviewerVerdict:
     try:
-        if prop.action in MEMORY_APPLY_ACTIONS and env_flag(
+        if is_memory_action(prop.action, prop.detector) and env_flag(
             "PRECIS_GARDEN_MEMORY_APPLY"
         ):
             refusal = memory_successor_refusal(prop.payload, prop.evidence)

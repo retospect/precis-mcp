@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 MEMORY_DETECTORS = (
     "dangling_mention",
     "anchor_rot",
+    "grab_bag",
     "thread_shape",
     "review_due",
     "title_shape",

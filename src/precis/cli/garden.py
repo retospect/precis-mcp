@@ -263,9 +263,17 @@ def _undo(args: argparse.Namespace, store: Store) -> None:
         undo_relink,
         undo_retirement,
         undo_rewrite,
+        undo_split,
     )
 
     apply_id = args.apply_id
+    if apply_id.startswith("garden-split:"):
+        counts = undo_split(store, apply_id, actor=_actor(args))
+        print(
+            f"undid {apply_id}: {counts['children_deleted']} child(ren) removed, "
+            f"parent restored, {counts['links_restored']} link(s) restored"
+        )
+        return
     if apply_id.startswith(("garden-supersede:", "garden-retire:")):
         counts = undo_retirement(store, apply_id, actor=_actor(args))
         print(

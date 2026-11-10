@@ -196,7 +196,7 @@ _DETECTOR_BY_PASS = {
     "tag-sweep": ("untagged",),
     "siblings": ("sibling_confusion",),
     "paper-identity": ("paper_identity",),
-    "memory": ("dangling_mention", "thread_shape", "anchor_rot"),
+    "memory": ("dangling_mention", "thread_shape", "anchor_rot", "grab_bag"),
     "memory-review": (
         "entity_claim_stale",
         "negative_undated",
@@ -1512,7 +1512,9 @@ _BOILERPLATE = re.compile(r"^(?:source|left|meta|title)\s*:", re.IGNORECASE)
 _OWNER_RANK = {"section:reference": 0, "section:gotchas": 1, "section:threads": 2}
 
 
-def _claim_sentences(body: str, title: str) -> Iterator[tuple[str, list[int]]]:
+def _claim_sentences(
+    body: str, title: str, *, min_words: int = 8
+) -> Iterator[tuple[str, list[int]]]:
     """Exact sentence spans, omitting short text, headings and metadata lines.
 
     Join soft-wrapped prose within a paragraph; a boilerplate line terminates
@@ -1541,7 +1543,7 @@ def _claim_sentences(body: str, title: str) -> Iterator[tuple[str, list[int]]]:
     for begin, end in ranges:
         for match in _SENTENCE.finditer(body, begin, end):
             text = match.group().rstrip()
-            if len(re.findall(r"\b\w+\b", text)) >= 8:
+            if len(re.findall(r"\b\w+\b", text)) >= min_words:
                 yield text, [match.start(), match.start() + len(text)]
 
 
@@ -1810,6 +1812,196 @@ def restated_claim_candidates(
                 _RESTATED_PREFIX + "pair": offset + len(out) if more_pairs else 0,
             }
         )
+    return out
+
+
+#: ``grab_bag`` (gr561019) — a memory carrying many independent claims is a
+#: split candidate: recall cuts on title/hook words, so most of a grab-bag's
+#: content is unfindable under its one card. The body leg needs >=4 top-level
+#: bullets or headings whose sentence embeddings cluster into >=3 groups; the
+#: title leg fires on conjunction/dual/slash/dated-campaign titles on its own.
+GRAB_BAG_MIN_ITEMS = 4
+GRAB_BAG_MIN_CLUSTERS = 3
+GRAB_BAG_SENTENCE_CAP = 32
+GRAB_BAG_MIN_WORDS = 4
+GRAB_BAG_MAX_DISTANCE = 0.5
+GRAB_BAG_EMBED_SECONDS = 10.0
+#: Bounded bodies scanned per tick — each eligible body costs one embed call.
+GRAB_BAG_SCAN_CAP = 64
+_GRAB_BAG_ITEM = re.compile(r"(?:[-*+]|\d+[.)])\s+\S|#{1,6}\s+\S")
+_GRAB_BAG_AND = re.compile(r"\band\b", re.IGNORECASE)
+_GRAB_BAG_TWO = re.compile(r"\btwo\b", re.IGNORECASE)
+
+
+def _grab_bag_title_reasons(title: str) -> list[str]:
+    """Deterministic multi-claim title smells (gr561019)."""
+    reasons = [
+        reason
+        for reason, hit in (
+            ("and", _GRAB_BAG_AND.search(title)),
+            ("two", _GRAB_BAG_TWO.search(title)),
+            ("slash", "/" in title),
+            (
+                "campaign_or_dated",
+                _CAMPAIGN_RANGE_TITLE.search(title) or _DATE.search(title),
+            ),
+        )
+        if hit
+    ]
+    return reasons
+
+
+def _memory_parents(store: Store, ids: list[int]) -> dict[int, list[int]]:
+    """Live memory ``part-of`` parents per ref id, ascending."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT l.src_ref_id, l.dst_ref_id FROM links l JOIN refs r "
+            "ON r.ref_id = l.dst_ref_id WHERE l.src_ref_id = ANY(%s) "
+            "AND l.relation = 'part-of' AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL ORDER BY l.src_ref_id, l.dst_ref_id",
+            (ids,),
+        ).fetchall()
+    out: dict[int, list[int]] = {}
+    for src, dst in rows:
+        out.setdefault(int(src), []).append(int(dst))
+    return out
+
+
+def _grab_bag_clusters(vectors: list[list[float]]) -> list[list[int]]:
+    """Sentence-index groups: single-linkage components under the distance bar."""
+    parent = list(range(len(vectors)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(len(vectors)):
+        for j in range(i + 1, len(vectors)):
+            if _cosine(vectors[i], vectors[j]) < GRAB_BAG_MAX_DISTANCE:
+                pi, pj = find(i), find(j)
+                if pi != pj:
+                    parent[pj] = pi
+    groups: dict[int, list[int]] = {}
+    for i in range(len(vectors)):
+        groups.setdefault(find(i), []).append(i)
+    return sorted(groups.values(), key=lambda g: g[0])
+
+
+def grab_bag_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+    not_checked: dict[str, str] | None = None,
+) -> list[GardenCandidate]:
+    """Grab-bag memories: many independent claims under one title (gr561019).
+
+    Two deterministic legs, either sufficient: a multi-claim title smell, or
+    >=4 top-level bullets/headings whose sentence embeddings cluster into >=3
+    groups. Sentence vectors are ephemeral default-embedder reads, never
+    stored; an unavailable embedder reports ``not_checked`` and resumes the
+    scan at the failed body next tick, keeping evidence reproducible.
+    ``sentence`` spans pin the exact claim text the evaluator may split —
+    the apply door accepts no span outside this evidence.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "grab_bag:memory"
+    window, nxt = _scan_window(
+        store,
+        "memory",
+        after=(cursors or {}).get(key, 0),
+        size=min(scan_cap, GRAB_BAG_SCAN_CAP),
+    )
+    parents = _memory_parents(store, window)
+    handles = [f"me{p}" for ids in parents.values() for p in ids]
+    supporting = _memory_supporting_shas(store, handles)
+    out: list[GardenCandidate] = []
+    evaluated_last = 0
+    aborted = False
+    for row in _memory_review_rows(store, window):
+        reasons = _grab_bag_title_reasons(row.title)
+        items = sum(1 for line in row.body.splitlines() if _GRAB_BAG_ITEM.match(line))
+        spans = list(
+            islice(
+                _claim_sentences(row.body, row.title, min_words=GRAB_BAG_MIN_WORDS),
+                GRAB_BAG_SENTENCE_CAP + 1,
+            )
+        )
+        capped = len(spans) > GRAB_BAG_SENTENCE_CAP
+        spans = spans[:GRAB_BAG_SENTENCE_CAP]
+        clusters: list[list[int]] | None = None
+        if items >= GRAB_BAG_MIN_ITEMS and len(spans) >= 2:
+            budget = GRAB_BAG_EMBED_SECONDS
+            if (deadline := deadline_at()) is not None:
+                budget = min(budget, max(0.001, deadline - time.monotonic() - 0.1))
+            try:
+                vectors = call_with_deadline(
+                    partial(
+                        _restated_embeddings,
+                        store,
+                        [text for text, _ in spans],
+                    ),
+                    deadline_s=budget,
+                    label="garden:grab_bag:embed",
+                )
+            except (RuntimeError, ValueError, OSError, ImportError) as exc:
+                # DeadlineExceeded inherits TimeoutError/OSError. Resume the
+                # scan at this body next tick so evidence stays reproducible.
+                if not_checked is not None:
+                    not_checked["grab_bag"] = "embedder_unavailable"
+                log.info("garden: grab_bag not_checked (%s)", type(exc).__name__)
+                aborted = True
+                break
+            clusters = _grab_bag_clusters(vectors)
+        evaluated_last = row.ref_id
+        if not reasons and len(clusters or ()) < GRAB_BAG_MIN_CLUSTERS:
+            continue
+        out.append(
+            GardenCandidate(
+                detector="grab_bag",
+                action="split",
+                target_kind="ref",
+                target_id=row.ref_id,
+                title=f"me{row.ref_id} carries many claims under one title",
+                evidence={
+                    "title": row.title,
+                    "title_reasons": reasons,
+                    "items": items,
+                    "clusters": clusters,
+                    "sentences": [{"text": text, "span": span} for text, span in spans],
+                    "sentences_capped": capped,
+                    "parents": parents.get(row.ref_id, []),
+                    "supporting_shas": {
+                        f"me{p}": supporting[f"me{p}"]
+                        for p in parents.get(row.ref_id, [])
+                        if f"me{p}" in supporting
+                    },
+                    "content_sha": row.sha,
+                },
+                payload={
+                    "base_sha": row.sha,
+                    "hub": next(iter(parents.get(row.ref_id, [])), None),
+                    "children": None,
+                    "parent_fate": None,
+                    "match_cap": MEMORY_REVIEW_MATCH_CAP,
+                    "matches_capped": False,
+                },
+            )
+        )
+        if len(out) >= limit:
+            nxt = row.ref_id
+            break
+    if next_cursors is not None:
+        # An aborted embed resumes at the failed body; a completed window
+        # saves the scan cursor (limit-break keeps its own resume point).
+        next_cursors[key] = evaluated_last if aborted else nxt
     return out
 
 
@@ -3432,9 +3624,12 @@ def run_detectors(
                 cursors=saved,
                 next_cursors=nxt,
             )
-        elif det == "restated_claim":
+        elif det in {"restated_claim", "grab_bag"}:
             fn = partial(
-                restated_claim_candidates,
+                {
+                    "restated_claim": restated_claim_candidates,
+                    "grab_bag": grab_bag_candidates,
+                }[det],
                 store,
                 scan_cap=scan_cap,
                 limit=limit,
@@ -3524,6 +3719,7 @@ __all__ = [
     "duplicate_candidates",
     "entity_claim_stale_candidates",
     "freshly_considered",
+    "grab_bag_candidates",
     "memory_expiry_shape",
     "negative_undated_candidates",
     "orphan_taxon_candidates",

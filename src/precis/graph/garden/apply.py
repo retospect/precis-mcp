@@ -1187,6 +1187,17 @@ def _memory_dependency_ids(conn: Any, target: int, garden: dict[str, Any]) -> se
     ]
     for mention in evidence.get("mentions", []):
         handles.extend([mention.get("retired_ref"), mention.get("successor")])
+    if garden.get("action") == "split":
+        handles.append(payload.get("hub"))
+        for child in payload.get("children") or []:
+            if not isinstance(child, dict):
+                continue
+            handles.extend(
+                spec.get("target")
+                for spec in child.get("links") or []
+                if isinstance(spec, dict)
+            )
+            handles.extend(child.get("qualifies") or [])
     for value in handles:
         if isinstance(value, int):
             ids.add(value)
@@ -1338,6 +1349,8 @@ def _checked_memory_proposal(
             )
     if action == "rewrite":
         _check_rewrite_scope(payload, fresh[0].payload)
+    elif action == "split":
+        _check_split_scope(payload, fresh[0].evidence)
     bodies = conn.execute(
         "SELECT chunk_id, text, ord FROM chunks WHERE ref_id = %s "
         "AND chunk_kind = 'memory_body' AND retired_at IS NULL AND ord >= 0 "
@@ -2256,6 +2269,548 @@ def apply_retire(
     return {"target": target}
 
 
+# ── reviewed memory split (gr561019) ─────────────────────────────────────
+
+#: The section types a split child may carry — a trap is gotchas, a fact
+#: reference, a ruling rulings; the evaluator picks per child.
+SPLIT_CHILD_SECTIONS = frozenset(
+    {"gotchas", "reference", "rulings", "runbooks", "workflow"}
+)
+SPLIT_MAX_CHILDREN = 12
+SPLIT_TITLE_MAX = 80
+SPLIT_KEEP_MAX_LINES = 3
+
+
+def _check_split_scope(payload: dict[str, Any], fresh: dict[str, Any]) -> None:
+    """The evaluator proposes children; fresh detector spans own the scope.
+
+    Every child span must be one of the fresh detector's sentence spans and
+    join exactly one child — the model supplies titles, sections, links and
+    the keep summary, never new body text or expanded coverage.
+    """
+    children = payload.get("children")
+    if (
+        not isinstance(children, list)
+        or not 2 <= len(children) <= SPLIT_MAX_CHILDREN
+        or not all(isinstance(c, dict) for c in children)
+    ):
+        raise BadInput(
+            f"split requires 2..{SPLIT_MAX_CHILDREN} children "
+            "(payload_overrides.children)"
+        )
+    allowed = {
+        tuple(s["span"])
+        for s in (fresh.get("sentences") or [])
+        if isinstance(s, dict) and isinstance(s.get("span"), list)
+    }
+    if not allowed:
+        raise BadInput("split requires the detector's sentence-span evidence")
+    used: set[tuple[int, int]] = set()
+    for child in children:
+        title = child.get("title")
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or len(title) > SPLIT_TITLE_MAX
+        ):
+            raise BadInput(
+                f"split child title must be a nonempty ≤{SPLIT_TITLE_MAX}-char "
+                "claim (the sūtra)"
+            )
+        if child.get("section") not in SPLIT_CHILD_SECTIONS:
+            raise BadInput(
+                f"split child section must be one of {sorted(SPLIT_CHILD_SECTIONS)}"
+            )
+        spans = child.get("spans")
+        if not isinstance(spans, list) or not spans:
+            raise BadInput("split child needs ≥1 detector sentence span")
+        for span in spans:
+            key = tuple(span) if isinstance(span, list) and len(span) == 2 else None
+            if key is None or key not in allowed:
+                raise BadInput(
+                    "split scope rule: every span must match a fresh detector "
+                    "sentence span"
+                )
+            if key in used:
+                raise BadInput("a sentence span joins exactly one child")
+            used.add(key)
+        for extra in ("links", "qualifies"):
+            if child.get(extra) is not None and not isinstance(child[extra], list):
+                raise BadInput(f"split child {extra} must be a list")
+    fate = payload.get("parent_fate") or "retire"
+    if fate not in ("retire", "keep"):
+        raise BadInput("parent_fate must be retire or keep")
+    if fate == "keep":
+        keep = payload.get("keep_body")
+        if (
+            not isinstance(keep, str)
+            or not keep.strip()
+            or sum(1 for line in keep.splitlines() if line.strip())
+            > SPLIT_KEEP_MAX_LINES
+        ):
+            raise BadInput(f"keep_body must be a ≤{SPLIT_KEEP_MAX_LINES}-line summary")
+    hub = payload.get("hub")
+    if hub is not None and not isinstance(hub, int):
+        from precis.utils.handle_registry import parse
+
+        parsed = parse(str(hub))
+        if parsed is None or parsed[:2] != ("memory", False):
+            raise BadInput("split hub must be a memory id or me<N> handle")
+
+
+@dataclass(slots=True)
+class SplitRecord:
+    """Undo data on the parent's ``meta.garden_split`` (fate ``keep``)."""
+
+    split_id: str
+    proposal: int
+    target: int
+    parent_fate: str
+    children: list[dict[str, Any]] = field(default_factory=list)
+    hub: int | None = None
+    prior_sha: str = ""
+    prior_body_chunk_id: int = 0
+    prior_body: str = ""
+    prior_title: str = ""
+    prior_body_ord: int = 0
+    prior_header: dict[str, Any] | None = None
+    links: list[dict[str, Any]] = field(default_factory=list)
+    applied_sha: str = ""
+    applied_body_chunk_id: int = 0
+    applied_links: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _split_hub(
+    payload: dict[str, Any], target: int, fate: str, *, conn: Any
+) -> int | None:
+    """Resolve the children's part-of parent (the hub, never the parent)."""
+    from precis.utils.handle_registry import parse
+
+    raw = payload.get("hub")
+    if raw is None:
+        if fate == "retire":
+            raise MergeRefused(
+                "apply_refused",
+                "a split retire needs a live hub for the tombstone redirect; "
+                "propose keep or name a hub",
+            )
+        return target
+    rid = raw if isinstance(raw, int) else (parse(str(raw)) or (None, None, -1))[2]
+    if not isinstance(rid, int) or rid <= 0:
+        raise BadInput("split hub must be a memory id or me<N> handle")
+    if rid == target:
+        raise BadInput("split hub cannot be the split target")
+    row = conn.execute(
+        "SELECT kind, retired_at FROM refs WHERE ref_id = %s", (rid,)
+    ).fetchone()
+    if row is None or str(row[0]) != "memory" or row[1] is not None:
+        raise MergeRefused("target_gone", "the split hub is not a live memory")
+    return rid
+
+
+def _split_link_target(store: Store, raw: Any) -> tuple[int, int | None]:
+    from precis.utils.link_target import _parse_link_target
+
+    target = _parse_link_target(
+        f"me{raw}" if isinstance(raw, int) else str(raw), store=store
+    )
+    return int(target.ref_id), target.pos
+
+
+def _mint_split_child(
+    store: Store,
+    conn: Any,
+    handler: Any,
+    rec: SplitRecord,
+    child: dict[str, Any],
+    body: str,
+    space_tags: list[str],
+    *,
+    actor: str,
+    model: str | None,
+) -> int:
+    """Mint one atomic child through the memory create door, then its edges."""
+    from precis.utils.relations import validate_relation
+
+    text = "\n".join(body[s:e] for s, e in child["spans"])
+    _resp, cid = handler._create_with_id(
+        text=text,
+        tags=[f"section:{child['section']}", *space_tags],
+        link=None,
+        put_meta={"title": str(child["title"]).strip()},
+        set_by="agent",
+        system_meta={
+            "garden_split_child": {"split_id": rec.split_id, "source": rec.target}
+        },
+        default_tags=False,
+    )
+    if rec.hub is not None:
+        store.add_link(
+            src_ref_id=cid,
+            dst_ref_id=rec.hub,
+            relation="part-of",
+            set_by="agent",
+            conn=conn,
+        )
+    for spec in child.get("links") or []:
+        dst, pos = _split_link_target(store, spec.get("target"))
+        store.add_link(
+            src_ref_id=cid,
+            dst_ref_id=dst,
+            dst_pos=pos,
+            relation=validate_relation(spec.get("relation"), store=store),
+            set_by="agent",
+            conn=conn,
+        )
+    for raw in child.get("qualifies") or []:
+        dst, pos = _split_link_target(store, raw)
+        store.add_link(
+            src_ref_id=cid,
+            dst_ref_id=dst,
+            dst_pos=pos,
+            relation="qualifies",
+            set_by="agent",
+            conn=conn,
+        )
+    state = store.trust_state("ref", cid, conn=conn)
+    assert state is not None and state.sha is not None
+    store.record_trust_act(
+        TrustAct(
+            action="consider",
+            target_kind="ref",
+            target_id=cid,
+            expected_sha=state.sha,
+            reason=(
+                f"kg-review:{_review_model_token(model)}:"
+                f"{datetime.now(UTC):%Y-%m-%d}:ok"
+            ),
+        ),
+        actor=actor,
+        actor_type="agent",
+        model=model,
+    )
+    rec.children.append(
+        {"id": cid, "title": child["title"], "spans": child["spans"], "body": text}
+    )
+    return cid
+
+
+def _retire_split_children(store: Store, conn: Any, child_ids: list[int]) -> int:
+    """Undo helper: retire the minted children and drop their edges."""
+    deleted = 0
+    for cid in child_ids:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s FOR UPDATE", (cid,)
+        ).fetchone()
+        if row is None or row[0] is not None:
+            continue
+        conn.execute(
+            "DELETE FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (cid, cid),
+        )
+        store.retire_ref(cid, conn=conn)
+        deleted += 1
+    return deleted
+
+
+@trust_door("generated")
+def apply_split(
+    store: Store,
+    review_id: int,
+    *,
+    actor: str,
+    model: str | None = None,
+    verdict_extra: dict[str, Any] | None = None,
+) -> SplitRecord:
+    """Apply a reviewed grab-bag split: mint atomic children, then retire or
+    shrink the parent — all one transaction (gr561019).
+
+    ``retire`` (default): the parent's links migrate to the hub through the
+    memory delete door, its tombstone carries ``meta.split_into`` plus the
+    ``garden_retirement`` snapshot, and ``undo`` restores the node exactly.
+    ``keep``: the parent body shrinks to the reviewed ≤3-line summary and the
+    ``meta.garden_split`` record holds prior bytes and links for undo.
+    """
+    from precis.dispatch import Hub
+
+    with store.atomic() as conn:
+        target, garden, body = _checked_memory_proposal(store, conn, review_id, "split")
+        payload = garden["payload"]
+        children = payload["children"]
+        fate = payload.get("parent_fate") or "retire"
+        body_text = str(body[1])
+        links = _memory_links(conn, target, int(body[0]))
+        _guard_memory_link_measures(conn, links)
+        header = _memory_header(conn, target)
+        _guard_legacy_memory_links(links)
+        ref = store.get_ref(kind="memory", id=target)
+        assert ref is not None
+        rec = SplitRecord(
+            split_id=f"garden-split:{target}:{review_id}",
+            proposal=review_id,
+            target=target,
+            parent_fate=fate,
+            prior_sha=payload["base_sha"],
+            prior_body_chunk_id=int(body[0]),
+            prior_body=body_text,
+            prior_title=ref.title,
+            prior_body_ord=int(body[2]),
+            prior_header=header,
+            links=links,
+        )
+        rec.hub = _split_hub(payload, target, fate, conn=conn)
+        _resolve_memory_apply(
+            store,
+            conn,
+            review_id,
+            actor=actor,
+            model=model,
+            garden=garden,
+            applied=rec.split_id,
+            verdict_extra=verdict_extra,
+        )
+        handler = Hub(store=store).sibling("memory")
+        space_tags = [
+            t.value
+            for t in store.tags_for(target)
+            if t.namespace == "open" and t.value.startswith("space:")
+        ]
+        reason = f"garden:{garden['detector']}:{review_id}"
+        with revision_context(
+            reason, actor=actor, model="", writer=_garden_writer(model)
+        ):
+            for child in children:
+                _mint_split_child(
+                    store,
+                    conn,
+                    handler,
+                    rec,
+                    child,
+                    body_text,
+                    space_tags,
+                    actor=actor,
+                    model=model,
+                )
+            child_ids = [c["id"] for c in rec.children]
+            if fate == "retire":
+                assert rec.hub is not None
+                ret = _retirement_snapshot(
+                    store, conn, target, garden, review_id, successor=rec.hub
+                )
+                ret["children"] = child_ids
+                ret["parent_fate"] = "retire"
+                store.stamp_ref_meta(target, {"split_into": child_ids}, conn=conn)
+                handler._delete(id=target, reason=reason, superseded_by=f"me{rec.hub}")
+                _save_retirement(store, conn, ret)
+                # Written after the delete migrates links, so the provenance
+                # edge keeps pointing at the tombstone, not the hub.
+                for cid in child_ids:
+                    store.add_link(
+                        src_ref_id=cid,
+                        dst_ref_id=target,
+                        relation="derived-from",
+                        set_by="agent",
+                        conn=conn,
+                    )
+                return rec
+            for cid in child_ids:
+                store.add_link(
+                    src_ref_id=cid,
+                    dst_ref_id=target,
+                    relation="derived-from",
+                    set_by="agent",
+                    conn=conn,
+                )
+            ops = _rewrite_ops(
+                body_text,
+                [
+                    {
+                        "find": body_text,
+                        "text": str(payload["keep_body"]).strip(),
+                        "span": [0, len(body_text)],
+                    }
+                ],
+            )
+            handler.edit(id=target, ops=ops, reason=reason)
+            new_body = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'memory_body'",
+                (target,),
+            ).fetchone()
+            if new_body is None:
+                raise MergeRefused(
+                    "apply_refused", "the shrunken memory body is missing"
+                )
+            rec.applied_body_chunk_id = int(new_body[0])
+            rec.applied_links = _memory_links(conn, target, rec.applied_body_chunk_id)
+            state = store.trust_state("ref", target, conn=conn)
+            assert state is not None and state.sha is not None
+            rec.applied_sha = state.sha
+            store.stamp_ref_meta(target, {"garden_split": asdict(rec)}, conn=conn)
+            store.record_trust_act(
+                TrustAct(
+                    action="consider",
+                    target_kind="ref",
+                    target_id=target,
+                    expected_sha=state.sha,
+                    reason=(
+                        f"kg-review:{_review_model_token(model)}:"
+                        f"{datetime.now(UTC):%Y-%m-%d}:fixed"
+                    ),
+                ),
+                actor=actor,
+                actor_type="agent",
+                model=model,
+            )
+    return rec
+
+
+@trust_door("generated")
+def undo_split(store: Store, split_id: str, *, actor: str) -> dict[str, int]:
+    """Reverse an applied split: retire the minted children, restore the parent.
+
+    A ``retire`` fate delegates the node/link restoration to
+    :func:`undo_retirement` on the embedded snapshot; a ``keep`` fate replays
+    the saved body chunk and link set like :func:`undo_rewrite`. Both write
+    the terminal ``undone`` rejection on the proposal key.
+    """
+    from precis.graph.garden.proposals import GARDEN_VERSION
+
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta->'garden_split', title, retired_at FROM refs "
+            "WHERE meta->'garden_split'->>'split_id' = %s FOR UPDATE",
+            (split_id,),
+        ).fetchone()
+        if row is not None:
+            target, rec, title = int(row[0]), dict(row[1]), str(row[2])
+            if rec["parent_fate"] == "retire":
+                raise BadInput(
+                    "garden_split record on a retired parent is inconsistent",
+                    next=f"precis garden undo {split_id}",
+                )
+        else:
+            tomb = conn.execute(
+                "SELECT ref_id, meta->'garden_retirement' FROM refs "
+                "WHERE meta->'garden_retirement'->>'retirement_id' = %s "
+                "FOR UPDATE",
+                (split_id,),
+            ).fetchone()
+            if tomb is None:
+                raise NotFound(f"no split record for split_id={split_id!r}")
+            if tomb[1].get("parent_fate") != "retire":
+                raise NotFound(f"no split record for split_id={split_id!r}")
+            child_ids = [int(c) for c in tomb[1].get("children") or []]
+            deleted_children = _retire_split_children(store, conn, child_ids)
+            counts = undo_retirement(store, split_id, actor=actor)
+            return {
+                "children_deleted": deleted_children,
+                "links_restored": counts["links_restored"],
+                "links_deleted": counts["links_deleted"],
+                "links_restamped": counts["links_restamped"],
+            }
+        # fate == "keep": replay the saved body/links like undo_rewrite.
+        state = store.trust_state("ref", target, conn=conn)
+        links = _memory_links(conn, target, rec["applied_body_chunk_id"])
+        _guard_memory_link_measures(conn, links)
+        if (
+            state is None
+            or state.sha != rec["applied_sha"]
+            or links != rec["applied_links"]
+        ):
+            raise MergeRefused("stale", "memory or links changed after the split")
+        deleted_children = _retire_split_children(
+            store, conn, [int(c["id"]) for c in rec["children"]]
+        )
+        prior_links = {link["link_id"]: link for link in rec["links"]}
+        deleted = store.delete_links(
+            [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],
+            conn=conn,
+        )
+        reason = f"garden:undo:{split_id}"
+        with revision_context(reason, actor=actor):
+            apply_revision_context(conn, clear=True)
+            store.chunks.replace_body_chunk(
+                target,
+                rec["prior_body"],
+                chunk_kind="memory_body",
+                source=actor,
+                reason=reason,
+                conn=conn,
+            )
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'memory_body'",
+                (target,),
+            )
+            conn.execute(
+                "INSERT INTO chunks (chunk_id, ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, %s, 'memory_body', %s)",
+                (
+                    rec["prior_body_chunk_id"],
+                    target,
+                    rec["prior_body_ord"],
+                    rec["prior_body"],
+                ),
+            )
+            if title != rec["prior_title"]:
+                store.chunks.set_ref_title(
+                    target, rec["prior_title"], source=actor, conn=conn
+                )
+                header = rec.get("prior_header")
+                if header is None:
+                    store.chunks.sync_header_card(target, conn=conn)
+                else:
+                    conn.execute(
+                        "DELETE FROM chunks WHERE ref_id = %s AND ord = -1",
+                        (target,),
+                    )
+                    conn.execute(
+                        "INSERT INTO chunks (chunk_id, ref_id, ord, chunk_kind, "
+                        "text, meta, set_by, created_at) VALUES "
+                        "(%(chunk_id)s, %(ref_id)s, %(ord)s, %(chunk_kind)s, "
+                        "%(text)s, %(meta)s, %(set_by)s, %(created_at)s)",
+                        {**header, "meta": Jsonb(header["meta"])},
+                    )
+            for link in rec["links"]:
+                _restore_memory_link(store, conn, link, actor=actor)
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'garden_split' WHERE ref_id = %s",
+                (target,),
+            )
+        proposal = conn.execute(
+            "SELECT note FROM reviews WHERE review_id = %s", (rec["proposal"],)
+        ).fetchone()
+        if proposal is not None:
+            garden = (json.loads(proposal[0] or "{}") or {}).get("garden") or {}
+            if garden.get("key"):
+                store.record_target_review(
+                    "ref",
+                    target,
+                    actor=actor,
+                    verdict="rejected",
+                    version=GARDEN_VERSION,
+                    note=json.dumps(
+                        {
+                            "garden": {
+                                "v": 1,
+                                "key": garden["key"],
+                                "resolves": rec["proposal"],
+                                "undone": split_id,
+                                "reason": "undone",
+                            }
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    conn=conn,
+                )
+    return {
+        "children_deleted": deleted_children,
+        "links_restored": len(rec["links"]),
+        "links_deleted": deleted,
+    }
+
+
 __all__ = [
     "META_MERGE",
     "META_PRIOR_REF",
@@ -2263,14 +2818,17 @@ __all__ = [
     "MergeRefused",
     "RelinkRecord",
     "RewriteRecord",
+    "SplitRecord",
     "apply_merge",
     "apply_relink",
     "apply_retire",
     "apply_rewrite",
+    "apply_split",
     "apply_structural",
     "apply_supersede",
     "undo_merge",
     "undo_relink",
     "undo_retirement",
     "undo_rewrite",
+    "undo_split",
 ]
