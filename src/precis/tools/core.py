@@ -2445,9 +2445,12 @@ def edit(
     table: str | dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
-    # cell is typed str|dict so a legacy {'row','col'} dict reaches the
-    # handler and is refused there with the id-form next= — a str-only
-    # schema would fail pydantic at the boundary with a bare type error.
+    # cell is str|dict (gr592840): the '<row-id>.<col-id>' string takes
+    # its new value from text=; the dict spelling carries it —
+    # cell={'row': '<row-id>', 'col': '<col-id|name>', 'value': <scalar>}
+    # — so the whole cell write is one argument. A legacy positional-int
+    # dict still reaches the handler and is refused there with the
+    # id-form next=.
     cell: str | dict[str, Any] | None = None,
     # draft table footer aggregates (spreadsheet-tables 2):
     # footer={'cost': 'sum'|'mean'|'median'|'std'|'min'|'max'|'count'}

@@ -38,7 +38,7 @@ import logging
 import re
 from collections.abc import Sequence
 from datetime import UTC
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from psycopg import Connection
 
@@ -88,7 +88,7 @@ from precis.utils.search_merge import (
 )
 from precis.utils.table_data import (
     TABLE_CTRL_RE,
-    cell_next_hint,
+    cell_scalar,
     ctrl_cells,
     find_replace_cells,
     infer_scalar,
@@ -97,6 +97,7 @@ from precis.utils.table_data import (
     patch_latex_table_text,
     resolve_cell,
     set_cell,
+    split_cell_address,
     strict_markdown_table,
     table_ids_line,
     table_payload,
@@ -444,7 +445,7 @@ def _coerce_word_target(
 
 
 def _stored_ctrl_hint(
-    exc: BadInput, cur_table: Any, dc: str, *, skip: str | None = None
+    exc: BadInput, cur_table: Any, dc: str, *, skip: Any = None
 ) -> BadInput:
     """Re-aim a control-character refusal at its stored causes. Every
     structure op re-normalises the stored grid together with the
@@ -462,8 +463,8 @@ def _stored_ctrl_hint(
         return exc
     skip_ids: tuple[str, str] | None = None
     if skip is not None:
-        # resolve the '<row-id>.<col-id>' (or column-name) address to
-        # the stored ids — a failed resolve just means no skip
+        # resolve the '<row-id>.<col-id>' (or column-name, or dict-form)
+        # address to the stored ids — a failed resolve just means no skip
         try:
             row_i, col_i = resolve_cell(cur_table, skip)
         except BadInput:
@@ -4504,9 +4505,10 @@ class DraftHandler(Handler):
         sort: str | None = None,
     ) -> Response:
         """Edit a chunk_kind='table' chunk — precedence (the shipped draft-table-editing proposal item 1, git history): (1) ``table=`` replaces the whole
-        canonical structure; (2) ``cell='<row-id>.<col-id>'`` (stable ids —
-        spreadsheet-tables 1a, no A1) + ``text=`` sets ONE field via
-        :func:`set_cell`; (3)
+        canonical structure; (2) ``cell='<row-id>.<col-id>'`` + ``text=``
+        — or the one-arg dict ``cell={'row','col','value'}`` (stable ids —
+        spreadsheet-tables 1a, no A1; the dict spelling is gr592840) —
+        sets ONE field via :func:`set_cell`; (3)
         ``find=`` (literal, paired with ``text=`` as the replacement) or
         ``sub=`` (regex, ``{find,replace,flags}``/``s/…/…/``) find-replaces
         across every string cell via :func:`find_replace_cells`, refusing (chunk
@@ -4739,26 +4741,18 @@ class DraftHandler(Handler):
                         "text='…')  # then caption=/regen= separately",
                     )
                 # Cheap syntax gate BEFORE the lossy conversion: an A1
-                # ('B2') or dict-shaped address can never match the ids
-                # about to be minted — refuse while nothing is written,
-                # rather than converting first and refusing after
-                # (conversion is reserved for a well-formed id address
-                # that names no minted id).
-                if not isinstance(cell, str):
+                # ('B2') or otherwise malformed address can never match
+                # the ids about to be minted — refuse while nothing is
+                # written, rather than converting first and refusing
+                # after (conversion is reserved for a well-formed
+                # address that names no minted id). The dict spelling
+                # (gr592840) is well-formed here; its 'value' key
+                # supplies the new content the same way text= does.
+                split_cell_address(cell)
+                if text is None and not (isinstance(cell, dict) and "value" in cell):
                     raise BadInput(
-                        f"cell={cell!r} must be a '<row-id>.<col-id>' string",
-                        next=cell_next_hint(),
-                    )
-                _rid, _sep, _cref = cell.strip().partition(".")
-                if not _sep or not _rid or not _cref:
-                    raise BadInput(
-                        f"cell={cell!r} is not a cell address — the form "
-                        "is '<row-id>.<col-id>'",
-                        next=cell_next_hint(),
-                    )
-                if text is None:
-                    raise BadInput(
-                        "cell= addresses one field and needs text= for its new value",
+                        "cell= addresses one field and needs its new "
+                        "value — text=, or 'value' inside the cell dict",
                         next=f"edit(kind='draft', id={chunk.dc!r}, cell=…, text='…')",
                     )
                 norm_conv = cur_table
@@ -4964,19 +4958,47 @@ class DraftHandler(Handler):
                 c["id"] for c in norm.get("columns") or [] if c.get("formula")
             )
         elif cell is not None:
-            if text is None:
+            # One cell write, two spellings (gr592840): the new value
+            # rides in ``text=`` — ``cell='<row-id>.<col-id>'`` or a
+            # bare ``{'row','col'}`` dict — or inside the one-arg dict
+            # ``{'row','col','value'}``. Both given refuse (the write
+            # would be ambiguous); neither given refuses.
+            if isinstance(cell, dict):
+                # Shape gate first — a typo'd key (``'valu'``) names
+                # itself rather than reading back as "needs value".
+                split_cell_address(cell)
+            new_value: Any
+            if isinstance(cell, dict) and "value" in cell:
+                if text is not None:
+                    raise BadInput(
+                        "the new value was supplied twice — 'value' inside "
+                        "the cell dict and text=; pass one",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, "
+                        "cell={'row': '<row-id>', 'col': '<col-id>', "
+                        "'value': '…'})",
+                    )
+                new_value = cell["value"]
+                # Fail the non-scalar BEFORE set_cell's normalise raise —
+                # that refusal is re-aimed at stored offenders by the
+                # stored-ctrl hint below, which would misname this one.
+                cell_scalar(new_value)
+            elif text is None:
                 raise BadInput(
-                    "cell= addresses one field and needs text= for its new value",
-                    next=f"edit(kind='draft', id={chunk.dc!r}, cell={cell!r}, "
-                    "text='…')",
+                    "cell= addresses one field and needs its new value "
+                    "— text=, or 'value' inside the cell dict",
+                    next=f"edit(kind='draft', id={chunk.dc!r}, "
+                    "cell={'row': '<row-id>', 'col': '<col-id>', "
+                    "'value': '…'})",
                 )
+            else:
+                new_value = str(text)
             if not cur_table:
                 raise no_data_err
             try:
-                # ``cell`` is typed str|dict at the MCP boundary so a
-                # legacy {'row','col'} dict reaches here and is refused
-                # by resolve_cell with the id-form next=.
-                norm = set_cell(cur_table, cast(str, cell), str(text))
+                # ``cell`` is str|dict — split_cell_address inside
+                # resolve_cell refuses the legacy positional-int dict
+                # with the id-form next=.
+                norm = set_cell(cur_table, cell, new_value)
             except BadInput as exc:
                 # On a pre-schema table the ids exist only in memory so
                 # far — persist the mint before the refusal lands, else
@@ -4993,12 +5015,12 @@ class DraftHandler(Handler):
                         next=exc.next,
                         options=exc.options,
                     ) from None
-                if TABLE_CTRL_RE.search(str(text)):
-                    # The incoming text= itself carries a control
+                if isinstance(new_value, str) and TABLE_CTRL_RE.search(new_value):
+                    # The incoming value itself carries a control
                     # character — the gate still applies to the
                     # caller's own write (no surgical landing).
                     raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
-                hint = _stored_ctrl_hint(exc, cur_table, chunk.dc, skip=cast(str, cell))
+                hint = _stored_ctrl_hint(exc, cur_table, chunk.dc, skip=cell)
                 if hint is exc:
                     raise hint from exc
                 # The refusal fired only on OTHER pre-gate stored
@@ -5012,8 +5034,8 @@ class DraftHandler(Handler):
                 # and the reply notes what is left, one cell= repair
                 # call each.
                 rows2 = [list(r) for r in cur_table["rows"]]
-                ri, ci = resolve_cell(cur_table, cast(str, cell))
-                rows2[ri][ci] = infer_scalar(str(text))
+                ri, ci = resolve_cell(cur_table, cell)
+                rows2[ri][ci] = cell_scalar(new_value)
                 norm = {**cur_table, "rows": rows2}
                 ctrl_note = f"; note: {hint}"
         elif find is not None or sub is not None:

@@ -532,14 +532,21 @@ def test_resolve_cell_id_address() -> None:
     assert resolve_cell(table, f"{rid}.{cid}") == (1, 0)
     # column side may also be named
     assert resolve_cell(table, f"{rid}.b") == (1, 1)
+    # the dict spelling (gr592840) resolves the same — 'value' is ignored
+    assert resolve_cell(table, {"row": rid, "col": cid}) == (1, 0)
+    assert resolve_cell(table, {"row": rid, "col": "b", "value": "x"}) == (1, 1)
 
 
-def test_resolve_cell_refuses_a1_and_dict_and_unknown_ids() -> None:
+def test_resolve_cell_refuses_a1_int_dict_and_unknown_ids() -> None:
     table = normalize_table({"header": ["a", "b"], "rows": [[1, 2]]})
     with pytest.raises(BadInput, match="not a cell address"):
         resolve_cell(table, "B2")  # A1 gone — refused with the id form
-    with pytest.raises(BadInput, match="must be a"):
-        resolve_cell(table, {"row": 2, "col": 2})
+    with pytest.raises(BadInput, match="'row' must be a row id string"):
+        resolve_cell(table, {"row": 2, "col": 2})  # positional ints stay gone
+    with pytest.raises(BadInput, match="unknown keys"):
+        resolve_cell(table, {"row": "a", "col": "b", "valu": 1})  # typo'd key
+    with pytest.raises(BadInput, match="'col' must be"):
+        resolve_cell(table, {"row": "a"})  # missing half
     with pytest.raises(BadInput, match="no row id"):
         resolve_cell(table, "zzzz.a")
     with pytest.raises(BadInput, match="no column id/name"):
@@ -648,25 +655,78 @@ def test_edit_table_cell_id_address(draft: DraftHandler, hub: Hub) -> None:
     assert meta2["table"]["rowmeta"][1]["id"] == rows[1]
 
 
-def test_edit_table_cell_a1_and_dict_forms_refused(
+def test_edit_table_cell_dict_value_form(draft: DraftHandler, hub: Hub) -> None:
+    """gr592840: the one-arg dict spelling — ``cell={'row','col','value'}``
+    — lands a cell write without ``text=``. ``row``/``col`` are the id
+    strings the ``ids:`` line shows (``col`` may be the column name);
+    ``value`` is the new content: a string runs through the same
+    type-inference ``text=`` gets, a JSON scalar stores verbatim."""
+    tc = _seed_table(draft, hub)
+    rows, cols = _table_ids(hub, tc)
+    draft.edit(
+        id=tc.dc,
+        cell={"row": rows[0], "col": cols[1], "value": "1.523"},
+    )
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"][0] == ["Si", 1.523]
+    assert isinstance(meta["table"]["rows"][0][1], float)  # numerics-indexable
+
+    # a non-string scalar stores verbatim; 'col' may be the column name
+    draft.edit(id=tc.dc, cell={"row": rows[1], "col": "gap_eV", "value": 0.7})
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"][1] == ["Ge", 0.7]
+
+    # a bare {'row','col'} dict still takes its value from text=
+    draft.edit(id=tc.dc, cell={"row": rows[1], "col": cols[0]}, text="C")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"][1] == ["C", 0.7]
+
+
+def test_edit_table_cell_dict_refusals(draft: DraftHandler, hub: Hub) -> None:
+    """gr592840 dict spelling — refused shapes: 'value' + text= (the new
+    value twice), no value at all, an unknown key, a missing half, and a
+    non-scalar 'value'. Nothing is written."""
+    tc = _seed_table(draft, hub)
+    rows, cols = _table_ids(hub, tc)
+    before = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    with pytest.raises(BadInput, match="supplied twice"):
+        draft.edit(
+            id=tc.dc,
+            cell={"row": rows[0], "col": cols[0], "value": "x"},
+            text="y",
+        )
+    with pytest.raises(BadInput, match="needs its new value"):
+        draft.edit(id=tc.dc, cell={"row": rows[0], "col": cols[0]})
+    with pytest.raises(BadInput, match="unknown keys"):
+        draft.edit(
+            id=tc.dc, cell={"row": rows[0], "col": cols[0], "valu": "x"}
+        )  # a typo'd 'value' names itself, not "needs value"
+    with pytest.raises(BadInput, match="'col' must be"):
+        draft.edit(id=tc.dc, cell={"row": rows[0], "value": "x"})
+    with pytest.raises(BadInput, match="JSON scalar"):
+        draft.edit(id=tc.dc, cell={"row": rows[0], "col": cols[0], "value": [1]})
+    assert hub.live_store.drafts.draft_chunk_meta(tc.handle) == before
+
+
+def test_edit_table_cell_a1_and_int_dict_forms_refused(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """A1 (``'B2'``) and ``{'row','col'}`` addressing are gone — both
-    refuse with a ``next=`` showing the ``<row-id>.<col-id>`` form, and
-    neither touches the chunk."""
+    """A1 (``'B2'``) and positional-int ``{'row','col'}`` addressing are
+    gone — both refuse with a ``next=`` showing the id form, and neither
+    touches the chunk."""
     tc = _seed_table(draft, hub)
     before = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     with pytest.raises(BadInput, match="not a cell address") as exc:
         draft.edit(id=tc.dc, cell="B2", text="x")
     assert "row-id" in str(exc.value.next)
-    with pytest.raises(BadInput, match="must be a"):
+    with pytest.raises(BadInput, match="'row' must be a row id string"):
         draft.edit(id=tc.dc, cell=cast(Any, {"row": 2, "col": 2}), text="x")
     assert hub.live_store.drafts.draft_chunk_meta(tc.handle) == before
 
 
 def test_edit_table_cell_requires_text(draft: DraftHandler, hub: Hub) -> None:
     tc = _seed_table(draft, hub)
-    with pytest.raises(BadInput, match="needs text="):
+    with pytest.raises(BadInput, match="needs its new value"):
         draft.edit(id=tc.dc, cell="r2k7.k5f9")
 
 
@@ -830,11 +890,15 @@ def test_edit_table_cell_on_latex_source_converts_then_refuses_with_ids(
     assert "| $k$ | Simple | Combinatorial |" in chunk.text
     assert "\\toprule" not in chunk.text  # raw LaTeX layout dropped
 
-    # Retry with the real ids — the cell edit now applies.
+    # Retry with the real ids — the cell edit now applies, in either
+    # spelling (gr592840).
     rows, cols = _table_ids(hub, tc)
     draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="order")
     meta2 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta2["table"]["rows"][0][0] == "order"
+    draft.edit(id=tc.dc, cell={"row": rows[0], "col": cols[1], "value": "2"})
+    meta3 = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta3["table"]["rows"][0][1] == 2
 
 
 def test_edit_table_find_replace_patches_flagged_latex_chunk_in_place(
@@ -1296,7 +1360,7 @@ def test_edit_table_latex_cell_requires_text(draft: DraftHandler, hub: Hub) -> N
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
-    with pytest.raises(BadInput, match="needs text="):
+    with pytest.raises(BadInput, match="needs its new value"):
         draft.edit(id=tc.dc, cell="r2k7.k5f9")
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None

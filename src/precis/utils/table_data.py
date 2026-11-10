@@ -476,35 +476,81 @@ def infer_scalar(s: str) -> Scalar:
 def cell_next_hint() -> str:
     """The ``next=`` hint pointing at ``cell='<row-id>.<col-id>'``
     addressing — one string shared by every refusal so it always matches
-    the ``ids:`` line ``get`` renders at read time from ``meta.table``."""
+    the ``ids:`` line ``get`` renders at read time from ``meta.table``.
+    Names both spellings (gr592840): the string address plus ``text=``
+    for the value, or the one-arg dict carrying it."""
     return (
-        "cell='<row-id>.<col-id>' — e.g. cell='r2k7.k5f9' (stable ids, "
-        "not A1); get(kind='draft', id='dc<id>') lists them on the "
-        "'ids:' line under the grid"
+        "cell='<row-id>.<col-id>' + text= for the value — or "
+        "cell={'row': '<row-id>', 'col': '<col-id>', 'value': …} "
+        "(stable ids, not A1); get(kind='draft', id='dc<id>') lists "
+        "them on the 'ids:' line under the grid"
+    )
+
+
+#: Keys the ``cell=`` dict spelling accepts (gr592840) — ``value`` is the
+#: edit's new content, not part of the address; anything else refuses so
+#: a typo'd key never reads back as a silently dropped edit.
+_CELL_DICT_KEYS = frozenset({"row", "col", "value"})
+
+
+def split_cell_address(cell: Any) -> tuple[str, str]:
+    """Validate a ``cell=`` address into ``(row_ref, col_ref)``. Two
+    spellings (gr592840): the ``'<row-id>.<col-id>'`` string, or the dict
+    ``{'row': '<row-id>', 'col': '<col-id-or-name>', 'value': <scalar>}``
+    — ``value`` rides inside the dict so the whole cell write is one
+    argument; it is ignored here (the edit path reads it off the dict).
+    Raises :class:`BadInput` on any other shape — an A1 string, missing
+    or extra dict keys, or non-string refs (``{'row': 2, 'col': 2}``
+    positional ints stay gone: the refusal names the id form)."""
+    nxt = cell_next_hint()
+    if isinstance(cell, dict):
+        unknown = sorted(set(cell) - _CELL_DICT_KEYS)
+        if unknown:
+            raise BadInput(
+                f"cell={cell!r}: unknown keys {unknown} — the dict form "
+                "is {'row': '<row-id>', 'col': '<col-id>', 'value': …}",
+                next=nxt,
+            )
+        row_ref, col_ref = cell.get("row"), cell.get("col")
+        if not isinstance(row_ref, str) or not row_ref.strip():
+            raise BadInput(
+                f"cell={cell!r}: 'row' must be a row id string",
+                next=nxt,
+            )
+        if not isinstance(col_ref, str) or not col_ref.strip():
+            raise BadInput(
+                f"cell={cell!r}: 'col' must be a column id or name string",
+                next=nxt,
+            )
+        return row_ref.strip(), col_ref.strip()
+    if isinstance(cell, str):
+        row_ref, sep, col_ref = cell.strip().partition(".")
+        if not sep or not row_ref or not col_ref:
+            raise BadInput(
+                f"cell={cell!r} is not a cell address — the form is "
+                "'<row-id>.<col-id>'",
+                next=nxt,
+            )
+        return row_ref, col_ref
+    raise BadInput(
+        f"cell={cell!r} must be a '<row-id>.<col-id>' string or a "
+        "{'row', 'col', 'value'} dict",
+        next=nxt,
     )
 
 
 def resolve_cell(table: dict[str, Any], cell: Any) -> tuple[int, int]:
-    """Resolve a ``cell='<row-id>.<col-id>'`` address to ``(row_index,
-    col_index)`` into ``rows``/``columns``.
+    """Resolve a ``cell=`` address to ``(row_index, col_index)`` into
+    ``rows``/``columns`` — the ``'<row-id>.<col-id>'`` string or the
+    ``{'row','col','value'?}`` dict (:func:`split_cell_address`).
 
     Row ids come from ``rowmeta``; the column side resolves by id, then by
     exact ``name`` (columns may be named either way). A1 strings
-    (``'B3'``) and ``{'row','col'}`` dicts are gone — the refusal's
+    (``'B3'``) and positional-int dicts are gone — the refusal's
     ``next=`` shows the id form. Raises :class:`BadInput` naming the
     offending half when an id is unknown."""
     nxt = cell_next_hint()
-    if not isinstance(cell, str):
-        raise BadInput(
-            f"cell={cell!r} must be a '<row-id>.<col-id>' string",
-            next=nxt,
-        )
-    row_id, sep, col_ref = cell.strip().partition(".")
-    if not sep or not row_id or not col_ref:
-        raise BadInput(
-            f"cell={cell!r} is not a cell address — the form is '<row-id>.<col-id>'",
-            next=nxt,
-        )
+    row_id, col_ref = split_cell_address(cell)
     rowmeta = table.get("rowmeta") or []
     row_i = next((i for i, rm in enumerate(rowmeta) if rm.get("id") == row_id), None)
     if row_i is None:
@@ -528,15 +574,37 @@ def resolve_cell(table: dict[str, Any], cell: Any) -> tuple[int, int]:
     return row_i, col_i
 
 
-def set_cell(table: dict[str, Any], cell: str, value_str: str) -> dict[str, Any]:
+def cell_scalar(value: Any) -> Scalar:
+    """A ``cell=`` edit's raw value → the stored JSON scalar. Strings go
+    through :func:`infer_scalar` — the same Excel-style inference the
+    ``text=`` channel has always applied (``'1.523'`` lands a number);
+    non-string JSON scalars store verbatim — the dict spelling
+    ``cell={'row':…, 'col':…, 'value':…}`` may carry them natively
+    (``value=1.523`` is already a number, ``value=None`` clears to null).
+    A dict/list value refuses: it cannot be a cell."""
+    if isinstance(value, str):
+        return infer_scalar(value)
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    raise BadInput(
+        "cell 'value' must be a JSON scalar (string, number, bool, "
+        f"null) — got {type(value).__name__}",
+        next="cell={'row': '<row-id>', 'col': '<col-id>', 'value': '…'}",
+    )
+
+
+def set_cell(
+    table: dict[str, Any], cell: str | dict[str, Any], value: Scalar
+) -> dict[str, Any]:
     """Return a NEW normalised table with one data cell set, addressed by
     stable ids (``cell='r2k7.k5f9'`` — the ``<row-id>.<col-id>`` form that
-    replaced A1). The value is type-inferred via :func:`infer_scalar` so a
-    numeric edit stays a JSON number. Column names are set through the
-    column schema (``rename_column=``), never through a cell address."""
+    replaced A1 — or the ``{'row','col','value'}`` dict, gr592840). The
+    value runs through :func:`cell_scalar` so a numeric edit stays a JSON
+    number. Column names are set through the column schema
+    (``rename_column=``), never through a cell address."""
     rows = [list(r) for r in table["rows"]]
     row_i, col_i = resolve_cell(table, cell)
-    rows[row_i][col_i] = infer_scalar(value_str)
+    rows[row_i][col_i] = cell_scalar(value)
     return normalize_table({**table, "rows": rows})
 
 

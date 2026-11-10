@@ -249,7 +249,9 @@ grid), `cell='<row-id>.<col-id>'` + `text=` (one cell — every row and
 column carries a stable 4-char id minted at creation; `get` prints them
 on an `ids:` line under the grid, and `id='dc<id>~<rowid>.<colid>'`
 reads the one cell; the column side may
-also be the column's name), `find=` + `text=` (find-replace across
+also be the column's name; `text=` carries the new value — or write the
+whole edit as one dict `cell={'row': '<row-id>', 'col': '<col-id>', 'value': …}`),
+`find=` + `text=` (find-replace across
 string cells, literal), `sub='s/a/b/'` (regex across cells, commits
 immediately, no dry-run); plus `caption=`/`regen=` for metadata only.
 `cell=` is type-inferred

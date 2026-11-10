@@ -105,7 +105,8 @@ rejected on a table chunk)
 | call | effect |
 |---|---|
 | `table={'header':…, 'rows':…}` | whole grid, re-derives markdown |
-| `cell='<row-id>.<col-id>'` + `text=` | one cell by stable ids (the `ids:` line under the grid in `get`; a column may also be named) |
+| `cell='<row-id>.<col-id>'` + `text=` | one cell by stable ids (the `ids:` line under the grid in `get`; a column may also be named) — `text=` carries the new value |
+| `cell={'row','col','value'}` | same edit as one argument — `row`/`col` are the id strings, `value` the new content |
 | `find=` + `text=` | find-replace across string cells (literal) |
 | `sub='s/a/b/'` | regex across cells, commits immediately, no dry-run |
 | `caption=` / `regen=` | metadata only, data untouched |
