@@ -349,6 +349,15 @@ def parse_comment_selectors(
     not exist instead of rendering an empty page.
     """
     view_call = f"get(kind={kind!r}, id={ref_id}, view='comments'"
+    # gr573039: a bare ord list is not a callable ``next=`` (rule 2) —
+    # the session re-issued the failing range get. The next is the call
+    # that works: the full valid window, or the card when there are no
+    # comments (gr551839's single-comment twin).
+    span_next = (
+        f"{view_call}, args={{'comments': '{ords[0]}-{ords[-1]}'}})"
+        if ords
+        else f"get(kind={kind!r}, id={ref_id})"
+    )
     if comment is not None and (comments is not None or last is not None):
         raise BadInput(
             "pass args={'comment': K} or args={'comments': K}/"
@@ -367,11 +376,7 @@ def parse_comment_selectors(
         except (TypeError, ValueError):
             raise BadInput(
                 f"args['comment'] must be a comment number, got {comment!r}",
-                next=(
-                    f"comments on {kind} {ref_id}: {ords}"
-                    if ords
-                    else f"{kind} {ref_id} has no comments"
-                ),
+                next=span_next,
             ) from None
         if number not in ords:
             if not ords:
@@ -395,20 +400,17 @@ def parse_comment_selectors(
                 raise BadInput(
                     "args['comments'] range must be 'A-B' with "
                     f"1 <= A <= B, got {comments!r}",
-                    next=(
-                        f"comments on {kind} {ref_id}: {ords}"
-                        if ords
-                        else f"{kind} {ref_id} has no comments"
-                    ),
+                    next=span_next,
                 )
             if not any(o >= lo and (hi is None or o <= hi) for o in ords):
                 raise BadInput(
-                    f"{kind} {ref_id} has no comments in range {text!r}",
-                    next=(
-                        f"comments on {kind} {ref_id}: {ords}"
+                    f"{kind} {ref_id} has no comments in range {text!r}"
+                    + (
+                        f" — it has {len(ords)} comments, valid: {ords[0]}..{ords[-1]}"
                         if ords
-                        else f"{kind} {ref_id} has no comments"
+                        else " (0 comments)"
                     ),
+                    next=span_next,
                 )
             return None, None, lo, hi
         try:

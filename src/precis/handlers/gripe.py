@@ -2789,17 +2789,23 @@ class GripeHandler(NumericRefHandler):
                 ),
             )
         ords = sorted(c.ord for c in cblocks)
+        # gr573039: a bare ord list is not a callable ``next=`` (rule 2) —
+        # the session re-issued the failing range get. The next is the
+        # call that works: the full valid window, or the full read when
+        # there are no comments (gr551839's single-comment twin).
+        span_next = (
+            f"get(kind={self.kind!r}, id={ref.id}, view='comments', "
+            f"args={{'comments': '{ords[0]}-{ords[-1]}'}})"
+            if ords
+            else f"get(kind={self.kind!r}, id={ref.id}, view='full')"
+        )
         if comment is not None:
             try:
                 number = int(comment)
             except (TypeError, ValueError):
                 raise BadInput(
                     f"args['comment'] must be a comment number, got {comment!r}",
-                    next=(
-                        f"comments on {self._sense()} {ref.id}: {ords}"
-                        if ords
-                        else f"{self._sense()} {ref.id} has no comments"
-                    ),
+                    next=span_next,
                 ) from None
             if number not in ords:
                 # Counts let loops stop; the next call drops the invalid
@@ -2830,22 +2836,21 @@ class GripeHandler(NumericRefHandler):
                     raise BadInput(
                         "args['comments'] range must be 'A-B' with "
                         f"1 <= A <= B, got {comments!r}",
-                        next=(
-                            f"comments on {self._sense()} {ref.id}: {ords}"
-                            if ords
-                            else f"{self._sense()} {ref.id} has no comments"
-                        ),
+                        next=span_next,
                     )
                 if not any(
                     c.ord >= lo and (hi is None or c.ord <= hi) for c in cblocks
                 ):
                     raise BadInput(
-                        f"{self._sense()} {ref.id} has no comments in range {text!r}",
-                        next=(
-                            f"comments on {self._sense()} {ref.id}: {ords}"
+                        f"{self._sense()} {ref.id} has no comments in range "
+                        f"{text!r}"
+                        + (
+                            f" — it has {len(ords)} comments, "
+                            f"valid: {ords[0]}..{ords[-1]}"
                             if ords
-                            else f"{self._sense()} {ref.id} has no comments"
+                            else " (0 comments)"
                         ),
+                        next=span_next,
                     )
                 return _Window(lo=lo, hi=hi)
             try:

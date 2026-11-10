@@ -206,6 +206,33 @@ def test_todo_comment_selector_bad_values_refuse(todo: TodoHandler) -> None:
         todo.get(id=rid, view="comments", last=0)
 
 
+def test_todo_comment_range_out_of_bounds_gives_a_call(todo: TodoHandler) -> None:
+    """gr573039: the out-of-range window names the count and valid span
+    and its ``next=`` is the working window call — the old next was a
+    bare ord list and one session re-issued the failing get 7 times."""
+    rid = _todo_with_notes(todo)  # notes 1..5
+    with pytest.raises(BadInput, match="no comments in range") as exc:
+        todo.get(id=rid, view="comments", comments="11-14")
+    assert "5 comments" in str(exc.value) and "1..5" in str(exc.value)
+    nxt = str(exc.value.next)
+    assert nxt == (
+        f"get(kind='todo', id={rid}, view='comments', args={{'comments': '1-5'}})"
+    )
+    assert "note-1" in todo.get(id=rid, view="comments", comments="1-5").body
+
+
+def test_todo_comment_range_on_commentless_todo_gives_the_card(
+    todo: TodoHandler,
+) -> None:
+    """The commentless twin: the next is the card read, not another
+    comments call (gr551839's shape)."""
+    rid = _new(todo)
+    with pytest.raises(BadInput, match="no comments in range") as exc:
+        todo.get(id=rid, view="comments", comments="2-3")
+    assert "0 comments" in str(exc.value)
+    assert str(exc.value.next) == f"get(kind='todo', id={rid})"
+
+
 def test_todo_get_args_last_flows_through_dispatch(
     runtime_with_store: Any,
 ) -> None:

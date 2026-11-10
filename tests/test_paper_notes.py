@@ -110,6 +110,25 @@ def test_note_selectors_refuse_off_view(handler: PaperHandler, store: Store) -> 
         handler.get(id="wang2020state", view="comments", args={"comment": 99})
 
 
+def test_note_range_out_of_bounds_gives_a_call(
+    handler: PaperHandler, store: Store
+) -> None:
+    """gr573039: the out-of-range window names the count and valid span
+    and its ``next=`` is the working window call — the old next was a
+    bare ord list."""
+    rid = _seed(store)
+    for i in range(1, 4):
+        handler.put(id="wang2020state", text=f"note-{i}")
+    with pytest.raises(BadInput, match="no comments in range") as exc:
+        handler.get(id="wang2020state", view="comments", args={"comments": "5-9"})
+    assert "3 comments" in str(exc.value) and "1..3" in str(exc.value)
+    assert str(exc.value.next) == (
+        f"get(kind='paper', id='pa{rid}', view='comments', args={{'comments': '1-3'}})"
+    )
+    out = handler.get(id="wang2020state", view="comments", args={"comments": "1-3"})
+    assert "note-1" in out.body
+
+
 def test_hide_and_restore_note(handler: PaperHandler, store: Store) -> None:
     rid = _seed(store)
     for i in range(1, 3):

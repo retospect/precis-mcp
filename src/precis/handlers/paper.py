@@ -4377,10 +4377,15 @@ class PaperHandler(Handler):
                 ),
             )
         numbers = sorted(_note_number(c) for c in notes)
-        have = (
-            f"comments on {kind} {_pa(ref)}: {numbers}"
+        # gr573039: a bare ord list is not a callable ``next=`` (rule 2) —
+        # the session re-issued the failing range get. The next is the
+        # call that works: the full valid window, or the card when there
+        # are no notes (gr551839's single-comment twin).
+        span_next = (
+            f"get(kind={kind!r}, id='{_pa(ref)}', view='comments', "
+            f"args={{'comments': '{numbers[0]}-{numbers[-1]}'}})"
             if numbers
-            else f"{kind} {_pa(ref)} has no comments"
+            else f"get(kind={kind!r}, id='{_pa(ref)}')"
         )
         if comment is not None:
             try:
@@ -4388,10 +4393,19 @@ class PaperHandler(Handler):
             except (TypeError, ValueError):
                 raise BadInput(
                     f"args['comment'] must be a comment number, got {comment!r}",
-                    next=have,
+                    next=span_next,
                 ) from None
             if number not in numbers:
-                raise BadInput(f"{kind} {_pa(ref)} has no comment {number}", next=have)
+                raise BadInput(
+                    f"{kind} {_pa(ref)} has no comment {number}"
+                    + (
+                        f" — it has {len(numbers)} comments, "
+                        f"valid: {numbers[0]}..{numbers[-1]}"
+                        if numbers
+                        else " (0 comments)"
+                    ),
+                    next=span_next,
+                )
             return _NoteWindow(only=number)
         if comments_sel is not None:
             text = str(comments_sel).strip()
@@ -4402,15 +4416,21 @@ class PaperHandler(Handler):
                     raise BadInput(
                         "args['comments'] range must be 'A-B' with "
                         f"1 <= A <= B, got {comments_sel!r}",
-                        next=have,
+                        next=span_next,
                     )
                 if not any(
                     lo <= _note_number(c) and (hi is None or _note_number(c) <= hi)
                     for c in notes
                 ):
                     raise BadInput(
-                        f"{kind} {_pa(ref)} has no comments in range {text!r}",
-                        next=have,
+                        f"{kind} {_pa(ref)} has no comments in range {text!r}"
+                        + (
+                            f" — it has {len(numbers)} comments, "
+                            f"valid: {numbers[0]}..{numbers[-1]}"
+                            if numbers
+                            else " (0 comments)"
+                        ),
+                        next=span_next,
                     )
                 return _NoteWindow(lo=lo, hi=hi)
             try:

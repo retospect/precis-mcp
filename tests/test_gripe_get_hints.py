@@ -271,3 +271,35 @@ def test_comment_selector_on_a_commentless_gripe_still_gives_a_call(
     assert nxt == f"get(kind='gripe', id={rid}, view='full')"
     assert "view='comments'" not in nxt
     assert "hint fixture body" in handler.get(id=rid, view="full").body
+
+
+def test_comment_range_out_of_bounds_gives_a_call(hub: Hub) -> None:
+    """gr573039: the range-case twin of gr551839 — the message names the
+    count and valid span, and the ``next=`` is the working window call,
+    not a bare ord list."""
+    handler = GripeHandler(hub=hub)
+    rid = _gripe(handler)  # comments 1..3
+    with pytest.raises(BadInput) as exc:
+        handler.get(id=rid, view="comments", comments="5-9")
+    assert f"gripe {rid} has no comments in range '5-9'" in str(exc.value)
+    assert "3 comments" in str(exc.value) and "1..3" in str(exc.value)
+    nxt = str(exc.value.next)
+    assert nxt == (
+        f"get(kind='gripe', id={rid}, view='comments', args={{'comments': '1-3'}})"
+    )
+    assert (
+        "comment number 3" in handler.get(id=rid, view="comments", comments="1-3").body
+    )
+
+
+def test_comment_range_on_a_commentless_gripe_gives_the_full_read(hub: Hub) -> None:
+    """The commentless twin: the next is the full read, not another
+    comments call."""
+    handler = GripeHandler(hub=hub)
+    rid = _gripe(handler, comments=0)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id=rid, view="comments", comments="1-2")
+    assert "0 comments" in str(exc.value)
+    nxt = str(exc.value.next)
+    assert nxt == f"get(kind='gripe', id={rid}, view='full')"
+    assert "view='comments'" not in nxt
