@@ -364,20 +364,14 @@ def test_no_head_refusal_carries_next(monkeypatch: pytest.MonkeyPatch) -> None:
     assert caught.value.next
 
 
-def test_more_is_auxiliary_and_cursor_cache_state_is_gone(
-    runtime_with_store: PrecisRuntime,
-) -> None:
+def test_more_and_cursor_state_are_gone(runtime_with_store: PrecisRuntime) -> None:
     from precis import server
+    from precis.tools import TOOL_REGISTRY
     from precis.utils.llm.precis_tools import precis_tool_specs
 
-    # ``more`` is an auxiliary registry entry (gr592662), not a verb of
-    # the API: absent from the verb-level read set and from the llm-loop
-    # bridge, whose executor forwards to ``runtime.dispatch`` (the seven
-    # verbs only) — a truncated result names its full ``get``/``search``
-    # continuation in a ``next:`` footer instead.
+    assert "more" not in TOOL_REGISTRY
     assert "more" not in server.READ_ONLY_VERBS
     assert "more" not in {spec.name for spec in precis_tool_specs()}
-    # The removed cursor-cache state stays removed.
     assert not hasattr(runtime_with_store, "fetch_more")
     assert not hasattr(runtime_with_store, "pagination")
 

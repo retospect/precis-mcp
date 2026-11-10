@@ -1,7 +1,7 @@
 ---
 name: test-runner
 description: "Cheap: runs scripts/test with given args, reports pass/fail and failing ids."
-tools: Bash, Read, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
+tools: Bash, Read, mcp__precis__get, mcp__precis__search, mcp__precis__put, mcp__precis__tag
 model: haiku
 ---
 

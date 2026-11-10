@@ -130,8 +130,6 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 _VERB_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "get": ToolAnnotations(readOnlyHint=True),
     "search": ToolAnnotations(readOnlyHint=True),
-    # ``more`` re-issues a read verbatim — it never writes (gr592662).
-    "more": ToolAnnotations(readOnlyHint=True),
     "delete": ToolAnnotations(destructiveHint=True),
 }
 

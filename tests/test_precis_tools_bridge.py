@@ -97,11 +97,3 @@ def test_precis_tool_specs_covers_verbs() -> None:
     for s in specs:  # every advertised tool has an object-typed schema
         assert s.parameters["type"] == "object"
         assert isinstance(s.description, str)
-
-
-def test_precis_tool_specs_default_excludes_more() -> None:
-    """``more`` is a registry auxiliary, not a runtime verb — the loop's
-    executor forwards to ``runtime.dispatch`` (seven verbs), so the spec
-    set excludes it by default; ``exclude=frozenset()`` renders all."""
-    assert "more" not in {s.name for s in precis_tool_specs()}
-    assert "more" in {s.name for s in precis_tool_specs(exclude=frozenset())}

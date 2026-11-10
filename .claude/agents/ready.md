@@ -1,7 +1,7 @@
 ---
 name: ready
 description: "Sonnet backlog-readiness judge: vets a spec against prose and code; never writes code or flips status."
-tools: Read, Grep, Glob, Bash, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
+tools: Read, Grep, Glob, Bash, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 

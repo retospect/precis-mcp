@@ -29,14 +29,7 @@ if TYPE_CHECKING:
 
     from precis.utils.llm.openai_tools import ToolExecutor
 
-#: Tools kept out of the OSS loop's advertised set. ``more`` is an
-#: auxiliary registry entry (gr592662), not one of the seven runtime
-#: verbs, and :func:`runtime_executor` forwards calls verbatim to
-#: ``runtime.dispatch`` — which refuses it as an unknown verb. The loop
-#: never needs it: a truncated result names its full continuation call
-#: in a ``next:``/``rest:`` footer, so the model continues by issuing
-#: that call directly.
-_DEFAULT_EXCLUDE: frozenset[str] = frozenset({"more"})
+_DEFAULT_EXCLUDE: frozenset[str] = frozenset()
 
 
 def _json_schema_for(pinfo: dict[str, Any], *, description: str = "") -> dict[str, Any]:
@@ -88,12 +81,7 @@ def _spec_from_registry(name: str, info: dict[str, Any]) -> ToolSpec:
 
 
 def precis_tool_specs(*, exclude: frozenset[str] = _DEFAULT_EXCLUDE) -> list[ToolSpec]:
-    """The precis verbs as OpenAI tool specs.
-
-    The registry's auxiliary tools (``more``) are excluded by default —
-    see :data:`_DEFAULT_EXCLUDE`; pass ``exclude=frozenset()`` to render
-    the whole registry.
-    """
+    """The precis verbs as OpenAI tool specs."""
     from precis.tools import TOOL_REGISTRY
 
     return [

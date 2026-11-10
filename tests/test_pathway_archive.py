@@ -6,7 +6,10 @@ inspectable and integrity-checked without a database, engine or compute.
 The persisted ``repro_case.json`` snapshot is the recorded November case —
 the real ``pw455722`` record (NO → NH3 on Pd, pathway 455722, seed job
 455725) exported read-only from prod, its retained ``pathway_body`` chunk
-riding as ``methods``. ``repro_case_bundle.zip`` is its packaged archive,
+riding as ``methods``. The two free-text fields (``_source`` note and the
+``methods`` body) are synthetic placeholders: the public repo carries no
+paper-style prose (tests/test_paper_text_gate.py). ``repro_case_bundle.zip``
+is its packaged archive, rebuilt from the fixture,
 committed so an offline reader can verify integrity without building
 anything. The record predates artifact retention and the D10 manifest, so
 those pins are genuinely absent and disclosed, never fabricated.

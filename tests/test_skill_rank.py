@@ -252,15 +252,30 @@ def test_title_boost_df_exactly_one_bypasses_but_df_two_does_not(
     """``rare_identity_hit`` must fire on catalogue identity-DF ==
     *exactly* 1, not "not 1" or "exactly 2" — a mutant on either the
     ``==`` or the ``1`` would make a DF==2 word bypass identically to a
-    genuine DF==1 word. "bounded" is DF==1 (only
-    ``precis-search-help``'s title carries it); "anki" is DF==2
-    (``precis-anki-help`` and ``precis-cloze`` both do). Both
+    genuine DF==1 word. "merge" is DF==1 (only
+    ``precis-taproot-hub-edit-help``'s title carries it); "anki" is
+    DF==2 (``precis-anki-help`` and ``precis-cloze`` both do). Both
     queries pad the same way to well under the 70% coverage bar and
     below the 2-word-match floor, so only the DF==1 bypass can explain
     a difference in outcome.
+
+    The DF premises are asserted first: this test used to use "bounded"
+    (DF==1 on ``precis-search-help``) until ``soul-structure`` put the
+    word in its title and made it DF==2 — a catalogue edit, not a
+    search regression, so the premise check names that cause.
     """
-    out = skill.search(q="bounded banana orange grape mango kiwi")
-    assert _pinned_slugs(out.body) == ["precis-search-help"], out.body
+    from precis.handlers import skill as skill_mod
+
+    idents = {s: skill_mod._skill_title_tokens(s)[0] for s in skill_mod._list_skills()}
+    for word, want in (("merge", 1), ("anki", 2)):
+        owners = sorted(s for s, ident in idents.items() if word in ident)
+        assert len(owners) == want, (
+            f"{word!r} must be identity-DF=={want}, now {owners}: pick another "
+            "filler/rare word, the catalogue moved under this test"
+        )
+
+    out = skill.search(q="merge banana orange grape mango kiwi")
+    assert _pinned_slugs(out.body) == ["precis-taproot-hub-edit-help"], out.body
 
     out = skill.search(q="anki banana orange grape mango kiwi")
     assert _pinned_slugs(out.body) == [], out.body

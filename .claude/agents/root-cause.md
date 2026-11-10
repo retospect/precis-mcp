@@ -1,7 +1,7 @@
 ---
 name: root-cause
 description: "Sonnet read-only root-cause investigator: reproduces a bug, traces symptom to defect, flags masking risk."
-tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
+tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 
