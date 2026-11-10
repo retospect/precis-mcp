@@ -659,7 +659,10 @@ def run_search_step(
 # chunk or todo ref whose full text lands in the NEXT tick's context; `fetch` asks for
 # a served abstract stub's full text via ``PaperHandler.acquire``
 # (idempotent identifier-collapse — the request re-pins the stub at the
-# head of the fetch_oa queue, never a second mint).
+# head of the fetch_oa queue, never a second mint), or — its `{"url": …}`
+# form (gr573684) — fetches a live page through the ``web`` cache and
+# parks it for the same next-tick render, the tick's pricing-page /
+# vendor-doc monitor.
 #
 # A `read` entry may carry two optional selectors (gr505186/gr507189 — a
 # bare read only ever reached the front matter): ``section`` names a
@@ -675,6 +678,11 @@ PENDING_READS_META_KEY = "pending_reads"
 #: Logbook marker prefix a successful ``fetch`` request writes — the
 #: serving context's ``full text: requested`` status scans for it.
 _FETCH_MARKER = "lit-fetch:"
+
+#: Logbook marker prefix a ``fetch`` ``{"url": ...}`` entry writes — the
+#: traceable record of which live page the tick pulled, and the
+#: ``web:<id>`` handle a later ``read`` can name (gr573684).
+_WEB_FETCH_MARKER = "web-fetch:"
 
 
 def _paper_body_held(store: Store, ref_id: int) -> bool:
@@ -692,9 +700,31 @@ def _paper_body_held(store: Store, ref_id: int) -> bool:
     return False
 
 
+def _resolve_cache_ref(store: Store, kind: str, ident: str) -> Any | None:
+    """A live cache-backed ref addressed ``<kind>:<ref_id|slug>`` — the
+    cite form cache kinds carry (``web:<id>``), since provider kinds have
+    no universal handle (:data:`handle_registry.CODELESS_KINDS`). Digits
+    resolve as a ref id, anything else as the ref's slug; ``None`` when no
+    live cache row matches."""
+    ident = ident.strip()
+    if not ident:
+        return None
+    entry = None
+    if ident.isdigit():
+        entry = store.get_cache_entry_by_ref_id(kind=kind, ref_id=int(ident))
+    if entry is None:
+        entry = store.get_cache_entry_by_slug(kind=kind, slug=ident)
+    return entry[0] if entry is not None else None
+
+
 def _resolve_read_ref(store: Store, ident: str) -> Any | None:
     """Resolve a ``read`` entry's ``ref`` — any well-formed universal
-    handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live."""
+    handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live, or
+    a ``web:<ref_id|slug>`` cache address (a fetched page carries no
+    universal handle — gr573684)."""
+    ident = ident.strip()
+    if ident.lower().startswith("web:"):
+        return _resolve_cache_ref(store, "web", ident[4:])
     resolved = store.resolve_handle(ident)
     return resolved
 
@@ -731,6 +761,12 @@ def apply_reads(
             why = str(e.get("why") or "").strip()[:200]
             if not ident:
                 refused.append("entry has no usable `ref`")
+                continue
+            if ident.startswith(("http://", "https://")):
+                refused.append(
+                    f"{ident[:80]}: a URL is a `fetch` request "
+                    '({"url": ...}), not a `read` — read names a held ref'
+                )
                 continue
             if _resolve_read_ref(store, ident) is None:
                 refused.append(f"{ident}: does not resolve to a held ref/chunk")
@@ -799,6 +835,67 @@ def apply_reads(
     return len(requests)
 
 
+def _fetch_web_page(
+    store: Store, url: str, *, hub: Any | None
+) -> tuple[int | None, str | None]:
+    """One ``fetch`` ``{"url": ...}`` entry: fetch the URL live through the
+    ``web`` kind's cache-backed path (SSRF-guarded ``safe_fetch``,
+    tier-0 injection scan, 7-day TTL — the same machinery
+    ``get(kind='web', id=URL)`` runs; gr573684).
+
+    Returns ``(ref_id, None)`` of the cached ``web`` ref on success, or
+    ``(None, refusal)`` — the URL is model-supplied, so every failure mode
+    (bad shape, private address, unreachable host, upstream HTTP error)
+    is a refusal note, never a raise.
+    """
+    from precis.utils.url import canonical_url, is_http_url
+
+    try:
+        key = canonical_url(url)
+    except ValueError:
+        return None, f"{url[:80]}: not a valid URL"
+    if not is_http_url(key):
+        return None, f"{url[:80]}: not an http(s) URL"
+    try:
+        if hub is None:
+            from precis.dispatch import Hub
+
+            hub = Hub(store=store)
+        from precis.handlers.web import WebHandler
+
+        WebHandler(hub=hub).get(id=key)
+    except Exception as exc:
+        return None, f"{url[:80]}: fetch failed ({type(exc).__name__}: {exc!s})"[:160]
+    entry = store.get_cache_entry(provider="web", request_hash=WebHandler._hash(key))
+    if entry is None:
+        return None, f"{url[:80]}: fetched but no cache row resolved"
+    return int(entry[0].id), None
+
+
+def _park_pending_reads(
+    store: Store, quest_id: int, reqs: list[dict[str, Any]]
+) -> None:
+    """Append fetched web refs to ``meta.pending_reads`` — the queue
+    :func:`apply_reads` rewrites each tick — so the next tick's
+    Requested-reads section renders their bodies (gr573684). Runs after
+    ``apply_reads`` in the stage order, so the fresh batch is preserved,
+    not clobbered; deduped against entries already parked."""
+    quest = store.get_ref(kind="quest", id=quest_id)
+    meta = getattr(quest, "meta", None) or {}
+    pending = meta.get(PENDING_READS_META_KEY)
+    merged: list[Any] = list(pending) if isinstance(pending, list) else []
+    have = {str(e.get("ref")) for e in merged if isinstance(e, dict)}
+    merged.extend(r for r in reqs if r["ref"] not in have)
+    try:
+        store.update_ref(quest_id, meta_patch={PENDING_READS_META_KEY: merged})
+    except Exception:
+        log.warning(
+            "apply_fetches: failed to park web reads for quest %s",
+            quest_id,
+            exc_info=True,
+        )
+
+
 def apply_fetches(
     store: Store,
     quest_id: int,
@@ -808,19 +905,30 @@ def apply_fetches(
     cap: int = 2,
     by: str = "agent",
 ) -> int:
-    """Execute a tick payload's ``fetch`` — ask for a served abstract
-    stub's full text through the same acquire path the DOI-hit leg uses
-    (``PaperHandler.acquire``; gr502680).
+    """Execute a tick payload's ``fetch`` — two entry shapes sharing one
+    per-tick cap.
 
-    Each entry is ``{"paper": "<pa<id> or ref id>", "why": ...}``. A stub
-    with a registered identifier (doi/arxiv/s2) goes through ``acquire`` —
-    the identifier collapses onto the held stub and re-pins it at the head
-    of the ``fetch_oa`` queue, so a repeat request is a no-op pin, never a
+    ``{"paper": "<pa<id> or ref id>", "why": ...}`` asks for a served
+    abstract stub's full text through the same acquire path the DOI-hit
+    leg uses (``PaperHandler.acquire``; gr502680). A stub with a
+    registered identifier (doi/arxiv/s2) goes through ``acquire`` — the
+    identifier collapses onto the held stub and re-pins it at the head of
+    the ``fetch_oa`` queue, so a repeat request is a no-op pin, never a
     second mint; a stub with no identifier is re-pinned directly. A paper
-    that already holds a body is refused ("already held"). Refusals land
-    as ``observation`` notes; each success logs a ``lit-fetch:`` marker
-    line the serving context's ``full text: requested`` status reads.
-    Returns the number of fetch requests made.
+    that already holds a body is refused ("already held").
+
+    ``{"url": "<https://…>", "why": ...}`` fetches a live page through the
+    ``web`` cache (:func:`_fetch_web_page`; gr573684 — the pricing-page /
+    vendor-doc monitor a tick had no channel for). The cached ref is
+    ``serves``-linked + ``quest:<id>``-tagged like a lit-search hit, and a
+    ``web:<ref_id>`` pending read is parked so the next tick's Requested
+    reads renders the body. A repeat request inside the 7-day TTL is a
+    cache read; after expiry the same request re-fetches — that IS the
+    monitor.
+
+    Refusals land as ``observation`` notes; each success logs a
+    ``lit-fetch:`` / ``web-fetch:`` marker line. Returns the number of
+    fetch requests made.
     """
     if not isinstance(entries, list):
         return 0
@@ -829,6 +937,7 @@ def apply_fetches(
     made = 0
     refused: list[str] = []
     handler: Any | None = None
+    parked: list[dict[str, Any]] = []
     over_cap = 0
     for e in entries:
         # The cap bounds fetches actually made; refused entries (held,
@@ -839,10 +948,48 @@ def apply_fetches(
         if not isinstance(e, dict):
             refused.append("malformed entry (not an object)")
             continue
-        ident = str(e.get("paper") or "").strip()
         why = str(e.get("why") or "").strip()[:200]
+        url = str(e.get("url") or "").strip()
+        if url:
+            web_ref_id, refusal = _fetch_web_page(store, url, hub=hub)
+            if web_ref_id is None:
+                refused.append(refusal or f"{url[:80]}: fetch failed")
+                continue
+            if not any(
+                ln.src_ref_id == web_ref_id
+                for ln in store.links_for(quest_id, direction="in", relation="serves")
+            ):
+                store.add_link(
+                    src_ref_id=web_ref_id,
+                    dst_ref_id=quest_id,
+                    relation="serves",
+                    set_by="agent",
+                )
+                store.add_tag(
+                    web_ref_id,
+                    Tag.open(quest_tag_value(quest_id, store)),
+                    set_by="system",
+                )
+            made += 1
+            parked.append({"ref": f"web:{web_ref_id}", "why": why})
+            try:
+                append_entry(
+                    store,
+                    quest_id,
+                    text=(
+                        f"{_WEB_FETCH_MARKER} fetched {url[:160]} "
+                        f"→ web:{web_ref_id} — text lands in next tick's "
+                        "requested reads" + (f" ({why})" if why else "")
+                    )[:400],
+                    entry_type="observation",
+                    by=by,
+                )
+            except Exception:
+                log.warning("apply_fetches: logbook note failed", exc_info=True)
+            continue
+        ident = str(e.get("paper") or "").strip()
         if not ident:
-            refused.append("entry has no usable `paper`")
+            refused.append("entry has no usable `paper` or `url`")
             continue
         parsed = handle_registry.parse(ident)
         ref_id: int | None = None
@@ -908,6 +1055,8 @@ def apply_fetches(
             log.warning("apply_fetches: logbook note failed", exc_info=True)
     if over_cap:
         refused.append(f"{over_cap} entr(ies) over the per-tick cap of {cap}")
+    if parked:
+        _park_pending_reads(store, quest_id, parked)
     for note in refused:
         try:
             append_entry(

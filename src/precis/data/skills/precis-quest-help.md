@@ -381,6 +381,14 @@ second; tagged `quest:<id>` + `needs-tool:<slug>`; linked `blocks` → the
 quest, so the gap list reads `blocked on gr<id>: <tool>` and the dry-rest
 alert cites the handles. Closing the gripe clears the gap.
 
+What a tick already has, before it declares a need: `searches` (graph +
+Semantic Scholar lit acquisition), `read` (full text of a held
+`fi`/`pa`/`pc`/`td` item or a `web:<id>` fetched page, next tick's context),
+`fetch` (`{"paper": …}` pulls a served stub's full text; `{"url": …}`
+fetches a live page through the `web` cache — vendor pricing, changelogs,
+announcements — serves-linked, rendered next tick), `proposals` /
+`reruns` (sim lanes), `dialectic_ops` + `ledger_ops` (structure).
+
 ## The dossier + a research tick
 
 A quest keeps *two* records. The **logbook** is episodic (what happened,
