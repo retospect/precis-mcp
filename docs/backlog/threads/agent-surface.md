@@ -51,10 +51,16 @@ description budgets, then Drive.
    The start skill landed as `precis-repo-dev-start-help` (fixed slug,
    index-only, ratcheted by `tests/test_repo_dev_start_page.py`; it
    routes to the `soul` skill index, rulings hub me489895, vocabulary
-   root tn559460 and the checkout docs). Still to land: the load line +
-   fallback path in `AGENTS.md`/`CLAUDE.md`, the SessionStart hook
-   print, the `PRECIS_STARTUP_SKILLS` pin — the pin text already
-   recommends it in `precis-startup-skills-help`. Waits on
+   root tn559460 and the checkout docs). The generated, revisioned
+   fallback landed next (td627295): `scripts/docs-index` writes
+   `docs/repo-dev-start-page.md` per worktree — the start page and
+   `soul.md` embedded verbatim with file revs, plus the missing-MCP
+   pointers — no DB needed, so it renders mid-outage. Still to land:
+   the load line + fallback path in `AGENTS.md`/`CLAUDE.md` (the
+   ~30–50-line shared entry point), the SessionStart hook print, the
+   `PRECIS_STARTUP_SKILLS` pin — the pin text already recommends it in
+   `precis-startup-skills-help`; all three need an adapters/hooks lane.
+   Waits on
    Reto's yes/no for the conduct sentences (gr572704); a skill renders no
    linked neighbours yet (gr572706). Filed by the 2026-11-05
    surface-review pass on this surface: gr570088, gr570089, gr572707,

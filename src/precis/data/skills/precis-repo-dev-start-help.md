@@ -24,8 +24,10 @@ to be read end to end.
 Authority order: the checkout (`AGENTS.md`, `CLAUDE.md`, `docs/`,
 `scripts/`) and current user rulings win; this served copy (its
 `skill rev` trailer is the file's revision) and recalled memories are
-pointers and dated evidence, never new permission. The same file in
-the checkout is the MCP-outage fallback.
+pointers and dated evidence, never new permission. Offline or cold:
+`docs/repo-dev-start-page.md` — regenerated per worktree at session
+start (`scripts/docs-index`, gitignored) — embeds this page and the
+`soul` index verbatim with their file revs plus the outage pointers.
 
 ## Recall repo-dev knowledge before I touch code
 ## Orient in the memory graph at task start

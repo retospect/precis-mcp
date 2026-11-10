@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """scripts/docs-index — regenerate the gitignored doc indexes.
 
-Four standalone generated files, one script, run by the SessionStart
+Five standalone generated files, one script, run by the SessionStart
 hook (each worktree regenerates its own copies; nothing is committed —
 the files are gitignored, so they never churn or conflict):
 
@@ -13,6 +13,12 @@ the files are gitignored, so they never churn or conflict):
                            thread:<slug>, read from prod best-effort via
                            scripts/prod-psql --ro; off with
                            PRECIS_DOCS_INDEX_GRIPES=0 and under CI)
+  docs/repo-dev-start-page.md  cold-start fallback: the repo-dev start
+                           page and the soul index embedded verbatim
+                           from their canonical skill files (rev-stamped,
+                           never a maintained copy) plus the
+                           missing-MCP pointers — checkout files only,
+                           no database needed
 
 The summary for a markdown file is its first non-heading, non-front-matter
 prose line; `status:` is read from front-matter (backlog only, defaults to
@@ -41,10 +47,12 @@ errors, invalid thread navigation or (with --lint) a docstring finding.
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import re
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -236,10 +244,133 @@ def lint_docstrings() -> list[str]:
 
 def write_generated(target: Path, title: str, rows: list[str]) -> bool:
     new = "\n".join([f"# {title}", "", HEADER, "", *rows, ""])
+    return write_generated_text(target, new)
+
+
+def write_generated_text(target: Path, new: str) -> bool:
     if target.exists() and target.read_text(encoding="utf-8") == new:
         return False
     target.write_text(new, encoding="utf-8")
     return True
+
+
+# ── docs/repo-dev-start-page.md — the generated cold-start fallback ──────
+
+#: Sources embedded verbatim, in order: the repo-dev start page, then the
+#: soul conduct-layer index. Each section names its file and stamps the
+#: file's sha8 — the "generated from the same canonical source with its
+#: revision" half of gr564575; no independently maintained copy exists.
+START_PAGE_SOURCES = (
+    "src/precis/data/skills/precis-repo-dev-start-help.md",
+    "src/precis/data/skills/soul.md",
+)
+START_PAGE_TARGET = "docs/repo-dev-start-page.md"
+
+
+def _git(root: Path, *args: str) -> str | None:
+    """Best-effort one-shot git call in ``root``; None on any failure."""
+    try:
+        cp = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return None
+    return cp.stdout.strip()
+
+
+def shared_memory_dir(root: Path) -> str:
+    """``~/.claude/projects/<escaped main checkout>/memory`` — the shared
+    bootstrap dir. Same derivation as
+    ``scripts/hooks/session-start-memory.sh`` and ``scripts/memory-lint``:
+    a worktree lands on the main checkout's dir via ``--git-common-dir``,
+    so a parent session and its child worktrees share one address."""
+    common = _git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common is None:
+        return "~/.claude/projects/<escaped-main-checkout>/memory"
+    main_root = str(Path(common).parent)
+    return str(
+        Path.home() / ".claude" / "projects" / main_root.replace("/", "-") / "memory"
+    )
+
+
+def _nodes_cache_dir() -> Path:
+    """The SessionStart node-export dir (``PRECIS_MEMORY_NODES`` override,
+    else ``$XDG_CACHE_HOME/precis/memory-nodes``) — same default as
+    ``scripts/hooks/session-start-memory.sh``."""
+    override = os.environ.get("PRECIS_MEMORY_NODES")
+    if override:
+        return Path(override)
+    return (
+        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        / "precis"
+        / "memory-nodes"
+    )
+
+
+def start_page_text(root: Path) -> str:
+    """The whole ``docs/repo-dev-start-page.md`` render.
+
+    Every embedded section is verbatim from its named source file — the
+    ``rev`` trailer carries each source's sha8 so a stale render is
+    detectable by hashing the file, and no copy is independently
+    maintained. The stamp is the newest *source* mtime, not the wall
+    clock: regeneration stays idempotent like the other four files (no
+    churn, no rewrite when inputs are unchanged). Inputs are checkout
+    files and the harness cache paths only — no database, no network,
+    so the page renders outage-safe by construction.
+    """
+    parts: list[tuple[str, str, str]] = []
+    newest = 0.0
+    for rel in START_PAGE_SOURCES:
+        src = root / rel
+        text = src.read_text(encoding="utf-8")
+        newest = max(newest, src.stat().st_mtime)
+        _fm, body = front_matter(text)
+        parts.append(
+            (rel, hashlib.sha256(text.encode("utf-8")).hexdigest()[:8], body.strip())
+        )
+    stamp = datetime.fromtimestamp(newest, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    revs = " · ".join(f"{rel} {rev}" for rel, rev, _body in parts)
+    head = _git(root, "rev-parse", "--short", "HEAD") or "?"
+    nodes = _nodes_cache_dir()
+    memdir = shared_memory_dir(root)
+    out = [
+        "# Repo-dev start page",
+        "",
+        HEADER,
+        f"<!-- rev: {revs} · head {head} · sources as of {stamp} -->",
+        "",
+        "Cold-start, MCP-optional copy of the repo-dev start page and the",
+        "soul conduct-layer index — each embedded verbatim from its named",
+        "canonical file, never a maintained copy. The checkout",
+        "(`AGENTS.md`, `CLAUDE.md`, `docs/`, `scripts/`) and current user",
+        "rulings are the authority; this file is a dated mirror, not",
+        "permission.",
+        "",
+        "## If the precis MCP or the memory graph is unreachable",
+        "",
+        "- Skill bodies: `src/precis/data/skills/<slug>.md` — what",
+        "  `get(kind='skill', id='<slug>')` serves, minus the chrome.",
+        f"- Memory nodes: `{nodes}/` — `<handle>.md` is `# title` plus",
+        "  body, `_sections.tsv` the manifest; stale scratch that the",
+        "  next good export overwrites — read it, never edit it as",
+        "  memory (rotations beside it: `memory-nodes.<UTC stamp>`).",
+        "- Keep a fact: append `## <UTC stamp> <session>` plus the fact",
+        f"  to `{memdir}/outage-memory.md`; the SessionStart hook flags",
+        "  it for integration once the graph returns. No other memory",
+        "  writes during an outage.",
+        "- Restore: `docs/runbooks/memory-restore.md`.",
+    ]
+    for rel, rev, body in parts:
+        out += ["", f"## `{rel}` (file rev {rev})", "", body]
+    return "\n".join(out) + "\n"
 
 
 RESUME_FIELDS = (
@@ -451,6 +582,15 @@ def main() -> int:
         changed.append("docs/runbooks/INDEX.md")
     if write_generated(ROOT / "docs" / "codebase-map.md", "Package map", package_map()):
         changed.append("docs/codebase-map.md")
+    start_page = ROOT / START_PAGE_TARGET
+    try:
+        new_start_page = start_page_text(ROOT)
+    except OSError as error:
+        # A missing skill source must not take the other four files down.
+        print(f"docs-index: start page skipped ({error})", file=sys.stderr)
+    else:
+        if write_generated_text(start_page, new_start_page):
+            changed.append(START_PAGE_TARGET)
     for c in changed:
         print(f"→ {c}")
     return 0

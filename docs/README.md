@@ -63,7 +63,7 @@ package docstrings (present truth + rationale), or git history (past).
 
 ## Generated indexes
 
-`scripts/docs-index` (stdlib-only, bare `python3`) writes four standalone
+`scripts/docs-index` (stdlib-only, bare `python3`) writes five standalone
 **gitignored** files; a SessionStart hook regenerates them per-worktree, so
 they are never committed, never churn, never conflict. Never hand-edit them —
 each tracked doc that links to one carries a "run `scripts/docs-index`
@@ -74,6 +74,9 @@ if missing/stale" note for readers outside a hooked session.
 - `docs/codebase-map.md` — import path + docstring first line
   (PEP 257). A package listed as *(no package docstring yet)* is the nudge
   to write one.
+- `docs/repo-dev-start-page.md` — the cold-start/MCP-outage fallback:
+  `precis-repo-dev-start-help` and the `soul` index embedded verbatim from
+  their skill files (each rev-stamped), plus the missing-MCP pointers.
 
 - `docs/backlog/threads/PRIORITIES.md` — declared activity from the fleet
   roster, next actions and dependencies from bounded thread Resume fields.

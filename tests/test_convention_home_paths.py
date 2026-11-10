@@ -63,6 +63,7 @@ _GENERATED = {
     "docs/backlog/INDEX.md",
     "docs/backlog/threads/PRIORITIES.md",
     "docs/codebase-map.md",
+    "docs/repo-dev-start-page.md",
     "docs/runbooks/INDEX.md",
 }
 

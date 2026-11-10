@@ -163,6 +163,7 @@ coverage.xml
 docs/backlog/INDEX.md
 docs/runbooks/INDEX.md
 docs/codebase-map.md
+docs/repo-dev-start-page.md
 
 # per-session ship/deploy/mutate logs redirected by an operator (never commit)
 .ship.log
