@@ -24,7 +24,9 @@ Todo-tree detectors (each one SQL query → finding rows):
   (gr551962).
 * **spin loops** — a ``(ref_id, source)`` emitting > ``SPIN_LOOP_EVENTS_24H``
   ``ref_events``/24h — a derived-queue worker re-claiming the same ref
-  every pass.
+  every pass. ``schedule:close`` rows (per-tick bookkeeping, gr601246)
+  are excluded — they are consequences of a tick, not re-claims
+  (gr614724).
 * **plan-tick spins** — a planner parent minting > ``PLAN_TICK_REMINT_24H``
   ``plan_tick`` jobs/24h — succeeding each tick without converging.
 * **quest-loop failing** — a ``quest_tick`` coordinator resting
@@ -1085,6 +1087,13 @@ def _detect_spin_loops(store: Store) -> list[Symptom]:
     onto the ref — a loop on the same ref from the same source is one
     finding regardless of how the count drifts pass-to-pass.
 
+    ``schedule:close`` rows are excluded: they are per-tick lifecycle
+    bookkeeping stamped once per settled tick child (gr601246), not
+    re-claims — a healthy ~10-min recurring logs ~144 ``spawn`` + ~144
+    ``close`` rows a day and false-fired this detector on both Watches
+    ticks (gr614724). Dropping them costs nothing: a day with >200
+    closes implies >200 spawns, which still alert.
+
     Cheap: a single grouped scan of the last 24h of ``ref_events``,
     which is GIN/btree-indexed on ``ts``. Capped at 50 like the others.
     """
@@ -1096,6 +1105,7 @@ def _detect_spin_loops(store: Store) -> list[Symptom]:
                    count(*)::int AS n
               FROM ref_events
              WHERE ts > now() - interval '24 hours'
+               AND NOT (source = 'schedule' AND event = 'close')
              GROUP BY ref_id, source
             HAVING count(*) > %s
              ORDER BY count(*) DESC

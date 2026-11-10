@@ -58,7 +58,11 @@ spawned child stuck open will silently prevent further ticks.
 `spin-loop` is the only cross-kind detector — it scans `ref_events`
 rather than the todo tree, catching a background worker that
 re-claims the same ref every pass (a broken retry window, a no-op
-outcome that never clears the claim predicate). The detail names the
+outcome that never clears the claim predicate). `schedule:close` rows
+are excluded from the count — they are per-tick lifecycle bookkeeping
+(one per settled tick, gr601246), not re-claims; a healthy ~10-min
+recurring would otherwise read ~288 events/24h and false-fire
+(gr614724). The detail names the
 source + last event + rate so triage starts at the worker. The same
 loops are also surfaced on the web Status page's "Background health"
 panel for pull-style monitoring.

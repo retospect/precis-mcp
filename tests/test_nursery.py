@@ -926,6 +926,32 @@ def test_spin_loop_detector_flags_hammered_ref(store: Store) -> None:
     assert "no_oa_version" in hits[0].detail
 
 
+def test_spin_loop_detector_ignores_schedule_close_rows(store: Store) -> None:
+    """gr614724: ``schedule:close`` rows are per-tick lifecycle
+    bookkeeping (the settled-tick close, gr601246), not re-claims — a
+    healthy ~10-min recurring logs ~144 ``spawn`` + ~144 ``close`` a
+    day and must not trip the detector on the combined count."""
+    rec = store.insert_ref(kind="todo", slug=None, title="Recurring watch", meta={})
+    _seed_events(store, rec.id, "schedule", "spawn", 150)
+    _seed_events(store, rec.id, "schedule", "close", SPIN_LOOP_EVENTS_24H)
+
+    findings = _detect_spin_loops(store)
+    assert rec.id not in {f.ref_id for f in findings}
+
+
+def test_spin_loop_detector_still_flags_spawn_storm(store: Store) -> None:
+    """A genuinely over-firing recurring still trips on its ``spawn``
+    rows alone — dropping ``close`` loses no detection power."""
+    rec = store.insert_ref(kind="todo", slug=None, title="Spinning recurring", meta={})
+    _seed_events(store, rec.id, "schedule", "spawn", SPIN_LOOP_EVENTS_24H + 1)
+    _seed_events(store, rec.id, "schedule", "close", SPIN_LOOP_EVENTS_24H + 1)
+
+    findings = _detect_spin_loops(store)
+    hits = [f for f in findings if f.ref_id == rec.id]
+    assert len(hits) == 1
+    assert hits[0].category == "spin-loop"
+
+
 def _mint_plan_ticks(store: Store, parent_id: int, n: int) -> None:
     for i in range(n):
         store.insert_ref(

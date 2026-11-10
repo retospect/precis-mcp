@@ -1031,6 +1031,11 @@ def _background_anomalies(store: Store) -> dict[str, list[dict[str, Any]]]:
                    count(*)::int AS n
               FROM ref_events
              WHERE ts > now() - interval '24 hours'
+               -- Mirrors the nursery detector: ``schedule:close`` is
+               -- per-tick lifecycle bookkeeping (gr601246), not a
+               -- re-claim — a healthy ~10-min recurring would otherwise
+               -- read ~288 events/24h and false-fire (gr614724).
+               AND NOT (source = 'schedule' AND event = 'close')
              GROUP BY ref_id, source
             HAVING count(*) > %s
              ORDER BY count(*) DESC
