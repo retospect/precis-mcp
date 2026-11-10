@@ -78,7 +78,10 @@ A recurring pass summarizes recent news and persists a dated, searchable
 brief; optionally it delivers into a Discord thread. Each brief ends with
 a deterministic `## Weather` section — spoken METAR/TAF, active SIGMETs,
 and Met Éireann marine warnings (`PRECIS_BRIEFING_*` config; details:
-`docs/runbooks/news-ops.md`). Read a past brief by its handle:
+`docs/runbooks/news-ops.md`). A day with no new headlines still gets a
+dated brief when unresolved work is open (open alerts, ask-user waits,
+child-failed flags, halted or unminted executor todos); a truly quiet day
+writes no brief. Read a past brief by its handle:
 
 ```python
 get(id="nw<id>")

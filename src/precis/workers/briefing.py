@@ -30,6 +30,15 @@ later than background work, and a pause never ends silently:
   "delayed" notice (once per day) and asks the schedule worker to re-mint
   the tick in an hour (:func:`handle_pause`), until the recurring's
   deadline (``deadline_utc`` param, default 12:00Z) — then "skipped today".
+
+**No-news days.** An empty window used to exit silently — which hid the
+days the feed itself was the outage (gr626716). The pass now checks
+*unresolved health/decision work* before declaring nothing to brief
+(:func:`_unresolved_lines`: open ``kind='alert'`` conditions + the todo
+attention signals). Any found still lands a dated ``briefing-<date>`` ref —
+deterministic, no LLM (a fleet/LLM outage is itself one of the conditions
+this path exists to surface) — delivered like any other brief. A truly
+quiet day stays an explicit no-op (``articles == 0``, ``ref_id=None``).
 """
 
 from __future__ import annotations
@@ -271,8 +280,11 @@ def run_briefing(
 ) -> dict[str, Any]:
     """Generate (and persist) a morning briefing from recent news refs.
 
-    Returns ``{articles, brief_chars, ref_id}``; ``articles == 0`` means
-    no news in the window and no brief was written.
+    Returns ``{articles, brief_chars, ref_id, degraded_to, unresolved}``;
+    ``ref_id is None`` means a truly quiet day — no news in the window
+    *and* no unresolved work — and no brief was written. ``articles == 0``
+    with a non-``None`` ``ref_id`` is the deterministic unresolved-work
+    digest (gr626716; ``unresolved`` counts its lines).
 
     ``deliver_to`` is a delivery target (e.g. ``conv:discord/<g>/<c>/<t>``,
     preferred so the brief mirrors into the conv thread's history); when
@@ -298,19 +310,28 @@ def run_briefing(
     # Don't fold prior briefings back into the next brief.
     refs = [r for r in refs if not (r.slug or "").startswith("briefing-")]
 
-    if not refs:
-        log.info("briefing: no news in the last %dh — nothing to brief", lookback_hours)
-        return {"articles": 0, "brief_chars": 0, "ref_id": None}
-
-    context = _format_context(refs)
-    messages = _build_briefing_messages(
-        date=now.date().isoformat(), count=len(refs), context=context
-    )
-    if client is not None:
-        result, degraded = _complete_with_retry(client, messages), False
+    result: Any = None
+    degraded = False
+    unresolved: list[str] = []
+    if refs:
+        context = _format_context(refs)
+        messages = _build_briefing_messages(
+            date=now.date().isoformat(), count=len(refs), context=context
+        )
+        if client is not None:
+            result = _complete_with_retry(client, messages)
+        else:
+            result, degraded = _compose(store, messages)
+        brief = result.text.strip()
     else:
-        result, degraded = _compose(store, messages)
-    brief = result.text.strip()
+        unresolved = _unresolved_lines(store, now=now)
+        if not unresolved:
+            log.info(
+                "briefing: no news in the last %dh — nothing to brief",
+                lookback_hours,
+            )
+            return {"articles": 0, "brief_chars": 0, "ref_id": None}
+        brief = _unresolved_brief(unresolved, lookback_hours=lookback_hours)
     weather = _weather_section(weather_fn)
     if weather:
         brief = f"{brief}\n\n{weather}"
@@ -327,7 +348,11 @@ def run_briefing(
         request_hash=request_hash,
         ttl_seconds=None,
         ref_meta={"briefing": True, "date": date_tag, "source": "briefing"},
-        cache_meta={"articles": len(refs), "date": date_tag},
+        cache_meta={
+            "articles": len(refs),
+            "date": date_tag,
+            "unresolved": len(unresolved),
+        },
     )
     from precis.utils.link_tag_ops import apply_tag_ops
 
@@ -362,7 +387,112 @@ def run_briefing(
         "brief_chars": len(brief),
         "ref_id": ref.id,
         "degraded_to": result.model if degraded else None,
+        "unresolved": len(unresolved),
     }
+
+
+#: Cap on items each unresolved-work signal names (mirrors the reading
+#: brief's lane cap) — the digest is a nudge, not the ``/alerts`` tab.
+_UNRESOLVED_ITEM_CAP = 12
+
+#: Env var + default mirroring ``reading.briefing_cast``'s info-alert
+#: staleness window: ``critical``/``warn`` open alerts always count as
+#: unresolved; a routine ``info`` nudge only while its sightings are still
+#: fresh (``updated_at`` within the window). Duplicated rather than
+#: imported — ``workers`` reaching into ``reading`` inverts the layering.
+_INFO_ALERT_STALE_HOURS_ENV = "PRECIS_BRIEF_ALERT_STALE_HOURS"
+_INFO_ALERT_STALE_HOURS_DEFAULT = 24.0
+
+
+def _info_alert_stale_hours() -> float:
+    """The configured info-alert freshness window, in hours (env override)."""
+    raw = os.environ.get(_INFO_ALERT_STALE_HOURS_ENV)
+    if not raw:
+        return _INFO_ALERT_STALE_HOURS_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(
+            "briefing: bad %s=%r, using default", _INFO_ALERT_STALE_HOURS_ENV, raw
+        )
+        return _INFO_ALERT_STALE_HOURS_DEFAULT
+
+
+def _first_line(text: Any, *, cap: int = 100) -> str:
+    """First line of ``text``, capped — one unresolved item per digest cell."""
+    line = str(text or "").split("\n", 1)[0].strip()
+    if len(line) > cap:
+        line = line[:cap].rstrip() + "…"
+    return line
+
+
+def _unresolved_lines(store: Store, *, now: datetime) -> list[str]:
+    """Still-open health/decision items, one bullet per signal (gr626716).
+
+    Read only when the news window is empty: a non-empty answer means the
+    day is not *truly* quiet, so the pass writes a dated brief instead of
+    exiting silently. Health: open ``kind='alert'`` conditions —
+    ``critical``/``warn`` always count, an ``info`` nudge only while fresh
+    (``updated_at`` tracks the latest sighting, not first raise).
+    Decision: the ``todo`` attention signals ``view='attention'``
+    aggregates — ask-user waits, ``child-failed:`` bubble flags awaiting a
+    retry/give-up call, halted todos, stalled executor mints. Every probe
+    is best-effort: a failed read logs and contributes nothing rather than
+    sinking the pass.
+    """
+    lines: list[str] = []
+    try:
+        from precis.alerts import list_open_alerts
+
+        alerts = list_open_alerts(store, limit=_UNRESOLVED_ITEM_CAP)
+        stale_cutoff = now - timedelta(hours=_info_alert_stale_hours())
+        titles = []
+        for a in alerts:
+            sev = a.get("severity") or "warn"
+            ts = a.get("updated_at")
+            if ts is not None and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if sev not in ("critical", "warn") and not (
+                isinstance(ts, datetime) and ts >= stale_cutoff
+            ):
+                continue
+            if t := _first_line(a.get("title")):
+                titles.append(t)
+        if titles:
+            lines.append(f"- Open alerts ({len(titles)}): " + "; ".join(titles))
+    except Exception:
+        log.debug("briefing: open-alerts probe failed", exc_info=True)
+
+    try:
+        from precis.todo import views as _todo_views
+
+        signals = (
+            ("Waiting on your input", _todo_views._attention_ask_user(store)),
+            (
+                "Child jobs failed, awaiting a decision",
+                _todo_views._attention_child_failed(store),
+            ),
+            ("Halted", _todo_views._attention_halted(store)),
+            (
+                "Executor todo, no job minted",
+                _todo_views._attention_unminted(store),
+            ),
+        )
+        for label, items in signals:
+            titles = [t for i in items if (t := _first_line(i.get("title")))]
+            if titles:
+                lines.append(f"- {label} ({len(titles)}): " + "; ".join(titles))
+    except Exception:
+        log.debug("briefing: attention probe failed", exc_info=True)
+    return lines
+
+
+def _unresolved_brief(lines: list[str], *, lookback_hours: int) -> str:
+    """The deterministic no-headlines brief body (gr626716)."""
+    return (
+        f"## Quiet wire\n\nNo new headlines in the last {lookback_hours}h — "
+        "but unresolved work still wants eyes:\n\n" + "\n".join(lines)
+    )
 
 
 def _weather_section(weather_fn: Callable[[], str] | None) -> str:

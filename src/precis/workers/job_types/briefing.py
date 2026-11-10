@@ -107,7 +107,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"briefing: pass raised: {exc}")
         return
 
-    if r["articles"] == 0:
+    if r["ref_id"] is None:
         ctx.append_chunk(
             "job_summary", "briefing: no news in window — nothing to brief"
         )
@@ -116,9 +116,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         "job_summary",
         f"briefing: {r['articles']} articles → {r['brief_chars']}-char brief "
         f"(ref {r['ref_id']})"
+        + (f", {r['unresolved']} unresolved item(s)" if r.get("unresolved") else "")
         + (f", degraded to {r['degraded_to']}" if r.get("degraded_to") else ""),
     )
     ctx.set_meta(articles=r["articles"], brief_ref_id=r["ref_id"])
+    if r.get("unresolved"):
+        ctx.set_meta(unresolved=r["unresolved"])
     if r.get("degraded_to"):
         ctx.set_meta(degraded_to=r["degraded_to"])
 
