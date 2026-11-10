@@ -50,8 +50,8 @@ description budgets, then Drive.
    memory hubs and repo docs; the SessionStart hook prints it.
    The start skill landed as `precis-repo-dev-start-help` (fixed slug,
    index-only, ratcheted by `tests/test_repo_dev_start_page.py`; it
-   routes to soul index me563907, rulings hub me489895, vocabulary root
-   tn559460 and the checkout docs). Still to land: the load line +
+   routes to the `soul` skill index, rulings hub me489895, vocabulary
+   root tn559460 and the checkout docs). Still to land: the load line +
    fallback path in `AGENTS.md`/`CLAUDE.md`, the SessionStart hook
    print, the `PRECIS_STARTUP_SKILLS` pin — the pin text already
    recommends it in `precis-startup-skills-help`. Waits on

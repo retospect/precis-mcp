@@ -8,9 +8,10 @@ fallback and any ``PRECIS_STARTUP_SKILLS`` pin — so it is pinned here.
 
 The page stays an *index*: pointers to the memory layer, repo docs and
 the canonical skill owners, never an inlined manual. A byte cap
-ratchets that shape; the live graph handles it routes to are pinned as
-text (the soul index me563907 + its selective bodies, the rulings hub,
-the vocabulary root, the ``SPACE:repo-dev`` recall tag).
+ratchets that shape; the entry points it routes to are pinned as text
+(the ``soul`` skill index — the staged soul memory migrated to ordinary
+skills under gr563975 — the rulings hub, the vocabulary root, the
+``SPACE:repo-dev`` recall tag).
 
 Pure file stats + ``startup_skills.resolve`` — no DB.
 """
@@ -69,12 +70,12 @@ def test_start_page_resolves_for_pinning() -> None:
     assert not result.unknown
 
 
-def test_start_page_carries_the_memory_layer_handles() -> None:
-    """The soul index, rulings hub, vocabulary root and recall tag are
-    the live entry points the page routes to — dropping one strands
-    recall with no pointer."""
+def test_start_page_carries_the_recall_entry_points() -> None:
+    """The soul skill index, rulings hub, vocabulary root and recall
+    tag are the live entry points the page routes to — dropping one
+    strands recall with no pointer."""
     text = _text()
-    for anchor in ("me563907", "me489895", "tn559460", "SPACE:repo-dev"):
+    for anchor in ('id="soul"', "me489895", "tn559460", "SPACE:repo-dev"):
         assert anchor in text, f"{anchor} no longer appears in {SLUG}"
 
 

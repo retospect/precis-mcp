@@ -32,7 +32,7 @@ the checkout is the MCP-outage fallback.
 
 ```python
 search(kind="memory", tags=["SPACE:repo-dev"], q="<the task>", view="index")
-get(kind="memory", id="me563907", extent="fisheye+2hop")   # soul index — principle nodes, bodies stay selective
+get(kind="skill", id="soul")                             # conduct index — open only the entries the task touches
 get(kind="memory", id="me489895")                        # rulings & preferences hub
 search(kind="taxon", q="<coined or overloaded term>", args={"under": "tn559460"})
 ```
