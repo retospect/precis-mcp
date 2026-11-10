@@ -1,4 +1,4 @@
-"""gr510534: a scoped paper search must not miss multi-word queries.
+"""gr510534 + gr614169: a paper search must not miss multi-word queries.
 
 Prod repro (2026-10-23): ``search(kind='paper', q='AMOC strengthening
 weakening response to regional MCB', scope='pa510467')`` returned "no
@@ -7,17 +7,25 @@ chunk. Two legs failed at once: the lexical leg ANDs every term through
 ``websearch_to_tsquery`` and the terms live in *different* chunks of the
 paper, so no single chunk matched; and the semantic leg contributed
 nothing because the paper's chunks were unembedded (ingested hours
-earlier).
+earlier). The memory-ablation bench (gr614169) measured the same failure
+corpus-wide: the AND query was empty for 11 of 25 QASPER quick
+questions, so hybrid degraded to semantic-only exactly when the query
+was a natural-language question.
 
-Two relaxations apply under a single-ref ``scope=``:
+One relaxation applies under either scope:
 
-* the lexical leg retries the same terms OR-ed when the strict AND
-  query is empty (``_SCOPED_OR_TSQUERY`` / ``lex_any``);
-* the semantic distance floor lifts — the floor is a corpus-wide
-  nonsense guard, and within one paper "the closest blocks it has" is
-  an honest answer.
+* when the strict AND query is empty, the lexical leg retries the same
+  terms OR-ed (``_OR_TSQUERY`` / ``lex_any``) — under a single-ref
+  ``scope=`` for any multi-word query, unscoped from three words up and
+  only when an EXISTS probe shows the strict leg empty, so an AND that
+  hits pays no OR scan;
+* under ``scope=`` the semantic distance floor also lifts — the floor is
+  a corpus-wide nonsense guard, and within one paper "the closest
+  blocks it has" is an honest answer.
 
-Corpus-wide AND precision and the floor elsewhere are unchanged.
+Strict AND hits are never reordered — the OR retry only fills an empty
+leg — and operator queries (``-term`` / ``"phrase"``) never retry, since
+``plainto_tsquery`` would flatten them into positive OR terms.
 """
 
 from __future__ import annotations
@@ -69,6 +77,13 @@ def _handler(store: Store) -> PaperHandler:
     return PaperHandler(hub=Hub(store=store, embedder=_embedder(store)))
 
 
+def _found_chunk_handles(body: str, chunk_ids: list[int]) -> list[bool]:
+    return [
+        handle_registry.format_handle("paper", cid, chunk=True) in body
+        for cid in chunk_ids
+    ]
+
+
 def test_scoped_multiword_hybrid_finds_spread_terms(store: Store) -> None:
     """The prod repro shape: unembedded chunks, hybrid mode — the
     semantic leg is empty, so only the OR-ed lexical retry can hit."""
@@ -76,11 +91,7 @@ def test_scoped_multiword_hybrid_finds_spread_terms(store: Store) -> None:
     scope = handle_registry.format_handle("paper", ref_id)
     body = _handler(store).search(q=_Q, scope=scope).body
     assert "no paper blocks match" not in body
-    found = [
-        handle_registry.format_handle("paper", cid, chunk=True) in body
-        for cid in chunk_ids
-    ]
-    assert any(found)
+    assert any(_found_chunk_handles(body, chunk_ids))
 
 
 def test_scoped_multiword_lexical_finds_spread_terms(store: Store) -> None:
@@ -89,18 +100,49 @@ def test_scoped_multiword_lexical_finds_spread_terms(store: Store) -> None:
     scope = handle_registry.format_handle("paper", ref_id)
     body = _handler(store).search(q=_Q, scope=scope, mode="lexical").body
     assert "no paper blocks match" not in body
-    found = [
-        handle_registry.format_handle("paper", cid, chunk=True) in body
-        for cid in chunk_ids
-    ]
-    assert any(found)
+    assert any(_found_chunk_handles(body, chunk_ids))
 
 
-def test_unscoped_multiword_keeps_and_precision(store: Store) -> None:
-    """The retry is scope-only: corpus-wide lexical search still ANDs
-    every term, so the same query stays empty."""
-    _seed(store, embedded=False)
+def test_unscoped_multiword_lexical_finds_spread_terms(store: Store) -> None:
+    """gr614169: the same AND-empty failure happens corpus-wide — a
+    natural-language question's terms spread over different chunks, so
+    the unscoped lexical leg OR-retries too instead of answering "no
+    blocks" while each term alone hits."""
+    _ref_id, chunk_ids = _seed(store, embedded=False)
     body = _handler(store).search(q=_Q, mode="lexical").body
+    assert "no paper blocks match" not in body
+    assert any(_found_chunk_handles(body, chunk_ids))
+
+
+def test_unscoped_multiword_hybrid_finds_spread_terms(store: Store) -> None:
+    """gr614169 through fused: the ``lex_any`` OR leg fills the empty
+    AND leg corpus-wide, so the query's lexical leg stops degrading
+    hybrid to semantic-only."""
+    _ref_id, chunk_ids = _seed(store, embedded=False)
+    body = _handler(store).search(q=_Q).body
+    assert "no paper blocks match" not in body
+    assert any(_found_chunk_handles(body, chunk_ids))
+
+
+def test_unscoped_two_word_keeps_strict_and(store: Store) -> None:
+    """The unscoped retry starts at three words: a one- or two-word
+    keyword query's partial match is noise more often than signal, so
+    an AND-empty two-word answer stays empty."""
+    _seed(store, embedded=False)
+    body = _handler(store).search(q="AMOC weakening", mode="lexical").body
+    assert "no paper blocks match" in body
+
+
+def test_unscoped_operator_query_never_or_retries(store: Store) -> None:
+    """``-term`` / ``"phrase"`` are intents the plainto OR retry would
+    invert, so an operator query keeps strict-AND semantics: an empty
+    AND answer stays empty."""
+    _seed(store, embedded=False)
+    body = (
+        _handler(store)
+        .search(q="AMOC -strengthening weakening response regional MCB", mode="lexical")
+        .body
+    )
     assert "no paper blocks match" in body
 
 
@@ -148,12 +190,49 @@ def test_scoped_and_matches_keep_strict_results(store: Store) -> None:
     assert or_only not in body
 
 
+def test_unscoped_and_matches_keep_strict_results(store: Store) -> None:
+    """gr614169: unscoped the EXISTS probe sees the strict leg's hits,
+    so no OR leg is built — a one-term-only chunk stays OUT, exactly as
+    scoped."""
+    e = _embedder(store)
+    ref = store.insert_ref(
+        kind="paper", slug="and-paper-unscoped", title="AND probe", year=2024
+    )
+    rows = store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text="a paragraph about weakening only",
+                embedding=e.embed_one("a paragraph about weakening only"),
+            ),
+            ChunkInsert(
+                ord=1,
+                text="AMOC weakening under MCB forcing, in one chunk.",
+                embedding=e.embed_one(
+                    "AMOC weakening under MCB forcing, in one chunk."
+                ),
+            ),
+        ],
+    )
+    or_only = handle_registry.format_handle("paper", rows[0].id, chunk=True)
+    and_hit = handle_registry.format_handle("paper", rows[1].id, chunk=True)
+    body = _handler(store).search(q="AMOC weakening MCB", mode="lexical").body
+    assert and_hit in body
+    assert or_only not in body
+
+
 def test_scoped_count_mirrors_the_or_retry(store: Store) -> None:
     """``count_chunks_lexical`` is the "N of K" denominator for the leg
     the search actually ran — it must count the OR universe when the
     strict AND universe is empty, not report "N of 0" over real hits."""
     ref_id, _ = _seed(store, embedded=False)
-    strict = store.chunks.count_chunks_lexical(q=_Q, kind="paper")
-    assert strict == 0
     scoped = store.chunks.count_chunks_lexical(q=_Q, kind="paper", scope_ref_id=ref_id)
     assert scoped == 2
+
+
+def test_unscoped_count_mirrors_the_or_retry(store: Store) -> None:
+    """gr614169: same universe mirroring without a scope — the AND-empty
+    count retries OR-ed corpus-wide."""
+    _seed(store, embedded=False)
+    assert store.chunks.count_chunks_lexical(q=_Q, kind="paper") == 2

@@ -597,31 +597,55 @@ def _chunk_scope_clauses(
     return out
 
 
-#: OR-ed fallback tsquery for a single-ref-scoped lexical leg (gr510534).
+#: OR-ed fallback tsquery for a lexical leg whose strict AND query came
+#: back empty (gr510534 scoped, gr614169 unscoped).
 #: ``websearch_to_tsquery`` ANDs every term, so a multi-word
-#: natural-language query whose words live in *different* chunks of the
-#: same paper matches nothing — a false "no blocks" while each single
-#: keyword hits (prod 2026-10-23: 'AMOC strengthening weakening response
-#: to regional MCB' scoped to one paper: 0 AND hits, 58 OR hits; the
-#: paper was unembedded, so the semantic leg contributed nothing either).
-#: When the strict scoped leg comes back empty, the same term set is
-#: retried OR-ed — the ``_pcb_ops`` idiom: flip ``plainto_tsquery``'s
-#: '&' to '|' at the tsquery-text level.
+#: natural-language query whose words live in *different* chunks matches
+#: nothing — a false "no blocks" while each single keyword hits (prod
+#: 2026-10-23: 'AMOC strengthening weakening response to regional MCB'
+#: scoped to one paper: 0 AND hits, 58 OR hits; the memory-ablation bench
+#: then measured the same failure corpus-wide: the AND query was empty
+#: for 11 of 25 QASPER quick questions, lexical-only recall@5 0.054 —
+#: hybrid degraded to semantic-only exactly when the query was long,
+#: which is what agents and humans ask).
+#: When the strict leg comes back empty, the same term set is retried
+#: OR-ed — the ``_pcb_ops`` idiom: flip ``plainto_tsquery``'s '&' to '|'
+#: at the tsquery-text level. ``plainto`` also drops the question's
+#: stopwords, so the OR is over content terms.
 #: The scalar expression only — in a FROM clause it needs a
 #: ``(SELECT <expr>) qq(qq)`` wrapper (a bare ``expr::type`` can't take a
 #: table alias); the fused leg wraps it the same way.
-_SCOPED_OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
+_OR_TSQUERY = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
+
+#: Websearch operators the OR retry cannot express: ``plainto_tsquery``
+#: flattens a ``-negated`` term or a ``"quoted phrase"`` into positive OR
+#: terms, inverting the query's intent. A bare ``or`` needs no guard —
+#: plainto drops it as a stopword, so the retry ORs the same term set
+#: websearch did.
+_TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-\S')
+
+#: Minimum words before an *unscoped* query earns the OR retry
+#: (gr614169). Inside one ref any multi-word query retries — every term
+#: is on-topic there. Corpus-wide a one- or two-word partial match is
+#: more often noise than signal ('PV efficiency' hitting 'efficiency'
+#: alone); three or more words is where natural-language questions —
+#: and the spread-terms failure the bench measured — begin.
+_OR_RETRY_MIN_WORDS = 3
 
 
-def _scoped_or_retry(q: str, scope_ref_id: int | None) -> bool:
-    """Whether an empty strict lexical leg gets the OR-ed scoped retry.
+def _or_retry(q: str, scope_ref_id: int | None) -> bool:
+    """Whether an empty strict lexical leg retries with its terms OR-ed.
 
-    Only a single-ref scope relaxes: corpus-wide AND-ing is the lexical
-    leg's precision contract, but within one document the candidate set
-    is tiny and OR-recall is what "search this paper" means. A one-word
-    query ORs to itself — nothing to retry.
+    The AND leg's precision contract stands whenever it returns rows:
+    the retry only fills an *empty* leg — recall, never a reordering.
+    Scoped retries any multi-word query (gr510534); unscoped needs
+    :data:`_OR_RETRY_MIN_WORDS` words (gr614169). An operator query
+    (``-term``, ``"phrase"``) never retries (see :data:`_TSQUERY_OP_RE`).
     """
-    return scope_ref_id is not None and len(q.split()) > 1
+    if _TSQUERY_OP_RE.search(q) is not None:
+        return False
+    min_words = 2 if scope_ref_id is not None else _OR_RETRY_MIN_WORDS
+    return len(q.split()) >= min_words
 
 
 def _or_corroborates(q: str) -> bool:
@@ -630,8 +654,8 @@ def _or_corroborates(q: str) -> bool:
     gr514956: a multi-word natural-language query whose terms land in
     different chunks leaves the strict-AND ``lex`` leg empty, so judging
     corroboration on AND alone makes every sem-only hit look
-    uncorroborated. Unlike ``lex_any`` (a candidate leg, scoped-only),
-    this is an evidence probe on already-returned rows — safe unscoped.
+    uncorroborated. Unlike ``lex_any`` (a candidate leg), this is an
+    evidence probe on already-returned rows — safe unscoped.
     A one-word query ORs to itself: the ``lex`` leg already says it.
     Terms split on non-word characters, matching what the tsquery sees
     (``cloud-brightening`` is two terms, not one).
@@ -971,14 +995,14 @@ class ChunkStore:
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
-            if int(row[0]) == 0 and _scoped_or_retry(q, scope_ref_id):
-                # Mirror the scoped OR retry in search_chunks_lexical —
+            if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+                # Mirror the OR retry in search_chunks_lexical —
                 # this count IS that leg's universe for the "N of K"
                 # header, so it must count the same rows.
                 row = conn.execute(
                     sql.replace(
                         "websearch_to_tsquery('english', %s)",
-                        f"(SELECT {_SCOPED_OR_TSQUERY})",
+                        f"(SELECT {_OR_TSQUERY})",
                     ),
                     [q, *params[1:]],
                 ).fetchone()
@@ -1131,13 +1155,13 @@ class ChunkStore:
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
-            if int(row[0]) == 0 and _scoped_or_retry(q, scope_ref_id):
-                # Same scoped OR retry as search_chunks_lexical — the
+            if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+                # Same OR retry as search_chunks_lexical — the
                 # notice counts the universe the leg actually searched.
                 row = conn.execute(
                     sql.replace(
                         "websearch_to_tsquery('english', %s)",
-                        f"(SELECT {_SCOPED_OR_TSQUERY})",
+                        f"(SELECT {_OR_TSQUERY})",
                     ),
                     params,
                 ).fetchone()
@@ -1308,11 +1332,11 @@ class ChunkStore:
             rows = conn.execute(
                 _sql("websearch_to_tsquery('english', %s)"), params
             ).fetchall()
-            if not rows and _scoped_or_retry(q, scope_ref_id):
-                # Scoped recall fallback (gr510534): the AND tsquery
-                # missed inside a single ref — retry every term OR-ed.
+            if not rows and _or_retry(q, scope_ref_id):
+                # Recall fallback (gr510534 scoped, gr614169 unscoped):
+                # the AND tsquery missed — retry every term OR-ed.
                 rows = conn.execute(
-                    _sql(f"(SELECT {_SCOPED_OR_TSQUERY})"), [q, *params[1:]]
+                    _sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
                 ).fetchall()
         unpacked = [_unpack_search_row(r) for r in rows]
         if search_trace.active():
@@ -1731,7 +1755,7 @@ class ChunkStore:
         corroborated)}`` for every returned row: the hit's ``sem`` leg
         distance (``None`` when the semantic leg never saw it — a
         lex-only hit) and whether any lexical leg corroborated it
-        (strict-AND ``lex``, the scoped ``lex_any`` retry, or a
+        (strict-AND ``lex``, the ``lex_any`` OR retry, or a
         partial-term OR match for multi-word queries). The rendered
         result fold reads this to hide — not drop — weak uncorroborated
         rows; ``semantic_only_max_distance`` uses the same corroboration
@@ -1744,11 +1768,13 @@ class ChunkStore:
         ``card_kinds`` opts the listed synthetic cards back into both
         legs (see :func:`_ord_card_clause`).
 
-        Under a single-ref ``scope_ref_id`` the lex leg gains a
-        ``lex_any`` sibling (gr510534): when the strict AND tsquery
-        matched nothing inside the scoped paper, the same terms OR-ed
-        fill the leg instead — same candidate set, recall instead of a
-        false "no blocks".
+        When the strict AND tsquery matches nothing, the lex leg gains
+        a ``lex_any`` sibling re-running the same terms OR-ed (gr510534
+        scoped, gr614169 unscoped): a natural-language question's
+        content terms spread over different chunks, so the leg was
+        absent exactly when the query was long. Strict matches keep
+        their ordering untouched — the fallback only fills an empty
+        leg.
         """
         if query_vec is None:
             rows = self.search_chunks_lexical(
@@ -1844,8 +1870,28 @@ class ChunkStore:
             sem_outer_where = "WHERE x.d < %s"
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        # OR-ed lexical fallback (gr510534 scoped, gr614169 unscoped):
+        # ``lex_any`` re-runs the same terms OR-ed, but only when ``lex``
+        # is empty, so strict matches keep their ordering untouched.
+        # Scoped emits the leg unconditionally — one ref's candidate set
+        # is small. Unscoped first probes the strict leg's own predicate
+        # with EXISTS: an unguarded ``lex_any`` would scan every
+        # OR-matched chunk in the corpus on every multi-word query, hit
+        # or not; the common case (AND hit) pays one early-exiting index
+        # probe and emits SQL identical to no fallback at all.
+        or_leg = _or_retry(q, scope_ref_id)
         with self.pool.connection() as conn:
             route, route_kind = _ann_route(conn, kind, None)
+            if or_leg and scope_ref_id is None:
+                row = conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM chunks c "
+                    "JOIN refs r ON r.ref_id = c.ref_id, "
+                    "websearch_to_tsquery('english', %s) qq(qq) "
+                    f"WHERE c.tsv @@ qq.qq{where_extra})",
+                    [lexical_q(q), *params],
+                ).fetchone()
+                assert row is not None
+                or_leg = not bool(row[0])
         sem_core, order_vec = _ann_core_sql(
             route,
             route_kind,
@@ -1859,12 +1905,6 @@ class ChunkStore:
             ),
             dist="d",
         )
-        # Scoped lexical fallback (gr510534): inside one ref the AND
-        # leg can miss every multi-word natural-language query while
-        # each term alone hits — ``lex_any`` re-runs the same terms
-        # OR-ed, but only when ``lex`` is empty, so strict matches keep
-        # their ordering untouched.
-        or_leg = _scoped_or_retry(q, scope_ref_id)
         lex_any_cte = ""
         lex_any_union = ""
         lex_any_score = ""
@@ -1875,7 +1915,7 @@ class ChunkStore:
                            ORDER BY ts_rank_cd(c.tsv, oq.oq) DESC, c.chunk_id
                        ) AS rnk
                 FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
-                     (SELECT {_SCOPED_OR_TSQUERY}) oq(oq)
+                     (SELECT {_OR_TSQUERY}) oq(oq)
                 WHERE c.tsv @@ oq.oq
                       {where_extra}
                       AND NOT EXISTS (SELECT 1 FROM lex)
@@ -1899,7 +1939,7 @@ class ChunkStore:
         # the outer row's own ``c.tsv`` — per output row, no extra
         # candidate leg — so it can never change the fused ranking.
         or_corrob = _or_corroborates(q)
-        or_exists = f"OR c.tsv @@ (SELECT {_SCOPED_OR_TSQUERY}) " if or_corrob else ""
+        or_exists = f"OR c.tsv @@ (SELECT {_OR_TSQUERY}) " if or_corrob else ""
         corrob_expr = (
             "EXISTS (SELECT 1 FROM lex l2 WHERE l2.cid = fused.cid) "
             + (
@@ -2021,7 +2061,7 @@ class ChunkStore:
 
         # Param construction sequence:
         #   lex: q + WHERE params + inner_limit
-        #   lex_any (scoped fallback only): q + WHERE params + inner_limit
+        #   lex_any (OR fallback only): q + WHERE params + inner_limit
         #   sem: query_vec + embedder + WHERE params
         #        + query_vec (unless the exact route) + inner_limit
         #        + [optional: max_distance]
