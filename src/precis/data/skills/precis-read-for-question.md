@@ -2,7 +2,7 @@
 id: precis-read-for-question
 family: paper
 title: precis — read the corpus for a question and leave claim hubs behind
-summary: the question-driven reading loop — hubs first, then papers the hubs do not already rest on, one reader per paper (toc → scoped search → ranges → proposals), root converges proposals onto hubs; returns fi ids labelled new/existing × answers/partial/side
+summary: the question-driven reading loop — hubs first, then papers the hubs do not already rest on, one reader per paper (scoped search → chunk fisheye → full ranges → proposals; toc for orientation), root converges proposals onto hubs; returns fi ids labelled new/existing × answers/partial/side
 answers:
   - I have a question — which papers should I read and how, so the facts end up as claim hubs?
   - how do I read papers for a question without re-reading what we already hubbed?
@@ -98,8 +98,14 @@ idempotent and the root dedups. The reader:
 
    ```python
    search(kind="paper", q="<facet of the question>", scope="pa<id>")
-   get(kind="paper", id="<slug>~A..B")  # the hit plus its surrounds
+   get(id="pc<chunk>", extent="fisheye")  # the hit in context — which neighbours matter
+   get(kind="paper", id="<slug>~A..B")  # pull those neighbours IN FULL
    ```
+
+   A hit handle goes straight to the fisheye — the TOC is the
+   orientation map, not a required waypoint. Judge evidence on the
+   full-text range read; the fisheye's previews only pick which
+   neighbours to pull.
 
 3. Read whole only when the toc shows fewer than about twenty body
    chunks. Otherwise results, tables, conclusions; never the

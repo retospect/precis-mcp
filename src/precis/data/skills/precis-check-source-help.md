@@ -2,7 +2,7 @@
 id: precis-check-source-help
 family: evidence
 title: precis — find a passage, read its surrounds, check it supports the point
-summary: reader-side source-checking — locate the passage by chunk handle, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then ground a finding hub on it and cite the hub [fi<id>]
+summary: reader-side source-checking — locate the passage by chunk handle, read its local context (extent='fisheye', then the needed neighbours in full via ~A..B), judge whether it actually supports the claim, then ground a finding hub on it and cite the hub [fi<id>]
 answers:
   - how do I find the passage in a paper that backs a claim I want to cite?
   - how do I read the context around a chunk before citing it?
@@ -58,22 +58,32 @@ searched next to the conclusion.
 ## Get the surrounding paragraphs of a chunk
 
 **This is the step most agents miss.** A search hit is one block; the
-claim's real meaning lives in the blocks around it. Use the **range
-selector** `~A..B` — *not* `view='chunks'`, *not* `args={'chunk_range':…}`
-(those don't exist):
+claim's real meaning lives in the blocks around it. You already hold
+the anchor — start the local context straight from the chunk handle:
 
 ```python
 get(id="pc7")  # the hit itself, one block
-get(kind="paper", id="<slug>~5..9")  # blocks 5–9: the hit + its surrounds
+get(id="pc7", extent="fisheye")  # the hit in context: verbatim + neighbours previewed
+get(kind="paper", id="<slug>~5..9")  # blocks 5–9: the hit + its surrounds IN FULL
 get(kind="paper", id="<slug>~38")  # a single block by position
 ```
 
-If the search returned `pc7` and you don't know its position, open the
-paper's TOC to place it, then drill the range:
+`extent='fisheye'` renders the chunk inside its cluster — the block in
+full, its neighbours as one-line previews, the rest of the paper as a
+map. Orient with it, then fetch every block you will judge evidence
+from **in full** with the `~A..B` **range selector** — *not*
+`view='chunks'`, *not* `args={'chunk_range':…}` (those don't exist).
+Previews and keywords only pick which neighbours to pull; they are not
+citation-grade text themselves.
+
+The hit's own output already names its position — each `#` header and
+search excerpt prints `pc<id> ~<ord>`. When you need the
+whole-document map anyway (where this section sits, what else the
+paper holds), the TOC is the fallback:
 
 ```python
-get(kind="paper", id="<slug>", view="toc")  # the reading map
-get(kind="paper", id="<slug>~63..89")  # drill a TOC range
+get(kind="paper", id="<slug>", view="toc")  # the whole-paper map
+get(kind="paper", id="<slug>~63..89")  # drill a range it names
 get(kind="paper", id="<slug>~63..89", view="toc")  # sub-TOC of a range
 ```
 
@@ -147,8 +157,9 @@ including the adversarial search: [[precis-citation-help]].
 
 Search results carry short `excerpt @ ~N:` sub-lines picked for triage
 — they help you decide whether to drill in, but they are clipped. Never
-judge support from the excerpt: fetch the full chunk (`get(id='pc<id>')`
-or the `~A..B` range) and read it before you cite.
+judge support from the excerpt: fetch the full chunk (`get(id='pc<id>')`,
+its `extent='fisheye'` context, or a `~A..B` range) and read it before
+you cite.
 
 ## Reviewing someone else's citation (the faithfulness check)
 

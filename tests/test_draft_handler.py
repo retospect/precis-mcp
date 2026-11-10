@@ -610,13 +610,15 @@ def test_chunk_view_fisheye_routes_to_render_eye_not_silent_degrade(
     lone = draft.get(id=mid).body
     assert "Second paragraph" in lone
     assert "First paragraph" not in lone
-    # The unprompted-discovery fisheye promo on a bare
-    # single-chunk read must scope itself to the kinds that actually
-    # support the view — an agent read this footer on a draft chunk and
-    # then tried view='fisheye' on an unrelated paper chunk, hitting
-    # Unsupported.
-    assert "view='fisheye'" in lone
-    assert "kind='draft' and kind='finding' support this view" in lone
+    # The unprompted-discovery fisheye promo on a bare single-chunk
+    # read names the shared door truthfully (gr621056): extent= is the
+    # one door on every kind's get — a draft section renders its
+    # spatial span, a paper chunk its cluster context. The earlier
+    # "only draft and finding" wording was doubly wrong: it hid the
+    # doc-kind eyes that now exist, and finding's eye was never the
+    # spatial one this text describes.
+    assert "extent='fisheye'" in lone
+    assert "every kind" in lone
 
     fisheye = draft.get(id=mid, view="fisheye").body
     assert "Second paragraph" in fisheye  # the focal chunk

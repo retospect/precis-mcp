@@ -1776,17 +1776,28 @@ class PaperSearchResultRenderer:
                 handle_registry.try_format(ref0.kind, block0.id, chunk=True)
                 or f"{ref0.slug or '???'}~{block0.ord}"
             )
-            nav.append(
-                (
-                    f"get(id='{first_handle}')",
-                    "read the full text of any hit (paste any handle above)",
+            # The search-to-chunk teaching point is the focused-context
+            # read (gr621056): a body-chunk handle opens the eye on its
+            # own cluster — the hit verbatim, neighbours as previews —
+            # so context needs no whole-paper TOC detour. Two cases
+            # keep the verbatim get: a card-variant hit (ord<0 sits in
+            # no cluster) and a code-less kind's ``slug~ord`` fallback
+            # (no universal handle, no eye door).
+            if handle_registry.parse(first_handle) is not None and block0.ord >= 0:
+                nav.append(
+                    (
+                        f"get(id='{first_handle}', extent='fisheye')",
+                        "read a hit with its surrounding context "
+                        "(paste any handle above; drop extent= for the block alone)",
+                    )
                 )
-            )
-            # F20: cluster-context navigation hint now uses the
-            # dynamic TOC. Pointing at view='toc' on the paper gives
-            # the agent the freshly-clustered structure for the
-            # current corpus state — no segment-containing-chunk
-            # lookup needed because clusters are computed on demand.
+            else:
+                nav.append(
+                    (
+                        f"get(id='{first_handle}')",
+                        "read the full text of any hit (paste any handle above)",
+                    )
+                )
 
         # Singleton-hit special case (MCP critic MINOR-$): when
         # ``len(hits) == 1`` the original nav was 46 % of the response

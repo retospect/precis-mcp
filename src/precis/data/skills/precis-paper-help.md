@@ -32,7 +32,7 @@ chunk handles `pc<id>` (e.g. `pc512`).
 
 ```python
 get(kind="paper", id="pa40")  # full overview, by handle
-get(kind="paper", id="pa40", view="toc")  # TOC — the reading entry point
+get(kind="paper", id="pa40", view="toc")  # TOC — the whole-paper map
 get(kind="paper", id="pa40", q="NOx")  # passages inside the paper (find-in-ref)
 get(kind="paper", id="10.1038/nature10352")  # bare DOI resolves via metadata
 get(kind="paper", id="10.1038/nature10352", view="abstract")  # DOI + view = kwarg only
@@ -449,12 +449,16 @@ sparse result isn't mistaken for "nothing exists" — fix missing years via
 ## Open a paper's TOC to see what's in it
 ## I have a handle — what's in this paper?
 
-Start with the TOC — it's the entry point for any non-trivial paper.
+Opening a paper cold? Start with the TOC — it's the entry point for a
+whole-document survey. Already holding a chunk handle `pc<id>` (a
+search hit, a citation, a TOC row)? Skip the map and read it in
+context directly.
 
 ```python
-get(kind="paper", id="pa40", view="toc")  # start here
+get(kind="paper", id="pa40", view="toc")  # whole-paper survey start
 get(kind="paper", id="pa40", view="summaries")  # per-chunk gloss + keywords
 get(id="pc512")  # single block by chunk handle
+get(id="pc512", extent="fisheye")  # a known block + its surrounding context
 get(kind="paper", id="pa40", view="abstract")
 get(kind="paper", id="pa40")  # full overview
 get(kind="paper", id="pa40/toc")  # path form = view='toc'

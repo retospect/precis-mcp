@@ -15,9 +15,12 @@ kinds: paper, skill, draft, markdown, tex, plan, python, datasheet, edgar, cfp
 
 # precis-toc-help — table of contents for any TOC-capable kind
 
-The TOC is the reading entry point for anything longer than a snippet.
-It returns a table of drillable handles, each labelled with the
-keywords that distinguish its range.
+The TOC is the reading entry point for a document you haven't located
+in yet — the whole-document map for anything longer than a snippet.
+(Already holding the chunk handle you want? `extent='fisheye'` on it is
+the shorter context route — `precis-fisheye-help`.) It returns a table
+of drillable handles, each labelled with the keywords that distinguish
+its range.
 
 ## Ask for the TOC of something
 ## Open the table of contents

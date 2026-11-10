@@ -768,12 +768,13 @@ class TestChunks:
         assert f"# {chunk_handle(store, 'wang2020state', ord=1)} ~1" in resp.body
         assert f"# {chunk_handle(store, 'wang2020state', ord=2)} ~2" in resp.body
 
-    def test_single_chunk_promotes_search_toc_and_range(
+    def test_single_chunk_promotes_context_search_and_range(
         self, store: Store, handler: PaperHandler
     ) -> None:
         """Single-block reads (the typical landing from a search hit)
         must NOT advertise ``next chunk: ~N+1`` as the primary
-        follow-up.
+        follow-up — and must lead with the focused-context read, not a
+        whole-document detour.
 
         Pre-fix, the trailer's first hint was ``next chunk: ~N+1``,
         which trained a linear ~N → ~N+1 → ~N+2 paging scan. Observed
@@ -783,53 +784,116 @@ class TestChunks:
         ``search(scope=...)`` or ``view='toc'`` would have finished
         in one turn.
 
-        Post-fix, single-block trailers lead with:
-          1. in-paper ``search(scope=...)`` — fused lexical+embedding
-          2. ``view='toc'`` — structural map
+        gr621056: a reader already holding a body chunk gets its
+        ``extent='fisheye'`` context read first — the whole-paper TOC
+        demoted to the map/fallback row, not the required waypoint.
+        Post-fix, single-block trailers order:
+
+          1. chunk ``extent='fisheye'`` — the passage in its context
+          2. in-paper ``search(scope=...)`` — fused lexical+embedding
           3. forward range (``~N+1..N+5``), NOT single ``~N+1``
+          4. ``view='toc'`` — the whole-document map
         """
         _seed_paper(store, blocks=[f"para {i}" for i in range(20)])
         resp = handler.get(id="wang2020state~3")
         assert "Next:" in resp.body
-        # Promoted: in-paper semantic search.
+        trailer = resp.body.split("Next:", 1)[1]
         _pa = record_handle(store, "wang2020state")
-        assert f"search(kind='paper', q='your query', scope='{_pa}')" in resp.body
-        # Promoted: TOC.
-        assert "view='toc'" in resp.body
+        _pc = chunk_handle(store, "wang2020state", ord=3)
+        # Lead: the focused-context read on the chunk just read.
+        assert f"get(id='{_pc}', extent='fisheye')" in trailer
+        assert trailer.index("extent='fisheye'") < trailer.index("search(kind=")
+        # Preserved: in-paper semantic search for the nonlocal question.
+        assert f"search(kind='paper', q='your query', scope='{_pa}')" in trailer
         # Forward read is a 5-block absolute range anchored on the same
         # record handle as the other trailer hints — verifiable at a
         # glance from the response itself (read ~3 → next is ~4..8) —
         # not the opaque relative form ``pc<id>+1..5``.
-        assert f"get(id='{_pa}~4..8')" in resp.body
-        assert "+1.." not in resp.body
+        assert f"get(id='{_pa}~4..8')" in trailer
+        assert "+1.." not in trailer
+        # Demoted: the whole-paper TOC sits below the forward read.
+        assert f"get(id='{_pa}', view='toc')" in trailer
+        assert trailer.index("~4..8") < trailer.index("view='toc'")
         # And the bare-block legacy hint is NOT the primary follow-up.
         assert "next chunk: get(kind='paper', id='wang2020state~4')" not in resp.body
 
     def test_chunk_trailer_hints_round_trip(
-        self, store: Store, handler: PaperHandler
+        self,
+        store: Store,
+        handler: PaperHandler,
+        runtime_with_store: PrecisRuntime,
     ) -> None:
         """Every ``get(...)`` the chunk-read trailer advertises must
         execute, and the forward hint must land on exactly the chunks
         after the range just read. A trailer hint that errors — or
         silently fetches the wrong span — trains callers into retry
         loops, and nothing else checks the advertised call actually
-        works (prior assertions were substring-presence only)."""
+        works (prior assertions were substring-presence only).
+
+        Hints go through the real dispatcher, not ``handler.get`` —
+        the dispatcher owns ``extent=`` routing, so a handler-level
+        ``**kwargs`` acceptance is no proof an advertised eye call
+        works (gr621056)."""
         _seed_paper(store, blocks=[f"para {i}" for i in range(10)])
         resp = handler.get(id="wang2020state~2..4")
-        hints = re.findall(r"get\([^)]*\)", resp.body.split("Next:")[-1])
+        trailer = resp.body.split("Next:")[-1]
+        hints = re.findall(r"get\([^)]*\)", trailer)
         assert hints, "trailer advertised no get() hints"
+        # A range read asked for its own context — the single-focus
+        # gate keeps the chunk fisheye out of its trailer.
+        assert "extent='fisheye'" not in trailer
         for hint in hints:
             verb, kwargs = parse_command(hint)
             assert verb == "get"
-            kwargs.pop("kind", None)
-            assert handler.get(**kwargs).body
+            out, err = runtime_with_store.dispatch_with_status("get", kwargs)
+            assert not err, f"advertised hint {hint!r} failed: {out}"
         # The forward hint specifically: read ~2..4 → next 3 are 5..7.
         forward = next(h for h in hints if ".." in h)
         _, kwargs = parse_command(forward)
-        body = handler.get(id=kwargs["id"]).body
+        body, err = runtime_with_store.dispatch_with_status("get", kwargs)
+        assert not err
         for o in (5, 6, 7):
             assert f"# {chunk_handle(store, 'wang2020state', ord=o)}" in body
         assert f"# {chunk_handle(store, 'wang2020state', ord=8)}" not in body
+
+    def test_single_chunk_fisheye_hint_keeps_the_center(
+        self,
+        store: Store,
+        handler: PaperHandler,
+        runtime_with_store: PrecisRuntime,
+    ) -> None:
+        """gr621056 acceptance: follow the emitted scalar hint through
+        the real dispatcher — the requested center survives verbatim
+        with its cluster context. The explicit ``kind='paper'`` form
+        renders the same split; a batch ``id=[...]`` still refuses, so
+        no trailer may advertise one."""
+        _seed_paper(store, blocks=[f"para {i}" for i in range(10)])
+        resp = handler.get(id="wang2020state~3")
+        pc = chunk_handle(store, "wang2020state", ord=3)
+        m = re.search(r"get\(id='[^']+', extent='fisheye'\)", resp.body)
+        assert m is not None, f"no fisheye hint in trailer:\n{resp.body}"
+        verb, kwargs = parse_command(m.group(0))
+        assert verb == "get" and kwargs["id"] == pc
+        # Bare pc handle — the eye keeps the requested chunk verbatim.
+        out, err = runtime_with_store.dispatch_with_status("get", kwargs)
+        assert not err, out
+        assert f"▸ {pc}" in out  # the eye chunk, marked
+        assert "para 3" in out  # its verbatim text
+        assert "— cluster —" in out  # the neighbourhood around it
+        # Explicit kind= form renders the same center.
+        out2, err2 = runtime_with_store.dispatch_with_status(
+            "get", {"kind": "paper", "id": pc, "extent": "fisheye"}
+        )
+        assert not err2 and f"▸ {pc}" in out2
+        # Batch + extent is not a supported read — the trailers must
+        # never advertise ``id=[...]`` (gr621056: a list id resolves to
+        # no live ref, NotFound).
+        pc0 = chunk_handle(store, "wang2020state", ord=2)
+        out3, err3 = runtime_with_store.dispatch_with_status(
+            "get", {"kind": "paper", "id": [pc0, pc], "extent": "fisheye"}
+        )
+        assert err3
+        assert "id=[" not in resp.body
 
     def test_card_variant_chunk_fetch(
         self, store: Store, handler: PaperHandler
@@ -1349,6 +1413,54 @@ class TestSearch:
         assert ref.title == shown_title
 
         assert_hints_round_trip(body, runtime_with_store.dispatch)
+
+    def test_search_drill_hint_is_the_hit_chunk_fisheye(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """gr621056: the search-to-chunk teaching point is the focused-
+        context read — the first hit's own ``pc`` handle at
+        ``extent='fisheye'`` — not a bare verbatim get and not a
+        whole-paper TOC detour. The emitted hint names a handle the
+        table shows and round-trips through dispatch to the split that
+        keeps the hit verbatim."""
+        for slug in ("paper-a", "paper-b"):
+            _seed_paper(
+                store,
+                slug=slug,
+                title=f"Distinctive Title {slug}",
+                blocks=[
+                    f"photocatalytic reduction step {i} in {slug}" for i in range(3)
+                ],
+            )
+        body = runtime_with_store.dispatch(
+            "search",
+            {"kind": "paper", "q": "photocatalytic", "page_size": 3},
+        )
+        m = re.search(r"get\(id='(pc\d+)', extent='fisheye'\)", body)
+        assert m is not None, f"no fisheye drill hint:\n{body}"
+        pc = m.group(1)
+        assert pc in body.split("Next:", 1)[0]  # a handle the table shows
+        out, err = runtime_with_store.dispatch_with_status(
+            "get", {"id": pc, "extent": "fisheye"}
+        )
+        assert not err, out
+        assert f"▸ {pc}" in out and "photocatalytic" in out
+        assert_hints_round_trip(body, runtime_with_store.dispatch)
+
+    def test_search_drill_hint_card_hit_stays_verbatim(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A synthetic card-variant hit (``ord<0`` — title/abstract
+        card, no cluster seat) keeps the verbatim ``get(id='pc')``
+        drill hint: its fisheye degrades to the whole-doc map and would
+        lose the hit itself (gr621056)."""
+        ref_id = _seed_paper(store, blocks=["intro", "methods"])
+        card_id = store.chunks.upsert_card_combined(ref_id, "Title\n\nAbstract text.")
+        card_handle = handle_registry.format_handle("paper", card_id, chunk=True)
+        resp = handler.search(q="abstract", page_size=3)
+        assert card_handle in resp.body  # the card was the hit
+        assert f"get(id='{card_handle}')" in resp.body
+        assert "extent='fisheye'" not in resp.body
 
     # ── exclude= ──────────────────────────────────────────────────
 

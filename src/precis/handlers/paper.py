@@ -9658,50 +9658,56 @@ class PaperHandler(Handler):
             lines.append("")
             block_spans.append((b.ord, len(lines)))
 
-        # Next: trailer — adjacent ranges + parent toc + citation.
-        # Use the actual block count so the hint never points off the end.
-        # Degenerate single-block ranges render as ``~N`` rather than
-        # ``~N..N``: the MCP critic flagged ``~77..77`` as training the
-        # wrong call shape — agents who saw a "range" hint then
-        # extrapolated ``~5..5`` for unrelated singletons later. The
-        # canonical single-block form is ``~N``. (Critic MINOR m6.)
+        # Next: trailer — focused context + adjacent ranges + parent toc +
+        # citation. Use the actual block count so the hint never points
+        # off the end. Degenerate single-block ranges render as ``~N``
+        # rather than ``~N..N``: the MCP critic flagged ``~77..77`` as
+        # training the wrong call shape — agents who saw a "range" hint
+        # then extrapolated ``~5..5`` for unrelated singletons later.
+        # The canonical single-block form is ``~N``. (Critic MINOR m6.)
         #
         # Single-block reads also widen the forward suggestion into a
         # range so a "next chunk" hint doesn't train a linear ~N → ~N+1
         # → ~N+2 sequential scan (observed pattern: agent reading
         # gerfen2011~13 through ~21 one-by-one across ~10 LLM turns
         # @ ~3min/turn when a single ~13..21 range read would have
-        # finished in one).  The promoted "navigate via TOC" hint
-        # comes first in single-block mode, since paging-by-block is
-        # almost never the right strategy when scanning a paper.
+        # finished in one).
         total = self.store.chunks.count_chunks(ref.id)
         nav: list[tuple[str, str]] = []
         single_block = lo == hi
 
-        # In single-block mode, lead with the two structural reads
-        # that are almost always more useful than paging linearly:
+        # A single-block read landed on a known passage — lead with the
+        # focused reads, not a whole-document detour (gr621056):
         #
-        # 1. In-paper semantic search — when looking for a specific
-        #    quote/section, scoped search beats reading sequentially.
-        #    The same fused lexical+embedding index used by
-        #    cross-paper search applies here, just narrowed to one
-        #    paper.
-        # 2. TOC — structural map of the whole paper, ~50 lines.
+        # 1. Chunk fisheye — this passage with its surrounding context:
+        #    the eye chunk verbatim inside its cluster, neighbours as
+        #    previews, the rest of the paper as a map. Only a body
+        #    chunk (ord>=0) sits in a cluster; a synthetic card chunk
+        #    (ord<0) has no focused read, so it keeps the routes below.
+        # 2. In-paper semantic search — for a *different* section (the
+        #    methods/results a local window can't reach), scoped search
+        #    beats reading sequentially. The same fused
+        #    lexical+embedding index used by cross-paper search applies
+        #    here, just narrowed to one paper.
         #
-        # In range mode these stay available but at lower priority
-        # than the next/prev range hints.
+        # The whole-paper TOC drops to a fallback row below the forward
+        # read: still the structural map when position isn't yet known,
+        # no longer the promoted first move for local inspection.
         if single_block:
+            if lo >= 0:
+                pc = handle_registry.try_format(ref.kind, blocks[0].id, chunk=True)
+                if pc is not None:
+                    nav.append(
+                        (
+                            f"get(id='{pc}', extent='fisheye')",
+                            "read this passage with its surrounding context",
+                        )
+                    )
             nav.append(
                 (
                     f"search(kind='{ref.kind}', q='your query', scope='{_pa(ref)}')",
                     "search inside this paper "
                     "(fused lexical+embedding) - usually beats paging",
-                )
-            )
-            nav.append(
-                (
-                    f"get(id='{_pa(ref)}', view='toc')",
-                    "TOC - structural map of the paper",
                 )
             )
 
@@ -9736,14 +9742,15 @@ class PaperHandler(Handler):
                     f"next {n_next} chunks" if n_next > 1 else "next chunk",
                 )
             )
-        if not single_block:
-            # Range mode: full TOC is the structural escape hatch.
-            nav.append(
-                (
-                    f"get(id='{_pa(ref)}', view='toc')",
-                    "see the full TOC",
-                )
+        # Whole-paper TOC — the structural map. A range read's escape
+        # hatch; a known-chunk read's whole-document fallback (the
+        # focused reads above cover the local question).
+        nav.append(
+            (
+                f"get(id='{_pa(ref)}', view='toc')",
+                "see the full TOC" if not single_block else "map the whole paper",
             )
+        )
         if self.spec.corpus_role == "evidence":
             nav.append(
                 (
