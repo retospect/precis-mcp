@@ -46,6 +46,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from markupsafe import Markup, escape
 
 from precis.errors import NotFound
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.rake import keyword_summary
 from precis.utils.slug import slug_from_text
@@ -1083,16 +1084,22 @@ def _focus_ask(store: Store, focus_row: dict[str, Any]) -> dict[str, Any] | None
     :func:`precis_web.routes.asks._ask_value` so a ``see-chunk-N``
     overflow reads as the real prose. ``None`` when the todo isn't
     waiting on a human.
+
+    Pending is the ``ask-user`` tag on a nonterminal todo — never
+    ``meta.ask`` alone: answering or dismissing strips the tag and
+    closes the todo but leaves the ask block on the ref as history,
+    so a retained ``meta.ask`` without the tag is an answered
+    question, not an open one.
     """
     tags = [
         t
         for t in focus_row.get("tags", [])
         if t == "ask-user" or t.startswith("ask-user:")
     ]
+    if not tags or focus_row.get("status") in TERMINAL_TODO_STATUSES:
+        return None
     meta = focus_row.get("meta")
     ask = meta.get("ask") if isinstance(meta, dict) else None
-    if not tags and not isinstance(ask, dict):
-        return None
     return {
         "tags": tags,
         "questions": [

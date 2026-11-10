@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+from typing import Any
 
 import pytest
 
@@ -1851,28 +1852,48 @@ def test_ask_terminate_closes_and_clears_tags(client, runtime) -> None:
     assert args["remove"] == ["ask-user:which one?", "ask-user"]
 
 
-def test_todo_focus_page_shows_meta_ask_answer_box(client, runtime) -> None:
-    """gr570259: a focused todo carrying ``meta.ask`` renders the question
-    plus an inline answer form (posting to /asks/<id>/answer and returning
-    to this focus page) — no detour through the Asks tab."""
+def _meta_ask_ref(make_ref: Any) -> Any:
+    """A todo carrying the structured ``meta.ask`` payload (td541979)."""
+    return make_ref(
+        id=7,
+        kind="todo",
+        title="Raise the cap, shard it, or hold that half?",
+        parent_id=None,
+        meta={
+            "ask": {
+                "kind": "ruling",
+                "options": ["raise the cap", "shard it", "hold that half"],
+                "blocks": "nothing",
+                "context": "ran long twice this week",
+            }
+        },
+    )
+
+
+def test_todo_focus_page_shows_meta_ask_answer_box(
+    client, runtime, monkeypatch
+) -> None:
+    """gr570259: a focused todo waiting on a ``meta.ask`` question renders
+    the question plus an inline answer form (posting to /asks/<id>/answer
+    and returning to this focus page) — no detour through the Asks tab."""
+    import precis_web.routes.todo as todo_mod
+
     from .conftest import make_ref
 
-    runtime.store.todos.append(
-        make_ref(
-            id=7,
-            kind="todo",
-            title="Raise the cap, shard it, or hold that half?",
-            parent_id=None,
-            meta={
-                "ask": {
-                    "kind": "ruling",
-                    "options": ["raise the cap", "shard it", "hold that half"],
-                    "blocks": "nothing",
-                    "context": "ran long twice this week",
-                }
-            },
-        )
-    )
+    runtime.store.todos.append(_meta_ask_ref(make_ref))
+    # The fake's tag-join SQL returns no rows; inject the pending
+    # ``ask-user`` tag that ``put(tags=['ask-user'], meta={'ask': …})``
+    # writes on the real path — pending is tag + nonterminal status,
+    # never meta alone (td627567).
+    real_freeform = todo_mod._load_freeform_tags
+
+    def freeform_with_ask(store, ref_ids):
+        out = real_freeform(store, ref_ids)
+        if 7 in out:
+            out[7] = ["ask-user"]
+        return out
+
+    monkeypatch.setattr(todo_mod, "_load_freeform_tags", freeform_with_ask)
     resp = client.get("/todo?focus=7")
     assert resp.status_code == 200
     html = resp.text
@@ -1882,6 +1903,19 @@ def test_todo_focus_page_shows_meta_ask_answer_box(client, runtime) -> None:
     assert 'name="next" value="/todo?focus=7"' in html
     assert "ruling" in html
     assert "raise the cap" in html
+
+
+def test_todo_focus_page_retained_meta_ask_shows_no_answer_box(client, runtime) -> None:
+    """td627567: answering / dismissing strips ``ask-user`` but leaves
+    ``meta.ask`` on the ref — retained meta alone is history, so no
+    "Waiting on your answer" form renders."""
+    from .conftest import make_ref
+
+    runtime.store.todos.append(_meta_ask_ref(make_ref))
+    html = client.get("/todo?focus=7").text
+    assert "Waiting on your answer" not in html
+    assert 'action="/asks/' not in html
+    assert "Submit answer" not in html
 
 
 def test_todo_focus_page_without_ask_shows_no_answer_box(client) -> None:
@@ -5152,7 +5186,6 @@ def test_status_health_checks_render_the_agent_panel_object(
     stale/unknown rows — the agent panel intentionally drops ok-row
     detail (render diet; the check's detail is one single-id read away)."""
     from datetime import UTC, datetime
-    from typing import Any
 
     from precis.dispatch import Hub
     from precis.handlers.alert import AlertHandler

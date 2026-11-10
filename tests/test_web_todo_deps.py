@@ -129,3 +129,76 @@ def test_focus_page_without_ask_shows_no_answer_box(
     html = client.get(f"/todo?focus={root}").text
     assert 'action="/asks/' not in html
     assert "Submit answer" not in html
+
+
+def _structured_ask(handler: TodoHandler) -> int:
+    """Mint a question for the owner — the td541979 ``meta.ask`` shape."""
+    return id_of(
+        handler.put(
+            text="raise the cap, shard it, or hold that half?",
+            tags=["ask-user"],
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["raise the cap", "shard it", "hold that half"],
+                    "blocks": "nothing",
+                    "context": "ran long twice this week",
+                }
+            },
+        ).body
+    )
+
+
+def _assert_no_answer_box(html: str) -> None:
+    assert "Waiting on your answer" not in html
+    assert 'action="/asks/' not in html
+    assert "Submit answer" not in html
+
+
+def test_focus_page_answered_ask_shows_no_answer_box(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    """td627567: answering a structured ask strips ``ask-user`` and closes
+    the todo, but ``meta.ask`` stays on the ref — the focus page must not
+    keep rendering the pending form."""
+    ask = _structured_ask(handler)
+    resp = client.post(
+        f"/asks/{ask}/answer",
+        data={
+            "response": "shard it",
+            "remove": "ask-user",
+            "next": f"/todo?focus={ask}",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    _assert_no_answer_box(client.get(f"/todo?focus={ask}").text)
+
+
+def test_focus_page_dismissed_ask_shows_no_answer_box(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    """td627567: the asks queue's X (terminate → ``STATUS:won't-do`` plus
+    the tag strip) leaves the same retained ``meta.ask`` — also history."""
+    ask = _structured_ask(handler)
+    resp = client.post(
+        f"/asks/{ask}/terminate",
+        data={"remove": "ask-user"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    _assert_no_answer_box(client.get(f"/todo?focus={ask}").text)
+
+
+def test_focus_page_terminal_ask_todo_shows_no_answer_box(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    """td627567: a ``STATUS:done`` that leaves the ``ask-user`` tag behind
+    (a manual close, not the answer route) still isn't pending — the same
+    terminal filter the asks queue applies."""
+    ask = _structured_ask(handler)
+    handler.tag(id=ask, add=["STATUS:done"])
+
+    _assert_no_answer_box(client.get(f"/todo?focus={ask}").text)
