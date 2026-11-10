@@ -45,7 +45,9 @@ the unauthenticated api.github.com budget (60/h) is shared with
    first cut reviewed, and nothing else mints their reviewers. A
    re-cut ``release_cut`` held below origin/main
    (``meta.cut_hold``) for :data:`CUT_HOLD_ASK_AFTER_MIN` files one
-   ``release-stuck:r<N>:recut-hold`` ask naming the holding units.
+   ``release-stuck:r<N>:recut-hold`` ask naming the holding units; a
+   first cut a refusal held (``meta.cut_retarget``) files
+   ``release-stuck:td<root>:recut-hold``, quoting the refusal.
 3. The repo: ``params.repo``, else ``release.repo``, else the checkout's
    ``origin`` (:func:`precis.plans.pr_class.resolve_repo`).
 4. ``GET /repos/<repo>/compare/prod...<pin>``: ``behind_by > 0`` or
@@ -778,6 +780,7 @@ def _file_stuck_ask(
     clock_txt: str,
     capped: bool = False,
     detail: str = "",
+    label: str | None = None,
 ) -> str:
     """The one write the watchdog makes: an ``ask-user`` ruling todo,
     deduped by its ``release-stuck:r<N>:<stage>`` tag over todos in any
@@ -790,10 +793,14 @@ def _file_stuck_ask(
     ``capped`` adds the ``capped:`` line — the ask filed only because
     the live leg's hold ran past ``_ACTIVITY_CAP_MARKS`` marks.
     ``detail`` is one more line for the body and context (the re-cut
-    hold's holding units, gr611217)."""
+    hold's holding units, gr611217). ``label`` replaces ``r<n>`` in the
+    tag and the text for a pass with no release number yet (a first cut
+    held before it cut: ``td<root>``)."""
     from precis.workers.job_types import run_slice
 
-    tag = f"{_STUCK_TAG_PREFIX}:r{n}:{stage}"
+    tok = label or f"r{n}"
+    disp = f"pass {label}" if label else f"r{n}"
+    tag = f"{_STUCK_TAG_PREFIX}:{tok}:{stage}"
     verbs = _STAGE_VERBS[stage]
     head_txt = (
         f"{run_head12}, the head the newest run on release/r{n} ran on — "
@@ -802,7 +809,7 @@ def _file_stuck_ask(
         else head12
     )
     context = (
-        f"release r{n} stage {stage}: {over}m past the {deadline}m "
+        f"release {disp} stage {stage}: {over}m past the {deadline}m "
         f"deadline; head {head_txt}; answering executes nothing"
         + (f"; {detail}" if detail else "")
     )
@@ -816,12 +823,12 @@ def _file_stuck_ask(
     }
     check_ask_meta(meta)
     title = (
-        f"release r{n} looks stuck in stage {stage} — act on it, or is this "
+        f"release {disp} looks stuck in stage {stage} — act on it, or is this "
         "a false alarm?"
     )
     capped_txt = "capped: leg active but stage exceeded 3× its mark\n" if capped else ""
     body = (
-        f"Release r{n} has been in stage {stage} for more than {deadline} "
+        f"Release {disp} has been in stage {stage} for more than {deadline} "
         f"minutes — {over}m past the mark — and nothing will act on that by "
         f"itself (head {head_txt}). This ask is the only write the release "
         f"watchdog makes; answering it executes nothing — 'acknowledged' "
@@ -845,7 +852,7 @@ def _file_stuck_ask(
             (tag,),
         ).fetchall()
         if dupes:
-            return f"stuck watch: ask for r{n}/{stage} already filed (td{dupes[0][0]})"
+            return f"stuck watch: ask for {tok}/{stage} already filed (td{dupes[0][0]})"
         if dry_run or run_slice.factory_off():
             return f"stuck watch: would file {tag} ({title[:60]})"
         ref = store.insert_ref(
@@ -2634,24 +2641,44 @@ def _cut_hold_ask(
     meta = (ref.meta or {}) if ref is not None else {}
     hold = meta.get("cut_hold")
     rel = meta.get("release")
-    if not isinstance(hold, dict) or not isinstance(rel, dict):
+    retarget = meta.get("cut_retarget")
+    if not isinstance(hold, dict):
         return None
-    m = re.fullmatch(r"r(\d+)", str(rel.get("rN") or ""))
     held = _minutes_since(now, hold.get("since"))
-    if m is None or held is None or held < CUT_HOLD_ASK_AFTER_MIN:
+    if held is None or held < CUT_HOLD_ASK_AFTER_MIN:
         return None
     lines = [str(ln) for ln in hold.get("lines") or []]
+    detail = "holding: " + ("; ".join(lines) or "unrecorded")
+    if isinstance(rel, dict):
+        m = re.fullmatch(r"r(\d+)", str(rel.get("rN") or ""))
+        if m is None:
+            return None
+        n, label = int(m.group(1)), None
+        head12 = str(rel.get("sha") or "")[: _release.LANDED_SHA_LEN] or "unrecorded"
+        clock = f"re-cut hold since {hold.get('since')}"
+    elif isinstance(retarget, dict):
+        # A first cut a refusal held (``release_cut._note_refusal``): no
+        # release number yet, so the ask keys on the pass root and quotes
+        # the refusal that started the hold.
+        n, label, head12 = 0, f"td{root_id}", "unrecorded"
+        clock = f"first-cut hold since {hold.get('since')}"
+        detail = (
+            f"cut refused ({retarget.get('class')}): {retarget.get('line')}; " + detail
+        )
+    else:
+        return None
     return _file_stuck_ask(
         store,
-        int(m.group(1)),
+        n,
         _CUT_HOLD_STAGE,
         int(held) - CUT_HOLD_ASK_AFTER_MIN,
-        str(rel.get("sha") or "")[: _release.LANDED_SHA_LEN] or "unrecorded",
+        head12,
         CUT_HOLD_ASK_AFTER_MIN,
         root_id,
         dry_run=dry_run,
-        clock_txt=f"re-cut hold since {hold.get('since')}",
-        detail="holding: " + ("; ".join(lines) or "unrecorded"),
+        clock_txt=clock,
+        detail=detail,
+        label=label,
     )
 
 

@@ -3610,6 +3610,59 @@ def _stuck_ask_ids(store: Store, tag: str) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+@pytest.mark.parametrize(
+    ("cls", "line"),
+    [
+        (
+            "tip-only",
+            "scripts/round: cut refused — the next release cuts at origin/main "
+            "(a1b2c3d4e), not 9f8e7d6c5",
+        ),
+        (
+            "gated-behind",
+            "scripts/round: cut refused — origin/gated cannot fast-forward to "
+            "the cut SHA",
+        ),
+        ("in-flight", "release in flight: release/r262"),
+        ("holding", "holding: cut abc sits below origin/main: td43 pending"),
+    ],
+)
+def test_a_first_cut_hold_past_an_hour_files_one_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch, cls: str, line: str
+) -> None:
+    """A first cut a refusal held (no ``meta.release`` yet) gets the
+    same hour-long ask a re-cut does, keyed on the pass root and quoting
+    the class and the refusal line; nothing before the hour is up."""
+    _fake_github(monkeypatch)
+    mint = T.mint_release_pass(store)
+    assert R.release_of(store, mint.ids["cut"]) is None
+    rp.note_cut_hold(store, mint.ids["cut"], [line], now=NOW)
+    store.stamp_ref_meta(
+        mint.root_id,
+        {"cut_retarget": {"class": cls, "line": line, "pace_until": None}},
+    )
+    tag = f"release-stuck:td{mint.root_id}:recut-hold"
+    rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=59))
+    assert _stuck_ask_ids(store, tag) == []
+    res = rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=61))
+    [ask] = _stuck_ask_ids(store, tag)
+    assert any(f"td{ask}" in n for n in res.notes)
+    text = _todo_text(store, ask)
+    assert f"cut refused ({cls}): {line}" in text
+    rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=90))
+    assert _stuck_ask_ids(store, tag) == [ask]  # deduped
+
+
+def test_a_hold_without_a_release_or_a_retarget_marker_asks_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch)
+    mint = T.mint_release_pass(store)
+    rp.note_cut_hold(store, mint.ids["cut"], ["x"], now=NOW)
+    rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=120))
+    assert _stuck_ask_ids(store, f"release-stuck:td{mint.root_id}:recut-hold") == []
+
+
 def test_a_recut_hold_past_an_hour_files_one_ask(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

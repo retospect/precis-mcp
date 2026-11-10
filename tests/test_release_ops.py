@@ -7,6 +7,7 @@ HTTP are faked."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -903,6 +904,11 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(rc, "_run_dir", lambda: runs)
     monkeypatch.setattr(rc, "_launch", launch)
     monkeypatch.setattr(rc, "origin_repo", lambda root: "o/r")
+    # The real refresh fetches origin and rewrites scripts/: the
+    # tooling tests below put it back over a real git repo.
+    monkeypatch.setattr(rc, "refresh_tooling", lambda root: "abc123def")
+    # The gone-branch preflight lists origin's branches: off unless a test says.
+    monkeypatch.setattr(rc, "_origin_branch_gone", lambda root, branch: False)
     seen["root"] = root
     return seen
 
@@ -1848,6 +1854,293 @@ def test_release_cut_abandon_failure_fails_the_job_and_cuts_nothing(
     assert "no cut launched" in ctx.failures[0]
     assert "not on origin/main" in ctx.failures[0]  # the log tail
     assert len(checkout["argv"]) == 1  # only the abandon launch
+
+
+# ── release_cut abandons a never-deployed record whose branch is gone ──
+
+
+def _gone_setup(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record: dict[str, Any] | None = None,
+    *,
+    gone: bool = True,
+) -> tuple[Path, T.PlanMint]:
+    script = _round_script(checkout)
+    _local_round(tmp_path, monkeypatch, [record or _open_record()])
+    seen: list[tuple[Path, str]] = []
+
+    def listing(root: Path, branch: str) -> bool:
+        seen.append((root, branch))
+        return gone
+
+    monkeypatch.setattr(rc, "_origin_branch_gone", listing)
+    checkout["listed"] = seen
+    return script, T.mint_release_pass(store)
+
+
+def test_release_cut_abandons_an_open_record_whose_branch_is_gone(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r262: the pass was dropped, its origin branch deleted, the clone's
+    ``round.json`` kept r7 open (never deployed, no shared-row dispute).
+    The cut first runs the detached ``cut --abandon``, then the cut; the
+    job records ``meta.preflight`` and the summary says so."""
+    script, mint = _gone_setup(store, checkout, tmp_path, monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and handle["phase"] == "abandon_gone"
+    assert checkout["listed"] == [(checkout["root"], "release/r7")]
+    assert checkout["argv"] == [[str(script), "cut", "--abandon"]]
+    assert checkout["env"] == [{"PRECIS_GRIPE_NOTE": "0"}]
+
+    _exit(checkout, 0, "release/r7 is not on origin — marking the record abandoned\n")
+    assert rc.poll(ctx, handle) is False  # swapped onto the cut
+    assert checkout["argv"][-1] == [
+        str(checkout["root"] / "scripts" / "release"),
+        "--cut-only",
+    ]
+    assert ctx.stamped["preflight"] == "abandoned r7"
+    assert handle["tooling"] == "abc123def"
+
+    _exit(checkout, 0, _cut_log("r8"))
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert "abandoned r7 (preflight)" in ctx.chunks[-1][1]
+
+
+def test_release_cut_gone_abandon_failure_cuts_nothing(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _script, mint = _gone_setup(store, checkout, tmp_path, monkeypatch)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None
+    _exit(checkout, 1, "scripts/round: cut refused — nope\n")
+    assert rc.poll(ctx, handle) is True
+    assert "no cut launched" in ctx.failures[0]
+    assert "preflight" not in ctx.stamped
+    assert len(checkout["argv"]) == 1
+
+
+@pytest.mark.parametrize(
+    "why",
+    ["branch_present", "deployment", "deploy", "live_deploy", "no_record", "pending"],
+)
+def test_release_cut_gone_abandon_is_skipped_unless_every_condition_holds(
+    store: Store,
+    checkout: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    why: str,
+) -> None:
+    record = {
+        "deployment": _open_record(deployment={"sha": SHA}),
+        "deploy": _open_record(deploy={"at": "x"}),
+        "pending": _open_record(cut_pending=True),
+    }.get(why, _open_record())
+    _script, mint = _gone_setup(
+        store,
+        checkout,
+        tmp_path,
+        monkeypatch,
+        record,
+        gone=why != "branch_present",
+    )
+    if why == "no_record":
+        _local_round(tmp_path, monkeypatch, [])
+    if why == "live_deploy":
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title="release_deploy job",
+            meta={"job_type": "release_deploy"},
+            parent_id=mint.ids["deploy"],
+        )
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None and "phase" not in handle
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
+    assert "preflight" not in ctx.stamped
+
+
+def test_origin_branch_gone_needs_a_listing_that_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent from a successful listing is gone; a present branch and an
+    unreachable origin (a failed listing is not absence) are not."""
+    monkeypatch.setattr(
+        rc._factory_git, "git_auth_env", lambda base=None: dict(os.environ)
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    _g(work, "init", "-q", "-b", "main")
+    (work / "f").write_text("x\n", encoding="utf-8")
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "m")
+    _g(work, "branch", "release/r7")
+    origin = tmp_path / "origin.git"
+    _g(tmp_path, "clone", "-q", "--bare", str(work), str(origin))
+    clone = tmp_path / "clone"
+    _g(tmp_path, "clone", "-q", str(origin), str(clone))
+    assert rc._origin_branch_gone(clone, "release/r7") is False
+    assert rc._origin_branch_gone(clone, "release/r8") is True
+    _g(clone, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    assert rc._origin_branch_gone(clone, "release/r8") is False
+
+
+# ── the cut runs origin/main's release tooling ───────────────────────
+
+_REAL_REFRESH_TOOLING = rc.refresh_tooling
+
+
+def _g(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+@pytest.fixture
+def stale_checkout(
+    tmp_path: Path, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """A real clone one commit behind origin/main, whose newer commit
+    rewrote ``scripts/round`` and ``scripts/lib``: the real
+    :func:`refresh_tooling` runs against it."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _g(work, "init", "-q", "-b", "main")
+    (work / "scripts" / "lib").mkdir(parents=True)
+    (work / "scripts" / "release").write_text("#!/bin/sh\n# old\n", encoding="utf-8")
+    (work / "scripts" / "round").write_text("#!/bin/sh\n# old\n", encoding="utf-8")
+    (work / "scripts" / "lib" / "x.py").write_text("OLD = 1\n", encoding="utf-8")
+    (work / "other.txt").write_text("keep\n", encoding="utf-8")
+    _g(work, "add", "-A")
+    _g(work, "commit", "-q", "-m", "old")
+    origin = tmp_path / "origin.git"
+    _g(tmp_path, "clone", "-q", "--bare", str(work), str(origin))
+    root = checkout["root"]
+    for child in sorted(root.rglob("*"), reverse=True):
+        child.unlink() if child.is_file() else child.rmdir()
+    root.rmdir()
+    _g(tmp_path, "clone", "-q", str(origin), str(root))
+    (work / "scripts" / "round").write_text("#!/bin/sh\n# NEW\n", encoding="utf-8")
+    (work / "scripts" / "lib" / "x.py").write_text("NEW = 1\n", encoding="utf-8")
+    (work / "other.txt").write_text("moved\n", encoding="utf-8")
+    _g(work, "commit", "-q", "-am", "new")
+    _g(work, "push", "-q", str(origin), "main")
+    checkout["tip"] = _g(work, "rev-parse", "HEAD")
+    checkout["origin"] = origin
+    monkeypatch.setattr(rc, "refresh_tooling", _REAL_REFRESH_TOOLING)
+    monkeypatch.setattr(
+        rc._factory_git, "git_auth_env", lambda base=None: dict(os.environ)
+    )
+    return checkout
+
+
+def test_release_cut_runs_origin_mains_tooling_not_the_trees(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    """The working tree is behind origin/main: the launched
+    ``scripts/release`` sources the fresh ``scripts/round`` and
+    ``scripts/lib``. HEAD and unrelated files stay put; the refreshed
+    paths read as staged (index == origin/main), not as unstaged edits."""
+    root = stale_checkout["root"]
+    head_before = _g(root, "rev-parse", "HEAD")
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    tip9 = stale_checkout["tip"][:9]
+    assert handle is not None and handle["tooling"] == tip9
+    assert ctx.stamped["tooling"] == tip9
+    assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# NEW\n")
+    assert (root / "scripts" / "lib" / "x.py").read_text(
+        encoding="utf-8"
+    ) == "NEW = 1\n"
+    assert (root / "other.txt").read_text(encoding="utf-8") == "keep\n"
+    assert _g(root, "rev-parse", "HEAD") == head_before
+    assert _g(root, "diff", "--name-only") == ""  # nothing unstaged
+    assert _g(root, "diff", "--cached", "--name-only").splitlines() == [
+        "scripts/lib/x.py",
+        "scripts/round",
+    ]
+    _g(root, "merge", "--ff-only", "origin/main")  # the next pull still works
+
+    _exit(stale_checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert f"- tooling: {tip9}" in ctx.chunks[-1][1]
+
+
+def test_release_cut_tooling_refresh_is_idempotent(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    root = stale_checkout["root"]
+    first = rc.refresh_tooling(root)
+    index = _g(root, "write-tree")
+    assert rc.refresh_tooling(root) == first == stale_checkout["tip"][:9]
+    assert _g(root, "write-tree") == index
+
+
+def test_release_cut_tooling_fetch_failure_runs_the_tree_and_says_so(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    root = stale_checkout["root"]
+    _g(root, "remote", "set-url", "origin", str(root.parent / "gone.git"))
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == []
+    assert handle is not None
+    assert handle["tooling"].startswith("working tree (fetch of origin/main failed")
+    assert (root / "scripts" / "round").read_text(encoding="utf-8").endswith("# old\n")
+    assert len(stale_checkout["argv"]) == 1  # the cut still launched
+    _exit(stale_checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    assert "- tooling: working tree (fetch of origin/main failed" in ctx.chunks[-1][1]
+
+
+def test_release_cut_tooling_never_overwrites_local_edits(
+    store: Store, stale_checkout: dict[str, Any]
+) -> None:
+    root = stale_checkout["root"]
+    (root / "scripts" / "round").write_text(
+        "#!/bin/sh\n# hand edit\n", encoding="utf-8"
+    )
+    label = rc.refresh_tooling(root)
+    assert label == "working tree (tooling paths carry local edits; not refreshed)"
+    assert (
+        (root / "scripts" / "round").read_text(encoding="utf-8").endswith("hand edit\n")
+    )
 
 
 # ── the deploy is pinned to the cut's host and checkout ──────────────
@@ -3533,6 +3826,7 @@ def _fake_gh_api(
     *,
     compare: Any = None,
     main_sha: str = "5" * 40,
+    gated_behind: tuple[str, ...] = (),
 ) -> None:
     """``release_cut``'s re-cut path reads GitHub through
     ``pr_class._get_json``: the compare against the scan's pin
@@ -3548,6 +3842,10 @@ def _fake_gh_api(
                 "behind_by": 0,
                 "commits": [{"sha": main_sha}],
             }
+        elif "/compare/gated..." in url:
+            # origin/gated sits ahead of every sha in ``gated_behind``.
+            sha = url.rsplit("...", 1)[1]
+            data = {"status": "behind" if sha in gated_behind else "ahead"}
         else:
             data = {}
         return SimpleNamespace(status_code=200, json=lambda: data)
@@ -3814,6 +4112,294 @@ def test_a_recut_below_the_head_holds_and_names_the_unit(
     assert checkout["argv"] == []
     assert ctx.failures and rc.HOLD_PREFIX in ctx.failures[0]
     assert ctx.stamped.get("attempt_free") == "cut-hold"
+
+
+# ── cut refusals are classified, not retried into an ask ─────────────
+
+_TIP_LINE = (
+    "scripts/round: cut refused — the next release cuts at origin/main "
+    "(a1b2c3d4e), not 9f8e7d6c5"
+)
+_BRANCH_LINE = (
+    "scripts/round: cut refused — release branch release/r262 exists on origin "
+    "— one open release at a time"
+)
+_GATED_LINE = (
+    "scripts/round: cut refused — origin/gated cannot fast-forward to the cut SHA "
+    "— choose a compatible green main SHA"
+)
+_UNCLASSIFIED_LINE = (
+    "scripts/round: cut refused — migration number collision in the cut tree "
+    "(renumber the unshipped one on main first):"
+)
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "cls", "line", "free"),
+    [
+        (1, f"noise\n{_TIP_LINE}\n", "tip-only", _TIP_LINE, True),
+        (1, f"{_GATED_LINE}\n", "gated-behind", _GATED_LINE, True),
+        (1, f"{_BRANCH_LINE}\n", "in-flight", _BRANCH_LINE, True),
+        (
+            0,
+            "release in flight: release/r262\n9f8e7d6c5 rides the next cut\n",
+            "in-flight",
+            "release in flight: release/r262",
+            True,
+        ),
+        (
+            1,
+            "holding: cut abc sits below origin/main: td9 pending\n",
+            "holding",
+            "holding: cut abc sits below origin/main: td9 pending",
+            True,
+        ),
+        (
+            1,
+            f"{_UNCLASSIFIED_LINE}\n  0001 a\n",
+            "unclassified",
+            _UNCLASSIFIED_LINE,
+            False,
+        ),
+        (
+            1,
+            "scripts/release: cannot read origin's branches\n",
+            "unclassified",
+            "scripts/release: cannot read origin's branches",
+            False,
+        ),
+    ],
+)
+def test_release_cut_classifies_a_refusal(
+    store: Store,
+    checkout: dict[str, Any],
+    code: int,
+    out: str,
+    cls: str,
+    line: str,
+    free: bool,
+) -> None:
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    _exit(checkout, code, out)
+    assert rc.poll(ctx, handle) is True
+    assert ctx.status is None and len(ctx.failures) == 1
+    assert ctx.stamped["cut_refusal"] == {"class": cls, "line": line}
+    assert f"refusal ({cls}): {line}" in ctx.failures[0]
+    assert ("job_summary", f"release_cut: cut refused ({cls}): {line}") in ctx.chunks
+    assert (ctx.stamped.get("attempt_free") == f"cut-{cls}") is free
+    # A wait records the hold on the plan root; the unclassified refusal
+    # leaves the retry cap (and its ask) as it was.
+    assert ("cut_hold" in _meta(store, mint.root_id)) is free
+
+
+def test_a_tip_line_naming_the_same_sha_is_not_below_the_tip(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    line = "scripts/round: cut refused — the next release cuts at origin/main (abc1234), not abc1234"
+    mint = T.mint_release_pass(store)
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    _exit(checkout, 1, line + "\n")
+    assert rc.poll(ctx, handle) is True
+    assert ctx.stamped["cut_refusal"]["class"] == "tip-only"
+    assert "attempt_free" not in ctx.stamped
+    assert "cut_hold" not in _meta(store, mint.root_id)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_tip_only_refusal_holds_the_next_tick_until_the_tip_is_reviewed(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recorded target A sits below the tip B: the cut is refused
+    tip-only, the job burns no attempt, and the hold on the plan root
+    sends the next tick through ``cleared_head`` — ``holding:`` while B's
+    review is open, then a cut at B (the tip) once it clears."""
+    a, b = "a" * 40, "b" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", a]
+    _exit(checkout, 1, _TIP_LINE + "\n")
+    assert rc.poll(ctx, handle) is True
+    assert ctx.stamped["attempt_free"] == "cut-tip-only"
+    assert _meta(store, mint.root_id)["cut_hold"]["lines"] == [_TIP_LINE]
+
+    _fake_gh_api(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": b}],
+        },
+    )
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, ["scripts/ship"], sha=b)
+    rid = _reviewer(store, 43)
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None
+    assert refusal.startswith(f"release_cut: {rc.HOLD_PREFIX}cut {a[:12]}")
+    assert f"td{rid}" in refusal
+    assert len(checkout["argv"]) == 1  # no job minted, nothing launched
+
+    store.stamp_ref_meta(rid, {"review": {"verdict": "LAND"}})
+    store.add_tag(
+        rid, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx2 = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle2 = rc.submit(ctx2, None)
+    assert handle2 is not None
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+    # The hold keeps its clock while the cut runs; a successful cut clears it.
+    assert _meta(store, mint.root_id)["cut_hold"]["since"]
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx2, handle2) is True
+    meta = _meta(store, mint.root_id)
+    assert not meta.get("cut_hold") and not meta.get("cut_retarget")
+
+
+def _two_lands(store: Store, a: str, b: str, *, b_reviewed: bool) -> int:
+    """Lands A (cleared) and B (cleared or pending); the pending reviewer's id."""
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, ["scripts/ship"], sha=b)
+    if b_reviewed:
+        return _reviewer(store, 43, status="done", review={"verdict": "LAND"})
+    return _reviewer(store, 43)
+
+
+_TWO_COMMITS = {"status": "ahead", "ahead_by": 2, "behind_by": 0}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_recorded_target_behind_gated_is_dropped_and_recomputed(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later --remote land moved origin/gated past the pass's recorded
+    target A: the first cut drops A before any launch and cuts the newest
+    reviewed head at or after gated (B) — the refusal cannot happen."""
+    a, b = "a" * 40, "b" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _fake_gh_api(
+        monkeypatch,
+        compare={**_TWO_COMMITS, "commits": [{"sha": a}, {"sha": b}]},
+        gated_behind=(a,),
+    )
+    _two_lands(store, a, b, b_reviewed=True)
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is not None
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_no_reviewed_head_at_or_after_gated_holds_the_cut(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gated moved past A, B's review is still open: the newest cleared
+    head is A, below gated — validate holds (no job), a racing submit
+    fails attempt-free and launches nothing."""
+    a, b = "a" * 40, "b" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _fake_gh_api(
+        monkeypatch,
+        compare={**_TWO_COMMITS, "commits": [{"sha": a}, {"sha": b}]},
+        gated_behind=(a,),
+    )
+    rid = _two_lands(store, a, b, b_reviewed=False)
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None
+    assert refusal.startswith(f"release_cut: {rc.HOLD_PREFIX}cleared head {a[:12]}")
+    assert "origin/gated" in refusal and f"td{rid}" in refusal
+    assert _meta(store, mint.root_id)["cut_hold"]["lines"]
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is None
+    assert checkout["argv"] == []
+    assert ctx.stamped["attempt_free"] == "cut-hold"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_gated_behind_refusal_retargets_the_next_tick(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The up-front check could not read GitHub, so the cut launched at A
+    and the script refused ``origin/gated cannot fast-forward``: the job
+    burns no attempt, marks the plan root, and the next tick re-targets to
+    the reviewed head at or after gated."""
+    a, b = "a" * 40, "b" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)  # no repo resolves: the check fails open
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", a]
+    _exit(checkout, 1, _GATED_LINE + "\n")
+    assert rc.poll(ctx, handle) is True
+    assert ctx.stamped["attempt_free"] == "cut-gated-behind"
+    assert _meta(store, mint.root_id)["cut_retarget"]["class"] == "gated-behind"
+
+    _fake_gh_api(
+        monkeypatch,
+        compare={**_TWO_COMMITS, "commits": [{"sha": a}, {"sha": b}]},
+        gated_behind=(a,),
+    )
+    _two_lands(store, a, b, b_reviewed=True)
+    ctx2 = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx2, None) is not None
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release in flight elsewhere refuses the cut attempt-free, and
+    the marker paces the retries: validate refuses (no job minted) for
+    ten minutes after the refusal, then lets one cut try through."""
+    a = "a" * 40
+    t0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+    clock = {"now": t0}
+    monkeypatch.setattr(rc, "_now", lambda: clock["now"])
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    _exit(checkout, 0, "release in flight: release/r262\n")
+    assert rc.poll(ctx, handle) is True
+    mark = _meta(store, mint.root_id)["cut_retarget"]
+    assert mark["class"] == "in-flight" and mark["pace_until"] == "2026-11-10T12:10:00Z"
+
+    _fake_gh_api(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "commits": [{"sha": a}],
+        },
+    )
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    launches = len(checkout["argv"])
+    for minutes in (1, 9):  # inside the window: ticks skip, nothing launches
+        clock["now"] = t0 + timedelta(minutes=minutes)
+        refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+        assert refusal is not None and rc.HOLD_PREFIX in refusal
+        assert "release in flight" in refusal and "12:10:00Z" in refusal
+        ctx_in = Ctx(store, {"todo_id": mint.ids["cut"]})
+        assert rc.submit(ctx_in, None) is None
+        assert ctx_in.stamped["attempt_free"] == "cut-hold"
+    assert len(checkout["argv"]) == launches
+    clock["now"] = t0 + timedelta(minutes=10)
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
+    assert len(checkout["argv"]) == launches + 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")

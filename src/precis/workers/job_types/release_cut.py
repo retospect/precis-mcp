@@ -35,7 +35,31 @@ detached submit/poll pair under ``ssh_node``:
   summary note — never a job failure, the cut happened. No
   ``RELEASE_CUT`` line (S already live,
   a release in flight elsewhere) or a non-zero exit fails the job with the
-  log tail; the plan tick's retry cap then files the ask.
+  log tail, and the refusal line is classified (:func:`classify_cut_refusal`,
+  ``meta.cut_refusal = {class, line}``, the line in the summary): ``tip-only``
+  (``scripts/round``'s "the next release cuts at origin/main", the asked sha
+  below the tip), ``gated-behind`` ("origin/gated cannot fast-forward":
+  a later --remote land moved gated past the recorded target; the re-target
+  must land at or after gated, and a first cut drops a target that is a strict
+  ancestor of gated up front), ``in-flight`` and ``holding`` are waits — the job fails
+  attempt-free (no attempt burned, no retry-cap ask), the hold is recorded
+  (``release_poll.note_cut_hold``) and the plan root marked
+  ``meta.cut_retarget``, so the next tick's :func:`_cut_target` re-targets
+  through ``release_poll.cleared_head`` (``holding:`` at validate until the
+  tip is reviewed); the hour-long recut-hold ask is the backstop, for a first
+  cut too (keyed on the marker, quoting the refusal), and an ``in-flight`` first
+  cut mints at most one job per ``IN_FLIGHT_PACE_MIN`` minutes. Any
+  other refusal is ``unclassified``: the plan tick's retry cap files the ask,
+  now quoting the line.
+
+Before any launch :func:`submit` runs :func:`refresh_tooling`: fetch
+origin/main and check ``scripts/release``, ``scripts/round`` and
+``scripts/lib`` out of it into the checkout (those paths only; staged, so
+a later fast-forward is not refused), so a tooling fix that landed on main
+reaches the cut even when the checkout's tree is older (r263 refused four
+times on a stale ``scripts/round``). The job records ``tooling: <sha9>``
+(``meta.tooling``, the summary); a failed fetch, or unstaged local edits
+to those paths, runs the working tree and the label says so.
 
 Before ``--cut-only`` launches, :func:`submit` clears the checkout's
 stale local round when three preflight conditions hold: the clone's own
@@ -72,6 +96,15 @@ unforwarded commits) fail the job with the log tail, no cut launched.
 On exit 0 the handle swaps onto the ``--cut-only`` launch exactly as
 the supersede's does.
 
+A third covers a branch the shared row never learned about (r262: the
+pass dropped and its origin branch deleted, the clone's record left open):
+an open local record whose ``release/r<n>`` is absent from origin (an
+``ls-remote`` that succeeded — a failed read is not absence), with no
+``deployment``/``deploy`` key and no live ``release_deploy`` job, launches
+the same ``cut --abandon`` as an ``abandon_gone`` phase (its absent-branch
+path only marks the record). The job records ``meta.preflight = "abandoned
+r<n>"`` and the summary says so.
+
 The cut never waits for CI: ``ci_verdict_poll`` records the verdict and the
 ``tests-green`` gate reads it. Refused while ``PRECIS_FACTORY=off``. The
 helpers below (:func:`launch_script`, :func:`finish_run`) are shared with
@@ -83,12 +116,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import tempfile
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +143,82 @@ _TAIL_CAP = 2000
 #: a wait, not a failure: ``validate_submit`` refuses it before any job
 #: mints, and a ``submit`` that races into it fails attempt-free.
 HOLD_PREFIX = "holding: "
+
+#: A first cut held as ``in-flight`` mints at most one cut job per this many
+#: minutes (the plan tick would otherwise mint one per tick).
+IN_FLIGHT_PACE_MIN = 10
+
+#: Refusal classes (``meta.cut_refusal.class``). ``tip-only``,
+#: ``in-flight`` and ``holding`` are waits the plan tick must not burn an
+#: attempt on (and ask about): the job fails attempt-free and the hold is
+#: recorded; ``unclassified`` keeps the retry cap, its ask quotes the line.
+REFUSAL_TIP_ONLY = "tip-only"
+REFUSAL_IN_FLIGHT = "in-flight"
+REFUSAL_HOLDING = "holding"
+REFUSAL_GATED_BEHIND = "gated-behind"
+REFUSAL_UNCLASSIFIED = "unclassified"
+
+#: ``scripts/round``'s pipelined-cut rule (``_cut_refuse``): the line names
+#: origin/main's tip and the sha the cut asked for.
+_TIP_ONLY_RE = re.compile(
+    r"the next release cuts at origin/main(?: \((?P<tip>[0-9a-f]+)\))?"
+    r"(?:, not (?P<asked>[0-9a-f]+))?"
+)
+#: ``scripts/release``'s "release in flight: <branch>" say-line (exit 0, no
+#: ``RELEASE_CUT``), ``scripts/round``'s "release branch <b> exists on
+#: origin" and the record-level "already records an open release".
+_IN_FLIGHT_RE = re.compile(
+    r"release in flight|exists on origin|already records an open release"
+)
+#: ``scripts/round``'s fast-forward guard on the cut sha: a later --remote
+#: land moved origin/gated past the pass's recorded target.
+_GATED_BEHIND_RE = re.compile(r"origin/gated cannot fast-forward")
+_HOLDING_RE = re.compile(r"(?:^|\s)holding: ")
+_REFUSED_RE = re.compile(r"cut refused|^scripts/(?:release|round): ")
+_REFUSAL_LINE_CAP = 300
+
+
+def classify_cut_refusal(log_text: str) -> dict[str, str]:
+    """``{"class", "line"}`` for a failed ``--cut-only`` log — the refusal
+    line the cut died on (``scripts/round: cut refused — ...``,
+    ``scripts/release: ...``, ``release in flight: ...``) and its class
+    (:data:`REFUSAL_TIP_ONLY`, :data:`REFUSAL_GATED_BEHIND`,
+    :data:`REFUSAL_IN_FLIGHT`,
+    :data:`REFUSAL_HOLDING`, else :data:`REFUSAL_UNCLASSIFIED` — whose line
+    is the last refusal-shaped line, else the last non-empty line). The
+    newest matching line of the most specific class wins: a log can carry
+    earlier lines of the cut's own retries."""
+    lines = [ln.strip() for ln in log_text.splitlines() if ln.strip()]
+    for cls, pat in (
+        (REFUSAL_TIP_ONLY, _TIP_ONLY_RE),
+        (REFUSAL_GATED_BEHIND, _GATED_BEHIND_RE),
+        (REFUSAL_IN_FLIGHT, _IN_FLIGHT_RE),
+        (REFUSAL_HOLDING, _HOLDING_RE),
+    ):
+        for ln in reversed(lines):
+            if pat.search(ln):
+                return {"class": cls, "line": ln[:_REFUSAL_LINE_CAP]}
+    for ln in reversed(lines):
+        if _REFUSED_RE.search(ln):
+            return {"class": REFUSAL_UNCLASSIFIED, "line": ln[:_REFUSAL_LINE_CAP]}
+    return {
+        "class": REFUSAL_UNCLASSIFIED,
+        "line": lines[-1][:_REFUSAL_LINE_CAP] if lines else "",
+    }
+
+
+def _below_tip(line: str) -> bool:
+    """Whether a tip-only refusal line shows the asked sha below the tip
+    (the two shas differ, or the line does not say); the line naming the
+    same sha twice is not a below-the-tip refusal and takes the retry cap."""
+    m = _TIP_ONLY_RE.search(line)
+    if m is None or not m.group("tip") or not m.group("asked"):
+        return True
+    return not (
+        m.group("tip").startswith(m.group("asked"))
+        or m.group("asked").startswith(m.group("tip"))
+    )
+
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -436,7 +546,240 @@ def _dead_open_round_n(ctx: Any) -> int | None:
     return None
 
 
+def _origin_branch_gone(root: Path, branch: str) -> bool:
+    """Whether the remote listing read origin and ``refs/heads/<branch>``
+    is absent. A failed or timed-out read is not absence."""
+    try:
+        proc = _tooling_git(
+            root, ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"]
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and not proc.stdout.strip()
+
+
+def _gone_open_round_n(ctx: Any) -> int | None:
+    """``n`` of the checkout's open record whose ``release/r<n>`` branch
+    is gone from origin and which never deployed, else ``None``: the pass
+    was dropped and its branch deleted elsewhere, yet the clone's
+    ``round.json`` still reads it in flight, so every cut refuses until
+    ``round cut --abandon`` marks it (r262 needed an ssh session). All of:
+    one open (non-pending) local record, no ``deployment``/``deploy`` key
+    (``_cut_abandon`` refuses a journal anyway), no live ``release_deploy``
+    job in the store, and a listing that succeeded and found no such
+    branch. Any read failure is a warning and "no"."""
+    try:
+        root = _rs.slice_root()
+    except RuntimeError:
+        return None  # launch_script below reports the same failure
+    rel = _local_open_round(root)
+    if rel is None or rel.get("deployment") or rel.get("deploy"):
+        return None
+    branch = str(rel.get("branch") or "")
+    if not branch:
+        return None
+    try:
+        if _release.live_deploy_job(ctx.store):
+            return None
+    except Exception:
+        log.warning("%s: gone-round preflight read failed", NAME, exc_info=True)
+        return None
+    return int(rel["n"]) if _origin_branch_gone(root, branch) else None
+
+
+# ── the release tooling a launch runs ──────────────────────────────
+
+#: The paths a ``scripts/release``/``scripts/round`` launch executes and
+#: sources (``scripts/lib`` for the runpy-loaded helpers).
+_TOOLING_PATHS = ("scripts/release", "scripts/round", "scripts/lib")
+
+_TOOLING_GIT_S = 120
+
+
+def _tooling_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    """``git -C root <args>`` under the factory git credentials; never
+    raises on a non-zero exit."""
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=_TOOLING_GIT_S,
+        env=_factory_git.git_auth_env(),
+    )
+
+
+def refresh_tooling(root: Path) -> str:
+    """Make the checkout's ``scripts/release``, ``scripts/round`` and
+    ``scripts/lib`` match origin/main, and answer the tooling label the
+    job records: the 9-char origin/main sha, else ``working tree (<why>)``.
+
+    The cut runs the checkout's own working tree
+    (:func:`run_slice.slice_root`), which can be older than origin/main —
+    a fix to ``scripts/round`` then never reaches the cut (r263 refused
+    four times on a tip-only rule the tree predated). The refresh is
+    ``git fetch origin main`` plus ``git checkout origin/main -- <paths>``
+    for those paths only: HEAD, the branch and every other file stay as
+    they are, and the paths read as staged against HEAD — an index equal
+    to origin/main's, so a later fast-forward onto it is not refused as
+    overwriting local changes. It runs in place, not from an export of
+    origin/main: both scripts resolve their ``ROOT`` from their own
+    location, and the ``PRECIS_ROUND_ROOT`` override that would redirect an
+    export also switches off their shared-row reads and writes ("a foreign
+    checkout"), so only the in-place copy keeps the cut's round state,
+    ``.release-owner`` marker and shared-row sync as they are today. Every
+    failure — fetch, an unreadable ref, unstaged local edits to those
+    paths (never overwritten), the checkout — falls back to the working
+    tree and names why."""
+    try:
+        fetched = _tooling_git(
+            root,
+            ["fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        )
+        if fetched.returncode != 0:
+            why = (fetched.stderr.strip().splitlines() or ["git fetch failed"])[-1]
+            return f"working tree (fetch of origin/main failed: {why[:120]})"
+        head = _tooling_git(
+            root, ["rev-parse", "--verify", "-q", "refs/remotes/origin/main^{commit}"]
+        )
+        sha = head.stdout.strip()
+        if head.returncode != 0 or not sha:
+            return "working tree (origin/main unreadable after the fetch)"
+        if (
+            _tooling_git(
+                root, ["diff", "--quiet", sha, "--", *_TOOLING_PATHS]
+            ).returncode
+            == 0
+        ):
+            return sha[:9]  # already matches: touch nothing
+        if _tooling_git(root, ["diff", "--quiet", "--", *_TOOLING_PATHS]).returncode:
+            return "working tree (tooling paths carry local edits; not refreshed)"
+        out = _tooling_git(root, ["checkout", sha, "--", *_TOOLING_PATHS])
+        if out.returncode != 0:
+            why = (out.stderr.strip().splitlines() or ["git checkout failed"])[-1]
+            return f"working tree (refresh failed: {why[:120]})"
+        return sha[:9]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"working tree ({type(exc).__name__}: {str(exc)[:120]})"
+
+
+def _tooling_label(ctx: Any) -> str:
+    """Refresh the tooling for this job's launches and record it on the
+    job (``meta.tooling``, a ``job_event``): the label, ``working tree
+    (...)`` when the checkout cannot be resolved or refreshed."""
+    try:
+        label = refresh_tooling(_rs.slice_root())
+    except RuntimeError as exc:
+        label = f"working tree ({str(exc)[:120]})"
+    except Exception as exc:  # never the cut's verdict: run the tree as is
+        log.warning("%s: tooling refresh raised", NAME, exc_info=True)
+        label = f"working tree ({type(exc).__name__})"
+    ctx.set_meta(tooling=label)
+    ctx.append_chunk("job_event", f"{NAME}: tooling: {label}")
+    return label
+
+
 # ── release_cut ────────────────────────────────────────────────────
+
+
+def _retarget_marker(store: Any, todo_id: Any) -> dict[str, Any] | None:
+    """The plan root's ``meta.cut_retarget`` (see :func:`_note_refusal`):
+    ``{class, line, pace_until}`` of the refusal that held the first cut,
+    else ``None``. A marker of its own, not ``meta.cut_hold``: the hold's
+    ``since`` must survive the gate clearing so the hour-long ask measures
+    the whole hold, and the submit after the validate must still see the
+    re-target."""
+    if not isinstance(todo_id, int):
+        return None
+    ref = store.get_ref(kind="todo", id=_release.plan_root(store, todo_id))
+    mark = (ref.meta or {}).get("cut_retarget") if ref is not None else None
+    return mark if isinstance(mark, dict) and mark.get("class") else None
+
+
+def _now() -> datetime:
+    """Seam (tests patch it): the pacing clock, UTC."""
+    return datetime.now(UTC)
+
+
+def _paced(mark: dict[str, Any]) -> str | None:
+    """The :data:`HOLD_PREFIX` refusal while an ``in-flight`` first cut is
+    inside its pacing window (:data:`IN_FLIGHT_PACE_MIN` after the refusal
+    that marked it), else ``None``: validate refuses, so no job mints."""
+    until = mark.get("pace_until")
+    if not until:
+        return None
+    try:
+        t = datetime.strptime(str(until), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    if _now() >= t:
+        return None
+    return (
+        f"{HOLD_PREFIX}a release is in flight ({mark.get('line')}); "
+        f"the next cut try is after {until}"
+    )
+
+
+def _clear_retarget(store: Any, todo_id: Any) -> None:
+    """A cut succeeded: drop the first cut's hold and re-target marker (a
+    write only when one is there). A failure is a log line."""
+    try:
+        if _retarget_marker(store, todo_id) is not None:
+            store.stamp_ref_meta(
+                _release.plan_root(store, todo_id), {"cut_retarget": None}
+            )
+        _rp.note_cut_hold(store, todo_id, None)
+    except Exception:
+        log.warning("%s: retarget clear failed", NAME, exc_info=True)
+
+
+def _vs_gated(repo: str, sha: str) -> str:
+    """How ``sha`` sits against origin/gated, from GitHub's
+    ``compare/gated...<sha>`` status: ``identical``/``ahead`` (gated is
+    ``sha`` or its ancestor: the cut can fast-forward it), ``behind`` (``sha``
+    is a strict ancestor of gated), ``diverged``, else ``unknown`` (a reply
+    without a status — the script's own guard decides). Raises
+    :class:`precis.plans.pr_class.GitHubUnreadable`."""
+    url = f"{_rp._API.format(repo=repo)}/compare/gated...{sha}"
+    data = pr_class._get_json(url, {})
+    status = str(data.get("status") or "") if isinstance(data, dict) else ""
+    if status in ("identical", "ahead", "behind", "diverged"):
+        return status
+    return "unknown"
+
+
+def _gated_retarget(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
+    """``(sha, refusal)`` for a first cut whose recorded target sits below
+    origin/gated (a later --remote land moved it): the newest fully-reviewed
+    head through :func:`release_poll.cleared_head`, accepted only when it is
+    at or after gated — a head below it is not cuttable, so the cut holds
+    (:data:`HOLD_PREFIX`, attempt-free) until a review reaches it. Unlike a
+    re-cut it may sit below the tip: with no release open the cut is not
+    pinned to origin/main."""
+    repo = pr_class.resolve_repo(store, None)
+    if not repo:
+        return None, (
+            "no GitHub owner/repo (release.repo and the checkout's "
+            "origin both empty); next: set release.repo"
+        )
+    try:
+        sha, blockers, _notes = _rp.cleared_head(store, repo=repo)
+        status = _vs_gated(repo, sha) if sha is not None else ""
+    except pr_class.GitHubUnreadable as exc:
+        return None, f"GitHub unreadable ({exc}); next: the next tick retries"
+    if sha is None:
+        _rp.note_cut_hold(store, todo_id, blockers)
+        return None, f"{HOLD_PREFIX}{'; '.join(blockers)}; next tick retries"
+    if status in ("behind", "diverged"):
+        lines = [
+            f"cleared head {sha[:12]} is not at or after origin/gated "
+            f"({status}); no fully-reviewed head reaches it yet",
+            *blockers,
+        ]
+        _rp.note_cut_hold(store, todo_id, lines)
+        return None, f"{HOLD_PREFIX}{'; '.join(lines)}; next tick retries"
+    return sha, None  # the hold stays: a cut clears it (_clear_retarget)
 
 
 def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
@@ -454,9 +797,34 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     keeps the whole-gate tip rule. A re-cut whose cleared head sits
     below the pinned origin/main refuses with a :data:`HOLD_PREFIX`
     line naming the holding units (gr611217): the open round's
-    pipelined cut must be at origin/main, so the launch would die."""
+    pipelined cut must be at origin/main, so the launch would die.
+
+    A first cut a refusal held (``meta.cut_retarget`` on the plan root,
+    written by :func:`_note_refusal`: the recorded target sat below
+    origin/main, or a release was in flight) is recomputed the same way
+    as a re-cut — the recorded target is stale, the cleared head decides —
+    and its hold clears when the gate does. A recorded target that is a
+    strict ancestor of origin/gated (a later --remote land moved gated past
+    it) is dropped up front, as is one whose cut was refused
+    ``gated-behind``: :func:`_gated_retarget` recomputes it, so
+    ``scripts/round``'s fast-forward guard never has to refuse it."""
     rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
-    if rel is not None:
+    mark = None if rel is not None else _retarget_marker(store, todo_id)
+    if mark is not None and (paced := _paced(mark)) is not None:
+        return None, paced
+    mode = str(mark["class"]) if mark else None
+    if rel is None and mode is None and isinstance(todo_id, int):
+        stale = _release.release_target_of(store, todo_id)
+        repo = pr_class.resolve_repo(store, None) if stale is not None else None
+        if stale is not None and repo:
+            try:
+                if _vs_gated(repo, stale["sha"]) == "behind":
+                    mode = REFUSAL_GATED_BEHIND
+            except pr_class.GitHubUnreadable:
+                pass  # fail open: the script's own guard still refuses it
+    if mode == REFUSAL_GATED_BEHIND:
+        return _gated_retarget(store, todo_id)
+    if rel is not None or mode is not None:
         repo = pr_class.resolve_repo(store, None)
         if not repo:
             return None, (
@@ -469,8 +837,11 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
             return None, f"GitHub unreadable ({exc}); next: the next tick retries"
         if sha is None:
             return None, "; ".join(blockers)
-        # The poll's liveness clock: a hold past an hour files one ask.
-        _rp.note_cut_hold(store, todo_id, blockers)
+        # The poll's liveness clock: a hold past an hour files one ask. A
+        # held first cut keeps its clock until a cut succeeds
+        # (:func:`_clear_retarget`): in-flight retries would restart it.
+        if rel is not None or blockers:
+            _rp.note_cut_hold(store, todo_id, blockers)
         if blockers:
             # gr611217: a re-cut runs while r<N> is open, and
             # ``scripts/round`` cuts that pipelined release only at
@@ -553,6 +924,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         ctx.record_failure(f"{NAME}: {refusal}")
         return None
     argv = ["--cut-only"] + (["--sha", sha] if sha else [])
+    tooling = _tooling_label(ctx)
     if ctx.store is not None:
         n = _stale_supersede_n(ctx)
         if n is not None:
@@ -569,7 +941,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 env={"PRECIS_GRIPE_NOTE": "0"},
             )
             if isinstance(handle, dict):
-                handle.update(phase="supersede", n=n, cut_argv=argv)
+                handle.update(phase="supersede", n=n, cut_argv=argv, tooling=tooling)
             return handle
         dead = _dead_open_round_n(ctx)
         if dead is not None:
@@ -587,9 +959,30 @@ def submit(ctx: Any, spec: Any) -> Any:
                 env={"PRECIS_GRIPE_NOTE": "0"},
             )
             if isinstance(handle, dict):
-                handle.update(phase="abandon", n=dead, cut_argv=argv)
+                handle.update(phase="abandon", n=dead, cut_argv=argv, tooling=tooling)
             return handle
-    return launch_script(ctx, NAME, argv)
+        gone = _gone_open_round_n(ctx)
+        if gone is not None:
+            # The record's origin branch is gone and it never deployed
+            # (a dropped pass deleted it): the same detached `cut
+            # --abandon`, from origin/main's refreshed tooling; its
+            # absent-branch path only marks the record.
+            handle = launch_script(
+                ctx,
+                f"{NAME}_abandon",
+                ["cut", "--abandon"],
+                script="round",
+                env={"PRECIS_GRIPE_NOTE": "0"},
+            )
+            if isinstance(handle, dict):
+                handle.update(
+                    phase="abandon_gone", n=gone, cut_argv=argv, tooling=tooling
+                )
+            return handle
+    handle = launch_script(ctx, NAME, argv)
+    if isinstance(handle, dict):
+        handle["tooling"] = tooling
+    return handle
 
 
 #: The retire phases' printed verb, note and meta key — ``supersede``
@@ -604,6 +997,12 @@ _PHASES: dict[str, tuple[str, str, str]] = {
     "abandon": (
         "cut --abandon",
         "abandoned dead local r{n}: the shared round row retired it",
+        "dead_round_abandoned",
+    ),
+    "abandon_gone": (
+        "cut --abandon",
+        "abandoned r{n} (preflight): its branch is gone from origin and it "
+        "never deployed",
         "dead_round_abandoned",
     ),
 }
@@ -634,17 +1033,61 @@ def _phase_done(ctx: Any, handle: dict[str, Any]) -> bool:
     fresh = launch_script(ctx, NAME, list(handle.get("cut_argv") or ["--cut-only"]))
     ctx.append_chunk("job_event", f"{NAME}: {note}" + (f" — {tail}" if tail else ""))
     ctx.set_meta(**{meta_key: {"n": n}})
+    if handle.get("phase") == "abandon_gone":
+        ctx.set_meta(preflight=f"abandoned r{n}")
     if fresh is None:
         return True  # the launch failure is recorded; no cut
+    tooling = handle.get("tooling")
     handle.clear()
     handle.update(fresh)
     handle["notes"] = [note]
+    if tooling:
+        handle["tooling"] = tooling
     ctx.set_meta(
         compute_handle=handle,
         compute_handle_released=False,
         deadline=time.time() + wall_seconds(),
     )
     return False
+
+
+def _note_refusal(ctx: Any, refusal: dict[str, str]) -> None:
+    """Record a failed cut's refusal on the job: ``meta.cut_refusal`` and
+    a summary line always. A wait — ``tip-only`` (the asked sha sits below
+    origin/main), ``in-flight``, ``holding`` — also fails attempt-free
+    (``plan_dispatch._no_attempt``: no attempt burned, no retry-cap ask)
+    and records the hold on the plan root (:func:`release_poll.note_cut_hold`):
+    the next tick's :func:`_cut_target` then re-targets through
+    ``release_poll.cleared_head``, holding at ``validate_submit`` until the
+    tip is fully reviewed. ``release_poll``'s hour-long recut-hold ask is
+    the backstop (it keys on this marker for a first cut). ``unclassified`` changes nothing about the retry."""
+    cls, line = refusal["class"], refusal["line"]
+    ctx.set_meta(cut_refusal=dict(refusal))
+    if line:
+        ctx.append_chunk("job_summary", f"release_cut: cut refused ({cls}): {line}")
+    wait = cls in (REFUSAL_IN_FLIGHT, REFUSAL_HOLDING, REFUSAL_GATED_BEHIND) or (
+        cls == REFUSAL_TIP_ONLY and _below_tip(line)
+    )
+    if not wait:
+        return
+    ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: f"cut-{cls}"})
+    todo_id = ((ctx.meta or {}).get("params") or {}).get("todo_id")
+    if isinstance(todo_id, int) and ctx.store is not None:
+        _rp.note_cut_hold(ctx.store, todo_id, [line])
+        pace = (
+            (_now() + timedelta(minutes=IN_FLIGHT_PACE_MIN)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            if cls == REFUSAL_IN_FLIGHT
+            else None
+        )
+        try:
+            ctx.store.stamp_ref_meta(
+                _release.plan_root(ctx.store, todo_id),
+                {"cut_retarget": {"class": cls, "line": line, "pace_until": pace}},
+            )
+        except Exception:
+            log.warning("%s: cut_retarget stamp failed", NAME, exc_info=True)
 
 
 def poll(ctx: Any, handle: Any) -> bool:
@@ -662,7 +1105,12 @@ def poll(ctx: Any, handle: Any) -> bool:
             else "exit 0 but no RELEASE_CUT line (S already live, or a release "
             "is in flight elsewhere — nothing cut for this plan)"
         )
-        fail_with_tail(ctx, f"{NAME}: scripts/release --cut-only {why}", log_text)
+        reason = f"{NAME}: scripts/release --cut-only {why}"
+        refusal = classify_cut_refusal(log_text)
+        if refusal["line"]:
+            reason += f"\nrefusal ({refusal['class']}): {refusal['line']}"
+        _note_refusal(ctx, refusal)
+        fail_with_tail(ctx, reason, log_text)
         return True
     rn, sha, rng = cut
     params = (ctx.meta or {}).get("params") or {}
@@ -671,6 +1119,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     repo = origin_repo(Path(checkout))
     host = run_host(params)
     notes: list[str] = list(handle.get("notes") or [])
+    if handle.get("tooling"):
+        notes.append(f"tooling: {handle['tooling']}")
     if isinstance(todo_id, int):
         now = datetime.now(UTC)
         try:
@@ -736,6 +1186,8 @@ def poll(ctx: Any, handle: Any) -> bool:
             + [f"- {n}" for n in notes]
         ),
     )
+    if isinstance(todo_id, int):
+        _clear_retarget(ctx.store, todo_id)
     ctx.set_status("succeeded")
     return True
 

@@ -2730,6 +2730,43 @@ def test_retry_cap_mints_exactly_one_ask(
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def test_retry_cap_ask_quotes_the_cut_refusal_line(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release cut that died on a refusal ``release_cut`` could not
+    classify carries ``meta.cut_refusal``: the cap ask quotes its line in
+    the context, ahead of the (truncatable) log tail."""
+    dead = L.Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="free-promo",
+        cap=3,
+        task_classes=frozenset({"code", "review", "validate"}),
+        enabled=True,
+        parked_reason="outage:timeout",
+        vendor="cognition",
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+        cost_class=L.COST_FREE,
+    )
+    use_lanes(monkeypatch, dead)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    line = "scripts/round: cut refused — migration number collision in the cut tree"
+    _failed_job(store, task, "first failure")
+    _failed_job(
+        store,
+        task,
+        "release_cut: exit 1\n" + "x" * 3000,
+        meta={"cut_refusal": {"class": "unclassified", "line": line}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    asks = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert len(asks) == 1
+    assert f"cut refused: {line}" in _meta(store, asks[0])["ask"]["context"]
+
+
 def test_model_pinned_node_caps_at_default_retries(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

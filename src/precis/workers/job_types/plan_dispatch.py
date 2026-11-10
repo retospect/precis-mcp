@@ -4910,6 +4910,12 @@ def _mint_ask(
         )
         title = f"td{n.id} hit its retry cap: retry, rewrite the brief, or drop it?"
         options = list(_ASK_OPTIONS)
+        # A release cut that died on a refusal line it could not classify
+        # (``release_cut.poll``, ``meta.cut_refusal``): quote the line, the
+        # log tail below may have scrolled past it.
+        refusal = newest.meta.get("cut_refusal")
+        if isinstance(refusal, dict) and refusal.get("line"):
+            head = f"{head}; cut refused: {str(refusal['line'])[:300]}"
     if lane_gap:
         head = f"{head}; {lane_gap}"
     tail = _failure_tail(store, newest.id, _ASK_CONTEXT_CAP - len(head) - 3)

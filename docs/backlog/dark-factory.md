@@ -635,6 +635,22 @@ home-built release loop breaks, and the guard for each:**
   `origin/prod`, not from the sha it deploys; harness diffs
   (`HARNESS_DIFF`, extended to the factory's own modules) never ride
   the dark lane;
+- the cut running a stale checkout's `scripts/round` (r263 refused four
+  times on a rule the tree predated) → `release_cut` checks
+  `scripts/release`, `scripts/round` and `scripts/lib` out of a fresh
+  origin/main before each launch and records `tooling: <sha9>` on the job;
+- a cut refused for a reason that is a wait (the asked sha below the tip,
+  origin/gated moved past the recorded target, a release in flight,
+  a review hold) → `release_cut` classifies the
+  refusal (`meta.cut_refusal`), fails attempt-free and re-targets through
+  the cleared head next tick instead of burning the retry cap into an ask;
+  a wait held an hour files the recut-hold ask (first cuts too), an in-flight
+  first cut retries at most every 10 minutes; an unrecognised refusal still
+  asks, quoting its line;
+- a dropped pass whose origin branch is gone but whose clone record is
+  still open (r262 needed an ssh `round cut --abandon`) → `release_cut`
+  abandons a never-deployed record with no origin branch before cutting
+  (`meta.preflight = "abandoned r<N>"`);
 - a landing cadence so fast releases never settle → bounded by gate
   time; if that proves wrong, a minimum spacing, not a timer.
 
