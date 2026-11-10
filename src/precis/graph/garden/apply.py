@@ -1713,11 +1713,17 @@ def apply_rewrite(
     actor: str,
     model: str | None = None,
     verdict_extra: dict[str, Any] | None = None,
+    applied: str | None = None,
 ) -> RewriteRecord:
     """Apply a reviewed anchored memory rewrite and its trust stamp atomically.
 
     All outgoing edges survive mention synchronization. A shorter
     body dropping a handle must not silently erase provenance or recall routes.
+
+    ``applied`` overrides the ledger's ``garden.applied`` marker — the
+    consumer's no-model duplicate-successor path records ``"mention"``
+    (gr564554); the reversal record id then lands under ``rewrite_id``
+    so the ledger still names the undo handle.
     """
     from precis.dispatch import Hub
     from precis.handlers.memory import _derive_title
@@ -1757,6 +1763,10 @@ def apply_rewrite(
             prior_header=header,
             previous=(ref.meta or {}).get("garden_rewrite"),
         )
+        applied_id = applied or rec.rewrite_id
+        extra = verdict_extra
+        if applied_id != rec.rewrite_id:
+            extra = {**(verdict_extra or {}), "rewrite_id": rec.rewrite_id}
         _resolve_memory_apply(
             store,
             conn,
@@ -1764,8 +1774,8 @@ def apply_rewrite(
             actor=actor,
             model=model,
             garden=garden,
-            applied=rec.rewrite_id,
-            verdict_extra=verdict_extra,
+            applied=applied_id,
+            verdict_extra=extra,
         )
         reason = f"garden:{garden['detector']}:{review_id}"
         with revision_context(

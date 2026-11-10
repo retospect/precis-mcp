@@ -70,6 +70,15 @@ both run by the ``graph_garden`` job right after its tick
    A ``compact`` proposal is reviewed but never auto-applied: an approval is
    recorded and the proposal held for the explicit door,
    ``precis garden apply <review_id>``.
+   One cell needs no review at all (gr564554): a ``dangling_mention``
+   rewrite whose every op is a bare handle swap onto a successor the
+   detector verified as a duplicate — a merge-made redirect
+   (``meta.garden_merge`` on the tombstone) or a ``supersedes`` edge to a
+   node with the same normalised title — applies through ``apply_rewrite``
+   recorded as ``garden.applied='mention'`` with the before/after spans and
+   the undo ``rewrite_id``, sharing the per-tick review budget without
+   spending a call. An agent-written supersedes to different content stays
+   on the reviewed path (gr560762).
 
 **Griped close** (gr561873). An applied ``griped`` proposal replays the
    complaint's recorded route once no sibling proposal stays pending:
@@ -202,6 +211,10 @@ MAX_MEMORY_APPLY_FAILURES = 5
 #: Unresolved text may await another source briefly, then needs operator attention.
 MAX_UNRESOLVED_AGE = timedelta(days=1)
 
+#: ``evidence.mentions[].duplicate_successor`` fates a detector may verify —
+#: a merge-made redirect or a same-title ``supersedes`` target (gr564554).
+_DUPLICATE_FATES = frozenset({"merge", "same_title"})
+
 #: Machine-readable reject reasons. The model picks one; anything else
 #: is recorded as ``other``. The last five are the rule's and the
 #: consumer's own.
@@ -253,6 +266,15 @@ class ConsumerVerdict:
 
 ReviewFn = Callable[["Store", GardenProposal], ConsumerVerdict]
 
+#: The recorded verdict a no-model duplicate-successor apply carries — the
+#: detector's own evidence is the whole justification.
+_MENTION_APPROVAL = ConsumerVerdict(
+    verdict="approve",
+    why="every mention resolves to a verified duplicate successor — a bare "
+    "handle swap needs no review (gr564554)",
+    model=None,
+)
+
 
 @dataclass(slots=True)
 class ConsumeReport:
@@ -273,6 +295,10 @@ class ConsumeReport:
     relinks: list[str] = field(default_factory=list)
     rewrites: list[str] = field(default_factory=list)
     splits: list[str] = field(default_factory=list)
+    #: ``garden-rewrite`` ids applied with no model call — the
+    #: duplicate-successor handle swaps (gr564554), a subset of
+    #: ``rewrites``.
+    mentions: list[str] = field(default_factory=list)
 
     def as_meta(self) -> dict[str, Any]:
         return asdict(self)
@@ -766,11 +792,48 @@ def _apply_approved(
     report.merges.append(rec.merge_id)
 
 
+def _mention_duplicate(prop: GardenProposal) -> bool:
+    """Whether a ``dangling_mention`` rewrite is nothing but handle swaps
+    onto verified duplicate successors — the no-model cell (gr564554).
+
+    The check binds each op to the *proposal's own evidence* at its span:
+    the detector computed ``duplicate_successor`` and ``successor`` there,
+    and ``apply_rewrite`` re-verifies that evidence live, so model- or
+    hand-written op flags cannot widen the swap. An op that rewords the
+    sentence, misses its span, or names a non-duplicate successor stays on
+    the reviewed path.
+    """
+    if prop.detector != "dangling_mention" or prop.action != "rewrite":
+        return False
+    ops = prop.payload.get("ops")
+    mentions = prop.evidence.get("mentions")
+    if not (isinstance(ops, list) and ops and isinstance(mentions, list)):
+        return False
+    by_span = {
+        tuple(m["span"]): m
+        for m in mentions
+        if isinstance(m, dict) and isinstance(m.get("span"), list)
+    }
+    return all(
+        isinstance(op, dict)
+        and isinstance(op.get("find"), str)
+        and isinstance(op.get("text"), str)
+        and isinstance(op.get("span"), list)
+        and (mention := by_span.get(tuple(op["span"]))) is not None
+        and mention.get("duplicate_successor") in _DUPLICATE_FATES
+        and op["find"] == mention.get("handle")
+        and op["text"] == mention.get("successor")
+        for op in ops
+    )
+
+
 def _apply_memory(
     store: Store,
     prop: GardenProposal,
     verdict: ConsumerVerdict,
     report: ConsumeReport,
+    *,
+    mention: bool = False,
 ) -> None:
     """Apply a reviewed memory proposal, holding protected nodes on drift."""
     from precis.graph.garden.apply import (
@@ -819,6 +882,13 @@ def _apply_memory(
     extra = decision_record(
         prop, outcome="applied", why=verdict.why, model=verdict.model
     )
+    if mention:
+        # The gripe's audit record: each swapped handle's before/after span.
+        extra["spans"] = [
+            {"span": op.get("span"), "before": op.get("find"), "after": op.get("text")}
+            for op in prop.payload.get("ops") or []
+            if isinstance(op, dict)
+        ]
     try:
         if prop.action == "rewrite":
             record = apply_rewrite(
@@ -827,8 +897,11 @@ def _apply_memory(
                 actor=CONSUMER_ACTOR,
                 model=verdict.model,
                 verdict_extra=extra,
+                applied="mention" if mention else None,
             )
             report.rewrites.append(record.rewrite_id)
+            if mention:
+                report.mentions.append(record.rewrite_id)
         elif prop.action == "split":
             split = apply_split(
                 store,
@@ -1793,6 +1866,13 @@ def review_pending(
             if prop.review_id in approvals:
                 retried += 1
                 _apply_memory(store, prop, approvals[prop.review_id], report)
+                continue
+            if _mention_duplicate(prop):
+                # A bare handle swap onto a verified duplicate successor is
+                # fully determined by the detector evidence — no model call
+                # (gr564554); it shares the per-tick apply budget.
+                retried += 1
+                _apply_memory(store, prop, _MENTION_APPROVAL, report, mention=True)
                 continue
         if _short_siblings(store, prop):
             _close(

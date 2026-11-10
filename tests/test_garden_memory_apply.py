@@ -181,12 +181,15 @@ def _proposal(
 
 
 def _apply(store: Store, prop: MemoryProposal) -> Any:
-    door = {
-        "rewrite": doors.apply_rewrite,
-        "supersede": doors.apply_supersede,
-        "retire": doors.apply_retire,
-    }[prop.candidate.action]
-    return door(
+    if prop.candidate.action == "rewrite":
+        return doors.apply_rewrite(
+            store, prop.review_id, actor="garden-consumer", model="fixture-reviewer"
+        )
+    if prop.candidate.action == "supersede":
+        return doors.apply_supersede(
+            store, prop.review_id, actor="garden-consumer", model="fixture-reviewer"
+        )
+    return doors.apply_retire(
         store, prop.review_id, actor="garden-consumer", model="fixture-reviewer"
     )
 
@@ -1998,3 +2001,172 @@ def test_sampled_review_describes_the_available_executor(
         "a human or a gated consumer would carry it out" in prompt
     ) is consumer_applies
     assert ("a human would carry it out" in prompt) is not consumer_applies
+
+
+# ── gr564554: duplicate-successor handle swaps need no model call ─────────
+
+
+def _mention_proposal(store: Store, target: int) -> tuple[Any, int]:
+    """Emit the dangling_mention proposal for ``target`` and return it."""
+    candidate = next(
+        c for c in cand.dangling_mention_candidates(store) if c.target_id == target
+    )
+    review_id = emit_proposal(store, candidate, rationale="Detector evidence.")
+    assert review_id is not None
+    return candidate, review_id
+
+
+def _applied_decision(store: Store, target: int, review_id: int) -> dict[str, Any]:
+    for row in _reviews(store, target):
+        garden = json.loads(row[3]).get("garden") or {}
+        if garden.get("resolves") == review_id:
+            return garden
+    raise AssertionError(f"no decision row resolves {review_id}")
+
+
+def _never_review(_store: Store, _prop: GardenProposal) -> ConsumerVerdict:
+    pytest.fail("a verified duplicate-successor swap needs no model call")
+
+
+@pytest.mark.parametrize("fate", ["merge", "same_title"])
+def test_duplicate_successor_swap_applies_without_review(
+    store: Store, monkeypatch: pytest.MonkeyPatch, fate: str
+) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    successor = _memory(store, "Current facts.")
+    retired = _memory(store, "Former facts.")
+    if fate == "merge":
+        doors.apply_merge(store, retired, successor, actor="fixture")
+    else:
+        store.add_link(src_ref_id=successor, dst_ref_id=retired, relation="supersedes")
+        store.retire_ref(retired)
+    body = f"Résumé: use me{retired}.\nCompare me{retired}."
+    target = _memory(store, body)
+    candidate, review_id = _mention_proposal(store, target)
+    assert [
+        mention["duplicate_successor"] for mention in candidate.evidence["mentions"]
+    ] == [fate] * 2
+
+    report = consume_proposals(store, review=_never_review)
+
+    assert (report.attempts, report.reviewed, report.applied) == (0, 0, 1)
+    assert _body(store, target) == (
+        f"Résumé: use me{successor}.\nCompare me{successor}."
+    )
+    rewrite_id = f"garden-rewrite:{target}:{review_id}"
+    assert report.mentions == [rewrite_id]
+    garden = _applied_decision(store, target, review_id)
+    assert garden["applied"] == "mention"
+    assert garden["rewrite_id"] == rewrite_id
+    assert garden["outcome"] == "applied"
+    assert garden["spans"] == [
+        {"span": op["span"], "before": f"me{retired}", "after": f"me{successor}"}
+        for op in candidate.payload["ops"]
+    ]
+    assert pending_proposals(store) == []
+
+    doors.undo_rewrite(store, rewrite_id, actor="operator")
+    assert _body(store, target) == body
+
+
+def test_different_title_supersedes_stays_on_the_reviewed_path(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent-written supersedes to different content keeps the reviewer."""
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    successor = _memory(store, "Current facts.")
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        store.update_ref(successor, title="A different claim")
+    retired = _memory(store, "Former facts.")
+    store.add_link(src_ref_id=successor, dst_ref_id=retired, relation="supersedes")
+    store.retire_ref(retired)
+    target = _memory(store, f"Résumé: use me{retired}.")
+    candidate, review_id = _mention_proposal(store, target)
+    assert candidate.evidence["mentions"][0]["duplicate_successor"] is None
+
+    report = consume_proposals(store, review=_approve)
+
+    assert (report.attempts, report.reviewed, report.applied) == (1, 1, 1)
+    assert report.mentions == []
+    garden = _applied_decision(store, target, review_id)
+    assert garden["applied"] == f"garden-rewrite:{target}:{review_id}"
+    assert "spans" not in garden
+    assert _body(store, target) == f"Résumé: use me{successor}."
+
+
+def test_meta_successor_without_merge_or_edge_stays_reviewed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    prop = _proposal(store)
+    assert all(
+        mention["duplicate_successor"] is None
+        for mention in prop.candidate.evidence["mentions"]
+    )
+    report = consume_proposals(store, review=_approve)
+    assert (report.attempts, report.reviewed, report.applied) == (1, 1, 1)
+    assert report.mentions == []
+
+
+def test_duplicate_successor_apply_is_gated_by_memory_apply_flag(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRECIS_GARDEN_MEMORY_APPLY", raising=False)
+    winner = _memory(store, "Current facts.")
+    loser = _memory(store, "Former facts.")
+    doors.apply_merge(store, loser, winner, actor="fixture")
+    body = f"Résumé: use me{loser}."
+    target = _memory(store, body)
+    _candidate, review_id = _mention_proposal(store, target)
+
+    report = consume_proposals(store, review=_never_review)
+
+    assert (report.attempts, report.applied, report.held) == (0, 0, 0)
+    assert {p.review_id for p in pending_proposals(store)} == {review_id}
+    assert _body(store, target) == body
+
+
+def test_mixed_mentions_stay_on_the_reviewed_path(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    winner = _memory(store, "Current facts.")
+    loser = _memory(store, "Former facts.")
+    doors.apply_merge(store, loser, winner, actor="fixture")
+    other = _memory(store, "Other source.")
+    plain = _memory(store, "Plain source.", meta={"superseded_by": other})
+    store.retire_ref(plain)
+    target = _memory(store, f"Résumé: use me{loser}; compare me{plain}.")
+    candidate, review_id = _mention_proposal(store, target)
+    assert [
+        mention["duplicate_successor"] for mention in candidate.evidence["mentions"]
+    ] == ["merge", None]
+
+    report = consume_proposals(store, review=_approve)
+
+    assert (report.attempts, report.reviewed, report.applied) == (1, 1, 1)
+    assert report.mentions == []
+    garden = _applied_decision(store, target, review_id)
+    assert garden["applied"] == f"garden-rewrite:{target}:{review_id}"
+
+
+def test_duplicate_successor_swap_holds_a_protected_memory(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    winner = _memory(store, "Current facts.")
+    loser = _memory(store, "Former facts.")
+    doors.apply_merge(store, loser, winner, actor="fixture")
+    body = f"Résumé: use me{loser}."
+    target = _memory(store, body, origin="human")
+    _candidate, review_id = _mention_proposal(store, target)
+
+    report = consume_proposals(store, review=_never_review)
+
+    assert (report.attempts, report.applied, report.held) == (0, 0, 1)
+    assert any(
+        json.loads(row[3]).get("garden_review", {}).get("held") == "human"
+        for row in _reviews(store, target)
+    )
+    assert {p.review_id for p in pending_proposals(store)} == {review_id}
+    assert _body(store, target) == body

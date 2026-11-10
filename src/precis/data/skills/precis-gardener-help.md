@@ -60,7 +60,10 @@ list, default `all`):
   handles, even when no mention edge remains. A `rewrite` proposal pins
   the target SHA, exact spans, retire dates and any successor. Null
   replacement text needs evaluation; it is never a deletion instruction.
-  DREAM memories are excluded. `thread_shape` scans tagged
+  A mention whose successor is a verified duplicate (merge-made redirect,
+  or a same-title `supersedes` target) applies with no model call,
+  recorded `garden.applied='mention'` (gr564554); other successors stay
+  reviewed. DREAM memories are excluded. `thread_shape` scans tagged
   thread children as well as roots: a missing `Left:` line, a terminal
   todo/gripe on that line, or a commit sha on that line confirmed as an
   ancestor of `origin/prod` proposes `supersede` by the nearest ancestor

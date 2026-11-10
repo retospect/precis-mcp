@@ -212,7 +212,10 @@ it to merge or prune.
 dangling_mention proposes a rewrite for the gated reviewed memory door.
 Its ops pin find/text spans
 to base_sha; text=null means unresolved, never delete. A successor alone
-does not prove that it supports the sentence. Dated history may legitimately
+does not prove that it supports the sentence. A mention marked
+duplicate_successor ("merge"/"same_title") is a bare handle swap: the
+consumer applies it with no model call, so rewording it here only spends
+a review. Dated history may legitimately
 name retired refs. Preserve the SHA and spans; never turn this into a merge
 or prune. Accept only a supported rewrite; otherwise reject.
 

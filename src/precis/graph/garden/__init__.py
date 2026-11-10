@@ -78,8 +78,11 @@ Review rows and trust acts retain the original model string.
    to bound the judge's evidence. Memory detectors have their own action sets
    and prompt version so their rules cannot reopen existing v2 rejections.
    These rewrites can use the reviewed memory door behind the default-off
-   ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate; no-model successor rewrites
-   remain deferred to gr564554.
+   ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate; a mention whose successor
+   is a verified duplicate (merge-made redirect, or a same-title
+   ``supersedes`` target — ``evidence.mentions[].duplicate_successor``)
+   applies with no model call, recorded ``garden.applied='mention'``
+   (gr564554).
    ``thread_shape`` covers tagged thread children too: missing ``Left:``,
    terminal todo/gripe work, or a Left-line commit sha confirmed on
    ``origin/prod`` proposes supersede by the nearest live ancestor with a
@@ -135,7 +138,10 @@ Review rows and trust acts retain the original model string.
    proposals from ``dangling_mention``, ``anchor_rot``, ``grab_bag``,
    ``griped`` and ``thread_shape`` share this review budget. Eligibility and
    apply-time re-checks use one detector registry so proposals that cannot
-   apply do not spend a review. The six ``memory-review`` detectors stay
+   apply do not spend a review. A ``dangling_mention`` proposal whose ops
+   are all bare swaps onto verified duplicate successors applies without a
+   call (``garden.applied='mention'``, before/after spans recorded).
+   The six ``memory-review`` detectors stay
    pending without consumer review or state changes. ``qualify`` and ``ask``
    remain outside that consumer; an ``ask`` verdict files a ``memory-review``
    todo from the runner (tiered by smell class), never a proposal. A

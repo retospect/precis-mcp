@@ -172,8 +172,9 @@ where to look, the standard above says what to write.
 | structure, example | rewrite handle | rewrite / replace | replace with the live equivalent | replace with a live example |
 | restatement | point at the successor | keep the newer truth once | this node is now the only copy: keep it, say so | keep it, say so |
 
-The first column's proposed no-model auto-apply is deferred to gr564554;
-this cut requires review for every memory action. Every other cell is the
+The first column's no-model auto-apply shipped as gr564554: a
+duplicate-successor mention's bare handle swap applies with no model call
+(`garden.applied='mention'` + before/after spans); every other cell is the
 evaluator writing the current truth in. A handle inside a dated history
 line is a record, not a claim, and is left alone.
 Forward rule for the skills: the role is the relation — evidence is
@@ -225,8 +226,8 @@ see-also only — so a future dangling edge resolves by its relation.
   `considered` stamp is held (`garden_review` row, `held=human`), never
   applied by the consumer.
 
-The no-model `dangling_mention` auto-apply is out of this cut (gr564554).
-No memory action applies without review.
+The no-model `dangling_mention` auto-apply is out of this cut (it shipped
+later as gr564554): every other memory action applies only after review.
 
 ### 4b. Compaction before any retire
 

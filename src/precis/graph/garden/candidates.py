@@ -796,9 +796,11 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             "SELECT r.ref_id, r.kind, true, c.chunk_id FROM chunks c "
             "JOIN refs r USING (ref_id) WHERE c.chunk_id = ANY(%s)) "
             "SELECT m.kind, m.is_chunk, m.pk, r.ref_id, r.retired_at, "
-            "r.meta->>'superseded_by', s.ref_id, s.kind "
+            "r.meta->>'superseded_by', s.ref_id, s.kind, s.title, r.title, "
+            "(r.meta->'garden_merge') IS NOT NULL "
             "FROM mentioned m JOIN refs r USING (ref_id) "
-            "LEFT JOIN LATERAL (SELECT live.ref_id, live.kind FROM links l "
+            "LEFT JOIN LATERAL (SELECT live.ref_id, live.kind, live.title "
+            "FROM links l "
             "JOIN refs live ON live.ref_id = l.src_ref_id "
             "WHERE l.dst_ref_id = r.ref_id AND l.relation = 'supersedes' "
             "AND live.retired_at IS NULL ORDER BY live.ref_id LIMIT 1) s ON true "
@@ -814,21 +816,63 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             for rid in {int(row[3]) for row in rows if row[5]}
         }
     by_address = {}
-    for kind, chunk, pk, rid, retired, raw, sid, skind in rows:
+    for kind, chunk, pk, rid, retired, raw, sid, skind, stitle, rtitle, merged in rows:
         successor = successors.get(int(rid))
         if successor is None and sid is not None:
             successor = try_format(str(skind), int(sid))
+        duplicate = _duplicate_successor(
+            successor, merged=bool(merged), sid=sid, rtitle=rtitle, stitle=stitle
+        )
         by_address[(kind, bool(chunk), int(pk))] = {
             "retired_ref": try_format(str(kind), int(rid)),
             "retired_at": retired.isoformat(),
             "successor": successor,
             "chunk": bool(chunk),
+            "duplicate_successor": duplicate,
         }
     return {
         token: by_address[address]
         for token, address in decoded.items()
         if address in by_address
     }
+
+
+def _duplicate_successor(
+    successor: str | None,
+    *,
+    merged: bool,
+    sid: Any,
+    rtitle: Any,
+    stitle: Any,
+) -> str | None:
+    """Whether a mention's resolved successor is a duplicate of the retired
+    ref — the one fate whose handle swap needs no model judgment (gr564554):
+
+    - ``"merge"``: the tombstone carries ``meta.garden_merge`` — a merge
+      folded the node into the successor, so the handle swap cannot change
+      the referent.
+    - ``"same_title"``: the resolved successor is exactly the live ref whose
+      inbound ``supersedes`` edge claims the replacement, and both titles
+      normalise equal — the restated claim is the same node. An
+      agent-written supersede to *different* content returns ``None`` and
+      stays with the evaluator.
+    """
+    if successor is None:
+        return None
+    if merged:
+        return "merge"
+    parsed = parse_handle(successor)
+    retired_title = normalize_name(str(rtitle or ""))
+    if (
+        sid is not None
+        and parsed is not None
+        and not parsed[1]
+        and int(parsed[2]) == int(sid)
+        and retired_title
+        and retired_title == normalize_name(str(stitle or ""))
+    ):
+        return "same_title"
+    return None
 
 
 def dangling_mention_candidates(
@@ -845,7 +889,10 @@ def dangling_mention_candidates(
     spans (zero-based, end exclusive), with ``matches_capped`` in its payload
     when more remain. Missing successors leave ``text=None`` for the evaluator;
     this is not a deletion instruction. Even a supplied successor needs
-    semantic review. No write/apply path is invoked here. The dispatcher
+    semantic review — except a verified ``duplicate_successor`` mention
+    (``"merge"``/``"same_title"``; see :func:`_duplicate_successor`), whose
+    bare handle swap the consumer applies with no model call (gr564554).
+    No write/apply path is invoked here. The dispatcher
     supplies the same deadline as every other wide scan.
     """
     if limit <= 0 or scan_cap <= 0:
