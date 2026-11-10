@@ -29,6 +29,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.skill import _REPO_DEV_SKILLS, SkillHandler
+from precis.runtime.core import PrecisRuntime
 
 
 @pytest.fixture
@@ -199,7 +200,7 @@ def test_missing_skill_notfound_names_deploy_gap(skill: SkillHandler) -> None:
     assert any("not yet deployed" in h for h in hints)
 
 
-def _next_hints(err: NotFound) -> list[str]:
+def _next_hints(err: BadInput | NotFound) -> list[str]:
     nxt = err.next
     return nxt if isinstance(nxt, list) else [nxt or ""]
 
@@ -290,3 +291,61 @@ def test_get_rejects_literal_args_dict(skill: SkillHandler) -> None:
     kwarg spelling a handler-level test should use instead."""
     with pytest.raises(BadInput, match="args="):
         skill.get(id="toc", args={"family": "se"})
+
+
+# ── search scope=/view= (gr573037) ──────────────────────────────────
+
+
+def test_search_scope_routes_to_find_in_ref(skill: SkillHandler) -> None:
+    """gr573037: the slim search schema advertises ``scope=`` on every
+    kind, and callers used it to mean "search inside that one skill" —
+    20 of 32 refused calls carried it. It now routes to find-in-ref
+    (``get(id='<slug>', q=…)``) instead of dying at the kwargs gate."""
+    out = skill.search(q="executor", scope="precis-job-help")
+    assert "# find 'executor' in precis-job-help" in out.body
+    assert "match" in out.body
+
+
+def test_search_scope_needs_q(skill: SkillHandler) -> None:
+    with pytest.raises(BadInput, match="needs q="):
+        skill.search(scope="precis-job-help")
+
+
+def test_search_scope_unknown_slug_notfound(skill: SkillHandler) -> None:
+    """A dead slug keeps find_in_ref's own refusal, with the catalogue
+    hints — same as ``get(id=<slug>, q=…)``."""
+    with pytest.raises(NotFound) as excinfo:
+        skill.search(q="anything", scope="nonexistent-skill")
+    assert any("search(kind='skill'" in h for h in _next_hints(excinfo.value))
+
+
+def test_search_view_index_folds_to_default(skill: SkillHandler) -> None:
+    """``view='index'`` spells the default listing (the memory
+    convention): q-less it is the catalogue, with q it is the hits —
+    the second most common refused shape on the gripe (11 calls)."""
+    assert skill.search(view="index").body == skill.get().body
+    out = skill.search(q="kind", view="index")
+    assert "skill match" in out.body
+
+
+def test_search_view_refused_with_working_call(skill: SkillHandler) -> None:
+    """Other ``view=`` values name get() reads — refused with the
+    working call, the python handler's gr567275 convention."""
+    with pytest.raises(BadInput) as excinfo:
+        skill.search(q="kind", view="toc")
+    hints = _next_hints(excinfo.value)
+    assert any("get(kind='skill'" in h for h in hints)
+    assert any("scope=" in h for h in hints)
+
+
+def test_search_scope_through_dispatch(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The gripe's actual failure was the strictness gate rejecting
+    ``scope=`` before the handler ran — pin the full dispatch path."""
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {"kind": "skill", "q": "executor", "scope": "precis-job-help"},
+    )
+    assert is_error is False
+    assert "# find 'executor' in precis-job-help" in body

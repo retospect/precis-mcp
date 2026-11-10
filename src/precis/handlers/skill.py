@@ -1443,6 +1443,8 @@ class SkillHandler(Handler):
         self,
         *,
         q: str | None = None,
+        scope: str | None = None,
+        view: str | None = None,
         page_size: int | None = None,
         page: int = 1,
         tag: str | None = None,
@@ -1453,6 +1455,54 @@ class SkillHandler(Handler):
         **_kw: Any,
     ) -> Response:
         q = fold_match_all_q(q)
+        # gr573037: the slim search schema advertises ``scope=`` on
+        # every kind; on skill it reads as "search inside that one
+        # skill" — the find-in-ref affordance (gr486840). Route it
+        # there instead of dying at the kwargs gate. ``scope`` takes
+        # the id spellings find_in_ref accepts (slug, served alias,
+        # ``wt-<tree>/<slug>``); a selector (``slug~N``) or unknown
+        # slug keeps find_in_ref's own refusal.
+        if scope is not None:
+            scope_s = str(scope).strip()
+            if not scope_s:
+                raise BadInput(
+                    "search(kind='skill'): scope= is empty — name the "
+                    "skill slug to search inside",
+                    next="search(kind='skill', q='<text>', scope='<slug>')",
+                )
+            if q is None or not str(q).strip():
+                raise BadInput(
+                    "search(kind='skill'): scope= narrows the find to one "
+                    "skill — it needs q= (the text to find inside it)",
+                    next=f"search(kind='skill', q='<text>', scope={scope_s!r})",
+                )
+            return self.find_in_ref(id=scope_s, q=str(q).strip())
+        # ``view=`` is advertised the same way (11 refused calls on the
+        # gripe). The search itself is the ranked/listing view —
+        # ``'index'`` folds to the default (q-less → the catalogue via
+        # the degrade below; q → the hits). Other values name get()
+        # reads and are refused with the working call (the python
+        # handler's convention, gr567275). ``'count'`` is refused too:
+        # skills are file-backed, not store refs — the catalogue's own
+        # headline already prints the live skill count.
+        if view is not None:
+            view_s = str(view).strip()
+            if view_s == "index":
+                view = None
+            else:
+                raise BadInput(
+                    f"search(kind='skill') takes no view={view_s!r} — "
+                    "the search itself is the listing view",
+                    next=[
+                        "search(kind='skill', q='your goal') — ranked skills",
+                        "search(kind='skill', q='text', scope='<slug>') — "
+                        "find inside one skill",
+                        "get(kind='skill') — the grouped catalogue",
+                        "get(kind='skill', id='toc') — the table of contents",
+                        "get(kind='skill', id='<slug>', view='toc') — "
+                        "one skill's section map",
+                    ],
+                )
         # ``mode=`` (gr488917, silently ignored before): ``hybrid`` (the
         # default) merges both streams; ``semantic`` drops the lexical
         # ones; ``lexical`` drops the embedder; ``verbatim`` keeps only
