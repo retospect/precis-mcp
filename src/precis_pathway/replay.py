@@ -302,7 +302,10 @@ def _check_weights(bundle: Path) -> list[dict[str, Any]]:
     replacement is exactly what the contract forbids.
     """
     rows: list[dict[str, Any]] = []
-    raw = _read_json(bundle / "env" / "weights.json")
+    try:
+        raw = _read_json(bundle / "env" / "weights.json")
+    except (OSError, ValueError) as exc:
+        raise ReplayRefused(f"env/weights.json is not valid JSON: {exc}") from exc
     entries = raw if isinstance(raw, list) else [raw]
     for entry in entries:
         if not isinstance(entry, dict):
@@ -329,6 +332,11 @@ def _check_weights(bundle: Path) -> list[dict[str, Any]]:
                 )
             )
             continue
+        if not _safe_member(str(rel)):
+            raise ReplayRefused(
+                f"weights:{name}: unsafe file path {rel!r}; a declared weight "
+                "must live inside the bundle — nothing outside it is hashed"
+            )
         path = bundle / str(rel)
         if not path.is_file():
             raise ReplayRefused(f"weights:{name}: declared file {rel} is missing")
@@ -399,7 +407,12 @@ def stage_bundle(bundle: Path, work: Path) -> dict[str, Any]:
             if path.is_file():
                 path.chmod(0o444)
     weights_rows = _check_weights(bundle)
-    record = _read_json(bundle / "manifest" / "validation_manifest.json")
+    try:
+        record = _read_json(bundle / "manifest" / "validation_manifest.json")
+    except (OSError, ValueError) as exc:
+        raise ReplayRefused(
+            f"manifest/validation_manifest.json is not valid JSON: {exc}"
+        ) from exc
     if not isinstance(record, dict):
         raise ReplayRefused(
             "manifest/validation_manifest.json is not a manifest record"
@@ -646,7 +659,24 @@ def coverage_rows(coverage: Any, not_run: tuple[str, ...]) -> list[dict[str, Any
             )
             continue
         legs = claim.get("required_legs") or []
-        missing = [leg for leg in legs if leg in not_run]
+        if not isinstance(legs, list) or not all(isinstance(x, str) for x in legs):
+            raise ReplayRefused(
+                f"coverage.json claim {name} has malformed required_legs"
+            )
+        if not legs:
+            rows.append(
+                _row(
+                    "coverage",
+                    name,
+                    "unavailable",
+                    "coverage.json",
+                    "claim names no required legs",
+                )
+            )
+            continue
+        # a required leg this replay did not run — or one outside the leg
+        # vocabulary, which no replay could run — blocks the claim
+        missing = [leg for leg in legs if leg in not_run or leg not in ALL_LEGS]
         rows.append(
             _row(
                 "coverage",
@@ -732,6 +762,11 @@ def replay(
         except (OSError, ValueError) as exc:
             refusal = f"outputs/results.json is not valid JSON: {exc}"
             verdict = f"refused(bundle): {refusal}"
+        else:
+            if not isinstance(shipped, dict):
+                refusal = "outputs/results.json is not a results object"
+                verdict = f"refused(bundle): {refusal}"
+                shipped = None
     if staged is not None and refusal is None and shipped is not None:
         env = _entrypoint_env(staged["inputs"], staged["out_dir"], staged["home"])
         runner = run if run is not None else _subprocess_runner(timeout_seconds)
@@ -852,6 +887,20 @@ def replay(
                     verdict = "failed(entrypoint)"
                     refusal = f"out/results.json is not valid JSON: {exc}"
                     fresh = None
+                else:
+                    if not isinstance(fresh, dict):
+                        checks.append(
+                            _row(
+                                "execution",
+                                "results.json",
+                                "failed",
+                                "fresh-output",
+                                "out/results.json is not a results object",
+                            )
+                        )
+                        verdict = "failed(entrypoint)"
+                        refusal = "out/results.json is not a results object"
+                        fresh = None
                 if fresh is not None:
                     try:
                         declared = _read_declared_legs(staged["out_dir"])

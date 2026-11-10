@@ -387,8 +387,11 @@ exported bundle directory with no precis checkout, store, MCP or credentials:
   except `outputs/`, so the shipped references can never be reused as
   fresh results; `env/weights.json` files hash-verify (a mismatch refuses
   naming both digests, never substitutes; hash-only private-engine records
-  stay `unavailable`, never silently fetched) and the staged `env/uv.lock`
-  must hash-match the D10 record's pin.
+  stay `unavailable`, never silently fetched; a `file` path escaping the
+  bundle refuses, so no host file is ever hashed or staged) and the staged
+  `env/uv.lock` must hash-match the D10 record's pin. A checksum-valid but
+  unparseable weights or validation-manifest record refuses with an
+  actionable report — the report is always the acceptance artifact.
 - execution: the declared entrypoint runs as a subprocess with a scrubbed
   allowlist environment (host credentials, dependency and cache variables
   are not inherited; `HOME` points inside the work dir). Where the host
@@ -414,7 +417,9 @@ exported bundle directory with no precis checkout, store, MCP or credentials:
   unavailable network guard all withhold it.
 - coverage: `coverage.json` carries claim/run/required-leg/acceptance-test
   rows; legs the replay did not run stay `not-run` (named, with why) and
-  block their claims — one fixture cannot read as paper-wide coverage.
+  block their claims, a claim without a named acceptance test or required
+  legs stays `unavailable`, and a required leg outside the leg vocabulary
+  blocks its claim — one fixture cannot read as paper-wide coverage.
 
 `tests/test_pathway_replay.py` covers all of it engine-free on a synthetic
 CPU fixture — including real `sh reproduce.sh` subprocess runs with the

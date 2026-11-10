@@ -94,6 +94,13 @@ def _rehash(bundle: Path, *rels: str) -> None:
     )
 
 
+def _rewrite(bundle: Path, rel: str, body: bytes) -> None:
+    """Replace one declared file and re-stamp the manifest, so integrity
+    still passes and the leg under test is downstream of the checksum."""
+    (bundle / rel).write_bytes(body)
+    _rehash(bundle, rel)
+
+
 @pytest.fixture
 def bundle(tmp_path: Path) -> Path:
     """The small public CPU fixture: an EMT-class bundle, all pins satisfied."""
@@ -373,6 +380,92 @@ def test_hash_only_weights_stay_unavailable_and_never_fetched(
     assert row["status"] == "unavailable"
 
 
+def test_a_weights_path_outside_the_bundle_is_refused(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """A ``file`` naming ``../`` or an absolute path would hash a host file
+    and attest it as the weight — a declared weight must live inside the
+    bundle, so the unsafe path refuses naming itself."""
+    entry = json.loads((bundle / "env" / "weights.json").read_text(encoding="utf-8"))
+    entry["file"] = "../outside.model"
+    _rewrite(bundle, "env/weights.json", json.dumps(entry).encode("utf-8"))
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(staging)")
+    assert "../outside.model" in report["verdict"]
+    assert report["complete"] is False
+
+
+def test_an_absolute_weights_path_is_refused(bundle: Path, tmp_path: Path) -> None:
+    entry = json.loads((bundle / "env" / "weights.json").read_text(encoding="utf-8"))
+    entry["file"] = "/etc/hostname"
+    _rewrite(bundle, "env/weights.json", json.dumps(entry).encode("utf-8"))
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(staging)")
+    assert "/etc/hostname" in report["verdict"]
+
+
+def test_a_malformed_weights_json_refuses_with_an_actionable_report(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """A checksum-valid but unparseable ``env/weights.json`` must produce a
+    report, never an uncaught error (the report is the acceptance artifact)."""
+    _rewrite(bundle, "env/weights.json", b"{ not json")
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(staging)")
+    assert "env/weights.json" in report["verdict"]
+    assert report["schema"] == "pathway_replay_report"
+
+
+def test_a_malformed_validation_manifest_refuses_with_an_actionable_report(
+    bundle: Path, tmp_path: Path
+) -> None:
+    _rewrite(bundle, "manifest/validation_manifest.json", b"[1,")
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(staging)")
+    assert "validation_manifest.json" in report["verdict"]
+    assert report["schema"] == "pathway_replay_report"
+
+
+def test_shipped_results_that_are_not_an_object_refuse(
+    bundle: Path, tmp_path: Path
+) -> None:
+    _rewrite(bundle, "outputs/results.json", b"[1, 2]")
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(bundle)")
+    assert "not a results object" in report["verdict"]
+
+
+def test_fresh_results_that_are_not_an_object_count_no_leg(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """A ``null`` ``out/results.json`` parses but is no results object: the
+    run fails actionably and no leg may report ``passed`` off it."""
+
+    def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
+        (out_dir / "results.json").write_text("null", encoding="utf-8")
+        (out_dir / "legs.json").write_text('["kinetics"]', encoding="utf-8")
+
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=run, judge=_fake_judge()
+    )
+    assert report["verdict"] == "failed(entrypoint)"
+    assert "not a results object" in str(
+        next(r for r in report["checks"] if r["method"] == "fresh-output")["observed"]
+    )
+    assert all(v["status"] == "not-run" for v in report["legs"].values())
+    assert report["complete"] is False
+
+
 def test_a_missing_dependency_refuses_naming_the_path(
     bundle: Path, tmp_path: Path
 ) -> None:
@@ -625,6 +718,54 @@ def test_a_claim_without_an_acceptance_test_is_unavailable(
     )
     assert row["status"] == "unavailable"
     # an unattestable claim withholds completeness — never a pass
+    assert report["complete"] is False
+
+
+def test_a_claim_without_required_legs_is_unavailable(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """An acceptance test with no required legs attests nothing: the claim
+    stays ``unavailable``, never a vacuous ``passed``."""
+    cov = json.loads((bundle / "coverage.json").read_text(encoding="utf-8"))
+    cov["claims"].append(
+        {"claim": "paper-vacuous", "runs": ["run-1"], "acceptance_test": "t"}
+    )
+    _rewrite(bundle, "coverage.json", json.dumps(cov).encode("utf-8"))
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    row = next(
+        r
+        for r in report["checks"]
+        if r["scope"] == "coverage" and r["check"] == "paper-vacuous"
+    )
+    assert row["status"] == "unavailable"
+    assert report["complete"] is False
+
+
+def test_an_unknown_required_leg_blocks_the_claim(bundle: Path, tmp_path: Path) -> None:
+    """A required leg outside the leg vocabulary can never run, so the claim
+    stays ``not-run`` naming it — it cannot pass silently."""
+    cov = json.loads((bundle / "coverage.json").read_text(encoding="utf-8"))
+    cov["claims"].append(
+        {
+            "claim": "paper-bogus",
+            "runs": ["run-1"],
+            "required_legs": ["energies", "bogus-leg"],
+            "acceptance_test": "t",
+        }
+    )
+    _rewrite(bundle, "coverage.json", json.dumps(cov).encode("utf-8"))
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    row = next(
+        r
+        for r in report["checks"]
+        if r["scope"] == "coverage" and r["check"] == "paper-bogus"
+    )
+    assert row["status"] == "not-run"
+    assert row["observed"]["not_run"] == ["bogus-leg"]
     assert report["complete"] is False
 
 
