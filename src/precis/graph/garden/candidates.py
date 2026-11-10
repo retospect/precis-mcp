@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from psycopg.errors import QueryCanceled
 
-from precis.graph.garden._anchors import AnchorResolver
+from precis.graph.garden._anchors import AnchorResolver, ProdAncestry
 from precis.graph.garden._drift_refs import ref_change
 from precis.graph.garden._drift_repo import RepoDriftResolver
 from precis.reading.concepts import normalize_name
@@ -587,6 +587,9 @@ def memory_handle_mentions(body: str, handle: str) -> list[re.Match[str]]:
 SUCCESSOR_MAX_HOPS = 16
 MENTION_MATCH_CAP = 20
 ANCHOR_MATCH_CAP = 20
+#: Commit tokens read off one Left line before the ancestry cap gives up —
+#: a single sha already on origin/prod makes the whole line stale work.
+THREAD_COMMIT_CHECK_CAP = 5
 
 # Explicit code/document syntax limits prose false positives. Dotted names
 # must name a package in the pinned tree, even inside code spans; arbitrary
@@ -990,13 +993,36 @@ def _closed_left_handles(left: str, terminals: dict[str, str]) -> dict[str, str]
     }
 
 
-def _current_thread_ancestor(store: Store, ref_id: int) -> tuple[int, str, str] | None:
+def _left_commit_tokens(left: str) -> list[str]:
+    """Commit-shaped tokens on a Left line, first occurrence order.
+
+    Reuses the anchor grammar so handle-shaped words (``me123``) and pure
+    digit ids never masquerade as shas.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _MEMORY_ANCHOR.finditer(left):
+        token = match.group("commit")
+        if token and token.lower() not in seen:
+            seen.add(token.lower())
+            out.append(token)
+    return out
+
+
+def _current_thread_ancestor(
+    store: Store,
+    ref_id: int,
+    *,
+    left_is_stale: Callable[[str], bool] | None = None,
+) -> tuple[int, str, str] | None:
     """Nearest live part-of ancestor with a nonempty, unfinished Left line.
 
     Breadth-first traversal crosses untagged intermediate nodes and skips
-    malformed/closed thread ancestors. A visited set handles cycles; equal
-    distance ties use ref id for deterministic proposals. Deadline ownership
-    stays with run_detectors, including every query in this traversal.
+    malformed/closed thread ancestors; ``left_is_stale`` additionally
+    excludes ancestors whose Left names landed work (a sha on
+    ``origin/prod``). A visited set handles cycles; equal distance ties use
+    ref id for deterministic proposals. Deadline ownership stays with
+    run_detectors, including every query in this traversal.
     """
     seen = {ref_id}
     frontier = [ref_id]
@@ -1022,6 +1048,7 @@ def _current_thread_ancestor(store: Store, ref_id: int) -> tuple[int, str, str] 
                 left
                 and not left_is_done(left)
                 and not _closed_left_handles(left, terminals)
+                and not (left_is_stale is not None and left_is_stale(left))
             ):
                 return rid, left, sha
     return None
@@ -1038,9 +1065,13 @@ def thread_shape_candidates(
     """Propose superseding malformed/stale thread snapshots, else retirement.
 
     Left grammar is shared with the daily sweep. Terminal todo/gripe STATUS
-    is DB evidence; origin/prod ancestry is not stored as a general DB oracle,
-    so this detector never claims that a SHA has landed and invokes no git.
-    Preservation is a review requirement in the payload, not an edit here.
+    is DB evidence. A commit sha on a Left line names landed work when
+    :class:`ProdAncestry` confirms it as an ancestor of ``origin/prod`` in
+    the configured main checkout (a sha on main alone is still live work).
+    When the main root or the prod ref is unavailable every sha verdict
+    stays unknown: such a node is not flagged for that reason and the
+    evidence keeps ``sha_on_prod: not_checked``. Preservation is a review
+    requirement in the payload, not an edit here.
     """
     if limit <= 0 or scan_cap <= 0:
         return []
@@ -1051,17 +1082,47 @@ def thread_shape_candidates(
     bodies = _thread_bodies(store, window)
     lefts = {rid: first_left(body) for rid, body, _ in bodies}
     terminals = _terminal_thread_work(store, [left for left in lefts.values() if left])
-    out = []
+    out: list[GardenCandidate] = []
+    ancestry: ProdAncestry | None = None
+
+    def landed_left_tokens(text: str) -> list[str]:
+        """Left-line commit tokens confirmed as ancestors of ``origin/prod``."""
+        nonlocal ancestry
+        out: list[str] = []
+        for token in _left_commit_tokens(text)[:THREAD_COMMIT_CHECK_CAP]:
+            if ancestry is None:
+                ancestry = ProdAncestry()
+            if ancestry.is_deployed(token):
+                out.append(token.lower())
+        return out
+
     for rid, body, sha in bodies:
         left = lefts[rid]
         closed = _closed_left_handles(left or "", terminals)
-        if left is not None and not closed:
+        landed = (
+            {}
+            if left is None or closed
+            else {token: True for token in landed_left_tokens(left)}
+        )
+        if left is not None and not closed and not landed:
             continue
-        ancestor = _current_thread_ancestor(store, rid)
+        ancestor = _current_thread_ancestor(
+            store, rid, left_is_stale=lambda text: bool(landed_left_tokens(text))
+        )
         successor = ancestor[0] if ancestor else None
         shas = {str(rid): sha}
         if ancestor:
             shas[str(ancestor[0])] = ancestor[2]
+        reason = (
+            "missing_left"
+            if left is None
+            else ("terminal_work" if closed else "landed_sha")
+        )
+        title_tail = {
+            "missing_left": "no Left: line",
+            "terminal_work": "closed Left: work",
+            "landed_sha": "landed Left: sha",
+        }[reason]
         out.append(
             GardenCandidate(
                 detector="thread_shape",
@@ -1069,18 +1130,24 @@ def thread_shape_candidates(
                 target_kind="ref",
                 target_id=rid,
                 other_id=successor,
-                title=f"me{rid} has {'no Left: line' if left is None else 'closed Left: work'}",
+                title=f"me{rid} has {title_tail}",
                 evidence={
-                    "reason": "missing_left" if left is None else "terminal_work",
+                    "reason": reason,
                     "left": left,
                     "terminal_work": closed,
+                    "landed_shas": landed,
+                    "prod_ref": ancestry.prod_ref if ancestry is not None else None,
                     "supporting_shas": {
                         **_memory_supporting_shas(store, list(closed)),
                         **({f"me{ancestor[0]}": ancestor[2]} if ancestor else {}),
                     },
                     "content_sha": sha,
                     "ancestor_left": ancestor[1] if ancestor else None,
-                    "sha_on_prod": "not_checked",
+                    "sha_on_prod": (
+                        "checked"
+                        if ancestry is not None and ancestry.prod_ref
+                        else "not_checked"
+                    ),
                 },
                 payload={
                     "base_sha": sha,

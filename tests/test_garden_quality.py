@@ -186,7 +186,8 @@ def test_memory_prompt_has_its_rules_and_actions(detector: str, actions: str) ->
     assert f'the payload actions are "{actions}"' in prompt
     assert "answer with EXACTLY\nONE action" in prompt
     assert "text=null means unresolved, never delete" in prompt
-    assert "SHA ancestry on\norigin/prod has not been checked" in prompt
+    assert "confirmed as an ancestor of origin/prod is landed work" in prompt
+    assert "unverifiable\nsha or prod ref stays not_checked" in prompt
     assert "not_checked\nanchors are unverifiable" in prompt
     assert "body already records the removal" in prompt
     assert proposer.MEMORY_PROMPT_VERSION != proposer.PROMPT_VERSION

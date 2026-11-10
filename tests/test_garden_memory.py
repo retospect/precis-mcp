@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 from psycopg.errors import QueryCanceled
 
+from precis.graph.garden import _anchors
 from precis.graph.garden import candidates as cand
 from precis.graph.garden.proposals import emit_proposal, pending_proposals
 from precis.graph.garden.proposer import _excerpt_ids
@@ -384,7 +387,7 @@ def test_thread_scan_keeps_live_work_history_and_excluded_nodes(store: Store) ->
     _thread(store, f"Left: work on gr{opened.id}\nEarlier: closed gr{done.id}")
     _thread(store, f"Left: check td{done.id}")  # Wrong kind must not resolve.
     _thread(store, "Left: none")  # Daily sweep owns this case.
-    _thread(store, "Left: check abcdef1234567 on origin/prod")  # No git claim.
+    _thread(store, "Left: check abcdef1234567 on origin/prod")  # No landed claim.
     _memory(store, "A non-thread without Left:")
     hub = _thread(store, "Section hub")
     store.add_tag(hub, Tag.open("section:index"), set_by="system")
@@ -392,6 +395,139 @@ def test_thread_scan_keeps_live_work_history_and_excluded_nodes(store: Store) ->
     store.add_tag(dream, Tag.closed("DREAM", "speculative"), set_by="system")
     retired = _thread(store, "Old snapshot")
     store.retire_ref(retired)
+    assert cand.thread_shape_candidates(store) == []
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+    ).stdout.strip()
+
+
+def _commit_fixture(root: Path, message: str) -> str:
+    message_file = root / ".git" / "fixture-message"
+    message_file.write_text(message, encoding="utf-8")
+    _git(
+        root,
+        "-c",
+        "user.name=Thread fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-F",
+        str(message_file),
+    )
+    return _git(root, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def prod_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str, str]:
+    """A main checkout whose ``origin/prod`` sits one commit behind main."""
+    _git(tmp_path, "init", "-b", "main")
+    (tmp_path / "app.txt").write_text("one\n", encoding="utf-8")
+    _git(tmp_path, "add", "app.txt")
+    landed = _commit_fixture(tmp_path, "Landed on prod\n")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/prod", landed)
+    (tmp_path / "app.txt").write_text("two\n", encoding="utf-8")
+    _git(tmp_path, "add", "app.txt")
+    pending = _commit_fixture(tmp_path, "On main only\n")
+    monkeypatch.setattr(cand, "ProdAncestry", lambda: _anchors.ProdAncestry(tmp_path))
+    return tmp_path, landed, pending
+
+
+def test_prod_ancestry_verdicts_and_fail_closed(
+    prod_repo: tuple[Path, str, str],
+) -> None:
+    repo, landed, pending = prod_repo
+    ancestry = _anchors.ProdAncestry(repo)
+    assert ancestry.prod_ref == "origin/prod"
+    assert ancestry.is_deployed(landed) is True
+    # A short prefix is only commit-shaped when mixed letter-digit; a
+    # letter-only window (chance ~2% per run) is conservatively unknown.
+    shaped_prefix = next(
+        landed[i : i + 8]
+        for i in range(33)
+        if _anchors.is_commit_token(landed[i : i + 8])
+    )
+    assert ancestry.is_deployed(shaped_prefix) is True
+    letter_only = next(landed[i : i + 8] for i in range(33) if landed[i].isalpha())
+    if not any(ch.isdigit() for ch in letter_only):
+        assert ancestry.is_deployed(letter_only) is None
+    assert ancestry.is_deployed(pending) is False
+    assert ancestry.is_deployed("abcdef1234567") is None  # Unknown object.
+    assert ancestry.is_deployed("1234567") is None  # Not commit-shaped.
+    missing = _anchors.ProdAncestry(repo / "absent")
+    assert missing.prod_ref is None
+    assert missing.is_deployed(landed) is None
+
+
+def test_landed_left_sha_proposes_supersede_with_checked_evidence(
+    store: Store, prod_repo: tuple[Path, str, str]
+) -> None:
+    _repo, landed, _pending = prod_repo
+    root = _thread(store, "Left: finish the rollout")
+    target = _thread(store, f"Left: verify deploy {landed} on the fleet")
+    _part_of(store, target, root)
+    found = cand.thread_shape_candidates(store)
+    assert [c.target_id for c in found] == [target]
+    candidate = found[0]
+    assert candidate.action == "supersede" and candidate.other_id == root
+    assert candidate.evidence["reason"] == "landed_sha"
+    assert candidate.evidence["landed_shas"] == {landed: True}
+    assert candidate.evidence["sha_on_prod"] == "checked"
+    assert candidate.evidence["prod_ref"] == "origin/prod"
+    assert candidate.payload["successor"] == f"me{root}"
+    assert emit_proposal(store, candidate, rationale="fixture") is not None
+    assert pending_proposals(store, action="supersede")[0].current
+
+
+def test_unlanded_or_unknown_left_sha_stays_live(
+    store: Store, prod_repo: tuple[Path, str, str]
+) -> None:
+    _repo, _landed, pending = prod_repo
+    _thread(store, f"Left: await deploy {pending} reaching prod")
+    _thread(store, "Left: check abcdef1234567 after the deploy")
+    assert cand.thread_shape_candidates(store) == []
+
+
+def test_landed_left_sha_without_ancestor_proposes_retire(
+    store: Store, prod_repo: tuple[Path, str, str]
+) -> None:
+    _repo, landed, _pending = prod_repo
+    target = _thread(store, f"Left: rollout reached {landed}")
+    found = cand.thread_shape_candidates(store)
+    assert [c.target_id for c in found] == [target]
+    assert found[0].action == "retire"
+    assert found[0].evidence["reason"] == "landed_sha"
+
+
+def test_landed_ancestor_is_skipped_as_supersede_target(
+    store: Store, prod_repo: tuple[Path, str, str]
+) -> None:
+    _repo, landed, _pending = prod_repo
+    root = _thread(store, "Left: root work")
+    parent = _thread(store, f"Left: confirm deploy {landed}")
+    child = _thread(store, "Snapshot without resume state")
+    _part_of(store, child, parent)
+    _part_of(store, parent, root)
+    by_id = {c.target_id: c for c in cand.thread_shape_candidates(store)}
+    assert by_id[parent].evidence["reason"] == "landed_sha"
+    assert by_id[parent].other_id == root
+    assert by_id[child].other_id == root
+
+
+def test_unavailable_prod_ref_keeps_sha_not_checked(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cand, "ProdAncestry", lambda: _anchors.ProdAncestry(None))
+    _thread(store, "Left: verify deploy 04ef78736 on prod")
     assert cand.thread_shape_candidates(store) == []
 
 

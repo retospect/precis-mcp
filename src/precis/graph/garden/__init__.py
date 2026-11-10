@@ -80,11 +80,16 @@ Review rows and trust acts retain the original model string.
    These rewrites can use the reviewed memory door behind the default-off
    ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate; no-model successor rewrites
    remain deferred to gr564554.
-   ``thread_shape`` covers tagged thread children too: missing ``Left:``
-   or terminal todo/gripe work proposes supersede by the nearest live
-   ancestor with a current ``Left:``, else retire. A supersede proposal
-   requires preserving needed figures in the ancestor's ``Earlier:`` line;
-   retirement also requires compaction review. No edits occur at detection.
+   ``thread_shape`` covers tagged thread children too: missing ``Left:``,
+   terminal todo/gripe work, or a Left-line commit sha confirmed on
+   ``origin/prod`` proposes supersede by the nearest live ancestor with a
+   current ``Left:``, else retire. A supersede proposal requires
+   preserving needed figures in the ancestor's ``Earlier:`` line;
+   retirement also requires compaction review. No edits occur at
+   detection. Sha-on-prod verdicts come from ``git merge-base
+   --is-ancestor`` in the configured main checkout; when the main root or
+   the prod ref is unavailable every sha stays ``not_checked`` and no
+   landed-work claim is made.
    ``compact`` (gr561025) fires on expiry, 90-day-cold reads, a
    half-history body or any pending retire proposal: the evaluator owes a
    per-sentence plan (keep / move-to related — hub family, qualifies,

@@ -252,11 +252,7 @@ class AnchorResolver:
         return False
 
     def _check_commit(self, target: str, tried: list[str]) -> bool | None:
-        if not (
-            re.fullmatch(r"[a-fA-F0-9]{7,40}", target)
-            and re.search(r"[a-fA-F]", target)
-            and re.search(r"[0-9]", target)
-        ):
+        if not is_commit_token(target):
             tried.append("not a mixed letter-digit commit abbreviation")
             return None
         matches = self._git(
@@ -275,3 +271,87 @@ class AnchorResolver:
         object_type = self._git("cat-file", "-t", matches[0].decode("ascii")).strip()
         tried.append(f"git object type: {object_type.decode('ascii')}")
         return object_type == b"commit"
+
+
+def is_commit_token(target: str) -> bool:
+    """Mixed letter-digit hex, 7-40 chars — the anchor commit shape.
+
+    Pure-digit tokens are ids, not shas; a pure-letter token matches too
+    many words. The same shape both anchor classes accept."""
+    return bool(
+        re.fullmatch(r"[a-fA-F0-9]{7,40}", target)
+        and re.search(r"[a-fA-F]", target)
+        and re.search(r"[0-9]", target)
+    )
+
+
+#: The deployed ref — ``scripts/deploy`` moves it only after a completed
+#: deploy, so ancestry against it is the landed-on-prod proof (the same
+#: ref gripe tririage-adjacent code uses, with the same "no bare HEAD"
+#: caution as gripe triage's ``origin/prod`` candidates).
+PROD_REF = "origin/prod"
+
+
+class ProdAncestry:
+    """Whether commit shas reached ``origin/prod``, cached per sha.
+
+    The configured main checkout is the only local git evidence. A missing
+    main root or prod ref makes every verdict unknown (``None``), never a
+    not-landed claim — callers keep ``not_checked`` semantics. Git exit
+    code 1 from ``merge-base --is-ancestor`` is the real "not an ancestor"
+    verdict, distinct from a git failure (exit 128 or worse).
+    """
+
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root if root is not None else _main_root()
+        self.prod_ref: str | None = None
+        self._results: dict[str, bool | None] = {}
+        if self.root is None:
+            return
+        try:
+            self._git("rev-parse", "--verify", f"{PROD_REF}^{{commit}}")
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+            return
+        self.prod_ref = PROD_REF
+
+    def _git(self, *args: str) -> bytes:
+        return subprocess.run(
+            ["git", "-C", str(self.root), *args],
+            check=True,
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_S,
+        ).stdout
+
+    def is_deployed(self, target: str) -> bool | None:
+        """True when ``target`` is an ancestor of ``origin/prod``.
+
+        ``None`` when the token is not commit-shaped, the main root or the
+        prod ref is missing, or git fails — unknowns never claim "not
+        deployed" either.
+        """
+        key = target.lower()
+        if key in self._results:
+            return self._results[key]
+        result: bool | None = None
+        if self.prod_ref is not None and is_commit_token(target):
+            try:
+                proc = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self.root),
+                        "merge-base",
+                        "--is-ancestor",
+                        key,
+                        self.prod_ref,
+                    ],
+                    capture_output=True,
+                    timeout=_GIT_TIMEOUT_S,
+                    check=False,
+                )
+                if proc.returncode in (0, 1):
+                    result = proc.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                result = None
+        self._results[key] = result
+        return result

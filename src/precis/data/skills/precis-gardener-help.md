@@ -61,13 +61,16 @@ list, default `all`):
   the target SHA, exact spans, retire dates and any successor. Null
   replacement text needs evaluation; it is never a deletion instruction.
   DREAM memories are excluded. `thread_shape` scans tagged
-  thread children as well as roots: a missing `Left:` line or a terminal
-  todo/gripe on that line proposes `supersede` by the nearest ancestor
+  thread children as well as roots: a missing `Left:` line, a terminal
+  todo/gripe on that line, or a commit sha on that line confirmed as an
+  ancestor of `origin/prod` proposes `supersede` by the nearest ancestor
   thread with a current `Left:`, otherwise `retire`. Needed figures must
   be folded into the ancestor's `Earlier:` line before superseding; all
   retirement requires preservation review. Section hubs are excluded.
-  SHA ancestry on `origin/prod` is not checked: there is no general ancestry
-  oracle in the DB.
+  Sha-on-prod verdicts come from `git merge-base --is-ancestor` in the
+  configured main checkout; when the main root or the prod ref is
+  unavailable the evidence keeps `sha_on_prod: not_checked` and the sha
+  is not evidence.
 - **host-facts** — opt-in one-off (gr560767): after the operator refreshes
   the machine census (`put(kind='machine', mode='sync')` plus hand-added
   hosts), `host_facts` scans live memory bodies for sentences naming a

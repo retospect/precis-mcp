@@ -235,9 +235,11 @@ else retire. This proposer applies neither action; the gated consumer uses
 the reviewed memory doors. Before superseding, still-needed
 figures must be folded into the ancestor's Earlier: line; before retiring,
 still-true facts must be preserved. Terminal handles in Left: are evidence
-of stale resume state, not proof that all work is done. SHA ancestry on
-origin/prod has not been checked. Preserve these requirements and SHA pins;
-never refine these candidates to merge or prune.
+of stale resume state, not proof that all work is done. A Left-line sha
+confirmed as an ancestor of origin/prod is landed work; an unverifiable
+sha or prod ref stays not_checked and must not support a finding. Preserve
+these requirements and SHA pins; never refine these candidates to merge or
+prune.
 
 restated_claim compares individual sentences within one hub, not whole bodies.
 Distance and lexical overlap are hints: check that both spans assert the same
