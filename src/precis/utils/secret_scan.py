@@ -140,6 +140,10 @@ _HEX = re.compile(r"^[0-9a-fA-F]+$")
 _UUID = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+#: Head segment of a relative-path or dot-dir tail: a short lowercase word
+#: (``mac``, ``src``, ``jordanhubbard``). A base64 segment in that position is
+#: rarely a 2-16-char pure-lowercase run, so this stays a path signal.
+_PATH_HEAD = re.compile(r"^[a-z]{2,16}$")
 _ENTROPY_MIN = 4.0
 
 
@@ -189,6 +193,18 @@ def _generic_candidate(tok: str) -> bool:
         # high-entropy run. Judge each segment alone; a real token needs 32+
         # characters between slashes. Base64 (``+``, few or odd-rooted
         # segments) is still judged whole.
+        return any(len(seg) >= 32 and _generic_candidate(seg) for seg in segs)
+    if (
+        not tok.startswith("/")
+        and len(segs) >= 2
+        and "+" not in tok
+        and _PATH_HEAD.match(segs[0])
+    ):
+        # Relative-path or dot-dir tail (``~/.mac/MAC_STATE_…``, ``src/x/…``):
+        # the run starts mid-path, cut off by a ``.`` or a space, so a
+        # lowercase word before the first ``/`` is a directory, not a token
+        # prefix. Same per-segment judgment -- a real token still needs a
+        # 32+ unbroken run between slashes (gr608735).
         return any(len(seg) >= 32 and _generic_candidate(seg) for seg in segs)
     if _UUID.match(tok) or _HEX.match(tok):  # git sha, uuid, sha256/md5 digest
         return False

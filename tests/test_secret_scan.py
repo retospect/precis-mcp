@@ -52,6 +52,9 @@ NEGATIVES = {
     "ssh fingerprint": "SHA256:C6hMRQSpHtuRChf0MALenPMwpOyqpB30aLPDpR1/LX0",
     "url path id": "(https://www.example.com/design/" + _B + "). Root frame",
     "long path": "~/CascadeProjects/alphafold-setup/alphafold3/docker/run_x",
+    "dot-dir path tail": "marker ~/.mac/MAC_" + "CONTINUITY_ebd48bb8c9010cc1 ok",
+    "relative path tail": "see mac/" + _B[:28] + " for details",
+    "relative path file": "open src/precis/utils/VeryLongFileName2026.py done",
     "lan ip and host": "node-a at 192.168.1.20 and 100.64.1.2",  # secret-gate: allow — negative sample: addresses are not credentials
     "password read in code": "password = _read_password(args); pw = x\n"
     "password = self.store.secret_value",
@@ -136,6 +139,22 @@ def test_slash_leading_base64_and_attached_token_still_masked() -> None:
     assert [h.kind for h in find_secrets(b64)] == ["high-entropy token"]
     tok = _B
     assert [h.kind for h in find_secrets(f"/a/b/{tok}")] == ["high-entropy token"]
+
+
+def test_relative_path_tail_judged_per_segment() -> None:
+    # ``mac/…`` tails in Slack conv text (gr608735): ``~/.mac/`` dot-dir
+    # paths and ``mac/``-relative paths begin mid-string after ``.`` or a
+    # space, so a lowercase word before the first ``/`` is a directory,
+    # not a token prefix. Segments are judged alone -- a real token still
+    # needs a 32+ unbroken run.
+    text = "marker ~/.mac/MAC_" + "CONTINUITY_ebd48bb8c9010cc1 ok"
+    assert find_secrets(text) == []
+    assert mask_secrets(text, warn=False) == text
+    tok = _B
+    assert [h.kind for h in find_secrets(f"mac/{tok}")] == ["high-entropy token"]
+    assert [h.kind for h in find_secrets(f"~/.mac/{tok}")] == ["high-entropy token"]
+    b64 = "mac/" + tok[:10] + "+" + tok[10:]
+    assert [h.kind for h in find_secrets(b64)] == ["high-entropy token"]
 
 
 def test_excerpt_is_masked() -> None:
