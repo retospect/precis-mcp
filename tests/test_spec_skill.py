@@ -9,6 +9,8 @@ gripe names — so a later edit cannot silently drop a section again.
 
 from __future__ import annotations
 
+import re
+
 from precis.utils.skill_common import parse_frontmatter
 from tests._skill_roots import BUILTIN_SKILLS_DIR
 
@@ -76,3 +78,30 @@ def test_spec_skill_h2_chunks_fit_the_ingest_budget() -> None:
         if len(c.text) > DEFAULT_CHUNK_BUDGET_CHARS
     ]
     assert not oversized, f"H2 chunks over budget: {oversized}"
+
+
+_FENCE_PY = re.compile(r"```(?:python|py)\n(.*?)\n```", re.DOTALL)
+
+
+def test_spec_skill_examples_use_supported_memory_args() -> None:
+    """Review td627307: fenced ``put(kind='memory')`` examples must not
+    pass ``parent_id`` (memory put has no such kwarg — parenting is the
+    ``link=``/``rel='part-of'`` pair), and ``link(`` examples must not
+    pass ``rel_intent`` as a top-level argument (the strictness gate
+    rejects it; it lives in edge ``meta``)."""
+    for block in _FENCE_PY.findall(SKILL_PATH.read_text(encoding="utf-8")):
+        for frag in re.split(r"\n\s*\n", block):
+            if re.search(r"put\(\s*kind=[\"']memory[\"']", frag):
+                assert "parent_id" not in frag, (
+                    "memory put example uses parent_id; parent with "
+                    "link='memory:<parent>' + rel='part-of'"
+                )
+                if "text=" in frag:
+                    assert "link=" in frag and re.search(
+                        r"rel=[\"']part-of[\"']", frag
+                    ), "memory put example creates a node with no part-of parent edge"
+            if "link(" in frag:
+                assert not re.search(r"\brel_intent\s*=", frag), (
+                    "link() example passes rel_intent top-level; "
+                    "it belongs in meta={'rel_intent': ...}"
+                )

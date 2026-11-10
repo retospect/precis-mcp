@@ -73,7 +73,7 @@ A spec root is `section:index`, part-of its programme root, tagged
 
 ```python
 put(kind="memory", text="Spec: routing: task-aware MCP tool routing",
-    parent_id=<programme root id>,
+    link="memory:<programme root id>", rel="part-of",
     tags=["section:index", "spec:routing", "SPACE:repo-dev"],
     meta={"hook": "routing spec root"})
 ```
@@ -104,7 +104,7 @@ root body gives the reading order:
 
 ```python
 put(kind="memory", text="Routing prefers cache hits over model calls",
-    parent_id=<spec root id>,
+    link="memory:<spec root id>", rel="part-of",
     tags=["section:reference", "spec:routing", "SPACE:repo-dev"],
     meta={"hook": "routing section 3"})
 ```
@@ -135,15 +135,15 @@ the task-aware routing spec `me568172`, 2026-11-05).
 
 **Ruling node** — tagged `ruling` with meta `ruled_by`, `ruled_on` and
 `review_by` ([[precis-memory-help]] §rulings), one decision per node,
-linked `related-to` what it decides with `rel_intent='decides'`. A ruling
-left in prose is what rots:
+linked `related-to` what it decides with edge meta
+`rel_intent='decides'`. A ruling left in prose is what rots:
 
 ```python
 tag(kind="memory", id=<ruling id>, add=["ruling"],
     meta={"ruled_by": "reto", "ruled_on": "2026-11-05",
           "review_by": "2026-12-05"})
 link(kind="memory", id=<ruling id>, rel="related-to",
-     target="memory:<spec root id>", rel_intent="decides")
+     target="memory:<spec root id>", meta={"rel_intent": "decides"})
 ```
 
 **Gotcha node** — `section:gotchas`, `qualifies` the feature or section
