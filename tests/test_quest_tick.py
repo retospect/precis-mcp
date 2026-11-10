@@ -4732,3 +4732,156 @@ class TestUrlFetchField:
         assert "Requested reads" in prompt
         assert f"web:{web_refs[0].id}" in prompt
         assert "$0.25/1M" in prompt
+
+
+def _bench_results(stem: str, dir_path: Any) -> str:
+    """A small results file on disk — the ``bench:<stem>`` read target."""
+    rows = [
+        {
+            "task": t,
+            "arm": a,
+            "type": "lookup",
+            "source": "qasper",
+            "caller": "triage",
+            "abstention": False,
+            "applicable": True,
+            "found": a == "all-on",
+            "censored": a != "all-on",
+            "tokens_to_first_gold": 100.0 if a == "all-on" else 8000.0,
+            "tokens_total": 150.0,
+            "calls": 2,
+            "verbatim_opens": 1,
+            "errors": 0,
+            "refusals": 0,
+            "recall_at_5": 1.0,
+            "call_log": [
+                {
+                    "n": 1,
+                    "verb": "search",
+                    "what": f"paper q? ({t})",
+                    "tokens": 100.0,
+                    "refusal": False,
+                },
+                {
+                    "n": 2,
+                    "verb": "get",
+                    "what": f"pc1 verbatim ({a})",
+                    "tokens": 50.0,
+                    "refusal": a != "all-on",
+                },
+            ],
+        }
+        for t in ("t1", "t2", "t3")
+        for a in ("all-on", "no-kwd")
+    ]
+    path = dir_path / f"{stem}.json"
+    path.write_text(
+        json.dumps(
+            {"header": {"set": "quick", "caller": {"name": "triage"}}, "rows": rows}
+        ),
+        encoding="utf-8",
+    )
+    return stem
+
+
+class TestBenchRead:
+    """gr618517 — qu604835's inquiry step kept declaring
+    `raw-benchmark-log-reader` missing: its toolset is the JSON payload
+    (searches/read/fetch), so `scripts/bench raw` is a shell it cannot
+    run. A `bench:<stem>` read address now opens the same raw log in the
+    next tick's Requested reads."""
+
+    def test_bench_read_renders_the_raw_log_next_tick(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results("20261110Z-abc1234-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving digesting run three")
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"bench:{stem}", "why": "per-arm detail"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "Requested reads" in prompt
+        assert f"bench:{stem}" in prompt
+        assert "# raw log quick (caller triage)" in prompt
+        assert "arm all-on" in prompt and "get pc1 verbatim" in prompt
+        assert "page 1/" in prompt
+
+    def test_bench_read_miss_lists_held_runs(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results("20261110Z-abc1234-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving guessing a run name")
+        payload = {"logbook": [], "read": [{"ref": "bench:no-such-run"}]}
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 0
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any(
+            "read refused" in t and "no-such-run" in t and stem in t for t in texts
+        )
+
+    def test_bench_read_section_selects_an_arm(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results("20261110Z-abc1234-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving after one arm")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": f"bench:{stem}", "section": "no-kwd"},
+                    {"ref": f"bench:{stem}", "section": "t3"},
+                    {"ref": f"bench:{stem}", "section": "bogus-arm"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        blocks = prompt.split("### ")
+        arm_block = next(b for b in blocks if 'section "no-kwd"' in b.splitlines()[0])
+        assert "arm no-kwd" in arm_block and "arm all-on" not in arm_block
+        task_block = next(b for b in blocks if 'section "t3"' in b.splitlines()[0])
+        assert "task t3" in task_block and "task t1" not in task_block
+        assert "no arm or task matching 'bogus-arm'" in prompt
+        assert "arms: all-on, no-kwd" in prompt
+
+    def test_bench_read_pages_the_long_table(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        stem = _bench_results("20261110Z-abc1234-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        monkeypatch.setattr(tick_mod, "_BENCH_READ_BLOCK_CHARS", 400)
+        qid = _mk_quest(store, "A striving paging a run")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": f"bench:{stem}", "page": 1},
+                    {"ref": f"bench:{stem}", "page": 99},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        blocks = prompt.split("### ")
+        p1 = next(b for b in blocks if b.splitlines()[0] == f"bench:{stem}")
+        assert "page 1/" in p1
+        assert "task t" in p1
+        assert 0 < p1.count("task t") < 6  # a bounded page, not the whole log
+        assert "reads further" in p1
+        assert "page 99 out of" in prompt
+
+    def test_inquiry_template_offers_the_bench_read(self, store: Any) -> None:
+        """The bench read is advertised in BOTH bodies — an inquiry quest
+        (qu604835's own body) must see the address it can name, like the
+        gr607446 url-fetch pin."""
+        qid = _mk_quest(store, "A striving checking its read vocabulary")
+        assert "bench:<run-stem>" in build_tick_prompt(store, _qref(store, qid))
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+        prompt = build_tick_prompt(
+            store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
+        )
+        assert "bench:<run-stem>" in prompt

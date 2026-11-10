@@ -10,6 +10,14 @@ slices — one arm's rows, one task across arms, or a page of the long table —
 and the continuation line names the next slice, the same ``Next:``
 affordance the product's renders use.
 
+Two surfaces share the row block (:func:`row_block`): the
+``scripts/bench raw`` CLI, and the quest tick's ``read`` channel — a
+``bench:<stem>`` read address resolves through :func:`resolve_results`
+against the results dir (:func:`precis.bench.runner.default_results_dir`,
+``PRECIS_BENCH_RESULTS``-overridable) and renders the same bounded slices
+into next tick's Requested reads (gr618517 — the CLI alone was unreachable
+from a model that outputs one JSON payload).
+
 Runs written before the per-call log (results schema 1) carry no
 ``call_log`` on their rows; their summary lines still print, without call
 lines.
@@ -18,6 +26,7 @@ lines.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from precis.utils.next_block import render_next_section
@@ -78,6 +87,60 @@ def row_header(r: Mapping[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def row_block(r: Mapping[str, Any]) -> str:
+    """One task x arm row's raw block — the :func:`row_header` summary
+    line, then its per-call token log. Shared by ``raw_markdown`` and the
+    quest ``bench:`` read's pages, so a tick sees the log in exactly the
+    CLI's shape."""
+    lines = [row_header(r)]
+    for c in r.get("call_log") or ():
+        flag = " (refused)" if c.get("refusal") else ""
+        lines.append(f"  {c['n']}. {c['verb']} {c['what']} — {c['tokens']:g} tok{flag}")
+    return "\n".join(lines)
+
+
+def arm_names(results: Mapping[str, Any]) -> list[str]:
+    """Distinct arm names in file order — one ``bench:`` read's ``section``
+    vocabulary (gr618517)."""
+    seen: dict[str, None] = {}
+    for r in results["rows"]:
+        seen.setdefault(str(r["arm"]))
+    return list(seen)
+
+
+def task_ids(results: Mapping[str, Any]) -> list[str]:
+    """Distinct task ids in file order — the other ``section`` vocabulary."""
+    seen: dict[str, None] = {}
+    for r in results["rows"]:
+        seen.setdefault(str(r["task"]))
+    return list(seen)
+
+
+def list_results_stems(results_dir: Path) -> list[str]:
+    """Stems of the ``*.json`` files in ``results_dir``, newest first —
+    the ``bench:<stem>`` address book a missed read lists (gr618517)."""
+    if not results_dir.is_dir():
+        return []
+    stems = [
+        (p.stat().st_mtime, p.stem) for p in results_dir.glob("*.json") if p.is_file()
+    ]
+    return [stem for _mtime, stem in sorted(stems, reverse=True)]
+
+
+def resolve_results(results_dir: Path, name: str) -> Path | None:
+    """``bench:<name>`` → its results file, or ``None``. ``name`` is the
+    filename stem (a trailing ``.json`` is tolerated); anything that would
+    address outside ``results_dir`` — a separator, a dot name — resolves
+    to ``None``, never a path."""
+    stem = name.strip()
+    if stem.endswith(".json"):
+        stem = stem[: -len(".json")]
+    if not stem or stem in (".", "..") or "/" in stem or "\\" in stem:
+        return None
+    path = results_dir / f"{stem}.json"
+    return path if path.is_file() else None
+
+
 def raw_markdown(
     results: Mapping[str, Any],
     *,
@@ -105,12 +168,7 @@ def raw_markdown(
     ]
     for r in sel[offset:end]:
         out.append("")
-        out.append(row_header(r))
-        for c in r.get("call_log") or ():
-            flag = " (refused)" if c.get("refusal") else ""
-            out.append(
-                f"  {c['n']}. {c['verb']} {c['what']} — {c['tokens']:g} tok{flag}"
-            )
+        out.append(row_block(r))
     if end < len(sel):
         out.append(
             render_next_section(

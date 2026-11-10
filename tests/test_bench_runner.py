@@ -491,6 +491,43 @@ def test_raw_reader_tolerates_schema1_rows_without_call_log():
 
 
 # ---------------------------------------------------------------------------
+# pure: the bench: read address' file resolution (gr618517)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_results_names_only_stems_inside_the_dir(tmp_path: Path):
+    (tmp_path / "run1.json").write_text("{}", encoding="utf-8")
+    assert raw.resolve_results(tmp_path, "run1") == tmp_path / "run1.json"
+    assert raw.resolve_results(tmp_path, "run1.json") == tmp_path / "run1.json"
+    assert raw.resolve_results(tmp_path, "missing") is None
+    assert raw.resolve_results(tmp_path, "") is None
+    # traversal resolves to None, never to a path outside the dir
+    assert raw.resolve_results(tmp_path, "..") is None
+    assert raw.resolve_results(tmp_path, "../run1") is None
+    assert raw.resolve_results(tmp_path, "sub/run1") is None
+    assert raw.resolve_results(tmp_path, "C:\\run1") is None
+
+
+def test_list_results_stems_newest_first(tmp_path: Path):
+    import os
+
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_text("{}", encoding="utf-8")
+    b.write_text("{}", encoding="utf-8")
+    os.utime(a, (1000, 1000))
+    os.utime(b, (2000, 2000))
+    assert raw.list_results_stems(tmp_path) == ["b", "a"]
+    assert raw.list_results_stems(tmp_path / "absent") == []
+
+
+def test_arm_and_task_vocabularies_come_from_the_rows():
+    res = _raw_results()
+    assert raw.arm_names(res) == ["all-on", "no-kwd"]
+    assert raw.task_ids(res) == ["t1", "t2"]
+
+
+# ---------------------------------------------------------------------------
 # DB: the caller, the baselines, the coverage guard
 # ---------------------------------------------------------------------------
 

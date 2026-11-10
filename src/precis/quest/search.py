@@ -717,16 +717,55 @@ def _resolve_cache_ref(store: Store, kind: str, ident: str) -> Any | None:
     return entry[0] if entry is not None else None
 
 
+def _bench_stems() -> list[str]:
+    """The held results-file stems a ``bench:`` read can name — the
+    address book a refused read prints so the next tick can aim again
+    (gr618517). Any lookup fault is an empty list, never an apply
+    failure."""
+    try:
+        from precis.bench import raw as bench_raw
+        from precis.bench import runner as bench_runner
+
+        return bench_raw.list_results_stems(bench_runner.default_results_dir())
+    except Exception:
+        return []
+
+
 def _resolve_read_ref(store: Store, ident: str) -> Any | None:
     """Resolve a ``read`` entry's ``ref`` — any well-formed universal
-    handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live, or
-    a ``web:<ref_id|slug>`` cache address (a fetched page carries no
-    universal handle — gr573684)."""
+    handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live, a
+    ``web:<ref_id|slug>`` cache address (a fetched page carries no
+    universal handle — gr573684), or a ``bench:<stem>`` results-file
+    address (gr618517 — a benchmark run's raw log lives on disk, not in
+    the store; resolves to its ``Path``, a truthy non-ref)."""
     ident = ident.strip()
     if ident.lower().startswith("web:"):
         return _resolve_cache_ref(store, "web", ident[4:])
+    if ident.lower().startswith("bench:"):
+        from precis.bench import raw as bench_raw
+        from precis.bench import runner as bench_runner
+
+        try:
+            return bench_raw.resolve_results(
+                bench_runner.default_results_dir(), ident[6:]
+            )
+        except Exception:
+            return None
     resolved = store.resolve_handle(ident)
     return resolved
+
+
+def _read_refusal(ident: str) -> str:
+    """The apply-time refusal line for an unresolvable ``read`` ref —
+    a ``bench:`` miss names the held run stems so the next tick can aim
+    again (gr618517)."""
+    if ident.lower().startswith("bench:"):
+        stems = _bench_stems()
+        listing = ", ".join(stems[:12]) or "(none held)"
+        if len(stems) > 12:
+            listing += f", +{len(stems) - 12} more"
+        return f"{ident}: no such results file — held runs: {listing}"
+    return f"{ident}: does not resolve to a held ref/chunk"
 
 
 def apply_reads(
@@ -769,7 +808,7 @@ def apply_reads(
                 )
                 continue
             if _resolve_read_ref(store, ident) is None:
-                refused.append(f"{ident}: does not resolve to a held ref/chunk")
+                refused.append(_read_refusal(ident))
                 continue
             req: dict[str, Any] = {"ref": ident, "why": why}
             section = e.get("section")

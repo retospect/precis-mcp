@@ -965,6 +965,113 @@ def _read_cache_ref_text(
     return out
 
 
+#: Char budget for one ``bench:`` read page's row blocks — the same
+#: :data:`_READ_TEXT_CHARS` envelope, minus headroom for the header line
+#: and the page/section nav trailer.
+_BENCH_READ_BLOCK_CHARS = _READ_TEXT_CHARS - 400
+
+
+def _bench_pages(blocks: list[str]) -> list[tuple[int, int]]:
+    """``[(start, end)]`` row windows, each packed greedily under
+    :data:`_BENCH_READ_BLOCK_CHARS` — a page is "as many whole rows as
+    fit", not a fixed row count, so a run of call-heavy rows paginates
+    tighter instead of truncating mid-block. A row bigger than the window
+    still gets its own page."""
+    pages: list[tuple[int, int]] = []
+    i = 0
+    while i < len(blocks):
+        j = i + 1
+        size = len(blocks[i])
+        while j < len(blocks) and size + 2 + len(blocks[j]) <= _BENCH_READ_BLOCK_CHARS:
+            size += 2 + len(blocks[j])
+            j += 1
+        pages.append((i, j))
+        i = j
+    return pages or [(0, 0)]
+
+
+def _read_bench_text(ident: str, *, section: str | None = None, page: int = 1) -> str:
+    """The ``bench:<stem>`` read (gr618517) — a bounded window of one
+    benchmark results file's raw log: the file's ``# raw log`` header,
+    one :func:`precis.bench.raw.row_block` per selected row, and the
+    nav trailer naming how to read on. The selectors are the body's own
+    ``read`` vocabulary: ``section`` names an arm (or, failing that, a
+    task id) and ``page`` windows the long table, so the quest's inquiry
+    step reaches every arm and per-call token log the truncated views
+    could not show — with no shell access (its only tool channel is the
+    JSON payload)."""
+    from precis.bench import raw as bench_raw
+    from precis.bench import runner as bench_runner
+
+    results_dir = bench_runner.default_results_dir()
+    path = bench_raw.resolve_results(results_dir, ident)
+    if path is None:
+        stems = bench_raw.list_results_stems(results_dir)
+        listing = ", ".join(stems[:_READ_SECTION_NAMES_MAX]) or "(none held)"
+        if len(stems) > _READ_SECTION_NAMES_MAX:
+            listing += f", +{len(stems) - _READ_SECTION_NAMES_MAX} more"
+        return f"(no results file named {ident!r} — held runs: {listing})"
+    try:
+        results = bench_runner.load_results(path)
+    except Exception as exc:
+        return f"({path.name}: unreadable results file — {exc})"
+    sel = list(results["rows"])
+    arms = bench_raw.arm_names(results)
+    arm_sel: list[str] | None = None
+    task_sel: str | None = None
+    if section:
+        needle = " ".join(str(section).lower().split())
+        arm_hits = [a for a in arms if needle in a.lower()]
+        if arm_hits:
+            arm_sel = arm_hits
+        else:
+            task_hits = [t for t in bench_raw.task_ids(results) if needle in t.lower()]
+            if len(task_hits) == 1:
+                task_sel = task_hits[0]
+            elif task_hits:
+                listing = ", ".join(task_hits[:_READ_SECTION_NAMES_MAX])
+                return (
+                    f"({section!r} matches {len(task_hits)} tasks — narrow "
+                    f"it: {listing})"
+                )
+            else:
+                listing = ", ".join(arms[:_READ_SECTION_NAMES_MAX]) or "(none)"
+                return (
+                    f"(no arm or task matching {section!r} — arms: "
+                    f'{listing}; "page": <n> windows the whole log)'
+                )
+        sel = bench_raw.select_rows(results, arms=arm_sel, task=task_sel)
+    blocks = [bench_raw.row_block(r) for r in sel]
+    pages = _bench_pages(blocks)
+    if page > len(pages):
+        return f"(page {page} out of {len(pages)} — {len(sel)} rows selected)"
+    start, end = pages[page - 1]
+    h = results["header"]
+    caller = h.get("caller", {}).get("name", "?")
+    out = (
+        f"# raw log {h.get('set', '?')} (caller {caller}) — "
+        f"rows {start}-{end} of {len(sel)}"
+    )
+    if start < end:
+        out += "\n\n" + "\n\n".join(blocks[start:end])
+    else:
+        out += "\n\n(the selection is empty)"
+    bits = [f"page {page}/{len(pages)}", f"{end}/{len(sel)} rows"]
+    if arm_sel:
+        bits.append(f"arm {'/'.join(arm_sel)}")
+    if task_sel:
+        bits.append(f"task {task_sel}")
+    hint = "; ".join(bits)
+    if not section:
+        shown = arms[:_READ_SECTION_NAMES_MAX]
+        if shown:
+            hint += "; arms: " + ", ".join(shown)
+            if len(arms) > _READ_SECTION_NAMES_MAX:
+                hint += f", +{len(arms) - _READ_SECTION_NAMES_MAX} more"
+    hint += ' — "page": <n> or "section": "<arm or task id>" reads further'
+    return out + f"\n\n({hint})"
+
+
 def _label_sort_key(label: str) -> tuple[str, int, str]:
     """Natural order for minted atom labels — ``aPd2`` before ``aPd10``;
     a label outside the ``a<El><n>`` shape sorts by itself."""
@@ -1038,7 +1145,9 @@ def _read_ref_text(
     text for a bare chunk handle (``pc<id>``), the ref's body chunks for a
     record handle (``fi<id>``/``pa<id>``) — bounded at
     :data:`_READ_TEXT_CHARS`. A ``web:<ref_id|slug>`` address reads a
-    fetched page through the cache path (gr573684); a ``st<id>`` structure
+    fetched page through the cache path (gr573684); a ``bench:<stem>``
+    address reads a benchmark run's raw results log
+    (:func:`_read_bench_text`, gr618517); a ``st<id>`` structure
     read takes the inspector branch (:func:`_structure_read_text`) instead
     of body chunks — composition plus the label→element truth.
 
@@ -1052,6 +1161,8 @@ def _read_ref_text(
     ident = handle.strip()
     if ident.lower().startswith("web:"):
         return _read_cache_ref_text(store, "web", ident[4:], section=section, page=page)
+    if ident.lower().startswith("bench:"):
+        return _read_bench_text(ident[6:], section=section, page=page)
     resolved = store.resolve_handle(ident)
     if resolved is None:
         return "(no longer resolvable — the ref is gone or the handle is wrong)"
@@ -2257,9 +2368,10 @@ runs>"}}
 derive_from clone>", "why": "<the elementary step this edge measures>"}}
   ],
   "read": [
-    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id> or web:<id> of a held \
-item you want text of>", "why": "<what you are looking for>", "section": \
-"<optional heading name>", "page": "<optional 1-based page>"}}
+    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id>, web:<id> or \
+bench:<run-stem> of a held item you want text of>", "why": "<what you are \
+looking for>", "section": "<optional heading name>", "page": \
+"<optional 1-based page>"}}
   ],
   "fetch": [
     {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
@@ -2295,7 +2407,8 @@ naming the fix (an endpoint still missing its converged ml relax refuses \
 until it lands). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
-chunk, `[td<id>]` todo, `[st<id>]` structure or a `web:<id>` fetched page \
+chunk, `[td<id>]` todo, `[st<id>]` structure, a `web:<id>` fetched page \
+or a `bench:<stem>` benchmark run's raw results log \
 from the context above; the finding claims, abstract snippets and served \
 titles are otherwise all you see, so use this when the detail lives \
 deeper than the snippet. A bare read returns the body's front page — add \
@@ -2305,7 +2418,11 @@ handle with a selector reads its owning paper; a `td` read returns the \
 todo's body and comment timeline; a `st` read returns the structure's \
 live composition and atom labels grouped by element — the \
 post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
-atom can wear an `aPd…` label). \
+atom can wear an `aPd…` label). A `bench:<stem>` read (the stem is the \
+results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
+per-arm rows with their per-call token logs — on it `"section"` names an \
+arm or a task id, and a refused `bench:` read answers with the stems \
+held. \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \
@@ -2502,9 +2619,10 @@ does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
 it would unblock>"}}
   ],
   "read": [
-    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id> or web:<id> of a held \
-item you want text of>", "why": "<what you are looking for>", "section": \
-"<optional heading name>", "page": "<optional 1-based page>"}}
+    {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id>, web:<id> or \
+bench:<run-stem> of a held item you want text of>", "why": "<what you are \
+looking for>", "section": "<optional heading name>", "page": \
+"<optional 1-based page>"}}
   ],
   "fetch": [
     {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
@@ -2518,7 +2636,8 @@ If a tool, data source, simulation lane or catalog entry you need does not \
 exist, say so in `needs` instead of guessing around it. \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
-chunk, `[td<id>]` todo, `[st<id>]` structure or a `web:<id>` fetched page \
+chunk, `[td<id>]` todo, `[st<id>]` structure, a `web:<id>` fetched page \
+or a `bench:<stem>` benchmark run's raw results log \
 from the context above; the finding claims, abstract snippets and served \
 titles are otherwise all you see, so use this when the detail lives \
 deeper than the snippet. A bare read returns the body's front page — add \
@@ -2528,7 +2647,11 @@ handle with a selector reads its owning paper; a `td` read returns the \
 todo's body and comment timeline; a `st` read returns the structure's \
 live composition and atom labels grouped by element — the \
 post-`set_element` truth (a dopant keeps its mint-prefix label, so an Ir \
-atom can wear an `aPd…` label). \
+atom can wear an `aPd…` label). A `bench:<stem>` read (the stem is the \
+results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
+per-arm rows with their per-call token logs — on it `"section"` names an \
+arm or a task id, and a refused `bench:` read answers with the stems \
+held. \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \

@@ -121,6 +121,14 @@ rows remain past the window, a `Next:` block (the sanctioned
 `--offset`/`--limit` call that reads the next slice. Schema-1 files (runs
 #1–#3) carry no `call_log`; their summary lines still print.
 
+A quest tick reaches the same log without a shell: its `read` field takes a
+`bench:<stem>` address (the stem is the filename, e.g.
+`bench:20261109Z-0123456-quick-triage`; the dir is
+`runner.default_results_dir()`, `PRECIS_BENCH_RESULTS`-overridable) and the
+next tick's Requested reads renders a bounded page of the same row blocks —
+`"section"` selecting an arm or task id, `"page"` windowing the rows
+(gr618517).
+
 ## What counts as found
 
 All scripted callers stop at the first call whose output renders a chunk whose
