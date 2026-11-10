@@ -37,6 +37,35 @@ and pinned application version. Restart both after configuration changes.
 The MCP service still requires its own `PRECIS_MCP_TOKEN` for infrastructure
 access. Keep that credential separate from user app authorizations.
 
+The gateway's `precis_web` role can configure both daemons and the persistent
+MCP listener without reinstalling the application or applying migrations.
+In its private `host_vars/<gateway>.yml` set:
+
+```yaml
+precis_mcp_public_enabled: true
+precis_mcp_public_funnel: true
+precis_mcp_public_port: 8766
+precis_mcp_public_oauth_env:
+  PRECIS_OAUTH_ISSUER: https://precis.example.com
+  PRECIS_OAUTH_RESOURCE: https://precis.example.com:8443/mcp
+  PRECIS_OAUTH_SCOPES: mcp:full
+```
+
+After the normal release has installed the OAuth code and migration, run the
+existing web play with `--tags precis-web-config,precis-mcp-public` and the
+gateway limit. This renders the same OAuth map into the web and dedicated
+MCP environments, safely reloads changed daemons, verifies a discovery-bearing
+401 before exposure, and asserts the exact MCP and existing web mappings.
+The dedicated `com.precis.mcp-public` daemon uses the deployed web venv,
+loopback only, and an `agent_rw` DSN. It refuses pending migrations and never
+auto-migrates. The role creates a separate infrastructure token once in
+`/opt/mcps/mcp-public-secrets/PRECIS_MCP_TOKEN` (deploy-owned, mode 0600;
+directory 0700); only its directory is in the plist. Reapplying preserves the
+token and existing session MCP. Setting `precis_mcp_public_funnel: false`
+converges the 8443 mapping to tailnet-only. To stop the listener and remove
+exposure, the operator must explicitly unload that unit and remove its mapping;
+`precis_mcp_public_enabled: false` skips management rather than deleting services.
+
 Register additional public clients through `PRECIS_OAUTH_CLIENTS`:
 
 ```json
@@ -104,6 +133,29 @@ Secrets are random and digest-only in PostgreSQL. Never log request bodies,
 Authorization headers, token responses or redirect Location headers carrying
 authorization codes. Keep authentication request and concurrency limits at
 the public ingress; the authorization store also bounds outstanding requests.
+
+## External security assessment
+
+Use an independent machine outside the tailnet (for example a laptop on a
+phone hotspot with Tailscale disconnected) to verify the named HTTPS 443 and 8443
+routes, TLS certificates, public OAuth discovery and authentication refusals.
+Funnel's public DNS points to shared Tailscale relay infrastructure: a blanket
+IP port scan measures that relay rather than this gateway. Scope such testing
+to the owned hostname with TLS SNI, and inspect `tailscale funnel status --json`
+plus local socket bindings for the actual exposed services. A full TCP scan is
+appropriate only for a separately owned public gateway address.
+
+Against production, use low-volume unauthenticated probes and invalid credentials:
+MCP requests without or with a random bearer must refuse with 401; `/authorize`,
+account and consent management must require login; malformed OAuth requests must refuse,
+and no token or authorization code may appear in logs or redirect to an
+unregistered callback. Do not follow attacker-controlled redirect probes.
+Run active scanners such as ZAP and the stronger OAuth checks (PKCE omission,
+wrong verifier, code replay, scope escalation, cross-account access, refresh
+replay and selective revocation) against an isolated dev DB with test users.
+Production grants are created only by real user acceptance through Claude.
+Passing these checks is evidence for the tested boundaries, not a guarantee
+that every application kind is free of vulnerabilities.
 
 Protocol references, checked 2026-11-10 UTC:
 [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),

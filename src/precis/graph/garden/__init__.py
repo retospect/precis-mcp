@@ -1,38 +1,31 @@
 """Graph garden — deterministic upkeep signals, LLM-judged proposals.
 
-The knowledge graph grows without consolidation: duplicates accumulate,
-conflated terms stay conflated, wrong edges persist. The gardener is the
-maintenance pass that finds them — and stops there.
+Detectors find duplicate nodes, conflated terms and wrong edges without
+mutating the graph.
 
-**Proposals only.** Nothing in this package merges, splits, prunes,
-retags or relinks the graph on its own. Detectors emit *candidates*;
-a proposer turns candidates into *proposals*; every proposal lands as
-one ``reviews`` row (migration 0185) with ``verdict='proposed'``,
-``actor='graph-garden'`` and a JSON payload in ``note`` (action,
-evidence, reversal hints) for a human or frontier-model judge. Apply
-is a separate explicit verb — :mod:`precis.graph.garden.apply`, reached
-through ``precis garden apply`` or the consumer (step 5), never by a
-detector or the proposer. A pass over
-a clean graph writes nothing: no reviews, no chunks, no log spam.
+**Proposals only.** Detectors emit candidates; the proposer emits proposals:
+one ``reviews`` row (migration 0185), ``verdict='proposed'``,
+``actor='graph-garden'``, JSON ``note`` (action, evidence, reversal hints)
+for a human or frontier-model judge. Merging, splitting, pruning, retagging
+and relinking require explicit apply — :mod:`precis.graph.garden.apply`,
+via ``precis garden apply`` or the consumer (step 5), never detectors or
+proposer. A clean pass writes no reviews, chunks or log spam.
 
-Memory proposals pin supporting ref content as well as the edited body;
-unpinned legacy proposals close before paid review. Stale memory evidence closes
-the old proposal with a retryable rejection so unchanged target content cannot block
-a fresh review. A proposal must match the fresh detector's action, checked
-before paid review and again at apply, so supersede cannot degrade to retire.
+Memory proposals pin supporting refs and edited bodies; unpinned legacy
+proposals close before paid review. Stale evidence closes with retryable rejection,
+allowing fresh review despite unchanged target content. Fresh detector actions
+must match before paid review and apply: supersede cannot degrade to retire.
 Deterministic refusals close the key; unexpected deterministic apply failures
-hold the proposal so they cannot buy another review each tick. Operational
-database failures hold after five recorded attempts.
-Memory approvals are saved separately before apply, survive rollback, and
-are reused on bounded later-tick attempts after the same evidence checks.
-If saving the approval itself fails, no apply occurs; a later tick may pay
-again, at most once per proposal per tick within the shared review limit.
-Hold-write failures count as errors without aborting the remaining tick.
-The CLI shows hold reasons; rejecting an apply-error hold reopens its key.
-Unresolved ops wait one day, then resolved ops get a fresh proposal. Applied find/span pairs must match
-fresh detector ops, and link removals are refused, because model
-payload overrides cannot expand the detector's edit scope. Undo writes a
-terminal rejection on the restored content so the next tick cannot reapply it.
+hold it, preventing repeated paid review. Operational DB failures hold after five
+recorded attempts. Memory approvals persist separately before apply, survive
+rollback, and serve bounded later-tick retries with identical evidence checks.
+Failed approval persistence prevents apply; later ticks may pay again, at most
+once per proposal per tick within the shared review limit. Failed hold writes
+count as errors without aborting the tick. CLI shows hold reasons; rejecting an
+apply-error hold reopens its key. Unresolved ops wait one day; resolved ops get
+fresh proposals. Applied find/span pairs must match fresh detector ops; link
+removals refuse, preventing model overrides from expanding detector edit scope.
+Undo terminally rejects restored content, preventing next-tick reapplication.
 Supersede and retire snapshot links for undo, refusing changed endpoints.
 Supersede checks incoming and outgoing part-of migrations
 before writing and refuses edges that close a containment cycle. A direct
@@ -101,22 +94,18 @@ Review rows and trust acts retain the original model string.
    Git ancestry on origin/prod is deliberately untested: the DB has no
    general ancestry oracle and thread_shape needs no network or git.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
-   per candidate renders it into a structured verdict
-   (``accept``/rationale). Memory-body candidates (the memory detectors)
-   get the node's fisheye+1hop plus the ``precis-fix-memory-gripe-help``
-   checklist pinned verbatim and answer the one-action JSON:
+   per candidate returns structured ``accept``/rationale. Memory detectors'
+   body candidates receive fisheye+1hop and verbatim
+   ``precis-fix-memory-gripe-help`` checklist; one-action JSON answers:
    rewrite / qualify / supersede / retire / no-change / ask (gr560762).
-   Model placement is configuration: the call
-   carries ``source='graph_garden:propose'`` (an ``llm.op.*`` row steers
-   it; see ``precis.utils.llm.operations``). Nothing is pinned to a
-   host or model name in code.
-3. Persistence (:mod:`precis.graph.garden.proposals`) — accepted
-   verdicts become ``reviews`` rows, deduplicated against pending
-   proposals with the same proposal key and against a rejection of the
-   target's unchanged content. A proposer rejection is a ``rejected``
-   row too, so an unchanged candidate is asked once per prompt version,
-   not every run (gr506046). The tick's ``max_proposals`` is shared
-   round-robin across the detectors that produced candidates.
+   ``source='graph_garden:propose'`` routes through configured ``llm.op.*``
+   (``precis.utils.llm.operations``), never a code-pinned host/model.
+3. Persistence (:mod:`precis.graph.garden.proposals`) — accepted verdicts
+   become ``reviews`` rows, deduplicated by pending proposal key and
+   rejected unchanged target content. Proposer refusals also persist as
+   ``rejected``: unchanged candidates are asked once per prompt version
+   (gr506046). Candidate-producing detectors share ``max_proposals``
+   round-robin.
 4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
    ``precis garden review``) — a FRONTIER-tier burn-down over open
    proposals older than a few days: one approve/reject verdict per
@@ -142,37 +131,32 @@ Review rows and trust acts retain the original model string.
    ``griped`` apply replays the gripe's route and closes it with a
    ``resolved:`` comment once the deterministic pass holds (gr561873).
 
-**Memory reconciliation.** Memory candidates (including ``dup_pair``) and the
-interactive ``precis-make-memory`` skill share the packaged memory-help policy
-through :mod:`precis.utils.memory_reconcile`. Proposer, consumer and sampled
-reviewers use the exact same section; a policy digest versions only memory
-proposer rejections. This keeps identity, conflict and preservation judgments
-consistent without moving interpretation into the detectors or broadening
-their apply doors. Sampled memory reviews also read bounded body excerpts;
-merge repointing does not synthesize a loser's unique claims into the winner.
+**Memory reconciliation.** Memory candidates (including ``dup_pair``) and
+interactive ``precis-make-memory`` share packaged memory-help policy via
+:mod:`precis.utils.memory_reconcile`. Proposer, consumer and sampled reviewers
+use the identical section; its digest versions only memory proposer rejections.
+Identity/conflict/preservation judgments stay consistent without detector
+interpretation or broader apply doors. Sampled reviews read bounded body excerpts;
+merge repointing never synthesizes loser's unique claims into the winner.
 
-**Scheduling.** The ``graph_garden`` job_type (``job_inproc`` executor)
-runs one bounded pass per tick — ``params.pass`` picks the detector
-subset (``merge|split|relink|prune|tag-sweep|siblings|paper-identity|memory|all``,
-or a list), ``limit`` bounds candidates scanned, ``max_proposals``
-bounds writes, and each detector runs under a wall-clock deadline that
-skips it rather than zeroing the tick (gr503580). The wide scans walk
-each kind from a cursor saved on the job's ``meta.garden.cursors``
-(:func:`precis.graph.garden.service.saved_cursors`), so successive runs
-cover the corpus. The cadence is an operator-seeded
-**recurring todo** under Watches — ``meta.schedule`` +
-``meta.executor='job_inproc'`` + ``meta.job_type='graph_garden'`` (the
-job-mode automation shape, ``precis-recurring-help``): each due tick
-spawns a subtask the dispatch pass mints the job from, and the
-spawner's ``spawned_for_tick`` idempotency plus collision-skip on a
-still-open previous child are the run bound. The gates are evaluated
-per run by the job dispatcher
-(:mod:`precis.workers.job_types.graph_garden`): a dark
-``graph_garden`` service_config row
-(:func:`precis.graph.garden.service.graph_garden_enabled`) or an
-active cooling streak writes ``meta.garden.skipped`` and exits. After
-``DRY_RUNS_ESCALATE`` consecutive empty runs the pass cools for
-``COOL_RUNS`` runs instead of scanning every tick.
+**Scheduling.** ``graph_garden`` job_type (``job_inproc`` executor) runs one
+bounded pass per tick. ``params.pass`` selects detectors
+(``merge|split|relink|prune|tag-sweep|siblings|paper-identity|memory|all`` or
+list); ``limit`` bounds scans, ``max_proposals`` bounds writes. Per-detector
+wall-clock deadlines skip that detector, preserving the tick (gr503580).
+Wide scans resume per-kind cursors in job ``meta.garden.cursors``
+(:func:`precis.graph.garden.service.saved_cursors`), covering the corpus
+across runs. An operator seeds a Watches **recurring todo**:
+``meta.schedule``, ``meta.executor='job_inproc'``,
+``meta.job_type='graph_garden'`` (``precis-recurring-help`` job-mode
+automation). Each due tick spawns a subtask; dispatch mints its job.
+Spawner ``spawned_for_tick`` idempotency and collision-skipping an open
+previous child bound runs. Per-run dispatcher gates
+(:mod:`precis.workers.job_types.graph_garden`): dark ``graph_garden``
+service_config (:func:`precis.graph.garden.service.graph_garden_enabled`)
+or active cooling writes ``meta.garden.skipped`` and exits.
+``DRY_RUNS_ESCALATE`` consecutive empty runs trigger ``COOL_RUNS``
+cooling runs without scans.
 
 **Polysemy contract (provisional).** The split pass fires when a live
 ``finding`` linked to a node carries ``meta.annotation='polysemy'``

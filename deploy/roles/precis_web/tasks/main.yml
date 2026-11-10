@@ -54,6 +54,17 @@
     mode: "0755"
   become: true
 
+- name: Require OAuth endpoints before changing the web configuration
+  when:
+    - os_family == "darwin"
+    - precis_mcp_public_enabled | bool
+  ansible.builtin.assert:
+    that:
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_ISSUER is defined
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE is defined
+    fail_msg: Set canonical OAuth issuer/resource URLs in the private gateway inventory.
+  tags: [precis-web-config, precis-mcp-public]
+
 - name: Ensure precis-web LaunchDaemon plist
   when: os_family == "darwin"
   ansible.builtin.template:
@@ -64,6 +75,7 @@
     group: wheel
   become: true
   notify: restart precis-web
+  tags: [precis-web-config]
 
 - name: Load precis-web LaunchDaemon
   when: os_family == "darwin"
@@ -100,19 +112,28 @@
   failed_when: false
   tags: [tailscale]
 
-- name: Verify the Tailscale exposure matches precis_web_funnel
+- name: Read the Tailscale web exposure
   when: os_family == "darwin"
-  # Assert the end state rather than trusting the command above, which
-  # keeps failed_when: false so a transient CLI hiccup doesn't abort a
-  # deploy. "(tailnet only)" in the status output means this host is NOT
-  # published publicly — so that substring must be present exactly when
-  # precis_web_funnel is false. Equality of the two booleans is the
-  # mismatch: same value => intent and reality disagree.
-  ansible.builtin.command: tailscale funnel status
+  ansible.builtin.command: tailscale funnel status --json
   become: true
   register: _precis_web_ts_status
   changed_when: false
-  failed_when: >-
-    (precis_web_funnel | bool)
-    == ('(tailnet only)' in _precis_web_ts_status.stdout)
   tags: [tailscale]
+
+- name: Verify the exact web HTTPS mapping
+  when: os_family == "darwin"
+  ansible.builtin.assert:
+    that:
+      - _precis_web_ts_config.Web[_precis_web_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_web_port | string)
+      - (_precis_web_ts_config.AllowFunnel | default({})).get(_precis_web_ts_host, false) | bool == precis_web_funnel | bool
+  vars:
+    _precis_web_ts_config: "{{ _precis_web_ts_status.stdout | from_json }}"
+    _precis_web_ts_host: "{{ precis_web_podcast_base_url | urlsplit('hostname') }}:443"
+  tags: [tailscale]
+
+- name: Configure the dedicated public MCP listener
+  ansible.builtin.import_tasks: public-mcp.yml
+  when:
+    - os_family == "darwin"
+    - precis_mcp_public_enabled | bool
+  tags: [precis-mcp-public]

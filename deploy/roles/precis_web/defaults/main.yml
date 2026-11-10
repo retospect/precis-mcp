@@ -65,3 +65,13 @@ precis_web_watch_inbox: "{{ papers_inbox_path }}"
 # it belongs in the private inventory overlay (host_vars/<host>.yml),
 # never in a repo default where a new gateway would inherit it.
 precis_web_funnel: false
+
+# Separate public MCP listener: opt-in per gateway in the private inventory.
+# Both daemons receive this exact OAuth map; no public coordinates live here.
+precis_mcp_public_enabled: false
+precis_mcp_public_funnel: false
+precis_mcp_public_port: 8766
+precis_mcp_public_https_port: 8443
+precis_mcp_public_oauth_env: {}
+precis_mcp_public_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+precis_mcp_public_secrets_dir: /opt/mcps/mcp-public-secrets

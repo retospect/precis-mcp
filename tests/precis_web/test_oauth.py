@@ -62,7 +62,7 @@ def client(store, oauth_env):
         yield client
 
 
-def _request(client: TestClient, **overrides: str) -> str:
+def _request(client: TestClient, *, login: str = "alice", **overrides: str) -> str:
     response = client.get(
         "/authorize",
         params={
@@ -76,6 +76,7 @@ def _request(client: TestClient, **overrides: str) -> str:
             "state": "application-state",
             **overrides,
         },
+        headers=_auth(login),
     )
     assert response.status_code in {302, 303}, response.text
     location = response.headers["location"]
@@ -100,7 +101,7 @@ def _consent_form(
 def _code(
     client: TestClient, *, login: str = "alice", label: str = "Claude laptop"
 ) -> str:
-    fields = _consent_form(client, _request(client), login)
+    fields = _consent_form(client, _request(client, login=login), login)
     response = client.post(
         "/oauth/consent",
         data={**fields, "decision": "allow", "label": label},
@@ -142,6 +143,7 @@ def test_discovery_and_exact_public_exemptions(client):
     assert metadata["code_challenge_methods_supported"] == ["S256"]
     assert "registration_endpoint" not in metadata
     for path in (
+        "/authorize",
         "/token-extra",
         "/token/private",
         "/oauth/consent",
@@ -162,6 +164,43 @@ def test_discovery_and_exact_public_exemptions(client):
     )
     assert preflight.status_code == 200
     assert preflight.headers["access-control-allow-origin"] == "*"
+
+
+def test_authorize_authenticates_before_reserving_request_slots(client, store):
+    params = {
+        "response_type": "code",
+        "client_id": "precis-claude",
+        "redirect_uri": CALLBACK,
+        "scope": "learning",
+        "code_challenge": CHALLENGE,
+        "code_challenge_method": "S256",
+        "resource": RESOURCE,
+        "state": "application-state",
+    }
+    for _ in range(3):
+        response = client.get("/authorize", params=params)
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"].startswith("Basic")
+    with store.pool.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM mcp_oauth_requests").fetchone() == (
+            0,
+        )
+
+    # The first browser visit logs in with Basic and receives a session cookie.
+    _request(client)
+    with store.pool.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM mcp_oauth_requests").fetchone() == (
+            1,
+        )
+
+    # A subsequent visit authenticates with that cookie and still reaches OAuth.
+    response = client.get("/authorize", params=params)
+    assert response.status_code in {302, 303}
+    assert response.headers["location"].startswith(f"{ISSUER}/oauth/consent?")
+    with store.pool.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM mcp_oauth_requests").fetchone() == (
+            2,
+        )
 
 
 def test_two_connections_per_user_and_owner_only_revoke(client, store, oauth_env):
@@ -252,6 +291,7 @@ def test_sdk_rejects_wrong_pkce_resource_redirect_and_code_replay(client):
             "redirect_uri": "https://evil.example/callback",
             "code_challenge": CHALLENGE,
         },
+        headers=_auth(),
     )
     assert redirect.status_code == 400
     assert "location" not in redirect.headers

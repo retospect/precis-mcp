@@ -209,7 +209,7 @@ def test_play_38_installs_then_skips_a_second_migrate() -> None:
         for t in main
         if "ansible.builtin.import_tasks" in t
     ]
-    assert imports == ["install.yml", "migrate.yml"]
+    assert imports == ["install.yml", "migrate.yml", "public-mcp.yml"]
     install = _load(WEB_TASKS / "install.yml")
     assert any("precis-mcp[web,estimate]" in t["name"] for t in install)
     (migrate,) = _load(WEB_TASKS / "migrate.yml")

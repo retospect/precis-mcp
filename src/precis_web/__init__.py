@@ -70,7 +70,7 @@ row stores only the podcast token digest, so the vault is the other source.
 Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
 deletes the session cookie.
 
-**OAuth.** ``precis.oauth`` owns grants; ``routes.oauth`` covers consent and connections.
+**OAuth.** ``precis.oauth`` owns grants; ``routes.oauth`` authenticates authorization before reserving capacity.
 
 **Access logs / Secrets.** ``access_log.py`` masks ``t`` queries;
 ``routes/secrets.py`` provides write-only controls.

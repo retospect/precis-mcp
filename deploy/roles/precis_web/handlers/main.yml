@@ -16,3 +16,13 @@
     os_family == "darwin"
     and (precis_deploy_changed is not defined
          or not (precis_deploy_changed | bool))
+
+- name: restart precis-mcp-public
+  ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
+  vars:
+    reload_unit: com.precis.mcp-public
+    reload_persistent: true
+  when: >-
+    os_family == "darwin"
+    and (precis_deploy_changed is not defined
+         or not (precis_deploy_changed | bool))

@@ -43,6 +43,11 @@ requests. The roster row still decides on every cookie request
 (:func:`authorize_session_login`), so disable/rm bite immediately, and
 ``POST /account/logout`` clears the cookie alongside its Basic
 realm-rotation challenge.
+
+**OAuth authorization starts behind the browser gate.** Discovery, token exchange
+and revocation self-authenticate, but ``/authorize`` requires the same login
+as consent before it can reserve bounded pending-request slots. Otherwise an
+anonymous caller could exhaust one app's slots and block its users.
 """
 
 from __future__ import annotations
@@ -591,12 +596,17 @@ class BasicAuthMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        # OAuth machine endpoints validate their own credentials and protocol;
-        # consent and account pages still use this authenticated browser gate.
+        # OAuth machine endpoints validate their own credentials and protocol.
+        # Authorization is a browser navigation: authenticate before reserving
+        # pending-request slots, just as consent and account pages require.
         oauth_paths = getattr(
             getattr(scope.get("app"), "state", None), "oauth_protocol_paths", ()
         )
-        if path in _OPEN_PATHS or _is_self_auth(path) or path in oauth_paths:
+        if (
+            path in _OPEN_PATHS
+            or _is_self_auth(path)
+            or (path in oauth_paths and path != "/authorize")
+        ):
             await self.app(scope, receive, send)
             return
 

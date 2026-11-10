@@ -1,0 +1,154 @@
+---
+# The public endpoint is a separate process: the shared session MCP keeps its
+# existing listener, credentials and lifecycle. These tasks are configuration
+# only; installing code or migrating the DB stays in the normal release.
+- name: Validate public MCP OAuth and exposure configuration
+  ansible.builtin.assert:
+    that:
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_ISSUER is defined
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE is defined
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_ISSUER | urlsplit('scheme') == 'https'
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('scheme') == 'https'
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('port') == precis_mcp_public_https_port | int
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('path') == '/mcp'
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('query') == ''
+      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('fragment') == ''
+      - precis_mcp_public_port | int != precis_web_port | int
+      - precis_mcp_public_https_port | int in [8443, 10000]
+    fail_msg: Configure the canonical public HTTPS issuer/resource in the private inventory before enabling MCP.
+
+- name: Ensure the dedicated MCP secret directory
+  ansible.builtin.file:
+    path: "{{ precis_mcp_public_secrets_dir }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+
+- name: Generate a separate infrastructure token once
+  ansible.builtin.command:
+    argv:
+      - "{{ precis_web_venv }}/bin/python"
+      - -c
+      - |
+        import os
+        import pathlib
+        import secrets
+        import sys
+        import tempfile
+        path = pathlib.Path(sys.argv[1])
+        fd, temporary = tempfile.mkstemp(dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(secrets.token_urlsafe(48) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            os.unlink(temporary)
+      - "{{ precis_mcp_public_secrets_dir }}/PRECIS_MCP_TOKEN"
+    creates: "{{ precis_mcp_public_secrets_dir }}/PRECIS_MCP_TOKEN"
+  become: true
+  become_user: deploy
+  no_log: true
+
+- name: Enforce dedicated token ownership and mode
+  ansible.builtin.file:
+    path: "{{ precis_mcp_public_secrets_dir }}/PRECIS_MCP_TOKEN"
+    state: file
+    owner: deploy
+    group: staff
+    mode: "0600"
+  no_log: true
+
+- name: Ensure the public MCP log is writable
+  ansible.builtin.file:
+    path: /var/log/precis-mcp-public.log
+    state: touch
+    owner: deploy
+    group: staff
+    mode: "0664"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Ensure the public MCP LaunchDaemon plist
+  ansible.builtin.template:
+    src: precis-web.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.mcp-public.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  vars:
+    precis_web_daemon_label: com.precis.mcp-public
+    precis_web_daemon_command: "exec {{ precis_web_venv }}/bin/precis serve --transport streamable-http --host 127.0.0.1 --port {{ precis_mcp_public_port }}"
+    precis_web_daemon_process: precis-mcp-public
+    precis_web_daemon_source: mcp:public
+    precis_web_daemon_log: /var/log/precis-mcp-public.log
+    precis_web_daemon_dsn: "{{ precis_mcp_public_dsn }}"
+    precis_web_daemon_env:
+      PRECIS_SECRETS_FILE_DIR: "{{ precis_mcp_public_secrets_dir }}"
+      PRECIS_MCP_TOKEN: ""
+      PRECIS_MCP_SLICE_TOKEN_DIR: ""
+      PRECIS_SCHEMA_GATE: refuse
+      PRECIS_AUTO_MIGRATE: "0"
+      PRECIS_SKIP_SCHEMA_CHECK: ""
+  notify: restart precis-mcp-public
+
+- name: Load the public MCP LaunchDaemon if absent
+  ansible.builtin.command: launchctl load -w /Library/LaunchDaemons/com.precis.mcp-public.plist
+  changed_when: false
+  failed_when: false
+
+- name: Apply pending OAuth and listener configuration before exposure
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the loopback MCP listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ precis_mcp_public_port }}"
+    timeout: 60
+
+- name: Confirm the MCP listener refuses unauthenticated access
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ precis_mcp_public_port }}/mcp"
+    method: POST
+    status_code: 401
+  register: _precis_mcp_public_challenge
+
+- name: Require OAuth discovery in the unauthenticated challenge
+  ansible.builtin.assert:
+    that:
+      - "'resource_metadata=' in _precis_mcp_public_challenge.www_authenticate | default('')"
+
+- name: Persist the public MCP HTTPS mapping
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - "{{ 'funnel' if precis_mcp_public_funnel | bool else 'serve' }}"
+      - --bg
+      - --yes
+      - "--https={{ precis_mcp_public_https_port }}"
+      - "http://127.0.0.1:{{ precis_mcp_public_port }}"
+  async: 60
+  poll: 5
+  changed_when: false
+
+- name: Read the persistent Tailscale mappings
+  ansible.builtin.command: tailscale funnel status --json
+  register: _precis_mcp_public_ts_status
+  changed_when: false
+
+- name: Verify the exact MCP mapping and preserve the web mapping
+  ansible.builtin.assert:
+    that:
+      - _precis_mcp_ts_config.Web[_precis_mcp_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_mcp_public_port | string)
+      - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_mcp_ts_host, false) | bool == precis_mcp_public_funnel | bool
+      - _precis_mcp_ts_config.Web[_precis_web_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_web_port | string)
+      - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_web_ts_host, false) | bool == precis_web_funnel | bool
+  vars:
+    _precis_mcp_ts_config: "{{ _precis_mcp_public_ts_status.stdout | from_json }}"
+    _precis_mcp_ts_host: "{{ precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('netloc') }}"
+    _precis_web_ts_host: "{{ precis_web_podcast_base_url | urlsplit('hostname') }}:443"

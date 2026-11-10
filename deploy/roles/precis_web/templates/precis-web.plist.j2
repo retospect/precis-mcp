@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.precis.web</string>
+  <string>{{ precis_web_daemon_label | default('com.precis.web') }}</string>
 
   {# bash wrapper makes /bin/bash the TCC "responsible process". Same
      pattern as precis_worker / precis_worker_agent. #}
@@ -12,7 +12,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>exec {{ precis_web_venv }}/bin/precis web --host 127.0.0.1 --port {{ precis_web_port }}</string>
+    <string>{{ precis_web_daemon_command | default('exec ' ~ precis_web_venv ~ '/bin/precis web --host 127.0.0.1 --port ' ~ precis_web_port) | e }}</string>
   </array>
 
   {# deploy user: same as precis_worker. The web service doesn't
@@ -36,7 +36,7 @@
     <key>PATH</key>
     <string>{{ precis_web_venv }}/bin:/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>PRECIS_DATABASE_URL</key>
-    <string>{{ precis_web_dsn }}</string>
+    <string>{{ precis_web_daemon_dsn | default(precis_web_dsn) | e }}</string>
     <key>PRECIS_STRUCTURE_PREFLIGHT</key>
     <string>1</string>
     <key>PRECIS_CORPUS_DIR</key>
@@ -53,9 +53,9 @@
        as owner (interactive Reto) so the web UI can mint
        level:strategic / level:recurring. Workers can't. #}
     <key>PRECIS_SOURCE</key>
-    <string>web:reto</string>
+    <string>{{ precis_web_daemon_source | default('web:reto') }}</string>
     <key>PRECIS_PROCESS</key>
-    <string>precis-web</string>
+    <string>{{ precis_web_daemon_process | default('precis-web') }}</string>
     {# Claim-page "Ask & think" follow-up pass: run it on opus (the code
        default is sonnet). The claim page surfaces this value beside the
        Ask box, so what it SAYS answers is what actually answers. #}
@@ -121,9 +121,12 @@
        parity is automatic; daemon-specific keys above are unique.
        Identity keys (email/API-key contacts) are vault-overridden via
        precis_identity_env (gr204873). #}
-    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({}))).items() %}
+    {# One environment for web and public MCP. Daemon guards win last, so a
+       shared setting cannot enable auto-migration or replace its token. #}
+    {% set oauth_env = precis_mcp_public_oauth_env | default({}) if precis_mcp_public_enabled | default(false) else {} %}
+    {% for env_key, env_val in (precis_shared_env | combine(precis_identity_env | default({})) | combine(oauth_env) | combine(precis_web_daemon_env | default({}))).items() if env_key not in ['PRECIS_DATABASE_URL', 'PRECIS_PROCESS', 'PRECIS_SOURCE'] %}
     <key>{{ env_key }}</key>
-    <string>{{ env_val }}</string>
+    <string>{{ env_val | string | e }}</string>
     {% endfor %}
   </dict>
 
@@ -139,8 +142,8 @@
   <integer>30</integer>
 
   <key>StandardOutPath</key>
-  <string>/var/log/precis-web.log</string>
+  <string>{{ precis_web_daemon_log | default('/var/log/precis-web.log') }}</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/precis-web.log</string>
+  <string>{{ precis_web_daemon_log | default('/var/log/precis-web.log') }}</string>
 </dict>
 </plist>
