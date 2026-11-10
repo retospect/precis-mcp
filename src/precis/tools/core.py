@@ -495,6 +495,19 @@ def _dispatch_as_user(
 
 def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
     """Apply PAT's private-learning boundary or an OAuth app's capabilities."""
+    if verb == "more":
+        # ``more`` re-issues the read a truncation footer names (gr592662):
+        # judge the continuation exactly as the hand-issued call — the
+        # cursor adds no authority the caller couldn't exercise directly.
+        from precis.tools.command_parser import CommandParseError, parse_more_cursor
+
+        cursor = payload.get("cursor")
+        if not isinstance(cursor, str):
+            return False
+        try:
+            verb, payload = parse_more_cursor(cursor)
+        except CommandParseError:
+            return False
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
     if oauth is not None:
@@ -2851,6 +2864,74 @@ def link(
         serve_ledger.unbind(token)
 
 
+def more(
+    # See ``search`` for the Optional-required pattern (round-2 picky N-1).
+    cursor: str | None = None,
+    # FastMCP-injected Context — forwarded into the continued read so the
+    # session binding (serve ledger, write-time fold) applies to the page
+    # exactly as it did to page one.
+    ctx: Context | None = None,
+) -> str:
+    """Continue a truncated read with the footer's `next:` call.
+
+    `cursor` is the ready-made continuation a truncation footer names —
+    e.g. `get(kind='memory', id=474312, view='members', args={'offset': 20})`
+    from a `… N of M shown — next: …` line (a leading `next:`/`rest:`
+    label is fine). Read verbs only (get/search): the result is the next
+    page, carrying its own `next:` cursor while rows remain. The call
+    runs exactly as typed, so the kind's own help documents the args:
+    get(kind='skill', id='precis-get-help').
+    """
+    from precis.errors import BadInput
+    from precis.tools.command_parser import CommandParseError, parse_more_cursor
+
+    if cursor is None or not cursor.strip():
+        return _validation_error(
+            _get_runtime().render_error(
+                BadInput(
+                    "more(cursor=...) continues a truncated read",
+                    next=(
+                        "copy the call a truncation footer names after "
+                        "`next:`, e.g. cursor=\"get(kind='memory', id=474312, "
+                        "view='members', args={'offset': 20})\""
+                    ),
+                )
+            )
+        )
+    try:
+        verb, kwargs = parse_more_cursor(cursor)
+    except CommandParseError as e:
+        return _validation_error(
+            _get_runtime().render_error(
+                BadInput(
+                    str(e),
+                    next="pass the `next: get(...)` call a truncated result names",
+                )
+            )
+        )
+    # Both read verbs declare ``ctx``; the injected request context always
+    # wins over any ``ctx=`` spelling smuggled inside the cursor.
+    kwargs["ctx"] = ctx
+    try:
+        # The same registry entry the typed profile registers — the exact
+        # function, so validation, error envelopes and hints are identical
+        # to issuing the continued read by hand (server.precis's pattern).
+        from precis.tools import TOOL_REGISTRY
+
+        return TOOL_REGISTRY[verb]["func"](**kwargs)
+    except TypeError as e:
+        return _validation_error(
+            _get_runtime().render_error(
+                BadInput(
+                    f"{verb}(...): {e}",
+                    next=(
+                        f"see get(kind='skill', id='precis-{verb}-help') for valid args"
+                    ),
+                )
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # CLI per-arg help strings.
 #
@@ -2955,6 +3036,12 @@ _LINK_HELP: dict[str, str] = {
     "rel": "Relation slug. Defaults to 'related-to' on add.",
 }
 
+_MORE_HELP: dict[str, str] = {
+    "cursor": "The ready-made continuation a truncation footer names "
+    "after 'next:' — a get/search call, e.g. \"get(kind='memory', "
+    "id=474312, view='members', args={'offset': 20})\". Read verbs only.",
+}
+
 CLI_HELP: dict[str, dict[str, str]] = {
     "get": _GET_HELP,
     "search": _SEARCH_HELP,
@@ -2963,4 +3050,5 @@ CLI_HELP: dict[str, dict[str, str]] = {
     "delete": _DELETE_HELP,
     "tag": _TAG_HELP,
     "link": _LINK_HELP,
+    "more": _MORE_HELP,
 }

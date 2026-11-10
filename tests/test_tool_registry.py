@@ -1,9 +1,11 @@
 """Smoke tests for the shared tool registry.
 
 The registry in ``precis.tools`` is the single source of truth for the
-seven-verb API surface, consumed by both the MCP server and the CLI.
-These tests pin the registration shape so a refactor can't silently
-drop a verb or break parameter introspection.
+API surface, consumed by both the MCP server and the CLI. The surface is
+the seven verbs plus ``more`` — the auxiliary continuation tool that
+re-issues a read a truncation footer names (gr592662), not an eighth
+verb of the API. These tests pin the registration shape so a refactor
+can't silently drop a verb or break parameter introspection.
 
 Companion design: ``docs/decisions/0003-shared-tool-registry.md``.
 """
@@ -14,14 +16,16 @@ import argparse
 
 import pytest
 
-# The canonical verb list (per `docs/decisions/0001` and the v1 surface).
+# The canonical verb list (per `docs/decisions/0001` and the v1 surface),
+# plus the `more` continuation tool.
 EXPECTED_VERBS = ["get", "search", "put", "edit", "delete", "tag", "link"]
+EXPECTED_TOOLS = [*EXPECTED_VERBS, "more"]
 
-_EXPECTED_REGISTRY_ENTRIES = EXPECTED_VERBS
+_EXPECTED_REGISTRY_ENTRIES = EXPECTED_TOOLS
 
 
 def test_registry_exposes_seven_verbs() -> None:
-    """All seven verbs are registered in `precis.tools.TOOL_REGISTRY`."""
+    """All seven verbs (and the `more` tool) are registered."""
     from precis.tools import TOOL_REGISTRY, get_tool_names
 
     names = get_tool_names()
@@ -30,7 +34,7 @@ def test_registry_exposes_seven_verbs() -> None:
     assert sorted(TOOL_REGISTRY.keys()) == sorted(_EXPECTED_REGISTRY_ENTRIES)
 
 
-@pytest.mark.parametrize("verb", EXPECTED_VERBS)
+@pytest.mark.parametrize("verb", EXPECTED_TOOLS)
 def test_each_verb_has_metadata(verb: str) -> None:
     """Every registered verb carries func / doc / signature / parameters."""
     from precis.tools import get_tool_info
@@ -78,5 +82,5 @@ def test_cli_adapter_covers_all_verbs() -> None:
     # Inspect registered choices directly to avoid triggering required-arg
     # validation on individual verbs.
     registered = set(subparsers.choices.keys())
-    missing = set(EXPECTED_VERBS) - registered
+    missing = set(EXPECTED_TOOLS) - registered
     assert not missing, f"add_tool_parsers missed verb(s): {missing}"

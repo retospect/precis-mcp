@@ -435,6 +435,26 @@ def fixes_targets(store: Any, refs: Any) -> frozenset[str] | None:
         return None
 
 
+def _more_target(payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """The (verb, kwargs) a ``more`` cursor continues, or ``None``.
+
+    ``more`` re-issues the ready-made read a truncation footer names
+    (gr592662), so the boundary judges the continuation exactly as the
+    hand-issued call — the agent could issue that call directly, the
+    cursor adds no authority. An unparseable cursor or one naming a
+    write verb unwraps to ``None``: the refusal fails closed.
+    """
+    cursor = payload.get("cursor")
+    if not isinstance(cursor, str):
+        return None
+    from precis.tools.command_parser import CommandParseError, parse_more_cursor
+
+    try:
+        return parse_more_cursor(cursor)
+    except CommandParseError:
+        return None
+
+
 def refusal(
     scope: str,
     verb: str,
@@ -459,6 +479,15 @@ def refusal(
         )
     if not isinstance(payload, dict):
         payload = {}
+    if verb == "more":
+        inner = _more_target(payload)
+        if inner is None:
+            return _deny(
+                f"slice scope {scope!r}: more(cursor=...) must name a "
+                "get/search continuation call",
+                scope,
+            )
+        verb, payload = inner
     if verb not in _VERBS[scope]:
         return _deny(
             f"slice scope {scope!r} refuses {verb or 'non-tool requests'!r}",

@@ -29,6 +29,14 @@ from typing import Any
 
 _EXAMPLE = "get(kind='skill', id='toc')"
 
+#: Verbs a ``more`` cursor may continue — the read listings whose
+#: truncation footers name ready-made ``next:`` calls.
+_MORE_READ_VERBS = frozenset({"get", "search"})
+
+#: A pasted footer label (``next: get(...)`` / ``rest: get(...)``) the
+#: cursor tolerates — the agent copies the line, label and all.
+_CURSOR_LABEL_RE = re.compile(r"^(?:next|rest)\s*:\s*", re.IGNORECASE)
+
 #: Python's tokenizer names a stray non-ASCII punctuation character
 #: (em-dash, curly quotes, ...) this way — the shape an agent hits when
 #: it pastes prose straight into ``command=`` instead of routing it
@@ -133,4 +141,26 @@ def parse_command(
             )
         kwargs["text"] = text
 
+    return verb, kwargs
+
+
+def parse_more_cursor(cursor: str) -> tuple[str, dict[str, Any]]:
+    """Parse a ``more(cursor=...)`` continuation into its inner call.
+
+    The cursor is the ready-made call a truncation footer names after
+    ``next:``/``rest:`` — a leading label is tolerated. Only the read
+    verbs (:data:`_MORE_READ_VERBS`) continue: ``more`` re-issues the
+    read exactly as spelled, so a cursor naming anything else raises
+    :class:`CommandParseError` rather than smuggling a write past the
+    verb's read-only contract. Every gate that judges a ``more`` call
+    (personal scope, slice scope, the verb itself) unwraps through here,
+    so the continuation is judged exactly as the hand-issued call.
+    """
+    raw = _CURSOR_LABEL_RE.sub("", cursor.strip()).strip()
+    verb, kwargs = parse_command(raw)
+    if verb not in _MORE_READ_VERBS:
+        raise CommandParseError(
+            "more continues read listings only "
+            f"({'/'.join(sorted(_MORE_READ_VERBS))}), not {verb!r}"
+        )
     return verb, kwargs

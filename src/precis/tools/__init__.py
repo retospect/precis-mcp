@@ -16,6 +16,7 @@ from precis.tools.core import (
     edit,
     get,
     link,
+    more,
     put,
     search,
     tag,
@@ -86,6 +87,9 @@ _register_tool("edit", edit)
 _register_tool("delete", delete)
 _register_tool("tag", tag)
 _register_tool("link", link)
+# ``more`` is the auxiliary eighth tool, not an eighth verb of the API:
+# it re-issues a read a truncation footer names (gr592662).
+_register_tool("more", more)
 
 
 def get_tool_names() -> list[str]:
