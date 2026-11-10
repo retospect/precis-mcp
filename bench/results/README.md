@@ -172,15 +172,6 @@ this corpus; a policy that scores something richer (the chunk keywords already
 printed in the search rows, a relative cut against the best score) is a
 different caller.
 
-### Known defect: `semantic-only`
-
-`search(kind='paper', mode='semantic')` returns its top-N chunks farthest-first
-(gr613850: the paper handler's retraction re-sort ranks by `-score`, and a
-semantic score is a distance). `semantic-only` is therefore measured on ranks
-6-10 of the nearest N and carries `known_defect` in the header and the report. The
-other arms are not affected: the hybrid score and the lexical rank are
-larger-is-better.
-
 ### `lexical-only` is hybrid's lexical leg
 
 Checked 2026-11-09 against `store.chunks`: hybrid's lexical leg

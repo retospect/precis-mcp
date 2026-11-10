@@ -119,12 +119,7 @@ SWEEP_SEEDS = (1, 2, 3)
 
 #: Known defects of the code under test that bend one arm's numbers; shown as
 #: a flag on the arm in the header and the report.
-KNOWN_DEFECTS = {
-    "semantic-only": (
-        "gr613850: search(mode='semantic') on papers returns the nearest "
-        "chunks farthest-first, so its top-5 is ranks 6-10"
-    ),
-}
+KNOWN_DEFECTS: dict[str, str] = {}
 
 BASELINES = ("chunk-rag", "whole-paper")
 ALL_ARMS = ("all-on", *ARMS, *BASELINES)

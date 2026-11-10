@@ -206,6 +206,8 @@ def _representative_block_for_ref(store: Store, rid: int) -> Any | None:
 
 def _apply_retraction_downrank(
     hits: list[tuple[Any, Any, float]],
+    *,
+    ascending: bool = False,
 ) -> list[tuple[Any, Any, float]]:
     """Stable-resort ``(block, ref, score)`` triples so a retracted /
     corrected / EoC paper ranks appropriately below an otherwise-
@@ -226,6 +228,15 @@ def _apply_retraction_downrank(
     fractional factor is still infinity, so running this pass after
     injection would silently fail to downrank an injected retracted
     title match. Running before keeps the two passes independent.
+
+    ``ascending=True`` is for scores where SMALLER is better — the
+    cosine DISTANCE a single-leg ``mode='semantic'`` search returns
+    (``Store.chunks.search_chunks_semantic``). The factor is a
+    relevance multiplier (< 1 = penalty), so a distance is *divided* by
+    it (a retracted hit's distance grows) and the sort is ascending. The
+    default descending ``-(score * factor)`` is right for the
+    bigger-is-better scores (RRF fusion, ts_rank); applying it to
+    distances reversed a semantic page farthest-first (gr613850).
     """
     if not hits:
         return hits
@@ -234,6 +245,8 @@ def _apply_retraction_downrank(
         status = (getattr(ref, "retraction_status", None) or "").strip().lower()
         return _RETRACTION_SCORE_FACTOR.get(status, 1.0)
 
+    if ascending:
+        return sorted(hits, key=lambda triple: triple[2] / _factor(triple[1]))
     return sorted(hits, key=lambda triple: -(triple[2] * _factor(triple[1])))
 
 
@@ -1059,6 +1072,7 @@ class FusedBlockSearch:
         # top slice the single-leg path returns. ``ref_counts`` feeds the
         # per-row ``more`` counter (pre-cap pool hits per ref).
         ref_counts: dict[int, int] = {}
+        score_is_distance = False
         if broad or paper_rows:
             # Semantic legs embed q + each reformulation + each HyDE
             # answer — in ONE batch call (q is NOT embedded separately;
@@ -1122,6 +1136,14 @@ class FusedBlockSearch:
             # instead (gripe #254606). See :func:`query_vec_for`.
             _stage_t0 = time.monotonic()
             query_vec = query_vec_for(self.embedder, q, mode)
+            # A single-leg ``mode='semantic'`` search that actually ran
+            # the vector leg (the store dispatcher falls to lexical when
+            # ``query_vec`` is None) scores in cosine DISTANCE, smaller =
+            # better; every other path (multi-leg RRF, fused, lexical)
+            # is bigger-better — see ``_apply_retraction_downrank``.
+            score_is_distance = (
+                mode or ""
+            ).strip().lower() == "semantic" and query_vec is not None
             _log.debug(
                 "paper search: embed stage (single-leg, mode=%s) took %.3fs",
                 mode,
@@ -1168,7 +1190,7 @@ class FusedBlockSearch:
         # which stamps a float('inf') sentinel score that a
         # multiplicative penalty can't touch (see
         # ``_apply_retraction_downrank``'s docstring).
-        hits = _apply_retraction_downrank(hits)
+        hits = _apply_retraction_downrank(hits, ascending=score_is_distance)
 
         # Title introducer: a query that *is* a paper's title
         # ("attention is all you need") gets stripped by FTS to its

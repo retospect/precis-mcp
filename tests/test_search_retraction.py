@@ -215,3 +215,141 @@ def test_null_retraction_status_does_not_change_ranking(store: Store) -> None:
     assert "⚠" not in body
     assert "RETRACTED" not in body
     assert "CORRECTED" not in body
+
+
+# ---------------------------------------------------------------------------
+# gr613850 — mode='semantic' scores are cosine DISTANCE (smaller = better).
+# The downrank used to sort every mode by ``-(score * factor)``, which
+# reversed a semantic page farthest-first.
+# ---------------------------------------------------------------------------
+
+
+def test_downrank_ascending_keeps_nearest_first_and_sinks_retracted() -> None:
+    """Distance scores: no-status hits keep nearest-first, and a retracted
+    hit's distance gets WORSE (larger), not better."""
+    near: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.10)
+    mid: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.20)
+    far: tuple[Any, Any, float] = (object(), _FakeRef(None), 0.30)
+    assert _apply_retraction_downrank([near, mid, far], ascending=True) == [
+        near,
+        mid,
+        far,
+    ]
+    # retracted nearest hit: 0.10 / 0.02 = 5.0 -> behind both clean hits.
+    bad_near: tuple[Any, Any, float] = (object(), _FakeRef("retracted"), 0.10)
+    assert _apply_retraction_downrank([bad_near, mid, far], ascending=True) == [
+        mid,
+        far,
+        bad_near,
+    ]
+    # soft status (factor 0.85): 0.10 / 0.85 = 0.118 stays ahead of 0.20.
+    soft_near: tuple[Any, Any, float] = (object(), _FakeRef("corrected"), 0.10)
+    assert _apply_retraction_downrank([soft_near, mid], ascending=True) == [
+        soft_near,
+        mid,
+    ]
+
+
+class _AxisEmbedder(MockEmbedder):
+    """Query = unit x-axis; a stored text ``"theta:<t>"`` embeds at angle
+    ``t`` off the x-axis, so its cosine distance is ``1 - cos(t)`` —
+    strictly increasing in ``t``. Any other text embeds on the x-axis."""
+
+    def embed_one(self, text: str) -> list[float]:
+        import math
+
+        theta = float(text.split(":", 1)[1]) if text.startswith("theta:") else 0.0
+        vec = [0.0] * self.dim
+        vec[0] = math.cos(theta)
+        vec[1] = math.sin(theta)
+        return vec
+
+
+def _seed_angled(store: Store, e: _AxisEmbedder, thetas: list[float]) -> list[int]:
+    """One paper per angle, nearest first; returns their ref ids."""
+    out = []
+    for i, t in enumerate(thetas):
+        text = f"theta:{t}"
+        ref = store.insert_ref(kind="paper", slug=f"angle-{i}", title=f"angle-{i}")
+        store.chunks.insert_chunks(
+            ref.id, [ChunkInsert(ord=0, text=text, embedding=e.embed_one(text))]
+        )
+        out.append(ref.id)
+    return out
+
+
+def test_semantic_paper_search_returns_nearest_first(store: Store) -> None:
+    e = _AxisEmbedder(dim=1024)
+    rids = _seed_angled(store, e, [0.1, 0.3, 0.5, 0.7, 0.9])
+
+    h = _handler(store, e)
+    resp = h.search(q="query", mode="semantic", page_size=10, unique_per="chunk")
+    assert _ranked_ref_ids(store, resp.body) == rids
+
+
+def test_semantic_paper_search_downranks_retracted_not_promotes(
+    store: Store,
+) -> None:
+    """The retracted paper is the NEAREST hit (distance 0.005); /0.02 puts
+    it at 0.25, between the 0.7 (0.235) and 0.9 (0.378) angles — behind
+    the clean nearer papers, still present."""
+    e = _AxisEmbedder(dim=1024)
+    rids = _seed_angled(store, e, [0.1, 0.3, 0.5, 0.7, 0.9])
+    store.set_retraction_status(rids[0], status="retracted")
+
+    h = _handler(store, e)
+    resp = h.search(q="query", mode="semantic", page_size=10, unique_per="chunk")
+    assert _ranked_ref_ids(store, resp.body) == [
+        rids[1],
+        rids[2],
+        rids[3],
+        rids[0],
+        rids[4],
+    ]
+
+
+def test_semantic_paper_search_paginates_nearest_first(store: Store) -> None:
+    """Page 1 holds ranks 1-2, page 2 ranks 3-4 (the bench saw ranks 6-10
+    on page 1)."""
+    e = _AxisEmbedder(dim=1024)
+    rids = _seed_angled(store, e, [0.1, 0.3, 0.5, 0.7, 0.9])
+
+    h = _handler(store, e)
+    p1 = h.search(q="query", mode="semantic", page_size=2, unique_per="chunk")
+    p2 = h.search(q="query", mode="semantic", page_size=2, page=2, unique_per="chunk")
+    assert _ranked_ref_ids(store, p1.body) == rids[:2]
+    assert _ranked_ref_ids(store, p2.body) == rids[2:4]
+
+
+def test_semantic_mode_without_embedder_keeps_lexical_order(store: Store) -> None:
+    """``mode='semantic'`` with no embedder degrades to the lexical leg,
+    whose score is ts_rank (bigger = better): the downrank must stay
+    descending there, so a retracted hit still sinks below a clean one."""
+    e = MockEmbedder(dim=1024)
+    text = "single-atom copper catalyst nitrate reduction ammonia"
+    rid_bad = _seed(store, slug="bad-paper", text=text, embedder=e)
+    rid_good = _seed(store, slug="good-paper", text=text, embedder=e)
+    store.set_retraction_status(rid_bad, status="retracted")
+
+    h = PaperHandler(hub=Hub(store=store, embedder=None))
+    resp = h.search(
+        q="copper nitrate ammonia", mode="semantic", page_size=10, unique_per="chunk"
+    )
+    order = _ranked_ref_ids(store, resp.body)
+    assert order.index(rid_good) < order.index(rid_bad)
+
+
+def test_lexical_mode_still_downranks_retracted(store: Store) -> None:
+    """Lexical (ts_rank, bigger = better) keeps the descending path."""
+    e = MockEmbedder(dim=1024)
+    text = "single-atom copper catalyst nitrate reduction ammonia"
+    rid_bad = _seed(store, slug="bad-paper", text=text, embedder=e)
+    rid_good = _seed(store, slug="good-paper", text=text, embedder=e)
+    store.set_retraction_status(rid_bad, status="retracted")
+
+    h = _handler(store, e)
+    resp = h.search(
+        q="copper nitrate ammonia", mode="lexical", page_size=10, unique_per="chunk"
+    )
+    order = _ranked_ref_ids(store, resp.body)
+    assert order.index(rid_good) < order.index(rid_bad)
