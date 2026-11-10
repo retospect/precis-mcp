@@ -15,7 +15,7 @@ Set these values in the private deployment environment of **both** services:
 
 ```text
 PRECIS_OAUTH_ISSUER=https://precis.example.com
-PRECIS_OAUTH_RESOURCE=https://precis.example.com:8443/mcp
+PRECIS_OAUTH_RESOURCE=https://precis.example.com/mcp
 PRECIS_OAUTH_SCOPES=mcp:full
 ```
 
@@ -45,9 +45,10 @@ In its private `host_vars/<gateway>.yml` set:
 precis_mcp_public_enabled: true
 precis_mcp_public_funnel: true
 precis_mcp_public_port: 8766
+precis_mcp_public_https_port: 443
 precis_mcp_public_oauth_env:
   PRECIS_OAUTH_ISSUER: https://precis.example.com
-  PRECIS_OAUTH_RESOURCE: https://precis.example.com:8443/mcp
+  PRECIS_OAUTH_RESOURCE: https://precis.example.com/mcp
   PRECIS_OAUTH_SCOPES: mcp:full
 ```
 
@@ -61,10 +62,12 @@ loopback only, and an `agent_rw` DSN. It refuses pending migrations and never
 auto-migrates. The role creates a separate infrastructure token once in
 `/opt/mcps/mcp-public-secrets/PRECIS_MCP_TOKEN` (deploy-owned, mode 0600;
 directory 0700); only its directory is in the plist. Reapplying preserves the
-token and existing session MCP. Setting `precis_mcp_public_funnel: false`
-converges the 8443 mapping to tailnet-only. To stop the listener and remove
-exposure, the operator must explicitly unload that unit and remove its mapping;
-`precis_mcp_public_enabled: false` skips management rather than deleting services.
+token and existing session MCP. The dedicated HTTPS ports 8443 and 10000
+remain available when the web and MCP services need different exposure.
+On shared HTTPS 443, both services must use the same Serve or Funnel mode.
+Setting `precis_mcp_public_enabled: false` skips management. To remove
+exposure, remove the configured MCP path mappings or the dedicated port
+mapping and unload the listener.
 
 ### Web database identity
 
@@ -103,20 +106,20 @@ are no client secrets, dynamic registration or client-credentials grants.
 
 ## Tailscale exposure
 
-Reuse the web deployment's persistent Funnel-to-loopback pattern. Keep the
-web listener on its existing HTTPS 443 mapping. Run the dedicated MCP service
-on loopback port 8766 (confirm it is free), then the deployment owner can set:
+On HTTPS 443 the root mapping still goes to the web listener. The role mounts
+`/mcp` and `/.well-known/oauth-protected-resource/mcp` on the dedicated
+loopback listener. Each proxy target repeats the mount path because Funnel
+removes that prefix before forwarding. OAuth issuer routes stay on the web
+listener.
 
-```sh
-tailscale funnel --bg --yes --https=8443 http://127.0.0.1:8766
-tailscale funnel status --json
-```
+Use the canonical resource URL `https://precis.example.com/mcp` in clients.
+When moving from a dedicated HTTPS port, existing OAuth grants are tied to
+the old resource URL. Users sign in again on the new URL. Remove any retired
+port mapping separately after checking which clients still use it.
 
-Record the intended mapping in deployment automation/private inventory, just
-as the web role does. The public MCP URL is the returned HTTPS origin on
-8443 followed by `/mcp`. Do not run `serve` on that port afterward: it changes
-public Funnel exposure to tailnet-only. Keep the raw backend on loopback.
-Funnel supplies HTTPS, not caller authorization.
+For a fixed credential in Claude, select **No sign-in** and add the
+`authorization` request header with the value `Bearer YOUR_TOKEN`. Personal
+tokens authorize learning only. Use OAuth for per-user full MCP access.
 
 The MCP SDK's Host/Origin checks retain localhost allowances and add the exact
 configured public resource host/origin and issuer origin. Configure proxy
@@ -160,7 +163,7 @@ the public ingress; the authorization store also bounds outstanding requests.
 ## External security assessment
 
 Use an independent machine outside the tailnet (for example a laptop on a
-phone hotspot with Tailscale disconnected) to verify the named HTTPS 443 and 8443
+phone hotspot with Tailscale disconnected) to verify the configured HTTPS
 routes, TLS certificates, public OAuth discovery and authentication refusals.
 Funnel's public DNS points to shared Tailscale relay infrastructure: a blanket
 IP port scan measures that relay rather than this gateway. Scope such testing

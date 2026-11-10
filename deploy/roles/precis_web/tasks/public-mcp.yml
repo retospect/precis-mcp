@@ -9,12 +9,18 @@
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE is defined
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_ISSUER | urlsplit('scheme') == 'https'
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('scheme') == 'https'
-      - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('port') == precis_mcp_public_https_port | int
+      - (precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('port') | default(443, true) | int) == (precis_mcp_public_https_port | int)
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('path') == '/mcp'
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('query') == ''
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('fragment') == ''
       - precis_mcp_public_port | int != precis_web_port | int
-      - precis_mcp_public_https_port | int in [8443, 10000]
+      - precis_mcp_public_https_port | int in [443, 8443, 10000]
+      # Funnel enables exposure per host:port, so shared paths cannot differ.
+      - >-
+        (precis_mcp_public_https_port | int != 443) or
+        ((precis_mcp_public_funnel | bool == precis_web_funnel | bool) and
+         (precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('netloc')
+          == precis_web_podcast_base_url | urlsplit('hostname')))
     fail_msg: Configure the canonical public HTTPS issuer/resource in the private inventory before enabling MCP.
 
 - name: Ensure the dedicated MCP secret directory
@@ -131,7 +137,12 @@
       - --bg
       - --yes
       - "--https={{ precis_mcp_public_https_port }}"
-      - "http://127.0.0.1:{{ precis_mcp_public_port }}"
+      - "--set-path={{ item }}"
+      # Funnel strips the mount before proxying. Repeat it in the target.
+      - "http://127.0.0.1:{{ precis_mcp_public_port }}{{ '' if item == '/' else item }}"
+  loop: >-
+    {{ ['/mcp', '/.well-known/oauth-protected-resource/mcp']
+       if precis_mcp_public_https_port | int == 443 else ['/'] }}
   async: 60
   poll: 5
   changed_when: false
@@ -144,11 +155,16 @@
 - name: Verify the exact MCP mapping and preserve the web mapping
   ansible.builtin.assert:
     that:
-      - _precis_mcp_ts_config.Web[_precis_mcp_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_mcp_public_port | string)
+      - >-
+        _precis_mcp_ts_config.Web[_precis_mcp_ts_host].Handlers[item].Proxy
+        == 'http://127.0.0.1:' ~ (precis_mcp_public_port | string) ~ ('' if item == '/' else item)
       - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_mcp_ts_host, false) | bool == precis_mcp_public_funnel | bool
       - _precis_mcp_ts_config.Web[_precis_web_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_web_port | string)
       - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_web_ts_host, false) | bool == precis_web_funnel | bool
+  loop: >-
+    {{ ['/mcp', '/.well-known/oauth-protected-resource/mcp']
+       if precis_mcp_public_https_port | int == 443 else ['/'] }}
   vars:
     _precis_mcp_ts_config: "{{ _precis_mcp_public_ts_status.stdout | from_json }}"
-    _precis_mcp_ts_host: "{{ precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('netloc') }}"
+    _precis_mcp_ts_host: "{{ precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('hostname') }}:{{ precis_mcp_public_https_port }}"
     _precis_web_ts_host: "{{ precis_web_podcast_base_url | urlsplit('hostname') }}:443"

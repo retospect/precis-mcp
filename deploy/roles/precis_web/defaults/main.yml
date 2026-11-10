@@ -71,6 +71,7 @@ precis_web_funnel: false
 precis_mcp_public_enabled: false
 precis_mcp_public_funnel: false
 precis_mcp_public_port: 8766
+# Set 443 to share the web listener's HTTPS port through path mappings.
 precis_mcp_public_https_port: 8443
 precis_mcp_public_oauth_env: {}
 precis_mcp_public_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
