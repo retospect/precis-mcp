@@ -126,3 +126,90 @@ def test_focus_page_renders_the_todo_body(
     # <details> block with the Alpine expand control).
     assert 'x-data="{actions:true}"' in page.text
     assert "data-card-detail" in page.text
+
+
+def _todo_app(store: Any, runtime_with_store: Any, tmp_path: Any) -> Any:
+    """A TestClient over the real store (``create_app`` wiring)."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    return TestClient(
+        create_app(
+            runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+        )
+    )
+
+
+def test_focus_page_renders_the_todo_comments(
+    store: Any, runtime_with_store: Any, tmp_path: Any
+) -> None:
+    """gr573935: ``todo_comment`` chunks — the handoffs / answers an agent
+    appends to a todo — render on the focused page, numbered by chunk
+    ``ord`` exactly as ``view='comments'`` prints them, so a cited
+    "comment N on td<id>" resolves there."""
+    from precis.store import ChunkInsert
+
+    client = _todo_app(store, runtime_with_store, tmp_path)
+    todo = store.insert_ref(kind="todo", slug=None, title="recheck dry run", meta={})
+    store.chunks.insert_chunks(
+        todo.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text="the decision body",
+                meta={"chunk_kind": "todo_body"},
+            ),
+            *[
+                ChunkInsert(
+                    ord=n,
+                    text=f"handoff note {n}",
+                    meta={"chunk_kind": "todo_comment"},
+                )
+                for n in (1, 2, 3)
+            ],
+        ],
+    )
+
+    page = client.get(f"/todo?focus={todo.id}")
+    assert page.status_code == 200, page.text
+    # The newest comment — the one an agent cites as "comment 3 on
+    # td<id>" — is on the page, under its MCP-view number.
+    assert "comment 3" in page.text
+    assert "handoff note 3" in page.text
+    assert "comment 1" in page.text
+    assert "handoff note 1" in page.text
+
+
+def test_focus_page_marks_hidden_comments(
+    store: Any, runtime_with_store: Any, tmp_path: Any
+) -> None:
+    """A comment hidden via ``meta.hidden_comments`` still renders —
+    marked ``[hidden]`` like ``view='comments'`` prints it."""
+    from precis.store import ChunkInsert
+
+    client = _todo_app(store, runtime_with_store, tmp_path)
+    todo = store.insert_ref(
+        kind="todo", slug=None, title="t", meta={"hidden_comments": [2]}
+    )
+    store.chunks.insert_chunks(
+        todo.id,
+        [
+            ChunkInsert(
+                ord=n,
+                text=f"note {n}",
+                meta={"chunk_kind": "todo_comment"},
+            )
+            for n in (1, 2)
+        ],
+    )
+
+    page = client.get(f"/todo?focus={todo.id}")
+    assert page.status_code == 200, page.text
+    assert "note 2" in page.text
+    assert "[hidden]" in page.text
+    # Only comment 2 is marked — comment 1's header stays clean.
+    assert "comment 1" in page.text
+    assert page.text.count("[hidden]") == 1

@@ -49,6 +49,7 @@ from precis.errors import NotFound
 from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.rake import keyword_summary
 from precis.utils.slug import slug_from_text
+from precis.utils.timeutil import as_utc
 from precis.utils.workspace import Workspace
 from precis_web.deps import (
     await_dispatch,
@@ -960,6 +961,56 @@ def _todo_bodies(store: Store, todo_ids: list[int]) -> dict[int, str]:
     return out
 
 
+def _comment_stamp(dt: Any) -> str:
+    """The comment-header timestamp: ``%Y-%m-%d %H:%MZ`` — the same
+    format the MCP ``view='comments'`` header prints
+    (``_comment_timeline._stamp``; gripe detail's ``_comment_stamp``)."""
+    if dt is None:
+        return ""
+    dt = as_utc(dt)
+    return dt.strftime("%Y-%m-%d %H:%MZ") if dt is not None else ""
+
+
+def _todo_comments(
+    store: Store, todo_ids: list[int]
+) -> dict[int, list[dict[str, Any]]]:
+    """Each todo's comment timeline — its ``todo_comment`` chunks
+    (``handlers/todo.py`` ``_COMMENT_KIND``), oldest first.
+
+    Comments are the handoffs / answers / state agents append to a todo;
+    the page already showed the details body but never these, so a cited
+    "comment N on td<id>" had no web page to land on (gr573935). ``num``
+    is the chunk ``ord`` — the same number ``view='comments'`` prints.
+    Degrades to ``{}`` under the test fake (no chunks table)."""
+    out: dict[int, list[dict[str, Any]]] = {}
+    if not todo_ids:
+        return out
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, ord, text, created_at, "
+                "meta->>'authored_by' AS author "
+                "FROM chunks "
+                "WHERE ref_id = ANY(%s) AND chunk_kind = 'todo_comment' "
+                "AND retired_at IS NULL ORDER BY ref_id, ord",
+                (todo_ids,),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return out
+    for ref_id, num, text, created_at, author in rows:
+        out.setdefault(int(ref_id), []).append(
+            {
+                "num": int(num),
+                "text": str(text or ""),
+                # 'agent' covers rows written before meta.authored_by
+                # existed (same fallback as the gripe detail page).
+                "author": author or "agent",
+                "stamp": _comment_stamp(created_at),
+            }
+        )
+    return out
+
+
 def _focus_deps(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
     """The ``blocked-by`` graph of a focused subtree, as the page's
     depends-on / depended-on-by table.
@@ -1052,6 +1103,9 @@ def _build_rows(
     # Details bodies (``todo_body`` chunks) — the row renders the title;
     # the body is the decision/brief text the focus page must show.
     bodies = _todo_bodies(store, todo_ids)
+    # Comment timelines (``todo_comment`` chunks) — the handoffs /
+    # answers agents append to a todo; rendered under the expanded card.
+    comments = _todo_comments(store, todo_ids)
 
     # Normalise todos + jobs into a single node dict so the walk is
     # kind-agnostic.
@@ -1178,6 +1232,20 @@ def _build_rows(
                 ]
         rollup_total = rollup_done + rollup_waiting + rollup_active
         status = tags[node["id"]]["status"]
+        # Comment timeline: marked ``[hidden]`` when the ref's
+        # ``meta.hidden_comments`` (``_comment_timeline.HIDDEN_META_KEY``)
+        # names its number — the same read ``view='comments'`` prints.
+        row_comments: list[dict[str, Any]] = []
+        if node["kind"] == "todo":
+            hidden = {
+                int(n)
+                for n in ((node.get("meta") or {}).get("hidden_comments") or [])
+                if isinstance(n, int) and not isinstance(n, bool)
+            }
+            row_comments = [
+                {**c, "hidden": c["num"] in hidden}
+                for c in comments.get(node["id"], [])
+            ]
         # ``.get`` not ``[]``: a time field missing is a row that renders
         # without its clock, not a 500 on the whole tree. Same posture as
         # ``_child_jobs``' short-row tolerance.
@@ -1191,6 +1259,7 @@ def _build_rows(
                 "parent_id": node["parent_id"],
                 "title": node["title"],
                 "body": bodies.get(node["id"], "") if node["kind"] == "todo" else "",
+                "comments": row_comments,
                 "gist": _gist(node["title"]),
                 "status": status,
                 "level": tags[node["id"]]["level"],

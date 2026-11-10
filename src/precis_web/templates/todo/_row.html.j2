@@ -280,6 +280,26 @@
        (gr521530). #}
     <div class="todo-md whitespace-pre-wrap break-words text-sm text-fg-secondary">{{ r.body | linkify_refs(markdown=True) }}</div>
     {% endif %}
+    {% if r.comments %}
+    {# The comment timeline (todo_comment chunks) — the handoffs /
+       answers an agent appends to a todo, numbered by chunk ord exactly
+       as ``view='comments'`` prints them, so a cited "comment N on
+       td<id>" resolves to the same entry here (gr573935). Same card
+       shape as the gripe detail page, denser. #}
+    <div class="space-y-1" data-comments>
+      <div class="text-xs font-semibold uppercase tracking-wide text-fg-faint">
+        Comments <span class="font-normal">({{ r.comments|length }})</span>
+      </div>
+      {% for c in r.comments %}
+      <div class="rounded border border-line-subtle{% if c.hidden %} opacity-60{% endif %}">
+        <div class="px-2 py-0.5 border-b border-line-subtle bg-surface-subtle/60 text-xs font-mono text-fg-faint">
+          comment {{ c.num }} · {{ c.author }}{% if c.stamp %} · {{ c.stamp }}{% endif %}{% if c.hidden %} · [hidden]{% endif %}
+        </div>
+        <div class="todo-md px-2 py-1 text-xs whitespace-pre-wrap break-words text-fg-secondary">{{ c.text | linkify_refs(markdown=True) }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {# Tag add — the chips themselves (with their ×) live on line 1. #}
     <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex items-center gap-1">
       {{ filter_inputs() }}
