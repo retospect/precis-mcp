@@ -443,8 +443,10 @@ def enter_rescue(
 # that went silent past their stage deadline and sends each to RESCUE —
 # never dispatched, a cancelled newest job, queued/build/land/review
 # overrunning, a sha-in-prod gate that never opens, a root closed under
-# an open node, a land's post-land write that never landed — plus the
-# ``tick-silent`` heartbeat on plan_dispatch itself. A hold is not a
+# an open node, a land's post-land write that never landed (recoverable
+# when the build's ``landed:`` comment names the sha — the pass fills
+# the gate itself first, gr576154) — plus the ``tick-silent`` heartbeat
+# on plan_dispatch itself. A hold is not a
 # stall: ``waiting-for:``, ``halt``, paused, an open ask, ``rescue:`` or
 # a live ``blocked-by`` target exempt a node. Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
@@ -878,6 +880,61 @@ def _landed_line(store: Store, plan: Any, gate: Any) -> str | None:
     return None
 
 
+#: ``landed: <sha>`` — the comment line whose sha a missed post-land
+#: write still owes the pending gate (gr576154). ``landed: nothing`` (a
+#: no-diff reland's :data:`land_slice.NO_DIFF_NOTE`) parses to no sha.
+_LANDED_SHA_RE = re.compile(r"^landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+
+
+def _landed_sha(store: Store, plan: Any, gate: Any) -> tuple[int, str] | None:
+    """``(build todo id, sha)`` the newest ``landed: <sha>`` comment on the
+    gate's ``blocked-by`` targets names — the write land_slice owed the
+    gate (gr576154); ``None`` when no landed comment parses to a sha."""
+    for b in plan.blockers.get(gate.id, []):
+        chunks = sorted(
+            store.chunks.list_chunks_for_ref(b.id),
+            key=lambda c: int(c.ord),
+            reverse=True,
+        )
+        for c in chunks:
+            for line in str(c.text).splitlines():
+                m = _LANDED_SHA_RE.match(line.strip())
+                if m is not None and m.group(1).lower() != PENDING_SHA:
+                    return b.id, m.group(1).lower()
+    return None
+
+
+def _fill_gate(store: Store, gate_id: int, sha: str, build_id: int) -> bool:
+    """The post-land write ``land_slice._write_gate`` owed the gate, run by
+    the stall pass: ``meta.gate.args.sha = sha`` plus the lander's audit
+    comment, under a ``FOR UPDATE`` recheck so a fill committed since the
+    pass read the node is never overwritten (the ``edit(mode='gate')``
+    shape). ``False`` when the row is gone or no longer pending — the
+    gate is filled either way, so there is nothing left to rescue."""
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT meta->'gate' FROM refs "
+            "WHERE ref_id = %s AND retired_at IS NULL FOR UPDATE",
+            (gate_id,),
+        ).fetchone()
+        if row is None or not isinstance(row[0], dict):
+            return False
+        gate = row[0]
+        args = dict(gate.get("args") or {})
+        if str(args.get("sha") or "") != PENDING_SHA:
+            return False
+        args["sha"] = sha
+        store.stamp_ref_meta(gate_id, {"gate": {**gate, "args": args}}, conn=conn)
+        _comment(
+            store,
+            conn,
+            gate_id,
+            _COMMENT_KIND["todo"],
+            f"sha: {sha} — landed by td{build_id} (stall-pass fill)",
+        )
+    return True
+
+
 def _rescue(
     store: Store,
     res: StallResult,
@@ -967,6 +1024,29 @@ def _judge_node(
 
         branch, head_sha = slice_branch(n.id), head
     if cls == "post-land-write":
+        # gr576154: a build whose landed comment names the sha makes the
+        # missed post-land write recoverable — fill the gate the land
+        # owed it instead of rescuing (a hand land, a lander killed
+        # between ship's push and its gate write, a no-diff reland).
+        hit = _landed_sha(store, plan, n)
+        if hit is not None:
+            build_id, sha = hit
+            if res.dry_run:
+                res.notes.append(
+                    f"td{n.id}: would fill the gate's pending sha from "
+                    f"td{build_id}'s landed comment ({sha[:9]}); no rescue"
+                )
+            elif _fill_gate(store, n.id, sha, build_id):
+                res.notes.append(
+                    f"td{n.id}: gate sha filled from td{build_id}'s landed "
+                    f"comment ({sha[:9]}) — post-land write healed, no rescue"
+                )
+            else:
+                res.notes.append(
+                    f"td{n.id}: gate no longer holds the placeholder — "
+                    "post-land write recovered, no rescue"
+                )
+            return
         landed = _landed_line(store, plan, n)
         if landed:
             lines.append(f"build: {landed}")

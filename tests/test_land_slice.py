@@ -796,6 +796,40 @@ def test_poll_nothing_new_lands_no_sha(
     assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
 
 
+def test_poll_no_diff_reland_fills_the_gate_from_the_landed_comment(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr576154: a reland after a land that pushed but died before its gate
+    write squashes nothing — the pending gate still gets the sha the
+    todo's own ``landed:`` comment names."""
+    monkeypatch.setattr(land_slice, "log_plan_event", lambda *a, **k: 1)
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub", "plan:40"),
+        comments=(f"landed: {FULL_SHA[:9]} — {SUBJECT}",),
+    )
+    store.add_todo(
+        44,
+        status="open",
+        tags=("plan:40",),
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+    )
+    seams["gates"] = [(44, True)]
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert pctx.meta_set["landed_sha"] is None
+    assert pctx.meta_set["gate_id"] == 44
+    # the gate gets the prior land's sha — the one the todo's comment names
+    assert store.refs[44].meta["gate"]["args"]["sha"] == FULL_SHA[:9]
+    assert store.comments(44)[-1] == f"sha: {FULL_SHA[:9]} — landed by td42"
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "from the todo's landed comment" in summary
+
+
 def test_poll_green_writes_the_land_when_land_notify_did_not(
     seams: dict[str, Any],
 ) -> None:

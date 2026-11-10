@@ -33,8 +33,11 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   the plan's pending ``sha-in-prod`` gate (:func:`pending_gate`). When ship
   took its nothing-new guard (:func:`nothing_new`: the branch's tree equals
   origin/main's, nothing squashed) no sha is the slice's: the todo closes
-  with :data:`NO_DIFF_NOTE`, the gate stays pending and no PR is closed
-  (gr561142: main's head is another land's commit). The land that fills a
+  with :data:`NO_DIFF_NOTE` and no PR is closed (gr561142: main's head is
+  another land's commit); the gate stays pending — unless the todo's own
+  ``landed:`` comment still names a sha, a reland after the first land's
+  gate write died mid-job, which fills it from that comment (gr576154).
+  The land that fills a
   ``gripe-fix`` plan's gate also moves the plan's gripe to the verify rung
   (``resolved: <sha>`` + ``STATUS:verify``, :func:`_notify_gripe`;
   gr561932), so ``gripe_validate`` closes it once the sha is on prod. Then
@@ -1132,6 +1135,29 @@ def _write_gate(store: Any, gate_id: int, sha: str, todo_id: int) -> None:
     args["sha"] = sha
     store.stamp_ref_meta(gate_id, {"gate": {**gate, "args": args}})
     _rs._append_comment(store, gate_id, f"sha: {sha} — landed by td{todo_id}")
+
+
+#: ``landed: <sha>`` — the comment line whose sha a no-diff reland still
+#: owes the pending gate (gr576154). ``landed: nothing``
+#: (:data:`NO_DIFF_NOTE`) parses to no sha.
+_LANDED_COMMENT_RE = re.compile(r"^landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+
+
+def _landed_comment_sha(store: Any, todo_id: int) -> str | None:
+    """The sha the todo's newest ``landed: <sha>`` comment names. A reland
+    after a land that pushed but died before its gate write finds no diff
+    and no new sha — the earlier land's comment is the sha the plan's
+    gate waits on (gr576154). ``None`` when no landed comment parses (a
+    ``landed: nothing`` no-diff note, or the todo never landed)."""
+    comments = [
+        c for c in _rs._todo_chunks(store, todo_id) if c.chunk_kind == _rs._COMMENT_KIND
+    ]
+    for c in sorted(comments, key=lambda c: int(c.ord), reverse=True):
+        for line in str(c.text).splitlines():
+            m = _LANDED_COMMENT_RE.match(line.strip())
+            if m is not None and m.group(1).lower() != PENDING_SHA:
+                return m.group(1).lower()
+    return None
 
 
 # ── The gripe behind the plan ──────────────────────────────────────
@@ -2585,15 +2611,35 @@ def poll(ctx: Any, handle: Any) -> bool:
         log.warning("land_slice: land record on td%d failed", todo_id, exc_info=True)
         summary.append(f"todo: land record FAILED ({exc})")
     gate_id = None
+    # ``sha`` is what THIS job's ship squashed; ``gate_sha`` is what the
+    # plan's gate ends up holding — the recovered prior land's on a
+    # no-diff reland (gr576154). The gripe verify comment and the PR
+    # close ride ``gate_sha``: the work is on main under that sha
+    # whichever land pushed it.
+    gate_sha = sha
     try:
         gate_id = pending_gate(store, todo_id)
         if gate_id is None:
             summary.append("gate: no pending sha-in-prod gate blocked-by this todo")
         elif sha is None:
-            summary.append(
-                f"gate td{gate_id}: left pending — no sha landed (the work is "
-                "already on main; the plan decides what the gate waits for)"
-            )
+            # gr576154: a reland after a land that pushed but died before
+            # its gate write squashes nothing — the todo's own landed:
+            # comment still names the sha the gate waits on.
+            prior = _landed_comment_sha(store, todo_id)
+            if prior is not None:
+                _write_gate(store, gate_id, prior, todo_id)
+                gate_sha = prior
+                summary.append(
+                    f"gate td{gate_id}: sha-in-prod sha set to {prior[:9]} "
+                    "(from the todo's landed comment — the reland squashed "
+                    "nothing)"
+                )
+            else:
+                summary.append(
+                    f"gate td{gate_id}: left pending — no sha landed (the work "
+                    "is already on main; the plan decides what the gate waits "
+                    "for)"
+                )
         else:
             _write_gate(store, gate_id, sha, todo_id)
             summary.append(f"gate td{gate_id}: sha-in-prod sha set to {sha[:9]}")
@@ -2606,10 +2652,12 @@ def poll(ctx: Any, handle: Any) -> bool:
         # the gripe the plan is about to the verify rung, as a session
         # would. A brief node's land (a spec test) fills no gate and leaves
         # the gripe alone.
-        if gate_id is not None and sha is not None and plan_tag is not None:
+        if gate_id is not None and gate_sha is not None and plan_tag is not None:
             gripe_id = _plan_gripe(store, plan_tag)
             if gripe_id is not None:
-                summary.append(_notify_gripe(store, gripe_id, sha, subject, todo_id))
+                summary.append(
+                    _notify_gripe(store, gripe_id, gate_sha, subject, todo_id)
+                )
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gripe notify for td%d failed", todo_id, exc_info=True)
         summary.append(f"gripe: notify FAILED ({exc})")
@@ -2634,11 +2682,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         closed_pr = _pr_to_close(store, dict(params), todo_id)
         if closed_pr is None:
             pass
-        elif sha is None:
+        elif gate_sha is None:
             summary.append(f"PR #{closed_pr}: left open — nothing landed")
             closed_pr = None
         else:
-            summary.append(_close_pr(store, closed_pr, todo_id, sha))
+            summary.append(_close_pr(store, closed_pr, todo_id, gate_sha))
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: PR close for td%d failed", todo_id, exc_info=True)
         summary.append(f"PR close FAILED ({exc})")

@@ -307,10 +307,11 @@ def test_gate_not_open_is_judged_at_72_hours(store: Store) -> None:
     assert _rescue_tags(store, gate) == ["rescue:stalled"]
 
 
-def test_post_land_write_failure_rescues_the_gate(store: Store) -> None:
+def test_post_land_write_fill_heals_the_gate(store: Store) -> None:
     """The build landed but the gate still holds PENDING_SHA: land_slice's
-    post-land write (sha into meta.gate.args) failed — rescue the GATE,
-    class ``post-land-write``, at the idle deadline."""
+    post-land write (sha into meta.gate.args) never ran — the stall pass
+    fills the gate from the build's own ``landed:`` comment instead of
+    rescuing (gr576154)."""
     root = _root(store)
     build = _node(store, root, title="build", status="done")
     _comment(store, build, "landed: a1b2c3d — the fix")
@@ -318,10 +319,39 @@ def test_post_land_write_failure_rescues_the_gate(store: Store) -> None:
 
     res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
 
+    assert res.rescued == [] and res.would_rescue == []
+    assert _rescue_tags(store, gate) == []
+    ref = store.get_ref(kind="todo", id=gate)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "a1b2c3d"
+    assert _sig_gripes(store) == []
+    (comment,) = _comments(store, gate)
+    assert comment == f"sha: a1b2c3d — landed by td{build} (stall-pass fill)"
+
+
+def test_post_land_write_nothing_new_still_rescues(store: Store) -> None:
+    """A no-diff land's ``landed: nothing`` note carries no sha — the gate
+    stays pending and the pass rescues the GATE, class
+    ``post-land-write``, at the idle deadline."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _comment(
+        store,
+        build,
+        "landed: nothing — branch had no net diff against origin/main "
+        "(already on main)",
+    )
+    gate = _gate(store, root, PENDING_SHA, blocked_by=build)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
     assert res.rescued == [(gate, "post-land-write", "idle")]
     assert _rescue_tags(store, gate) == ["rescue:post-land-write"]
+    ref = store.get_ref(kind="todo", id=gate)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == PENDING_SHA
     (comment,) = _comments(store, gate)
-    assert "landed: a1b2c3d" in comment
+    assert "landed: nothing" in comment
 
 
 # ── holds: a hold is not a stall (one test per hold) ──────────────
