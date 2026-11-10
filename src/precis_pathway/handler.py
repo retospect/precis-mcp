@@ -26,6 +26,7 @@ import math
 import os
 import re
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -242,11 +243,34 @@ class PathwayHandler(Handler):
     #: rejects any other key. Keep in step with :func:`_point_args`.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec(
-            {"U", "pH", "point", "environment", "axis", "class", "page_size", "offset"}
+            {
+                "U",
+                "pH",
+                "point",
+                "environment",
+                "axis",
+                "class",
+                "page_size",
+                "offset",
+                # view='bundle-plan'/'export' seed-job selector
+                "job",
+            }
         ),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
         # 'seeds' is mode='verify' only (the multi-seed dispatch count/list).
-        "put": ArgsSpec({"environment", "objective", "manifest", "sweep", "seeds"}),
+        # 'dir'/'job'/'claims' are mode='export' only (the repro-bundle writer).
+        "put": ArgsSpec(
+            {
+                "environment",
+                "objective",
+                "manifest",
+                "sweep",
+                "seeds",
+                "dir",
+                "job",
+                "claims",
+            }
+        ),
         # Search filters on stored meta (gr592660) — the declaration is
         # also what lets dispatch reject a bogus args= key naming these.
         "search": ArgsSpec({"candidate", "engine", "status", "tier"}),
@@ -293,12 +317,16 @@ class PathwayHandler(Handler):
         # reruns the pathway's candidate NEB on N fresh seeds.
         # 'measure_modes' mints autocatpath_modes: the normal modes a stored
         # vib-priced pathway lacks, from its seed jobs' geometries.
+        # 'export' writes the frozen seed-run repro bundle (MANIFEST.sha256 +
+        # RO-Crate + offline index) to args={'dir'} — stored data only, no
+        # engine or compute (gr564186).
         modes=(
             "preview",
             "revalidate",
             "recompute_kinetics",
             "verify",
             "measure_modes",
+            "export",
         ),
         views=(
             "analysis",
@@ -320,6 +348,7 @@ class PathwayHandler(Handler):
             "methods",
             "config",
             "staircase",
+            "bundle-plan",
         ),
     )
 
@@ -365,6 +394,8 @@ class PathwayHandler(Handler):
             return self._recompute_kinetics(id, args)
         if mode == "measure_modes":  # engine-free: the job checks the host
             return self._measure_modes(id)
+        if mode == "export":  # stored data only: no engine, no compute
+            return self._export(id, args)
         from . import runner
 
         if not text or not text.strip():
@@ -744,6 +775,155 @@ class PathwayHandler(Handler):
                 "mode='recompute_kinetics')"
             )
         )
+
+    def _select_seed(
+        self, store: Store, ref: Any, args: dict[str, Any] | None
+    ) -> tuple[int, dict[str, Any]]:
+        """The ``(job_id, meta)`` of the succeeded ``autocatpath_seed`` job
+        the bundle freezes: ``args={'job': <id>}`` picks explicitly; one
+        candidate self-selects; zero or several refuse with the choices."""
+        from . import archive
+
+        jobs = archive.seed_jobs_for_pathway(store, ref.id)
+        if args is not None and "job" in args:
+            want = args["job"]
+            if isinstance(want, bool) or not isinstance(want, int):
+                raise BadInput(
+                    f"args['job'] must be a job ref id, got {want!r}",
+                    options=[str(jid) for jid, _ in jobs],
+                )
+            for jid, meta in jobs:
+                if jid == want:
+                    return jid, meta
+            raise BadInput(
+                f"job {want} is not a succeeded autocatpath_seed of this pathway",
+                options=[str(jid) for jid, _ in jobs],
+                next="get(kind='pathway', id=<slug>, view='bundle-plan') lists "
+                "the candidates",
+            )
+        if not jobs:
+            raise BadInput(
+                "pathway has no succeeded autocatpath_seed job — the bundle "
+                "needs a stored seed envelope to export",
+                next="re-run the pathway (put(kind='pathway', mode='verify') "
+                "mints seeds) or pick a pathway that fanned out",
+            )
+        if len(jobs) > 1:
+            raise BadInput(
+                f"{len(jobs)} succeeded seed jobs — pick one",
+                options=[str(jid) for jid, _ in jobs],
+                next=f"add args={{'job': <id>}} (e.g. args={{'job': {jobs[0][0]}}})",
+            )
+        return jobs[0]
+
+    def _export(self, ident: str | int | None, args: dict[str, Any] | None) -> Response:
+        """``mode='export'``: write the stored seed run's repro bundle —
+        MANIFEST.sha256 + RO-Crate + offline index — into ``args['dir']``.
+        Stored data only; the artifact store supplies verified bytes, and a
+        host that cannot reach it still exports with 'unavailable' pins."""
+        from . import archive
+
+        if ident is None:
+            raise BadInput(
+                "mode='export' needs the pathway handle (id=)",
+                next="put(kind='pathway', id='pw123', mode='export', "
+                "args={'dir': '<dir>'})",
+            )
+        store = self.hub.live_store
+        ref = _lookup(store, str(ident))
+        if ref is None:
+            raise BadInput(
+                f"no pathway '{ident}'", next="get(kind='pathway') lists all"
+            )
+        raw_dir = (args or {}).get("dir")
+        if not raw_dir or not isinstance(raw_dir, str):
+            raise BadInput(
+                "mode='export' needs args={'dir': '<output directory>'}",
+                next=f"put(kind='pathway', id={str(ident)!r}, mode='export', "
+                "args={'dir': 'bundles/'})",
+            )
+        job_id, job_meta = self._select_seed(store, ref, args)
+        frozen = store.has_tag(int(ref.id), "OPEN", archive.FROZEN_TAG)
+        claims = (args or {}).get("claims") or []
+        if not isinstance(claims, list) or any(not isinstance(c, dict) for c in claims):
+            raise BadInput("args['claims'] must be a list of pin objects")
+        result = archive.build_archive(
+            job_id=job_id,
+            job_meta=job_meta,
+            pathway_id=int(ref.id),
+            pathway_meta=ref.meta or {},
+            out_dir=Path(raw_dir).expanduser(),
+            slug=ref.slug,
+            title=ref.title,
+            frozen=frozen,
+            claims=claims,
+        )
+        body = (
+            f"bundle written: {result.archive}\n"
+            f"bundle_id {result.bundle_id} (sha256 of MANIFEST.sha256) · "
+            f"{len(result.files)} files · sidecar {result.sidecar.name}\n"
+        )
+        if result.preliminary:
+            body += (
+                f"preliminary: pathway lacks the {archive.FROZEN_TAG} tag — "
+                "the crate marks it preliminary\n"
+            )
+        body += (
+            f"verify offline: precis pathway inspect {result.archive}\n"
+            "cite: the bundle_id and the .repro.json sidecar go in the "
+            "draft's data-package record"
+        )
+        return Response(body=body)
+
+    def _bundle_plan(
+        self,
+        store: Store,
+        ref: Any,
+        *,
+        id: str | int,
+        args: dict[str, Any] | None,
+    ) -> Response:
+        """``view='bundle-plan'``: the exact inventory the export would
+        stage — files, byte counts, pins, disclosed gaps and the
+        publication-gate findings that would refuse it — without writing."""
+        from . import archive
+
+        job_id, job_meta = self._select_seed(store, ref, args)
+        frozen = store.has_tag(int(ref.id), "OPEN", archive.FROZEN_TAG)
+        plan = archive.plan_archive(
+            job_id=job_id,
+            job_meta=job_meta,
+            pathway_id=int(ref.id),
+            pathway_meta=ref.meta or {},
+            slug=ref.slug,
+            title=ref.title,
+            frozen=frozen,
+        )
+        lines = [
+            f"bundle plan for '{ref.slug or ref.id}' — seed job {job_id}, "
+            f"{'FROZEN' if frozen else f'preliminary (no {archive.FROZEN_TAG} tag)'}"
+        ]
+        for f in plan["files"]:
+            row = f"  {f['path']}"
+            if "bytes" in f:
+                row += f"  {f['bytes']} B  {f.get('sha256', '')[:12]}"
+            if "status" in f:
+                row += f"  ({f['status']})"
+            if "reason" in f:
+                row += f"  ({f['reason']})"
+            lines.append(row)
+        if plan["missing"]:
+            lines.append("disclosed gaps:")
+            lines.extend(f"  {k} — {v}" for k, v in sorted(plan["missing"].items()))
+        if plan["gate_findings"]:
+            lines.append("publication gate findings (export would REFUSE):")
+            for rel, hits in sorted(plan["gate_findings"].items()):
+                lines.append(f"  {rel}: {', '.join(hits[:2])}")
+        lines.append(
+            f"next: put(kind='pathway', id={str(id)!r}, mode='export', "
+            f"args={{'dir': '<dir>', 'job': {job_id}}})"
+        )
+        return Response(body="\n".join(lines))
 
     def _recompute_kinetics(
         self, ident: str | int | None, args: dict[str, Any] | None
@@ -1160,7 +1340,9 @@ class PathwayHandler(Handler):
             # to find any of ~700 pathways — and this branch's error pointed
             # at an example slug that never existed.
             return Response(body=self._list(store))
-        point_args = {k: val for k, val in (args or {}).items() if k != "environment"}
+        point_args = {
+            k: val for k, val in (args or {}).items() if k not in ("environment", "job")
+        }
         gate = _gate_arg(point_args)
         if gate is not None and (view or "").lower() != "compare":
             raise BadInput(
@@ -1390,6 +1572,8 @@ class PathwayHandler(Handler):
             from .manifest import manifest_text
 
             return Response(body=manifest_text(meta))
+        if v == "bundle-plan":
+            return self._bundle_plan(store, ref, id=id, args=args)
         if v == "objective":
             from .objective import objective_text
 

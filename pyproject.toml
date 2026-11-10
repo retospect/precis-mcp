@@ -392,6 +392,14 @@ catalyst-gpu = [
 # pulls ray, dscribe, ase-ga, scikit-learn, h5py, matplotlib — kept out of
 # the pathway compute stack's own resolve and out of `[all]`.
 struct-search = ["agox>=3.11,<4"]
+# repro — the pathway reproducibility-bundle writer (gr564186,
+# src/precis_pathway/archive.py): ro-crate-py serializes the RO-Crate 1.3 /
+# Process Run Crate 0.6 metadata the archive ships. Lazy-imported at export
+# time — a minimal install still boots; the export itself refuses with a
+# next= naming this extra. The validator (roc-validator) stays out of the
+# install surface deliberately: profile validation is a dev/CI concern, not
+# a bundle-writer dependency.
+repro = ["rocrate>=0.16.0,<0.17"]
 # NOTE: [external] and [patent] were promoted into core (2026-08-16) —
 # light pure-Python network clients; see the promotion note in
 # ``dependencies``. The extras no longer exist.
@@ -673,6 +681,10 @@ dev = [
     # until the job's timeout-minutes cancels it anonymously (gr503084).
     "pytest-timeout>=2.4.0",
     "ansible-core>=2.21.5",
+    # ro-crate-py (the ``repro`` extra's writer) in the dev image, so the
+    # pathway bundle tests exercise the real RO-Crate path — pinned exact,
+    # the archive is a byte-determinism golden (tests/test_pathway_archive.py).
+    "rocrate==0.16.0",
 ]
 
 # autocatpath is release-gated off PyPI past 0.13.0; resolve it from the
@@ -1270,6 +1282,10 @@ module = [
     "ray.*",
     "rdkit",
     "rdkit.*",
+    # ro-crate-py (the ``repro`` extra, src/precis_pathway/archive.py) ships
+    # no py.typed marker; imported lazily inside the export call.
+    "rocrate",
+    "rocrate.*",
     # present in every install transitively (core dep ase requires it);
     # ships no stubs for scipy.spatial (precis_se/atomic/clearance.py).
     "scipy",

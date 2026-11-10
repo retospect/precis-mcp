@@ -189,6 +189,9 @@ def test_views_and_modes_are_declared() -> None:
         "recompute_kinetics",
         "verify",
         "measure_modes",
+        # gr564186: the stored-seed repro bundle (archive.py) — stored data
+        # only, no engine or compute.
+        "export",
     )
     # kinetics-sweep (slice 4) was routed but undeclared, so get refused it
     assert {
@@ -198,8 +201,9 @@ def test_views_and_modes_are_declared() -> None:
         "tpd",
         "optimum",
         "objective",
+        "bundle-plan",
     } <= set(spec.views)
-    assert len(spec.views) == 19
+    assert len(spec.views) == 20
 
 
 def test_executors_exclude_every_llm_executor() -> None:

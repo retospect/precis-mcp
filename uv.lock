@@ -270,6 +270,15 @@ wheels = [
 ]
 
 [[package]]
+name = "arcp"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/4d/de103380fb1646b720a5318401cf2a49a1a88c082ef06fdd015d848f073b/arcp-0.2.1.tar.gz", hash = "sha256:5c17ac7972c9ef82979cc2caf2b3a87c1aefd3fefe9adb8a5dd728ada57715dd", size = 22063, upload-time = "2020-02-12T12:05:07Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/df/32574bc8f1d440d40f4aaf3b455316b2b1536c7243c985a90f8516cf3074/arcp-0.2.1-py2.py3-none-any.whl", hash = "sha256:4e09b2d8a9fc3fda7ec112b553498ff032ea7de354e27dbeb1acc53667122444", size = 15838, upload-time = "2020-02-12T12:05:05Z" },
+]
+
+[[package]]
 name = "ase"
 version = "3.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4095,6 +4104,9 @@ pourbaix = [
     { name = "mp-api" },
     { name = "pymatgen" },
 ]
+repro = [
+    { name = "rocrate" },
+]
 struct-search = [
     { name = "agox" },
 ]
@@ -4126,6 +4138,7 @@ dev = [
     { name = "pytest-testmon" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "rocrate" },
     { name = "ruff" },
     { name = "types-networkx" },
     { name = "types-pyyaml" },
@@ -4197,6 +4210,7 @@ requires-dist = [
     { name = "rdkit", specifier = ">=2023.9" },
     { name = "rdkit", marker = "extra == 'chem'", specifier = ">=2023.9" },
     { name = "resvg-py", specifier = ">=0.1" },
+    { name = "rocrate", marker = "extra == 'repro'", specifier = ">=0.16.0,<0.17" },
     { name = "scipy", specifier = ">=1.14" },
     { name = "semanticscholar", specifier = ">=0.8" },
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
@@ -4217,7 +4231,7 @@ requires-dist = [
     { name = "wolframalpha", specifier = ">=5.0" },
     { name = "youtube-transcript-api", specifier = ">=1.2.4" },
 ]
-provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "struct-search", "web", "cad-step", "guide", "chem", "estimate", "chain", "pourbaix", "all"]
+provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "dft-ml", "catalyst", "catalyst-gpu", "struct-search", "repro", "web", "cad-step", "guide", "chem", "estimate", "chain", "pourbaix", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4233,6 +4247,7 @@ dev = [
     { name = "pytest-testmon", specifier = ">=2.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "rocrate", specifier = "==0.16.0" },
     { name = "ruff", specifier = ">=0.17.2" },
     { name = "types-networkx", specifier = ">=3.6.1.20260728" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
@@ -5528,6 +5543,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/96/3e/5688fdd83aea416de336582a274f2bc8236b5c261b04c11e17bc262786ad/rich_click-1.9.9.tar.gz", hash = "sha256:324cba7513cd4187ee92b2eef21f071714e45be062458c8b157bd7e0c81103e3", size = 75866, upload-time = "2026-09-05T19:20:14.799Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/51/b2b91aec091e86bc961e5164f00207d89f133cc82b5ddad541d2132ea819/rich_click-1.9.9-py3-none-any.whl", hash = "sha256:365e7a9d0adb42e41ea832a0a12e02c44c079a26536dee688125eb9814f97274", size = 71910, upload-time = "2026-09-05T19:20:13.587Z" },
+]
+
+[[package]]
+name = "rocrate"
+version = "0.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "arcp" },
+    { name = "click" },
+    { name = "jinja2" },
+    { name = "python-dateutil" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/55/67deaa5169d10a4ef6eee0209bbec95d09465255daa3c74fb740ce1f1e1f/rocrate-0.16.0.tar.gz", hash = "sha256:eafd31adf0f6c0603eb68ff6e0f1f9f82028f7ffd345a7fe485eecee8240d485", size = 366394, upload-time = "2026-10-06T13:46:04Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/4e/d4fa9de88f1c779de02758a1f52284fd771f5cc5efadecb514d0ca50141e/rocrate-0.16.0-py3-none-any.whl", hash = "sha256:1f5b4563833a166640f9e09596f8f88c9a5d8ea733bc96345e73466beae85eea", size = 396420, upload-time = "2026-10-06T13:46:02Z" },
 ]
 
 [[package]]

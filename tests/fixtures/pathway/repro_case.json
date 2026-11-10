@@ -1,0 +1,85 @@
+{
+  "slug": "no-to-no3-pd111",
+  "title": "NO → NO3 on Pd(111)",
+  "frozen": true,
+  "job_id": 7,
+  "pathway_id": 11,
+  "claims": [
+    {
+      "id": "fig3-s1-energy",
+      "label": "Figure 3: s1 state energy",
+      "file": "outputs/partial.json",
+      "pointer": "/states/s1/energy"
+    },
+    {
+      "id": "tbl1-seed",
+      "label": "Table 1: seed used",
+      "file": "outputs/partial.json",
+      "pointer": "/seed"
+    }
+  ],
+  "job_meta": {
+    "job_type": "autocatpath_seed",
+    "pathway_ref": 11,
+    "content_key": "seed-key",
+    "seed": 3,
+    "model_index": 0,
+    "model": "mace:small",
+    "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "started_at": "2026-11-03T10:14:02Z",
+    "finished_at": "2026-11-03T10:41:55Z",
+    "params": {
+      "pathway_ref_id": 11,
+      "content_key": "seed-key",
+      "seed": 3,
+      "model_index": 0,
+      "engine_token": "dispatch-intent",
+      "force_backend": null,
+      "only_steps": ["s1"],
+      "step_retry": {"attempt": 1},
+      "config": {
+        "mlip": {"backend": "mace", "model": "small"},
+        "search": {"seeds": [3]},
+        "environment": {"temperature": 300}
+      },
+      "slab_extxyz": "1\nProperties=species:S:1:pos:R:3\nCu 0 0 0\n"
+    },
+    "partial": {"seed": 3, "states": {"s1": {"energy": -1.25}}},
+    "lattice": {"a": 3.6},
+    "structures": {"s1": "1\nProperties=species:S:1:pos:R:3\nCu 0 0 0\n"},
+    "bands": {"s1": {"artifact": "band.extxyz"}},
+    "ts": {},
+    "artifacts": [
+      {
+        "name": "band.extxyz",
+        "path": "job-artifacts/7/band.extxyz",
+        "bytes": 3,
+        "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      },
+      {
+        "name": "ts.extxyz",
+        "path": "job-artifacts/7/ts.extxyz",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "pathway_meta": {
+    "content_key": "pathway-key",
+    "autocatpath_version": "0.38.0",
+    "manifest_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "validation_manifest": {
+      "schema": "validation_manifest",
+      "schema_version": 1,
+      "manifest_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "code": {"precis_sha": "cccccccccccccccccccccccccccccccccccccccc", "autocatpath_version": "0.38.0", "autocatpath_sha": "dddddddddddddddddddddddddddddddddddddddd"},
+      "lock": {"uv_lock_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "lock_source": "uv.lock", "mlip": [{"backend": "mace", "model": "small", "weights_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+      "platform": {"arch": "x86_64", "os": "linux", "accelerator": "cpu"},
+      "seeds": {"search_seeds": [3], "kinetics_seed": 0},
+      "inputs": {},
+      "tolerances": [{"observable": "tof_chain", "unit": "decades"}]
+    },
+    "results": {"substrate": "NO", "target": "NO3"}
+  },
+  "artifact_text": {"band.extxyz": "abc", "ts.extxyz": ""}
+}

@@ -64,6 +64,7 @@ from typing import Any
 
 import pytest
 
+from precis.utils import public_scan
 from tests._policy_scan import (
     ScanIncomplete,
     gitignore_matcher,
@@ -100,48 +101,21 @@ _SKIP_DIRS = {
 
 # A line carrying this marker is exempt (rare, e.g. a comment that must name a
 # forbidden token to explain the rule). Keep uses vanishingly few.
-_ALLOW_MARKER = "secret-gate: allow"
+# Pattern source: ``precis.utils.public_scan`` — shared with the publication
+# gate that scans generated artifact trees (the pathway repro bundle) with
+# the identical shapes, so the two gates can never drift apart.
+_ALLOW_MARKER = public_scan.ALLOW_MARKER
 
 # ── Tree-wide: cluster addresses. Disclosure, scanned everywhere. ────────────
-_FORBIDDEN_ANYWHERE: list[tuple[str, re.Pattern[str]]] = [
-    # An ansible-vault-encrypted blob (or a pasted one). The header is unique.
-    (
-        "ansible-vault blob",
-        re.compile(r"\$ANSIBLE_VAULT"),  # secret-gate: allow — pattern
-    ),
-    # Tailscale CGNAT — the tailnet addresses of the nodes.
-    (
-        "tailscale ip (CGNAT)",
-        re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b"),
-    ),
-    # The cluster LAN (used for NFS). Real private addresses of the boxes.
-    ("lan ip (192.168.x)", re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b")),
-]
+_FORBIDDEN_ANYWHERE: list[tuple[str, re.Pattern[str]]] = public_scan.ADDRESS_PATTERNS
 
 # ── deploy/ only: real node hostnames. Parameterisation, not disclosure. ─────
-_FORBIDDEN_IN_DEPLOY: list[tuple[str, re.Pattern[str]]] = [
-    (
-        "real hostname / tailnet",
-        re.compile(
-            r"\b(?:melchior|caspar|balthazar|spark|hephaestus|finnmaccool|aidev)\b",
-            re.IGNORECASE,
-        ),
-    ),
-]
+_FORBIDDEN_IN_DEPLOY: list[tuple[str, re.Pattern[str]]] = (
+    public_scan.NODE_HOSTNAME_PATTERNS
+)
 
 # Binary / non-text suffixes we don't scan.
-_BINARY_SUFFIXES = {
-    ".gif",
-    ".gz",
-    ".ico",
-    ".jpeg",
-    ".jpg",
-    ".pdf",
-    ".png",
-    ".so",
-    ".whl",
-    ".zip",
-}
+_BINARY_SUFFIXES = public_scan.BINARY_SUFFIXES
 
 
 # ── Tree-wide: credential shapes (patterns live in utils/secret_scan). ───────

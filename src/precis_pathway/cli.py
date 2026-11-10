@@ -40,6 +40,18 @@ to a cadence or hook.
 checks archive integrity and renders recorded D10 attempts into a new JSON
 file. It opens no store and launches no compute. Missing host stamps remain
 unavailable; scientific support remains with the evidence/review gates.
+
+``bundle --record <snapshot.json> --output-dir <dir>`` writes the stored seed
+run's repro archive (MANIFEST.sha256 + RO-Crate + offline index) from a
+frozen ``{job_id, job_meta, pathway_id, pathway_meta}`` snapshot — the same
+inputs ``precis_pathway.bundle.build_envelope`` consumes, plus optional
+``slug``/``title``/``frozen``/``claims``. Needs the ``repro`` extra for the
+RO-Crate writer; artifact bytes resolve through the job-artifact store, so a
+host without the mount exports 'unavailable' pins rather than failing.
+
+``inspect <archive.zip>`` prints the integrity rows and where the offline
+evidence index lives — the archive's own reader needs no database, engine
+or ``repro`` extra.
 """
 
 from __future__ import annotations
@@ -140,6 +152,36 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Directory for a new verification JSON report; existing records are preserved.",
     )
     vr.add_argument("--envelope-id", default=None, help="Opaque run-envelope identity.")
+    bd = psub.add_parser(
+        "bundle",
+        help="Write a stored seed run's repro archive from a frozen snapshot.",
+        description=(
+            "Stage and zip the reproducibility bundle for one stored "
+            "autocatpath_seed run: MANIFEST.sha256, RO-Crate metadata, the "
+            "frozen inputs/outputs/artifacts/env pins that exist, recorded "
+            "checks and an offline index.html. --record is a JSON snapshot "
+            "{job_id, job_meta, pathway_id, pathway_meta} plus optional "
+            "slug/title/frozen/claims. No DB, engine or compute; the "
+            "rocrate writer comes from the 'repro' extra."
+        ),
+    )
+    bd.add_argument(
+        "--record",
+        required=True,
+        type=Path,
+        help="Frozen snapshot JSON: job_id, job_meta, pathway_id, pathway_meta.",
+    )
+    bd.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory the <slug>-<bundle_id12>.zip and its .repro.json sidecar land in.",
+    )
+    ins = psub.add_parser(
+        "inspect",
+        help="Integrity-check a bundle zip and locate its offline index.",
+    )
+    ins.add_argument("archive", type=Path, help="Zip written by `pathway bundle`.")
     return p
 
 
@@ -151,6 +193,10 @@ def run(args: argparse.Namespace) -> None:
         _retitle(args)
     elif args.pathway_cmd == "verify-report":
         _verify_report(args)
+    elif args.pathway_cmd == "bundle":
+        _bundle(args)
+    elif args.pathway_cmd == "inspect":
+        _inspect(args)
 
 
 def _verify_report(args: argparse.Namespace) -> None:
@@ -172,6 +218,53 @@ def _verify_report(args: argparse.Namespace) -> None:
         for row in report["checks"]
     ):
         raise SystemExit(1)
+
+
+def _bundle(args: argparse.Namespace) -> None:
+    """Offline writer: the frozen snapshot in, the deterministic zip out."""
+    from .archive import ArchiveRefused, build_archive
+
+    with args.record.open(encoding="utf-8") as fh:
+        snapshot = json.load(fh)
+    if not isinstance(snapshot, dict):
+        raise SystemExit("pathway bundle: --record must contain a snapshot object")
+    claims = snapshot.get("claims") or []
+    if not isinstance(claims, list) or any(not isinstance(c, dict) for c in claims):
+        raise SystemExit("pathway bundle: 'claims' must be a list of pin objects")
+    try:
+        result = build_archive(
+            job_id=snapshot["job_id"],
+            job_meta=snapshot["job_meta"],
+            pathway_id=snapshot["pathway_id"],
+            pathway_meta=snapshot["pathway_meta"],
+            out_dir=args.output_dir,
+            slug=snapshot.get("slug"),
+            title=snapshot.get("title"),
+            frozen=bool(snapshot.get("frozen")),
+            claims=claims,
+        )
+    except KeyError as exc:
+        raise SystemExit(f"pathway bundle: snapshot lacks {exc}") from exc
+    except ArchiveRefused as exc:
+        raise SystemExit(f"pathway bundle: {exc}") from exc
+    print(result.archive)
+    print(f"bundle_id {result.bundle_id} · sidecar {result.sidecar}")
+    if result.preliminary:
+        print("preliminary: snapshot is not marked frozen")
+
+
+def _inspect(args: argparse.Namespace) -> None:
+    """Offline integrity read — the archive's own reader needs no store."""
+    from .verification import verify_archive
+
+    rows = verify_archive(args.archive)
+    for row in rows:
+        print(f"{row['status']:<11} {row['scope']}:{row['check']}")
+    bad = [r for r in rows if r["status"] != "passed"]
+    if bad:
+        raise SystemExit(1)
+    print("all members verified against MANIFEST.sha256")
+    print("open index.html in the extracted root for the offline evidence index")
 
 
 def _open_store(args: argparse.Namespace) -> Store:
