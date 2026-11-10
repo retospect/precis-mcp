@@ -236,7 +236,7 @@ a block exists. The dialectic design is
    evidence `serves`, the narrative is a bounded generated view, exports
    build from the graph; a dry-run-first migration of the 25 prod
    dossiers. Slices 1–2 shipped (`quest/directions.py`, the relation pin).
-   Reto 2026-11-01/02 (gr549581, gr553318 folded in): one memory card per
+   Reto 2026-11-01/02: one memory card per
    experiment (candidate structure) under its direction todo, written by
    the tick's proposal and auto-commit paths and converted from the 25
    dossiers; the design pass landed 2026-11-02 (§Experiment memory

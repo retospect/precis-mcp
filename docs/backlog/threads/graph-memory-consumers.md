@@ -160,8 +160,9 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    ships dark (`service_config`); operator-only
    `precis memory recall-set accept td<N> [--only N,M]` edits the checkout
    benchmark without committing or pushing. Activation and public-data review
-   remain operator-owned. Open: gr548266 glossary mirror, gr548275 SPACE
-   backfill. Specs:
+   remain operator-owned. Open: gr548275 SPACE backfill (the glossary
+   mirror is superseded — the vocabulary lives as taxa under tn559460).
+   Specs:
    `memory-retrieval-learning.md` (idea, decision rule),
    `dreaming-classify-rehome.md` (draft). Reto's call: S4 in
    `context-memory-hierarchy.md` (resident block, largest token lever).
@@ -190,7 +191,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 1. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: a quest's
    graph "is" the dossier and a writer agent linearises it. Specified by
    `retire-dossier.md` (draft, ranked in roadmap-quest Horizon 5); its
-   experiment memory cards (gr549581) are the quest loop's memory
+   experiment memory cards are the quest loop's memory
    consumer: one `memory` per candidate structure, `serves` the quest,
    `part-of` its direction todo, every line a quoted source. Same
    principle as Do-next 1 (graph is truth, text is a render).
@@ -204,7 +205,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 6. **backlog/skill-bundled-scripts.md**
 7. **backlog/turn-routing-and-context-dsl.md**
 8. **Context-audit tail** — the catalog lives in
-   `scripts/context-audit/`; the fisheye study (gr56588) is carried in
+   `scripts/context-audit/`; the fisheye study is carried in
    `backlog/context-navigation.md` §1 measures (its render residuals: halt-reason + numeric-handle items shipped
    2026-10-21; quest-frontier objective and recency N-of-K items stay
    with `handlers/quest.py` / `runtime/search.py` owners).

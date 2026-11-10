@@ -46,7 +46,7 @@ Section → owner:
   fidelity levels are this note's MM→DFT ladder in the other costume).
   Held here: alchemical relaxation (§9.3), new.
 - §10 open items — carried, updated.
-- §6b pcb as second renter — `pcb-guided-place-route.md` /
+- §6b pcb as second renter — `pcb-topo-place.md` /
   `pcb-se-binding.md` own pcb; held here: the term→layer split and the
   seed_placement bridge.
 - §6c agent code edits as the outer move — **new, owned here**

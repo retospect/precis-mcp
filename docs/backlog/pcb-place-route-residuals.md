@@ -1,27 +1,19 @@
 ---
-status: draft
-title: pcb place+route — remaining open items (layer count as a user call)
+status: idea
+title: pcb place+route residuals — layer count as a user call; ADR 0042 web/phase leftovers
 prio: normal
 pillar: 3d-design
 ---
 
-# pcb place+route — remaining open items
+# pcb place+route residuals
 
-**RETIRED (2026-10-25, gr515107).** The route half this spec covers is
-gone — `vroute` and the `pcb_route` job were deleted (tag `vroute-final`);
-`op='route'`/`pcb.local.route` refuse and the topological router
-([pcb-topo-place](pcb-topo-place.md)) is the only router, its realiser
-unshipped. The place half, the judged-mutation gate and the stored-route
-readers below still describe main. The file stays because ~20 docstrings
-cite it; delete in a follow-up.
-
-The sketch-as-canonical place+route engine, the JLCPCB order op, the
-route-state consolidation and `op=` idempotency all shipped; truth lives in
-the `src/precis/pcb/__init__.py` docstring, `src/precis/pcb/route_state.py`,
-`src/precis/pcb/jlc_order.py` and `git log`. Engine-level open work is in
-[`pcb-engine-plan.md`](./pcb-engine-plan.md) (cost-neutral `ROTATE` /
-`SIDE_FLIP` moves: `src/precis/pcb/optimize.py` module note and
-engine-plan §1). Only the item below is unfiled elsewhere.
+The two open items carried over from `pcb-guided-place-route.md`, retired
+2026-10-25 (gr515107: `vroute`/`pcb_route` deleted, the topological router is
+the only router) and deleted here; git history holds the spec. Everything
+else that file described is shipped — truth lives in the
+`src/precis/pcb/__init__.py` docstring, `src/precis/pcb/route_state.py`,
+`src/precis/pcb/jlc_order.py` and `git log`; engine-level open work is in
+[`pcb-engine-plan.md`](./pcb-engine-plan.md).
 
 ## Layer count is a user call, not a hard 4
 

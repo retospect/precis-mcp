@@ -72,11 +72,11 @@ quality-of-life and container items.
    lands there). Nodes minted before the classes (plan 543631) carry a
    `params.lane` pin instead. `gripe-fix-direct` (td564019) drops triage
    and brief so a codex build needs no Claude step; the gripe text rides
-   the build body. First run (jo565335, gr564261): codex built the fix but
+   the build body. First run (jo565335): codex built the fix but
    its workspace-write sandbox keeps `.git` read-only, so `run_slice.poll`
    now commits a clean session's tree with its `scratch/commit-msg.txt`
    instead of widening codex's writable roots. Its escalation then burned
-   an attempt on the Claude weekly 429 (gr565359): a quota or rate result
+   an attempt on the Claude weekly 429: a quota or rate result
    now parks the slice with no attempt, resubmitting at once on another
    vendor's lane when one fits, else at the parsed reset. Intake:
    `workers/gripe_dispatch.py` (td564019 cut 3, dark until a

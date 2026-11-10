@@ -23,10 +23,12 @@ back into this directory.
 ## What the paper describes
 
 The `pcb` kind's LLM-guided topological place-and-route system in
-`src/precis/pcb/`. The design spec and live build status are in
-`docs/backlog/pcb-guided-place-route.md`, which stays the authority on what
-is shipped, inert, or unbuilt — the paper quotes that state as of writing
-and will go stale against it.
+`src/precis/pcb/`. The design spec `docs/backlog/pcb-guided-place-route.md`
+was retired 2026-10-25 and deleted 2026-11 (git history holds it): shipped
+state lives in the `src/precis/pcb/__init__.py` docstring and `git log`,
+open work in `docs/backlog/pcb-topo-place.md` and
+`docs/backlog/pcb-place-route-residuals.md` — the paper quotes that state
+as of writing and will go stale against it.
 
 ## Open threads
 

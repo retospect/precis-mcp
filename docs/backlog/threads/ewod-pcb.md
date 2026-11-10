@@ -290,7 +290,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    via and reports it when it could not, but `pcb_route` surfaces that
    nowhere). Belongs with the invariant because refusing to route an
    illegal placement is what closes it.
-2. **backlog/pcb-guided-place-route.md** — layer count as a user call
+2. **backlog/pcb-place-route-residuals.md** — layer count as a user call
    (the one open item); waits on 1 because each slice's acceptance is an "is the board still
    valid" claim.
 3. **backlog/pcb-congestion-driven-spread.md** — the escape-yield lever

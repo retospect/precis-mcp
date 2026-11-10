@@ -61,7 +61,7 @@ the dated detail is in `git log` and the owning items):**
   `surface_coverage_scan` jobs on baseline st203306 (jo543903), subject A
   st202238 (jo543904) and subject B st463208 (jo543910), pinned to castor
   (the first mints, jo543898 and jo543899, failed in 0.1 s on a node without
-  autocatpath, gr543909). Stage-0 pathways: baseline pw538937 (minted
+  autocatpath). Stage-0 pathways: baseline pw538937 (minted
   2026-10-30, origin accepted as-is), A pw541657, B pw517889. The overnight
   pathways pw542513, pw542519 and pw542537 stay out of the study until
   they are explained. Scope: those runs only; no other re-run. Item 23's
@@ -222,8 +222,8 @@ the dated detail is in `git log` and the owning items):**
    - (13) `model_index>0` units keep no structures, ~100 kB per seed,
      including the geometry vib ran on.
    Solver warnings are also discarded at `kmc.py` and `mkm.run_sweep`
-   (`warnings=[]`); vib modes and the Hessian are covered by gr543723
-   (closed).
+   (`warnings=[]`); vib modes and the Hessian are covered by shipped
+   retention work.
 
 ## Horizon
 
@@ -305,8 +305,8 @@ the dated detail is in `git log` and the owning items):**
    kinetics on the diagram, BEP humps, one environment record, the compute
    cart, the left box as a tab strip (Pourbaix, kinetic map, rung lines,
    sensitivity, per-slab Pareto). Ten slice gripes (cluster
-   `pathway-explorer-controls`, gr559345–gr559353 and the two filed
-   later that day) plus gr559354 (catpath transient θ(t)) and gr559355.
+   `pathway-explorer-controls`, tracked in the spec's slice list — the
+   gripe id is the ship record) plus gr559354 (catpath transient θ(t)).
    Reto's six decisions are recorded in the file (2026-11-03). Ranked
    here, not in Do next: slices 1–4 are stored-data display Reto reads
    results through, and nothing in them touches the engine. Slice 6

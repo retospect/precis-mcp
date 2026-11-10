@@ -219,8 +219,9 @@ collapse the board onto its hub.
 
 ## Obligations to the paper (pcb-paper worktree, td266176)
 
-The arXiv preprint's ship gate is the acceptance criterion in
-`pcb-guided-place-route.md` — the synthetic ESP32-C3, 4-layer, `op:'place'`
+The arXiv preprint's ship gate is the acceptance criterion from
+`pcb-guided-place-route.md` (retired 2026-10-25, deleted 2026-11; git
+history) — the synthetic ESP32-C3, 4-layer, `op:'place'`
 then `op:'route'` through the tool surface, 100% routed, zero DRC errors.
 That run outranks S1–S10; it is also a *measurement*, and every defect in this
 build was found by measuring, never by reading. Two standing obligations:
@@ -2269,7 +2270,8 @@ second mechanism all along.
 
 ### 8. The JLC scope probe could not fail — fixed in the doc, verify the claim
 
-The probe in `pcb-guided-place-route.md` had two bugs, both live-fixed
+The probe in `pcb-guided-place-route.md` (file since deleted; git history)
+had two bugs, both live-fixed
 2026-08-28: `c.available()` on a property (raised `TypeError` before
 probing anything), and — worse — `component_info` returns `None` both
 when credentials are absent *and* when the part is not found, so with no

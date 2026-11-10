@@ -103,8 +103,9 @@ its central objects at all. Survey against code (2026-09-13):
   anywhere, so "ENIG + parylene" can't even be recorded for fab output.
 - **Bottom-side parts are invisible to the engine**: `rules.py::PAD_LAYER=0`
   and `ir.py::from_graph` ignores `pcb_instances.layer`, so bottom-mounted
-  sensors/Peltier drivers aren't seen by placer/router/DRC (known-inert
-  note in `pcb-guided-place-route.md` BUILD STATUS).
+  sensors/Peltier drivers aren't seen by placer/router/DRC (known-inert;
+  recorded in the deleted `pcb-guided-place-route.md` BUILD STATUS — git
+  history).
 - **No resistance/length targets, no serpentine generator** — heater
   traces and copper-RTD sensors need "hit R ohms in this region";
   `objectives.py::ObjectiveVector.low_resistance` is only a width bias,

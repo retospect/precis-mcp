@@ -177,7 +177,7 @@ own item); they become items as each comes into reach.
   `pathway_title` (plugin-owned) but does not need to, since the failed case
   is a suffix swap. Deployed is not verified: closing the gap took three
   dogfood rounds, because only an arriving input could exercise the path.
-  gr549574 follow-on (2026-11-02): the convention itself changed — titles now
+  A 2026-11-02 follow-on: the convention itself changed — titles now
   name the candidate structure (`<rxn> on <name>`; `pathway_title` resolves
   `meta.candidate_ref`/related-to/slug, can return `None`) and `precis
   pathway retitle` is the rename door for existing rows.

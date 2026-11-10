@@ -103,7 +103,7 @@ current evidence and local intake gate remain in memory me562868.
    waits on ewod-pcb's routing work, not on anything in this file.
 11. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
    sequenced after 9 by the item's own stated order.
-12. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
+12. **backlog/pcb-place-route-residuals.md** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
 13. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,

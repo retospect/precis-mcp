@@ -307,8 +307,8 @@ is verified done on prod.
 ## Horizon
 
 0. **`backlog/paper-backup-pdf-transfer.md`** — slice 1 is the
-   undo export every destructive paper door lacks (gr513878 needed
-   hand SQL); later slices unblock re-extract/re-home of stored PDFs.
+   undo export every destructive paper door lacks (a past prod repair
+   needed hand SQL); later slices unblock re-extract/re-home of stored PDFs.
    Slice 4 waits on the keep_pdf door.
 1. **`backlog/pdf-sha256-identifier-hygiene.md`** — the missing-sha sweep
    (the defect subset of the 22,106 sha-less refs is unmeasured; needs a
