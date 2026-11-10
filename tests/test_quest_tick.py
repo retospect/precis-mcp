@@ -4675,3 +4675,60 @@ class TestUrlFetchField:
         assert "ignore previous instructions" not in prompt
         assert "untrusted external content" in prompt
         assert "pricing table body" in prompt
+
+    def test_inquiry_tick_offers_and_applies_url_fetch(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr607446 — an inquiry-body quest (qu604835) declared web-fetch
+        missing when it could not reach a vendor pricing page. The inquiry
+        template must advertise the ``{"url": …}`` form too and the shared
+        apply path must honour it — a materials-only pin would let the
+        door quietly drop from this body again."""
+        from precis.handlers import web as web_mod
+
+        qid = _mk_quest(store, "A striving reconstructing cost constants")
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+
+        prompt0 = build_tick_prompt(
+            store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
+        )
+        assert '"fetch"' in prompt0 and '"url"' in prompt0
+        assert "proposals" not in prompt0  # the inquiry shape, not materials
+
+        monkeypatch.setattr(
+            web_mod.WebHandler,
+            "_fetch",
+            _fake_web_fetch(
+                "gpt-5-mini $0.25/1M input, $2.00/1M output; "
+                "gpt-5-nano $0.05/1M input, $0.40/1M output",
+                title="OpenAI API pricing",
+            ),
+        )
+        payload = {
+            "logbook": [],
+            "fetch": [
+                {
+                    "url": "https://platform.openai.com/docs/pricing",
+                    "why": "per-token rates for C_read/C_first_turn/C_cached_turn",
+                }
+            ],
+        }
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(payload),
+            quest_body=QUEST_BODY_INQUIRY,
+        )
+        assert out.fetches_made == 1
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any(
+            "web-fetch:" in t and "platform.openai.com/docs/pricing" in t for t in texts
+        )
+        web_refs = [r for r in gaps_mod._live_servers(store, qid) if r.kind == "web"]
+        assert len(web_refs) == 1
+        prompt = build_tick_prompt(
+            store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
+        )
+        assert "Requested reads" in prompt
+        assert f"web:{web_refs[0].id}" in prompt
+        assert "$0.25/1M" in prompt
