@@ -48,7 +48,7 @@ def _hub(store: Store) -> int:
 
 
 def _grab_bag(
-    store: Store, body: str = BODY, *, title: str = "Cleanup notes", hub: int
+    store: Store, body: str = BODY, *, title: str = "Cleanup notes", hub: int | None
 ) -> int:
     from precis.store.revision_context import revision_context
 
@@ -65,7 +65,8 @@ def _grab_bag(
         )
     store.add_tag(ref.id, Tag.open("section:gotchas"), set_by="system")
     store.add_tag(ref.id, Tag.open("SPACE:repo-dev"), set_by="system")
-    store.add_link(src_ref_id=ref.id, dst_ref_id=hub, relation="part-of")
+    if hub is not None:
+        store.add_link(src_ref_id=ref.id, dst_ref_id=hub, relation="part-of")
     return int(ref.id)
 
 
@@ -357,6 +358,264 @@ def test_reviewable_requires_a_children_plan(
     assert review_id is not None
     (prop,) = [p for p in pending_proposals(store) if p.review_id == review_id]
     assert not _reviewable(prop)
+
+
+def test_keep_split_without_a_named_hub_uses_the_index_ancestor(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    """td626343: the children parent on the index hub, never the split parent."""
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    candidate.payload["hub"] = None
+    review_id = _propose(store, candidate, fate="keep")
+
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+
+    assert rec.hub == hub
+    for child in rec.children:
+        rels = {(link[1], link[3], link[5]) for link in _links(store, child["id"])}
+        assert (child["id"], hub, "part-of") in rels
+        assert (child["id"], target, "part-of") not in rels
+
+
+def test_retire_split_without_a_named_hub_uses_the_index_ancestor(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    candidate.payload["hub"] = None
+    review_id = _propose(store, candidate)
+
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+
+    assert rec.hub == hub
+    tomb = store.get_ref(kind="memory", id=target, include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
+    assert tomb.meta["superseded_by"] == f"me{hub}"
+
+
+def test_split_without_any_hub_ancestor_refuses(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=None)
+    candidate = _candidate(store, target)
+    assert candidate.payload["hub"] is None
+    review_id = _propose(store, candidate)
+
+    with pytest.raises(doors.MergeRefused):
+        doors.apply_split(
+            store, review_id, actor="garden-consumer", model="fixture-reviewer"
+        )
+    assert _body(store, target).encode("utf-8") == BODY.encode("utf-8")
+    assert store.get_ref(kind="memory", id=target) is not None
+
+
+def test_undo_split_refuses_a_relinked_child(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    """td626343: an edge added after the split is intervening work undo
+    may not delete."""
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    review_id = _propose(store, candidate)
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+    cid = int(rec.children[0]["id"])
+    store.add_link(src_ref_id=hub, dst_ref_id=cid, relation="cites", set_by="agent")
+
+    with pytest.raises(doors.MergeRefused):
+        doors.undo_split(store, rec.split_id, actor="operator")
+
+    assert store.get_ref(kind="memory", id=cid) is not None
+    assert (hub, cid, "cites") in {
+        (link[1], link[3], link[5]) for link in _links(store, hub)
+    }
+    assert store.get_ref(kind="memory", id=target) is None
+
+
+def test_undo_split_refuses_an_edited_child(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    from precis.store.revision_context import revision_context
+
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    review_id = _propose(store, candidate, fate="keep")
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+    cid = int(rec.children[0]["id"])
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        store.chunks.replace_body_chunk(
+            cid,
+            "An intervening edit.",
+            chunk_kind="memory_body",
+            source="operator",
+            reason="intervening edit",
+        )
+
+    with pytest.raises(doors.MergeRefused):
+        doors.undo_split(store, rec.split_id, actor="operator")
+
+    assert _body(store, cid) == "An intervening edit."
+    assert _body(store, target) == "Index of three claims; see children."
+
+
+def test_undo_split_refuses_a_retired_child(
+    store: Store, embedder: _StubEmbedder
+) -> None:
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    review_id = _propose(store, candidate)
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+    cid = int(rec.children[0]["id"])
+    store.retire_ref(cid)
+
+    with pytest.raises(doors.MergeRefused):
+        doors.undo_split(store, rec.split_id, actor="operator")
+
+    assert store.get_ref(kind="memory", id=cid) is None
+    assert store.get_ref(kind="memory", id=target) is None
+
+
+def _llm_result(text: str):
+    from precis.utils.llm.router import LlmResult, Tier
+
+    return LlmResult(
+        text=text,
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.MEDIUM,
+        stop_reason="stop",
+    )
+
+
+def test_proposer_split_verdict_carries_the_plan(
+    store: Store, embedder: _StubEmbedder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td626343: a split verdict must keep the plan or the proposal can
+    never become reviewable."""
+    import json
+
+    from precis.graph.garden import proposer
+    from precis.utils.llm import router
+
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    children = _children(candidate)
+    reply = {
+        "action": "split",
+        "reason": "three independent claims",
+        "children": children,
+        "parent_fate": "keep",
+        "keep_body": "Index of three claims; see children.",
+        "hub": f"me{hub}",
+    }
+    monkeypatch.setattr(router, "route", lambda _req: _llm_result(json.dumps(reply)))
+    verdict = proposer.propose_llm(store, candidate)
+    assert verdict.accept and verdict.action == "split"
+    assert verdict.payload_overrides == {
+        "children": children,
+        "parent_fate": "keep",
+        "keep_body": "Index of three claims; see children.",
+        "hub": f"me{hub}",
+    }
+
+
+def test_proposer_reads_nested_payload_overrides(
+    store: Store, embedder: _StubEmbedder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompt names payload_overrides.children — honour that shape too."""
+    import json
+
+    from precis.graph.garden import proposer
+    from precis.utils.llm import router
+
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    children = _children(candidate)
+    reply = {
+        "action": "split",
+        "reason": "three independent claims",
+        "payload_overrides": {"children": children},
+    }
+    monkeypatch.setattr(router, "route", lambda _req: _llm_result(json.dumps(reply)))
+    verdict = proposer.propose_llm(store, candidate)
+    assert verdict.accept and verdict.action == "split"
+    assert verdict.payload_overrides == {"children": children}
+
+
+def test_a_proposed_split_reaches_review_and_applies(
+    store: Store, embedder: _StubEmbedder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real path: proposer verdict → merged payload → reviewable → apply."""
+    import json
+    from dataclasses import replace
+
+    from precis.graph.garden import proposer
+    from precis.graph.garden.consumer import _reviewable
+    from precis.utils.llm import router
+
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    hub = _hub(store)
+    _topic_vectors(embedder)
+    target = _grab_bag(store, hub=hub)
+    candidate = _candidate(store, target)
+    monkeypatch.setattr(
+        router,
+        "route",
+        lambda _req: _llm_result(
+            json.dumps(
+                {
+                    "action": "split",
+                    "reason": "three independent claims",
+                    "children": _children(candidate),
+                }
+            )
+        ),
+    )
+    verdict = proposer.propose_llm(store, candidate)
+    merged = dict(candidate.payload)
+    merged.update(verdict.payload_overrides)
+    review_id = emit_proposal(
+        store,
+        replace(candidate, payload=merged),
+        rationale=verdict.rationale,
+    )
+    assert review_id is not None
+    (prop,) = [p for p in pending_proposals(store) if p.review_id == review_id]
+    assert _reviewable(prop)
+
+    rec = doors.apply_split(
+        store, review_id, actor="garden-consumer", model="fixture-reviewer"
+    )
+
+    assert len(rec.children) == 3
+    tomb = store.get_ref(kind="memory", id=target, include_deleted=True)
+    assert tomb is not None and tomb.retired_at is not None
 
 
 def test_cli_dispatches_split_undo(

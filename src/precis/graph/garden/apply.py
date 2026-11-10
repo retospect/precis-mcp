@@ -3230,21 +3230,72 @@ class SplitRecord:
     applied_links: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _is_index(conn: Any, ref_id: int) -> bool:
+    """Whether ``ref_id`` carries the ``section:index`` hub tag."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'OPEN' "
+            "AND t.value = 'section:index'",
+            (ref_id,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _index_ancestor(conn: Any, target: int) -> int | None:
+    """The nearest live ``section:index`` ancestor along the ``part-of``
+    chain (``contains`` is the same membership stored inverted), or None.
+    Intermediate parents must be live; the chain is depth-capped like
+    :func:`precis.utils.memory_hubs.hubs_of`."""
+    row = conn.execute(
+        "WITH RECURSIVE edges(child, parent) AS ("
+        "  SELECT src_ref_id, dst_ref_id FROM links WHERE relation = 'part-of' "
+        "  UNION SELECT dst_ref_id, src_ref_id FROM links "
+        "  WHERE relation = 'contains'), "
+        "up(ref_id, depth) AS ("
+        "  SELECT e.parent, 1 FROM edges e JOIN refs r ON r.ref_id = e.parent "
+        "  WHERE e.child = %(t)s AND r.retired_at IS NULL "
+        "  UNION SELECT e.parent, u.depth + 1 FROM up u "
+        "  JOIN edges e ON e.child = u.ref_id "
+        "  JOIN refs r ON r.ref_id = e.parent AND r.retired_at IS NULL "
+        "  WHERE u.depth < 8) "
+        "SELECT u.ref_id FROM up u JOIN refs r ON r.ref_id = u.ref_id "
+        "WHERE r.kind = 'memory' AND EXISTS ("
+        "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "  WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
+        "  AND t.value = 'section:index') "
+        "ORDER BY u.depth, u.ref_id LIMIT 1",
+        {"t": target},
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
 def _split_hub(
     payload: dict[str, Any], target: int, fate: str, *, conn: Any
 ) -> int | None:
-    """Resolve the children's part-of parent (the hub, never the parent)."""
+    """Resolve the children's part-of parent (the hub, never the parent).
+
+    An explicit ``payload.hub`` must be a live memory. Without one the
+    children hang on the target's ``section:index`` ancestry — a kept hub
+    stays its own hub, anything else resolves to the nearest live index
+    ancestor. The split parent is never a substitute hub: hanging
+    children on it would violate the one-hub-parent shape.
+    """
     from precis.utils.handle_registry import parse
 
     raw = payload.get("hub")
     if raw is None:
-        if fate == "retire":
+        if fate == "keep" and _is_index(conn, target):
+            return target
+        rid = _index_ancestor(conn, target)
+        if rid is None:
             raise MergeRefused(
                 "apply_refused",
-                "a split retire needs a live hub for the tombstone redirect; "
-                "propose keep or name a hub",
+                "the split names no hub and no live section:index ancestor "
+                "reaches the target; name a hub",
             )
-        return target
+        return rid
     rid = raw if isinstance(raw, int) else (parse(str(raw)) or (None, None, -1))[2]
     if not isinstance(rid, int) or rid <= 0:
         raise BadInput("split hub must be a memory id or me<N> handle")
@@ -3345,22 +3396,58 @@ def _mint_split_child(
     return cid
 
 
-def _retire_split_children(store: Store, conn: Any, child_ids: list[int]) -> int:
-    """Undo helper: retire the minted children and drop their edges."""
-    deleted = 0
+def _split_child_pins(
+    store: Store, conn: Any, child_ids: list[int]
+) -> list[dict[str, Any]]:
+    """Undo pins for the minted children: each child's trust-subject sha
+    and every link row touching it — exactly what undo may delete."""
+    pins = []
     for cid in child_ids:
+        state = store.trust_state("ref", cid, conn=conn)
+        assert state is not None and state.sha is not None
+        pins.append(
+            {"id": cid, "sha": state.sha, "links": _retirement_links(conn, [cid])}
+        )
+    return pins
+
+
+def _retire_split_children(store: Store, conn: Any, pins: list[dict[str, Any]]) -> int:
+    """Undo helper: retire the minted children and drop their edges.
+
+    Every child must still match its apply-time pin — trust-subject sha
+    and the full link set. An edited, retired or relinked child carries
+    intervening work a blind delete would erase, so undo refuses."""
+    for pin in pins:
+        cid = int(pin["id"])
         row = conn.execute(
             "SELECT retired_at FROM refs WHERE ref_id = %s FOR UPDATE", (cid,)
         ).fetchone()
-        if row is None or row[0] is not None:
-            continue
+        if row is None:
+            raise MergeRefused("target_gone", f"split child me{cid} is gone")
+        state = store.trust_state("ref", cid, conn=conn)
+        links = _retirement_links(conn, [cid])
+        if (
+            row[0] is not None
+            or not isinstance(pin.get("sha"), str)
+            or not isinstance(pin.get("links"), list)
+            or state is None
+            or state.sha != pin["sha"]
+            or links != pin["links"]
+        ):
+            raise MergeRefused(
+                "stale",
+                f"split child me{cid} changed after the split; undo is unsafe",
+                next=f"get(kind='memory', id='me{cid}')",
+            )
+        _guard_memory_link_measures(conn, links)
+    for pin in pins:
+        cid = int(pin["id"])
         conn.execute(
             "DELETE FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
             (cid, cid),
         )
         store.retire_ref(cid, conn=conn)
-        deleted += 1
-    return deleted
+    return len(pins)
 
 
 @trust_door("generated")
@@ -3462,6 +3549,10 @@ def apply_split(
                         set_by="agent",
                         conn=conn,
                     )
+                # The pins include the derived-from edges, so they stamp
+                # after _save_retirement; the merge rewrites the key whole.
+                ret["child_pins"] = _split_child_pins(store, conn, child_ids)
+                store.stamp_ref_meta(target, {"garden_retirement": ret}, conn=conn)
                 return rec
             for cid in child_ids:
                 store.add_link(
@@ -3471,6 +3562,12 @@ def apply_split(
                     set_by="agent",
                     conn=conn,
                 )
+            for child, pin in zip(
+                rec.children,
+                _split_child_pins(store, conn, child_ids),
+                strict=True,
+            ):
+                child.update(pin)
             ops = _rewrite_ops(
                 body_text,
                 [
@@ -3522,7 +3619,10 @@ def undo_split(store: Store, split_id: str, *, actor: str) -> dict[str, int]:
     A ``retire`` fate delegates the node/link restoration to
     :func:`undo_retirement` on the embedded snapshot; a ``keep`` fate replays
     the saved body chunk and link set like :func:`undo_rewrite`. Both write
-    the terminal ``undone`` rejection on the proposal key.
+    the terminal ``undone`` rejection on the proposal key. The children are
+    pinned at apply time (content sha plus every link row) and undo refuses
+    when one changed, retired or relinked since — an intervening edit is
+    never deleted.
     """
     from precis.graph.garden.proposals import GARDEN_VERSION
 
@@ -3550,8 +3650,15 @@ def undo_split(store: Store, split_id: str, *, actor: str) -> dict[str, int]:
                 raise NotFound(f"no split record for split_id={split_id!r}")
             if tomb[1].get("parent_fate") != "retire":
                 raise NotFound(f"no split record for split_id={split_id!r}")
-            child_ids = [int(c) for c in tomb[1].get("children") or []]
-            deleted_children = _retire_split_children(store, conn, child_ids)
+            child_pins = tomb[1].get("child_pins")
+            if not isinstance(child_pins, list):
+                raise MergeRefused(
+                    "stale",
+                    "the split record carries no child pins; "
+                    "undo cannot verify the children are untouched",
+                    next=f"inspect me{int(tomb[0])}'s garden_retirement record",
+                )
+            deleted_children = _retire_split_children(store, conn, child_pins)
             counts = undo_retirement(store, split_id, actor=actor)
             return {
                 "children_deleted": deleted_children,
@@ -3569,9 +3676,7 @@ def undo_split(store: Store, split_id: str, *, actor: str) -> dict[str, int]:
             or links != rec["applied_links"]
         ):
             raise MergeRefused("stale", "memory or links changed after the split")
-        deleted_children = _retire_split_children(
-            store, conn, [int(c["id"]) for c in rec["children"]]
-        )
+        deleted_children = _retire_split_children(store, conn, rec["children"])
         prior_links = {link["link_id"]: link for link in rec["links"]}
         deleted = store.delete_links(
             [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],

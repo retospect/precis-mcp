@@ -509,6 +509,18 @@ def _one_action_verdict(
         successor = body.get("successor")
         if isinstance(successor, str | int) and not isinstance(successor, bool):
             overrides["successor"] = successor
+    elif action == "split":
+        # grab_bag's plan: the prompt asks for payload_overrides.children,
+        # but a flat reply names the same keys at the top level — a split
+        # without them can never be reviewed (children=None).
+        nested = body.get("payload_overrides")
+        nested = nested if isinstance(nested, dict) else {}
+        for key in ("children", "parent_fate", "keep_body", "hub"):
+            value = nested.get(key)
+            if value is None:
+                value = body.get(key)
+            if value is not None:
+                overrides[key] = value
     return Verdict(
         accept=True,
         rationale=reason,
