@@ -3792,7 +3792,19 @@ class DispatchMixin(RuntimeShape):
                     # mcp_slim applies to full-verb params one layer up.
                     # ``args`` itself is never promoted; what stays in
                     # ``unknown`` is genuinely unknown and rejected below.
-                    promotable = [k for k in unknown if k in accepted and k != "args"]
+                    # gr593341: "real kwarg" is the MRO-accepted set, not
+                    # the override's own signature — a param the override
+                    # forwards through its ``**_kw`` catch-all (todo.search
+                    # → NumericRefHandler.search's ``sort=``) is real too;
+                    # checking only the own signature refused
+                    # ``search(kind='todo', args={'sort': 'recency'})``
+                    # while gripe/quest take the same spelling.
+                    promotable = [
+                        k
+                        for k in unknown
+                        if k != "args"
+                        and k in _handler_accepted_kwargs(type(handler), verb)
+                    ]
                     if promotable:
                         promoted = _coerce_extras(
                             type(handler),

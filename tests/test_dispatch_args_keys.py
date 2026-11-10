@@ -745,6 +745,30 @@ def test_args_key_naming_handler_kwarg_is_promoted_not_rejected(
     assert "zz_nope" in bad
 
 
+def test_args_key_naming_forwarded_kwarg_is_promoted_not_rejected(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr593341: ``search(kind='todo', args={'sort': 'recency'})``.
+
+    ``sort`` is no explicit param of ``TodoHandler.search`` — its
+    ``**_kw`` catch-all forwards to ``NumericRefHandler.search`` where
+    ``sort=`` is real. The own-signature promotable check refused it on
+    the ``ARGS_KEYS`` gate while gripe/quest take the same args=
+    spelling through their lenient/explicit paths. The MRO-accepted set
+    promotes it; an invalid value then surfaces the base browse-sort
+    refusal (proof it reached ``sort=``, not a silent drop), and
+    ``args={'id_min': …}`` — the same gripe's other misfiled key —
+    promotes too."""
+    out = _call(runtime_with_store, "todo", "search", {"sort": "recency"})
+    assert "[error" not in out, out
+    out = _call(runtime_with_store, "todo", "search", {"id_min": 0})
+    assert "[error" not in out, out
+
+    bad = _call(runtime_with_store, "todo", "search", {"sort": "bogus"})
+    assert "not accepted by todo.search" not in bad, bad
+    assert "sort= is supported" in bad, bad
+
+
 @pytest.mark.parametrize("kind", ["gripe", "todo"])
 def test_unknown_put_args_key_points_at_comment_idiom(
     runtime_with_store: PrecisRuntime, kind: str
