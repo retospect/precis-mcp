@@ -1768,6 +1768,7 @@ class SkillHandler(Handler):
         page_size: int = 10,
         mode: str | None = None,
         exclude: list[str] | None = None,
+        query_vec: list[float] | None = None,
         **_kw: Any,
     ) -> list[_MergeSearchHit]:
         """Skill rows as ``SearchHit``\\ s for the cross-kind merge (gr568412).
@@ -1775,7 +1776,10 @@ class SkillHandler(Handler):
         The same ranked merge :meth:`search` runs — floored semantic
         leg, word-overlap/verbatim lexical rows, title/slug identity
         pins — minus the TOON render and paging, one row per skill.
-        ``exclude=`` drops named slugs. ``tags=`` stays with the
+        ``exclude=`` drops named slugs. ``query_vec=`` is the
+        dispatcher's shared query embedding (gr519679): the index
+        would otherwise re-embed ``q`` inside the fan-out deadline,
+        one remote call per kind. ``tags=`` stays with the
         dispatcher's post-filter; the ``*_ref_ids`` facets never reach
         this kind (no ref-id wiring — it sits in
         ``UNCITED_UNSUPPORTED_KINDS`` so a ``cited=``/``uncited=``
@@ -1793,7 +1797,7 @@ class SkillHandler(Handler):
                 options=list(_SKILL_SEARCH_MODES),
             )
         rows, _per_slug, _hidden = self._ranked_rows(
-            q, mode_norm=mode_norm, page_size=page_size
+            q, mode_norm=mode_norm, page_size=page_size, query_vec=query_vec
         )
         if current_scope() == "read":
             rows = [r for r in rows if not _skill_is_write_only(r.slug)]
@@ -1827,6 +1831,7 @@ class SkillHandler(Handler):
         *,
         mode_norm: str,
         page_size: int,
+        query_vec: list[float] | None = None,
     ) -> tuple[list[_SkillSearchRow], Counter[str], set[str]]:
         """Merged + score-sorted skill rows — the ranking core shared by
         :meth:`search` and :meth:`search_hits`.
@@ -1890,7 +1895,7 @@ class SkillHandler(Handler):
         semantic_hits = (
             []
             if mode_norm in ("lexical", "verbatim")
-            else self._semantic_hits(q, page_size=over_fetch)
+            else self._semantic_hits(q, page_size=over_fetch, query_vec=query_vec)
         )
         # gr568412: floor the semantic leg BEFORE the per-slug merge —
         # the cut used to run downstream in ``search_hits``, where a
@@ -2131,12 +2136,14 @@ class SkillHandler(Handler):
 
     # ── search helpers ─────────────────────────────────────────────
 
-    def _semantic_hits(self, q: str, *, page_size: int) -> list[SearchHit]:
+    def _semantic_hits(
+        self, q: str, *, page_size: int, query_vec: list[float] | None = None
+    ) -> list[SearchHit]:
         """Return cosine-ranked chunk hits, or ``[]`` when no embedder."""
         index = self._get_index()
         if index is None:
             return []
-        return index.search(q, page_size=page_size)
+        return index.search(q, page_size=page_size, query_vec=query_vec)
 
     def _semantic_available(self) -> bool:
         """True when the semantic side of skill search can answer.

@@ -126,7 +126,9 @@ def _stub_hits(
         for slug, score in pairs
     ]
     monkeypatch.setattr(
-        skill, "_semantic_hits", lambda q, *, page_size: hits[:page_size]
+        skill,
+        "_semantic_hits",
+        lambda q, *, page_size, query_vec=None: hits[:page_size],
     )
     monkeypatch.setattr(skill, "_lexical_hits", lambda q: [])
 
@@ -399,7 +401,9 @@ def _strong_semantic_elsewhere(skill: SkillHandler, monkeypatch) -> None:
             variant="structural",
         ),
     ]
-    monkeypatch.setattr(skill, "_semantic_hits", lambda q, *, page_size: hits)
+    monkeypatch.setattr(
+        skill, "_semantic_hits", lambda q, *, page_size, query_vec=None: hits
+    )
 
 
 def _rows(body: str) -> list[str]:
@@ -511,7 +515,7 @@ def test_search_hits_floors_semantic_leg(skill: SkillHandler, monkeypatch) -> No
     monkeypatch.setattr(
         skill,
         "_semantic_hits",
-        lambda q, *, page_size: _sem_hits(
+        lambda q, *, page_size, query_vec=None: _sem_hits(
             ("precis-overview", 0.8), ("precis-pcb-help", 0.10)
         ),
     )
@@ -532,7 +536,7 @@ def test_search_hits_floor_runs_before_slug_merge(
     monkeypatch.setattr(
         skill,
         "_semantic_hits",
-        lambda q, *, page_size: _sem_hits(("precis-pcb-help", 0.30)),
+        lambda q, *, page_size, query_vec=None: _sem_hits(("precis-pcb-help", 0.30)),
     )
     monkeypatch.setattr(
         skill,
@@ -547,7 +551,9 @@ def test_search_hits_floor_runs_before_slug_merge(
 
 def test_search_hits_lexical_and_exclude(skill: SkillHandler, monkeypatch) -> None:
     """Lexical rows are never floored; exclude= drops named slugs."""
-    monkeypatch.setattr(skill, "_semantic_hits", lambda q, *, page_size: [])
+    monkeypatch.setattr(
+        skill, "_semantic_hits", lambda q, *, page_size, query_vec=None: []
+    )
     monkeypatch.setattr(
         skill,
         "_lexical_hits",

@@ -181,7 +181,7 @@ def test_title_boost_df1_bypass_demotes_below_strong_hit_on_long_query(
     monkeypatch.setattr(
         skill,
         "_semantic_hits",
-        lambda q, *, page_size: [
+        lambda q, *, page_size, query_vec=None: [
             SearchHit(
                 slug="precis-memory-help",
                 chunk_idx=0,

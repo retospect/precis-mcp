@@ -197,13 +197,24 @@ class FileCorpusIndex:
     # ── search ─────────────────────────────────────────────────────
 
     def search(
-        self, q: str, page_size: int = 10, *, build_wait_s: float | None = None
+        self,
+        q: str,
+        page_size: int = 10,
+        *,
+        build_wait_s: float | None = None,
+        query_vec: list[float] | None = None,
     ) -> list[SearchHit]:
         """Cosine search the corpus for ``q``.
 
         ``build_wait_s`` bounds the wait for a cold build (default
         :data:`_BUILD_WAIT_S`, for interactive callers); a background
         caller that would rather wait than miss passes a longer one.
+
+        ``query_vec`` is a caller-supplied embedding of ``q`` — the
+        cross-kind fan-out embeds the query once at dispatch and
+        threads it into every kind's ``search_hits``; passing it on
+        here keeps the whole fan-out at one ``embed_one(q)`` instead
+        of one per kind (gr519679).
 
         Returns ``[]`` when the index isn't available (see
         :meth:`is_available`) or when the corpus is empty. Build
@@ -231,15 +242,18 @@ class FileCorpusIndex:
         if not entries:
             return []
 
-        try:
-            qv = _bounded(
-                self._embedder.embed_one,  # type: ignore[union-attr]
-                q,
-                timeout=_EMBED_CALL_TIMEOUT_S,
-            )
-        except Exception as exc:  # pragma: no cover — embedder failure
-            log.warning("skill_index: query embed failed: %s", exc)
-            return []
+        if query_vec is not None:
+            qv: Any = query_vec
+        else:
+            try:
+                qv = _bounded(
+                    self._embedder.embed_one,  # type: ignore[union-attr]
+                    q,
+                    timeout=_EMBED_CALL_TIMEOUT_S,
+                )
+            except Exception as exc:  # pragma: no cover — embedder failure
+                log.warning("skill_index: query embed failed: %s", exc)
+                return []
         if qv is _TIMED_OUT:
             log.warning(
                 "skill_index: query embed exceeded %.0fs wall-clock cap — "

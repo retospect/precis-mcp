@@ -190,7 +190,9 @@ def test_semantic_search_distinct_section_count_skips_twin_variants(
             variant="question_only",
         ),
     ]
-    monkeypatch.setattr(skill, "_semantic_hits", lambda q, *, page_size: hits)
+    monkeypatch.setattr(
+        skill, "_semantic_hits", lambda q, *, page_size, query_vec=None: hits
+    )
 
     out = skill.search(q="zzzznonexistentqueryzzzz")
     rows = [ln for ln in out.body.splitlines() if ln.startswith(f"{slug}\t")]
