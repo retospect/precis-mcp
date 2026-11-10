@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import GardenCandidate
+from precis.utils.handle_registry import format_handle
 from precis.utils.handle_registry import parse as parse_handle
 from precis.utils.memory_reconcile import (
     memory_body_checklist,
@@ -377,7 +378,8 @@ def _memory_eye(store: Store, candidate: GardenCandidate) -> str | None:
     try:
         from precis.utils.eye_render import render_eye
 
-        rendered = render_eye(store, f"memory:{candidate.target_id}", "fisheye+1hop")
+        handle = format_handle("memory", candidate.target_id)
+        rendered = render_eye(store, handle, "fisheye+1hop")
     except Exception:
         log.warning(
             "garden proposer: fisheye+1hop failed for memory:%s",
@@ -439,12 +441,6 @@ def _parse_verdict(text: str) -> dict[str, Any] | None:
     except ValueError:
         return None
     return out if isinstance(out, dict) else None
-
-
-#: The one-action vocabulary for memory-body candidates (gr560762).
-_ONE_ACTIONS = frozenset(
-    {"rewrite", "qualify", "supersede", "retire", "no-change", "ask"}
-)
 
 
 def _one_action_verdict(

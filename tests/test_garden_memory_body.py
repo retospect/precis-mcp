@@ -225,7 +225,12 @@ def test_prompt_fails_loudly_when_the_checklist_loses_a_section(
 def test_propose_carries_the_nodes_fisheye(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    body = "The verified route reaches the evidence with a live anchor."
+    # The markers must ride the eye render alone: a body past
+    # EXCERPT_CHARS leaves a tail the bounded excerpt never shows, and
+    # the me<id> [memory] head only exists inside the render — so a
+    # regression to excerpt-only input fails here.
+    tail = "the tail only the fisheye reaches"
+    body = "pad " * 200 + tail
     rid = _memory(store, "A standing fact", body)
     captured: list[str] = []
 
@@ -237,8 +242,10 @@ def test_propose_carries_the_nodes_fisheye(
     verdict = proposer.propose_llm(store, _candidate(rid))
     assert verdict.accept is False
     (prompt,) = captured
-    assert '"fisheye"' in prompt
-    assert body in prompt
+    # '"fisheye":' is the JSON field — '"fisheye"' alone also matches the
+    # contract's prose.
+    assert f'"fisheye": "me{rid} [memory] A standing fact' in prompt
+    assert tail in prompt
 
 
 def test_memory_prompt_version_covers_the_checklist() -> None:
