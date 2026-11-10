@@ -3662,3 +3662,156 @@ def test_red_verdict_counts_gate_fast_and_ignores_soak(
     )
     looked, red = mod._red_verdict(rig.root, sha)
     assert looked and red is None
+
+
+# ── red-test waiver on the release candidate (precis.plans.red_waiver) ──
+
+
+class _Verdicts:
+    """Fake ``scripts/prod-precis`` serving ``release.ci_verdicts``."""
+
+    def __init__(self, rows: Any, *, fail: bool = False) -> None:
+        self.rows = rows
+        self.fail = fail
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str], **kw: Any) -> tuple[int, str, str]:
+        self.calls.append(args)
+        if self.fail:
+            return 1, "", "refused"
+        assert args[:2] == ["settings", "get"], args
+        return 0, f"{args[2]} = {json.dumps(self.rows)} (layer=db)\n", ""
+
+
+def _utc(hours_ago: float) -> str:
+    when = time.gmtime(time.time() - hours_ago * 3600)
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", when)
+
+
+def _waived_row(head: str, **over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "sha": head[:12],
+        "range": "aaaa..bbbb",
+        "verdict": "green",
+        "run_id": "31",
+        "at": _utc(1.0),
+        "waived": {"gripe": 77, "tests": ["tests/test_w.py::test_a"]},
+    }
+    row.update(over)
+    return row
+
+
+def _waiver_facts(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, prod: Any
+) -> tuple[ModuleType, str, dict[str, Any]]:
+    head = _cut(rig)
+    _push_branch(rig, "gated", rig.shas["c0"])
+    _push_branch(rig, "prod", rig.shas["c0"])
+    mod = _published(rig, monkeypatch, prod)
+    exact = _verdict(head, state="release_not_green")["LGM_EXACT"]
+    monkeypatch.setenv("LGM_EXACT", exact)
+    return mod, head, mod._gate_facts(rig.root)
+
+
+def test_waived_head_becomes_the_candidate_and_names_the_gripe(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Verdicts([_waived_row(rig.shas["c2"])])
+    mod, head, facts = _waiver_facts(rig, monkeypatch, prod)
+    assert facts["candidate"] == head and facts["candidate_state"] == "waived"
+    assert facts["certificate"]["waived"] == {
+        "gripe": 77,
+        "tests": ["tests/test_w.py::test_a"],
+    }
+    assert 0.9 < facts["age_hours"] < 1.2
+    assert prod.calls == [["settings", "get", "release.ci_verdicts"]]
+    assert "WAIVED by gr77" in capsys.readouterr().err
+    # the deploy gate accepts the waiver in place of the green attempt
+    assert mod._refusal(rig.root, facts) == ""
+
+
+def test_a_stale_waiver_still_trips_the_verdict_age_limit(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Verdicts([_waived_row(rig.shas["c2"], at=_utc(7.0))])
+    mod, _head, facts = _waiver_facts(rig, monkeypatch, prod)
+    assert facts["candidate_state"] == "waived"
+    assert "verdict is 7.0h old" in mod._refusal(rig.root, facts)
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"waived": None},  # a plain verdict
+        {"verdict": "red"},
+        {"sha": "0" * 12},  # another sha
+        {"waived": {"gripe": "77"}},  # malformed marker
+        {"waived": {"tests": []}},
+        {"at": "yesterday"},
+        {"at": _utc(-5.0)},  # future-dated
+        {"sha": "c0ffee"},  # too short to bind
+    ],
+)
+def test_only_a_well_formed_green_waived_row_on_this_sha_counts(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, over: dict[str, Any]
+) -> None:
+    row = _waived_row(rig.shas["c2"], **over)
+    if "waived" in over and over["waived"] is None:
+        del row["waived"]
+    mod, _head, facts = _waiver_facts(rig, monkeypatch, _Verdicts([row]))
+    assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
+    assert "waived" not in (facts.get("certificate") or {})
+    assert "no full green CI verdict" in mod._refusal(rig.root, facts)
+
+
+@pytest.mark.parametrize("rows", [None, "junk", {"sha": "x"}, []])
+def test_unreadable_or_empty_verdict_rows_change_nothing(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, rows: Any
+) -> None:
+    _mod, _head, facts = _waiver_facts(rig, monkeypatch, _Verdicts(rows))
+    assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
+
+
+def test_no_prod_access_leaves_the_gate_exactly_as_strict(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rig names another checkout, so the real skip reason applies and
+    no prod call is made; a failing read is the same."""
+    head = _cut(rig)
+    mod = _load_round(rig, monkeypatch)
+    exact = _verdict(head, state="release_not_green")["LGM_EXACT"]
+    monkeypatch.setenv("LGM_EXACT", exact)
+    calls: list[Any] = []
+    monkeypatch.setattr(mod, "_prod_precis", lambda *a, **k: calls.append(a))
+    facts = mod._gate_facts(rig.root)
+    assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
+    assert calls == []
+    failing = _Verdicts([_waived_row(rig.shas["c2"])], fail=True)
+    monkeypatch.setattr(mod, "_prod_precis", failing)
+    monkeypatch.setattr(mod, "_record_skip_reason", lambda: None)
+    assert mod._gate_facts(rig.root)["candidate"] == ""
+    assert failing.calls  # it did try the read
+
+
+def test_the_waiver_is_never_consulted_for_a_green_or_unreadable_head(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = _cut(rig)
+    prod = _Verdicts([_waived_row(rig.shas["c2"])])
+    mod = _published(rig, monkeypatch, prod)
+    for state in ("found", "unreadable"):
+        monkeypatch.setenv("LGM_EXACT", _verdict(head, state=state)["LGM_EXACT"])
+        facts = mod._gate_facts(rig.root)
+        assert facts["candidate_state"] == state
+    assert prod.calls == []
+
+
+def test_a_waived_certificate_must_still_bind_to_the_candidate(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Verdicts([_waived_row(rig.shas["c2"])])
+    mod, _head, facts = _waiver_facts(rig, monkeypatch, prod)
+    facts["certificate"] = {**facts["certificate"], "sha": "f" * 40}
+    assert "lacks its CI workflow/run/attempt certificate" in mod._refusal(
+        rig.root, facts
+    )

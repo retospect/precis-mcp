@@ -1295,7 +1295,101 @@ def _release_candidate(root: Path, rel: dict[str, Any]) -> dict[str, Any]:
             file=sys.stderr,
         )
         facts["candidate_state"] = "unreadable"
+    if facts.get("candidate_state") == "release_not_green" and not facts["candidate"]:
+        _apply_waiver(facts, head)
     return facts
+
+
+#: ``app_settings`` key of the CI verdict rows (``scripts/release``
+#: writes them, ``precis.plans.release`` too — a test pins the literals).
+CI_VERDICTS_KEY = "release.ci_verdicts"
+_VERDICTS_ROW_RE = re.compile(
+    rf"^{re.escape(CI_VERDICTS_KEY)} = (.*) \(layer=(\w+)\)$", re.MULTILINE
+)
+_ROW_SHA_MIN = 7  # ``precis.plans.gates.MIN_SHA_LEN``
+
+
+def _waived_verdict(sha: str) -> dict[str, Any] | None:
+    """The red-test waiver on ``sha`` (``precis.plans.red_waiver``): the
+    ``release.ci_verdicts`` row for that sha is ``green`` AND carries a
+    ``waived`` marker, read from prod like ``release.soak_red``. ``None``
+    on every doubt — no prod access, an unreadable value, no row for the
+    sha, a plain verdict, a malformed marker or timestamp — so the gate
+    stays exactly as strict as without it. Returns ``{gripe, run_id, at,
+    age_hours, tests}``."""
+    if _record_skip_reason():
+        return None
+    try:
+        rc, out, _err = _prod_precis(
+            ["settings", "get", CI_VERDICTS_KEY], timeout=RECORD_TIMEOUT_S
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _VERDICTS_ROW_RE.search(out) if rc == 0 else None
+    if m is None or m.group(2) != "db":
+        return None
+    try:
+        rows = json.loads(m.group(1))
+    except ValueError:
+        return None
+    if not isinstance(rows, list):
+        return None
+    best: dict[str, Any] | None = None
+    for row in rows:
+        row_sha = str(row.get("sha") or "").lower() if isinstance(row, dict) else ""
+        if len(row_sha) < _ROW_SHA_MIN or not sha.lower().startswith(row_sha):
+            continue
+        if best is None or str(row.get("at") or "") >= str(best.get("at") or ""):
+            best = row
+    if best is None or best.get("verdict") != "green":
+        return None
+    marker = best.get("waived")
+    if not isinstance(marker, dict) or not isinstance(marker.get("gripe"), int):
+        return None
+    try:
+        then = datetime.strptime(str(best.get("at")), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
+    except ValueError:
+        return None
+    age = (datetime.now(UTC) - then).total_seconds() / 3600
+    if age < 0:
+        return None
+    tests = marker.get("tests")
+    return {
+        "gripe": marker["gripe"],
+        "run_id": str(best.get("run_id") or ""),
+        "at": str(best["at"]),
+        "age_hours": age,
+        "tests": [str(t) for t in tests] if isinstance(tests, list) else [],
+    }
+
+
+def _apply_waiver(facts: dict[str, Any], head: str) -> None:
+    """A release head whose CI is red but waived (see :func:`_waived_verdict`)
+    is the candidate: ``candidate_state`` ``waived``, ``age_hours`` the
+    waiver's age (so the staleness limit still bites), and a certificate
+    that names the waiver instead of a green workflow attempt
+    (:func:`_refusal` accepts it). The waiving gripe is logged."""
+    w = _waived_verdict(head)
+    if w is None:
+        return
+    facts.update(
+        candidate=head,
+        candidate_state="waived",
+        age_hours=w["age_hours"],
+        certificate={
+            "sha": head,
+            "waived": {"gripe": w["gripe"], "tests": w["tests"]},
+            "run_id": w["run_id"],
+            "completed_at": w["at"],
+        },
+    )
+    print(
+        f"scripts/round: CI is red on {head[:9]} but WAIVED by gr{w['gripe']} "
+        f"(run {w['run_id'] or '?'}, {', '.join(w['tests']) or 'no ids'}) at {w['at']}",
+        file=sys.stderr,
+    )
 
 
 def _ref(root: Path, name: str) -> str:
@@ -1657,12 +1751,20 @@ def _refusal(root: Path, f: dict[str, Any]) -> str:
         return f"origin/prod {f['origin_prod'][:8]} is not an ancestor of candidate {cand[:8]} (prod moves fast-forward only)"
     if f.get("release_branch"):
         certificate = f.get("certificate")
+        waived = isinstance(certificate, dict) and isinstance(
+            certificate.get("waived"), dict
+        )
         if (
             not isinstance(certificate, dict)
             or certificate.get("sha") != cand
-            or certificate.get("workflow") != ".github/workflows/check.yml"
-            or not certificate.get("run_id")
-            or not certificate.get("attempt")
+            or (
+                not waived  # a waiver stands in for the green attempt
+                and (
+                    certificate.get("workflow") != ".github/workflows/check.yml"
+                    or not certificate.get("run_id")
+                    or not certificate.get("attempt")
+                )
+            )
         ):
             return "exact release head lacks its CI workflow/run/attempt certificate"
         rel = _active_rel(_read_round(_round_state(root))) or {}

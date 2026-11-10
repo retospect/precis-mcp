@@ -1109,6 +1109,16 @@ def ci_verdict_rows(
         "run_id": str(run_id or ""),
         "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if verdict == "red" and any(
+        isinstance(r.get("waived"), dict)
+        for r in previous
+        if str(r.get("sha", ""))[:LANDED_SHA_LEN] == row["sha"]
+    ):
+        # The red-test waiver (precis.plans.red_waiver) is a standing
+        # decision on this sha: a red read after it (a gate that could not
+        # read the waiver, a retried poll) must not erase the row. Only a
+        # fresh green replaces it.
+        return list(previous)
     kept = [r for r in previous if str(r.get("sha", ""))[:LANDED_SHA_LEN] != row["sha"]]
     return [*kept, row][-MAX_CI_VERDICTS:]
 
@@ -1367,6 +1377,18 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
         if facts.get("candidate_state") == "release_missing" and rbranch == branch:
             return die(1, f"release {branch} is missing on origin — investigate")
         if head and cand == head and rbranch == branch:
+            if facts.get("candidate_state") == "waived":
+                # The red-test waiver (precis.plans.red_waiver): `round gate`
+                # read a green-waived release.ci_verdicts row for this head.
+                # Proceed, and do NOT re-record the verdict — that would
+                # overwrite the waiver row with a plain green.
+                waiver = (facts.get("certificate") or {}).get("waived") or {}
+                say(
+                    f"CI red on {branch} at {head[:9]} WAIVED by "
+                    f"gr{waiver.get('gripe', '?')} — deploying anyway "
+                    f"({', '.join(waiver.get('tests') or []) or 'no ids'})"
+                )
+                return 0  # no soak note: the head's CI was red
             say(f"CI green on {branch} at {head[:9]}")
             note_ci_verdict(head, "green", _regate_run_id(head))
             note_soak(head)

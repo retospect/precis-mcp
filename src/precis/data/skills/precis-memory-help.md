@@ -100,7 +100,7 @@ transcript, not landed history (those live in `git log` and the docs).
    index view cuts semantic-only hits past a query-relative gap (best
    hit's distance + 0.15, capped at the 0.65 corpus floor; the fixed
    0.42 memory floor applies only under the
-   `PRECIS_SEARCH_FIXED_FLOORS=1` fallback), so a memory without them
+   fixed-floors fallback), so a memory without them
    can silently never come back. Retrieval keys and field fallbacks:
    `precis-firstline-help`.
 5. **Link it in.** One `part-of` to a hub (or to a summary node for a
@@ -366,7 +366,7 @@ neighbours and the nearest unlinked memories in the same `SPACE:`
 the write-section round-trip check: semantic-only hits past a
 query-relative gap (best hit's distance + 0.15, capped at the 0.65
 corpus floor; the fixed 0.42 memory floor applies only under the
-`PRECIS_SEARCH_FIXED_FLOORS=1` fallback) — a memory whose title/hook
+fixed-floors fallback) — a memory whose title/hook
 lacks the task words can miss the list. The semantically nearest
 hit keeps a slot even with no word match, recently touched nodes rank a
 little higher, and when no gotcha made the page the best matching

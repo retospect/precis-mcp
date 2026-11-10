@@ -13,6 +13,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -1576,6 +1577,94 @@ def test_wait_ci_records_the_verdict_with_range_and_run_id(
     n = mod.LANDED_SHA_LEN
     run_id = "555" if verdict == "green" else "666"
     assert calls == [(head, f"{prod[:n]}..{head[:n]}", verdict, run_id)]
+
+
+def test_wait_ci_proceeds_on_a_waived_head_without_re_recording(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The red-test waiver (`precis.plans.red_waiver`): `round gate` names
+    the head the candidate with state `waived`. wait_ci proceeds, logs the
+    gripe, and records NOTHING — a green re-record would overwrite the
+    waiver row the store-side gates read."""
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "c0ffee" + "1" * 34
+    facts = {
+        "release_head": head,
+        "release_branch": "release/r1",
+        "candidate": head,
+        "candidate_state": "waived",
+        "certificate": {
+            "sha": head,
+            "waived": {"gripe": 77, "tests": ["tests/test_w.py::test_a"]},
+        },
+    }
+    monkeypatch.setattr(mod, "gate_facts", lambda: facts)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    recorded: list[Any] = []
+    monkeypatch.setattr(mod, "note_ci_verdict", lambda *a: recorded.append(a))
+    monkeypatch.setattr(mod, "note_soak", lambda *a: recorded.append(a))
+    monkeypatch.setattr(mod, "ci_red", lambda h: recorded.append((h,)))
+    args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
+    assert mod.wait_ci("release/r1", args) == 0
+    assert recorded == []
+    out = capsys.readouterr().out
+    assert "WAIVED by gr77" in out and "tests/test_w.py::test_a" in out
+
+
+def test_a_red_never_overwrites_a_waived_row_but_a_green_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The waiver row is a standing decision: wait_ci's red record (or a
+    retried poll) on the same sha leaves it; a fresh green replaces it;
+    other shas and plain rows behave as before."""
+    mod = _load_release(tmp_path, monkeypatch)
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+    head = "c0ffee" + "1" * 34
+    waived = {
+        "sha": head[:12],
+        "range": "a..b",
+        "verdict": "green",
+        "run_id": "31",
+        "at": "2026-11-10T11:00:00Z",
+        "waived": {"gripe": 77, "tests": ["tests/t.py::a"]},
+    }
+    other = {"sha": "1" * 12, "verdict": "red", "run_id": "1", "at": "x"}
+    prev = [other, waived]
+    assert mod.ci_verdict_rows(head, "a..b", "red", "99", prev, now) == prev
+    rows = mod.ci_verdict_rows(head, "a..b", "green", "99", prev, now)
+    assert [r["verdict"] for r in rows] == ["red", "green"]
+    assert "waived" not in rows[-1] and rows[-1]["run_id"] == "99"
+    # a red on a different sha, or over a plain row, records as ever
+    rows = mod.ci_verdict_rows("2" * 40, "a..b", "red", "5", prev, now)
+    assert rows[:2] == prev and rows[-1]["sha"] == "2" * 12
+    plain = {**waived}
+    del plain["waived"]
+    rows = mod.ci_verdict_rows(head, "a..b", "red", "99", [plain], now)
+    assert [(r["verdict"], r["run_id"]) for r in rows] == [("red", "99")]
+
+
+def test_wait_ci_green_path_is_unchanged_when_not_waived(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "c0ffee" + "1" * 34
+    facts = {
+        "release_head": head,
+        "release_branch": "release/r1",
+        "candidate": head,
+        "candidate_state": "found",
+        "certificate": {"sha": head, "waived": {"gripe": 1}},  # not state=waived
+    }
+    monkeypatch.setattr(mod, "gate_facts", lambda: facts)
+    monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    seen: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(mod, "note_ci_verdict", lambda *a: seen.append(a))
+    monkeypatch.setattr(mod, "note_soak", lambda *a: None)
+    args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
+    assert mod.wait_ci("release/r1", args) == 0
+    assert seen == [(head, "green", "555")]
 
 
 @pytest.mark.parametrize("verdict", ["green", "red"])
