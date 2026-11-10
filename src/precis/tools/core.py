@@ -1929,7 +1929,9 @@ def put(
     # the S2/registry not-found rejection for a known-real paper no index
     # carries yet; citation= resolves a 'Journal Vol, Page (Year)' string
     # via Crossref; context_ref_id= links the minted stub to where it came
-    # up. Declared at the verb level (the gr262482 pattern) — they sat in
+    # up — a ref id or its universal handle ('pa123', 'me123'; a chunk
+    # handle lands on its owning ref). Declared at the verb level (the
+    # gr262482 pattern) — they sat in
     # _ARGS_ONLY as reachable-through-args handler kwargs while the
     # acquire error's own "pass verify=False" hint named them
     # (gr483930/gr484234).

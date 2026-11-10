@@ -106,8 +106,15 @@ def test_acquire_rejects_dead_context_ref(handler: PaperHandler) -> None:
 
 
 def test_acquire_rejects_non_int_context_ref(handler: PaperHandler) -> None:
-    with pytest.raises(BadInput, match="must be an int"):
+    with pytest.raises(BadInput, match="must be an int or a handle"):
         handler.acquire(identifier="doi:10.1/x", context_ref_id="abc")
+
+
+def test_acquire_rejects_dead_handle_context_ref(handler: PaperHandler) -> None:
+    # A well-formed handle naming no live ref fails the same way a dead
+    # numeric id does — before any write.
+    with pytest.raises(BadInput, match="not a live ref"):
+        handler.acquire(identifier="doi:10.1/x", context_ref_id="pa999999999")
 
 
 # ── minting + idempotency ───────────────────────────────────────────
@@ -435,6 +442,33 @@ def test_acquire_links_from_context(handler: PaperHandler, store: Store) -> None
     out = store.links_for(ctx.id, direction="out", relation="related-to")
     assert any(link.dst_ref_id == rid for link in out)
     assert f"ref {ctx.id}" in r.body
+
+
+def test_acquire_links_from_handle_context(handler: PaperHandler, store: Store) -> None:
+    # gr623795: the universal handle is the address every read emits —
+    # passing 'pa<id>'/'me<id>' for context_ref_id must not have to
+    # strip the prefix. Kind-agnostic: the provenance ref may be a
+    # paper or a memory.
+    ctx_paper = store.insert_ref(kind="paper", slug="ctxsrc", title="ctx src")
+    ctx_mem = store.insert_ref(kind="memory", slug=None, title="ctx mem")
+    r = handler.acquire(
+        identifier="arxiv:2401.00002",
+        context_ref_id=f"pa{ctx_paper.id}",
+        reason="rev",
+    )
+    rid = _ref_id(r.body)
+    r2 = handler.acquire(
+        identifier="arxiv:2401.00003",
+        context_ref_id=f"me{ctx_mem.id}",
+        reason="rev",
+    )
+    rid2 = _ref_id(r2.body)
+    out = store.links_for(ctx_paper.id, direction="out", relation="related-to")
+    assert any(link.dst_ref_id == rid for link in out)
+    out2 = store.links_for(ctx_mem.id, direction="out", relation="related-to")
+    assert any(link.dst_ref_id == rid2 for link in out2)
+    assert f"ref {ctx_paper.id}" in r.body
+    assert f"ref {ctx_mem.id}" in r2.body
 
 
 def test_acquire_does_not_retag_existing_paper(

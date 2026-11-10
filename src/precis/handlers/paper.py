@@ -578,6 +578,35 @@ def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
     return None
 
 
+def _resolve_context_ref_id(store: Store, raw: int | str) -> int:
+    """Coerce ``context_ref_id`` to the ref_id it names.
+
+    The bare ref id is the documented form, but the universal handle is
+    the address every read emits, so an agent that pastes
+    ``context_ref_id='pa621646'`` should not have to strip the prefix by
+    hand (gr623795): ``Store.resolve_handle`` decodes it — a chunk
+    handle lands on its owning ref, a merged handle follows the
+    tombstone to the live survivor. Anything else is refused here so a
+    bad value fails before any write.
+    """
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        pass
+    if isinstance(raw, str) and handle_registry.parse(raw) is not None:
+        resolved = store.resolve_handle(raw)
+        if resolved is not None:
+            return resolved.ref_id
+        raise BadInput(
+            f"acquire: context_ref_id={raw!r} is not a live ref",
+            next="omit context_ref_id or pass a live ref id or handle",
+        ) from None
+    raise BadInput(
+        f"acquire: context_ref_id must be an int or a handle, got {raw!r}",
+        next="pass the ref id (or its 'pa123'/'me123' handle) where the paper came up",
+    )
+
+
 def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | None:
     """Best-effort Semantic Scholar enrichment for a fresh stub.
 
@@ -1749,7 +1778,9 @@ class PaperHandler(Handler):
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
-        3. Link it from ``context_ref_id`` (provenance) when supplied.
+        3. Link it from ``context_ref_id`` (provenance) when supplied —
+           a ref id or its universal handle (``pa621646``; a chunk
+           handle lands on its owning ref).
 
         Downstream is automatic: an explicit acquire is a "fetch NOW"
         signal, so the stub is pinned to the head of the ``fetch_oa``
@@ -1798,16 +1829,11 @@ class PaperHandler(Handler):
                 )
 
         # Validate the provenance ref up-front so a bad id fails before
-        # any write (kind-agnostic — context may be a paper or a memory).
+        # any write (kind-agnostic — context may be a paper or a memory;
+        # a universal handle like 'pa621646' resolves to its ref id).
         ctx_id: int | None = None
         if context_ref_id is not None:
-            try:
-                ctx_id = int(context_ref_id)
-            except (TypeError, ValueError) as exc:
-                raise BadInput(
-                    f"acquire: context_ref_id must be an int, got {context_ref_id!r}",
-                    next="pass the numeric ref id where the paper came up",
-                ) from exc
+            ctx_id = _resolve_context_ref_id(self.store, context_ref_id)
             if ctx_id not in self.store.fetch_refs_by_ids(
                 [ctx_id], include_deleted=False
             ):

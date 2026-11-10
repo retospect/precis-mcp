@@ -63,8 +63,10 @@ put(kind="paper", arxiv="2401.00001", title="…")
   meta and helps the operator decide whether the auto-fetch is worth
   paywall-paying for.
 - `context_ref_id=` — the ref id of the surfacing source (the
-  perplexity-research / search result / draft tex chunk). Lets a
-  later reviewer chase back to where the paper was first wanted.
+  perplexity-research / search result / draft tex chunk), or its
+  handle (`pa123`, `me123`, … — a chunk handle like `pc123` lands on
+  its owning ref). Lets a later reviewer chase back to where the
+  paper was first wanted.
 - `verify=` — default `True`. Identifier is resolved via Semantic
   Scholar at mint time; if the lookup returns no metadata, the call
   rejects with a `BadInput` (so a hallucinated DOI never lands on
