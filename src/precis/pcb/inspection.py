@@ -10,6 +10,13 @@ layer filter cannot reset cumulative distances. Results paginate below
 Display rounding never changes connectivity. Pours are reported, not
 assigned a fictitious travel distance. Density is occupied area per cell,
 not a count of track endpoints.
+
+Board furniture's fiducial flashes ride ``model["pads"]`` as ordinary pad
+rows (``role: "fiducial"``, ``board_furniture`` folds them in so copper and
+mask fall out of the pad pipeline). They census under their own kind —
+``fiducial FID<n>``, the name :func:`precis.pcb.selectables.build` already
+gives them — so a layer sheet's ``pad`` count stays the component-pad truth
+(gr564928: a furnished board read 161 pads over a 159-pad source).
 """
 
 from __future__ import annotations
@@ -139,6 +146,11 @@ class Inspection:
         }
         self.instances = {str(i["refdes"]): i for i in graph["instances"]}
         self.items: list[Item] = []
+        fid_ordinals: dict[tuple[float, float], int] = {}
+        for row in model.get("pads", []):
+            if row.get("role") == "fiducial":
+                spot = (round(float(row["x"]), 4), round(float(row["y"]), 4))
+                fid_ordinals.setdefault(spot, len(fid_ordinals) + 1)
         for kind, rows in (
             ("pad", model.get("pads", [])),
             ("copper", model.get("copper", [])),
@@ -153,11 +165,19 @@ class Inspection:
                     if ctype == "via"
                     else [str(row.get("layer") or "")]
                 )
-                label = (
-                    f"{row.get('refdes', '?')}.{row.get('pin', '?')}"
-                    if ctype == "pad"
-                    else ctype
-                )
+                if ctype == "pad" and row.get("role") == "fiducial":
+                    ctype = "fiducial"
+                    spot = (
+                        round(float(row["x"]), 4),
+                        round(float(row["y"]), 4),
+                    )
+                    label = f"FID{fid_ordinals[spot]}"
+                else:
+                    label = (
+                        f"{row.get('refdes', '?')}.{row.get('pin', '?')}"
+                        if ctype == "pad"
+                        else ctype
+                    )
                 for layer in layers:
                     self.items.append(
                         Item(ctype, layer, str(row.get("net") or ""), label, shape, row)

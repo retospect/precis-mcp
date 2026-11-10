@@ -101,7 +101,8 @@ distances. Pours are counted but have no invented centre-line distance.
 Part cards include pose, pad nets, same-side courtyard gaps, actual label
 spot/offset and DRC findings; `refdes`/`net` accept globs, `side` is
 `top|bottom`. Layer sheets include counts, net histogram, extents and
-12x6 occupied-area ASCII density. Layers and snippets accept `net`/
+12x6 occupied-area ASCII density. Generated board fiducials census under
+`fiducial` (named `FID<n>`), never `pad`. Layers and snippets accept `net`/
 `net_class` globs and `bbox` or `refdes` + `margin` region filters.
 Silkscreen layers are `F.Silkscreen`/`B.Silkscreen`.
 

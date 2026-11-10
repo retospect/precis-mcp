@@ -223,6 +223,33 @@ def test_layer_counts_text_groups_and_density_of_crossing_track() -> None:
     assert "############" in body
 
 
+def test_fiducials_census_as_their_own_kind_not_pads() -> None:
+    """gr564928: furniture fiducials rode `model["pads"]` and inflated the
+    layer sheet's pad count (159-pad source read 161). They census as
+    `fiducial FID<n>` — the `selectables.build` name — instead."""
+    data = _data()
+    data.model["pads"] += [
+        {
+            "layer": layer,
+            "net": "",
+            "shape": "circle",
+            "x": x,
+            "y": 8,
+            "w": 1.0,
+            "role": "fiducial",
+        }
+        for x in (1, 9)
+        for layer in ("F.Cu", "B.Cu")
+    ]
+    data = inspection.Inspection(data.model, data.graph, data.courtyards, [])
+    body = "\n".join(data.layer({"layer": "F.Cu"}))
+    assert "'fiducial': 2" in body and "'pad': 2" in body
+    snippet = "\n".join(data.snippet({"bbox": [0, 7, 2, 9]}))
+    assert "fiducial FID1 F.Cu net=- bbox=(0.50,7.50)..(1.50,8.50)" in snippet
+    assert "pad ?.?" not in snippet
+    assert "FID" not in "\n".join(data.wire({"net": "SIG"}))
+
+
 def test_snippet_intersects_tracks_not_just_endpoints_and_has_census() -> None:
     body = "\n".join(_data().snippet({"bbox": [2, -0.5, 4, 0.5]}))
     assert "track track F.Cu net=SIG" in body
