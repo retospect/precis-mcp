@@ -1029,12 +1029,36 @@ def get(
                 and isinstance(id, str)
                 and (id == "/traces" or id.startswith("/traces?"))
             )
+            # view='logbook' (gr592279) reads args['q'] as its in-window
+            # text filter — the one documented args= key that shares a
+            # name with an explicit kwarg. Top-level q= on get() stays
+            # find-in-ref's door, so the two never collide inside the
+            # handler — but a call passing both is ambiguous and refuses.
+            logbook_q = kind == "quest" and view == "logbook"
             reserved = (
-                ("id", "view", "q") if trace_filters else ("kind", "id", "view", "q")
+                ("id", "view", "q")
+                if trace_filters
+                else ("kind", "id", "view")
+                if logbook_q
+                else ("kind", "id", "view", "q")
             )
             err = _check_reserved_args(args, reserved=reserved)
             if err is not None:
                 return err
+            if logbook_q and q is not None and "q" in args:
+                from precis.errors import BadInput
+
+                return _validation_error(
+                    _get_runtime().render_error(
+                        BadInput(
+                            "q= and args={'q': …} both set on view='logbook'",
+                            next=(
+                                "pass one — q= is find-in-ref, args={'q': …} "
+                                "is the logbook filter"
+                            ),
+                        )
+                    )
+                )
             payload["__extras__"] = dict(args)
         if extent is not None:
             payload["extent"] = extent

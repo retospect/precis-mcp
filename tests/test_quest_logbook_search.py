@@ -13,8 +13,10 @@ import re
 from typing import Any
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from precis.errors import BadInput, NotFound
+from precis.tools import core as tools_core
 
 
 def _handler(store: Any) -> Any:
@@ -140,6 +142,54 @@ class TestScopedLogbookSearch:
         out = h.search(q="notebook is searched").body
         assert f"qu{qid}" in out or str(qid) in out
 
+    def test_recency_sorts_before_pagination(self, store: Any) -> None:
+        """td626940: recency re-orders the matching pool BEFORE the page
+        is cut — slicing the relevance-ranked pool first dropped newer
+        entries that scored under the cutoff."""
+        h, qid = _quest_with_log(
+            store,
+            ["anchor observation", "anchor observation", "anchor observation"],
+        )
+        cids = _ql_ids(store, qid)
+        # Identical text → equal ts_rank (chunk_id ASC tiebreak ranks the
+        # oldest first), so the relevance page hides the newest entry.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET created_at = now() - interval '3 days' "
+                "WHERE chunk_id = %s",
+                (cids[0],),
+            )
+            conn.execute(
+                "UPDATE chunks SET created_at = now() - interval '2 days' "
+                "WHERE chunk_id = %s",
+                (cids[1],),
+            )
+            conn.commit()
+        out = h.search(
+            q="anchor",
+            scope=f"qu{qid}",
+            sort="recency",
+            mode="lexical",
+            page_size=2,
+            view="ids",
+        ).body
+        # Page 1 is the two NEWEST matches, not the two most relevant.
+        assert f"ql{cids[2]}" in out
+        assert f"ql{cids[1]}" in out
+        assert f"ql{cids[0]}" not in out
+        assert out.index(f"ql{cids[2]}") < out.index(f"ql{cids[1]}")
+        # The oldest match paginates normally from the re-ordered pool.
+        out2 = h.search(
+            q="anchor",
+            scope=f"qu{qid}",
+            sort="recency",
+            mode="lexical",
+            page_size=2,
+            page=2,
+            view="ids",
+        ).body
+        assert f"ql{cids[0]}" in out2
+
 
 class TestLogbookViewQ:
     def test_logbook_args_q_filters_entries(self, store: Any) -> None:
@@ -174,3 +224,86 @@ class TestLogbookViewQ:
         h, qid = _quest_with_log(store, ["x"])
         with pytest.raises(BadInput, match="is empty"):
             h.get(id=qid, view="logbook", args={"q": "  "})
+
+
+# ── tool boundary ─────────────────────────────────────────────────
+#
+# td626940: the get() tool's args= reserved-key gate rejected the
+# documented ``args={'q': …}`` on view='logbook', so the filter was
+# unreachable over MCP even though the handler supported it.
+
+
+@pytest.fixture
+def mcp_tools(runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Mount the test runtime into ``precis.tools.core`` so the MCP verb
+    functions run against the test store — the boundary the reserved-key
+    gate lives on."""
+    monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+    return tools_core
+
+
+def _tool_text(out: Any) -> str:
+    if isinstance(out, CallToolResult):
+        block = out.content[0]
+        assert isinstance(block, TextContent)
+        return block.text
+    return out
+
+
+def _tool_is_error(out: Any) -> bool:
+    return isinstance(out, CallToolResult) and bool(out.isError)
+
+
+class TestLogbookToolBoundary:
+    def test_get_tool_logbook_args_q_reaches_the_filter(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        _h, qid = _quest_with_log(
+            store, ["trusted anchor candidate Ta2O5", "the pump broke again"]
+        )
+        out = mcp_tools.get(
+            kind="quest", id=qid, view="logbook", args={"q": "trusted anchor"}
+        )
+        assert not _tool_is_error(out)
+        body = _tool_text(out)
+        assert "entries match" in body
+        assert "trusted anchor candidate" in body
+        assert "pump broke" not in body
+        assert re.search(r"### ql\d+ ~\d+", body)
+
+    def test_get_tool_args_q_outside_logbook_still_reserved(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        _h, qid = _quest_with_log(store, ["x"])
+        out = mcp_tools.get(kind="quest", id=qid, args={"q": "x"})
+        assert _tool_is_error(out)
+        assert "shadows the explicit kwargs" in _tool_text(out)
+
+    def test_get_tool_logbook_q_and_args_q_refused(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        """q= (find-in-ref) and args={'q': …} (logbook filter) are
+        different doors — passing both refuses rather than silently
+        dropping one."""
+        _h, qid = _quest_with_log(store, ["x"])
+        out = mcp_tools.get(
+            kind="quest",
+            id=qid,
+            view="logbook",
+            q="anchor",
+            args={"q": "anchor"},
+        )
+        assert _tool_is_error(out)
+        body = _tool_text(out)
+        assert "[error:BadInput]" in body
+        assert "both set" in body
+
+    def test_search_tool_scope_reaches_logbook(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        _h, qid = _quest_with_log(
+            store, ["vanadium redox flow entry", "an unrelated note"]
+        )
+        out = mcp_tools.search(q="vanadium redox", kind="quest", scope=f"qu{qid}")
+        assert not _tool_is_error(out)
+        assert "vanadium redox" in _tool_text(out)

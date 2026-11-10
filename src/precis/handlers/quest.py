@@ -1441,6 +1441,7 @@ class QuestHandler(NumericRefHandler):
                 f"page_size={page_size!r}",
                 next="search(kind='quest', q='…', scope='qu<id>', page_size=20)",
             ) from None
+        recency = sort == "recency"
         hits = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
@@ -1448,8 +1449,15 @@ class QuestHandler(NumericRefHandler):
             kind=self.kind,
             scope_ref_id=ref.id,
             chunk_kinds=[_LOG_KIND],
-            limit=int(page_size),
-            offset=offset,
+            # recency re-orders BEFORE the page is cut: slicing the
+            # relevance-ranked pool first would drop newer entries that
+            # scored under the cutoff (td626940). The pool is bounded by
+            # one quest's logbook, so fetch it whole and slice after the
+            # re-order.
+            limit=(
+                max(len(self._log_entries(ref.id)), 1) if recency else int(page_size)
+            ),
+            offset=0 if recency else offset,
             # Same lift as paper's scope= (gr510534): inside one logbook
             # "the closest entries this quest has" IS an honest answer —
             # a natural-language query must not come back empty while
@@ -1458,9 +1466,9 @@ class QuestHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
         )
-        if sort == "recency":
-            hits = sorted(
-                hits,
+        pool_size = len(hits)
+        if recency:
+            hits.sort(
                 key=lambda h: (
                     _utc_aware(h[0].created_at)
                     if h[0].created_at
@@ -1468,6 +1476,7 @@ class QuestHandler(NumericRefHandler):
                 ),
                 reverse=True,
             )
+            hits = hits[offset : offset + int(page_size)]
         total = max(
             self.store.chunks.count_chunks_lexical(
                 q=q,
@@ -1477,7 +1486,7 @@ class QuestHandler(NumericRefHandler):
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
             ),
-            len(hits),
+            pool_size,
         )
         search_trace.page([f"ql{block.id}" for block, _ref, _s in hits], rendered=True)
         return self._render_logbook_hits(ref, hits, q=q, total=total, view=view)
