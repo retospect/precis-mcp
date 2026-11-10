@@ -1649,11 +1649,12 @@ def _llm_ops_ctx(store: Store) -> dict[str, Any]:
 
 
 #: Representative ``tools_needed`` per capability tier for the active-routing
-#: header. The agentic tiers (FRONTIER/BIG) dispatch with tools, the
-#: judge/classify tiers (MEDIUM/SMALL) are one-shot JSON. This only sways the
-#: *transport* shown for a tier with **no** operator chain override (the
-#: resolved model is tools-independent); an operator chain pins its own
-#: transport per rung, so the value is moot there.
+#: header's DEFAULT chain. The agentic tiers (FRONTIER/BIG) dispatch with
+#: tools, the judge/classify tiers (MEDIUM/SMALL) are one-shot JSON. The flag
+#: only sways a default chain: ``select_transport`` picks ``claude_agent`` vs
+#: ``claude_p`` on it. An operator chain is instead shown *as configured*
+#: (unfiltered — see ``_active_routing_ctx``), so its value never reaches the
+#: override path.
 _TIER_TOOLS: dict[str, bool] = {
     "frontier": True,
     "big": True,
@@ -1675,7 +1676,12 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
     it from the catalog cards below.
 
     The chain + models come from the SAME resolvers ``dispatch`` walks, so this
-    can't drift from real routing. Those resolvers read the operator
+    can't drift from real routing. An operator chain is shown *as configured*
+    (the per-call tools filter skipped — a rung a tool-using call would drop
+    is still a rung the chain carries, flagged ``tools=False`` for the
+    templates); a tier with no override shows its default chain resolved with
+    the tier's representative ``tools_needed`` (:data:`_TIER_TOOLS`). Those
+    resolvers read the operator
     ``app_settings`` overrides through ``live_config``'s process-bound store, so
     we ``bind_store`` first (as the budget routes do) — otherwise the reads dark
     to the compiled defaults and the header would silently lie. Everything
@@ -1687,8 +1693,10 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
         from precis.utils.llm import live_config
         from precis.utils.llm.router import (
             Backend,
+            Rung,
             Tier,
             _rung_is_cloud,
+            parse_chain_rungs,
             resolve_backend,
             resolve_chain,
             resolve_model,
@@ -1703,13 +1711,29 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         for tier in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL):
             try:
-                chain = resolve_chain(
-                    tier,
-                    tools_needed=_TIER_TOOLS.get(tier.value, False),
-                    backend=backend,
-                )
+                override = live_config.chain_override(tier)
+                has_override = bool(override)
+                # An operator chain is shown AS CONFIGURED, tool filter off:
+                # ``filter_tool_rungs`` is a per-call filter (a tier serves
+                # agentic AND completion traffic), so resolving BIG/FRONTIER
+                # with ``tools_needed=True`` hid a valid local completion
+                # rung and the card then lied "no local rung" (td624226
+                # review). Only a malformed override falls back to the
+                # default chain, which keeps the tier's representative flag —
+                # there ``tools_needed`` picks the transport itself
+                # (``select_transport``).
+                ladder: list[Rung] | None = None
+                if override:
+                    parsed, bad = parse_chain_rungs(override)
+                    if bad is None:
+                        ladder = parsed
+                if ladder is None:
+                    ladder = resolve_chain(
+                        tier,
+                        tools_needed=_TIER_TOOLS.get(tier.value, False),
+                        backend=backend,
+                    )
                 primary = resolve_model(tier)
-                has_override = bool(live_config.chain_override(tier))
                 rungs = [
                     {
                         # A rung with ``model=None`` inherits the tier's resolved
@@ -1717,8 +1741,12 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
                         "model": r.model or primary,
                         "transport": r.transport.value,
                         "placement": "cloud" if _rung_is_cloud(r) else "local",
+                        # A tool-using call skips a completion-wire rung —
+                        # the templates mark it, since the chain shown is the
+                        # unfiltered configured one.
+                        "tools": r.transport.carries_tools,
                     }
-                    for r in chain
+                    for r in ladder
                 ]
             except Exception:
                 log.warning(
@@ -1834,6 +1862,7 @@ def _llm_op_pins_ctx(store: Any) -> dict[str, Any]:
                         "model": r.model or primary,
                         "transport": r.transport.value,
                         "placement": "cloud" if _rung_is_cloud(r) else "local",
+                        "tools": r.transport.carries_tools,
                     }
                     for r in ladder
                 ]

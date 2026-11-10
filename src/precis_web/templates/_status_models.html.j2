@@ -17,7 +17,8 @@
    Derived from the SAME resolvers dispatch walks (resolve_chain /
    resolve_model), so it reflects live operator chains, not the static
    catalog below. rung-0 is what the router tries first; any further rungs
-   are the failover order. #}
+   are the failover order. An operator chain shows as configured — a
+   `· no tools` rung is a completion wire a tool-using call skips. #}
 {% if active_routing %}
 <section class="mb-8">
   <div class="flex items-baseline gap-2 mb-3">
@@ -54,11 +55,12 @@
           <span class="text-fg-ghost">·</span>
           <span>{{ rung.placement }}</span>
           <span class="text-fg-ghost font-mono">{{ rung.transport }}</span>
+          {% if not rung.tools %}<span class="text-fg-ghost" title="completion wire — a tool-using call skips this rung">· no tools</span>{% endif %}
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <div class="mt-1 text-[11px] font-mono text-fg-faint">{{ r.rungs[0].transport if r.rungs else '—' }}</div>
+      <div class="mt-1 text-[11px] font-mono text-fg-faint">{{ r.rungs[0].transport if r.rungs else '—' }}{% if r.rungs and not r.rungs[0].tools %}<span class="text-fg-ghost" title="completion wire — a tool-using call skips this rung"> · no tools</span>{% endif %}</div>
       {% endif %}
       {% if r.rungs and not r.has_local %}
       <div class="mt-1 text-[10px] uppercase tracking-wide text-fg-ghost"

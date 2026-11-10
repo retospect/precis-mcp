@@ -44,7 +44,7 @@
           <td class="pr-2 tabular-nums text-fg-faint">{{ loop.index }}</td>
           <td class="pr-2 font-mono truncate" title="{{ rung.model }}">{{ rung.model }}</td>
           <td class="pr-2 {% if rung.placement == 'cloud' %}text-warning{% else %}text-success{% endif %}">{{ rung.placement }}</td>
-          <td class="font-mono text-fg-subtle">{{ rung.transport }}</td>
+          <td class="font-mono text-fg-subtle">{{ rung.transport }}{% if not rung.tools %}<span class="text-fg-ghost" title="completion wire — a tool-using call skips this rung"> · no tools</span>{% endif %}</td>
         </tr>
         {% else %}
         <tr><td colspan="4" class="text-fg-faint">—</td></tr>
@@ -105,7 +105,7 @@
             <td class="pr-2 tabular-nums text-fg-faint">{{ loop.index }}</td>
             <td class="pr-2 font-mono truncate" title="{{ rung.model }}">{{ rung.model }}</td>
             <td class="pr-2 {% if rung.placement == 'cloud' %}text-warning{% else %}text-success{% endif %}">{{ rung.placement }}</td>
-            <td class="font-mono text-fg-subtle">{{ rung.transport }}</td>
+            <td class="font-mono text-fg-subtle">{{ rung.transport }}{% if not rung.tools %}<span class="text-fg-ghost" title="completion wire — a tool-using call skips this rung"> · no tools</span>{% endif %}</td>
           </tr>
           {% else %}
           <tr><td colspan="4" class="text-fg-faint">—</td></tr>

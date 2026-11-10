@@ -316,6 +316,92 @@ def test_active_routing_ctx_marks_a_chain_with_no_local_rung(
         assert r["has_local"] == any(g["placement"] == "local" for g in r["rungs"])
 
 
+def test_active_routing_ctx_shows_a_big_operator_chain_unfiltered(
+    monkeypatch,
+) -> None:
+    """td624226 review — a BIG chain's local completion rung must render:
+    the tools filter is per-call (a tier serves agentic AND completion
+    traffic), so resolving the tier with ``tools_needed=True`` dropped the
+    LOCAL rung and the card then lied "no local rung"."""
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    big_chain = [
+        {"placement": "local", "model": "gpt-oss-120b", "transport": "local"},
+        {
+            "placement": "cloud",
+            "model": "claude-sonnet-5",
+            "transport": "claude_agent",
+        },
+    ]
+    monkeypatch.setattr(
+        live_config,
+        "chain_override",
+        lambda tier: big_chain if tier is Tier.BIG else None,
+    )
+    rows = {r["tier"]: r for r in _active_routing_ctx(_FakeStore([]))["active_routing"]}
+    big = rows["big"]
+    assert big["source"] == "operator chain"
+    # The configured rung-0 IS the advertised active model — a completion
+    # call walks it; a tool-using call skips it (the ``tools`` flag).
+    assert big["active_model"] == "gpt-oss-120b"
+    assert big["active_placement"] == "local"
+    assert big["has_local"] is True
+    assert [(g["model"], g["placement"], g["tools"]) for g in big["rungs"]] == [
+        ("gpt-oss-120b", "local", False),
+        ("claude-sonnet-5", "cloud", True),
+    ]
+
+
+def test_active_routing_ctx_shows_an_all_local_big_chain(monkeypatch) -> None:
+    """The sharpened td624226 case: a BIG chain of ONLY tool-less rungs —
+    the per-call filter emptied it outright, so the card rendered the
+    *default* chain under an "operator chain" badge. The configured rung
+    must list, flagged as a completion wire."""
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    monkeypatch.setattr(
+        live_config,
+        "chain_override",
+        lambda tier: (
+            [{"placement": "local", "model": "gpt-oss-120b", "transport": "local"}]
+            if tier is Tier.BIG
+            else None
+        ),
+    )
+    big = {r["tier"]: r for r in _active_routing_ctx(_FakeStore([]))["active_routing"]}[
+        "big"
+    ]
+    assert big["has_local"] is True
+    assert [(g["model"], g["placement"], g["tools"]) for g in big["rungs"]] == [
+        ("gpt-oss-120b", "local", False)
+    ]
+
+
+def test_active_routing_ctx_malformed_big_chain_keeps_the_tools_default(
+    monkeypatch,
+) -> None:
+    """A malformed override still degrades to the default chain — resolved
+    with the tier's representative ``tools_needed``, so a BIG card never
+    advertises the ``claude_p`` completion wire its agentic traffic would
+    not take."""
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    monkeypatch.setattr(
+        live_config,
+        "chain_override",
+        lambda tier: [{"placement": "local"}] if tier is Tier.BIG else None,
+    )
+    big = {r["tier"]: r for r in _active_routing_ctx(_FakeStore([]))["active_routing"]}[
+        "big"
+    ]
+    assert big["source"] == "operator chain"  # the override exists; it is broken
+    assert big["rungs"]  # the default chain, not the malformed rung
+    assert all(g["tools"] for g in big["rungs"])
+
+
 def test_llm_op_pins_ctx_empty_without_routing_overrides() -> None:
     # No ``llm.op.*`` rows reachable → nothing to list (the fake store has
     # no app_settings; ``quota_fallback``-only rows would be skipped too).
