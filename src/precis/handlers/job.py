@@ -4243,7 +4243,10 @@ class JobHandler(NumericRefHandler):
         non-terminal job under a root ref — the same member + link
         resolution ``search(kind='job', under=…)`` reports — optionally
         narrowed by ``args={'job_type': …}`` and bounded at
-        :data:`_EXTEND_GROUP_CAP` live jobs per call. Terminal jobs are
+        :data:`_EXTEND_GROUP_CAP` live jobs per call. A TRUNCATED
+        resolution (the member-walk cap or the job-list LIMIT firing)
+        refuses outright before any write rather than extending a
+        silently incomplete set. Terminal jobs are
         skipped and named in the report, never extended; a live job with
         neither field stored has nothing to extend. ``reason=`` is
         required: the actor, reason, delta and old→new values land in a
@@ -4309,14 +4312,40 @@ class JobHandler(NumericRefHandler):
             scope = f"job #{job_id}"
         else:
             root = self._resolve_under_root(under)
-            members, _capped = self._under_members(root.id, _UNDER_DEFAULT_DEPTH)
-            rows = self._under_jobs(
+            root_label = handle_registry.try_format(root.kind, root.id) or (
+                f"{root.kind}:{root.id}"
+            )
+            # A truncated resolution means an incomplete target set —
+            # extend never writes a partial group (td627156 review of
+            # td626662): refuse BEFORE any write, naming the cap hit.
+            members, member_capped = self._under_members(root.id, _UNDER_DEFAULT_DEPTH)
+            if member_capped:
+                raise BadInput(
+                    f"the under= subtree of {root_label} exceeds the "
+                    f"{_UNDER_MEMBER_CAP}-member walk cap — the resolved "
+                    "job set would be incomplete",
+                    next=(
+                        "narrow the root (a child todo/quest), or extend "
+                        "one job per call with id="
+                    ),
+                )
+            rows, jobs_capped = self._under_jobs(
                 [m[0] for m in members],
                 status=None,
                 since=None,
                 until=None,
                 job_type=jt,
             )
+            if jobs_capped:
+                raise BadInput(
+                    f"the under= job resolution of {root_label} hit the "
+                    f"{_UNDER_JOB_CAP}-row cap — the resolved job set "
+                    "would be incomplete",
+                    next=(
+                        "narrow with args={'job_type': '<type>'} or a "
+                        "deeper root, or extend one job per call with id="
+                    ),
+                )
             target_ids = sorted(r[0] for r in rows if r[5] not in _TERMINAL_STATUSES)
             terminal_n = len(rows) - len(target_ids)
             if len(target_ids) > _EXTEND_GROUP_CAP:
@@ -4328,9 +4357,6 @@ class JobHandler(NumericRefHandler):
                         "extend one job per call with id="
                     ),
                 )
-            root_label = handle_registry.try_format(root.kind, root.id) or (
-                f"{root.kind}:{root.id}"
-            )
             scope = f"job(s) under {root_label}"
 
         from precis.store.revision_context import current_revision_context
@@ -5720,7 +5746,7 @@ class JobHandler(NumericRefHandler):
 
         root = self._resolve_under_root(under)
         members, member_capped = self._under_members(root.id, n_depth)
-        jobs = self._under_jobs(
+        jobs, jobs_capped = self._under_jobs(
             [m[0] for m in members],
             status=status,
             since=since,
@@ -5772,14 +5798,23 @@ class JobHandler(NumericRefHandler):
                 f"jobs under {root_label} "
                 f"({len(members)} member refs, depth≤{n_depth})"
                 + ("; subtree member cap hit" if member_capped else "")
+                + ("; job cap hit" if jobs_capped else "")
             )
             return _dc_replace(resp, body=f"{scope}\n\n{resp.body}")
         if view == "tree":
             return self._render_under_tree(
-                root, root_label, members, jobs, n_depth, member_capped
+                root, root_label, members, jobs, n_depth, member_capped, jobs_capped
             )
         return self._render_under_listing(
-            root, root_label, members, jobs, n_depth, member_capped, page, page_size
+            root,
+            root_label,
+            members,
+            jobs,
+            n_depth,
+            member_capped,
+            jobs_capped,
+            page,
+            page_size,
         )
 
     def _resolve_under_root(self, under: str | int) -> Ref:
@@ -5856,16 +5891,22 @@ class JobHandler(NumericRefHandler):
         since: str | datetime | None,
         until: str | datetime | None,
         job_type: str | None = None,
-    ) -> list[tuple[int, int | None, int | None, str, str, str | None, str]]:
+    ) -> tuple[
+        list[tuple[int, int | None, int | None, str, str, str | None, str]], bool
+    ]:
         """Live jobs attached to the member set: ``(ref_id, parent_id,
-        link_member_id, title, job_type, status, created_iso)``.
+        link_member_id, title, job_type, status, created_iso)`` rows plus
+        a ``capped`` flag — ``True`` when the SQL ``LIMIT`` fired, i.e.
+        the set may be incomplete.
 
         Attachment = ``parent_id`` in members (the parent_id tree is the
         primary edge) OR a ``links`` row either direction to a member
         (subject links — a ``fix_gripe`` job links its gripe, a build job
         its pcb). ``status=`` is a STATUS-tag value filter; the job's own
         ``created_at`` honours the same since=/until= window the count
-        view uses. Bounded at ``_UNDER_JOB_CAP`` newest-first.
+        view uses. Bounded at ``_UNDER_JOB_CAP`` newest-first — a caller
+        that writes on the resolved set (``mode='extend'``) must refuse
+        on ``capped`` rather than act on a silently truncated group.
         """
         clauses = [
             "j.kind = 'job'",
@@ -5915,6 +5956,7 @@ class JobHandler(NumericRefHandler):
         params.append(_UNDER_JOB_CAP)
         with self.store.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
+        capped = len(rows) >= _UNDER_JOB_CAP
         out: dict[
             int, tuple[int, int | None, int | None, str, str, str | None, str]
         ] = {}
@@ -5932,7 +5974,7 @@ class JobHandler(NumericRefHandler):
                 str(r[5]) if r[5] is not None else None,
                 str(r[6]),
             )
-        return list(out.values())
+        return list(out.values()), capped
 
     def _search_by_job_type(
         self,
@@ -6137,6 +6179,7 @@ class JobHandler(NumericRefHandler):
         jobs: list[tuple[int, int | None, int | None, str, str, str | None, str]],
         depth: int,
         member_capped: bool,
+        jobs_capped: bool,
         page: int,
         page_size: int,
     ) -> Response:
@@ -6162,6 +6205,11 @@ class JobHandler(NumericRefHandler):
             lines.append(
                 f"note: subtree capped at {_UNDER_MEMBER_CAP} members — "
                 "narrow with depth= or a deeper root"
+            )
+        if jobs_capped:
+            lines.append(
+                f"note: job list capped at {_UNDER_JOB_CAP} rows — the "
+                "set below may be incomplete"
             )
         for ref_id, parent_id, link_member_id, title, jt, status, created in rows:
             via = (
@@ -6203,6 +6251,7 @@ class JobHandler(NumericRefHandler):
         jobs: list[tuple[int, int | None, int | None, str, str, str | None, str]],
         depth: int,
         member_capped: bool,
+        jobs_capped: bool,
     ) -> Response:
         """Compact hierarchy: the member skeleton indented by depth, jobs
         attached under their parent member (or ``~link`` under their
@@ -6231,6 +6280,11 @@ class JobHandler(NumericRefHandler):
         lines = [f"# tree under {root_label} (depth≤{depth})"]
         if member_capped:
             lines.append(f"note: subtree capped at {_UNDER_MEMBER_CAP} members")
+        if jobs_capped:
+            lines.append(
+                f"note: job list capped at {_UNDER_JOB_CAP} rows — "
+                "jobs past the cut are not shown"
+            )
         emitted = 0
         truncated = False
 

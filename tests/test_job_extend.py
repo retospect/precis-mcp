@@ -304,6 +304,40 @@ def test_extend_group_cap(
         jobs.put(mode="extend", under=quest_id, seconds=60, reason="r")
 
 
+def test_extend_group_refuses_a_truncated_member_walk(
+    jobs: JobHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subtree bigger than the member walk cap resolves an INCOMPLETE
+    job set — extend refuses before writing rather than silently
+    extending a partial group (td627156)."""
+    monkeypatch.setattr(job_mod, "_UNDER_MEMBER_CAP", 1)
+    quest_id, todo_id = _quest_tree(store)  # root + todo = 2 rows > cap
+    job_id = _insert_job(store, status="queued", parent_id=todo_id)
+
+    with pytest.raises(BadInput, match="member walk cap"):
+        jobs.put(mode="extend", under=quest_id, seconds=60, reason="r")
+
+    assert _meta(store, job_id)["params"]["resources"]["wall_seconds"] == 5400
+    assert store.events_for(job_id, source="job-extend") == []
+
+
+def test_extend_group_refuses_a_truncated_job_resolution(
+    jobs: JobHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same refusal when the job-resolution LIMIT itself fires: the
+    resolved set may be missing live jobs past the cut."""
+    monkeypatch.setattr(job_mod, "_UNDER_JOB_CAP", 2)
+    quest_id, todo_id = _quest_tree(store)
+    ids = [_insert_job(store, status="queued", parent_id=todo_id) for _ in range(3)]
+
+    with pytest.raises(BadInput, match="row cap"):
+        jobs.put(mode="extend", under=quest_id, seconds=60, reason="r")
+
+    for job_id in ids:
+        assert _meta(store, job_id)["params"]["resources"]["wall_seconds"] == 5400
+        assert store.events_for(job_id, source="job-extend") == []
+
+
 def test_extend_group_with_nothing_live_reports_zero(
     jobs: JobHandler, store: Store
 ) -> None:

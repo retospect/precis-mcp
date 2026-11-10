@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from psycopg.types.json import Jsonb
 
+from precis.dispatch import Hub
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import EXECUTOR_PROVIDES, ssh_node
@@ -1437,6 +1438,102 @@ def test_verify_seed_survives_19h_and_is_killed_past_its_wall(
     assert killed == [(over, "seed-over")]
     assert _status(store, over) == "failed"
     assert _meta(store, over)["failure_class"] == "timeout"
+
+
+def test_submit_deadline_reflects_an_extension_during_submit(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """put(mode='extend') bumps ``params.resources.wall_seconds`` under
+    the same row lock the handle-persist re-reads — an extension landing
+    between the claim snapshot and the deadline stamp must be priced
+    into the deadline, not silently lost to a stale-snapshot stamp
+    (td627156)."""
+    from precis.handlers.job import JobHandler
+
+    jobs = JobHandler(hub=hub)
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        # The mid-submit extension: after the claim snapshot, before the
+        # handle/deadline persist — the race the reread exists for.
+        jobs.put(id=ctx.ref_id, mode="extend", seconds=3600, reason="mid-submit")
+        return "remote-pid-extended"
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=_submit, poll=lambda c, h: False),
+    )
+    rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+    before = time.time()
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    meta = _meta(store, rid)
+    # The stale snapshot would stamp ~before + 1800 + margin; the
+    # extended budget is 1800 + 3600 = 5400, plus margin.
+    extended = before + 5400 + ssh_node._LEASE_MARGIN_S
+    assert meta["deadline"] >= extended - 5
+    assert meta["deadline"] <= extended + 30
+
+
+def test_poll_rechecks_the_deadline_under_the_row_lock(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The poll's deadline read comes from the pass-start ``_polling_jobs``
+    snapshot — an extension committing between that snapshot and the kill
+    write must win. The kill re-reads ``meta.deadline`` under the same
+    row lock the extension holds, so a stale past-deadline snapshot
+    cannot kill live compute (td627156)."""
+    from precis.handlers.job import JobHandler
+
+    killed: list[Any] = []
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_relax",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"ssh_node"}),
+            requires=frozenset(),
+            description="fake relax for tests",
+            run=lambda *a, **k: "noop",
+            submit=lambda c, s: None,
+            poll=lambda c, h: False,
+            kill=lambda c, h: killed.append(h),
+        ),
+    )
+    rid = _mk_running_job(store, lease_offset_s=3600, compute_handle="remote-pid-race")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+            "WHERE ref_id = %s",
+            (time.time() - 5, rid),
+        )
+        conn.commit()
+
+    jobs = JobHandler(hub=hub)
+    real_select = ssh_node._polling_jobs
+
+    def _select_then_extend(store_: Store, node_: str | None) -> Any:
+        rows = real_select(store_, node_)
+        # The extension commits AFTER the poll snapshot, BEFORE the kill
+        # decision — the stale snapshot still holds the past deadline.
+        jobs.put(id=rid, mode="extend", seconds=7200, reason="more time")
+        return rows
+
+    monkeypatch.setattr(ssh_node, "_polling_jobs", _select_then_extend)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    # Still running: the re-read saw the extended (future) deadline and
+    # deferred — no kill hook, no terminal write.
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert killed == []
+    assert _status(store, rid) == "running"
+    assert "swept:wall-timeout" not in {str(t) for t in store.tags_for(rid)}
+    assert "failure_class" not in _meta(store, rid)
+    # The extension itself did land — only the kill deferred.
+    assert len(store.events_for(rid, source="job-extend")) == 1
 
 
 # ── §B-2 piece 5: operator kill backstop (`precis jobs kill`) ──────

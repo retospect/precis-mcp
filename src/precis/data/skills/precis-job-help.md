@@ -675,7 +675,10 @@ required; the actor, reason and old→new values land in a `job-extend`
 event on each job. A terminal job refuses (`id=`) or is skipped and
 named (`under=`); a live job with neither field has nothing to extend.
 `under=` touches at most 64 live jobs per call — narrow with
-`job_type=`. The response lists every job's old→new `wall_seconds` and
+`job_type=` — and refuses outright when the member/job resolution
+itself truncates rather than extending a silently incomplete set
+(narrow the root or use `job_type=`). The response lists every job's
+old→new `wall_seconds` and
 `deadline`; both fields also ride the `get(kind='job', id=N)` status
 card as `resources.wall_seconds:` / `deadline:`.
 

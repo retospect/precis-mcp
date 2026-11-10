@@ -1115,6 +1115,32 @@ def _kill_and_terminalize(
     process_handle = isinstance(handle, dict) and not handle.get("not_before")
     skip_reason = _detached_identity_reason(handle) if process_handle else None
     with store.pool.connection() as conn:
+        if swept_tag in {"wall-timeout", "deadline"}:
+            # Serialize the kill decision with put(mode='extend')
+            # (td627156): the deadline that tripped came from the
+            # pass-start ``_polling_jobs`` snapshot, so an extension that
+            # committed after it is invisible there. Re-read under the
+            # row lock the extension writes hold — an in-flight extend
+            # fails the NOWAIT, deferring to the next pass's fresh
+            # snapshot; one queued behind us sees the terminal row and
+            # skips. A deadline still past proceeds to the kill; one now
+            # in the future defers instead of killing live compute. An
+            # absent deadline proceeds unchanged — the kill path is only
+            # reached with one stamped.
+            try:
+                fresh = conn.execute(
+                    "SELECT meta->'deadline' FROM refs WHERE ref_id = %s "
+                    "FOR UPDATE NOWAIT",
+                    (ref_id,),
+                ).fetchone()
+            except LockNotAvailable:
+                conn.rollback()
+                return False
+            if fresh is None or (
+                fresh[0] is not None and time.time() <= float(fresh[0])
+            ):
+                conn.rollback()
+                return False
         if (
             skip_reason == "missing-identity"
             and swept_tag in {"wall-timeout", "deadline"}
@@ -1375,12 +1401,23 @@ def _run_one(ctx: DispatchContext) -> bool:
             # §H piece 2: stamp a wall-clock kill deadline alongside the
             # handle — see ``_deadline_epoch`` / ``_poll_one``'s docstrings
             # for why a detached submit/poll job otherwise has no
-            # termination path at all.
+            # termination path at all. The bound is computed from a FRESH
+            # meta read under the row lock: put(mode='extend') bumps
+            # params.resources.wall_seconds under the same lock
+            # (td627156), so an extension committed between the claim
+            # snapshot and this stamp is already priced in — and one
+            # landing after bumps the stamped deadline itself.
+            fresh = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE",
+                (ref_id,),
+            ).fetchone()
             _set_meta(
                 conn,
                 ref_id,
                 compute_handle=handle,
-                deadline=_deadline_epoch(meta, spec),
+                deadline=_deadline_epoch(
+                    dict(fresh[0]) if fresh is not None else meta, spec
+                ),
                 submit_started_at=None,
             )
             _pin_to_submitting_node(conn, ref_id, handle)
