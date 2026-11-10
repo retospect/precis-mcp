@@ -207,6 +207,22 @@ def test_renders_handle_title_and_preview() -> None:
     assert "A preview" in out.body
 
 
+def test_render_clips_long_hit_title() -> None:
+    """A title that IS the query (the perplexity tiers store the whole
+    prompt as the ref title) used to flood the merged results page —
+    the ``_title_`` label is display-clipped while ``hit.title`` itself
+    stays whole for ranking (gr625863)."""
+    long_title = "identify publications " + "x" * 500 + " END-MARKER"
+    s1 = [_hit(slug="a", pos=3, kind="perplexity-research", title=long_title)]
+    out = merge_and_render([s1], page_size=10, mode="priority")
+    assert "END-MARKER" not in out.body
+    title_line = next(
+        ln for ln in out.body.splitlines() if ln.startswith("_") and ln.endswith("_")
+    )
+    assert title_line.endswith("…_")
+    assert len(title_line) < 200
+
+
 def test_show_label_false_drops_bracket() -> None:
     s1 = [_hit(slug="a", pos=3, reach="local")]
     out = merge_and_render([s1], page_size=10, mode="priority", show_label=False)

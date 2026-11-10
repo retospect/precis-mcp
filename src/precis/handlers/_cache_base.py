@@ -68,6 +68,7 @@ from precis.utils.search_merge import (
     block_hits_to_search_hits,
     scores_are_distances,
 )
+from precis.utils.text import clip as _clip_title
 from precis.utils.text import excerpt as _excerpt
 
 if TYPE_CHECKING:
@@ -248,6 +249,14 @@ _RANGE_PAGE_CHUNKS = 4
 #: composite ``<ord>-<block-slug>`` spelling resolves against ``rest``
 #: too, so either handle shape search can emit reads the same block.
 _ORD_PREFIXED_SECTION_RE = re.compile(r"^\d+-(.+)$")
+
+#: Max chars of a ref title rendered into an agent-facing heading or
+#: search-hit label. Storage keeps the whole title — on the perplexity
+#: tiers the title *is* the query, and a many-KB prompt rendered verbatim
+#: as the ``# …`` heading ate almost the whole result budget before the
+#: paid answer could print (gr625863). The render is the display side of
+#: that split, same bound as ``precis_web.item_view.DISPLAY_TITLE_LIMIT``.
+_RENDER_TITLE_CHARS = 160
 
 #: Cap on the section-handle list an unknown-selector refusal renders
 #: via ``options=`` — a deep-research report can have hundreds of
@@ -928,7 +937,7 @@ class CacheBackedHandler(Handler):
         n_shown = len(blocks)
         label = f"~{lo}" if lo == hi else f"~{lo}..{hi}"
         lines = [
-            f"# {ref.title}",
+            f"# {_clip_title(ref.title, _RENDER_TITLE_CHARS)}",
             f"_chunks {label} of `{slug}` ({n_shown} of {total} chunks)_",
             "",
             body_text,
@@ -1238,7 +1247,7 @@ class CacheBackedHandler(Handler):
         verdict = inject.get("verdict")
         if verdict == "high":
             lines = [
-                f"# {ref.title}",
+                f"# {_clip_title(ref.title, _RENDER_TITLE_CHARS)}",
                 "",
                 "**[body withheld — suspected prompt injection]**",
                 f"Signals: {', '.join(inject.get('signals', [])) or '(model verdict)'}",
@@ -1260,7 +1269,7 @@ class CacheBackedHandler(Handler):
         body_text = dedupe_overlap_join([b.text for b in blocks])
 
         lines = []
-        lines.append(f"# {ref.title}")
+        lines.append(f"# {_clip_title(ref.title, _RENDER_TITLE_CHARS)}")
         lines.append("")
         if verdict == "suspect":
             lines.append(
@@ -1611,7 +1620,7 @@ class CacheBackedHandler(Handler):
             )
             preview = _excerpt(block.text)
             lines.append(f"\n## {handle}  (score={score:.4f})")
-            lines.append(f"_{ref.title}_")
+            lines.append(f"_{_clip_title(ref.title, _RENDER_TITLE_CHARS)}_")
             lines.append(preview)
         return Response(body="\n".join(lines))
 

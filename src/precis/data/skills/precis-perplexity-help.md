@@ -146,6 +146,12 @@ The API reports no expected result size before the call, so there is
 no pre-fetch estimate to warn on — these args and the chunk-range
 reads above are the only size bounds available.
 
+A long query no longer eats that budget itself: the `# <title>`
+heading and the `_title_` search-hit label clip at 160 chars for
+display (the stored title keeps the whole query), and a Next-tier
+escalation hint echoes the query verbatim only while it is
+hint-sized — past ~500 chars it shows `id='<same query>'`.
+
 New refs mint `<60-char slug>-<sha8>` — the tail is a hash of the full
 `model:query` key, so two queries that share a long lead-in now get
 distinct slugs instead of colliding (rows minted before the change keep

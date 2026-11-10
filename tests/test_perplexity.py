@@ -1961,3 +1961,91 @@ def test_shaping_args_reach_the_handler_through_args(
     )
     assert "[error:" not in out2, out2
     assert _StubClient.call_count == 1
+
+
+# ── long-query title clip at render (gr625863) ──────────────────────
+
+
+def _long_query() -> str:
+    """A query well past the render's title display cap.
+
+    The gripe's MMM12 prompt was ~23 kB; a few KB trips the same clip.
+    ``END-MARKER`` at the tail makes a whole-query echo detectable.
+    """
+    return (
+        "identify the actual research publications behind these MMM12 "
+        "conference contributions " + "filler " * 800 + "END-MARKER"
+    )
+
+
+def test_long_query_heading_clips_and_answer_survives(
+    websearch: WebsearchHandler,
+) -> None:
+    """gr625863: a multi-KB query became a verbatim ``# title`` heading
+    that ate nearly the whole body budget before the answer. The stored
+    title stays whole; the heading is a display clip."""
+    resp = websearch.get(id=_long_query())
+    heading = resp.body.splitlines()[0]
+    assert heading.startswith("# ")
+    assert heading.endswith("…")
+    assert len(heading) < 200
+    # The query's tail never reaches the render; the paid answer does.
+    assert "END-MARKER" not in resp.body
+    assert "Dario Amodei" in resp.body
+    # Nothing was lost — storage keeps the whole query.
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    assert ref.title == _long_query()
+
+
+def test_long_query_clips_on_every_read_surface(
+    websearch: WebsearchHandler,
+) -> None:
+    """The gripe's flooded commands — ``view='body'``, ``~N`` chunk
+    selectors, ``no_fetch`` reads and a ``max_bytes`` return — all take
+    the same clipped heading now."""
+    websearch.get(id=_long_query())
+    ref = websearch.store.list_refs(kind="websearch", limit=1)[0]
+    slug = ref.slug or ""
+    bodies = [
+        websearch.get(id=slug, view="body").body,
+        websearch.get(id=f"{slug}~0").body,
+        websearch.get(id=slug, no_fetch=True).body,
+        websearch.get(id=slug, no_fetch=True, max_bytes=4000).body,
+    ]
+    for body in bodies:
+        heading = body.splitlines()[0]
+        assert heading.startswith("# ") and heading.endswith("…"), heading
+        assert "END-MARKER" not in body
+        assert "Dario Amodei" in body
+    assert _StubClient.call_count == 1  # every read was cache, not a call
+
+
+def test_long_query_search_hit_clips_title(
+    research_with_embedder: ResearchHandler,
+) -> None:
+    """``search`` rendered the whole query as the hit's ``_title_``
+    label — the gripe's other flooded surface."""
+    h = research_with_embedder
+    h.put(id=_long_query(), text=_SAMPLE_RESEARCH_REPORT, mode="import")
+    resp = h.search(q="phthalocyanine")
+    assert "END-MARKER" not in resp.body
+    title_line = next(
+        ln for ln in resp.body.splitlines() if ln.startswith("_") and ln.endswith("_")
+    )
+    assert title_line.endswith("…_")
+    assert len(title_line) < 200
+
+
+def test_long_query_escalation_hint_falls_back_to_template(
+    websearch: WebsearchHandler,
+) -> None:
+    """The Next:-tier escalation call embeds ``id=<query>`` verbatim —
+    a many-KB query would re-flood the render through the trailer.
+    Past ``_NAV_QUERY_CHARS`` it degrades to the ``'<same query>'``
+    placeholder (parse-only, never a billable call)."""
+    resp = websearch.get(id=_long_query())
+    assert "id='<same query>'" in resp.body
+    assert "END-MARKER" not in resp.body
+    # A hint-sized query keeps the verbatim, copy-pasteable form.
+    resp2 = websearch.get(id="short query here")
+    assert "id='short query here'" in resp2.body

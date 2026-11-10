@@ -44,6 +44,7 @@ from precis._result_budget import size_cell as _size_cell
 from precis.response import Response
 from precis.utils import handle_registry, search_trace
 from precis.utils.search_header import format_search_headline
+from precis.utils.text import clip
 
 # Reciprocal-rank-fusion constant.  60 is the value Cormack et al.
 # settled on as a robust default across IR benchmarks; precis uses
@@ -805,7 +806,11 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     size_suffix = f" · {size}" if size else ""
     parts = [f"\n## {rank}. {ident}{label}{tag_suffix}{size_suffix}"]
     if hit.title:
-        parts.append(f"_{hit.title}_")
+        # Display clip only — ``hit.title`` itself stays whole for
+        # title-phrase ranking and TOON summaries; a title that is the
+        # query (perplexity tiers) would otherwise flood the merged
+        # results page (gr625863).
+        parts.append(f"_{clip(hit.title)}_")
     prefix = _annotation_prefix(hit)
     if prefix:
         parts.append(prefix)

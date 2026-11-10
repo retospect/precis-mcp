@@ -133,6 +133,26 @@ _SOURCES_TAIL_RE = re.compile(
 #: (the ratchet in tests/test_next_literal_ratchet.py counts the literal).
 _TAIL_AFTER_SOURCES_RE = re.compile(r"- |Next\s*:|\{")
 
+#: Longest query echoed verbatim into a Next-tier escalation call's
+#: ``id=``. Past this the hint renders the ``'<same query>'`` template
+#: placeholder instead — echoing a many-KB prompt into the ``Next:``
+#: trailer would re-spend the render budget the heading clip just freed
+#: (gr625863). Generous enough that any realistic query stays a
+#: copy-pasteable call.
+_NAV_QUERY_CHARS = 500
+
+
+def _nav_query_repr(query: str) -> str:
+    """The ``id=`` literal for a ``Next:`` tier-escalation hint.
+
+    Verbatim ``repr`` while the query is hint-sized; the angle-bracket
+    template placeholder past ``_NAV_QUERY_CHARS`` (parse-only per the
+    hint grammar — the agent fills in the query it already wrote).
+    """
+    if len(query) <= _NAV_QUERY_CHARS:
+        return repr(query)
+    return "'<same query>'"
+
 
 def _drop_sources_block(body: str) -> str:
     """Remove the trailing ``Sources:\\n[n] url`` block from a rendered
@@ -661,14 +681,14 @@ class _PerplexityBase(CacheBackedHandler):
         if self.spec.kind == "websearch" and query:
             nav.append(
                 (
-                    f"get(kind='perplexity-reasoning', id={query!r})",
+                    f"get(kind='perplexity-reasoning', id={_nav_query_repr(query)})",
                     "deeper analytical answer (~$0.005/call)",
                 )
             )
         elif self.spec.kind == "perplexity-reasoning" and query:
             nav.append(
                 (
-                    f"get(kind='perplexity-research', id={query!r})",
+                    f"get(kind='perplexity-research', id={_nav_query_repr(query)})",
                     "multi-step deep research (~$0.50/call)",
                 )
             )
@@ -1319,8 +1339,10 @@ def _title_for_query(query: str) -> str:
     point of a search ref). Whitespace is collapsed so a multi-line
     paste renders as one logical line, but nothing is dropped.
     Truncation is a *display* concern — Drive/list rows lean on
-    ``item_view.display_title`` and the agent-facing ``/recent`` listing
-    caps at 80 chars — never a storage one.
+    ``item_view.display_title``, the agent-facing ``/recent`` listing
+    caps at 80 chars, and the cached-read renders clip the heading /
+    search-hit label at ``_RENDER_TITLE_CHARS`` (gr625863) — never a
+    storage one.
     """
     return " ".join(query.split())
 
