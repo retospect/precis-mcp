@@ -2457,6 +2457,24 @@ class TestReactionContext:
         assert '"site":{"type":"fcc"}}' in prompt
         assert '{"op":"set_element","element":"<dopant>","site":' in prompt
 
+    def test_generic_neb_door_names_the_neb_payload_field(self, store: Any) -> None:
+        """gr573265: the tick model cannot call ``put(mode='neb')`` — the
+        door names the ``neb`` payload field the executor applies, and the
+        schema block parses as a JSON list of {is, fs, why} entries."""
+        qid = _mk_quest(store, "A generic materials striving with no reaction")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        # The schema's `neb` block parses — same contract as `reruns`.
+        start = prompt.index('"neb": [')
+        end = prompt.index("\n  ],", start)
+        entries = json.loads(prompt[start + len('"neb": ') : end + 4])
+        assert entries and entries[0]["is"] and entries[0]["fs"]
+        # The generic door instructs the FIELD, not the MCP call alone.
+        assert 'a `neb` payload entry {"is":' in prompt
+
     def test_generic_quest_without_barrier_objective_gets_no_neb_door(
         self, store: Any
     ) -> None:

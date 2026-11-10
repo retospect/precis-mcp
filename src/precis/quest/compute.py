@@ -6289,6 +6289,120 @@ def apply_reruns(
     return queued
 
 
+def apply_neb(
+    store: Store,
+    quest_id: int,
+    entries: Any,
+    *,
+    hub: Any | None = None,
+    cap: int = 1,
+    by: str = "agent",
+) -> int:
+    """Execute a tick payload's ``neb`` entries — the model's channel for
+    queueing one CI-NEB edge between two named endpoint designs (gr573265;
+    the same gated mint ``put(kind='structure', mode='neb')`` exposes,
+    adapted for a caller with no requester todo: each mint attributes
+    straight to this quest's rolling-24h lane via
+    :meth:`precis.handlers.structure.StructureHandler.queue_neb_edge`).
+
+    Each entry is ``{"is": "<st<id> or slug — the relaxed initial-state
+    candidate>", "fs": "<st<id> or slug — its label-matched final state,
+    usually a derive_from clone>", "why": ...}``. The IS must be a live
+    candidate of THIS quest — a barrier minted on a non-serving structure
+    would harvest nowhere (:func:`harvest_measures` only lifts edges whose
+    IS ``serves`` the quest). Entries past ``cap``, malformed entries and
+    per-edge refusals (unknown handle, a failed pair gate, the quest's
+    daily NEB cap) land as ``observation`` logbook notes the next tick
+    reads — never silent, never a tick failure. The whole payload is held
+    while the quest's compute lane is off (``meta.compute_lane='off'``,
+    the same switch :func:`request_rerun` honours). Returns the number of
+    entries whose edge queued — a collapse onto an in-flight or cached
+    twin counts too (the measurement exists either way).
+    """
+    if not isinstance(entries, list):
+        return 0
+    from precis.errors import PrecisError
+    from precis.handlers.structure import StructureHandler
+    from precis.utils.slug_ref import resolve_live_slug_ref
+
+    queued = 0
+    refused: list[str] = []
+    landed: list[str] = []
+    qref = store.get_ref(kind="quest", id=quest_id)
+    if str((getattr(qref, "meta", None) or {}).get("compute_lane") or "") == "off":
+        refused.append(f"{len(entries)} neb entr(ies) held — quest compute_lane='off'")
+        entries = []
+    for e in entries[:cap]:
+        if not isinstance(e, dict):
+            refused.append("malformed entry (not an object)")
+            continue
+        is_ident = str(e.get("is") or "").strip()
+        fs_ident = str(e.get("fs") or e.get("final") or "").strip()
+        why = str(e.get("why") or "").strip()
+        if not is_ident or not fs_ident:
+            refused.append("entry needs both `is` and `fs`")
+            continue
+        is_ref = _resolve_parent_structure(store, quest_id, is_ident)
+        if is_ref is None:
+            refused.append(
+                f"{is_ident}: the IS does not resolve to a live candidate "
+                "of this quest — a barrier minted on it would harvest "
+                "nowhere"
+            )
+            continue
+        try:
+            fs_ref = resolve_live_slug_ref(store, kind="structure", id=fs_ident)
+        except PrecisError as exc:
+            refused.append(f"{fs_ident}: {exc}")
+            continue
+        try:
+            resp = StructureHandler(hub=hub or _hub_for(store)).queue_neb_edge(
+                is_id=is_ref.id, fs_id=fs_ref.id, quest_ref_id=quest_id
+            )
+            queued += 1
+            head = str(resp.body).splitlines()[0].lstrip("# ").strip()
+            landed.append(f"neb queued: {head}" + (f" — {why}" if why else ""))
+        except PrecisError as exc:
+            # exc.headline carries the pair-gate/next= hint verbatim.
+            refused.append(f"{is_ident} → {fs_ident}: {exc}")
+        except Exception:
+            log.exception(
+                "apply_neb: mint raised for quest %s edge %r → %r",
+                quest_id,
+                is_ident,
+                fs_ident,
+            )
+            refused.append(f"{is_ident} → {fs_ident}: internal error (see worker log)")
+    extra = len(entries) - cap
+    if extra > 0:
+        refused.append(f"{extra} entr(ies) over the per-tick cap of {cap}")
+    for text in landed:
+        try:
+            append_entry(
+                store, quest_id, text=text[:400], entry_type="observation", by=by
+            )
+        except Exception:
+            log.warning(
+                "apply_neb: logbook note failed for quest %s", quest_id, exc_info=True
+            )
+    for note in refused:
+        try:
+            append_entry(
+                store,
+                quest_id,
+                text=f"neb refused: {note}"[:400],
+                entry_type="observation",
+                by=by,
+            )
+        except Exception:
+            log.warning(
+                "apply_neb: logbook note failed for quest %s",
+                quest_id,
+                exc_info=True,
+            )
+    return queued
+
+
 def _promotion_sort_key(store: Store, quest_id: int, c: Any) -> float:
     """Best-first sort key for a promotion candidate: the quest's declared
     composite objective when configured, else its primary rubric objective —
@@ -6985,6 +7099,7 @@ def run_compute_step(
 
 __all__ = [
     "ComputeStep",
+    "apply_neb",
     "dispatch_autocatpath",
     "dispatch_relax",
     "dispatch_search",

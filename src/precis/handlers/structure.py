@@ -2029,10 +2029,8 @@ class StructureHandler(Handler):
         ``requested_by=<todo>`` arms the wait exactly like a relax and
         counts against the serving quest's daily cap
         (:data:`_NEB_QUEST_DAILY_ENV`, default 4 per rolling 24 h)."""
-        from precis.structure import pair_check
         from precis.structure.neb import (
             NEB_DEFAULTS,
-            neb_cache_key,
             normalize_neb_params,
         )
 
@@ -2071,8 +2069,67 @@ class StructureHandler(Handler):
                 next="the engine knobs are " + ", ".join(sorted(NEB_DEFAULTS)),
             ) from exc
 
-        is_ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
-        fs_ref = resolve_live_slug_ref(self.store, kind="structure", id=fs_arg)
+        requester_id = _as_int_or_none(a.get("requested_by", a.get("parent_id")))
+        return self._neb_gated_dispatch(
+            is_id=str(id).strip(),
+            fs_id=fs_arg,
+            model_arg=str(a.get("model") or "").strip() or None,
+            engine_params=engine_params,
+            requester_id=requester_id,
+            quest_ref_id=None,
+        )
+
+    def queue_neb_edge(
+        self,
+        *,
+        is_id: str | int,
+        fs_id: str | int,
+        quest_ref_id: int | None = None,
+    ) -> Response:
+        """Queue one CI-NEB edge between two endpoint designs — the same
+        gated mint ``put(mode='neb')`` runs, minus the arg parsing, the
+        requester-todo wiring and the engine-knob surface (gr573265).
+
+        This is the executor-facing door: a quest tick's ``neb`` payload
+        entries (``compute.apply_neb``) and any other in-process caller
+        that knows the two endpoints and has no requester todo to arm.
+        ``quest_ref_id`` carries the attribution directly — every mint
+        counts against that quest's rolling-24h lane
+        (:data:`_NEB_QUEST_DAILY_ENV`), exactly as ``requested_by=<todo
+        serving the quest>`` does on the MCP call. ``None`` falls to the
+        global UTC-day lane, same as an unattributed call."""
+        from precis.structure.neb import normalize_neb_params
+
+        return self._neb_gated_dispatch(
+            is_id=is_id,
+            fs_id=fs_id,
+            model_arg=None,
+            engine_params=normalize_neb_params({}),
+            requester_id=None,
+            quest_ref_id=quest_ref_id,
+        )
+
+    def _neb_gated_dispatch(
+        self,
+        *,
+        is_id: str | int,
+        fs_id: str | int,
+        model_arg: str | None,
+        engine_params: dict[str, Any],
+        requester_id: int | None,
+        quest_ref_id: int | None,
+    ) -> Response:
+        """Resolve the endpoints, run the pair gates, pick the priced
+        model, dedupe on the content address and mint — the shared body
+        of :meth:`_put_neb` (args parsed) and :meth:`queue_neb_edge`
+        (caller-resolved). ``requester_id`` is the todo to arm + source
+        of quest attribution; when absent ``quest_ref_id`` attributes the
+        mint directly."""
+        from precis.structure import pair_check
+        from precis.structure.neb import neb_cache_key
+
+        is_ref = resolve_live_slug_ref(self.store, kind="structure", id=str(is_id))
+        fs_ref = resolve_live_slug_ref(self.store, kind="structure", id=fs_id)
         if fs_ref.id == is_ref.id:
             raise BadInput(
                 "mode='neb': the IS and FS are the same design — an edge "
@@ -2088,7 +2145,7 @@ class StructureHandler(Handler):
         is_runs = self.store.structure_runs(is_ref.id)
         fs_runs = self.store.structure_runs(fs_ref.id)
         is_slug = str(is_ref.slug or is_ref.id)
-        fs_slug = str(fs_ref.slug or fs_arg)
+        fs_slug = str(fs_ref.slug or fs_id)
         verdict = pair_check.evaluate_pair(
             is_scene,
             fs_scene,
@@ -2116,26 +2173,25 @@ class StructureHandler(Handler):
         # at on their current versions — the 'relaxed' gate's shared set —
         # else it would price a differently-relaxed geometry than the one
         # the gate checked.
-        caller_model = str(a.get("model") or "").strip() or None
         is_models = pair_check._ml_models(is_runs, is_version)
         fs_models = pair_check._ml_models(fs_runs, fs_version)
         shared = is_models & fs_models
-        if caller_model is not None:
+        if model_arg is not None:
             missing = [
                 slug
                 for slug, models in ((is_slug, is_models), (fs_slug, fs_models))
-                if caller_model not in models
+                if model_arg not in models
             ]
             if missing:
                 raise BadInput(
-                    f"model {caller_model!r} has no converged ml run on "
+                    f"model {model_arg!r} has no converged ml run on "
                     f"{' and '.join(missing)}'s current version — the band "
                     "would price a differently-relaxed geometry",
                     next=" then ".join(
-                        pair_check._relax_edit(s, model=caller_model) for s in missing
+                        pair_check._relax_edit(s, model=model_arg) for s in missing
                     ),
                 )
-            model: str | None = caller_model
+            model: str | None = model_arg
         else:
             # The IS's freshest shared-model relax names the calculator.
             model = next(
@@ -2164,8 +2220,6 @@ class StructureHandler(Handler):
         if inflight is not None:
             return self._neb_inflight_response(inflight, is_slug, fs_slug)
 
-        requester_id = _as_int_or_none(a.get("requested_by", a.get("parent_id")))
-        quest_ref_id: int | None = None
         if requester_id is not None:
             # A named requester must be a live todo (fail fast, before the
             # mint) — same contract as _dispatch_relax.

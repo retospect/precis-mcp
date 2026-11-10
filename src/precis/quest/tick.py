@@ -285,6 +285,12 @@ _LOGBOOK_TAIL_REVIEW = 20
 #: one-in-flight bound in ``compute.request_rerun`` still applies.
 MAX_RERUNS_PER_TICK = 2
 
+#: Per-tick cap on NEB edge requests (the ``neb`` payload field, gr573265)
+#: — the quest's rolling-24h mint cap (``PRECIS_STRUCT_NEB_QUEST_DAILY``)
+#: is the real bound; the per-tick cap mirrors the proposals WIP
+#: discipline (one new edge a tick). Advertised as ``{neb_cap}``.
+MAX_NEB_PER_TICK = 1
+
 #: Per-tick cap on deliberate full-text reads (the ``read`` payload field,
 #: gr502680) — each parks a held ref/chunk whose FULL text lands in the next
 #: tick's context, so a weak proposer can't flood the prompt.
@@ -1463,7 +1469,8 @@ _GENERIC_NEB_CONTEXT = (
     "\n## Barriers — one NEB edge between two of your own designs\n"
     "Two endpoint energies are NOT a barrier — never report ΔE as E_a. To "
     "measure an activation barrier on a step you choose:\n"
-    "1. IS: build the initial state — the `slab` op for an fcc(111) surface "
+    "1. IS: propose the initial state as a candidate `structure` — the "
+    "`slab` op for an fcc(111) surface "
     '({"op":"slab","element":"<host>","size":[3,3,4],"fix_layers":2}; '
     "element AND size are required), `add_adsorbate` for a group "
     "(H·O·N·OH·H2O·NH·NH2·NH3·C·CH·CH2·CH3·CH4), or hand-built ops. A "
@@ -1476,21 +1483,24 @@ _GENERIC_NEB_CONTEXT = (
     '{"type":"top"}} (or "subsurface"). To bind an adsorbate to the adatom '
     "itself, name the adatom's label among its `anchors`. "
     "Recipe: get(kind='skill', id='precis-structure-slab-help').\n"
-    "2. FS: DERIVE the final state from the IS so atom labels match — "
-    "put(kind='structure', id='<fs-slug>', args={'derive_from': '<is-slug>', "
-    "'ops': [...]}). `transfer` moves one atom onto an acceptor (the "
-    "bond-swap step); `move_group` rigidly relocates a fragment. A fresh "
-    "re-put is NEVER NEB-pairable (its own atom order).\n"
-    "3. Relax BOTH endpoints to a converged ml run on the current version, "
-    "then check the gates: get(kind='structure', id='<is>', view='pair', "
-    "args={'other': '<fs>'}) — every failed row names its fix.\n"
-    "4. Run the edge: put(kind='structure', id='<is>', mode='neb', "
-    "args={'final': '<fs>'}) — mints a struct_neb job (one in-flight run "
-    "per edge, ≤{neb_quest_daily} mints per quest per 24 h, "
-    "PRECIS_STRUCT_NEB_QUEST_DAILY). Poll get(kind='structure', "
-    "id='<is>', view='neb') for E_a, ΔE, the TS design and the trust "
-    "verdict; a succeeded run's barrier lands on the IS candidate and the "
-    "frontier by itself.\n"
+    "2. FS: a second proposal CLONED off the IS so atom labels match — "
+    '"structure": {"derive_from": "<is-slug or st<id>>", "ops": [...]}. '
+    "`transfer` moves one atom onto an acceptor (the bond-swap step); "
+    "`move_group` rigidly relocates a fragment; `displace` nudges one "
+    "atom. A fresh non-clone spec is NEVER NEB-pairable (its own atom "
+    "order), and neither is a clone whose ops change the atom set "
+    "(vacancy, add_atom).\n"
+    "3. Both endpoints relax automatically when they're minted — wait "
+    "for the converged ml runs to land before asking for the edge.\n"
+    '4. Run the edge: a `neb` payload entry {"is": "<is>", "fs": "<fs>", '
+    '"why": "<the elementary step>"} — the same gated mint '
+    "mode='neb' exposes (one in-flight run per edge, ≤{neb_quest_daily} "
+    "mints per quest per 24 h, PRECIS_STRUCT_NEB_QUEST_DAILY). The pair "
+    "gates (same atoms/cell/fixed set, both relaxed at one model, "
+    "distinct basins) run at mint: a refusal lands in your logbook "
+    "naming the fix. A landed barrier stamps the IS candidate and the "
+    "frontier by itself; agents inspect the band with view='neb' and the "
+    "gate table with view='pair'.\n"
     "Trust: a barrier ranks only on evidence from the CURRENT engine — "
     "engine:stale / engine:unknown / seeds:<n>-independent verdicts mean "
     "it doesn't count yet; the harvest re-queues stale edges on the "
@@ -1625,7 +1635,9 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '{"derive_from": "<cand-slug or st<id>>", "ops": [{"op": '
         '"set_element", "atom": "<label>", "element": "<dopant>"}]} — the '
         "clone keeps every atom, label and site marker, so a substitution "
-        "needs only its set_element op; no cell/slab key. Worked recipes "
+        "needs only its set_element op and an adatom variant only its "
+        "add_atom_site/add_adsorbate op — any composition op works on the "
+        "clone; no cell/slab key. Worked recipes "
         "(dopant adatoms, co-adsorbates, IS/FS pairs): "
         "get(kind='skill', id='precis-structure-slab-help').\n"
     )
@@ -1862,6 +1874,7 @@ def build_tick_prompt(
         reaction_context=_reaction_context(store, quest, fr=fr),
         proposal_cap=max_proposals_per_tick(),
         rerun_cap=MAX_RERUNS_PER_TICK,
+        neb_cap=MAX_NEB_PER_TICK,
         read_cap=MAX_READS_PER_TICK,
         fetch_cap=MAX_FETCHES_PER_TICK,
         dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS if has_blocks else "",
@@ -2115,6 +2128,11 @@ it would unblock>"}}
 "<optional list of seed ints, e.g. [3, 4] — the seed set this evaluation \
 runs>"}}
   ],
+  "neb": [
+    {{"is": "<st<id> or slug of the RELAXED initial-state candidate>", \
+"fs": "<st<id> or slug of its label-matched final state — usually a \
+derive_from clone>", "why": "<the elementary step this edge measures>"}}
+  ],
   "read": [
     {{"ref": "<fi<id>, pa<id>, pc<id> or td<id> of a held item you want \
 text of>", "why": "<what you are looking for>", "section": "<optional \
@@ -2143,6 +2161,13 @@ new — read \
 `get(kind='pathway', view='trust')` for each gate's verdict, the `anchor:` \
 line a barrier is credited through, and the \
 per-state `delta_meV` versus the recorded `tol_eV`). \
+`neb` (0–{neb_cap}) queues one CI-NEB edge between two NAMED, already-relaxed \
+designs — the quest-facing form of the NEB door, charged to this quest's \
+daily NEB lane. The IS must be a serving candidate (its harvested barrier \
+lands on it); the FS is usually its `derive_from` clone — labels preserved \
+means pairable. The pair gates run at mint: a refusal lands in the logbook \
+naming the fix (an endpoint still missing its converged ml relax refuses \
+until it lands). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
 chunk or `[td<id>]` todo from the context above; the finding claims, \
@@ -3889,20 +3914,43 @@ class _TickRun:
         except Exception:
             log.exception("run_quest_tick: reruns apply raised for quest %s", quest_id)
         self.st["reruns_queued"] = reruns_queued
+        # Deliberate NEB edges (the payload's `neb` field, gr573265): the
+        # tool-less tick's channel onto mode='neb' — same executor-side
+        # contract as `reruns` (per-entry refusals are logbook notes), and
+        # the same inquiry backstop as `proposals` (an inquiry quest mints
+        # no compute).
+        neb_queued = 0
+        try:
+            from precis.quest.compute import apply_neb
+
+            neb_queued = apply_neb(
+                store,
+                quest_id,
+                (
+                    []
+                    if self.quest_body == QUEST_BODY_INQUIRY
+                    else self.payload().get("neb")
+                ),
+                cap=MAX_NEB_PER_TICK,
+                by=by,
+            )
+        except Exception:
+            log.exception("run_quest_tick: neb apply raised for quest %s", quest_id)
+        self.st["neb_queued"] = neb_queued
         if step is not None:
             self.st["created"] = step.candidates_created
             self.st["dispatched"] = (
-                step.sims_dispatched + search_dispatched + reruns_queued
+                step.sims_dispatched + search_dispatched + reruns_queued + neb_queued
             )
             self.st["harvested"] = step.results_harvested
             self.st["ruled"] = step.ruled_out
             self.st["graduated"] = step.graduated
-        elif search_dispatched or reruns_queued:
+        elif search_dispatched or reruns_queued or neb_queued:
             # run_compute_step itself raised (degraded to `step = None`
-            # above) but the search slot or a rerun still landed a real job —
-            # don't lose that signal, or the stall counter would advance
-            # despite a genuine dispatch this tick.
-            self.st["dispatched"] = search_dispatched + reruns_queued
+            # above) but the search slot or a rerun/neb entry still landed
+            # a real job — don't lose that signal, or the stall counter
+            # would advance despite a genuine dispatch this tick.
+            self.st["dispatched"] = search_dispatched + reruns_queued + neb_queued
 
         # Commit re-prompt + tier-escalation ladder: a structural guarantee
         # that the AGENT is asked to act — never a code-chosen dispatch. A

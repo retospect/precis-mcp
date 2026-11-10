@@ -13143,3 +13143,200 @@ class TestCleanRungRunsAreNotMeasurements:
         assert fr.frontier == []
         assert [c.ref_id for c in fr.unevaluated] == [sid]
         assert fr.unevaluated[0].converged is False
+
+
+# ── the tick's `neb` field → apply_neb → queue_neb_edge (gr573265) ─────
+
+
+class TestApplyNeb:
+    """``apply_neb`` — the tool-less tick's channel onto ``mode='neb'``:
+    named endpoints resolve, the IS must serve the quest, the pair gates
+    run at mint, every refusal lands as a logbook observation."""
+
+    @staticmethod
+    def _structure(store: Any) -> StructureHandler:
+        return StructureHandler(hub=Hub(store=store))
+
+    @staticmethod
+    def _relaxed_pair(store: Any, structure: StructureHandler) -> Any:
+        """The pair-check fixture pair (ch_is + transfer-derived ch_fs)
+        with a converged ml run stubbed on each current version."""
+        from tests.test_structure_pair_check import _put_is_fs
+
+        _put_is_fs(structure)
+        refs = []
+        for slug in ("ch_is", "ch_fs"):
+            ref = store.get_ref(kind="structure", id=slug)
+            assert ref is not None, slug
+            store.structure_record_run(
+                ref.id,
+                fidelity="ml",
+                on_version=store.structure_version(ref.id),
+                converged=True,
+                n_steps=120,
+                max_disp=0.0,
+                model="mace_mp",
+                energy=-12.3,
+            )
+            refs.append(ref)
+        return refs[0], refs[1]
+
+    @staticmethod
+    def _pin_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta")
+        for env in ("PRECIS_AUTOCATPATH_ROUTE_NODE", "PRECIS_DFT_NODE"):
+            monkeypatch.delenv(env, raising=False)
+
+    @staticmethod
+    def _logs(store: Any, qid: int) -> list[str]:
+        return [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+
+    def test_queues_the_edge_and_charges_the_quest(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pin_nodes(monkeypatch)
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        queued = compute_mod.apply_neb(
+            store,
+            qid,
+            [{"is": is_ref.slug, "fs": "ch_fs", "why": "C-H scission"}],
+        )
+        assert queued == 1
+        runs = store.struct_neb_runs_for(is_ref.id)
+        assert len(runs) == 1 and runs[0]["status"] == "queued"
+        # quest_ref_id stamps the stored row only — the quest's daily lane.
+        assert runs[0]["params"]["quest_ref_id"] == str(qid)
+        logs = self._logs(store, qid)
+        assert any("neb queued" in t and "C-H scission" in t for t in logs)
+
+    def test_is_must_serve_the_quest(self, store: Any) -> None:
+        """A barrier minted on a non-serving structure harvests nowhere —
+        refuse with a note rather than burning GPU."""
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        queued = compute_mod.apply_neb(store, qid, [{"is": "ch_is", "fs": "ch_fs"}])
+        assert queued == 0
+        assert store.struct_neb_runs_for(is_ref.id) == []
+        logs = self._logs(store, qid)
+        assert any("neb refused" in t and "does not resolve" in t for t in logs)
+
+    def test_pair_gate_refusal_names_the_fix(self, store: Any) -> None:
+        """No converged ml runs → the 'relaxed' gate's refusal surfaces
+        the relax op in the logbook note (the gate table's own next=)."""
+        from tests.test_structure_pair_check import _put_is_fs
+
+        structure = self._structure(store)
+        _put_is_fs(structure)
+        is_ref = store.get_ref(kind="structure", id="ch_is")
+        assert is_ref is not None
+        qid = _mk_quest(store, "A barrier striving")
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        queued = compute_mod.apply_neb(store, qid, [{"is": "ch_is", "fs": "ch_fs"}])
+        assert queued == 0
+        assert store.struct_neb_runs_for(is_ref.id) == []
+        logs = self._logs(store, qid)
+        assert any("neb refused" in t and "relax" in t for t in logs)
+
+    def test_malformed_missing_fs_and_cap_notes(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pin_nodes(monkeypatch)
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        queued = compute_mod.apply_neb(
+            store,
+            qid,
+            [
+                {"is": "ch_is"},  # no `fs`
+                {"is": "ch_is", "fs": "ch_fs"},  # over the cap of 1
+            ],
+        )
+        assert queued == 0
+        assert store.struct_neb_runs_for(is_ref.id) == []
+        logs = self._logs(store, qid)
+        assert any("needs both `is` and `fs`" in t for t in logs)
+        assert any("per-tick cap" in t for t in logs)
+
+    def test_compute_lane_off_holds_the_payload(self, store: Any) -> None:
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        store.stamp_ref_meta(qid, {"compute_lane": "off"})
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        queued = compute_mod.apply_neb(store, qid, [{"is": "ch_is", "fs": "ch_fs"}])
+        assert queued == 0
+        assert store.struct_neb_runs_for(is_ref.id) == []
+        assert any("compute_lane" in t for t in self._logs(store, qid))
+
+    def test_identical_request_collapses_onto_inflight(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A repeat `neb` entry for the same edge collapses onto the
+        in-flight run — counted (the measurement exists), not refused."""
+        self._pin_nodes(monkeypatch)
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        entry = {"is": "ch_is", "fs": "ch_fs"}
+        assert compute_mod.apply_neb(store, qid, [entry]) == 1
+        assert compute_mod.apply_neb(store, qid, [entry]) == 1
+        assert len(store.struct_neb_runs_for(is_ref.id)) == 1
+        assert any("neb queued" in t for t in self._logs(store, qid))
+
+    def test_tick_neb_field_dispatches(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end: a tick payload's `neb` entry mints the edge and
+        counts as a real dispatch (the stall counter resets)."""
+        self._pin_nodes(monkeypatch)
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        payload = {
+            "logbook": [],
+            "dossier_markdown": "",
+            "neb": [{"is": "ch_is", "fs": "ch_fs", "why": "the step"}],
+        }
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(payload), compute=True
+        )
+        assert out.sims_dispatched >= 1
+        assert len(store.struct_neb_runs_for(is_ref.id)) == 1
+
+    def test_tick_neb_field_is_clamped_on_the_inquiry_body(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The inquiry backstop: a payload `neb` entry on an inquiry-body
+        tick mints nothing (same clamp as `proposals`)."""
+        from precis.quest.weave_tick import QUEST_BODY_INQUIRY
+
+        self._pin_nodes(monkeypatch)
+        structure = self._structure(store)
+        is_ref, _fs_ref = self._relaxed_pair(store, structure)
+        qid = _mk_quest(store, "A barrier striving")
+        store.add_link(src_ref_id=is_ref.id, dst_ref_id=qid, relation="serves")
+        payload = {
+            "logbook": [],
+            "dossier_markdown": "",
+            "neb": [{"is": "ch_is", "fs": "ch_fs"}],
+        }
+        run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(payload),
+            compute=True,
+            quest_body=QUEST_BODY_INQUIRY,
+        )
+        assert store.struct_neb_runs_for(is_ref.id) == []
