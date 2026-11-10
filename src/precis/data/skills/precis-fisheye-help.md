@@ -254,6 +254,24 @@ get(kind="finding", id="fi42", extent="fisheye+2hop", q="paper:cites")  # that g
 not a page; expand a folded group by narrowing (`q=` here,
 `args={'ring': …}` on the ring), not by asking for a next page.
 
+For an **exploratory** memory/hub/index read — orienting a task or
+discovering useful connections — `fisheye+2hop` is the preferred
+starting extent (the canonical procedure, Reto 2026-11-04): read the
+focus and direct links, take the second-hop counts as leads, and
+expand only the groups relevant to the task. Stop when there is
+enough context to decide the next action; do not expand every group
+or load the whole graph. An explicit request for a narrow read stays
+narrow — keep the requested extent/selector, add no graph context and
+no `+recall`.
+
+A count is not a list of inspected evidence. Distinguish counted,
+listed and read refs, and report any `+N more` fold, clipped body,
+render cap or failed expansion that limits a claim — with the
+narrowing call that would follow it. Absence from a bounded view is
+not proof of absence. A second-hop group pools links from the whole
+direct ring: verify a member's provenance path before attributing it
+to the focus.
+
 ## Read the same neighborhood in a browser
 
 `/eye/<handle>?extent=<rung>` renders the same text the `get` returns,

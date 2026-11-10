@@ -1,0 +1,47 @@
+#!/usr/bin/env -S uv run python
+"""scripts/gen-soul-index — regenerate the entry tables inside soul.md.
+
+The soul conduct layer (gr563975): ``src/precis/data/skills/soul.md`` is
+the root index; its ``soul-*.md`` siblings are the one canonical source.
+This rewrites the ``GENERATED soul-index`` block from their frontmatter
+(``soul-group:``, ``staged-from:``) and first-person hooks. The drift
+check lives in ``tests/test_soul_index.py``.
+
+    scripts/gen-soul-index          # rewrite soul.md in place
+    scripts/gen-soul-index --check  # exit 1 when the block is stale
+"""
+
+import sys
+from pathlib import Path
+
+from precis.skill_index.soul_index import SoulIndexError, render_block, sync_root
+
+ROOT = Path(__file__).resolve().parent.parent
+SKILLS_DIR = ROOT / "src" / "precis" / "data" / "skills"
+ROOT_FILE = SKILLS_DIR / "soul.md"
+
+
+def main(argv: list[str]) -> int:
+    check = "--check" in argv
+    try:
+        if check:
+            current = ROOT_FILE.read_text(encoding="utf-8")
+            if render_block(SKILLS_DIR) not in current:
+                print("gen-soul-index: soul.md is stale — run scripts/gen-soul-index")
+                return 1
+            print("gen-soul-index: soul.md is current")
+            return 0
+        changed = sync_root(SKILLS_DIR)
+        print(
+            "gen-soul-index: soul.md regenerated"
+            if changed
+            else "gen-soul-index: soul.md already current"
+        )
+        return 0
+    except SoulIndexError as exc:
+        print(f"gen-soul-index: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
