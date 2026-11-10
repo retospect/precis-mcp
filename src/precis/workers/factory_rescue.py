@@ -1309,15 +1309,40 @@ def _heartbeat(store: Store, now: datetime, res: StallResult) -> None:
     _rescue(store, res, tid, "tick-silent", "heartbeat", ev)
 
 
+def _terminal_root_stamps(conn: Any, roots: list[int]) -> dict[int, datetime]:
+    """``{root id: newest STATUS tag stamp}`` — when each dead root went
+    terminal (the ``_unblocked_at`` read: the STATUS stamp is the done
+    time). A missing row falls out; the judge then reads the root as
+    long dead."""
+    if not roots:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT rt.ref_id, max(rt.created_at)
+          FROM ref_tags rt JOIN tags t USING (tag_id)
+         WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS'
+         GROUP BY rt.ref_id
+        """,
+        (roots,),
+    ).fetchall()
+    return {int(r): ts for r, ts in rows}
+
+
 def _judge_terminal_roots(
     store: Store, now: datetime, plan: Any, res: StallResult
 ) -> None:
     """Non-terminal, non-held nodes under a root whose STATUS is terminal
     — the root was closed over open work: class ``terminal-root``, the
     idle deadline on the node's own newest signal (so a root closed
-    together with its nodes in one tick is not flagged mid-write)."""
+    together with its nodes in one tick is not flagged mid-write) AND on
+    the close itself (gr576155): the orphan is born at the root's
+    STATUS stamp, so a root dead seconds over a node idle for days is a
+    new orphan, not an old stall — the dead-root reapers (the dispatch
+    sweep, the orphan close) work inside that grace before a rescue
+    files."""
     with store.pool.connection() as conn:
         roots = _terminal_root_ids(conn)
+        term_at = _terminal_root_stamps(conn, roots)
     for root in roots:
         mini = _subtree_plan(store, root)
         rn = mini.nodes.get(root)
@@ -1340,6 +1365,7 @@ def _judge_terminal_roots(
         rows = _signal_rows(
             store, [n.id for n in judged] + [j.id for n in judged for j in mini.jobs(n)]
         )
+        closed_at = term_at.get(root)
         for n in judged:
             held = _held_in_plan(mini, n)
             if held is not None:
@@ -1347,9 +1373,14 @@ def _judge_terminal_roots(
                 continue
             jobs = mini.jobs(n)
             newest, label, lines = _node_signals(n, jobs, rows)
-            lines.append(f"root td{root} STATUS {rn.status if rn else '?'}")
+            lines.append(
+                f"root td{root} STATUS {rn.status if rn else '?'}"
+                + (f" at {_iso(closed_at)}" if closed_at is not None else "")
+            )
             deadline = STAGE_DEADLINES["idle"]
             if now - newest <= deadline:
+                continue
+            if closed_at is not None and now - closed_at <= deadline:
                 continue
             head = _branch_head(mini, n)
             branch = head_sha = None

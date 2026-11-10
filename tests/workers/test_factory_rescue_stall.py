@@ -272,6 +272,24 @@ def test_terminal_root_node_is_rescued(store: Store) -> None:
     assert _rescue_tags(store, leaf) == ["rescue:terminal-root"]
 
 
+def test_terminal_root_rescue_waits_for_the_close_to_age(store: Store) -> None:
+    """gr576155: the anomaly is "open under a dead root" — born at the
+    root's own STATUS stamp, not at the node's stale signal. A node
+    silent for days under a root closed seconds ago is a fresh orphan:
+    the dead-root reapers (the dispatch sweep, the orphan close) get
+    the idle deadline's grace before a rescue files."""
+    root = _root(store, status="done")
+    leaf = _node(store, root)
+    _age(store, leaf, timedelta(hours=2))  # idle long before the close
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=19))
+    assert res.rescued == [] and _rescue_tags(store, leaf) == []
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+    assert res.rescued == [(leaf, "terminal-root", "idle")]
+    assert _rescue_tags(store, leaf) == ["rescue:terminal-root"]
+
+
 def test_queued_job_deadline_is_30_minutes(store: Store) -> None:
     root = _root(store)
     task = _node(store, root)
