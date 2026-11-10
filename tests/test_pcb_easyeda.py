@@ -258,6 +258,67 @@ def test_parse_component_courtyard_widened_by_outline():
     assert y_max == pytest.approx(3.81)
 
 
+def test_parse_component_courtyard_provenance_marks_the_hint():
+    """gr565552: a box widened by recovered outline points is an inferred
+    graphic envelope, not a physical body claim — the provenance marker
+    says so explicitly instead of letting downstream promote it."""
+    footprint = easyeda.parse_component(_doc())
+    assert footprint is not None
+    assert footprint["courtyard"]["provenance"] == "graphic_hint"
+
+
+def _outline_doc(*tracks: str) -> dict:
+    """A minimal footprint doc: one 20x20 (raw unit) pad at the origin
+    plus the given TRACK primitives."""
+    return {
+        "result": {
+            "packageDetail": {
+                "uuid": "pkg-outline",
+                "dataStr": {
+                    "docType": 4,
+                    "head": {"x": 0, "y": 0},
+                    "shape": ["PAD~ELLIPSE~0~0~20~20~1~~1~~~id", *tracks],
+                },
+            }
+        }
+    }
+
+
+def test_parse_component_courtyard_ignores_non_silk_tracks():
+    """gr565552: the outline collection is layer-filtered — copper tracks
+    are connectivity, and the document layer (99) carries annotation
+    rectangles that are not a body outline (X1 C18213028's promoted box
+    matched layer-99 decoration extrema). Neither may widen the hint."""
+    footprint = easyeda.parse_component(
+        _outline_doc(
+            "TRACK~1~99~~200 0 400 0~t1~0",  # document layer, far out
+            "TRACK~1~1~~0 200 0 400~t2~0",  # top copper, far out
+        )
+    )
+    assert footprint is not None
+    assert footprint["courtyard"]["bbox"] == [-2.54, -2.54, 2.54, 2.54]
+    assert footprint["courtyard"]["provenance"] == "pad_extent"
+
+
+def test_parse_component_courtyard_keeps_bottom_silk_tracks():
+    footprint = easyeda.parse_component(
+        _outline_doc("TRACK~1~4~~0 200 400 200~t1~0")  # B.SilkS
+    )
+    assert footprint is not None
+    assert footprint["courtyard"]["bbox"][1] == pytest.approx(-50.8)
+    assert footprint["courtyard"]["provenance"] == "graphic_hint"
+
+
+def test_parse_component_courtyard_ignores_track_with_missing_layer():
+    """A TRACK whose layer field is empty cannot be attributed to an
+    outline layer, so it is dropped rather than silently widening the
+    hint — conservative handling of the unknown case."""
+    footprint = easyeda.parse_component(_outline_doc("TRACK~1~~0 200 0 400~t1~0"))
+    assert footprint is not None
+    assert footprint["courtyard"]["bbox"] == [-2.54, -2.54, 2.54, 2.54]
+    assert footprint["courtyard"]["provenance"] == "pad_extent"
+
+
 def test_parse_component_centroid_is_pad_extent_center():
     footprint = easyeda.parse_component(_doc())
     assert footprint is not None

@@ -415,6 +415,146 @@ def test_small_part_inside_the_body_is_a_courtyard_overlap() -> None:
     assert findings[0].severity == "error"
 
 
+def _pv1_l1_overlap_inputs(ir):
+    """The shared geometry for the provenance-grading tests: world
+    courtyards at the placer clearance, zero-clearance occupied unions,
+    and model pads for both parts (L1's lands sit inside PV1's modelled
+    body span, clear of PV1's real lands)."""
+    from precis.pcb.ir import world_courtyard_polygons
+
+    polys = world_courtyard_polygons(ir, clearance_mm=0.4)
+    bodies = [
+        (str(ir.instance_refdes[i]), p)
+        for i, p in enumerate(world_courtyard_polygons(ir, clearance_mm=0.0))
+    ]
+    pads = [
+        {
+            "refdes": "PV1",
+            "layer": "F.Cu",
+            "net": "IN",
+            "shape": "rect",
+            "x": 50.0 - 10.7,
+            "y": 50.0,
+            "w": 3.0,
+            "h": 8.0,
+        },
+        {
+            "refdes": "PV1",
+            "layer": "F.Cu",
+            "net": "OUT",
+            "shape": "rect",
+            "x": 50.0 + 10.7,
+            "y": 50.0,
+            "w": 3.0,
+            "h": 8.0,
+        },
+        {
+            "refdes": "L1",
+            "layer": "F.Cu",
+            "net": "IN",
+            "shape": "rect",
+            "x": 50.0,
+            "y": 52.0,
+            "w": 0.4,
+            "h": 0.4,
+        },
+    ]
+    return [("PV1", polys[0]), ("L1", polys[1])], bodies, pads
+
+
+def test_graphic_hint_body_reserves_but_does_not_prove_a_collision() -> None:
+    """gr565552: a catalog row whose courtyard is an INFERRED graphic hint
+    (``courtyard.provenance "graphic_hint"`` — EasyEDA silk/TRACK outline
+    extrema, e.g. X1 C18213028's asymmetric decoration box) keeps its
+    keep-out reservation but is not a verified body claim. The placer's
+    ring still covers the box; DRC grades an overlap reaching it as a
+    margin shortfall (WARN), not a proven collision (ERROR)."""
+    from shapely.geometry import Point
+
+    from precis.pcb.drc import check_courtyard_overlap
+    from precis.pcb.ir import (
+        bodied_refdes,
+        verified_bodied_refdes,
+    )
+
+    fp = _wide_body_fp()
+    fp["courtyard"] = {
+        "bbox": [-12.2, -4.064, 12.2, 4.064],
+        "provenance": "graphic_hint",
+    }
+    ir = _body_ir({"PV1": fp}, footprint_sources={"PV1": "catalog"})
+    # The reservation stands — the marker changes the claim, not the
+    # geometry. A conservative reservation is not proof it is unsafe.
+    assert ir.inst_body_bbox[0] == (-12.2, -4.064, 12.2, 4.064)
+    assert ir.inst_body_provenance[0] == "graphic_hint"
+    assert ir.inst_body_provenance[1] is None, "L1 has no footprint row"
+    assert bodied_refdes(ir) == frozenset({"PV1"})
+    assert verified_bodied_refdes(ir) == frozenset()
+    body = Polygon(instance_courtyard_polygon(ir, 0, clearance_mm=0.0))
+    assert body.covers(Point(0.0, 0.0)), "mid-body reservation must stand"
+    courtyards, bodies, pads = _pv1_l1_overlap_inputs(ir)
+    findings = check_courtyard_overlap(
+        courtyards,
+        bottom_by_refdes={},
+        clearance_mm=0.4,
+        pads=pads,
+        bodies=bodies,
+        bodied=verified_bodied_refdes(ir),
+    )
+    assert findings, "L1 inside the hinted span must still report"
+    assert findings[0].severity == "warn", findings[0].detail
+
+
+def test_unmarked_catalog_body_still_proves_the_collision() -> None:
+    """Conservative unknown handling: the identical geometry with NO
+    provenance marker keeps today's reading — a catalog courtyard is
+    vendor data and the pair grades as a proven collision (ERROR)."""
+    from precis.pcb.drc import check_courtyard_overlap
+    from precis.pcb.ir import verified_bodied_refdes
+
+    ir = _body_ir({"PV1": _wide_body_fp()}, footprint_sources={"PV1": "catalog"})
+    assert ir.inst_body_provenance[0] == "catalog"
+    assert verified_bodied_refdes(ir) == frozenset({"PV1"})
+    courtyards, bodies, pads = _pv1_l1_overlap_inputs(ir)
+    findings = check_courtyard_overlap(
+        courtyards,
+        bottom_by_refdes={},
+        clearance_mm=0.4,
+        pads=pads,
+        bodies=bodies,
+        bodied=verified_bodied_refdes(ir),
+    )
+    assert findings
+    assert findings[0].severity == "error"
+
+
+def test_explicit_provenance_marker_wins_over_the_equality_check() -> None:
+    """A design-local row whose courtyard EQUALS the pad extent is the
+    pad-derived fallback — no body claim — unless the row carries an
+    explicit marker: ``"authored"`` is a designer's claim (verified, gap
+    filled), ``"graphic_hint"`` is an inferred envelope (reservation
+    kept, not verified). The marker is stronger information than the
+    equality heuristic."""
+    from precis.pcb.ir import verified_bodied_refdes
+
+    fp = _wide_body_fp()
+    fp["courtyard"] = {"bbox": [-12.2, -4.0, 12.2, 4.0], "provenance": "authored"}
+    ir = _body_ir({"PV1": fp})  # design-local, no sources
+    assert ir.inst_body_bbox[0] == (-12.2, -4.0, 12.2, 4.0)
+    assert ir.inst_body_provenance[0] == "authored"
+    assert verified_bodied_refdes(ir) == frozenset({"PV1"})
+
+    hinted = _wide_body_fp()
+    hinted["courtyard"] = {
+        "bbox": [-12.2, -4.0, 12.2, 4.0],
+        "provenance": "graphic_hint",
+    }
+    ir2 = _body_ir({"PV1": hinted})
+    assert ir2.inst_body_bbox[0] == (-12.2, -4.0, 12.2, 4.0)
+    assert ir2.inst_body_provenance[0] == "graphic_hint"
+    assert verified_bodied_refdes(ir2) == frozenset()
+
+
 def test_a_rigid_group_pair_is_exempt_from_the_overlap_rule() -> None:
     """The authored exemption, end to end: two instances of one rigid
     ``inst_group`` assembly get no pair rule at all

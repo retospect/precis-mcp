@@ -920,9 +920,26 @@ def apply_real_pin_offsets(
     without source knowledge get the derived-check alone, which keeps
     every local row honest and costs only the rare catalog row whose
     courtyard equals its pad bbox exactly.
+
+    Also hydrates :attr:`~precis.pcb.ir.PcbIR.inst_body_provenance`
+    (:func:`precis.pcb.ir.footprint_body_provenances`) — WHAT each body
+    box claims. An explicit row marker (``courtyard.provenance``;
+    :mod:`precis.pcb.easyeda` stamps its inferred envelopes) wins over
+    the catalog/authored inference; unmarked rows keep today's reading
+    via conservative unknown handling. The box is a keep-out reservation
+    either way — only proven-collision grading
+    (:func:`precis.pcb.ir.verified_bodied_refdes`) consults the
+    provenance.
     """
     ir.footprint_pads = pcb_ir.footprint_pad_set(ir, footprints)
     ir.inst_body_bbox = pcb_ir.footprint_body_bboxes(
+        ir,
+        footprints,
+        catalog_refdes={
+            r for r, s in (footprint_sources or {}).items() if s == "catalog"
+        },
+    )
+    ir.inst_body_provenance = pcb_ir.footprint_body_provenances(
         ir,
         footprints,
         catalog_refdes={
@@ -1218,7 +1235,7 @@ def placement_drc_findings(
         edge_mates=pcb_edge_mate.records(ir),
         courtyard_clearance_mm=COURTYARD_CLEARANCE_MM,
         bodies=bodies,
-        bodied=pcb_ir.bodied_refdes(ir),
+        bodied=pcb_ir.verified_bodied_refdes(ir),
         rigid_pairs=pcb_ir.rigid_refdes_pairs(ir),
     )
 

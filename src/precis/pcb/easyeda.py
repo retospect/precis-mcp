@@ -440,13 +440,31 @@ def _parse_points_field(
     return pts
 
 
+#: TRACK layers whose strokes plausibly trace the body's outline for the
+#: :func:`_courtyard` hint: the two silk layers (:data:`_GRAPHIC_LAYER_NAMES`
+#: ids 3/4). Copper tracks are connectivity, not outline; the document
+#: layer (99) and friends carry annotation rectangles that are not a
+#: mechanical body claim — gr565552: X1 C18213028's cached catalog box
+#: exactly matched layer-99 silkscreen-decoration extrema and was promoted
+#: to an authoritative physical body.
+_COURTYARD_HINT_LAYERS = frozenset({3, 4})
+
+
 def _parse_track(
     fields: list[str], origin_x: float, origin_y: float
 ) -> list[tuple[float, float]]:
     """Decode one ``TRACK~...`` primitive's polyline into mm points, for the
     cheap courtyard-outline hint. ``points`` (field 4) is a space-separated
-    flat ``x1 y1 x2 y2 ...`` list."""
+    flat ``x1 y1 x2 y2 ...`` list; ``layer`` (field 2) is filtered to the
+    silk layers — a TRACK whose layer is missing, unrecognised, or not an
+    outline layer (copper, document/annotation) cannot be attributed to the
+    body outline, so it is dropped rather than silently widening the hint."""
     if len(fields) < 5 or not fields[4]:
+        return []
+    try:
+        if int(fields[2]) not in _COURTYARD_HINT_LAYERS:
+            return []
+    except (IndexError, ValueError):
         return []
     return _parse_points_field(fields[4], origin_x, origin_y)
 
@@ -454,8 +472,17 @@ def _parse_track(
 def _courtyard(
     pads: list[dict[str, Any]], outline: list[tuple[float, float]]
 ) -> dict[str, Any]:
-    """Bbox from pad extents, widened by any silk/assembly outline points
-    cheaply recovered from TRACK primitives (a hint, not authoritative)."""
+    """Bbox from pad extents, widened by any silk outline points cheaply
+    recovered from TRACK primitives — with explicit provenance, because
+    EasyEDA's footprint doc carries NO authored courtyard/body primitive:
+    this box is at best an INFERRED graphic envelope, never a verified
+    physical body claim (gr565552). ``provenance`` is ``"graphic_hint"``
+    when outline points widened the box past the pad extent, else
+    ``"pad_extent"`` — the vendor drew nothing beyond the pads, so the box
+    is the pads' own extent and claims no body at all. Downstream readers
+    (:func:`precis.pcb.ir.footprint_body_bboxes`) keep the box as a
+    conservative keep-out reservation either way; only its promotion to a
+    proven-collision body claim is provenance-gated."""
     xs: list[float] = []
     ys: list[float] = []
     for pad in pads:
@@ -469,16 +496,24 @@ def _courtyard(
         else:
             xs += [pad["x"] - pad["w"] / 2, pad["x"] + pad["w"] / 2]
             ys += [pad["y"] - pad["h"] / 2, pad["y"] + pad["h"] / 2]
+    pad_bbox = [
+        round(min(xs), 4),
+        round(min(ys), 4),
+        round(max(xs), 4),
+        round(max(ys), 4),
+    ]
     for x, y in outline:
         xs.append(x)
         ys.append(y)
+    bbox = [
+        round(min(xs), 4),
+        round(min(ys), 4),
+        round(max(xs), 4),
+        round(max(ys), 4),
+    ]
     return {
-        "bbox": [
-            round(min(xs), 4),
-            round(min(ys), 4),
-            round(max(xs), 4),
-            round(max(ys), 4),
-        ]
+        "bbox": bbox,
+        "provenance": "graphic_hint" if bbox != pad_bbox else "pad_extent",
     }
 
 

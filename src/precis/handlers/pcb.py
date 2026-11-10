@@ -8707,7 +8707,7 @@ class PcbHandler(Handler):
                 clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
                 pads=pads,
                 bodies=bodies,
-                bodied=pcb_ir.bodied_refdes(ir),
+                bodied=pcb_ir.verified_bodied_refdes(ir),
                 rigid_pairs=pcb_ir.rigid_refdes_pairs(ir),
             )
             findings += pcb_drc.check_courtyard_hole(

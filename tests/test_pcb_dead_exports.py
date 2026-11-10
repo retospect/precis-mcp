@@ -541,6 +541,21 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "bodied_refdes, which DRC courtyard_overlap and the placer reach "
         "-- same shape as PcbIR.pin_poly above"
     ),
+    "src/precis/pcb/ir.py::PcbIR.inst_body_provenance": (
+        "same invisible-wiring shape as PcbIR.inst_body_bbox directly "
+        "above (gr565552): session.py hydrates it alongside inst_body_"
+        "bbox; the only reader is ir.py's own verified_bodied_refdes, "
+        "which the three courtyard_overlap call sites reach -- the "
+        "provenance gate on proven-collision grading"
+    ),
+    "src/precis/pcb/ir.py::bodied_refdes": (
+        "re-entered this mapping with gr565552: it is the keep-out "
+        "RESERVATION set (inferred graphic hints included), superseded "
+        "as the courtyard_overlap grading input by "
+        "verified_bodied_refdes -- handlers/check_run/session all pass "
+        "the verified set now; pinned by tests/test_pcb_footprint_pad_set"
+        ".py"
+    ),
     # ---- class methods/properties: legitimately unwired ------------------
     "src/precis/pcb/datasheet_facts.py::PinFact.missing": (
         "9f9d59612 (datasheet_facts): the 'unknown -- ask the user' field "

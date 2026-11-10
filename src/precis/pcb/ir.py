@@ -619,7 +619,23 @@ class PcbIR:
     #: reserves the whole span, not two islands bridged by a corridor.
     #: ``()`` where no caller hydrated bodies (a hand-built IR, or none
     #: resolved) — the courtyard is then the pad union alone, as before.
+    #: The box is a keep-out RESERVATION whatever its provenance; whether
+    #: it also proves a physical collision is :attr:`inst_body_provenance`'s
+    #: question (gr565552).
     inst_body_bbox: tuple[tuple[float, float, float, float] | None, ...] = ()
+
+    #: Per-instance provenance of :attr:`inst_body_bbox` — one of
+    #: ``"authored"`` (a designer-authored courtyard claim), ``"catalog"``
+    #: (a vendor row with no explicit marker — conservative unknown
+    #: handling keeps it a claim), ``"graphic_hint"`` (an inferred EasyEDA
+    #: graphic envelope: silk/TRACK outline extrema, not a verified body
+    #: claim), ``"pad_extent"`` (the box equals the pads' own extent —
+    #: nothing beyond the pads is claimed), or ``None`` where the instance
+    #: has no body entry. Hydrated at the same seam by
+    #: :func:`footprint_body_provenances`. :func:`verified_bodied_refdes`
+    #: excludes the two inferred markers from proven-collision grading;
+    #: the keep-out reservation itself is unchanged either way.
+    inst_body_provenance: tuple[str | None, ...] = ()
 
     #: The footprint's own silk-layer stroke graphics per instance — the
     #: decoded ``graphics[]`` entries on an ``F.SilkS``/``B.SilkS`` layer,
@@ -2829,14 +2845,16 @@ def instance_courtyard_polygon(
     a connector's second tab outside it, so the placer could park a
     neighbour on copper the gerbers flash.
 
-    The union also takes the instance's authored BODY extent
+    The union also takes the instance's modelled BODY extent
     (:attr:`PcbIR.inst_body_bbox` — the footprint row's ``courtyard``
     claim, hydrated where :attr:`PcbIR.footprint_pads` is): pads alone
     leave the space BETWEEN disjoint pads open, so the placer parked a
     small part on the body of a two-pad cell whose lands sit at its ends
     (taz-leaf x2: L1 inside PV1's 24mm span). Over-covering is the safe
-    direction here as everywhere above: the authored box is the part's
-    own extent claim, and "two objects can not occupy same space".
+    direction here as everywhere above: whatever the box's
+    :attr:`~PcbIR.inst_body_provenance` — an authored claim or an
+    inferred graphic hint — the reservation stands, and "two objects
+    can not occupy same space".
 
     **Dense unions decimate BEFORE the offset** (:data:`COURTYARD_UNION_
     DENSE_VERTS`, gr536561): a shaped-electrode instance arrives with
@@ -3218,6 +3236,80 @@ def _pads_extent_bbox(
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+#: Body-extent provenance values that mark the box as INFERRED, not a
+#: verified body/assembly claim: an EasyEDA graphic envelope (silk/TRACK
+#: outline extrema — gr565552's promoted hint) or the pads' own extent.
+#: :func:`verified_bodied_refdes` excludes these from proven-collision
+#: grading; their keep-out reservation is untouched.
+_INFERRED_BODY_PROVENANCE = frozenset({"graphic_hint", "pad_extent"})
+
+
+def _body_claims(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    catalog_refdes: Collection[str] | None = None,
+) -> tuple[tuple[tuple[float, float, float, float] | None, str | None], ...]:
+    """``(body_bbox, provenance)`` per instance — the shared core of
+    :func:`footprint_body_bboxes` and :func:`footprint_body_provenances`.
+
+    The bbox half is :func:`footprint_body_bboxes`'s historical answer (a
+    keep-out reservation): every qualifying row's ``courtyard.bbox``. The
+    provenance half records WHAT the box claims. An explicit row marker
+    (``courtyard.provenance`` — :mod:`precis.pcb.easyeda` stamps its
+    inferred envelopes ``"graphic_hint"``/``"pad_extent"``) always wins
+    over the derived-fallback equality check; a row with no marker gets
+    ``"catalog"`` (vendor data, unknown provenance — conservative unknown
+    handling keeps today's reading) or ``"authored"`` (a design-local
+    courtyard that differs from the pad extent — the designer's own body
+    claim).
+    """
+    if not footprints:
+        return ()
+    catalog = set(catalog_refdes or ())
+    pins_of: dict[int, set[str]] = {}
+    for pid in range(ir.n_pins):
+        pins_of.setdefault(int(ir.pin_instance[pid]), set()).add(str(ir.pin_label[pid]))
+    out: list[tuple[tuple[float, float, float, float] | None, str | None]] = []
+    for inst_id in range(ir.n_instances):
+        refdes = str(ir.instance_refdes[inst_id])
+        fp = footprints.get(refdes) or {}
+        raw_pads = fp.get("pads") or []
+        raw_court = fp.get("courtyard") or {}
+        raw_bbox = raw_court.get("bbox")
+        body = None
+        prov: str | None = None
+        if raw_pads and raw_bbox is not None:
+            try:
+                bbox = tuple(float(v) for v in raw_bbox)
+            except (TypeError, ValueError):
+                bbox = ()
+            if len(bbox) == 4 and all(math.isfinite(v) for v in bbox):
+                labels = {
+                    padplace.pad_label(raw, fp.get("pin_map") or {}) for raw in raw_pads
+                }
+                if not (pins_of.get(inst_id, set()) - labels):
+                    row_prov = raw_court.get("provenance")
+                    row_prov = row_prov if isinstance(row_prov, str) else None
+                    authored = refdes in catalog
+                    if not authored and row_prov is None:
+                        # No explicit marker: the derived-fallback equality
+                        # check is the only signal — an explicit marker
+                        # wins over it (a round-tripped graphic hint stays
+                        # a hint even where it differs from the pad extent).
+                        pads_bbox = _pads_extent_bbox(raw_pads)
+                        authored = pads_bbox is not None and any(
+                            abs(a - b) > _BODY_DERIVED_TOL_MM
+                            for a, b in zip(bbox, pads_bbox, strict=True)
+                        )
+                    if authored or row_prov is not None:
+                        body = bbox
+                        prov = row_prov or (
+                            "catalog" if refdes in catalog else "authored"
+                        )
+        out.append((body, prov))
+    return tuple(out)
+
+
 def footprint_body_bboxes(
     ir: PcbIR,
     footprints: dict[str, dict[str, Any]] | None,
@@ -3241,47 +3333,35 @@ def footprint_body_bboxes(
     courtyard is vendor data even when it equals the pad bbox. Any other
     row qualifies only when its courtyard is NOT the pad-derived
     fallback — recognised by equality within :data:`_BODY_DERIVED_TOL_MM`
-    of :func:`_pads_extent_bbox`. An authored courtyard on a
+    of :func:`_pads_extent_bbox` — or when the row carries an explicit
+    ``courtyard.provenance`` marker. An authored courtyard on a
     design-local row (a supercap's authored span) applies the same way;
     the auto-derived one an authored comb gets never does.
+
+    The box is a keep-out RESERVATION whatever its provenance: an
+    inferred EasyEDA graphic envelope still keeps the placer out (a
+    conservative reservation is not proof it is unsafe — gr565552).
+    Whether the box also proves a physical collision is
+    :func:`footprint_body_provenances`'s question; see
+    :func:`verified_bodied_refdes`.
 
     The join rule is :func:`footprint_pad_set`'s: an instance whose
     pin/pad join failed contributes nothing — the footprint's extent
     would hang off pads this IR does not carry."""
-    if not footprints:
-        return ()
-    catalog = set(catalog_refdes or ())
-    pins_of: dict[int, set[str]] = {}
-    for pid in range(ir.n_pins):
-        pins_of.setdefault(int(ir.pin_instance[pid]), set()).add(str(ir.pin_label[pid]))
-    out: list[tuple[float, float, float, float] | None] = []
-    for inst_id in range(ir.n_instances):
-        refdes = str(ir.instance_refdes[inst_id])
-        fp = footprints.get(refdes) or {}
-        raw_pads = fp.get("pads") or []
-        raw_bbox = (fp.get("courtyard") or {}).get("bbox")
-        body = None
-        if raw_pads and raw_bbox is not None:
-            try:
-                bbox = tuple(float(v) for v in raw_bbox)
-            except (TypeError, ValueError):
-                bbox = ()
-            if len(bbox) == 4 and all(math.isfinite(v) for v in bbox):
-                labels = {
-                    padplace.pad_label(raw, fp.get("pin_map") or {}) for raw in raw_pads
-                }
-                if not (pins_of.get(inst_id, set()) - labels):
-                    authored = refdes in catalog
-                    if not authored:
-                        pads_bbox = _pads_extent_bbox(raw_pads)
-                        authored = pads_bbox is not None and any(
-                            abs(a - b) > _BODY_DERIVED_TOL_MM
-                            for a, b in zip(bbox, pads_bbox, strict=True)
-                        )
-                    if authored:
-                        body = bbox
-        out.append(body)
-    return tuple(out)
+    return tuple(body for body, _ in _body_claims(ir, footprints, catalog_refdes))
+
+
+def footprint_body_provenances(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    *,
+    catalog_refdes: Collection[str] | None = None,
+) -> tuple[str | None, ...]:
+    """Per-instance provenance of :func:`footprint_body_bboxes`'s boxes —
+    ``"authored"``, ``"catalog"``, ``"graphic_hint"`` or ``"pad_extent"``
+    where a body was claimed, else ``None`` (see
+    :attr:`PcbIR.inst_body_provenance` for the vocabulary)."""
+    return tuple(prov for _, prov in _body_claims(ir, footprints, catalog_refdes))
 
 
 def footprint_silk_graphics(
@@ -3320,15 +3400,42 @@ def footprint_silk_graphics(
 
 
 def bodied_refdes(ir: PcbIR) -> frozenset[str]:
-    """Refdes whose instance carries a real body extent
+    """Refdes whose instance carries a modelled body extent
     (:attr:`PcbIR.inst_body_bbox` — a catalog row's courtyard bbox or
-    an authored local one). :func:`precis.pcb.drc.check_courtyard_
-    overlap` grades an overlap reaching those occupied regions as a
-    proven collision, not a margin shortfall."""
+    an authored local one). Every one of these is a keep-out RESERVATION;
+    :func:`precis.pcb.drc.check_courtyard_overlap` reaches for
+    :func:`verified_bodied_refdes` when it grades an overlap as a proven
+    collision rather than a margin shortfall — an inferred graphic hint
+    (gr565552) keeps its reservation but cannot prove a collision."""
     return frozenset(
         str(ir.instance_refdes[i])
         for i, b in enumerate(ir.inst_body_bbox)
         if b is not None
+    )
+
+
+def verified_bodied_refdes(ir: PcbIR) -> frozenset[str]:
+    """Subset of :func:`bodied_refdes` whose body extent is a VERIFIED
+    body/assembly claim — a designer-authored courtyard (``"authored"``)
+    or a vendor row with no explicit marker (``"catalog"``: conservative
+    unknown handling, the pre-gr565552 reading). Boxes marked INFERRED
+    (:data:`_INFERRED_BODY_PROVENANCE` — an EasyEDA graphic envelope,
+    ``"graphic_hint"``, or the pads' own extent, ``"pad_extent"``) keep
+    their keep-out reservation in :attr:`PcbIR.inst_body_bbox` but are
+    excluded here: silkscreen-decoration extrema are not a certified
+    mechanical contract, so an overlap reaching them is graded a margin
+    shortfall, not a proven collision. ``inst_body_provenance`` shorter
+    than ``inst_body_bbox`` (a hand-built IR hydrated before provenance
+    existed) falls back to treating every body as verified — the same
+    conservative-unknown reading."""
+    provs = ir.inst_body_provenance
+    if len(provs) != len(ir.inst_body_bbox):
+        provs = ()
+    return frozenset(
+        str(ir.instance_refdes[i])
+        for i, b in enumerate(ir.inst_body_bbox)
+        if b is not None
+        and (i >= len(provs) or provs[i] not in _INFERRED_BODY_PROVENANCE)
     )
 
 

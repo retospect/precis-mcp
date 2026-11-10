@@ -2812,9 +2812,12 @@ def check_courtyard_overlap(
     ``courtyards``, what
     :func:`precis.pcb.ir.world_courtyard_polygons` returns at
     ``clearance_mm=0`` (gr529963's pad-and-body union) — and the refdes
-    subset whose union carries a real BODY extent
+    subset whose union carries a VERIFIED BODY extent
     (:attr:`precis.pcb.ir.PcbIR.inst_body_bbox`, from
-    :func:`precis.pcb.ir.bodied_refdes`). Given both, a pair in which a
+    :func:`precis.pcb.ir.verified_bodied_refdes` — the proven-collision
+    grading set; :func:`precis.pcb.ir.bodied_refdes` is the wider
+    keep-out reservation, inferred graphic hints included, which does not
+    grade collisions by itself, gr565552). Given both, a pair in which a
     modelled body participates is graded on real geometry, not the
     over-approximation argument: an overlap that reaches either part's
     occupied region is a proven collision — ERROR; an overlap living

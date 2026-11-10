@@ -1090,7 +1090,7 @@ def run(
         courtyard_clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
         undeclared_unchecked=undeclared_unchecked,
         profile_rules=board_profile_rules,
-        bodied=pcb_ir.bodied_refdes(ir),
+        bodied=pcb_ir.verified_bodied_refdes(ir),
         rigid_pairs=pcb_ir.rigid_refdes_pairs(ir),
     )
     # Parylene-coater size (gr414481): drc.py knows no components, so
