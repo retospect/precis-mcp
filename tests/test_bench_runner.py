@@ -799,15 +799,20 @@ class _StubRuntime:
     (handle, extent). Refuses a switched-off ``kwd`` / ``summary`` rung the way
     the server does (an error naming the switches variable)."""
 
-    def __init__(self, hits: list[str], texts: dict[tuple[str, str], str]) -> None:
-        self.hits, self.texts = hits, texts
+    def __init__(
+        self,
+        hits: list[str],
+        texts: dict[tuple[str, str], str],
+        rows: dict[str, str] | None = None,
+    ) -> None:
+        self.hits, self.texts, self.rows = hits, texts, rows or {}
         self.log: list[tuple[str, str]] = []
 
     def dispatch_with_status(self, verb, args, fold=True):
         from precis.bench import switches
 
         if verb == "search":
-            rows = "\n".join(f"{h}\tkw" for h in self.hits)
+            rows = "\n".join(f"{h}\t{self.rows.get(h, 'kw')}\t" for h in self.hits)
             return f"# hits\n{rows}\nNext:\n x", False
         handle, ext = args["id"], args["extent"]
         sw = switches.current()
@@ -970,25 +975,141 @@ def test_triage_never_requests_a_rung_the_arm_switched_off(stub_gold):
     assert ("pc1", "fisheye") in rt_nr.log
 
 
+#: search-row keywords per hit; coverage of the stub question: pc1 0, pc2 .25,
+#: pc3 1.0, pc4 .5, pc5 0. The gold is in pc4's verbatim.
+_ROWS = {
+    "pc1": "unrelated, other",
+    "pc2": "gamma",
+    "pc3": "alpha beta, gamma work",
+    "pc4": "alpha beta",
+    "pc5": "nothing",
+}
+
+
+def _rowkw_run(arm: str, threshold: float, texts=None):
+    rt = _StubRuntime(list(_HITS), dict(_KWD) if texts is None else texts, dict(_ROWS))
+    row = runner.run_scripted(
+        rt, _StubCatalog(), _stub_task(), arm, caller="rowkw", threshold=threshold
+    )
+    return row, rt
+
+
+def test_row_texts_reads_each_hits_own_search_row():
+    body = "# 2 hits\n\n{handle\tchunk_keywords\tsize}\npc9\talpha, beta\t\npc4\tgamma\t1kB\nNext:\npc1\tx"
+    got = runner.row_texts(_stub_task(), body)
+    assert got == {"pc9": "alpha, beta\t", "pc4": "gamma\t1kB"}  # Next: is not a hit
+    mem = runner.BenchTask({**_stub_task().row, "type": "memory"})
+    mbody = "## memory 7: t\nalpha fact\n\n## memory 9: u\nbeta fact\nNext:\n"
+    assert set(runner.row_texts(mem, mbody)) == {"me7", "me9"}
+    assert "beta fact" in runner.row_texts(mem, mbody)["me9"]
+
+
+def test_rowkw_scores_the_search_rows_and_reads_no_cheap_rung(stub_gold):
+    row, rt = _rowkw_run("all-on", 0.5)
+    # no kwd / summary read at all; verbatim by row score: pc3 (1.0) then pc4 (.5, gold)
+    assert [e for _h, e in rt.log if e in ("kwd", "summary")] == []
+    assert _verbatims(rt) == ["pc3", "pc4"]
+    assert row["found"] is True and row["caller"] == "rowkw"
+    assert row["calls"] == 3  # the search and two opens
+    # a cut above every score opens nothing, and no follow-up on an unopened hit
+    row0, rt0 = _rowkw_run("all-on", 1.1)
+    assert rt0.log == [] and row0["verbatim_opens"] == 0
+    # threshold 0: everything, best score first, ties in rank (pc1 and pc5 last)
+    nogold = {k: v for k, v in _KWD.items() if k != ("pc4", "verbatim")}
+    _row, rt1 = _rowkw_run("all-on", 0.0, nogold)
+    assert _verbatims(rt1) == ["pc3", "pc4", "pc2", "pc1", "pc5"]
+    assert rt1.log[-2:] == [("pc3", "fisheye"), ("pc3", "+recall")]
+
+
+def test_rowkw_without_the_keyword_layer_has_no_signal_and_opens_in_rank_order(
+    stub_gold,
+):
+    nogold = {k: v for k, v in _KWD.items() if k != ("pc4", "verbatim")}
+    for arm in ("no-kwd", "no-cheap-rungs"):
+        _row, rt = _rowkw_run(arm, 0.99, nogold)  # the cut is ignored: unscored
+        assert _verbatims(rt) == _HITS, arm
+    # no-summary leaves the rows alone: scored
+    _row, rt = _rowkw_run("no-summary", 0.99, nogold)
+    assert _verbatims(rt) == ["pc3"]
+
+
+def test_rowkw_and_triage_never_ask_for_a_removed_rung_in_any_arm(stub_gold):
+    for arm in ("all-on", *ARMS, *runner.COMBINED_ARMS):
+        for caller in ("triage", "rowkw"):
+            rt = _StubRuntime(list(_HITS), {}, dict(_ROWS))
+            row = runner.run_scripted(
+                rt, _StubCatalog(), _stub_task(), arm, caller=caller, threshold=0.0
+            )
+            assert row["refusals"] == 0 and row["errors"] == 0, (arm, caller)
+
+
+def test_no_cheap_rungs_switches_both_rungs_off_and_triage_opens_in_rank_order(
+    stub_gold,
+):
+    assert runner.arm_flags("no-cheap-rungs") == {"kwd": False, "summary": False}
+    assert "no-cheap-rungs" in runner.ALL_ARMS
+    nogold = {k: v for k, v in _KWD.items() if k != ("pc4", "verbatim")}
+    rt = _StubRuntime(list(_HITS), nogold)
+    row = runner.run_scripted(
+        rt,
+        _StubCatalog(),
+        _stub_task(),
+        "no-cheap-rungs",
+        caller="triage",
+        threshold=0.9,
+    )
+    assert [e for _h, e in rt.log if e in ("kwd", "summary")] == []
+    assert _verbatims(rt) == _HITS and row["refusals"] == 0
+    # the ladder asks for both and is refused for both on every hit
+    lad = runner.run_scripted(
+        _StubRuntime(list(_HITS), nogold),
+        _StubCatalog(),
+        _stub_task(),
+        "no-cheap-rungs",
+        caller="ladder",
+    )
+    assert lad["refusals"] >= 2
+
+
+def test_a_combined_arm_is_vacuous_only_when_every_layer_it_removes_is_empty():
+    rows = [_row("t1", "all-on", "a"), _row("t1", "no-cheap-rungs", "b")]
+    block = runner.arm_table(["all-on", "no-cheap-rungs"], ZERO, rows, embedder_id="x")
+    assert block["no-cheap-rungs"]["vacuous"] is True  # kwd and summary both empty
+    assert block["no-cheap-rungs"]["switches_off"] == ["kwd", "summary"]
+    kwd_only = {**ZERO, "chunks_with_keywords_frac": 0.8}
+    block2 = runner.arm_table(
+        ["all-on", "no-cheap-rungs"], kwd_only, rows, embedder_id="x"
+    )
+    assert block2["no-cheap-rungs"]["vacuous"] is False
+    assert runner.identical_to_all_on(rows) == {"no-cheap-rungs": 0.0}
+
+
 # ---------------------------------------------------------------------------
 # DB: the real runtime under the triage caller, and the lexical-only arm
 # ---------------------------------------------------------------------------
 
 
-def test_triage_is_deterministic_and_refusal_free_on_the_real_runtime(world):
+@pytest.mark.parametrize("caller", ["triage", "rowkw"])
+def test_triage_callers_are_deterministic_and_refusal_free_on_the_real_runtime(
+    world, caller
+):
     tasks, _ = runner.select_tasks(world["rows"])
-    for arm in ("all-on", *ARMS):
-        first = [
-            runner.run_scripted(world["runtime"], world["catalog"], t, arm)
+    for arm in ("all-on", *ARMS, *runner.COMBINED_ARMS):
+        run = [
+            runner.run_scripted(
+                world["runtime"], world["catalog"], t, arm, caller=caller
+            )
             for t in tasks
         ]
         again = [
-            runner.run_scripted(world["runtime"], world["catalog"], t, arm)
+            runner.run_scripted(
+                world["runtime"], world["catalog"], t, arm, caller=caller
+            )
             for t in tasks
         ]
-        assert [_comparable(r) for r in first] == [_comparable(r) for r in again], arm
-        assert all(r["refusals"] == 0 and r["errors"] == 0 for r in first), arm
-        assert all(r["caller"] == "triage" for r in first)
+        assert [_comparable(r) for r in run] == [_comparable(r) for r in again], arm
+        assert all(r["refusals"] == 0 and r["errors"] == 0 for r in run), arm
+        assert all(r["caller"] == caller for r in run)
     assert runner.DEFAULT_CALLER == "triage"
 
 

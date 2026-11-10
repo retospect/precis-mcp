@@ -8,7 +8,7 @@ fixed call sequence and records what it cost and whether it reached the gold.
 
 Callers
 -------
-Two deterministic, model-free callers (``caller`` on every results row):
+Three deterministic, model-free callers (``caller`` on every results row):
 
 ``triage`` (the default) reads what the arm leaves it and spends verbatim
 reads where a cheap read says the hit is relevant:
@@ -29,6 +29,12 @@ reads where a cheap read says the hit is relevant:
 
 The caller reads :func:`precis.bench.switches.current` and never requests a
 rung the arm switched off, so ``refusals`` is zero for every arm.
+
+``rowkw`` is ``triage`` without the cheap-rung reads: it scores each hit by
+:func:`overlap_score` of the chunk keywords the search row already prints
+(:func:`row_texts`; free, it is what an agent sees), then steps 3 and 4 as for
+``triage`` with its own :data:`ROWKW_THRESHOLD`. With the keyword layer off
+the rows print none, so it opens in search rank order.
 
 ``ladder`` (kept for comparison) climbs the whole extent ladder :data:`LADDER`
 (``kwd`` -> ``summary`` -> ``verbatim`` -> ``fisheye`` -> ``+recall``) on each of
@@ -106,8 +112,13 @@ READ_K = 5
 RECALL_KS = (1, 3, 5, 10)
 LADDER = ("kwd", "summary", "verbatim", "fisheye", "+recall")
 
-CALLERS = ("triage", "ladder")
+CALLERS = ("triage", "rowkw", "ladder")
 DEFAULT_CALLER = "triage"
+#: ``rowkw`` opens a hit's verbatim only when :func:`overlap_score` of the chunk
+#: keywords its search row prints is at least this; swept like
+#: :data:`TRIAGE_THRESHOLD` (planted dev seeds only, ``scripts/bench sweep
+#: --caller rowkw``).
+ROWKW_THRESHOLD = 0.0
 #: ``triage`` opens a hit's verbatim only when :func:`overlap_score` of its
 #: cheap-rung text is at least this. One constant for every arm; chosen by the
 #: sweep on the planted dev seeds recorded in ``bench/results/README.md``
@@ -121,8 +132,15 @@ SWEEP_SEEDS = (1, 2, 3)
 #: a flag on the arm in the header and the report.
 KNOWN_DEFECTS: dict[str, str] = {}
 
+#: Arms that switch off several layers at once, named by the flags (the server
+#: composes them: ``PRECIS_BENCH_SWITCHES=no-kwd,no-summary``). The full
+#: factorial is td606577.
+COMBINED_ARMS: Mapping[str, tuple[str, ...]] = {
+    "no-cheap-rungs": ("kwd", "summary"),
+}
+
 BASELINES = ("chunk-rag", "whole-paper")
-ALL_ARMS = ("all-on", *ARMS, *BASELINES)
+ALL_ARMS = ("all-on", *ARMS, *COMBINED_ARMS, *BASELINES)
 
 TOKEN_ESTIMATOR = (
     "chars/4 of the rendered dispatch body (relative ages and read counters "
@@ -133,6 +151,7 @@ _CREATED_RE = re.compile(r"\[created [^\]\n]*\]")
 _AGE_RE = re.compile(r"-\d+(?:mo|[smhdwy])\b")
 _READ_RE = re.compile(r"read \d+×")
 _MEMORY_HIT_RE = re.compile(r"^## memory (\d+):", re.MULTILINE)
+_ROW_RE = re.compile(r"^([a-z]{2}\d+)\t(.*)$")
 
 
 class BenchRunError(RuntimeError):
@@ -182,6 +201,8 @@ def arm_flags(arm: str) -> dict[str, bool]:
     (empty for ``all-on`` and the baselines)."""
     if arm in ARMS:
         return {ARMS[arm]: False}
+    if arm in COMBINED_ARMS:
+        return {flag: False for flag in COMBINED_ARMS[arm]}
     if arm == "all-on" or arm in BASELINES:
         return {}
     raise BenchRunError(f"unknown arm {arm!r}; known arms: {', '.join(ALL_ARMS)}")
@@ -585,6 +606,16 @@ def run_scripted(
     if found_at is None:
         if caller == "ladder":
             found_at = _ladder(s, task, catalog, hits, read_k)
+        elif caller == "rowkw":
+            found_at = _rowkw(
+                s,
+                task,
+                catalog,
+                hits,
+                row_texts(task, body),
+                read_k,
+                ROWKW_THRESHOLD if threshold is None else threshold,
+            )
         else:
             found_at = _triage(
                 s,
@@ -661,13 +692,77 @@ def _triage(
         if task.has_gold and rendered_gold(task, out, catalog):
             return s.tokens
         scored.append((overlap_score(task.question, out), rank, handle))
-    if cheap is None:
-        # no cheap rung: nothing to rank by, so search rank order, no cut
-        order = scored
-    else:
+    return _open_and_follow(
+        s, task, catalog, sw, scored, scoring=cheap is not None, read_k=read_k,
+        threshold=threshold,
+    )  # fmt: skip
+
+
+def row_texts(task: BenchTask, body: str) -> dict[str, str]:
+    """Each hit's own text in a ``search`` body, by handle: a paper row is
+    ``<handle>\\t<chunk keywords>\\t<size>`` (no extra call prices it), a memory
+    hit is its ``## memory N:`` block."""
+    rows = _NEXT_TRAILER_RE.split(body, maxsplit=1)[0]
+    out: dict[str, str] = {}
+    if task.is_memory:
+        for block in re.split(r"(?m)^(?=## memory \d+:)", rows):
+            m = _MEMORY_HIT_RE.match(block)
+            if m:
+                out[f"me{m.group(1)}"] = block
+        return out
+    for line in rows.splitlines():
+        m = _ROW_RE.match(line)
+        if m:
+            out.setdefault(m.group(1), m.group(2))
+    return out
+
+
+def _rowkw(
+    s: Session,
+    task: BenchTask,
+    catalog: Catalog,
+    hits: Sequence[str],
+    texts: Mapping[str, str],
+    read_k: int,
+    threshold: float,
+) -> float | None:
+    """The ``rowkw`` caller: ``triage`` that scores each hit by the chunk
+    keywords its search row already prints (no cheap-rung read, so nothing is
+    paid for the signal), then opens by the same rule. With the keyword layer
+    off the rows carry none: no signal, search rank order, no cut."""
+    sw = s.switches()
+    scored = [
+        (overlap_score(task.question, texts.get(h, "")), rank, h)
+        for rank, h in enumerate(hits)
+    ]
+    return _open_and_follow(
+        s, task, catalog, sw, scored, scoring=sw.kwd, read_k=read_k,
+        threshold=threshold,
+    )  # fmt: skip
+
+
+def _open_and_follow(
+    s: Session,
+    task: BenchTask,
+    catalog: Catalog,
+    sw: bench_switches.Switches,
+    scored: Sequence[tuple[float, int, str]],
+    *,
+    scoring: bool,
+    read_k: int,
+    threshold: float,
+) -> float | None:
+    """Shared tail of ``triage`` and ``rowkw``: open ``verbatim`` for scored
+    hits at or above ``threshold``, best first (ties in search rank), at most
+    ``read_k``; unscored (``scoring`` false), search rank order with no cut.
+    A miss is followed by ``fisheye`` then ``+recall`` once on the best opened
+    hit, each only if the arm has it."""
+    if scoring:
         order = sorted(
             (x for x in scored if x[0] >= threshold), key=lambda x: (-x[0], x[1])
         )
+    else:
+        order = list(scored)
     opened: list[str] = []
     for _score, _rank, handle in order[:read_k]:
         if s.out_of_budget:
@@ -826,7 +921,7 @@ def identical_to_all_on(rows: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     base = {r["task"]: r["transcript_sha256"] for r in rows if r["arm"] == "all-on"}
     seen: dict[str, list[bool]] = {}
     for r in rows:
-        if r["arm"] in ARMS and r["task"] in base:
+        if (r["arm"] in ARMS or r["arm"] in COMBINED_ARMS) and r["task"] in base:
             seen.setdefault(r["arm"], []).append(
                 r["transcript_sha256"] == base[r["task"]]
             )
@@ -847,10 +942,17 @@ def arm_table(
     same = identical_to_all_on(rows)
     out: dict[str, dict[str, Any]] = {}
     for arm in arms:
-        info: dict[str, Any] = {
-            "switches_off": sorted(arm_flags(arm)),
-            **layers.arm_vacuity(arm, cov, embedder_id=embedder_id),
-        }
+        vac = layers.arm_vacuity(arm, cov, embedder_id=embedder_id)
+        if arm in COMBINED_ARMS:
+            # vacuous only if every layer it removes is empty
+            parts = [
+                layers.arm_vacuity(a, cov, embedder_id=embedder_id)
+                for a, flag in ARMS.items()
+                if flag in COMBINED_ARMS[arm]
+            ]
+            if parts and all(p["vacuous"] for p in parts):
+                vac = {**vac, "vacuous": True, "reason": parts[0]["reason"]}
+        info: dict[str, Any] = {"switches_off": sorted(arm_flags(arm)), **vac}
         if arm in KNOWN_DEFECTS:
             info["known_defect"] = KNOWN_DEFECTS[arm]
         if arm in same:
@@ -1341,10 +1443,17 @@ def run_cli(
             "ladder": list(LADDER),
             **(
                 {
-                    "threshold": TRIAGE_THRESHOLD,
-                    "score": "question content-word coverage",
+                    "threshold": TRIAGE_THRESHOLD
+                    if caller == "triage"
+                    else ROWKW_THRESHOLD,
+                    "score": "question content-word coverage of "
+                    + (
+                        "the kwd rung text"
+                        if caller == "triage"
+                        else "the chunk keywords in the search row"
+                    ),
                 }
-                if caller == "triage"
+                if caller in ("triage", "rowkw")
                 else {}
             ),
             "recall_ks": list(RECALL_KS),
@@ -1418,8 +1527,9 @@ def sweep_threshold(
     arms: Sequence[str] = SWEEP_ARMS,
     *,
     budget: int = TOKEN_BUDGET,
+    caller: str = "triage",
 ) -> list[dict[str, Any]]:
-    """The ``triage`` caller at each threshold on ``tasks`` (answerable ones
+    """The ``caller`` (``triage`` or ``rowkw``) at each threshold on ``tasks`` (answerable ones
     only): per (arm, threshold) the share of tasks that reached the gold, the
     mean tokens to gold (a task that did not carries the budget) and the mean
     verbatim opens and calls."""
@@ -1430,7 +1540,7 @@ def sweep_threshold(
         for th in thresholds:
             rows = [
                 run_scripted(
-                    memo, catalog, t, arm, budget=budget, caller="triage", threshold=th
+                    memo, catalog, t, arm, budget=budget, caller=caller, threshold=th
                 )
                 for t in answerable
             ]
@@ -1459,9 +1569,14 @@ def pick_threshold(sweep: Sequence[Mapping[str, Any]]) -> float:
     return min(by_th, key=lambda th: (statistics.fmean(by_th[th]), th))
 
 
-def sweep_markdown(sweep: Sequence[Mapping[str, Any]], *, seeds: Sequence[int]) -> str:
+def sweep_markdown(
+    sweep: Sequence[Mapping[str, Any]],
+    *,
+    seeds: Sequence[int],
+    caller: str = "triage",
+) -> str:
     lines = [
-        f"Triage threshold sweep, planted dev seeds {', '.join(map(str, seeds))} "
+        f"{caller} threshold sweep, planted dev seeds {', '.join(map(str, seeds))} "
         f"(not the reported seed {PLANTED_SEED}, not QASPER).",
         "",
         "| arm | threshold | n | found | mean tok→gold (miss = budget) | mean opens | mean calls |",
@@ -1493,10 +1608,14 @@ def sweep_cli(
     dsn: str,
     host_docs: int | None = None,
     host_paras: int | None = None,
+    caller: str = "triage",
 ) -> str:
     """Everything behind ``scripts/bench sweep``: plant each dev seed's facts
     into the (throwaway) DB, fill their embeddings and keywords, run the
-    ``triage`` caller over those tasks at every threshold. Returns markdown.
+    ``caller`` (``triage`` or ``rowkw``) over those tasks at every threshold.
+    ``triage`` is swept on ``all-on`` and ``no-kwd`` (its cheap rung is ``kwd``,
+    else ``summary``); ``rowkw`` reads no rung, so on ``all-on`` alone.
+    Returns markdown.
 
     Use a DB of its own (``precis_dev_sweep``): the planted documents of every
     seed in ``seeds`` stay in it and would otherwise sit among the reported
@@ -1508,6 +1627,8 @@ def sweep_cli(
     from precis.runtime import PrecisRuntime
     from precis.store import Store
 
+    if caller not in ("triage", "rowkw"):
+        raise BenchRunError(f"only triage and rowkw have a threshold, not {caller!r}")
     if PLANTED_SEED in seeds:
         raise BenchRunError(
             f"seed {PLANTED_SEED} is the reported run's seed; sweep on dev seeds "
@@ -1546,8 +1667,14 @@ def sweep_cli(
         layers.fill(store, embedder)
         tasks, _skipped = select_tasks(all_rows, gold_text)
         sweep = sweep_threshold(
-            runtime, Catalog(store), tasks, thresholds, SWEEP_ARMS, budget=budget
+            runtime,
+            Catalog(store),
+            tasks,
+            thresholds,
+            SWEEP_ARMS if caller == "triage" else ("all-on",),
+            budget=budget,
+            caller=caller,
         )
     finally:
         store.close()
-    return sweep_markdown(sweep, seeds=list(seeds))
+    return sweep_markdown(sweep, seeds=list(seeds), caller=caller)

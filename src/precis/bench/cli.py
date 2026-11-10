@@ -111,6 +111,12 @@ def _parser() -> argparse.ArgumentParser:
         default=",".join(f"{t:g}" for t in runner.SWEEP_THRESHOLDS),
         help="comma list of triage thresholds",
     )
+    swp.add_argument(
+        "--caller",
+        choices=("triage", "rowkw"),
+        default="triage",
+        help="caller to sweep",
+    )
     swp.add_argument("--embedder", default="bge-m3")
     swp.add_argument("--manifest", type=Path, default=None)
     swp.add_argument("--tasks", type=Path, default=None)
@@ -260,6 +266,7 @@ def _sweep(args: argparse.Namespace) -> int:
             planted_n=args.planted,
             budget=args.budget,
             dsn=_dsn(),
+            caller=args.caller,
         )
     )
     return 0

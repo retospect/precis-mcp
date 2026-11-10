@@ -10,9 +10,9 @@
 #                                           # free local derived passes on the dev DB: chunk embeddings
 #                                           # + per-chunk keywords (no LLM: summaries, categorizer tags
 #                                           # and edges stay empty; `run` reports their coverage)
-#   scripts/bench run --set quick [--caller triage|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
+#   scripts/bench run --set quick [--caller triage|rowkw|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
 #                                           # scripted-caller ablation matrix -> bench/results/<date>Z-<sha>-quick-<caller>.json
-#   scripts/bench sweep [--seeds 1,2,3]     # pick the triage threshold on planted dev seeds (throwaway DB of its own:
+#   scripts/bench sweep [--caller triage|rowkw] [--seeds 1,2,3]   # pick the triage threshold on planted dev seeds (throwaway DB of its own:
 #                                           # PRECIS_DATABASE_URL=...precis_dev_sweep; never the reported seed, never QASPER)
 #   scripts/bench report <results.json>...  # markdown table per arm (+ delta vs all-on); >1 file also side by side
 #

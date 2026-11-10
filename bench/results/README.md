@@ -2,7 +2,7 @@
 
 `scripts/bench run --set quick` writes one file per run here,
 `<YYYYMMDD>Z-<shortsha>-<set>-<caller>.json` (UTC date, short precis git sha,
-caller `triage` or `ladder`). The files are gitignored; this README is the
+caller `triage`, `rowkw` or `ladder`). The files are gitignored; this README is the
 committed description of their schema. `scripts/bench report <file> [<file>…]`
 prints the markdown tables, and with several files (one per caller) a side by
 side comparison.
@@ -51,7 +51,7 @@ need an LLM; the dev DB does not have them, and the header says so.
 | `embedder` | `name`, `model`, `backend`, `dim`, `meaningful` (`false` for the hash/mock embedder), `stored` (embedder -> chunk count in the DB) |
 | `models`, `judge` | `null` on the scripted tier |
 | `token_estimator`, `token_budget` | `chars/4` of the rendered dispatch body; per-task budget |
-| `caller` | `name` (`triage` or `ladder`), search shape, `read_k`, the extent `ladder`, for `triage` the `threshold` and `score`, `recall_ks`, stop rule |
+| `caller` | `name` (`triage`, `rowkw` or `ladder`), search shape, `read_k`, the extent `ladder`, for `triage` and `rowkw` the `threshold` and `score`, `recall_ks`, stop rule |
 | `arms` | per arm: `switches_off`, `vacuous` + `reason`, `degenerate`, `embedder_note`, `identical_to_all_on_frac`, `known_defect` (a defect of the code under test that bends this arm, with its gripe) |
 | `layer_coverage` | what the DB holds of each layer (see below) |
 | `fill` | claimed/ok/failed counts of the embed and keyword passes run by this invocation |
@@ -80,8 +80,8 @@ effect.
 | key | meaning |
 |---|---|
 | `task`, `type`, `source` | task id, gold type (`lookup`, `grounding`, `k-hop`, `stance`, `memory`), `qasper` or `planted` |
-| `arm` | `all-on`, `no-kwd`, `no-summary`, `no-categorizer`, `no-fisheye`, `no-recall`, `lexical-only`, `semantic-only`, `chunk-rag`, `whole-paper` |
-| `caller` | `triage` or `ladder` for the scripted arms; `null` for the two baselines (they have no caller) |
+| `arm` | `all-on`, `no-kwd`, `no-summary`, `no-categorizer`, `no-fisheye`, `no-recall`, `lexical-only`, `semantic-only`, `no-cheap-rungs` (`kwd` and `summary` both off; the full factorial is td606577), `chunk-rag`, `whole-paper` |
+| `caller` | `triage`, `rowkw` or `ladder` for the scripted arms; `null` for the two baselines (they have no caller) |
 | `abstention` | unanswerable task: no gold, `found` and `tokens_to_first_gold` are `null`, only `tokens_total`/`calls` are meaningful |
 | `applicable` | `false` where the arm cannot run the task (`whole-paper` on a `memory` task, which has no document) |
 | `found`, `censored`, `stop` | gold rendered within the budget; `censored` = not reached, `stop` is `found`, `budget`, `exhausted` or `n/a` |
@@ -107,14 +107,14 @@ flagged `VACUOUS` and its delta is not a layer effect.
 
 ## What counts as found
 
-Both scripted callers stop at the first call whose output renders a chunk whose
+All scripted callers stop at the first call whose output renders a chunk whose
 **whole text** appears in the output and whose character offsets overlap a gold
 span (`precis.bench.gold.spans_overlap_chunk`, document-aware), or at the token
 budget. A truncated preview does not count. Planted `memory` tasks are found when
 the output contains the planted fact sentence. Re-running with unchanged code,
 data and seed reproduces every field except `wall_s`.
 
-### The two callers
+### The callers
 
 `triage` (default): `search` the question (top 10). Read the cheapest rung the
 arm has for every hit (`kwd`, else `summary`, else none) and score the hit by the
@@ -133,6 +133,19 @@ refused call.
 `verbatim`, `fisheye`, `+recall` in turn, whatever it saw. It has no relevance
 judgement with which to skip a rung, so an arm that refuses a rung is cheaper by
 the refused call and a cheap rung can never show value. Kept only to compare.
+
+`rowkw`: `triage` that scores each hit by the chunk keywords its search row
+already prints (`pc9<TAB>kw, kw, ...<TAB>size`), not by a cheap-rung read, so the
+signal costs nothing; then the same rule: open `verbatim` at or above its own
+threshold (`runner.ROWKW_THRESHOLD`), best score first, at most 5, then
+`fisheye` and `+recall` once on the best opened hit. With the keyword layer off
+the rows carry no keywords: no signal, search rank order, no cut. This is the
+caller closest to what an agent sees. Under `rowkw`, `no-kwd` and
+`no-cheap-rungs` both remove the row keywords (the `kwd` switch cuts them),
+so they are the same arm; `no-summary` changes nothing.
+
+`no-cheap-rungs` is the honest cost of having neither cheap rung: under `triage`
+there is no cheap read and the hits are opened in search rank order.
 
 ### The triage threshold
 
@@ -171,6 +184,39 @@ and a cheap rung's cost is pure overhead. That is a finding about these rungs on
 this corpus; a policy that scores something richer (the chunk keywords already
 printed in the search rows, a relative cut against the best score) is a
 different caller.
+
+`rowkw` is swept the same way (`scripts/bench sweep --caller rowkw`, `all-on`
+only: it reads no rung). Run 2026-11-10, planted dev seeds 1, 2, 3, 120 tasks:
+
+| threshold | found | mean tok→gold (miss = budget) | mean opens | mean calls |
+|---:|---:|---:|---:|---:|
+| 0 | 0.942 | 1402 | 1.31 | 2.4 |
+| 0.1 | 0.683 | 4231 | 0.88 | 2.1 |
+| 0.2 | 0.625 | 4887 | 0.78 | 2.0 |
+| 0.25 | 0.567 | 5546 | 0.68 | 1.8 |
+| 0.3 | 0.425 | 7143 | 0.46 | 1.6 |
+| 0.4 | 0.358 | 7895 | 0.37 | 1.4 |
+| 0.5 | 0.350 | 7976 | 0.30 | 1.4 |
+| 0.6 | 0.233 | 9292 | 0.17 | 1.2 |
+
+The pick is again 0. Row keywords carry real signal (unlike the `kwd` rung) but
+every cut loses more gold than it saves: a paraphrased question shares few
+content words with an extractive keyword list. Even at 0 the best-first order
+costs a little against search rank order (found 0.942 against `triage`'s
+0.967 at 0): the keyword score re-ranks hits the retriever had right.
+
+### What the `kwd` rung renders for a paper chunk
+
+`get(id='pc…', extent='kwd')` renders one line, the owning paper's header
+(`· pa1 [paper] <title> [created …]`, about 90 characters), and none of the
+chunk's keywords. That is the code's intent for doc kinds, not a dropped field:
+`eye_render._render_doc_eye` returns `f"· {head}"` for any `ext <= Extent.TOC`
+before it reads the chunk list, and `working_set.Extent.TOC` is documented as
+the "one-line bookmark, ancestor path un-collapsed" (`"kwd"`). For a chunk the
+ancestor path is the ref. The chunk's keywords first appear at `summary`
+(the `▸ pc… ~N [paragraph] kw, kw, …` focus line of `_fisheye_split`) and, for
+every hit, in the `search` rows. So `kwd` is a ref-level rung when applied to a
+chunk handle, which is why `triage` finds no signal in it.
 
 ### `lexical-only` is hybrid's lexical leg
 
