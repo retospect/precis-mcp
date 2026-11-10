@@ -13,6 +13,11 @@ from typing import Any
 
 import pytest
 
+from precis.computed_sources import (
+    build_external_source,
+    contract_fingerprint,
+    verify_source,
+)
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.measure import MeasureHandler, parse_query
@@ -1680,6 +1685,61 @@ class TestPutRun:
         items[1]["note"] = "y" * 501
         with pytest.raises(BadInput, match=r"items\[1\]\.note"):
             h.put(text="95", meta=self._meta(w), items=items)
+
+    @staticmethod
+    def _contract() -> dict[str, Any]:
+        return build_external_source(
+            producer="figrecipe",
+            run_key="run-9",
+            data=b'{"fe": {"pct": 95}}',
+            path="outputs/result.json",
+            encoding="json",
+            selector="fe.pct",
+            literal="95",
+            unit="%",
+            method="loaded ensemble",
+        )
+
+    def test_computed_source_is_stored_shown_and_verifiable(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        contract = self._contract()
+        # a computed row needs no paper anchor — the source IS its evidence
+        meta = self._meta(w, tier="computed", origin="computation")
+        del meta["anchor"]
+        meta["computed_source"] = contract
+        body = h.put(text="95", meta=meta).body
+        (mid,) = [int(m) for m in re.findall(r"^mx(\d+) ", body, re.M)]
+        row = store.measure_detail(mid)
+        assert row["meta"]["computed_source"] == contract
+        shown = h.get(id=mid).body
+        assert "computed source: external_result" in shown
+        assert "figrecipe · run run-9" in shown
+        assert "outputs/result.json · selector fe.pct" in shown
+        assert f"fp {contract_fingerprint(contract)[:12]}" in shown
+        assert verify_source(contract, data=b'{"fe": {"pct": 95}}') == []
+
+    def test_computed_source_refusals_name_the_field(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        contract = self._contract()
+        # the row's origin axis must say where the number was produced
+        meta = self._meta(w, tier="computed", computed_source=contract)
+        with pytest.raises(BadInput, match=r"meta\.origin") as ei:
+            h.put(text="95", meta=meta)
+        assert "'computation'" in str(ei.value)
+        # a malformed contract is named, field by field
+        meta = self._meta(
+            w,
+            tier="computed",
+            origin="computation",
+            computed_source={"schema": "nope"},
+        )
+        with pytest.raises(BadInput, match=r"meta\.computed_source") as ei:
+            h.put(text="95", meta=meta)
+        assert "schema" in str(ei.value)
+        # the refusal wrote nothing
+        assert store.search_measures(w["fe"], include_all=True).rows == []
 
     def test_a_non_string_note_is_refused(
         self, w: dict[str, Any], h: MeasureHandler

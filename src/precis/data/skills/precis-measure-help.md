@@ -171,6 +171,7 @@ assumption). Only `context` rows satisfy a measurand's required conditions.
 | `source_attribution` | `own_work`, `cited_work`, `not_established` |
 | `measurand_status` | `explicit`, `interpreted`, `ambiguous` |
 | `extraction_status` | `unverified`, `anchor_matched`, `anchor_mismatch`, `human_checked`; computed when written |
+| `computed_source` | a computed-evidence contract (`precis.computed_sources`) pinning the number to a producer's frozen output bytes, exact field selector, unit and method; requires `origin='computation'` and no `anchor` (the row's own contract is unchanged — the source rides in `meta`, standing is re-checked with `verify_source`) |
 
 The measurand is a `taxon` node. Each carries one canonical unit and values are
 stored in it.

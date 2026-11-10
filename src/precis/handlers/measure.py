@@ -306,6 +306,8 @@ class MeasureHandler(Handler):
             out.append(f"note: {note}")
 
         out.append(self._anchor_line(r))
+        if isinstance((r.get("meta") or {}).get("computed_source"), dict):
+            out.append(render.computed_source_line(r["meta"]["computed_source"]))
         out.append(
             f"written: {_utc(r['created_at'])} by {r['actor']}"
             + (f" ({r['model']})" if r["model"] else "")

@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from precis.computed_sources import contract_fingerprint
 from precis.errors import BadInput
 from precis.taxonomy.measure_units import (
     display_numbers,
@@ -294,3 +295,34 @@ def result_line(
     if flagged := flags(row):
         line += f"  ({'; '.join(flagged)})"
     return line
+
+
+def computed_source_line(source: dict[str, Any]) -> str:
+    """One line for a row's ``meta['computed_source']`` contract: the
+    producer, the pinned output + selector, and the contract's content
+    fingerprint, so a reviewer sees the value's evidence chain (and can spot
+    an edited contract) without expanding the whole JSON."""
+    producer = source.get("producer") or {}
+    output = source.get("output") or {}
+    value = source.get("value") or {}
+    adapter = producer.get("adapter") or "?"
+    if adapter == "pathway_seed":
+        who = f"job {producer.get('job_id')} · pathway {producer.get('pathway_ref_id')}"
+    else:
+        who = f"{producer.get('name')} · run {producer.get('run_key')}"
+    where = f"{output.get('path')} · selector {output.get('selector')}"
+    if output.get("encoding") == "csv" and output.get("row") is not None:
+        where += f" · row {output['row']}"
+    number = value.get("number")
+    reading = (
+        f"{number:g} {value.get('unit')}"
+        if isinstance(number, (int, float)) and not isinstance(number, bool)
+        else f"{value.get('text')!r} ({value.get('unit')})"
+    )
+    try:
+        fingerprint = contract_fingerprint(source)[:12]
+    except (TypeError, ValueError):
+        fingerprint = "malformed"
+    return (
+        f"computed source: {adapter} · {who} · {where} · {reading} · fp {fingerprint}"
+    )

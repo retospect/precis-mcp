@@ -27,7 +27,14 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
   ``meta.note``; written at insert only, since ``meta`` is frozen after);
 * ``anchor`` = ``{chunk, anchor_scheme, span}`` (an input inherits the
   output's), ``extra_anchors`` (a list of the same), ``supersedes`` (a measure
-  id or ``mx`` handle), ``derived_from`` (a list of the same).
+  id or ``mx`` handle), ``derived_from`` (a list of the same);
+* ``computed_source`` — a computed-evidence contract dict
+  (:mod:`precis.computed_sources`, gr564183) pinning the row's number to a
+  producer's exact frozen output bytes, field selector, unit and method.
+  Shape-validated here; standing is re-checked with the frozen producer
+  evidence (:func:`precis.computed_sources.verify_source`). The row's own
+  contract is unchanged — a computed row carries no paper ``anchor`` and must
+  say ``origin='computation'``; the source rides in the row's frozen ``meta``.
 
 The output's ``meta`` also takes ``run_key`` and ``model`` (the writing model).
 """
@@ -38,6 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from precis import computed_sources
 from precis.errors import BadInput
 from precis.store import Store
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
@@ -74,6 +82,7 @@ _ROW_FIELDS = frozenset(
         "extra_anchors",
         "supersedes",
         "derived_from",
+        "computed_source",
     }
 )
 _OUTPUT_ONLY = frozenset({"run_key", "model"})
@@ -310,6 +319,21 @@ class RunParser:
                 )
             if note.strip():
                 meta["note"] = note.strip()
+        source = raw.get("computed_source")
+        if source is not None:
+            problems = computed_sources.validate_contract(source)
+            if problems:
+                raise _bad(where, "computed_source", "; ".join(problems))
+            if raw.get("origin") != "computation":
+                raise _bad(
+                    where,
+                    "origin",
+                    "a computed_source pins a computed producer, so origin "
+                    "must be 'computation' (where the number itself was "
+                    "produced); a computed value filed as an experiment "
+                    "misstates its provenance",
+                )
+            meta["computed_source"] = source
         group = raw.get("subject_group")
         if group is None and defaults is not None:
             group = defaults.subject_group
