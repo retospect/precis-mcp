@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -456,15 +457,14 @@ def test_tiny_budget_censors_the_task(world):
 
 def test_the_ladder_caller_asks_for_a_switched_off_rung_and_is_refused(world):
     task = _by_question(world["rows"], "What did the quasar1x2 instrument")
-    run = dict(caller="ladder")
     base = runner.run_scripted(
-        world["runtime"], world["catalog"], task, "all-on", **run
+        world["runtime"], world["catalog"], task, "all-on", caller="ladder"
     )
     nokwd = runner.run_scripted(
-        world["runtime"], world["catalog"], task, "no-kwd", **run
+        world["runtime"], world["catalog"], task, "no-kwd", caller="ladder"
     )
     nosum = runner.run_scripted(
-        world["runtime"], world["catalog"], task, "no-summary", **run
+        world["runtime"], world["catalog"], task, "no-summary", caller="ladder"
     )
     assert base["refusals"] == 0
     assert nokwd["refusals"] >= 1 and nosum["refusals"] >= 1
@@ -786,8 +786,11 @@ def test_run_cli_is_deterministic_apart_from_wall_time(
 # ---------------------------------------------------------------------------
 
 
-class _StubCatalog:
-    def chunks(self, ids):
+class _StubCatalog(runner.Catalog):
+    def __init__(self) -> None:
+        super().__init__(store=None)
+
+    def chunks(self, ids: Iterable[int]) -> dict[int, runner.ChunkInfo]:
         return {}
 
 
