@@ -68,6 +68,17 @@ both run by the ``graph_garden`` job right after its tick
    re-propose only resolved ops for fresh review; wholly unresolved text gets
    a visible hold rather than silently occupying the pending window.
 
+**Griped close** (gr561873). An applied ``griped`` proposal replays the
+   complaint's recorded route once no sibling proposal stays pending:
+   a route row that cannot be replayed, a ``get`` that no longer
+   resolves, a ``search`` that lost a named memory the pinned replay
+   ranked, or a miss on the recall set of the touched hubs each leaves
+   the gripe open — never a silent close. A passing run writes the
+   ``resolved:`` comment + ``STATUS:done`` and files the replayed
+   (query, want) pairs on an operator ``recall-set-review`` todo. The
+   runner uses the same door when the evaluator's no-change verdict is
+   the resolution.
+
 **Verdict values.** The ruling names ``verdict='applied'``; the
 ``reviews`` CHECK (migration 0185) allows only proposed/approved/rejected,
 so an applied proposal is ``approved`` with ``garden.applied`` set — the
@@ -127,9 +138,13 @@ from precis.graph.garden.candidates import (
     _MEMORY_HANDLE,
     HISTORY_KINDS,
     PROVENANCE_RELATIONS,
+    ROUTE_REPLAY_K,
     SIBLING_REJECT_REASON,
     GardenCandidate,
+    _handle_ref_id,
     _live_ref_rows,
+    _replay_handler,
+    _replay_hits,
     short_sibling_pair,
 )
 from precis.graph.garden.paper_gate import (
@@ -951,11 +966,21 @@ def _griped_recall_pairs(
 ) -> list[dict[str, str]]:
     """``(query, goal)`` pairs a passing replay proves — the reader's route
     queries against the named memories they still recall, for the operator
-    recall-set review todo."""
+    recall-set review todo. ``source='griped'`` with the ``gr<N>``
+    provenance anchor is the shape ``accept_proposals`` admits."""
     if not named:
         return []
-    rows = _live_ref_rows(store, sorted(named))
+    with store.pool.connection() as conn:
+        cards = {
+            int(r[0]): (str(r[1] or ""), str(r[2] or ""))
+            for r in conn.execute(
+                "SELECT ref_id, title, meta->>'hook' FROM refs "
+                "WHERE ref_id = ANY(%s) AND retired_at IS NULL",
+                (sorted(named),),
+            ).fetchall()
+        }
     pairs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for entry in replay:
         q = entry.get("q")
         if not isinstance(q, str):
@@ -963,13 +988,17 @@ def _griped_recall_pairs(
         for hit in entry.get("hits") or []:
             if hit.get("ref_id") not in named:
                 continue
-            _kind, title = rows.get(int(hit["ref_id"]), ("memory", ""))
+            want = str(hit["handle"])
+            if (q, want) in seen:
+                continue
+            seen.add((q, want))
+            title, hook = cards.get(int(hit["ref_id"]), ("", ""))
             pairs.append(
                 {
                     "query": q,
-                    "want": str(hit["handle"]),
+                    "want": want,
                     "title": str(hit.get("title") or title),
-                    "hook": "",
+                    "hook": hook,
                     "source": "griped",
                     "why": f"gr{gripe}: reader route replayed after the fix",
                 }
@@ -991,29 +1020,103 @@ def _griped_live_handles(store: Store, story: str) -> bool:
     return all(is_chunk or int(pk) in live for _k, is_chunk, pk in parsed)
 
 
-def _griped_pass(replay: list[dict[str, Any]], named: set[int]) -> bool:
-    """The deterministic half of the replay-after pass: recorded ``get``s
-    resolve, each ``search`` still returns a named live memory (the routes
-    arrive), and no route row failed to replay. Answer consistency and
+def _griped_pass(
+    replay: list[dict[str, Any]],
+    named: set[int],
+    pinned: list[dict[str, Any]] | None = None,
+) -> bool:
+    """The deterministic half of the replay-after pass: no route row failed
+    to replay, recorded ``get``s resolve, and each ``search`` still returns
+    every named memory the pinned replay ranked — the routes arrive where
+    they arrived, never just at any named hit. A row with no pinned
+    counterpart must still surface a named memory. Answer consistency and
     scope were judged by the reviewer, not here."""
+    by_seq = {e.get("seq"): e for e in pinned or [] if isinstance(e, dict)}
     for entry in replay:
         if entry.get("not_replayed"):
-            continue
+            return False
         if entry.get("verb") == "get" and not entry.get("resolves"):
             return False
         if entry.get("verb") == "search":
-            hits = entry.get("hits") or []
-            if named and not any(h.get("ref_id") in named for h in hits):
+            hit_ids = {h.get("ref_id") for h in entry.get("hits") or []}
+            before = by_seq.get(entry.get("seq"))
+            if before is None:
+                if named and not hit_ids & named:
+                    return False
+                continue
+            required = {
+                rid
+                for handle, rank in (before.get("ranks") or {}).items()
+                if rank is not None and (rid := _handle_ref_id(handle)) is not None
+            }
+            if not required <= hit_ids:
                 return False
     return True
 
 
-def _griped_close(store: Store, prop: GardenProposal, report: ConsumeReport) -> None:
-    """Replay-after and close a reader's ``project:memory`` gripe once no
-    griped proposal for it stays pending — ``resolved:`` comment +
-    ``STATUS:fixed`` like ``fix_gripe``, plus a recall-set review todo for
-    the proven (query, goal) pairs. A failing pass or pending sibling
-    proposals leave the gripe open; never a silent close."""
+def _griped_recall_guard(
+    store: Store, named: set[int], *, entries: list[dict[str, Any]] | None = None
+) -> list[str]:
+    """The "the hub's recall set finds what it found before" regression
+    guard: recall-set questions whose answer is a named memory or shares
+    its hub, replayed lexically at :data:`ROUTE_REPLAY_K` like the route
+    (a regression guard, not a rank target). Returns the ``want``s that
+    no longer arrive — retired by the apply or ranked out."""
+    from precis.cli.memory import SPACE_TAG, load_recall_set
+    from precis.utils.memory_hubs import hubs_of
+
+    entries = load_recall_set() if entries is None else entries
+    wants: dict[int, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        rid = _handle_ref_id(entry.get("want"))
+        if rid is not None:
+            wants[rid] = entry
+    if not wants:
+        return []
+    hubs = {h for hs in hubs_of(store, sorted(named)).values() for h in hs}
+    want_hubs = hubs_of(store, sorted(wants))
+    relevant = [
+        rid for rid in wants if rid in named or set(want_hubs.get(rid, ())) & hubs
+    ]
+    if not relevant:
+        return []
+    live = _live_ref_rows(store, relevant)
+    handler = _replay_handler(store)
+    misses: list[str] = []
+    for rid in relevant:
+        entry = wants[rid]
+        if rid not in live:
+            misses.append(f"{entry['want']} (retired)")
+            continue
+        hits = _replay_hits(
+            store,
+            str(entry.get("query") or ""),
+            tags=[SPACE_TAG],
+            mode=None,
+            scope=None,
+            k=ROUTE_REPLAY_K,
+            handler=handler,
+        )
+        if rid not in {h["ref_id"] for h in hits}:
+            misses.append(str(entry["want"]))
+    return misses
+
+
+def _close_griped_gripe(
+    store: Store,
+    gripe: int,
+    comment: str,
+    *,
+    pinned_replay: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Replay-after and close one open ``project:memory`` gripe — the
+    ``resolved:`` comment + ``STATUS:done`` write like ``fix_gripe``,
+    plus a recall-set review todo for the proven (query, goal) pairs.
+    A failing pass, a pending sibling proposal or a recall miss in the
+    touched hubs leaves the gripe open; never a silent close. Returns
+    whether the close was written."""
     from precis.dispatch import Hub
     from precis.graph.garden.candidates import (
         _gripe_story,
@@ -1022,12 +1125,9 @@ def _griped_close(store: Store, prop: GardenProposal, report: ConsumeReport) -> 
     )
     from precis.handlers.gripe import GripeHandler
 
-    gripe = prop.payload.get("gripe") or prop.evidence.get("gripe")
-    if not isinstance(gripe, int):
-        return
     row = _gripe_story(store, [gripe]).get(gripe)
     if row is None:
-        return
+        return False
     _title, story, meta = row
     with store.pool.connection() as conn:
         still_open = conn.execute(
@@ -1038,28 +1138,29 @@ def _griped_close(store: Store, prop: GardenProposal, report: ConsumeReport) -> 
             (gripe,),
         ).fetchone()
     if still_open is None:
-        return
+        return False
     if any(
         p.detector == "griped" and p.evidence.get("gripe") == gripe
         for p in pending_proposals(store, limit=500)
     ):
-        return  # other named memories still carry pending proposals
+        return False  # other named memories still carry pending proposals
     route = meta.get("route")
     replay = route_replay(store, route if isinstance(route, list) else [])
     named = {int(m["ref_id"]) for m in _story_refs(store, story)[0]}
-    if not (_griped_pass(replay, named) and _griped_live_handles(store, story)):
-        return  # the replay still fails — the next tick re-detects it
-    applied = prop.payload.get("applied_sha") or ""
-    GripeHandler(hub=Hub(store=store)).put(
-        id=gripe,
-        text=(
-            f"resolved: garden:griped replay pass — {prop.action} applied on "
-            f"me{prop.target_id} (review {prop.review_id}, sha {applied or 'pinned'}); "
-            "routes still arrive, answers consistent or scoped, handles resolve, "
-            "hub recall preserved"
-        ),
-        tags=["STATUS:fixed"],
-    )
+    if not (
+        _griped_pass(replay, named, pinned_replay)
+        and _griped_live_handles(store, story)
+    ):
+        return False  # the replay still fails — the next tick re-detects it
+    misses = _griped_recall_guard(store, named)
+    if misses:
+        log.info(
+            "garden consumer: griped close held on gr%s — recall misses: %s",
+            gripe,
+            ", ".join(misses),
+        )
+        return False
+    GripeHandler(hub=Hub(store=store)).put(id=gripe, text=comment, tags=["STATUS:done"])
     pairs = _griped_recall_pairs(store, gripe, replay, named)
     if pairs:
         from precis.cli.memory_recall_set import PROPOSALS_KEY
@@ -1081,6 +1182,28 @@ def _griped_close(store: Store, prop: GardenProposal, report: ConsumeReport) -> 
             tags=["recall-set-review", "waiting-for:reto"],
             meta={PROPOSALS_KEY: pairs, "llm_tier": None},
         )
+    return True
+
+
+def _griped_close(store: Store, prop: GardenProposal, report: ConsumeReport) -> None:
+    """The applied-proposal arm of :func:`_close_griped_gripe` — the
+    comment names the applied action, the review and the pinned sha."""
+    gripe = prop.payload.get("gripe") or prop.evidence.get("gripe")
+    if not isinstance(gripe, int):
+        return
+    applied = prop.payload.get("applied_sha") or ""
+    pinned = prop.evidence.get("replay")
+    _close_griped_gripe(
+        store,
+        gripe,
+        (
+            f"resolved: garden:griped replay pass — {prop.action} applied on "
+            f"me{prop.target_id} (review {prop.review_id}, sha {applied or 'pinned'}); "
+            "routes still arrive, answers consistent or scoped, handles resolve, "
+            "hub recall preserved"
+        ),
+        pinned_replay=pinned if isinstance(pinned, list) else None,
+    )
 
 
 def _hold_memory(

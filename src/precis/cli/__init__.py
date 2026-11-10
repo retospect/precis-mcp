@@ -38,11 +38,11 @@ skipped. This keeps hygiene runs offline while replacing the retired
 glossary file's path check. Dotted module and sibling-repo pointers remain
 unresolvable findings rather than guessed paths.
 
-``memory recall-set accept`` is a checkout-only operator door: trace proposals
-are read from parked review todos, but acceptance only edits the tracked
-six-field JSON benchmark and prints its diff. No graph write, commit or push
-is hidden in the command; query text can be private, so the operator reviews
-the diff before landing it in this public repo.
+``memory recall-set accept`` is a checkout-only operator door: trace and
+griped proposals are read from parked review todos, but acceptance only
+edits the tracked six-field JSON benchmark and prints its diff. No graph
+write, commit or push is hidden in the command; query text can be private,
+so the operator reviews the diff before landing it in this public repo.
 """
 
 from __future__ import annotations

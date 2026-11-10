@@ -82,7 +82,10 @@ MEMORY_ACTIONS = {
     "dangling_mention": ("rewrite",),
     "entity_claim_stale": ("rewrite",),
     "grab_bag": ("split",),
-    "griped": ("rewrite", "supersede", "retire", "qualify"),
+    # qualify is out: the consumer's memory doors have no apply path for
+    # it, so a griped qualify proposal would sit pending forever. A scoped
+    # repair is a rewrite; a repair the ops cannot express is ``ask``.
+    "griped": ("rewrite", "supersede", "retire"),
     "negative_undated": ("rewrite", "qualify", "ask"),
     "restated_claim": ("rewrite",),
     "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
@@ -295,8 +298,10 @@ pinned checklist and emit its per-shape fix for THIS memory only. A rewrite
 takes ops whose find and span come verbatim from payload.ops, with the
 replacement text filled (text=null is unresolved, never a delete). A
 supersede must name a live successor among evidence.memories; a retire
-needs every still-true claim already preserved elsewhere. qualify carries
-the caveat; ask only when resolution needs a human. Reject (no-change)
+needs every still-true claim already preserved elsewhere. A true-in-scope
+claim gets its referent into the rewrite text and its live handle — there
+is no qualify apply door, so a repair the ops cannot express is ask.
+Reject (no-change)
 when the replay already passes: routes still arrive, answers consistent or
 each carrying its scope in title plus edge, no live losing claim, every
 handle resolves. Never retitle to win a query, never restate another node,
@@ -483,6 +488,11 @@ def _one_action_verdict(
     action = body.get("action")
     reason = str(body.get("reason") or body.get("rationale") or "")
     allowed = set(MEMORY_ACTIONS.get(candidate.detector, ())) | {"no-change", "ask"}
+    if candidate.detector == "griped" and action == "qualify" and action not in allowed:
+        # No qualify apply door: a scoped repair the ops cannot express
+        # goes to a human review todo, never a stranded proposal or a
+        # silent no-change.
+        return Verdict(accept=False, rationale=reason, ask=reason or None, model=model)
     if not isinstance(action, str) or action not in allowed or action == "no-change":
         return Verdict(accept=False, rationale=reason, model=model)
     if action == "ask":

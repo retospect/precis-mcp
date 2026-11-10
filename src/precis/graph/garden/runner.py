@@ -5,7 +5,9 @@ collect candidates (bounded), skip keys already pending or already
 rejected, ask the proposer, emit accepted proposals and record rejected
 ones (so the next run does not re-ask; gr506046). The only writes are
 ``reviews`` rows — plus, for an evaluator ``ask`` on a memory-body
-candidate, one ``memory-review`` todo pointing at the memory (gr560762).
+candidate, one ``memory-review`` todo pointing at the memory (gr560762),
+and for a ``griped`` no-change the replay-after close of the complaint
+itself once no sibling fix path remains (gr561873).
 
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
@@ -108,6 +110,49 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
         )
 
 
+def _close_no_change_gripe(
+    store: Store,
+    cand: GardenCandidate,
+    rationale: str,
+    queues: dict[str, deque[GardenCandidate]],
+    open_gripes: set[int],
+) -> None:
+    """The evaluator's no-change on a griped candidate is the complaint's
+    resolution when the deterministic replay pass agrees — the runner
+    records the rejection for dedup, then closes the gripe through the
+    same replay-after door the applied close uses. Sibling candidates
+    still queued, a pending proposal, or any live fix path this tick
+    keeps it open; so does a failing pass — a silent close never lands."""
+    from precis.graph.garden.consumer import _close_griped_gripe
+
+    gripe = cand.payload.get("gripe")
+    if not isinstance(gripe, int):
+        return
+    if gripe in open_gripes:
+        return
+    if any(c.payload.get("gripe") == gripe for c in queues.get(cand.detector, ())):
+        return  # a sibling (gripe, memory) pair may still carry the fix
+    pinned = cand.evidence.get("replay")
+    try:
+        _close_griped_gripe(
+            store,
+            gripe,
+            (
+                f"resolved: garden:griped replay pass — evaluator no-change on "
+                f"me{cand.target_id} ({rationale or 'no repair needed'}); "
+                "routes still arrive, answers consistent or scoped, handles "
+                "resolve, hub recall preserved"
+            ),
+            pinned_replay=pinned if isinstance(pinned, list) else None,
+        )
+    except Exception:
+        # The gripe staying open is safe; the recorded rejection still
+        # blocks the re-ask and the fault must not abort the tick.
+        log.warning(
+            "garden: griped no-change close failed on gr%s", gripe, exc_info=True
+        )
+
+
 ProposerFn = Callable[["Store", GardenCandidate], "Verdict | None"]
 
 
@@ -198,6 +243,10 @@ def run_garden_tick(
         not_checked=dict(run.not_checked),
         cursors=dict(run.cursors),
     )
+    # Gripe ids with a live fix path this tick — an ask, an emitted or
+    # pending proposal, an error or a pause. A no-change verdict closes the
+    # gripe only while nothing else may still repair it.
+    open_gripes: set[int] = set()
 
     def _one(cand: GardenCandidate) -> bool:
         """Propose one candidate; True when a proposal row was written.
@@ -206,6 +255,11 @@ def run_garden_tick(
             MEMORY_PROMPT_VERSION
             if uses_memory_policy(cand.detector, cand.evidence, cand.payload)
             else PROMPT_VERSION
+        )
+        gid = (
+            int(cand.payload["gripe"])
+            if cand.detector == "griped" and isinstance(cand.payload.get("gripe"), int)
+            else None
         )
         block = key_block(
             store,
@@ -219,6 +273,8 @@ def run_garden_tick(
             return False
         if block is not None:
             out.skipped_pending += 1
+            if gid is not None:
+                open_gripes.add(gid)
             return False
         if (
             cand.detector == "dup_pair"
@@ -240,15 +296,23 @@ def run_garden_tick(
         except Exception as exc:
             log.warning("garden: proposer raised on %s: %s", cand.key, exc)
             out.llm_errors += 1
+            if gid is not None:
+                open_gripes.add(gid)
             return False
         if verdict is None:
+            if gid is not None:
+                open_gripes.add(gid)
             return False
         if verdict.paused:
             out.paused = True
+            if gid is not None:
+                open_gripes.add(gid)
             return False
         if verdict.error is not None:
             out.llm_errors += 1
             out.llm_truncated += int(verdict.truncated)
+            if gid is not None:
+                open_gripes.add(gid)
             return False
         if verdict.ask is not None:
             out.asked += 1
@@ -261,6 +325,8 @@ def run_garden_tick(
                 model=verdict.model,
                 reason="asked",
             )
+            if gid is not None:
+                open_gripes.add(gid)
             return False
         if not verdict.accept:
             out.rejected += 1
@@ -271,6 +337,10 @@ def run_garden_tick(
                 prompt_version=prompt_version,
                 model=verdict.model,
             )
+            if gid is not None:
+                _close_no_change_gripe(
+                    store, cand, verdict.rationale, queues, open_gripes
+                )
             return False
         # The proposer may refine the action/payload; the dedup key stays
         # the deterministic candidate key.
@@ -290,7 +360,11 @@ def run_garden_tick(
         )
         if emitted is None:
             out.skipped_pending += 1
+            if gid is not None:
+                open_gripes.add(gid)
             return False
+        if gid is not None:
+            open_gripes.add(gid)
         out.proposals += 1
         out.proposals_by_detector[cand.detector] = (
             out.proposals_by_detector.get(cand.detector, 0) + 1

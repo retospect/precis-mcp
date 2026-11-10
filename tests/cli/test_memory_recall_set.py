@@ -12,15 +12,24 @@ from precis.cli.memory import load_recall_set, run
 from precis.store import Tag
 
 
-def _pair(query="observed question", handle="me123"):
+def _pair(query="observed question", handle="me123", *, source="trace", why=None):
     return {
         "query": query,
         "want": handle,
         "title": "Observed answer",
         "hook": "The answer hook",
-        "source": "trace",
-        "why": f"ag456: used {handle} (mode=hybrid)",
+        "source": source,
+        "why": why if why is not None else f"ag456: used {handle} (mode=hybrid)",
     }
+
+
+def _griped_pair(query="replayed route query", handle="me124"):
+    return _pair(
+        query,
+        handle,
+        source="griped",
+        why=f"gr77: reader route replayed after the fix ({handle})",
+    )
 
 
 @pytest.fixture
@@ -63,12 +72,26 @@ def test_invalid_selection_never_edits(checkout, only):
     assert load_recall_set(checkout) == []
 
 
+def test_griped_pairs_accept_with_their_gripe_anchor(checkout):
+    count, diff = recall_set.accept_proposals(checkout, [_griped_pair()])
+    assert count == 1 and "gr77" in diff
+    entries = load_recall_set(checkout)
+    assert entries[0]["source"] == "griped"
+
+
+def test_griped_pair_without_its_gripe_anchor_refuses(checkout):
+    with pytest.raises(ValueError, match="six-field provenance-backed"):
+        recall_set.accept_proposals(
+            checkout, [{**_griped_pair(), "why": "ag456: wrong anchor"}]
+        )
+
+
 @pytest.mark.parametrize(
     "change",
     [{"source": "manual"}, {"want": "td123"}, {"why": "no provenance"}, {"extra": "x"}],
 )
 def test_bad_selected_pair_refuses_entire_edit(checkout, change):
-    with pytest.raises(ValueError, match="six-field trace-backed"):
+    with pytest.raises(ValueError, match="six-field provenance-backed"):
         recall_set.accept_proposals(checkout, [_pair(), {**_pair(), **change}])
     assert load_recall_set(checkout) == []
 

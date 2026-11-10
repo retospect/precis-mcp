@@ -1,4 +1,5 @@
-"""Operator-only acceptance of trace pairs; no graph writes, commits or pushes."""
+"""Operator-only acceptance of proposed recall pairs — trace harvests and
+griped route replays; no graph writes, commits or pushes."""
 
 from __future__ import annotations
 
@@ -18,6 +19,14 @@ PROPOSALS_KEY = "recall_set_proposals"
 SET_PATH = "src/precis/data/memory_recall_set.json"
 FIELDS = {"query", "want", "title", "hook", "source", "why"}
 
+#: Provenance anchor each ``source`` value must carry in ``why``: the
+#: trace harvest cites its agentlog row (``ag<N>``), a griped replay cites
+#: the complaint it resolved (``gr<N>``).
+_SOURCE_ANCHOR = {
+    "trace": r"\bag[1-9][0-9]*\b",
+    "griped": r"\bgr[1-9][0-9]*\b",
+}
+
 
 def _todo_id(value: str) -> int:
     match = re.fullmatch(r"(?:td)?([1-9][0-9]*)", value)
@@ -34,7 +43,7 @@ def _only(value: str) -> list[int]:
 
 def configure_parser(sub: argparse._SubParsersAction) -> None:
     """Extend memory's nested verbs, not the top-level command registry."""
-    parser = sub.add_parser("recall-set", help="Review trace-derived recall pairs.")
+    parser = sub.add_parser("recall-set", help="Review proposed recall pairs.")
     verbs = parser.add_subparsers(dest="recall_set_cmd", required=True)
     accept = verbs.add_parser(
         "accept", help="Append reviewed pairs in a repo checkout; never commit/push."
@@ -90,16 +99,20 @@ def accept_proposals(
     selected = []
     for n in dict.fromkeys(numbers):
         pair = proposals[n - 1]
+        source = pair.get("source") if isinstance(pair, dict) else None
+        anchor = _SOURCE_ANCHOR.get(source) if isinstance(source, str) else None
         if (
             not isinstance(pair, dict)
             or pair.keys() != FIELDS
             or any(not isinstance(v, str) for v in pair.values())
             or not pair["query"].strip()
             or re.fullmatch(r"me[1-9][0-9]*", pair["want"]) is None
-            or pair["source"] != "trace"
-            or re.search(r"\bag[1-9][0-9]*\b", pair["why"]) is None
+            or anchor is None
+            or re.search(anchor, pair["why"]) is None
         ):
-            raise ValueError(f"pair {n} is not a six-field trace-backed recall entry")
+            raise ValueError(
+                f"pair {n} is not a six-field provenance-backed recall entry"
+            )
         selected.append(pair)
     before = path.read_text(encoding="utf-8")
     entries = json.loads(before)

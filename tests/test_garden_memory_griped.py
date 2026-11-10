@@ -245,3 +245,128 @@ def test_run_detectors_dispatches_griped(store: Store) -> None:
     run = cand.run_detectors(store, passes=("memory",), detector_deadline_s=0)
     assert any(c.detector == "griped" for c in run.candidates)
     assert "griped" not in run.skipped
+
+
+def test_griped_pass_requires_the_named_hits_the_route_ranked() -> None:
+    """A search passes only when the named memories it ranked at pin time
+    still arrive — any other named hit is no substitute — and an
+    unreplayable route row fails the pass rather than being skipped."""
+    pinned = [{"seq": 1, "verb": "search", "ranks": {"me1": 1, "me2": 3, "me3": None}}]
+    replay = [{"seq": 1, "verb": "search", "hits": [{"ref_id": 1}, {"ref_id": 2}]}]
+    assert consumer._griped_pass(replay, {1, 2, 3}, pinned)
+    replay[0]["hits"] = [{"ref_id": 1}, {"ref_id": 3}]  # me2 lost to me3
+    assert not consumer._griped_pass(replay, {1, 2, 3}, pinned)
+    replay[0]["hits"] = [{"ref_id": 1}, {"ref_id": 2}, {"ref_id": 3}]
+    assert consumer._griped_pass(replay, {1, 2, 3}, pinned)
+    assert not consumer._griped_pass(
+        [{"seq": 2, "verb": "search", "not_replayed": "no recorded query"}],
+        {1, 2, 3},
+        pinned,
+    )
+    assert not consumer._griped_pass(
+        [{"seq": 2, "verb": "get", "resolves": False}], {1, 2, 3}, pinned
+    )
+    # A route row with no pinned counterpart still has to reach a named memory.
+    assert consumer._griped_pass(
+        [{"seq": 9, "verb": "search", "hits": [{"ref_id": 2}]}], {1, 2, 3}, pinned
+    )
+    assert not consumer._griped_pass(
+        [{"seq": 9, "verb": "search", "hits": [{"ref_id": 99}]}],
+        {1, 2, 3},
+        pinned,
+    )
+
+
+def _hub(store: Store, *members: int) -> int:
+    hub = _memory(store, "The subject hub heading its members.")
+    store.add_tag(hub, Tag.open("section:index"))
+    for member in members:
+        store.add_link(src_ref_id=member, dst_ref_id=hub, relation="part-of")
+    return hub
+
+
+def test_recall_guard_scopes_to_the_touched_hubs(store: Store) -> None:
+    named = _memory(store, "Named claim about zilch routing tokens.")
+    want = _memory(store, "The recall answer about zilch routing tokens.")
+    store.add_tag(want, Tag.parse_strict("SPACE:repo-dev", kind="memory"))
+    _hub(store, named, want)
+    entries = [{"query": "zilch routing", "want": f"me{want}"}]
+    assert consumer._griped_recall_guard(store, {named}, entries=entries) == []
+    # A want outside the touched hubs is not the hub's recall set.
+    other = _memory(store, "An unrelated unhubbed claim.")
+    assert consumer._griped_recall_guard(store, {other}, entries=entries) == []
+    store.retire_ref(want)
+    assert consumer._griped_recall_guard(store, {named}, entries=entries) == [
+        f"me{want} (retired)"
+    ]
+
+
+def test_no_change_verdict_closes_the_gripe_after_the_rejection(
+    store: Store,
+) -> None:
+    """The evaluator's no-change is the complaint's resolution: the runner
+    records the rejection, then the replay-after door closes the gripe."""
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    gid = _gripe(
+        store,
+        f"me{keeper} and me{loser} disagree on pours.",
+        route=_route({"verb": "search", "arg_sample": {"q": "interim"}}),
+    )
+    runner.run_garden_tick(
+        store,
+        passes=("memory",),
+        kinds=("memory",),
+        propose=lambda _s, _c: Verdict(
+            accept=False, rationale="the replay already passes"
+        ),
+    )
+    tags = {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
+    assert "done" in tags
+    comments = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(gid)
+        if b.chunk_kind == "gripe_comment"
+    ]
+    assert comments and comments[-1].startswith("resolved:")
+
+
+def test_no_change_close_waits_on_queued_sibling_candidates(store: Store) -> None:
+    """A no-change on one named memory must not close while a sibling
+    candidate may still carry the fix — an ask marks the gripe open."""
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    gid = _gripe(
+        store,
+        f"me{keeper} and me{loser} disagree on pours.",
+        route=_route({"verb": "search", "arg_sample": {"q": "interim"}}),
+    )
+
+    def propose(_s: Any, c: Any) -> Verdict:
+        if c.target_id == keeper:
+            return Verdict(accept=False, ask="undecidable, needs a human")
+        return Verdict(accept=False, rationale="the replay already passes")
+
+    runner.run_garden_tick(
+        store, passes=("memory",), kinds=("memory",), propose=propose
+    )
+    tags = {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
+    assert "done" not in tags
+    assert store.list_refs(kind="todo", tags=["memory-review"], limit=10)
+
+
+def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
+    store: Store,
+) -> None:
+    from precis.graph.garden.proposer import MEMORY_ACTIONS, _one_action_verdict
+
+    assert "qualify" not in MEMORY_ACTIONS["griped"]
+    mem = _memory(store, "A scoped claim needing a caveat.")
+    _gripe(store, f"me{mem} needs its scope named.", route=[])
+    candidate = cand.griped_candidates(store)[0]
+    verdict = _one_action_verdict(
+        {"action": "qualify", "reason": "true only in scope", "caveat": "x"},
+        candidate,
+        model=None,
+    )
+    assert not verdict.accept and verdict.ask is not None

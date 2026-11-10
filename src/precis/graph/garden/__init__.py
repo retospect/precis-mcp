@@ -128,8 +128,10 @@ Review rows and trust acts retain the original model string.
    pending without consumer review or state changes. ``qualify`` and ``ask``
    remain outside that consumer; an ``ask`` verdict files a ``memory-review``
    todo from the runner (tiered by smell class), never a proposal. A
-   ``griped`` apply replays the gripe's route and closes it with a
-   ``resolved:`` comment once the deterministic pass holds (gr561873).
+   ``griped`` apply — and an evaluator no-change once no sibling fix
+   path remains — replays the gripe's route and hub recall set and
+   closes it with a ``resolved:`` comment once the deterministic pass
+   holds (gr561873).
 
 **Memory reconciliation.** Memory candidates (including ``dup_pair``) and
 interactive ``precis-make-memory`` share packaged memory-help policy via
