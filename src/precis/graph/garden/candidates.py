@@ -200,6 +200,7 @@ _DETECTOR_BY_PASS = {
         "dangling_mention",
         "thread_shape",
         "anchor_rot",
+        "compact",
         "grab_bag",
         "griped",
     ),
@@ -1823,6 +1824,281 @@ def restated_claim_candidates(
                 _RESTATED_PREFIX + "pair": offset + len(out) if more_pairs else 0,
             }
         )
+    return out
+
+
+#: Compaction triggers (gr561025): no node retires and no sentence drops
+#: before a per-sentence plan runs. ``expired`` reads the same expiry the
+#: review_due detector computes (meta.expires, else the shape default);
+#: ``cold`` is zero reads in COMPACT_COLD_DAYS on an older node
+#: (``ref_reads``, 0261); ``history`` is at least half the non-empty
+#: lines carrying a date, a sha or a landed/shipped/done marker; and
+#: ``retire_proposal`` is any undecided garden retire proposal on the
+#: node — compaction runs before that retirement may apply.
+COMPACT_COLD_DAYS = 90
+COMPACT_HISTORY_MIN = 0.5
+COMPACT_SENTENCE_CAP = 128
+COMPACT_RELATED_CAP = 24
+_SHA_TOKEN = re.compile(r"\b[0-9a-f]{7,40}\b")
+_HISTORY_WORD = re.compile(r"\b(?:landed|shipped|done)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class _CompactRow:
+    ref_id: int
+    title: str
+    body: str
+    sha: str
+    meta: dict[str, Any]
+    sections: frozenset[str]
+    updated_at: datetime
+    created_at: datetime
+    n_agent: int
+    n_human: int
+    last_read_at: datetime | None
+
+
+def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
+    """Body, expiry inputs and the read counter in one snapshot, no DREAMs."""
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, coalesce((SELECT string_agg(c.text, E'\\n' "
+            "ORDER BY c.ord, c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
+            "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
+            "AND c.retired_at IS NULL), ''), precis_target_sha('ref', r.ref_id), "
+            "r.meta, ARRAY(SELECT substring(t.value FROM 9) "
+            "FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
+            "AND starts_with(t.value, 'section:')), "
+            "r.updated_at, r.created_at, coalesce(rr.n_agent, 0), "
+            "coalesce(rr.n_human, 0), "
+            "greatest(rr.last_agent_at, rr.last_human_at) "
+            "FROM refs r LEFT JOIN ref_reads rr ON rr.ref_id = r.ref_id "
+            "WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') ORDER BY r.ref_id",
+            (ids,),
+        ).fetchall()
+    return [
+        _CompactRow(
+            int(rid),
+            title,
+            body,
+            sha,
+            meta or {},
+            frozenset(sections),
+            updated,
+            created,
+            int(na),
+            int(nh),
+            last,
+        )
+        for rid, title, body, sha, meta, sections, updated, created, na, nh, last in rows
+    ]
+
+
+def _pending_retire_proposals(store: Store, ids: list[int]) -> dict[int, list[int]]:
+    """Undecided garden retire proposals per memory: the compact-first trigger."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT p.target_id, p.review_id FROM reviews p "
+            "WHERE p.target_kind = 'ref' AND p.target_id = ANY(%s) "
+            "AND p.verdict = 'proposed' AND p.note LIKE %s AND p.note LIKE %s "
+            "AND NOT EXISTS (SELECT 1 FROM reviews d WHERE d.note LIKE %s "
+            "AND d.note ~ ('\"resolves\": ' || p.review_id || '[^0-9]'))",
+            (ids, '%"garden"%', '%"action": "retire"%', '%"resolves"%'),
+        ).fetchall()
+    out: dict[int, list[int]] = {}
+    for target_id, review_id in rows:
+        out.setdefault(int(target_id), []).append(int(review_id))
+    return out
+
+
+def _compact_related(store: Store, ids: list[int]) -> dict[int, dict[str, list[int]]]:
+    """The live-memory neighbourhood a compaction may move claims into.
+
+    Hub parents and their live children, qualifies targets and the
+    remaining outgoing-edge neighbours — the refs the writer's fisheye
+    reaches. Bounded per node; the apply door refuses plan edits to refs
+    outside this set. Sentence-level restated_claim matches are the
+    embedding pass's own finding, not duplicated here.
+    """
+    related: dict[int, dict[str, list[int]]] = {
+        rid: {"parents": [], "siblings": [], "qualifies": [], "neighbours": []}
+        for rid in ids
+    }
+    if not ids:
+        return related
+    with store.pool.connection() as conn:
+        parent_rows = conn.execute(
+            "SELECT l.src_ref_id, l.dst_ref_id FROM links l JOIN refs r "
+            "ON r.ref_id = l.dst_ref_id WHERE l.relation = 'part-of' "
+            "AND l.src_ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL",
+            (ids,),
+        ).fetchall()
+        by_parent: dict[int, list[int]] = {}
+        for src, dst in parent_rows:
+            related[int(src)]["parents"].append(int(dst))
+            by_parent.setdefault(int(dst), []).append(int(src))
+        if by_parent:
+            sib_rows = conn.execute(
+                "SELECT l.dst_ref_id, l.src_ref_id FROM links l JOIN refs r "
+                "ON r.ref_id = l.src_ref_id WHERE l.relation = 'part-of' "
+                "AND l.dst_ref_id = ANY(%s) AND r.kind = 'memory' "
+                "AND r.retired_at IS NULL",
+                (list(by_parent),),
+            ).fetchall()
+            for parent, child in sib_rows:
+                for rid in by_parent[int(parent)]:
+                    if int(child) != rid:
+                        related[rid]["siblings"].append(int(child))
+        edge_rows = conn.execute(
+            "SELECT l.src_ref_id, l.dst_ref_id, l.relation FROM links l "
+            "JOIN refs r ON r.ref_id = l.dst_ref_id "
+            "WHERE l.src_ref_id = ANY(%s) AND l.relation <> 'part-of' "
+            "AND r.kind = 'memory' AND r.retired_at IS NULL",
+            (ids,),
+        ).fetchall()
+    for src, dst, relation in edge_rows:
+        bucket = "qualifies" if str(relation) == "qualifies" else "neighbours"
+        related[int(src)][bucket].append(int(dst))
+    for rel in related.values():
+        for bucket, values in rel.items():
+            rel[bucket] = sorted(set(values))[:COMPACT_RELATED_CAP]
+    return related
+
+
+def _compact_sentences(body: str) -> tuple[list[dict[str, Any]], bool]:
+    """Every sentence span in the body, capped — the plan's work list."""
+    found = [
+        {
+            "span": [m.start(), m.start() + len(m.group().rstrip())],
+            "text": m.group().rstrip(),
+        }
+        for m in islice(_SENTENCE.finditer(body), COMPACT_SENTENCE_CAP + 1)
+    ]
+    return found[:COMPACT_SENTENCE_CAP], len(found) > COMPACT_SENTENCE_CAP
+
+
+def _compact_expiry(row: _CompactRow) -> tuple[datetime | None, str | None]:
+    """The expiry instant and whether meta.expires or the shape supplied it."""
+    if "expires" in row.meta:
+        return _review_date(row.meta["expires"]), "meta.expires"
+    _shape, days = memory_expiry_shape(row.title, row.sections)
+    if days is None:
+        return None, None
+    return row.updated_at + timedelta(days=days), "shape"
+
+
+def compact_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+    now: datetime | None = None,
+) -> list[GardenCandidate]:
+    """Memories owing a per-sentence compaction plan before any retirement.
+
+    Read-only. The evaluator (proposer) fills ``payload.plan``; the apply
+    door is ``apply_compact`` behind the memory apply gate. Evidence pins
+    only what recomputes identically: mutable figures (read counters) ride
+    along only for the trigger that fired on them.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    key = "compact:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    rows = _compact_rows(store, window)
+    pending_retire = _pending_retire_proposals(store, [row.ref_id for row in rows])
+    related = _compact_related(store, [row.ref_id for row in rows])
+    shas = _ref_shas(
+        store,
+        sorted(
+            {rid for rel in related.values() for ids in rel.values() for rid in ids}
+        ),
+    )
+    checked_at = now or datetime.now(UTC)
+    out: list[GardenCandidate] = []
+    for row in rows:
+        reasons: list[str] = []
+        evidence: dict[str, Any] = {"content_sha": row.sha}
+        expires, expiry_source = _compact_expiry(row)
+        if expires is not None and expires <= checked_at:
+            reasons.append("expired")
+            evidence["expires"] = expires.isoformat()
+            evidence["expiry_source"] = expiry_source
+        if row.created_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS) and (
+            row.last_read_at is None
+            or row.last_read_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS)
+        ):
+            reasons.append("cold")
+            evidence["created_at"] = row.created_at.isoformat()
+            evidence["reads"] = {
+                "n_agent": row.n_agent,
+                "n_human": row.n_human,
+                "last_read_at": row.last_read_at.isoformat()
+                if row.last_read_at
+                else None,
+            }
+        nonempty = [line for line in row.body.splitlines() if line.strip()]
+        history = sum(
+            bool(
+                _DATE.search(line)
+                or _SHA_TOKEN.search(line)
+                or _HISTORY_WORD.search(line)
+            )
+            for line in nonempty
+        )
+        if nonempty and history / len(nonempty) >= COMPACT_HISTORY_MIN:
+            reasons.append("history")
+            evidence["history_density"] = round(history / len(nonempty), 3)
+            evidence["history_lines"] = history
+            evidence["nonempty_lines"] = len(nonempty)
+        if row.ref_id in pending_retire:
+            reasons.append("retire_proposal")
+            evidence["retire_proposals"] = pending_retire[row.ref_id]
+        if not reasons:
+            continue
+        evidence["reasons"] = reasons
+        sentences, capped = _compact_sentences(row.body)
+        evidence["sentences"] = sentences
+        evidence["sentences_capped"] = capped
+        evidence["related"] = related[row.ref_id]
+        out.append(
+            GardenCandidate(
+                detector="compact",
+                action="compact",
+                target_kind="ref",
+                target_id=row.ref_id,
+                title=f"me{row.ref_id} owes a compaction plan ({', '.join(reasons)})",
+                evidence=evidence,
+                payload={
+                    "base_sha": row.sha,
+                    "shas": {
+                        str(rid): sha
+                        for rid, sha in sorted(shas.items())
+                        if rid
+                        in {i for ids in related[row.ref_id].values() for i in ids}
+                    },
+                    "plan": None,
+                },
+            )
+        )
+        if len(out) >= limit:
+            nxt = row.ref_id
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
     return out
 
 
@@ -4037,6 +4313,7 @@ def run_detectors(
             )
         elif det in {
             "anchor_rot",
+            "compact",
             "dangling_mention",
             "entity_claim_stale",
             "griped",
@@ -4049,6 +4326,7 @@ def run_detectors(
             fn = partial(
                 {
                     "anchor_rot": anchor_rot_candidates,
+                    "compact": compact_candidates,
                     "dangling_mention": dangling_mention_candidates,
                     "entity_claim_stale": entity_claim_stale_candidates,
                     "griped": griped_candidates,
@@ -4150,6 +4428,7 @@ __all__ = [
     "DetectorRun",
     "GardenCandidate",
     "anchor_rot_candidates",
+    "compact_candidates",
     "cycle_edge_candidates",
     "dangling_edge_candidates",
     "dangling_mention_candidates",

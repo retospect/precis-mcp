@@ -64,7 +64,7 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
 
@@ -1187,6 +1187,27 @@ def _memory_dependency_ids(conn: Any, target: int, garden: dict[str, Any]) -> se
     ]
     for mention in evidence.get("mentions", []):
         handles.extend([mention.get("retired_ref"), mention.get("successor")])
+    if garden.get("action") == "compact":
+        for values in (evidence.get("related") or {}).values():
+            if isinstance(values, list):
+                ids.update(int(v) for v in values if isinstance(v, int))
+        for sha_key in payload.get("shas") or {}:
+            if str(sha_key).isdigit():
+                ids.add(int(sha_key))
+        plan = payload.get("plan") or {}
+        for edit in plan.get("edits") or []:
+            if isinstance(edit, dict):
+                handles.append(edit.get("ref"))
+        shell = plan.get("shell")
+        if isinstance(shell, dict):
+            handles.append(shell.get("successor"))
+        for put in plan.get("puts") or []:
+            if not isinstance(put, dict):
+                continue
+            handles.extend(put.get("qualifies") or [])
+            for link in put.get("links") or []:
+                if isinstance(link, dict):
+                    handles.append(link.get("dst"))
     for entry in evidence.get("memories", []):
         if isinstance(entry, dict) and isinstance(entry.get("ref_id"), int):
             ids.add(int(entry["ref_id"]))
@@ -2261,13 +2282,18 @@ def apply_retire(
     model: str | None = None,
     verdict_extra: dict[str, Any] | None = None,
 ) -> dict[str, int]:
-    """Apply a reviewed retirement through the memory delete door, atomically."""
+    """Apply a reviewed retirement through the memory delete door, atomically.
+
+    The compact-first gate (gr561025): a pending or undecided compaction
+    on the node runs before this retirement may apply.
+    """
     from precis.dispatch import Hub
 
     with store.atomic() as conn:
         target, garden, _body = _checked_memory_proposal(
             store, conn, review_id, "retire"
         )
+        _compact_first(store, conn, target)
         rec = _retirement_snapshot(
             store, conn, target, garden, review_id, successor=None
         )
@@ -2288,6 +2314,809 @@ def apply_retire(
             )
             _save_retirement(store, conn, rec)
     return {"target": target}
+
+
+# ── compaction (gr561025) ───────────────────────────────────────────────────
+#
+# No node retires and no sentence drops before a per-sentence plan: the
+# compact detector's triggers (expired, cold, history-dense, or a pending
+# retire proposal) file one ``compact`` proposal; the evaluator supplies
+# ``payload.plan`` — anchored edits into the pinned related neighbourhood,
+# atomic puts, and the shell's fate. ``apply_compact`` runs it as one unit
+# under one ``meta.garden_compact`` record; ``undo_compact`` restores every
+# touched body, retires the minted children and un-retires the shell.
+
+COMPACT_KEEP_MAX_LINES = 3
+COMPACT_MAX_EXPIRES_DAYS = 3650
+
+
+def compact_plan_shape(plan: Any) -> bool:
+    """The consumer's shallow reviewable check on ``payload.plan``."""
+    if not isinstance(plan, dict):
+        return False
+    shell = plan.get("shell")
+    return (
+        isinstance(plan.get("edits") or [], list)
+        and isinstance(plan.get("puts") or [], list)
+        and isinstance(shell, dict)
+        and shell.get("fate") in {"retire", "keep"}
+    )
+
+
+def _plan_ref(value: Any) -> int | None:
+    """An int ref id or a ``meN``-style record handle, decoded."""
+    from precis.utils.handle_registry import parse
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        parsed = parse(value)
+        if parsed is not None and not parsed[1]:
+            return int(parsed[2])
+    return None
+
+
+def _checked_compact_plan(
+    store: Store, conn: Any, target: int, garden: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate the reviewed plan against the pinned neighbourhood, under lock.
+
+    Edits may only land on the detector's related set (hub parents and
+    siblings, qualifies targets, recall neighbours) — like the rewrite
+    scope rule, the model supplies text inside evidence, never new scope.
+    """
+    evidence = garden.get("evidence") or {}
+    payload = garden.get("payload") or {}
+    plan = payload.get("plan")
+    if not compact_plan_shape(plan):
+        raise BadInput("compact requires a well-formed payload.plan")
+    assert isinstance(plan, dict)
+    related = evidence.get("related") or {}
+    editable = {
+        int(v)
+        for values in related.values()
+        for v in (values or [])
+        if isinstance(v, int)
+    }
+    live = {
+        int(r[0])
+        for r in conn.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) AND kind = 'memory' "
+            "AND retired_at IS NULL",
+            (sorted(editable),),
+        ).fetchall()
+    }
+    if live != editable:
+        raise MergeRefused("stale", "a related memory the plan edits is not live")
+    edits: list[dict[str, Any]] = []
+    for i, edit in enumerate(plan.get("edits") or []):
+        if not isinstance(edit, dict):
+            raise BadInput(f"plan.edits[{i}] must be an object")
+        ref = _plan_ref(edit.get("ref"))
+        if ref is None or ref == target or ref not in editable:
+            raise BadInput(
+                f"plan.edits[{i}].ref must name a related live memory from "
+                "the detector's neighbourhood; the shell's own body is not "
+                "an edit target"
+            )
+        if memory_human_hold(store, ref):
+            raise MergeRefused(
+                "human",
+                f"plan.edits[{i}] touches human-origin or considered me{ref}",
+            )
+        ops = edit.get("ops")
+        if not isinstance(ops, list) or not ops:
+            raise BadInput(f"plan.edits[{i}] requires nonempty anchored ops")
+        for j, op in enumerate(ops):
+            if (
+                not isinstance(op, dict)
+                or not isinstance(op.get("find"), str)
+                or not op["find"]
+                or not isinstance(op.get("text"), str)
+            ):
+                raise BadInput(
+                    f"plan.edits[{i}].ops[{j}] requires resolved find/text strings"
+                )
+            span = op.get("span")
+            if span is not None and not (
+                isinstance(span, list)
+                and len(span) == 2
+                and all(isinstance(x, int) for x in span)
+            ):
+                raise BadInput(f"plan.edits[{i}].ops[{j}].span must be [start, end]")
+        edits.append(
+            {
+                "ref": ref,
+                "ops": ops,
+                "reason": str(edit.get("reason") or ""),
+            }
+        )
+    puts: list[dict[str, Any]] = []
+    for i, put in enumerate(plan.get("puts") or []):
+        if not isinstance(put, dict):
+            raise BadInput(f"plan.puts[{i}] must be an object")
+        if not isinstance(put.get("title"), str) or not put["title"].strip():
+            raise BadInput(f"plan.puts[{i}].title must state the claim")
+        if not isinstance(put.get("body"), str) or not put["body"].strip():
+            raise BadInput(f"plan.puts[{i}].body must carry the claim text")
+        section = put.get("section")
+        if section is not None and (
+            not isinstance(section, str) or not section.startswith("section:")
+        ):
+            raise BadInput(f"plan.puts[{i}].section must be a section: tag")
+        qualifies = []
+        for j, value in enumerate(put.get("qualifies") or []):
+            ref = _plan_ref(value)
+            if ref is None:
+                raise BadInput(f"plan.puts[{i}].qualifies[{j}] must name a live ref")
+            qualifies.append(ref)
+        links = []
+        for j, link in enumerate(put.get("links") or []):
+            if not isinstance(link, dict) or not isinstance(link.get("relation"), str):
+                raise BadInput(
+                    f"plan.puts[{i}].links[{j}] needs a relation and a live dst ref"
+                )
+            ref = _plan_ref(link.get("dst"))
+            if ref is None:
+                raise BadInput(f"plan.puts[{i}].links[{j}].dst must name a live ref")
+            links.append({"dst": ref, "relation": str(link["relation"])})
+        puts.append(
+            {
+                "title": put["title"].strip(),
+                "body": put["body"],
+                "section": section,
+                "qualifies": qualifies,
+                "links": links,
+            }
+        )
+    shell = dict(plan["shell"])
+    if shell["fate"] == "retire":
+        successor = shell.get("successor")
+        if isinstance(successor, dict):
+            idx = successor.get("put")
+            if not isinstance(idx, int) or not 0 <= idx < len(puts):
+                raise BadInput('shell.successor {"put": i} must index a plan put')
+        elif successor is not None:
+            ref = _plan_ref(successor)
+            parents = {
+                int(v) for v in (related.get("parents") or []) if isinstance(v, int)
+            }
+            if ref is None or ref not in parents:
+                raise BadInput(
+                    "a compact retirement's superseded_by must be the shell's "
+                    "hub parent, a minted child ({'put': i}) or null"
+                )
+            shell["successor"] = ref
+    else:
+        summary = shell.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise BadInput("a kept shell requires a nonempty summary")
+        if sum(1 for line in summary.splitlines() if line.strip()) > (
+            COMPACT_KEEP_MAX_LINES
+        ):
+            raise BadInput(
+                f"a kept shell's summary is at most {COMPACT_KEEP_MAX_LINES} "
+                "non-empty lines"
+            )
+        days = shell.get("expires_days")
+        if (
+            not isinstance(days, int)
+            or isinstance(days, bool)
+            or not (0 < days <= COMPACT_MAX_EXPIRES_DAYS)
+        ):
+            raise BadInput(
+                f"a kept shell re-arms expires: expires_days 1..{COMPACT_MAX_EXPIRES_DAYS}"
+            )
+    return {"edits": edits, "puts": puts, "shell": shell}
+
+
+def _compact_body_row(conn: Any, ref_id: int) -> tuple[Any, ...]:
+    rows = conn.execute(
+        "SELECT chunk_id, text, ord FROM chunks WHERE ref_id = %s "
+        "AND chunk_kind = 'memory_body' AND retired_at IS NULL AND ord >= 0 "
+        "ORDER BY ord, chunk_id",
+        (ref_id,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise MergeRefused("apply_refused", "compact edits require one live body chunk")
+    return rows[0]
+
+
+def _compact_edit_node(
+    store: Store,
+    conn: Any,
+    handler: Any,
+    ref_id: int,
+    raw_ops: Any,
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Snapshot one memory body, apply anchored ops, restore its routes.
+
+    The same reversal shape ``undo_rewrite`` records: prior bytes, chunk
+    identity, title, header and every link, plus the applied twins.
+    """
+    body = _compact_body_row(conn, ref_id)
+    ops = _rewrite_ops(str(body[1]), raw_ops)
+    links = _memory_links(conn, ref_id, int(body[0]))
+    _guard_memory_link_measures(conn, links)
+    header = _memory_header(conn, ref_id)
+    _guard_legacy_memory_links(links)
+    ref = store.get_ref(kind="memory", id=ref_id)
+    assert ref is not None
+    rec: dict[str, Any] = {
+        "ref": ref_id,
+        "prior_body": str(body[1]),
+        "prior_body_chunk_id": int(body[0]),
+        "prior_body_ord": int(body[2]),
+        "prior_title": ref.title,
+        "prior_header": header,
+        "links": links,
+    }
+    handler.edit(id=ref_id, ops=ops, reason=reason)
+    new_body = conn.execute(
+        "SELECT chunk_id FROM chunks WHERE ref_id = %s AND chunk_kind = 'memory_body'",
+        (ref_id,),
+    ).fetchone()
+    if new_body is None:
+        raise MergeRefused("apply_refused", "the rewritten memory body is missing")
+    rec["applied_body_chunk_id"] = int(new_body[0])
+    chunk_map = {rec["prior_body_chunk_id"]: rec["applied_body_chunk_id"]}
+    if header is not None:
+        new_header = _memory_header(conn, ref_id)
+        if new_header is None:
+            raise MergeRefused("apply_refused", "the rewritten header is missing")
+        chunk_map[header["chunk_id"]] = new_header["chunk_id"]
+    for link in links:
+        restored = dict(link)
+        for key in ("src_chunk_id", "dst_chunk_id"):
+            restored[key] = chunk_map.get(restored[key], restored[key])
+        _restore_memory_link(store, conn, restored, actor=actor)
+    rec["applied_links"] = _memory_links(conn, ref_id, rec["applied_body_chunk_id"])
+    state = store.trust_state("ref", ref_id, conn=conn)
+    assert state is not None and state.sha is not None
+    rec["applied_sha"] = state.sha
+    return rec
+
+
+def _apply_compact_put(
+    store: Store,
+    conn: Any,
+    handler: Any,
+    put: dict[str, Any],
+    *,
+    parents: list[int],
+    review_id: int,
+    actor: str,
+) -> dict[str, Any]:
+    """Mint one atomic child and hang it on the shell's hub.
+
+    A direct insert rather than the handler ``put`` door: the ack carries
+    no ``ref_id``, and minting on this transaction keeps the whole plan —
+    edits, puts and the shell's fate — one undoable unit.
+    """
+    from precis.store.types import ChunkInsert, Tag
+
+    ref = store.insert_ref(
+        kind="memory",
+        slug=None,
+        title=put["title"],
+        meta={"garden_compact": {"proposal": review_id}},
+        conn=conn,
+    )
+    ref_id = int(ref.id)
+    store.chunks.insert_chunks(
+        ref_id,
+        [ChunkInsert(ord=0, text=put["body"], meta={"chunk_kind": "memory_body"})],
+        conn=conn,
+    )
+    if put.get("section"):
+        store.add_tag(ref_id, Tag.open(str(put["section"])), set_by="agent", conn=conn)
+    marker = {"garden_compact": {"proposal": review_id}}
+    for dst, relation in (
+        [(p, "part-of") for p in parents]
+        + [(q, "qualifies") for q in put["qualifies"]]
+        + [(l["dst"], l["relation"]) for l in put["links"]]
+    ):
+        store.add_link(
+            src_ref_id=ref_id,
+            dst_ref_id=dst,
+            relation=relation,
+            set_by="agent",
+            meta=marker,
+            conn=conn,
+        )
+    # applied_sha/applied_links are stamped only after the shell's fate
+    # runs: its delete can migrate edges onto a minted successor.
+    return {"ref_id": ref_id}
+
+
+def _compact_shell_retire(
+    store: Store,
+    conn: Any,
+    handler: Any,
+    target: int,
+    garden: dict[str, Any],
+    review_id: int,
+    shell: dict[str, Any],
+    puts: list[dict[str, Any]],
+    reason: str,
+) -> dict[str, Any]:
+    """Retire the shell through the delete door; capture the same snapshot."""
+    successor = shell.get("successor")
+    if isinstance(successor, dict):
+        successor = puts[int(successor["put"])]["ref_id"]
+    rec = _retirement_snapshot(
+        store, conn, target, garden, review_id, successor=successor
+    )
+    handler.delete(id=target, reason=reason, superseded_by=rec["successor_handle"])
+    if successor is not None:
+        store.add_link(
+            src_ref_id=successor,
+            dst_ref_id=target,
+            relation="supersedes",
+            set_by="agent",
+            meta={"garden_compact": {"proposal": review_id}},
+            conn=conn,
+        )
+    rec["applied_links"] = _retirement_links(conn, rec["scope"])
+    prior = {link["link_id"]: link for link in rec["links"]}
+    applied = {link["link_id"]: link for link in rec["applied_links"]}
+    rewritten = [link for lid, link in prior.items() if applied.get(lid) != link]
+    changed = rewritten + [
+        link for lid, link in applied.items() if prior.get(lid) != link
+    ]
+    rec["content_endpoints"] = sorted(
+        {*rec["scope"], *(l[k] for l in changed for k in ("src_ref_id", "dst_ref_id"))}
+    )
+    rec["endpoints"] = rec["content_endpoints"]
+    chunk_ids = {l[k] for l in rewritten for k in ("src_chunk_id", "dst_chunk_id")}
+    rec["chunks"] = [c for c in rec["chunks"] if c["chunk_id"] in chunk_ids]
+    rec["applied_ends"] = _retirement_ends(
+        conn, rec["endpoints"], content_ids=rec["content_endpoints"]
+    )
+    rec["applied_meta"] = conn.execute(
+        "SELECT meta - 'garden_compact' FROM refs WHERE ref_id = %s",
+        (target,),
+    ).fetchone()[0]
+    return {"fate": "retire", "retirement": rec}
+
+
+def _compact_shell_keep(
+    store: Store,
+    conn: Any,
+    handler: Any,
+    target: int,
+    shell: dict[str, Any],
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Reduce the shell to its live-state summary and re-arm its expiry."""
+    ref = store.get_ref(kind="memory", id=target)
+    assert ref is not None
+    rec = _compact_edit_node(
+        store,
+        conn,
+        handler,
+        target,
+        [{"find": _compact_body_row(conn, target)[1], "text": shell["summary"]}],
+        actor=actor,
+        reason=reason,
+    )
+    expires = (
+        datetime.now(UTC) + timedelta(days=int(shell["expires_days"]))
+    ).isoformat()
+    store.stamp_ref_meta(target, {"expires": expires}, conn=conn)
+    rec["prior_expires"] = (ref.meta or {}).get("expires")
+    rec["expires"] = expires
+    return {"fate": "keep", "edit": rec}
+
+
+@trust_door("generated")
+def apply_compact(
+    store: Store,
+    review_id: int,
+    *,
+    actor: str,
+    model: str | None = None,
+    verdict_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a reviewed per-sentence compaction plan as one undoable unit.
+
+    Edits apply on the pinned related nodes, atomic children mint under
+    the shell's hub, and the shell retires through the delete door (with
+    ``superseded_by`` → the hub or the main child) or keeps a ≤3-line
+    summary with re-armed expiry — one ``meta.garden_compact`` record
+    reverses the whole plan via ``precis garden undo <compact_id>``.
+    """
+    from precis.dispatch import Hub
+
+    with store.atomic() as conn:
+        target, garden, _body = _checked_memory_proposal(
+            store, conn, review_id, "compact"
+        )
+        plan = _checked_compact_plan(store, conn, target, garden)
+        parents = [
+            int(v)
+            for v in ((garden.get("evidence") or {}).get("related") or {}).get(
+                "parents"
+            )
+            or []
+            if isinstance(v, int)
+        ]
+        rec: dict[str, Any] = {
+            "compact_id": f"garden-compact:{target}:{review_id}",
+            "proposal": review_id,
+            "target": target,
+            "detector": garden["detector"],
+            "edits": [],
+            "puts": [],
+            "shell": {},
+        }
+        _resolve_memory_apply(
+            store,
+            conn,
+            review_id,
+            actor=actor,
+            model=model,
+            garden=garden,
+            applied=rec["compact_id"],
+            verdict_extra=verdict_extra,
+        )
+        reason = f"garden:{garden['detector']}:{review_id}"
+        handler = Hub(store=store).sibling("memory")
+        with revision_context(reason, actor=actor, writer=_garden_writer(model)):
+            for edit in plan["edits"]:
+                rec["edits"].append(
+                    _compact_edit_node(
+                        store,
+                        conn,
+                        handler,
+                        edit["ref"],
+                        edit["ops"],
+                        actor=actor,
+                        reason=reason,
+                    )
+                )
+            for put in plan["puts"]:
+                rec["puts"].append(
+                    _apply_compact_put(
+                        store,
+                        conn,
+                        handler,
+                        put,
+                        parents=parents,
+                        review_id=review_id,
+                        actor=actor,
+                    )
+                )
+            if plan["shell"]["fate"] == "retire":
+                rec["shell"] = _compact_shell_retire(
+                    store,
+                    conn,
+                    handler,
+                    target,
+                    garden,
+                    review_id,
+                    plan["shell"],
+                    rec["puts"],
+                    reason,
+                )
+            else:
+                rec["shell"] = _compact_shell_keep(
+                    store,
+                    conn,
+                    handler,
+                    target,
+                    plan["shell"],
+                    actor=actor,
+                    reason=reason,
+                )
+            # Post-mutation twins: the shell's delete migrates edges onto a
+            # minted successor, so the child's applied state is only final
+            # after the shell's fate has run.
+            for put_rec in rec["puts"]:
+                child = int(put_rec["ref_id"])
+                sha_row = conn.execute(
+                    "SELECT precis_target_sha('ref', %s)", (child,)
+                ).fetchone()
+                assert sha_row is not None
+                put_rec["applied_sha"] = sha_row[0]
+                put_rec["applied_links"] = _retirement_links(conn, [child])
+        store.stamp_ref_meta(target, {"garden_compact": rec}, conn=conn)
+    return rec
+
+
+def _pending_compact_proposal(conn: Any, target: int) -> bool:
+    """An undecided compact proposal on this memory — compact runs first."""
+    row = conn.execute(
+        "SELECT 1 FROM reviews p WHERE p.target_kind = 'ref' AND p.target_id = %s "
+        "AND p.verdict = 'proposed' AND p.note LIKE %s AND p.note LIKE %s "
+        "AND NOT EXISTS (SELECT 1 FROM reviews d WHERE d.note LIKE %s "
+        "AND d.note ~ ('\"resolves\": ' || p.review_id || '[^0-9]')) LIMIT 1",
+        (target, '%"garden"%', '%"action": "compact"%', '%"resolves"%'),
+    ).fetchone()
+    return row is not None
+
+
+def _compact_first(store: Store, conn: Any, target: int) -> None:
+    """The retire door's compact-first gate (gr561025).
+
+    A retirement may not apply while a compact proposal is pending on the
+    node, or while the compact detector still files an undecided
+    candidate — an approved or rejected compaction answers the question;
+    an unasked one must be asked first.
+    """
+    from precis.graph.garden import candidates
+    from precis.graph.garden.proposals import key_block
+
+    if _pending_compact_proposal(conn, target):
+        raise MergeRefused(
+            "apply_refused",
+            "a pending compaction decides this memory before it retires",
+            next=f"precis garden proposals --action compact (me{target})",
+        )
+    fresh = candidates.compact_candidates(
+        store, scan_cap=1, limit=1, cursors={"compact:memory": target - 1}
+    )
+    if (
+        fresh
+        and fresh[0].target_id == target
+        and key_block(store, "ref", target, fresh[0].key) is None
+    ):
+        raise MergeRefused(
+            "apply_refused",
+            "this memory owes a per-sentence compaction plan before retiring",
+            next="run the memory garden pass to file the compact proposal",
+        )
+
+
+def _restore_compact_body(
+    store: Store, conn: Any, rec: dict[str, Any], *, actor: str, reason: str
+) -> dict[str, int]:
+    """Restore one edited-memory snapshot; drift refuses the whole undo."""
+    target = int(rec["ref"])
+    links = _memory_links(conn, target, int(rec["applied_body_chunk_id"]))
+    _guard_memory_link_measures(conn, links)
+    state = store.trust_state("ref", target, conn=conn)
+    if (
+        state is None
+        or state.sha != rec["applied_sha"]
+        or links != rec["applied_links"]
+    ):
+        raise BadInput(
+            "a compacted memory or its links changed; undo is unsafe",
+            next=f"inspect me{target} and its garden_compact snapshot; "
+            "reconcile changed endpoints before retrying garden undo",
+        )
+    prior_links = {link["link_id"]: link for link in rec["links"]}
+    deleted = store.delete_links(
+        [l["link_id"] for l in links if prior_links.get(l["link_id"]) != l],
+        conn=conn,
+    )
+    store.chunks.replace_body_chunk(
+        target,
+        rec["prior_body"],
+        chunk_kind="memory_body",
+        source=actor,
+        reason=reason,
+        conn=conn,
+    )
+    conn.execute(
+        "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'memory_body'",
+        (target,),
+    )
+    conn.execute(
+        "INSERT INTO chunks (chunk_id, ref_id, ord, chunk_kind, text) "
+        "VALUES (%s, %s, %s, 'memory_body', %s)",
+        (
+            rec["prior_body_chunk_id"],
+            target,
+            rec["prior_body_ord"],
+            rec["prior_body"],
+        ),
+    )
+    title = conn.execute(
+        "SELECT title FROM refs WHERE ref_id = %s", (target,)
+    ).fetchone()[0]
+    if title != rec["prior_title"]:
+        store.chunks.set_ref_title(target, rec["prior_title"], source=actor, conn=conn)
+        header = rec.get("prior_header")
+        if header is None:
+            store.chunks.sync_header_card(target, conn=conn)
+        else:
+            conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord = -1", (target,))
+            conn.execute(
+                "INSERT INTO chunks (chunk_id, ref_id, ord, chunk_kind, "
+                "text, meta, set_by, created_at) VALUES "
+                "(%(chunk_id)s, %(ref_id)s, %(ord)s, %(chunk_kind)s, "
+                "%(text)s, %(meta)s, %(set_by)s, %(created_at)s)",
+                {**header, "meta": Jsonb(header["meta"])},
+            )
+    for link in rec["links"]:
+        _restore_memory_link(store, conn, link, actor=actor)
+    return {"restored": len(rec["links"]), "deleted": deleted}
+
+
+def _restore_compact_retirement(
+    store: Store, conn: Any, rec: dict[str, Any], *, actor: str
+) -> dict[str, Any]:
+    """Un-retire the compact shell, the same drift contract as undo_retirement."""
+    target = int(rec["target"])
+    ends = _retirement_ends(
+        conn, rec["endpoints"], content_ids=rec["content_endpoints"]
+    )
+    links = _retirement_links(conn, rec["scope"])
+    prior = {l["link_id"]: l for l in rec["links"]}
+    applied = {l["link_id"]: l for l in rec["applied_links"]}
+    rewritten = [l for lid, l in prior.items() if applied.get(lid) != l]
+    removed = [l for lid, l in applied.items() if prior.get(lid) != l]
+    touched = {l["link_id"] for l in rewritten + removed}
+    current = {l["link_id"]: l for l in links}
+    edge_keys = (
+        "src_ref_id",
+        "src_chunk_id",
+        "dst_ref_id",
+        "dst_chunk_id",
+        "relation",
+    )
+    restored_edges = {tuple(l[k] for k in edge_keys) for l in rewritten}
+    meta = conn.execute(
+        "SELECT meta - 'garden_compact' FROM refs WHERE ref_id = %s", (target,)
+    ).fetchone()[0]
+    if (
+        ends != rec["applied_ends"]
+        or any(current.get(lid) != applied.get(lid) for lid in touched)
+        or any(
+            l["link_id"] not in touched
+            and tuple(l[k] for k in edge_keys) in restored_edges
+            for l in links
+        )
+        or meta != rec["applied_meta"]
+        or _retirement_chunks(conn, rewritten) != rec["chunks"]
+    ):
+        raise BadInput(
+            "retired memory, successor or link end changed; undo is unsafe",
+            next=f"inspect me{target} and its garden_compact snapshot; "
+            "reconcile changed endpoints before retrying garden undo",
+        )
+    _guard_memory_link_measures(conn, removed)
+    deleted = store.delete_links([l["link_id"] for l in removed], conn=conn)
+    restamped: list[int] = []
+    store.restore_ref(target, conn=conn)
+    conn.execute(
+        "UPDATE refs SET meta = %s WHERE ref_id = %s",
+        (Jsonb(rec["prior_meta"]), target),
+    )
+    for link in rewritten:
+        if _restore_memory_link(store, conn, link, actor=actor):
+            restamped.append(link["link_id"])
+    return {
+        "restored": len(rewritten),
+        "deleted": deleted,
+        "restamped": restamped,
+    }
+
+
+@trust_door("generated")
+def undo_compact(store: Store, compact_id: str, *, actor: str) -> dict[str, int]:
+    """Reverse one applied compaction as a unit.
+
+    Every edited related body and the kept or retired shell restore
+    byte-for-byte; each minted child retires; the restored key rejects so
+    the next tick cannot replay the plan.
+    """
+    from precis.dispatch import Hub
+    from precis.graph.garden.proposals import GARDEN_VERSION
+
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta->'garden_compact' FROM refs "
+            "WHERE meta->'garden_compact'->>'compact_id' = %s FOR UPDATE",
+            (compact_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"no compact record for compact_id={compact_id!r}")
+        target, rec = int(row[0]), row[1]
+        for put in rec["puts"]:
+            child = int(put["ref_id"])
+            crow = conn.execute(
+                "SELECT retired_at IS NULL, precis_target_sha('ref', ref_id) "
+                "FROM refs WHERE ref_id = %s FOR UPDATE",
+                (child,),
+            ).fetchone()
+            if (
+                crow is None
+                or not crow[0]
+                or crow[1] != put["applied_sha"]
+                or _retirement_links(conn, [child]) != put["applied_links"]
+            ):
+                raise BadInput(
+                    "a minted compact child changed or retired; undo is unsafe",
+                    next=f"inspect me{child} and the garden_compact snapshot on "
+                    f"me{target}; reconcile before retrying garden undo",
+                )
+        reason = f"garden:undo:{compact_id}"
+        counts = {
+            "edits_restored": 0,
+            "puts_retired": 0,
+            "links_deleted": 0,
+            "links_restamped": 0,
+        }
+        with revision_context(reason, actor=actor):
+            apply_revision_context(conn, clear=True)
+            for edit in rec["edits"]:
+                out = _restore_compact_body(
+                    store, conn, edit, actor=actor, reason=reason
+                )
+                counts["edits_restored"] += 1
+                counts["links_deleted"] += out["deleted"]
+            shell = rec["shell"]
+            if shell.get("fate") == "retire":
+                ret = _restore_compact_retirement(
+                    store, conn, shell["retirement"], actor=actor
+                )
+                counts["links_deleted"] += ret["deleted"]
+                counts["links_restamped"] += len(ret["restamped"])
+            else:
+                out = _restore_compact_body(
+                    store, conn, shell["edit"], actor=actor, reason=reason
+                )
+                counts["edits_restored"] += 1
+                counts["links_deleted"] += out["deleted"]
+                prior_expires = shell["edit"].get("prior_expires")
+                if prior_expires is None:
+                    conn.execute(
+                        "UPDATE refs SET meta = meta - 'expires' WHERE ref_id = %s",
+                        (target,),
+                    )
+                else:
+                    store.stamp_ref_meta(target, {"expires": prior_expires}, conn=conn)
+            handler = Hub(store=store).sibling("memory")
+            for put in rec["puts"]:
+                store.delete_links(
+                    [l["link_id"] for l in put["applied_links"]], conn=conn
+                )
+                handler.delete(
+                    id=int(put["ref_id"]),
+                    reason=reason,
+                )
+                counts["puts_retired"] += 1
+            if shell.get("fate") != "retire":
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'garden_compact' WHERE ref_id = %s",
+                    (target,),
+                )
+        proposal = conn.execute(
+            "SELECT note FROM reviews WHERE review_id = %s", (rec["proposal"],)
+        ).fetchone()
+        if proposal is not None:
+            garden = (json.loads(proposal[0] or "{}") or {}).get("garden") or {}
+            if garden.get("key"):
+                store.record_target_review(
+                    "ref",
+                    target,
+                    actor=actor,
+                    verdict="rejected",
+                    version=GARDEN_VERSION,
+                    note=json.dumps(
+                        {
+                            "garden": {
+                                "v": 1,
+                                "key": garden["key"],
+                                "resolves": rec["proposal"],
+                                "undone": compact_id,
+                                "reason": "undone",
+                            }
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    conn=conn,
+                )
+    return counts
 
 
 # ── reviewed memory split (gr561019) ─────────────────────────────────────
@@ -2840,6 +3669,7 @@ __all__ = [
     "RelinkRecord",
     "RewriteRecord",
     "SplitRecord",
+    "apply_compact",
     "apply_merge",
     "apply_relink",
     "apply_retire",
@@ -2847,6 +3677,8 @@ __all__ = [
     "apply_split",
     "apply_structural",
     "apply_supersede",
+    "compact_plan_shape",
+    "undo_compact",
     "undo_merge",
     "undo_relink",
     "undo_retirement",

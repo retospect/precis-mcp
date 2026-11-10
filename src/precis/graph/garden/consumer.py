@@ -50,8 +50,8 @@ both run by the ``graph_garden`` job right after its tick
    applied by the same door after the review pass, bounded by
    ``review_limit`` per tick.
 4. **Memory apply** (gr560760). ``PRECIS_GARDEN_MEMORY_APPLY`` defaults
-   off: rewrite/supersede/retire proposals stay pending without a review
-   call or ledger write. When enabled, only detectors with apply-time
+   off: rewrite/supersede/retire/compact proposals stay pending without
+   a review call or ledger write. When enabled, only detectors with apply-time
    re-checks share the review budget; other memory proposals stay pending.
    Admitted proposals apply through the memory doors, which re-check SHA pins,
    the detector predicate and human protection inside the transaction. Human-origin
@@ -471,6 +471,13 @@ before deleting the old node, since changed link ends can make undo unsafe.
 Judge each rewrite against the current truth and its evidence, not brevity.
 An unresolved replacement (text=null) cannot be approved. Every memory
 action requires review; a successor alone does not prove a rewrite correct.
+A compact plan retires or shortens the shell only after every sentence is
+accounted for: kept with the shell, moved into a named related node by an
+anchored edit, minted as an atomic child, or dropped — and a drop is
+history or restatement, never a still-true claim living nowhere else.
+Per dropped sentence ask: is it history, a restatement, or did it move?
+Reject a plan with any fourth answer, a move into an unrelated node, a
+shell retired without successor, or a keep-summary over three lines.
 An approved split mints the payload's atomic children under the hub and
 retires or shrinks the parent; verify each child title states one claim and
 every span belongs to the detector's evidence. A rejected proposal is closed.
@@ -749,6 +756,7 @@ def _apply_memory(
     """Apply a reviewed memory proposal, holding protected nodes on drift."""
     from precis.graph.garden.apply import (
         MergeRefused,
+        apply_compact,
         apply_retire,
         apply_rewrite,
         apply_split,
@@ -790,6 +798,15 @@ def _apply_memory(
                 verdict_extra=extra,
             )
             report.rewrites.append(record.rewrite_id)
+        elif prop.action == "compact":
+            crec = apply_compact(
+                store,
+                prop.review_id,
+                actor=CONSUMER_ACTOR,
+                model=verdict.model,
+                verdict_extra=extra,
+            )
+            report.rewrites.append(crec["compact_id"])
         elif prop.action == "split":
             split = apply_split(
                 store,
@@ -1272,6 +1289,10 @@ def _reviewable(prop: GardenProposal) -> bool:
                     for op in ops
                 )
             )
+        if prop.action == "compact":
+            from precis.graph.garden.apply import compact_plan_shape
+
+            return compact_plan_shape(prop.payload.get("plan"))
         if prop.action == "supersede":
             successor = prop.payload.get("successor")
             if isinstance(successor, int):
@@ -1338,23 +1359,41 @@ def _memory_action_mismatch(store: Store, prop: GardenProposal) -> str | None:
 
 
 def _unresolved_memory(prop: GardenProposal) -> bool:
-    """Whether a pinned rewrite contains an op the evaluator cannot approve."""
-    ops = prop.payload.get("ops")
-    return (
-        prop.action == "rewrite"
-        and isinstance(ops, list)
-        and bool(ops)
-        and any(
-            not isinstance(op, dict) or not isinstance(op.get("text"), str)
-            for op in ops
+    """Whether a pinned rewrite or compact plan awaits text the reviewer needs."""
+    if prop.action == "rewrite":
+        ops = prop.payload.get("ops")
+        return (
+            isinstance(ops, list)
+            and bool(ops)
+            and any(
+                not isinstance(op, dict) or not isinstance(op.get("text"), str)
+                for op in ops
+            )
         )
-    )
+    if prop.action == "compact":
+        from precis.graph.garden.apply import compact_plan_shape
+
+        return not compact_plan_shape(prop.payload.get("plan"))
+    return False
 
 
 def _age_unresolved_memory(
     store: Store, prop: GardenProposal, report: ConsumeReport
 ) -> None:
     """Release resolved ops for review without applying any unreviewed subset."""
+    if prop.action != "rewrite":
+        # A compact plan has no resolvable subset: it stands or falls whole.
+        _hold_memory(
+            store,
+            prop,
+            report,
+            reason="unresolved",
+            why=f"the compaction plan is missing or malformed after "
+            f"{MAX_UNRESOLVED_AGE.total_seconds() / 3600:g} hours; "
+            "repair the evidence and reject "
+            "this proposal to request a fresh one",
+        )
+        return
     resolved = [
         op
         for op in prop.payload["ops"]

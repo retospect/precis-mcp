@@ -259,6 +259,7 @@ def _reject(args: argparse.Namespace, store: Store) -> None:
 
 def _undo(args: argparse.Namespace, store: Store) -> None:
     from precis.graph.garden.apply import (
+        undo_compact,
         undo_merge,
         undo_relink,
         undo_retirement,
@@ -267,6 +268,14 @@ def _undo(args: argparse.Namespace, store: Store) -> None:
     )
 
     apply_id = args.apply_id
+    if apply_id.startswith("garden-compact:"):
+        counts = undo_compact(store, apply_id, actor=_actor(args))
+        print(
+            f"undid {apply_id}: {counts['edits_restored']} body edit(s) restored, "
+            f"{counts['puts_retired']} minted node(s) retired, "
+            f"{counts['links_restamped']} link(s) restamped"
+        )
+        return
     if apply_id.startswith("garden-split:"):
         counts = undo_split(store, apply_id, actor=_actor(args))
         print(

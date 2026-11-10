@@ -64,13 +64,14 @@ GARDEN_ACTOR = "graph-garden"
 GARDEN_VERSION = "garden.v1"
 
 #: Shared with the consumer so reviewer evidence needs no consumer import.
-MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire", "split"})
+MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire", "compact", "split"})
 
 #: Candidate re-checks shared by consumer eligibility and the memory apply door.
 MEMORY_APPLY_DETECTORS = {
     "dangling_mention": "dangling_mention_candidates",
     "anchor_rot": "anchor_rot_candidates",
     "thread_shape": "thread_shape_candidates",
+    "compact": "compact_candidates",
     "grab_bag": "grab_bag_candidates",
     "griped": "griped_candidates",
 }
@@ -128,6 +129,10 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
             for mention in proposal.evidence.get("mentions", [])
             if isinstance(mention, dict)
         )
+        if proposal.action == "compact":
+            successors.extend(_compact_plan_ref_values(proposal))
+            for values in (proposal.evidence.get("related") or {}).values():
+                ids.extend(v for v in values if isinstance(v, int))
         for successor in successors:
             if isinstance(successor, int):
                 ids.append(successor)
@@ -147,6 +152,31 @@ def proposal_ref_ids(proposal: GardenProposal) -> list[int]:
             if successor is not None and not successor[1]:
                 ids.append(successor[2])
     return list(dict.fromkeys(ids))
+
+
+def _compact_plan_ref_values(proposal: GardenProposal) -> list[Any]:
+    """Refs a compaction plan names — excerpts the reviewer needs.
+
+    ``{"put": i}`` placeholders index the plan's own puts; they mint no
+    ref and are skipped here."""
+    plan = proposal.payload.get("plan")
+    if not isinstance(plan, dict):
+        return []
+    values: list[Any] = []
+    for edit in plan.get("edits") or []:
+        if isinstance(edit, dict):
+            values.append(edit.get("ref"))
+    shell = plan.get("shell") or {}
+    if isinstance(shell, dict):
+        values.append(shell.get("successor"))
+    for put in plan.get("puts") or []:
+        if not isinstance(put, dict):
+            continue
+        values.extend(put.get("qualifies") or [])
+        for link in put.get("links") or []:
+            if isinstance(link, dict):
+                values.append(link.get("dst"))
+    return [v for v in values if isinstance(v, (int, str)) and not isinstance(v, dict)]
 
 
 def memory_successor_refusal(
