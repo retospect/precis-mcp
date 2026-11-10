@@ -318,12 +318,43 @@ class LlmHandler(NumericRefHandler):
                     kind=self.kind, key="model_id", value=s
                 )
                 if ref is None:
-                    raise NotFound(
-                        f"no llm card for model {s!r}",
-                        next=f"search(kind={self.kind!r}, q='...') to find models",
-                    )
+                    raise self._no_card(s)
                 return ref
         return self._resolve_live_ref(self._coerce_id(id))
+
+    def _no_card(self, slug: str) -> NotFound:
+        """The NotFound for an unresolvable model slug (gr581238).
+
+        A bare provider name (``openrouter``, ``groq``) is not a model id —
+        when the slug names an ``llm_account`` vendor or account the refusal
+        says so and points at the provider read. Either way the ``next=`` is
+        a copy-pasteable call carrying the asked-for slug: a literal
+        ``q='...'`` placeholder is prose, not a call that works.
+        """
+        core = slug[len("llm:") :] if slug.startswith("llm:") else slug
+        if self._names_account(core):
+            return NotFound(
+                f"no llm card for model {slug!r} — {core!r} is a "
+                "provider/account, not a model id",
+                next=[
+                    "get(kind='llm', id='/accounts') for that provider's account",
+                    f"search(kind='llm', q={slug!r}) to find models mentioning it",
+                ],
+            )
+        return NotFound(
+            f"no llm card for model {slug!r}",
+            next=f"search(kind='llm', q={slug!r}) to find models",
+        )
+
+    def _names_account(self, name: str) -> bool:
+        """``name`` is an ``llm_account`` name or vendor (case-folded)."""
+        lowered = name.lower()
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM llm_account WHERE name = %s OR vendor = %s LIMIT 1",
+                (lowered, lowered),
+            ).fetchone()
+        return row is not None
 
     # ── get: slug resolution + the tote / reviews views ─────────────
 

@@ -389,6 +389,39 @@ class TestHandler:
         with pytest.raises(NotFound):
             h.get(id="no-such-model-xyz")
 
+    def test_get_unknown_slug_next_is_a_runnable_search(self, store: Any) -> None:
+        """gr581238 — the search hint carries the asked-for slug; a literal
+        ``q='...'`` placeholder is prose, not a copy-pasteable call."""
+        from precis.errors import NotFound
+
+        h = _handler(store)
+        with pytest.raises(NotFound) as excinfo:
+            h.get(id="no-such-model-xyz")
+        assert "search(kind='llm', q='no-such-model-xyz')" in str(excinfo.value)
+
+    def test_get_provider_slug_points_at_accounts(self, store: Any) -> None:
+        """gr581238 — ``id='openrouter'``/``'groq'`` are provider names, not
+        model ids: the refusal says so and names the account read."""
+        from precis.errors import NotFound
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO llm_account (name, vendor, plan, adapter) "
+                "VALUES ('acct-prov-test', 'vendorx-test', 'metered', 'api') "
+                "ON CONFLICT (name) DO NOTHING"
+            )
+        try:
+            h = _handler(store)
+            with pytest.raises(NotFound, match="provider") as by_vendor:
+                h.get(id="vendorx-test")
+            assert "id='/accounts'" in str(by_vendor.value)
+            with pytest.raises(NotFound, match="provider") as by_name:
+                h.get(id="acct-prov-test")
+            assert "id='/accounts'" in str(by_name.value)
+        finally:
+            with store.pool.connection() as conn:
+                conn.execute("DELETE FROM llm_account WHERE name = 'acct-prov-test'")
+
     def test_put_requires_model_id(self, store: Any) -> None:
         from precis.errors import BadInput
 
