@@ -3,9 +3,12 @@
 The always-run half: a synthetic CPU fixture bundle in tmp_path exercises
 integrity, staging (weights and lock pins), the network guard, coverage and
 the machine-readable report without the engine — the packaging check the
-acceptance contract asks for on every run. The engine half (below, skipped
-without the ``catalyst`` extra) replays the trimmed pw455722 case and pins
-the D10 tolerance judgments; it never rejudges tolerances itself, mirroring
+acceptance contract asks for on every run. Several tests run the fixture's
+real ``reproduce.sh`` as an isolated subprocess (the default runner), so
+the entrypoint path is covered end to end, not only through injected
+callbacks. The engine half (below, skipped without the ``catalyst``
+extra) replays the trimmed pw455722 case and pins the D10 tolerance
+judgments; it never rejudges tolerances itself, mirroring
 test_pathway_revalidate.py.
 """
 
@@ -14,6 +17,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 import socket
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -38,7 +42,31 @@ RECORD: dict[str, Any] = {
 }
 
 SHIPPED_RESULTS: dict[str, Any] = {"nodes": {"*": {"energy": 0.0}}, "edges": []}
-FRESH_RESULTS: dict[str, Any] = copy.deepcopy(SHIPPED_RESULTS)
+#: Fresh results carry every leg's outputs; the entrypoint declares the
+#: legs it ran in ``out/legs.json`` — ``nodes`` alone would be copied-
+#: through data, not proof the energies leg executed.
+FRESH_RESULTS: dict[str, Any] = {
+    **copy.deepcopy(SHIPPED_RESULTS),
+    "kinetics_tpd": {"tpd": {"peaks": 1}},
+    "kinetics_v2": {"tof_chain": 1.0},
+    "kinetics_sweep": {"points": 2},
+}
+FRESH_LEGS: tuple[str, ...] = ("energies", "tpd", "kinetics", "sweep")
+
+#: The fixture entrypoint: a real sh script that folds the staged inputs
+#: into fresh observables, declares its executed legs, echoes a log marker
+#: and reports whether a canary host variable leaked into its environment.
+REPRODUCE_SH = b"""#!/bin/sh
+set -eu
+out="${REPLAY_OUT:?}"
+inputs="${REPLAY_INPUTS:?}"
+bytes=$(wc -c < "$inputs/slab.extxyz" | tr -d ' ')
+cat > "$out/results.json" <<JSON
+{"nodes": {"*": {"energy": 0.0}}, "edges": [], "kinetics_v2": {"tof_chain": 1.0}, "kinetics_tpd": {"tpd": {"peaks": 1}}, "kinetics_sweep": {"points": 2}, "slab_bytes": $bytes, "canary": "${PRECIS_REPLAY_CANARY:-scrubbed}"}
+JSON
+printf '%s\\n' '["energies", "tpd", "kinetics", "sweep"]' > "$out/legs.json"
+echo "fixture-ran slab_bytes=$bytes"
+"""
 
 
 def _write_manifest(bundle: Path, files: dict[str, bytes]) -> None:
@@ -72,7 +100,7 @@ def bundle(tmp_path: Path) -> Path:
     root.mkdir()
     files: dict[str, bytes] = {
         "README.md": b"# fixture bundle\n",
-        "reproduce.sh": b"#!/bin/sh\nexit 0\n",
+        "reproduce.sh": REPRODUCE_SH,
         "seeds.json": json.dumps({"search_seeds": [0]}).encode("utf-8"),
         "coverage.json": json.dumps(
             {
@@ -116,13 +144,17 @@ def bundle(tmp_path: Path) -> Path:
     return root
 
 
-def _fake_runner(fresh: dict[str, Any] | None = None):
+def _fake_runner(
+    fresh: dict[str, Any] | None = None,
+    legs: tuple[str, ...] = FRESH_LEGS,
+):
     def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
         assert inputs_dir.is_dir()
         assert out_dir.is_dir()
         assert env["UV_OFFLINE"] == "1"
         results = FRESH_RESULTS if fresh is None else fresh
         (out_dir / "results.json").write_text(json.dumps(results), encoding="utf-8")
+        (out_dir / "legs.json").write_text(json.dumps(list(legs)), encoding="utf-8")
 
     return run
 
@@ -172,6 +204,7 @@ def test_a_clean_bundle_replays_and_reports_every_contract_field(
     assert report["image_digest"] == "sha256:" + "f" * 64
     assert report["commands"][0]["argv"] == ["sh", "reproduce.sh"]
     assert report["commands"][0]["exit_code"] == 0
+    assert report["commands"][0]["network_guard"] == "in-process socket guard"
     scopes = {row["scope"] for row in report["checks"]}
     assert {
         "integrity",
@@ -211,7 +244,9 @@ def test_staged_inputs_are_read_only_and_shipped_outputs_never_reused(
     slab = seen["inputs"] / "slab.extxyz"
     assert slab.exists() and not slab.stat().st_mode & 0o222
     assert seen["out"].name == "out"
-    # the shipped reference is untouched by the replay
+    # shipped references never reach the entrypoint's working directory
+    assert not (seen["out"].parent / "outputs").exists()
+    # and the bundle's copy is untouched by the replay
     assert json.loads((bundle / "outputs" / "results.json").read_text("utf-8")) == (
         SHIPPED_RESULTS
     )
@@ -245,6 +280,51 @@ def test_an_undeclared_extra_file_fails_the_manifest(
     assert report["verdict"].startswith("refused(integrity)")
     row = next(r for r in report["checks"] if r["check"] == "stray.py")
     assert row["observed"] == "file has no checksum"
+
+
+def test_a_nested_undeclared_file_fails_the_manifest(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """Integrity recurses: an extra file deep in the tree is caught."""
+    (bundle / "inputs" / "stray.py").write_text("print('hi')\n", encoding="utf-8")
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(integrity)")
+    row = next(r for r in report["checks"] if r["check"] == "inputs/stray.py")
+    assert row["observed"] == "file has no checksum"
+
+
+def test_a_symlinked_member_fails_as_unsafe(bundle: Path, tmp_path: Path) -> None:
+    """A symlink member is unsafe even undeclared: it is never followed or
+    hashed, so nothing outside the bundle can stand in for a declared file."""
+    outside = tmp_path / "outside.extxyz"
+    outside.write_bytes(b"1\nfixture slab\n")
+    (bundle / "inputs" / "linked.extxyz").symlink_to(outside)
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(integrity)")
+    row = next(r for r in report["checks"] if r["check"] == "inputs/linked.extxyz")
+    assert "symlink" in str(row["observed"])
+
+
+def test_a_declared_member_replaced_by_a_symlink_fails(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """Even a declared path whose content would hash correctly fails when it
+    is a symlink: the member itself is unsafe, whatever its target holds."""
+    outside = tmp_path / "outside.extxyz"
+    outside.write_bytes((bundle / "inputs" / "slab.extxyz").read_bytes())
+    (bundle / "inputs" / "slab.extxyz").unlink()
+    (bundle / "inputs" / "slab.extxyz").symlink_to(outside)
+    _rehash(bundle, "inputs/slab.extxyz")  # same bytes — the hash would pass
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"].startswith("refused(integrity)")
+    row = next(r for r in report["checks"] if r["check"] == "inputs/slab.extxyz")
+    assert "symlink" in str(row["observed"])
 
 
 def test_a_tampered_weight_refuses_naming_both_digests(
@@ -286,6 +366,8 @@ def test_hash_only_weights_stay_unavailable_and_never_fetched(
         bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
     )
     assert report["verdict"] == "reproduced"
+    # an unattestable weight still withholds completeness — never a pass
+    assert report["complete"] is False
     row = next(r for r in report["checks"] if r["check"] == "weights:mace:medium")
     assert row["status"] == "unavailable"
 
@@ -393,25 +475,19 @@ def test_legs_the_replay_did_not_run_stay_named_and_block_coverage(
         }
     )
     (bundle / "coverage.json").write_text(json.dumps(cov), encoding="utf-8")
-    body = (bundle / "coverage.json").read_bytes()
-    lines = [
-        ln
-        for ln in (bundle / "MANIFEST.sha256").read_text("utf-8").splitlines()
-        if not ln.endswith("coverage.json")
-    ]
-    lines.append(f"{hashlib.sha256(body).hexdigest()}  coverage.json")
-    (bundle / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _rehash(bundle, "coverage.json")
 
-    not_run = ("tpd", "sweep")
+    # the entrypoint declares only the legs it ran; their outputs exist
+    fresh = {k: FRESH_RESULTS[k] for k in ("nodes", "edges", "kinetics_v2")}
     report = run_replay(
         bundle,
         work_dir=tmp_path / "work",
-        run=_fake_runner(),
-        judge=_fake_judge("reproduced_partial(tpd,sweep)", not_run),
+        run=_fake_runner(fresh, legs=("energies", "kinetics")),
+        judge=_fake_judge("reproduced_partial(tpd,sweep)"),
     )
     assert report["verdict"] == "reproduced_partial(tpd,sweep)"
     assert report["complete"] is False
-    for leg in not_run:
+    for leg in ("tpd", "sweep"):
         assert report["legs"][leg]["status"] == "not-run"
         assert report["legs"][leg]["why"]
     row = next(
@@ -429,6 +505,105 @@ def test_legs_the_replay_did_not_run_stay_named_and_block_coverage(
     assert fixture["status"] == "passed"
 
 
+def test_results_without_a_legs_declaration_count_nothing_as_run(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """Outputs alone are never execution proof — copied-through energy
+    nodes appear in any carried-forward results.json. Without the
+    entrypoint's ``out/legs.json`` every leg stays ``not-run``."""
+
+    def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
+        (out_dir / "results.json").write_text(
+            json.dumps(FRESH_RESULTS), encoding="utf-8"
+        )
+
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=run, judge=_fake_judge()
+    )
+    assert all(v["status"] == "not-run" for v in report["legs"].values())
+    assert report["complete"] is False
+    row = next(r for r in report["checks"] if r["check"] == "legs.json")
+    assert row["status"] == "unavailable"
+
+
+def test_copied_energy_nodes_do_not_register_an_energies_leg(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """A kinetics-only re-run carries ``nodes`` forward; declaring only the
+    legs executed keeps ``energies`` ``not-run`` despite their presence."""
+
+    def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
+        fresh = {k: FRESH_RESULTS[k] for k in ("nodes", "edges", "kinetics_v2")}
+        (out_dir / "results.json").write_text(json.dumps(fresh), encoding="utf-8")
+        (out_dir / "legs.json").write_text('["kinetics"]', encoding="utf-8")
+
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=run, judge=_fake_judge()
+    )
+    assert report["legs"]["kinetics"]["status"] == "passed"
+    assert report["legs"]["energies"]["status"] == "not-run"
+    assert report["complete"] is False
+
+
+def test_a_declared_leg_without_fresh_outputs_is_not_run(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """Declaration is necessary, not sufficient: a leg the entrypoint
+    claims but produced no outputs for stays ``not-run``, named why."""
+
+    def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
+        (out_dir / "results.json").write_text(
+            json.dumps({"kinetics_v2": {"tof_chain": 1.0}}), encoding="utf-8"
+        )
+        (out_dir / "legs.json").write_text('["energies", "kinetics"]', encoding="utf-8")
+
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=run, judge=_fake_judge()
+    )
+    assert report["legs"]["energies"]["status"] == "not-run"
+    assert "declared" in report["legs"]["energies"]["why"]
+    assert report["legs"]["kinetics"]["status"] == "passed"
+
+
+def test_a_malformed_legs_declaration_fails_the_run(
+    bundle: Path, tmp_path: Path
+) -> None:
+    def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
+        (out_dir / "results.json").write_text(
+            json.dumps(FRESH_RESULTS), encoding="utf-8"
+        )
+        (out_dir / "legs.json").write_text('["bogus-leg"]', encoding="utf-8")
+
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=run, judge=_fake_judge()
+    )
+    assert report["verdict"] == "failed(entrypoint)"
+    assert "bogus-leg" in str(
+        next(r for r in report["checks"] if r["method"] == "legs-declaration")[
+            "observed"
+        ]
+    )
+
+
+def test_a_bundle_without_a_coverage_table_is_not_complete(
+    bundle: Path, tmp_path: Path
+) -> None:
+    (bundle / "coverage.json").unlink()
+    lines = [
+        ln
+        for ln in (bundle / "MANIFEST.sha256").read_text("utf-8").splitlines()
+        if not ln.endswith("coverage.json")
+    ]
+    (bundle / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report = run_replay(
+        bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
+    )
+    assert report["verdict"] == "reproduced"
+    assert report["complete"] is False
+    row = next(r for r in report["checks"] if r["scope"] == "coverage")
+    assert row["status"] == "unavailable"
+
+
 def test_a_claim_without_an_acceptance_test_is_unavailable(
     bundle: Path, tmp_path: Path
 ) -> None:
@@ -437,15 +612,96 @@ def test_a_claim_without_an_acceptance_test_is_unavailable(
         {"claim": "paper-energy", "runs": ["run-1"], "required_legs": ["energies"]}
     )
     (bundle / "coverage.json").write_text(json.dumps(cov), encoding="utf-8")
+    _rehash(bundle, "coverage.json")  # keep the manifest honest
     report = run_replay(
         bundle, work_dir=tmp_path / "work", run=_fake_runner(), judge=_fake_judge()
     )
+    assert report["verdict"] == "reproduced"
     row = next(
         r
         for r in report["checks"]
         if r["scope"] == "coverage" and r["check"] == "paper-energy"
     )
     assert row["status"] == "unavailable"
+    # an unattestable claim withholds completeness — never a pass
+    assert report["complete"] is False
+
+
+# --- real entrypoint: the default runner shells `sh reproduce.sh` ---------
+
+
+def test_the_real_entrypoint_runs_isolated_and_reports_its_log(
+    bundle: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No injected runner: the fixture's ``reproduce.sh`` actually executes
+    in a subprocess with the scrubbed environment. The log and exit code
+    are kept on success, no host variable leaks in, the shipped references
+    are never staged, and the guard's real reach is reported — never
+    silently passed."""
+    monkeypatch.setenv("PRECIS_REPLAY_CANARY", "host-secret")
+    report = run_replay(bundle, work_dir=tmp_path / "work", judge=_fake_judge())
+    command = report["commands"][0]
+    assert command["argv"][-2:] == ["sh", "reproduce.sh"]
+    assert command["exit_code"] == 0
+    assert "fixture-ran" in command["log"]
+    guard = command["network_guard"]
+    guard_row = next(r for r in report["checks"] if r["check"] == "network-guard")
+    if guard.startswith("unavailable"):
+        assert guard_row["status"] == "unavailable"
+        # an uncertified guard withholds completeness — never a pass
+        assert report["complete"] is False
+    else:
+        assert guard == "netns(unshare -rn)"
+        assert guard_row["status"] == "passed"
+        assert report["complete"] is True
+    assert "PRECIS_REPLAY_CANARY" not in command["isolation"]
+    work = tmp_path / "work"
+    fresh = json.loads((work / "out" / "results.json").read_text("utf-8"))
+    assert fresh["canary"] == "scrubbed"  # the host env did not leak in
+    assert fresh["slab_bytes"] == len(b"1\nfixture slab\n")
+    assert not (work / "outputs").exists()  # references never staged
+    assert report["verdict"] == "reproduced"
+
+
+def test_the_real_entrypoint_reports_its_exit_code_and_log_on_failure(
+    bundle: Path, tmp_path: Path
+) -> None:
+    (bundle / "reproduce.sh").write_text(
+        "#!/bin/sh\necho fixture-failed >&2\nexit 7\n", encoding="utf-8"
+    )
+    _rehash(bundle, "reproduce.sh")
+    report = run_replay(bundle, work_dir=tmp_path / "work", judge=_fake_judge())
+    command = report["commands"][0]
+    assert command["exit_code"] == 7
+    assert "fixture-failed" in command["log"]
+    assert report["verdict"] == "failed(entrypoint)"
+    assert report["complete"] is False
+
+
+@pytest.mark.skipif(
+    replay._netns_prefix() is None or shutil.which("python3") is None,
+    reason="needs an unprivileged network namespace and python3 on PATH",
+)
+def test_a_real_entrypoint_network_attempt_fails_in_its_namespace(
+    bundle: Path, tmp_path: Path
+) -> None:
+    """On a host with ``unshare -rn`` the subprocess genuinely has no
+    network: a socket attempt fails inside the detached namespace and the
+    report says the guard was real."""
+    (bundle / "reproduce.sh").write_text(
+        "#!/bin/sh\npython3 -c "
+        "'import socket; socket.create_connection((\"203.0.113.1\", 9), timeout=2)'\n",
+        encoding="utf-8",
+    )
+    _rehash(bundle, "reproduce.sh")
+    report = run_replay(bundle, work_dir=tmp_path / "work", judge=_fake_judge())
+    command = report["commands"][0]
+    assert command["network_guard"] == "netns(unshare -rn)"
+    assert command["argv"][0].endswith("unshare")
+    assert command["exit_code"] != 0
+    assert report["verdict"] == "failed(entrypoint)"
+    row = next(r for r in report["checks"] if r["check"] == "network-guard")
+    assert row["status"] == "passed"
 
 
 def test_append_report_never_replaces_a_prior_report(
@@ -576,9 +832,10 @@ def _paper_bundle(tmp_path: Path, fx: dict[str, Any], shipped: dict[str, Any]) -
     return root
 
 
-def _out_runner(fresh: dict[str, Any]):
+def _out_runner(fresh: dict[str, Any], legs: tuple[str, ...] = ("kinetics",)):
     def run(inputs_dir: Path, out_dir: Path, env: Any) -> None:
         (out_dir / "results.json").write_text(json.dumps(fresh), encoding="utf-8")
+        (out_dir / "legs.json").write_text(json.dumps(list(legs)), encoding="utf-8")
 
     return run
 
@@ -604,8 +861,10 @@ def test_fixture_case_reproduces_under_the_real_d10_judge(
         run=_out_runner(solve(config)),
     )
     assert report["verdict"].startswith("reproduced")
-    assert report["complete"] is False  # tpd/sweep legs have no fresh outputs
-    for leg in ("tpd", "sweep"):
+    assert report["complete"] is False  # only the kinetics leg re-ran
+    # nodes are carried forward as inputs — declaring the legs actually
+    # executed keeps energies not-run, exactly as in the CPU revalidation
+    for leg in ("energies", "tpd", "sweep"):
         assert report["legs"][leg]["status"] == "not-run"
     compared = {
         row["check"]

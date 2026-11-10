@@ -379,16 +379,27 @@ judgment, negative tests, coverage table) is implemented reader-side as
 exported bundle directory with no precis checkout, store, MCP or credentials:
 
 - integrity: `sha256sum -c` semantics over `MANIFEST.sha256` before any
-  compute; undeclared files and mismatches refuse naming the path.
-- staging: declared files copy into a fresh read-only-inputs work dir;
-  `env/weights.json` files hash-verify (a mismatch refuses naming both
-  digests, never substitutes; hash-only private-engine records stay
-  `unavailable`, never silently fetched) and the staged `env/uv.lock` must
-  hash-match the D10 record's pin.
-- execution: the declared entrypoint runs under a socket guard (an
-  undeclared access fails naming the address), index/cache-isolation env,
-  immutable inputs and a new `out/`; shipped `outputs/` are never handed to
-  the entrypoint, so they cannot be reused as fresh results.
+  compute, recursing the whole tree; undeclared files at any depth and
+  mismatches refuse naming the path, and a symlink or non-regular member
+  fails as unsafe (nothing outside the bundle is followed, hashed or
+  staged).
+- staging: declared files copy into a fresh read-only-inputs work dir —
+  except `outputs/`, so the shipped references can never be reused as
+  fresh results; `env/weights.json` files hash-verify (a mismatch refuses
+  naming both digests, never substitutes; hash-only private-engine records
+  stay `unavailable`, never silently fetched) and the staged `env/uv.lock`
+  must hash-match the D10 record's pin.
+- execution: the declared entrypoint runs as a subprocess with a scrubbed
+  allowlist environment (host credentials, dependency and cache variables
+  are not inherited; `HOME` points inside the work dir). Where the host
+  offers `unshare -rn` the subprocess runs in a detached network
+  namespace; where it does not, the network-guard leg is `unavailable` —
+  never silently passed — and the report cannot be `complete` (run under
+  `--network none` for the full contract). The command's real argv, exit
+  code and captured log are recorded on success and failure alike.
+  Executed legs are the ones the entrypoint declares in `out/legs.json`
+  plus matching fresh outputs — copied-through energy nodes cannot
+  register an `energies` leg.
 - numerical agreement: fresh observables judged by the engine's D10
   `autocatpath.manifest.compare` against `manifest/validation_manifest.json`
   tolerances (same/cross-platform column by platform) — no second tolerance
@@ -397,22 +408,31 @@ exported bundle directory with no precis checkout, store, MCP or credentials:
   digest (`provenance/build.json`), code/lock/weight ids, commands, exit
   codes, logs, per-leg status, tolerances; integrity, execution, numerical
   agreement and scientific support stay distinct scopes, claim support
-  always `unavailable`.
+  always `unavailable`. `complete` holds only when the judge's verdict is
+  complete *and* every non-claim-support check passed — hash-only weights,
+  missing image provenance, an absent/blocked coverage row and an
+  unavailable network guard all withhold it.
 - coverage: `coverage.json` carries claim/run/required-leg/acceptance-test
   rows; legs the replay did not run stay `not-run` (named, with why) and
   block their claims — one fixture cannot read as paper-wide coverage.
 
 `tests/test_pathway_replay.py` covers all of it engine-free on a synthetic
-CPU fixture (the always-run packaging check) and replays the pw455722 case
-under the real D10 judge where the `catalyst` extra is installed. Legs the
-replay did not produce (GPU/HPC energies, sweep, TPD) stay `not-run`.
+CPU fixture — including real `sh reproduce.sh` subprocess runs with the
+scrubbed environment, exit-code/log reporting, and a genuine network
+attempt inside the detached namespace where the host offers one — and
+replays the pw455722 case under the real D10 judge where the `catalyst`
+extra is installed. Legs the replay did not declare (GPU/HPC energies,
+sweep, TPD) stay `not-run`.
 
 Recorded blockers, not weakened: the catpath repo is private, so a
 hash-only engine/weights record fails the full external-reproduction
 acceptance (inspection yes, independent replay no) until an
-outsider-accessible engine/weights distribution exists; and the container
-build leg of contract point 1 (pinned base-image build from the archive
-alone, empty caches, `--network none`) still needs the archive writer
-(slice 1) to produce a real bundle — this harness consumes it and is tested
-against synthetic fixtures until then. This item does not authorize
-publishing private code or weights.
+outsider-accessible engine/weights distribution exists; a host without
+unprivileged network namespaces cannot certify the undeclared-service-
+access leg — the guard row stays `unavailable` and completeness is
+withheld (the container's `--network none` remains the full-deployment
+route); and the container build leg of contract point 1 (pinned base-image
+build from the archive alone, empty caches, `--network none`) still needs
+the archive writer (slice 1) to produce a real bundle — this harness
+consumes it and is tested against synthetic fixtures until then. This item
+does not authorize publishing private code or weights.

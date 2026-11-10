@@ -6,21 +6,34 @@ exported bundle directory — no precis checkout, store, MCP, credentials or
 cached dependencies — and must still be able to re-run the computation and
 judge it. This module is that runner's engine:
 
-1. Integrity: every file is checked against ``MANIFEST.sha256``
-   (``sha256sum -c`` semantics) before any compute; a modified bundle refuses
-   naming the path, so a tampered input or weight never reaches the run.
-2. Staging: declared files are copied into a fresh work directory, inputs are
-   made read-only, shipped weights named in ``env/weights.json`` are
-   hash-verified, and the staged ``env/uv.lock`` must hash-match the D10
-   record's pinned lock. A mismatch refuses naming both digests — it never
-   substitutes, fetches an unpinned replacement or consults a local cache.
-   Weights recorded hash-only (no bundled file) stay unverified and are said
-   so; that is the documented honest gap for a private engine, not a pass.
-3. Execution: the declared entrypoint (``reproduce.sh``) runs with
-   networking disabled (a socket guard fails the run naming the attempted
-   address), index/cache isolation in the environment, immutable inputs and
-   a new ``out/`` directory. Shipped ``outputs/`` references are never given
-   to the entrypoint, so they cannot be reused as fresh results.
+1. Integrity: every file in the bundle tree is checked against
+   ``MANIFEST.sha256`` (``sha256sum -c`` semantics) before any compute; a
+   modified member or an undeclared file at any depth refuses naming the
+   path, and a symlink or non-regular member fails as unsafe — nothing
+   outside the bundle is ever followed, hashed or staged.
+2. Staging: declared files — *except* the shipped ``outputs/`` references —
+   are copied into a fresh work directory, inputs are made read-only,
+   shipped weights named in ``env/weights.json`` are hash-verified, and the
+   staged ``env/uv.lock`` must hash-match the D10 record's pinned lock. A
+   mismatch refuses naming both digests — it never substitutes, fetches an
+   unpinned replacement or consults a local cache. Weights recorded
+   hash-only (no bundled file) stay unverified and are said so; that is
+   the documented honest gap for a private engine, not a pass.
+3. Execution: the declared entrypoint (``reproduce.sh``) runs as a
+   subprocess with a scrubbed allowlist environment — host credentials,
+   dependency and cache variables are not inherited, and ``HOME`` points
+   inside the work directory. Where the host offers unprivileged network
+   namespaces (``unshare -rn``) the subprocess runs in a detached
+   namespace; where it does not, the network-guard leg is reported
+   ``unavailable`` — never silently passed — and the report cannot be
+   ``complete`` (run under ``--network none`` for the full contract). The
+   in-process socket guard still covers a caller that injects an
+   in-process runner. The command's real argv, exit code and captured log
+   are recorded on success and failure alike. Shipped ``outputs/`` never
+   reach the entrypoint's working directory, so they cannot be reused as
+   fresh results, and the legs a run counts are the ones the entrypoint
+   declares in ``out/legs.json`` — copied-through outputs (energy nodes
+   feeding the kinetics solve) cannot register as an executed leg.
 4. Numerical agreement: freshly computed observables are judged against the
    shipped references with the engine's D10 tolerance table
    (``autocatpath.manifest.compare``) — the same-platform or cross-platform
@@ -32,13 +45,17 @@ judge it. This module is that runner's engine:
    and a claim without a named test stays ``unavailable``, so one toy
    fixture cannot read as paper-wide coverage.
 
-Integrity, execution, numerical agreement and scientific support remain
-distinct scopes, as in ``verification.py``: the claim-support row is always
-``unavailable`` — hashes, execution and agreement do not establish
-scientific validity. The harness opens no store, needs no DB and mutates
-nothing outside its work directory; the engine is needed only for the
-judging step, so the integrity/staging/guard legs double as the always-run
-packaging check on hosts without the ``catalyst`` extra.
+``complete`` is true only when the judge's verdict is complete *and* every
+check outside ``claim_support`` passed: hash-only weights, missing image
+provenance, an unavailable or blocked coverage row and an unavailable
+network guard all withhold it. Integrity, execution, numerical agreement
+and scientific support remain distinct scopes, as in ``verification.py``:
+the claim-support row is always ``unavailable`` — hashes, execution and
+agreement do not establish scientific validity. The harness opens no store,
+needs no DB and mutates nothing outside its work directory; the engine is
+needed only for the judging step, so the integrity/staging/guard legs
+double as the always-run packaging check on hosts without the ``catalyst``
+extra.
 """
 
 from __future__ import annotations
@@ -90,12 +107,17 @@ REQUIRED_PATHS = (
 )
 
 #: Environment isolation handed to the entrypoint: no index, no cache
-#: fallback, fresh output location. Recorded in the report verbatim.
+#: fallback. Recorded in the report verbatim inside the full env.
 _ISOLATION_ENV = {
     "UV_OFFLINE": "1",
     "PIP_NO_INDEX": "1",
     "HF_HUB_OFFLINE": "1",
 }
+
+#: The only host variables the entrypoint's environment inherits — an
+#: allowlist, never ``os.environ``: host credentials, dependency and cache
+#: variables must not reach the subprocess.
+_ENV_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "TZ")
 
 _MANIFEST_LINE = re.compile(r"([0-9a-fA-F]{64}) [ *](.+)")
 
@@ -190,27 +212,72 @@ def parse_manifest(bundle: Path) -> dict[str, str]:
 
 
 def check_integrity(bundle: Path) -> list[dict[str, Any]]:
-    """``sha256sum -c`` over the bundle directory; one row per file.
+    """``sha256sum -c`` over the whole bundle tree; one row per member.
 
-    Undeclared files fail (a shipped archive must be exactly its manifest);
-    a missing or mismatched declared file fails naming the path. Rows, not
-    exceptions: the caller builds the report from every row.
+    Recurses into every directory: an undeclared file at any depth fails (a
+    shipped archive must be exactly its manifest), a missing or mismatched
+    declared file fails naming the path, and a symlink or non-regular
+    member fails as unsafe — nothing outside the bundle is ever followed
+    or hashed. Rows, not exceptions: the caller builds the report from
+    every row.
     """
     rows: list[dict[str, Any]] = []
     try:
         expected = parse_manifest(bundle)
     except ReplayRefused as exc:
         return [_row("integrity", "MANIFEST.sha256", "failed", "sha256", str(exc))]
-    for name in sorted(p for p in os.listdir(bundle) if p != "MANIFEST.sha256"):
-        if (bundle / name).is_file() and name not in expected:
-            rows.append(
-                _row("integrity", name, "failed", "sha256", "file has no checksum")
-            )
+    for dirpath, dirnames, filenames in os.walk(bundle):
+        dirnames.sort()
+        base = Path(dirpath)
+        for name in sorted(dirnames) + sorted(filenames):
+            path = base / name
+            rel = path.relative_to(bundle).as_posix()
+            if rel == "MANIFEST.sha256":
+                continue
+            if path.is_symlink():
+                rows.append(
+                    _row(
+                        "integrity",
+                        rel,
+                        "failed",
+                        "sha256",
+                        "unsafe bundle member (symlink)",
+                    )
+                )
+            elif path.is_file():
+                if rel not in expected:
+                    rows.append(
+                        _row(
+                            "integrity",
+                            rel,
+                            "failed",
+                            "sha256",
+                            "file has no checksum",
+                        )
+                    )
+            elif not path.is_dir():
+                rows.append(
+                    _row(
+                        "integrity",
+                        rel,
+                        "failed",
+                        "sha256",
+                        "unsafe bundle member (not a regular file)",
+                    )
+                )
     for name, want in sorted(expected.items()):
         path = bundle / name
+        if path.is_symlink():
+            continue  # already rowed unsafe above; a symlink is never hashed
         if not path.is_file():
             rows.append(
-                _row("integrity", name, "failed", "sha256", "manifest member missing")
+                _row(
+                    "integrity",
+                    name,
+                    "failed",
+                    "sha256",
+                    "manifest member missing or not a regular file",
+                )
             )
             continue
         got = _sha256_file(path)
@@ -296,12 +363,16 @@ def _check_lock_pin(bundle: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def stage_bundle(bundle: Path, work: Path) -> dict[str, Any]:
-    """Copy declared files into a fresh ``work`` dir and pin-check them.
+    """Copy declared files — except ``outputs/`` — into a fresh ``work`` dir.
 
-    Inputs land read-only; the returned mapping carries what the run step
-    needs. Refuses (naming the path or both digests) on a non-empty work
-    directory, a missing declared/structural file, a weights-hash mismatch
-    or a staged-lock pin mismatch — before any compute.
+    The shipped references stay out of the entrypoint's working directory,
+    so reference copying cannot pass as fresh computation; they are read
+    back from the bundle itself for the judging step. Inputs land
+    read-only; the returned mapping carries what the run step needs.
+    Refuses (naming the path or both digests) on a non-empty work
+    directory, a missing declared/structural file, a linked member, a
+    weights-hash mismatch or a staged-lock pin mismatch — before any
+    compute.
     """
     expected = parse_manifest(bundle)
     for rel in REQUIRED_PATHS:
@@ -313,9 +384,14 @@ def stage_bundle(bundle: Path, work: Path) -> dict[str, Any]:
         )
     work.mkdir(parents=True)
     for rel in sorted(expected):
+        if rel == "outputs" or rel.startswith("outputs/"):
+            continue  # shipped references are never staged
+        src = bundle / rel
+        if src.is_symlink() or not src.is_file():
+            raise ReplayRefused(f"unsafe bundle member: {rel}")
         dest = work / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(bundle / rel, dest)
+        shutil.copyfile(src, dest)
     shutil.copyfile(bundle / "MANIFEST.sha256", work / "MANIFEST.sha256")
     inputs = work / "inputs"
     if inputs.is_dir():
@@ -329,6 +405,8 @@ def stage_bundle(bundle: Path, work: Path) -> dict[str, Any]:
             "manifest/validation_manifest.json is not a manifest record"
         )
     lock_info = _check_lock_pin(bundle, record)
+    home = work / "home"
+    home.mkdir()
     out_dir = work / "out"
     out_dir.mkdir()
     return {
@@ -336,6 +414,7 @@ def stage_bundle(bundle: Path, work: Path) -> dict[str, Any]:
         "record": record,
         "inputs": inputs,
         "out_dir": out_dir,
+        "home": home,
         "weights_rows": weights_rows,
         "lock_info": lock_info,
         "bundle_id": _sha256_file(bundle / "MANIFEST.sha256"),
@@ -347,8 +426,10 @@ def network_disabled() -> Iterator[None]:
     """Fail any socket the entrypoint opens, naming the attempted address.
 
     In-process guard beneath the container's ``--network none``: it blocks
-    the undeclared-service-access leg of the acceptance contract even when
-    the harness runs outside a container.
+    the undeclared-service-access leg of the acceptance contract for a
+    runner that executes in this process. A monkeypatch cannot reach a
+    subprocess — the default runner puts the child in a detached network
+    namespace (:func:`_netns_prefix`) or reports the guard ``unavailable``.
     """
 
     real_socket = socket.socket
@@ -373,28 +454,109 @@ Runner = Callable[[Path, Path, Mapping[str, str]], Any]
 Judge = Callable[[dict[str, Any], dict[str, Any], dict[str, Any], Any], Any]
 
 
-def _subprocess_runner(
-    timeout_seconds: float,
-) -> Runner:
-    def run(inputs_dir: Path, out_dir: Path, env: Mapping[str, str]) -> None:
+def _entrypoint_env(inputs: Path, out_dir: Path, home: Path) -> dict[str, str]:
+    """The entrypoint's environment: an allowlist, never ``os.environ``.
+
+    ``PATH`` (plus locale/timezone hints) passes through so the declared
+    tools resolve; ``HOME`` points inside the work directory, so per-user
+    credentials, dependency installs and caches (``~/.cache/uv``,
+    ``~/.aws`` …) are invisible to the subprocess. Recorded verbatim in the
+    report.
+    """
+    env = {key: os.environ[key] for key in _ENV_PASSTHROUGH if os.environ.get(key)}
+    env["PATH"] = env.get("PATH") or "/usr/bin:/bin"
+    env["HOME"] = str(home)
+    env.update(_ISOLATION_ENV)
+    env["REPLAY_INPUTS"] = str(inputs)
+    env["REPLAY_OUT"] = str(out_dir)
+    return env
+
+
+def _netns_prefix() -> tuple[str, ...] | None:
+    """``unshare -rn`` argv prefix when this host offers it, else ``None``.
+
+    Probes ``unshare -rn true``: the flag set needs unprivileged user
+    namespaces, which a kernel can disable even where ``unshare`` exists.
+    """
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return None
+    try:
+        probe = subprocess.run(
+            [unshare, "-rn", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (unshare, "-rn") if probe.returncode == 0 else None
+
+
+def _subprocess_runner(timeout_seconds: float) -> Runner:
+    prefix = _netns_prefix()
+    argv = [*(prefix or ()), "sh", "reproduce.sh"]
+    guard = (
+        "netns(unshare -rn)"
+        if prefix
+        else "unavailable: no unprivileged network namespace on this host "
+        "(unshare -rn); the in-process socket guard cannot see a "
+        "subprocess — run the harness under --network none"
+    )
+
+    def run(inputs_dir: Path, out_dir: Path, env: Mapping[str, str]) -> dict[str, Any]:
         completed = subprocess.run(
-            ["sh", "reproduce.sh"],
+            argv,
             cwd=out_dir.parent,
             env=dict(env),
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
         )
-        log = (completed.stdout or "")[-65536:] + (completed.stderr or "")[-65536:]
-        if completed.returncode != 0:
-            raise ReplayRefused(
-                f"reproduce.sh exited {completed.returncode}: {log[-400:]}"
-            )
+        return {
+            "argv": list(argv),
+            "exit_code": completed.returncode,
+            "log": (completed.stdout or "")[-65536:]
+            + (completed.stderr or "")[-65536:],
+            "network_guard": guard,
+        }
 
     return run
 
 
+def _read_declared_legs(out_dir: Path) -> tuple[str, ...]:
+    """The legs the entrypoint says it ran, from ``out/legs.json``.
+
+    A JSON array of leg names (or ``{"legs": [...]}``) in the ``ALL_LEGS``
+    vocabulary. Absent means no leg counts as run: fresh outputs alone
+    cannot tell an executed leg from copied-through results. A malformed
+    file or an unknown name refuses.
+    """
+    path = out_dir / "legs.json"
+    if not path.is_file():
+        return ()
+    try:
+        data = _read_json(path)
+    except (OSError, ValueError) as exc:
+        raise ReplayRefused(f"out/legs.json is not valid JSON: {exc}") from exc
+    if isinstance(data, dict):
+        data = data.get("legs")
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        raise ReplayRefused("out/legs.json is not a list of executed legs")
+    unknown = sorted(set(data) - set(ALL_LEGS))
+    if unknown:
+        raise ReplayRefused(f"out/legs.json names unknown legs: {', '.join(unknown)}")
+    return tuple(dict.fromkeys(data))
+
+
 def _leg_present(leg: str, results: Mapping[str, Any]) -> bool:
+    """Fresh outputs exist for the leg — necessary, never sufficient.
+
+    Presence alone is not execution proof: ``nodes`` pass through a
+    kinetics-only re-run unchanged, so the caller also requires the
+    entrypoint's ``out/legs.json`` declaration before a leg counts as run.
+    """
     if leg == "energies":
         return bool(results.get("nodes"))
     if leg == "tpd":
@@ -412,10 +574,12 @@ def _engine_judge(
     fresh: dict[str, Any],
     record: dict[str, Any],
     platform_now: Any,
+    skip_legs: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Judge fresh observables against the shipped references with the D10
     table — the engine's ``compare``, same-platform or cross-platform column
-    by platform, legs the replay did not run named ``not-run``."""
+    by platform, ``skip_legs`` the legs this replay did not run (the caller
+    derives them from the entrypoint's declaration and fresh outputs)."""
     m = vm.engine_manifest()
     if m is None:
         raise ReplayRefused(
@@ -428,20 +592,19 @@ def _engine_judge(
     now_obs = m.observables(fresh)
     plat_now = platform_now or m.capture_platform()
     column = m.column_for(manifest.platform, plat_now)
-    not_run = tuple(leg for leg in ALL_LEGS if not _leg_present(leg, fresh))
     report = m.compare(
         then_obs,
         now_obs,
         manifest.tolerances,
         column=column,
         failed_legs=(),
-        skip_legs=not_run,
+        skip_legs=skip_legs,
         caveats=(),
     )
     return {
         "report": report.as_dict(),
         "column": column,
-        "not_run": not_run,
+        "not_run": skip_legs,
         "platform_now": plat_now.as_dict(),
     }
 
@@ -514,12 +677,17 @@ def replay(
     acceptance artifact).
 
     ``run`` stands in for the declared entrypoint: called as
-    ``run(inputs_dir, out_dir, env)`` it must compute fresh results and write
-    ``out_dir / "results.json"``. The default shells ``sh reproduce.sh`` in
-    the staged directory under :func:`network_disabled` with the isolation
-    environment. ``judge`` defaults to the engine's D10 judge; a caller
-    without the engine can inject an equivalent callable, and the integrity,
-    staging, execution and coverage legs still run engine-free.
+    ``run(inputs_dir, out_dir, env)`` it must compute fresh results, write
+    ``out_dir / "results.json"`` and declare the legs it executed in
+    ``out_dir / "legs.json"``. It may return ``None`` or a mapping with
+    ``argv``, ``exit_code``, ``log`` and ``network_guard`` for the command
+    record. The default shells ``sh reproduce.sh`` in the staged directory
+    under :func:`network_disabled` with the scrubbed environment — inside a
+    detached network namespace where the host offers one, else the
+    network-guard leg reports ``unavailable``. ``judge`` defaults to the
+    engine's D10 judge; a caller without the engine can inject an
+    equivalent callable, and the integrity, staging, execution and coverage
+    legs still run engine-free.
     """
     checks: list[dict[str, Any]] = []
     commands: list[dict[str, Any]] = []
@@ -555,24 +723,31 @@ def replay(
     shipped: dict[str, Any] | None = None
     fresh: dict[str, Any] | None = None
     judge_out: dict[str, Any] | None = None
+    legs_not_run: tuple[str, ...] = ()
+    legs_why: dict[str, str] = {}
     if staged is not None and refusal is None:
-        shipped = _read_json(bundle / "outputs" / "results.json")
-        env = {
-            **os.environ,
-            **_ISOLATION_ENV,
-            "REPLAY_INPUTS": str(staged["inputs"]),
-            "REPLAY_OUT": str(staged["out_dir"]),
-        }
+        try:
+            shipped = _read_json(bundle / "outputs" / "results.json")
+        except (OSError, ValueError) as exc:
+            refusal = f"outputs/results.json is not valid JSON: {exc}"
+            verdict = f"refused(bundle): {refusal}"
+    if staged is not None and refusal is None and shipped is not None:
+        env = _entrypoint_env(staged["inputs"], staged["out_dir"], staged["home"])
         runner = run if run is not None else _subprocess_runner(timeout_seconds)
         command: dict[str, Any] = {
             "argv": ["sh", "reproduce.sh"],
             "cwd": str(work_dir),
-            "isolation": dict(_ISOLATION_ENV),
+            "isolation": dict(env),
         }
+        outcome: dict[str, Any] = {}
         try:
             with network_disabled():
-                runner(staged["inputs"], staged["out_dir"], env)
-            command["exit_code"] = 0
+                outcome = runner(staged["inputs"], staged["out_dir"], env) or {}
+            if not isinstance(outcome, dict):
+                raise ReplayRefused(
+                    f"runner returned {type(outcome).__name__}; expected a "
+                    "mapping or None"
+                )
         except NetworkAttempt as exc:
             command["exit_code"] = "network-blocked"
             command["log"] = str(exc)
@@ -602,6 +777,37 @@ def replay(
             )
             verdict = "failed(timeout)"
             refusal = "entrypoint timed out"
+        else:
+            command["argv"] = outcome.get("argv") or command["argv"]
+            command["exit_code"] = outcome.get("exit_code", 0)
+            if outcome.get("log"):
+                command["log"] = outcome["log"]
+            guard = outcome.get("network_guard") or (
+                "in-process socket guard" if run is not None else "unavailable"
+            )
+            command["network_guard"] = guard
+            checks.append(
+                _row(
+                    "execution",
+                    "network-guard",
+                    "unavailable" if guard.startswith("unavailable") else "passed",
+                    "network-guard",
+                    guard,
+                )
+            )
+            if command["exit_code"] != 0:
+                tail = (command.get("log") or "")[-400:]
+                checks.append(
+                    _row(
+                        "execution",
+                        "reproduce.sh",
+                        "failed",
+                        "exit-code",
+                        {"exit_code": command["exit_code"], "log": tail},
+                    )
+                )
+                verdict = "failed(entrypoint)"
+                refusal = f"reproduce.sh exited {command['exit_code']}: {tail}"
         commands.append(command)
         if refusal is None:
             results_path = staged["out_dir"] / "results.json"
@@ -624,16 +830,84 @@ def replay(
                         "reproduce.sh",
                         "passed",
                         "exit-code",
-                        {"exit_code": 0, "out": str(staged["out_dir"])},
+                        {
+                            "exit_code": command["exit_code"],
+                            "out": str(staged["out_dir"]),
+                        },
                     )
                 )
-                fresh = _read_json(results_path)
+                try:
+                    fresh = _read_json(results_path)
+                except (OSError, ValueError) as exc:
+                    checks.append(
+                        _row(
+                            "execution",
+                            "results.json",
+                            "failed",
+                            "fresh-output",
+                            f"out/results.json is not valid JSON: {exc}",
+                        )
+                    )
+                    verdict = "failed(entrypoint)"
+                    refusal = f"out/results.json is not valid JSON: {exc}"
+                    fresh = None
+                if fresh is not None:
+                    try:
+                        declared = _read_declared_legs(staged["out_dir"])
+                    except ReplayRefused as exc:
+                        checks.append(
+                            _row(
+                                "execution",
+                                "legs.json",
+                                "failed",
+                                "legs-declaration",
+                                str(exc),
+                            )
+                        )
+                        verdict = "failed(entrypoint)"
+                        refusal = str(exc)
+                    else:
+                        if not declared:
+                            checks.append(
+                                _row(
+                                    "execution",
+                                    "legs.json",
+                                    "unavailable",
+                                    "legs-declaration",
+                                    "entrypoint wrote no out/legs.json; fresh "
+                                    "outputs alone cannot tell an executed "
+                                    "leg from copied-through results, so no "
+                                    "leg counts as run",
+                                )
+                            )
+                        legs_not_run = tuple(
+                            leg
+                            for leg in ALL_LEGS
+                            if leg not in declared or not _leg_present(leg, fresh)
+                        )
+                        legs_why = {
+                            leg: (
+                                f"the entrypoint declared the {leg} leg but "
+                                "its fresh outputs are absent"
+                                if leg in declared
+                                else _NOT_RUN_WHY[leg]
+                            )
+                            for leg in legs_not_run
+                        }
 
     record = (staged or {}).get("record") or {}
     if refusal is None and shipped is not None and fresh is not None:
-        judging = judge if judge is not None else _engine_judge
         try:
-            judged = judging(shipped, fresh, record, platform_now)
+            if judge is not None:
+                judged = judge(shipped, fresh, record, platform_now)
+            else:
+                judged = _engine_judge(
+                    shipped,
+                    fresh,
+                    record,
+                    platform_now,
+                    skip_legs=legs_not_run,
+                )
             judge_out = dict(judged)
         except ReplayRefused as exc:
             checks.append(
@@ -647,7 +921,14 @@ def replay(
         report = judge_out["report"]
         verdict = str(report["verdict"])
         complete = bool(report.get("complete"))
-        not_run = tuple(judge_out.get("not_run") or ())
+        judged_not_run = tuple(judge_out.get("not_run") or ())
+        not_run = tuple(
+            leg for leg in ALL_LEGS if leg in legs_not_run or leg in judged_not_run
+        )
+        legs_why = {
+            **{leg: _NOT_RUN_WHY[leg] for leg in not_run},
+            **legs_why,
+        }
         for observable in report.get("observables") or []:
             checks.append(
                 _row(
@@ -678,9 +959,7 @@ def replay(
                 )
             )
         for leg in not_run:
-            checks.append(
-                _row("execution", leg, "not-run", "D10-judge", _NOT_RUN_WHY[leg])
-            )
+            checks.append(_row("execution", leg, "not-run", "D10-judge", legs_why[leg]))
     elif refusal is None:
         checks.append(
             _row(
@@ -713,16 +992,24 @@ def replay(
             "status": "not-run"
             if (leg in not_run or refusal is not None)
             else "passed",
-            "why": _NOT_RUN_WHY.get(leg) if leg in not_run else (refusal or None),
+            "why": (
+                legs_why.get(leg, _NOT_RUN_WHY.get(leg))
+                if leg in not_run
+                else (refusal or None)
+            ),
         }
         for leg in ALL_LEGS
     }
     coverage_path = bundle / "coverage.json"
-    coverage = (
-        coverage_rows(_read_json(coverage_path), not_run)
-        if coverage_path.is_file()
-        else []
-    )
+    try:
+        coverage = coverage_rows(
+            _read_json(coverage_path) if coverage_path.is_file() else None,
+            not_run if judge_out is not None else tuple(ALL_LEGS),
+        )
+    except (OSError, ValueError, ReplayRefused) as exc:
+        coverage = [_row("coverage", "claims", "failed", "coverage.json", str(exc))]
+        verdict = verdict if refusal is not None else f"failed(coverage): {exc}"
+        refusal = refusal or str(exc)
     checks.extend(coverage)
     checks.append(
         _row(
@@ -734,6 +1021,14 @@ def replay(
             "do not establish scientific validity.",
             evidence={"manifest_id": record.get("manifest_id")},
         )
+    )
+    # Completeness is the whole acceptance contract, not just the verdict:
+    # hash-only weights, missing image provenance, a missing/blocked
+    # coverage row, an unavailable network guard or a leg that stayed
+    # not-run all withhold it. claim_support is exempt — it is always
+    # unavailable by design.
+    complete = complete and not any(
+        row["scope"] != "claim_support" and row["status"] != "passed" for row in checks
     )
 
     return {
@@ -760,8 +1055,9 @@ def replay(
         "next": (
             "none"
             if complete
-            else "a refused or partial replay names its refusal; legs not run "
-            "need their declared resources and an independent replay"
+            else "a refused or partial replay names its refusal; legs not "
+            "run need their declared resources and an independent replay, "
+            "and unavailable or failed checks withhold completeness"
         ),
     }
 
