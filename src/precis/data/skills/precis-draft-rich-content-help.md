@@ -207,9 +207,9 @@ still apply. Prefer `code` for new verbatim blocks.
 ## Data / table chunks
 
 A `chunk_kind='table'` chunk holds **structured data, not prose** — pass
-it as `table={header, rows}`, not `text=`; the markdown you read back is
-*derived* (regenerated on every write), so the numbers stay the source
-of truth and numerics-indexable.
+it as `table={header, rows}` (or a markdown grid in `text=`, below); the
+markdown you read back is *derived* (regenerated on every write), so the
+numbers stay the source of truth and numerics-indexable.
 
 ```python
 put(
@@ -222,6 +222,26 @@ put(
     at={"last": True},
 )
 ```
+
+Already holding the grid as **markdown**? `text=` accepts it — an
+optional `**…**` caption line, then the pipe grid:
+
+```python
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="table",
+    text="**Band gaps**\n| element | gap_eV |\n|---|---|\n| Si | 1.12 |",
+)
+```
+
+Cells get Excel-style typing (`1.12` lands a number, `true` a bool), so
+stats and formulas work the same. Three rules: the whole `text=` must
+be the table (a stray prose line refuses — put prose in its own
+paragraph chunk), `text=` never rides with `table=`/`columns=`/`rows=`/
+`footer=` (one data source per write; the legend is `caption=`), and
+`text=` is a *create* input only — on `edit` it's still rejected, use
+the edit forms below.
 
 Editing: change the data, not the rendered text (`text=` is rejected on a
 table chunk); the four forms are `table={'header':…, 'rows':…}` (whole

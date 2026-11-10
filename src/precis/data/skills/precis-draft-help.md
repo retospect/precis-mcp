@@ -321,7 +321,26 @@ refuse with their handles. A chunk outside that draft is NotFound.
 
 ## Add a figure, code block, or data table
 
-See [[precis-draft-rich-content-help]].
+See [[precis-draft-rich-content-help]]. A **data table** is
+`chunk_kind='table'` with its grid as `table={header, rows}` — or a
+markdown table in `text=` (`**caption**` line optional, cells typed
+Excel-style):
+
+```python
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="table",
+    table={"header": ["element", "gap_eV"], "rows": [["Si", 1.12]]},
+    caption="Band gaps",
+)
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="table",
+    text="| element | gap_eV |\n|---|---|\n| Si | 1.12 |",  # same table, markdown form
+)
+```
 
 ## Read the document — outline, verbatim, fisheye
 

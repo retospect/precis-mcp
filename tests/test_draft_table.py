@@ -26,6 +26,7 @@ from precis.utils.table_data import (
     parse_markdown_table,
     resolve_cell,
     set_cell,
+    strict_markdown_table,
     table_payload,
     table_to_markdown,
 )
@@ -186,6 +187,116 @@ def test_put_table_requires_data(draft: DraftHandler, hub: Hub) -> None:
     draft.put(id="d", title="T", project=proj)
     with pytest.raises(BadInput, match="requires table="):
         draft.put(id="d", chunk_kind="table", at={"last": True})
+
+
+def test_put_table_markdown_text_lands_canonical(draft: DraftHandler, hub: Hub) -> None:
+    """gr592764 — the natural first try (markdown grid in text=) refused;
+    now it parses to the same canonical meta.table as table={…}."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    r = draft.put(
+        id="d",
+        chunk_kind="table",
+        text="| element | gap_eV |\n|---|---|\n| Si | 1.12 |\n| Ge | 0.67 |",
+        at={"last": True},
+    )
+    assert "added table dc" in r.body and "2 rows × 2 cols" in r.body
+    tc = _table_chunk(hub, "d")
+    assert "| Si | 1.12 |" in tc.text  # text is the derived markdown
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    # numbers land typed (Excel-style), ids minted as in the table= form
+    assert meta["table"]["rows"] == [["Si", 1.12], ["Ge", 0.67]]
+    assert meta["table"]["header"] == ["element", "gap_eV"]
+    assert all(is_table_id(c["id"]) for c in meta["table"]["columns"])
+
+
+def test_put_table_markdown_caption_line_and_override(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        text="**Band gaps**\n| x |\n|---|\n| 1 |",
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
+    assert meta["caption"] == "Band gaps"
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        text="**ignored**\n| y |\n|---|\n| 2 |",
+        caption="explicit wins",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="d")
+    assert ref is not None
+    metas = [
+        hub.live_store.drafts.draft_chunk_meta(c.handle)
+        for c in hub.live_store.drafts.reading_order(ref.id)
+        if c.chunk_kind == "table"
+    ]
+    assert metas[1]["caption"] == "explicit wins"
+
+
+def test_put_table_markdown_text_refuses_prose_and_bad_grid(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    # prose riding alongside the grid would be silently dropped — refuse
+    with pytest.raises(BadInput, match="ONLY a markdown table"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            text="Here is the data:\n| x |\n|---|\n| 1 |",
+            at={"last": True},
+        )
+    # not a table at all
+    with pytest.raises(BadInput, match="ONLY a markdown table"):
+        draft.put(id="d", chunk_kind="table", text="just prose", at={"last": True})
+
+
+def test_put_table_text_never_combines_with_data_args(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    with pytest.raises(BadInput, match="ONE source"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            table={"header": ["x"], "rows": [[1]]},
+            text="| x |\n|---|\n| 1 |",
+            at={"last": True},
+        )
+    with pytest.raises(BadInput, match="ONE source"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            rows=[[1]],
+            text="| x |\n|---|\n| 1 |",
+            at={"last": True},
+        )
+
+
+def test_strict_markdown_table_whole_text_only() -> None:
+    # grid alone, grid + caption line OK; any other line → None
+    assert strict_markdown_table("| a |\n|---|\n| 1 |") == {
+        "header": ["a"],
+        "rows": [["1"]],
+        "caption": None,
+    }
+    assert strict_markdown_table("**C**\n| a |\n|---|\n| 1 |") == {
+        "header": ["a"],
+        "rows": [["1"]],
+        "caption": "C",
+    }
+    assert strict_markdown_table("note\n| a |\n|---|\n| 1 |") is None
+    assert strict_markdown_table("| a |\n|---|\n| 1 |\ntrailing") is None
+    assert strict_markdown_table("just prose") is None
 
 
 # ── edit ──────────────────────────────────────────────────────────────

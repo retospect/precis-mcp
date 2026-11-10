@@ -97,6 +97,7 @@ from precis.utils.table_data import (
     patch_latex_table_text,
     resolve_cell,
     set_cell,
+    strict_markdown_table,
     table_ids_line,
     table_payload,
     table_to_markdown,
@@ -1881,6 +1882,7 @@ class DraftHandler(Handler):
                     regen=regen,
                     at=at,
                     meta=meta,
+                    text=text,
                     columns=columns,
                     rows=rows,
                     footer=footer,
@@ -4346,6 +4348,7 @@ class DraftHandler(Handler):
         regen: dict[str, Any] | None,
         at: dict[str, Any] | None,
         meta: dict[str, Any] | None,
+        text: str | None = None,
         columns: list[dict[str, Any]] | None = None,
         rows: list[list[Any]] | None = None,
         footer: dict[str, Any] | None = None,
@@ -4359,16 +4362,55 @@ class DraftHandler(Handler):
         split-arg form of ``table={…}`` — a column carries ``formula=``
         (per-row expression over column names, stored id-side) and
         ``footer={'col': 'sum'|…}`` declares aggregates; both are evaluated
-        into the stored grid by :func:`evaluate_table` on this write."""
+        into the stored grid by :func:`evaluate_table` on this write.
+
+        The third input form is a GFM table in ``text=`` (gr592764 — the
+        natural first try when an agent already has the grid as markdown):
+        an optional ``**…**`` caption line, then the pipe grid. The whole
+        ``text=`` must be the table (a stray prose line refuses rather than
+        dropping silently), cells get the same Excel-style
+        :func:`infer_scalar` typing a ``cell=`` edit applies, and it never
+        combines with the data args — one source per write."""
         tobj: Any = table
+        md_caption: str | None = None
         if tobj is None and columns is None and rows is None and footer is None:
+            if text is not None and str(text).strip():
+                parsed = strict_markdown_table(str(text))
+                if parsed is None:
+                    raise BadInput(
+                        "a table chunk's text= must be ONLY a markdown "
+                        "table — an optional **caption** line, then the "
+                        "pipe grid (header, |---| separator, rows)",
+                        # + concat, not an f-string: a '|' grid inside a
+                        # JoinedStr trips the render-DRY guard.
+                        next=(
+                            "put(kind='draft', id="
+                            + repr(slug)
+                            + ", chunk_kind='table', "
+                            "text='| x | y |\\n|---|---|\\n| 1 | 2 |')"
+                        ),
+                    )
+                tobj = {
+                    "header": parsed["header"],
+                    "rows": [[infer_scalar(c) for c in r] for r in parsed["rows"]],
+                }
+                md_caption = parsed.get("caption")
+            else:
+                raise BadInput(
+                    "a table chunk requires table={header, rows}, "
+                    "columns=+rows=, or a markdown table in text=",
+                    next=(
+                        f"put(kind='draft', id={slug!r}, chunk_kind='table', "
+                        "table={'header': ['x','y'], 'rows': [[1,2],[3,4]]}, "
+                        "caption='…', at={'last': True})"
+                    ),
+                )
+        elif text is not None and str(text).strip():
             raise BadInput(
-                "a table chunk requires table={header, rows} or columns=+rows=",
-                next=(
-                    f"put(kind='draft', id={slug!r}, chunk_kind='table', "
-                    "table={'header': ['x','y'], 'rows': [[1,2],[3,4]]}, "
-                    "caption='…', at={'last': True})"
-                ),
+                "a table chunk takes its data from ONE source — text= does "
+                "not combine with table=/columns=/rows=/footer=",
+                next="the legend is caption=; pass the grid as table= "
+                "(or columns=+rows=), or alone as a markdown table in text=",
             )
         if isinstance(tobj, str):
             try:
@@ -4393,7 +4435,9 @@ class DraftHandler(Handler):
             # that resolves to no column refuses (a typo must not land).
             declared={c["id"] for c in norm.get("columns") or [] if c.get("formula")},
         )
-        cap = caption.strip() if caption and caption.strip() else None
+        # caption= wins over the markdown ``**…**`` caption line; an
+        # explicit empty caption= clears it.
+        cap = md_caption if caption is None else (caption.strip() or None)
         md = table_to_markdown(norm, caption=cap)
         chunk_meta = dict(meta or {})
         chunk_meta["table"] = norm

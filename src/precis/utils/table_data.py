@@ -755,6 +755,29 @@ def parse_markdown_table(text: str) -> dict[str, Any] | None:
     return {"header": header, "rows": rows, "caption": caption}
 
 
+def strict_markdown_table(text: str) -> dict[str, Any] | None:
+    """Like :func:`parse_markdown_table` but for the write path (``put``
+    ``text=``): the WHOLE text must be the table — one optional leading
+    ``**…**`` caption line plus the pipe grid — else ``None``. The
+    read-side parser skips non-grid lines; a write that silently dropped
+    prose riding alongside the grid would lose content the caller meant
+    to land, so a ``text=`` that isn't cleanly a table refuses instead
+    (gr592764)."""
+    parsed = parse_markdown_table(text)
+    if parsed is None:
+        return None
+    cap = parsed.get("caption")
+    stray = [
+        s for ln in text.splitlines() if (s := ln.strip()) and not s.startswith("|")
+    ]
+    if len(stray) > (1 if cap else 0) or any(
+        not (s.startswith("**") and s.endswith("**") and s[2:-2].strip() == cap)
+        for s in stray
+    ):
+        return None
+    return parsed
+
+
 def _find_balanced(text: str, start: int) -> int | None:
     """``text[start]`` is a ``{``; return the index just past its matching
     ``}`` (brace-depth aware, backslash-escaped chars skipped so ``\\{``/
