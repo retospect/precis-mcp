@@ -650,11 +650,13 @@ def run_search_step(
 
 # ── deliberate read/fetch requests (gr502680) ─────────────────────────
 #
-# A tick serves papers as title + abstract snippet and findings as title,
-# so the model's only escape from abstract-depth is to SAY what it wants
+# A tick serves papers as title + abstract snippet, findings as title and
+# todos as a one-line title (gr573759: a todo lead truncated in a dossier
+# handoff had no door back to its full text), so the model's only escape
+# from snippet-depth is to SAY what it wants
 # read — the same deliberate-request pattern as the `reruns` payload field
 # (gr499904, ``compute.apply_reruns``): `read` names a held finding/paper
-# chunk whose full text lands in the NEXT tick's context; `fetch` asks for
+# chunk or todo ref whose full text lands in the NEXT tick's context; `fetch` asks for
 # a served abstract stub's full text via ``PaperHandler.acquire``
 # (idempotent identifier-collapse — the request re-pins the stub at the
 # head of the fetch_oa queue, never a second mint).

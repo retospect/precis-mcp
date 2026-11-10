@@ -2063,9 +2063,9 @@ it would unblock>"}}
 runs>"}}
   ],
   "read": [
-    {{"ref": "<fi<id>, pa<id> or pc<id> of a held item you want text of>", \
-"why": "<what you are looking for>", "section": "<optional heading name>", \
-"page": "<optional 1-based page>"}}
+    {{"ref": "<fi<id>, pa<id>, pc<id> or td<id> of a held item you want \
+text of>", "why": "<what you are looking for>", "section": "<optional \
+heading name>", "page": "<optional 1-based page>"}}
   ],
   "fetch": [
     {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
@@ -2091,13 +2091,14 @@ new — read \
 line a barrier is credited through, and the \
 per-state `delta_meV` versus the recorded `tol_eV`). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
-context — name a `[fi<id>]` finding, `[pa<id>]` paper or `[pc<id>]` paper \
-chunk from the context above; the finding claims and abstract snippets are \
-otherwise all you see, so use this when the numbers live deeper than the \
-snippet. A bare read returns the body's front page — add `"section": \
-"<heading words>"` to jump to a named section ("results", "3.2 kinetics") \
-or `"page": <n>` to page deeper into the body; a `pc` handle with a \
-selector reads its owning paper. \
+context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
+chunk or `[td<id>]` todo from the context above; the finding claims, \
+abstract snippets and served titles are otherwise all you see, so use \
+this when the detail lives deeper than the snippet. A bare read returns \
+the body's front page — add `"section": "<heading words>"` to jump to \
+a named section ("results", "3.2 kinetics") or `"page": <n>` to page \
+deeper into the body; a `pc` handle with a selector reads its owning \
+paper; a `td` read returns the todo's body and comment timeline. \
 `fetch` (0–{fetch_cap}) requests the full text of a served abstract stub — \
 the `pa<id>` of a paper marked `full text: none` (never `requested`, that \
 fetch is already queued); acquisition runs out of band, and once the paper \
@@ -2288,9 +2289,9 @@ does not exist>", "why": "<what you were trying>", "would_unblock": "<what \
 it would unblock>"}}
   ],
   "read": [
-    {{"ref": "<fi<id>, pa<id> or pc<id> of a held item you want text of>", \
-"why": "<what you are looking for>", "section": "<optional heading name>", \
-"page": "<optional 1-based page>"}}
+    {{"ref": "<fi<id>, pa<id>, pc<id> or td<id> of a held item you want \
+text of>", "why": "<what you are looking for>", "section": "<optional \
+heading name>", "page": "<optional 1-based page>"}}
   ],
   "fetch": [
     {{"paper": "<pa<id> of a served paper showing `full text: none`>", \
@@ -2301,13 +2302,14 @@ it would unblock>"}}
 If a tool, data source, simulation lane or catalog entry you need does not \
 exist, say so in `needs` instead of guessing around it. \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
-context — name a `[fi<id>]` finding, `[pa<id>]` paper or `[pc<id>]` paper \
-chunk from the context above; the finding claims and abstract snippets are \
-otherwise all you see, so use this when the numbers live deeper than the \
-snippet. A bare read returns the body's front page — add `"section": \
-"<heading words>"` to jump to a named section ("results", "3.2 kinetics") \
-or `"page": <n>` to page deeper into the body; a `pc` handle with a \
-selector reads its owning paper. \
+context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
+chunk or `[td<id>]` todo from the context above; the finding claims, \
+abstract snippets and served titles are otherwise all you see, so use \
+this when the detail lives deeper than the snippet. A bare read returns \
+the body's front page — add `"section": "<heading words>"` to jump to \
+a named section ("results", "3.2 kinetics") or `"page": <n>` to page \
+deeper into the body; a `pc` handle with a selector reads its owning \
+paper; a `td` read returns the todo's body and comment timeline. \
 `fetch` (0–{fetch_cap}) requests the full text of a served abstract stub — \
 the `pa<id>` of a paper marked `full text: none` (never `requested`, that \
 fetch is already queued); acquisition runs out of band, and once the paper \

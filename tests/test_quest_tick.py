@@ -4079,6 +4079,43 @@ class TestReadField:
         prompt = build_tick_prompt(store, _qref(store, qid))
         assert "turnover frequency 0.12 s-1" in prompt
 
+    def test_read_pulls_a_todo(self, store: Any) -> None:
+        # gr573759: a todo server renders as a truncated one-line title in
+        # the tick context — reading its td handle is the door back to the
+        # item's full text (body + comment timeline).
+        from precis.store.types import TODO_BODY_KIND, ChunkInsert
+
+        qid = _mk_quest(store, "A quest reading a todo")
+        todo = store.insert_ref(
+            kind="todo", slug=None, title="A truncated lead's source todo", meta={}
+        )
+        store.chunks.insert_chunks(
+            todo.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text="Full lead text: the G-series computes at a 40% discount",
+                    meta={"chunk_kind": TODO_BODY_KIND},
+                ),
+                ChunkInsert(
+                    ord=1,
+                    text="follow-up detail that never fits a title line",
+                    meta={"chunk_kind": "todo_comment"},
+                ),
+            ],
+        )
+        _serve(store, todo.id, qid)
+        payload = {
+            "logbook": [],
+            "read": [{"ref": f"td{todo.id}", "why": "the full lead text"}],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 1
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "Requested reads" in prompt
+        assert "40% discount" in prompt
+        assert "follow-up detail" in prompt
+
     def test_read_cap_and_refusals(self, store: Any) -> None:
         qid = _mk_quest(store, "A quest over-reading")
         fid = _mk_finding(store, "claim")
