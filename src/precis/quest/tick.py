@@ -69,6 +69,17 @@ QUEST_LOOP_ENABLED_ENV = "PRECIS_QUEST_LOOP_ENABLED"
 #: How many trailing logbook entries to feed the tick as episodic context.
 _LOGBOOK_TAIL = 8
 
+#: Beaten rows shown in :func:`_frontier_summary` before the continuation
+#: line names the rest — the provisional band's cap, so both measured
+#: bands budget the same. The cap alone once hid every measured dopant
+#: past the fifth from qu509651's energy-rubric frontier table (gr567692).
+_BEATEN_SHOWN = 10
+
+#: Omitted beaten handles named in the continuation line before a bare
+#: "+N more" — a count alone cannot be reconciled against the logbook,
+#: which is exactly the sync gap the tick filed (gr567692/gr573266).
+_BEATEN_OMITTED_NAMED = 10
+
 #: Per-rung wall ceiling (seconds) for the tick's LLM call. The transport
 #: default (600s) proved too tight for a big-tier reasoning pass over a ~20k-char
 #: quest prompt — glm-5.2 via OpenRouter routinely needs >10 min, so both rungs
@@ -1046,6 +1057,29 @@ def _ruled_out_handles(
     return out
 
 
+def _primary_objective_key(
+    objectives: list[tuple[str, str]],
+) -> Callable[[Any], float]:
+    """A best-first sort key over candidates by the primary objective —
+    the leaderboard's ordering convention (lowest energy / highest
+    ``log_tof`` first; a missing value sinks to the bottom). Shared shape
+    with :func:`precis.quest.frontier.leaderboard`'s ``_sort_key``; pulled
+    out here so :func:`_frontier_summary`'s beaten band sorts the same way
+    the results table and leaderboard present the same candidates."""
+    primary = objectives[0] if objectives else None
+
+    def _key(c: Any) -> float:
+        if primary is None:
+            return 0.0
+        key, sense = primary
+        v = c.measures.get(key)
+        if v is None:
+            return float("inf")
+        return v if sense == "min" else -v
+
+    return _key
+
+
 def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> str:
     """A compact rendering of the Pareto frontier for a review prompt.
 
@@ -1075,9 +1109,28 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
     for c in fr.frontier:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
         lines.append(f"- FRONTIER {c.handle} {c.name} — {ms}")
-    for c in fr.dominated[:5]:
+    # Beaten rows: best-first by the primary objective (the leaderboard
+    # convention), NOT raw candidate order — qu509651's energy-rubric quest
+    # rendered insertion-order dominated[:5], so a dozen measured dopants
+    # vanished from "the ONLY authoritative source of measured" values
+    # while the logbook carried their converged energies, and the tick read
+    # it as a frontier-table/results-ledger sync gap (gr567692/gr573266).
+    # Past the cap the omitted handles are still NAMED so the table stays
+    # reconcilable against the logbook instead of silently dropping
+    # measurements.
+    beaten = sorted(fr.dominated, key=_primary_objective_key(fr.objectives))
+    for c in beaten[:_BEATEN_SHOWN]:
         ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
         lines.append(f"- beaten   {c.handle} {c.name} — {ms}")
+    if len(beaten) > _BEATEN_SHOWN:
+        omitted = beaten[_BEATEN_SHOWN:]
+        named = ", ".join(c.handle for c in omitted[:_BEATEN_OMITTED_NAMED])
+        more = (
+            f", …+{len(omitted) - _BEATEN_OMITTED_NAMED} more"
+            if len(omitted) > _BEATEN_OMITTED_NAMED
+            else ""
+        )
+        lines.append(f"  (+{len(omitted)} more beaten: {named}{more})")
     # Provisional rows: measured but unconfirmed (untrusted values marked ≈,
     # exclusion reason in brackets). Frontier-leaders-if-trusted first; within
     # that, a row whose barrier itself carries an untrusted/nonphysical flag

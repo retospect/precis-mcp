@@ -15,7 +15,7 @@ import dataclasses
 import json
 import re
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -3717,6 +3717,68 @@ class TestFrontierSummaryProvisional:
         assert "st2" in lines[0]
         assert "st3" in lines[1]
         assert "st1" in lines[2]  # the untrusted 73.7 row sinks to last
+
+
+class TestFrontierSummaryBeatenSync:
+    """gr567692/gr573266 (qu509651): the beaten band rendered insertion-order
+    ``dominated[:5]`` with no omission note, so measured dopants past the cap
+    vanished from "the ONLY authoritative source of measured" values while the
+    logbook carried their converged energies — the tick filed a
+    frontier-table/results-ledger sync gripe. Beaten rows now sort best-first
+    by the primary objective, the cap matches the provisional band's 10, and
+    the continuation line NAMES the omitted handles so the table stays
+    reconcilable against the logbook."""
+
+    @staticmethod
+    def _cand(ref_id: int, energy: float) -> Any:
+        from precis.quest.frontier import Candidate
+
+        return Candidate(ref_id, f"st{ref_id}", f"C{ref_id}", {"energy": energy}, True)
+
+    def _summary(self, fr: Any) -> str:
+        from precis.quest.frontier import FrontierResult
+        from precis.store import Store
+
+        store = cast(Store, SimpleNamespace(tags_for=lambda _rid: []))
+        result = FrontierResult(
+            objectives=[("energy", "min")],
+            frontier=fr.get("frontier", []),
+            dominated=fr.get("dominated", []),
+        )
+        return tick_mod._frontier_summary(store, 1, fr=result)
+
+    def test_beaten_sorts_best_first_and_names_the_omitted(self) -> None:
+        # 12 beaten candidates listed worst-first on purpose: the best energy
+        # must lead, the cap shows 10, and the two past it are NAMED — a bare
+        # count was the sync-gap complaint.
+        dominated = [self._cand(100 + i, -100.0 + 10.0 * i) for i in range(12)]
+        text = self._summary({"dominated": dominated})
+        lines = [ln for ln in text.splitlines() if ln.startswith("- beaten")]
+        assert len(lines) == 10
+        assert "st100" in lines[0]  # best energy (-100) leads
+        assert "st109" in lines[9]
+        assert "(+2 more beaten: st110, st111)" in text
+
+    def test_sync_regression_energy_rubric_candidates_all_visible(self) -> None:
+        """The qu509651 shape: a single frontier candidate plus six beaten on
+        an energy rubric — every measured candidate is either shown with its
+        energy or named in the continuation line."""
+        frontier = [self._cand(1, -169.7)]
+        dominated = [self._cand(i, -130.0 - i) for i in range(2, 8)]
+        text = self._summary({"frontier": frontier, "dominated": dominated})
+        for i in range(1, 8):
+            assert f"st{i}" in text
+        assert "energy=-169.7" in text
+        assert "more beaten" not in text  # six beaten fit under the cap
+
+    def test_more_than_ten_omitted_names_cap_with_count(self) -> None:
+        dominated = [self._cand(200 + i, -200.0 + i) for i in range(25)]
+        text = self._summary({"dominated": dominated})
+        assert "(+15 more beaten: " in text
+        assert "st210" in text  # first omitted, named
+        assert "st219" in text  # tenth omitted, named
+        assert "st220" not in text  # past the named cap: count only
+        assert "…+5 more" in text
 
 
 class TestServersSummaryHandles:

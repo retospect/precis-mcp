@@ -162,6 +162,12 @@ class TestBands:
         assert by_sid[provisional_sid]["barrier"] == "≈0.5"
         assert by_sid[frontier_sid]["barrier"] == "0.3"
         assert by_sid[awaiting_sid]["barrier"] == "-"
+        # the objective measure rides its own column (gr573266: an
+        # energy-rubric quest read every beaten row as "no energy value"
+        # because only the barrier-family measures had columns).
+        assert by_sid[frontier_sid]["energy"] == "-1"
+        assert by_sid[beaten_sid]["energy"] == "-1"
+        assert by_sid[awaiting_sid]["energy"] == "-"
 
 
 # ── dopant / site / co-adsorbate derivation ─────────────────────────────
@@ -615,6 +621,7 @@ class TestTickPromptSection:
             "BEFORE proposing)" in prompt
         )
         assert "band: frontier|beaten|provisional|awaiting" in prompt
+        assert "energy" in prompt  # the objective measure has its own column
         assert "Ag" in prompt
 
     def test_section_absent_when_no_candidates(self, store: Any) -> None:
