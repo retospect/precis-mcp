@@ -24,6 +24,8 @@ Address grammar accepted by ``get``:
                                         the selector resolves an exact
                                         slug, a title (case-insensitive)
                                         or a unique title prefix
+    [<address>, ...]                -> batch form: the same read mapped
+                                        over every element (gr573040)
 
 An absolute path under a registered root — or under a discovered
 worktree, host-side spellings included — resolves to its
@@ -367,11 +369,16 @@ class MdHandler(Handler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``id=[...]`` is the batch form (gr573040 — before this door a
+        # list fell into ``str(id)`` and its ``'['`` head parsed as a
+        # root alias, so the refusal never named the real problem).
+        if isinstance(id, (list, tuple)):
+            return self._get_batch(list(id), view=view, q=q)
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
         # find, never silently dropped.
         if q is not None:
@@ -431,6 +438,83 @@ class MdHandler(Handler):
         return interpreted(
             Response(body=_render_file_outline(parsed.alias, file_entry)), readings
         )
+
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, q: str | None
+    ) -> Response:
+        """``get(id=[...])``: the single-id read mapped over every id, in
+        the order given (gr573040).
+
+        The shared batch path (``_numeric_ref._get_batch``) covers the
+        integer-id ref kinds; an md address is a string, not a ``refs``
+        row, so the batch lives here — the same shape ``part`` uses.
+        Each element takes the same spellings the singleton form does
+        (``<alias>[/<file>.md][~slug-or-title]``, an absolute path under
+        a root); a miss is a one-line ``not found`` block, never a
+        dropped id or an error for the whole call. ``q=`` carries
+        through to each element's find-in-ref. Whole blocks page under
+        :data:`BATCH_VIEW_PAGE_CHARS`, same as the numeric batch's view
+        form — the unread tail is named as the ``next:`` call's id list.
+        """
+        # Lazy import: the DB-free handler keeps ``_numeric_ref`` (and its
+        # psycopg/store chain) out of its module imports — paper.py's
+        # convention for the same helpers.
+        from precis.handlers._numeric_ref import (
+            BATCH_ID_CAP,
+            BATCH_VIEW_PAGE_CHARS,
+            _id_batch_next,
+        )
+
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next="get(kind='md', id=['<alias>/<file>.md', ...])",
+            )
+        extra = f", q={str(q).strip()!r}" if q is not None else ""
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=_id_batch_next("get", "md", ids, extra=extra),
+            )
+        addr: list[str] = []
+        for pos, raw in enumerate(ids):
+            if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+                raise BadInput(
+                    f"id[{pos}] must be an md address string, got {type(raw).__name__}",
+                    next="get(kind='md', id=['<alias>/<file>.md', ...])",
+                )
+            a = str(raw)
+            if a not in addr:
+                addr.append(a)
+        blocks: list[str] = []
+        for a in addr:
+            try:
+                blocks.append(self.get(id=a, view=view, q=q).body)
+            except NotFound:
+                blocks.append(f"{a}  not found")
+        shown: list[str] = []
+        used = 0
+        for block in blocks:
+            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+                break
+            shown.append(block)
+            used += len(block) + 2  # the "\n\n" join
+        rest = addr[len(shown) :]
+        body = f"# {len(addr)} md ids (batch"
+        if view is not None:
+            body += f", view={view!r}"
+        if q is not None:
+            body += f", q={str(q).strip()!r}"
+        body += ")\n\n" + "\n\n".join(shown)
+        if rest:
+            body += (
+                f"\n\n{len(rest)} more — next: get(kind='md', "
+                f"id=[{', '.join(repr(a) for a in rest)}]"
+                + (f", view={view!r}" if view is not None else "")
+                + extra
+                + ")"
+            )
+        return Response(body=body, result_count=len(shown))
 
     # ── search ─────────────────────────────────────────────────────
 

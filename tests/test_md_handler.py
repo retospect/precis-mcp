@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -387,6 +388,77 @@ def test_find_in_ref_absolute_path(handler: MdHandler, repo: Path) -> None:
     resp = handler.get(id=str(repo / "docs" / "guide.md"), q="fresh")
     assert resp.body.startswith("interpreted: '")
     assert "fresh" in resp.body
+
+
+# ---------------------------------------------------------------------------
+# get — batch form (``id=[...]``, gr573040)
+# ---------------------------------------------------------------------------
+
+
+def test_get_batch_renders_one_block_per_id(handler: MdHandler) -> None:
+    """The reported call: a list of ``<alias>/<file>~<slug>`` addresses
+    used to be ``str()``-ed into alias ``"['main"``; now each element
+    gets its own read."""
+    resp = handler.get(
+        id=["r/docs/guide.md~Ship workflow", "r/docs/guide.md~Other section"]
+    )
+    assert resp.body.startswith("# 2 md ids (batch)")
+    assert "fresh after shipping" in resp.body
+    assert "Unrelated prose" in resp.body
+
+
+def test_get_batch_file_and_root_forms(handler: MdHandler) -> None:
+    resp = handler.get(id=["r/docs/guide.md", "r"])
+    assert "r/docs/guide.md" in resp.body
+    assert "md root overview" in resp.body
+
+
+def test_get_batch_miss_is_one_line_block_not_call_error(
+    handler: MdHandler,
+) -> None:
+    resp = handler.get(id=["r/docs/guide.md", "r/docs/nope.md", "r/readme.md"])
+    assert "r/docs/nope.md  not found" in resp.body
+    # the live ids still render
+    assert "Ship workflow" in resp.body
+    assert "r/readme.md" in resp.body
+
+
+def test_get_batch_dedupes(handler: MdHandler) -> None:
+    resp = handler.get(id=["r/readme.md", "r/readme.md"])
+    assert resp.body.startswith("# 1 md ids (batch)")
+
+
+def test_get_batch_empty_list_refuses(handler: MdHandler) -> None:
+    with pytest.raises(BadInput, match=r"id=\[\] is empty"):
+        handler.get(id=[])
+
+
+def test_get_batch_over_cap_refuses_with_split_next(
+    handler: MdHandler,
+) -> None:
+    ids: list[str | int] = ["r/readme.md"] * 51
+    with pytest.raises(BadInput, match="at most 50") as exc:
+        handler.get(id=ids)
+    assert "id=['r/readme.md'" in str(exc.value.next)
+
+
+def test_get_batch_non_address_element_refuses(handler: MdHandler) -> None:
+    # a JSON bridge can hand any element shape — validation is runtime
+    bad: list[Any] = ["r/readme.md", {"not": "an address"}]
+    with pytest.raises(BadInput, match=r"id\[1\] must be an md address"):
+        handler.get(id=bad)
+
+
+def test_get_batch_view_maps_per_id(handler: MdHandler) -> None:
+    resp = handler.get(id=["r/docs/guide.md", "r/readme.md"], view="source")
+    assert "view='source'" in resp.body
+    assert "Intro paragraph about the guide" in resp.body
+    assert "Top-level readme paragraph" in resp.body
+
+
+def test_get_batch_unknown_view_raises_on_first_id(handler: MdHandler) -> None:
+    with pytest.raises(Unsupported, match="unknown md view"):
+        handler.get(id=["r/docs/guide.md"], view="bogus")
 
 
 # ---------------------------------------------------------------------------
