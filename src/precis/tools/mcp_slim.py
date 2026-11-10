@@ -123,8 +123,13 @@ def _removed_search_arg_error(
     # promotes them to the full function, which maps k=/limit= onto
     # page_size= and owns the offset= value check (offset=0 no-ops,
     # offset>0 refuses). Only an args=-nested spelling refuses here: it
-    # names no kind arg.
-    nested = sorted(set(args) & {"k", "limit", "offset"})
+    # names no kind arg. The one exception is ``args={'offset': N}`` on
+    # the sort=/since=/until= source search — its exact-resume primitive
+    # (gr608577/td610130), the spelling its own next: call names.
+    refused_aliases = {"k", "limit", "offset"} - (
+        {"offset"} if _source_search_call(kwargs, args) else set()
+    )
+    nested = sorted(set(args) & refused_aliases)
     if nested:
         from precis.errors import BadInput
         from precis.tools.core import _get_runtime, _validation_error
@@ -298,8 +303,14 @@ def make_slim_verb(verb: str, full: Callable[..., Any]) -> Callable[..., Any]:
         # Only lift what the target kind's handler declares top-level; any
         # other key (``source`` on pcb ``op=import_epro``) stays in ``args``.
         accepted_top = _handler_top_level(verb, call.get("kind"))
+        source_call = _source_search_call(kwargs, args)
         for key in list(args):
             if key in full_names and key not in slim_names and key not in _INJECTED:
+                # The source-search ``args={'offset': N}`` resume primitive
+                # (td610130) rides ``__extras__`` — promoting it to the
+                # verb-level param hits the removed-paging refusal.
+                if source_call and key == "offset":
+                    continue
                 if accepted_top is not None and key not in accepted_top:
                     continue
                 call[key] = coerce_json_container(

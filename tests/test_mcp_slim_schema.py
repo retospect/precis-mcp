@@ -535,3 +535,39 @@ def test_memory_index_listing_page_still_refused_with_a_query(
     ):
         out = _call("search", call_args)
         assert "search no longer paginates" in out, out
+
+
+def test_source_search_window_args_reach_dispatch(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr608577/td610130: the sort=/since=/until= source search pages via
+    ``args={'page': N}`` and resumes a truncated window at the exact
+    ``args={'offset': M}`` — the spelling its own ``next:`` call names,
+    so the boundary must pass it through ``__extras__`` untouched (the
+    verb-level ``offset`` param still refuses everywhere else)."""
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    # ``since`` is not a slim-advertised param — it lands in ``args``
+    # either way (a deprecation note may suffix the result); the window
+    # keys are what must reach ``__extras__`` untouched.
+    base = {"q": "nanobuds", "since": "2026-01-01"}
+    for key, value in (("page", 2), ("offset", 74)):
+        for call_args in ({**base, "kind": "paper"}, base):
+            out = _call("search", {**call_args, "args": {key: value}})
+            assert "[error" not in out, out
+            assert seen["__extras__"][key] == value, seen
+        # the window must not promote to the verb-level params — the
+        # wrapper's own ``page=1`` default is the only top-level page.
+        assert seen.get("offset") in (None, 0), seen
+        assert seen.get("page") in (None, 1), seen
+
+    # ``offset`` nested on a non-source call is still the removed paging
+    # spelling — the gripe's page= spelling also stays door-gated.
+    out = _call("search", {"kind": "finding", "q": "nanobuds", "args": {"offset": 3}})
+    assert "[error:BadInput]" in out, out
