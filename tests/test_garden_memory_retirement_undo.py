@@ -53,6 +53,15 @@ def _propose(store: Store, target: int, action: str) -> MemoryProposal:
     )
     assert review_id is not None
     if action == "retire":
+        # The compact-first gate: a pending retire proposal is itself a
+        # compact trigger, so an apply needs completed preservation —
+        # here a garden_compact record covering this exact content.
+        state = store.trust_state("ref", target)
+        assert state is not None
+        store.stamp_ref_meta(
+            target,
+            {"garden_compact": {"shell": {"edit": {"applied_sha": state.sha}}}},
+        )
         _review_compaction(store, target)
     return MemoryProposal(target, review_id, _body(store, target), candidate)
 
