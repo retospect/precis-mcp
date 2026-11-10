@@ -42,6 +42,14 @@ Semantics (`precis-memory-help`):
                                      ``eye_render.render_eye``; ``+recall``
                                      fills k from the focus's ``SPACE:``
                                      tag inside the semantic search
+    - get(id=N, view='environment', args={'hops': 2})
+                                   — the graph neighbourhood (gr570722):
+                                     per-node stats + edges + computed
+                                     shape smells + session co-read pairs;
+                                     ``args={'mermaid': true}`` adds a sketch
+                                     (:mod:`precis.handlers._memory_environment`)
+    - search(view='shape', args={'under': 'me<hub>'})
+                                   — the same smells rolled up over a scope
     - search(q=...)                — hybrid search over the body chunks
     - search(q=..., view='index')  — recall: each hit as the session-start
                                      bullet (handle, mirror filename, hook),
@@ -750,6 +758,11 @@ class MemoryHandler(NumericRefHandler):
         depth: int | str | None = None,
         limit: int | str | None = None,
         event_id: int | str | None = None,
+        # ``view='environment'``'s neighbourhood args
+        # (``args={'hops': N, 'mermaid': true}``) — declared so the
+        # extras gate accepts them (gr570722).
+        hops: int | str | None = None,
+        mermaid: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Log offsets count events, or payload characters when event_id
@@ -758,6 +771,13 @@ class MemoryHandler(NumericRefHandler):
             raise BadInput(
                 "depth= only applies to get(kind='memory', view='members')",
                 next="get(kind='memory', id=N, view='members', args={'depth': 1})",
+            )
+        if any(v is not None for v in (hops, mermaid)) and (
+            view != "environment" or q is not None
+        ):
+            raise BadInput(
+                "hops=/mermaid= only apply to get(kind='memory', view='environment')",
+                next="get(kind='memory', id=N, view='environment', args={'hops': 2})",
             )
         if offset is not None and (view not in {"members", "log"} or q is not None):
             raise BadInput(
@@ -832,6 +852,32 @@ class MemoryHandler(NumericRefHandler):
             return render_memory_smells(
                 self.store, self._resolve_live_ref(self._coerce_id(id))
             )
+        if view == "environment" and concrete:
+            if isinstance(id, list):
+                raise BadInput(
+                    "view='environment' requires one memory id",
+                    next="get(kind='memory', id=N, view='environment', "
+                    "args={'hops': 2})",
+                )
+            from precis.handlers import _memory_environment as env
+
+            try:
+                n_hops = int(str(hops)) if hops is not None else env._HOPS_DEFAULT
+            except (TypeError, ValueError):
+                n_hops = 0
+            if not 1 <= n_hops <= env._HOPS_MAX:
+                raise BadInput(
+                    f"hops= must be an integer in 1..{env._HOPS_MAX}, got {hops!r}",
+                    next="get(kind='memory', id=N, view='environment', "
+                    "args={'hops': 3})",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return env.render_environment(
+                self.store,
+                ref,
+                hops=n_hops,
+                mermaid=mermaid not in (None, False, "false", "0", ""),
+            )
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_members(ref, offset=offset, depth=depth)
@@ -846,7 +892,14 @@ class MemoryHandler(NumericRefHandler):
             resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
         if concrete and view is not None and view not in _BASE_VIEWS:
-            legal = ["argument", "members", "processing", *EYE_LADDER, *_BASE_VIEWS]
+            legal = [
+                "argument",
+                "environment",
+                "members",
+                "processing",
+                *EYE_LADDER,
+                *_BASE_VIEWS,
+            ]
             close = difflib.get_close_matches(view, legal, n=1)
             raise Unsupported(
                 f"unknown view {view!r} for kind='memory'",
@@ -856,6 +909,7 @@ class MemoryHandler(NumericRefHandler):
                     + "view='argument' (kind:lemma/kind:inference proof tree) "
                     f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
                     "· members (paged part-of listing) · processing (before recall) "
+                    "· environment (graph neighbourhood + shape smells) "
                     "· links, log, raw (generic)"
                 ),
             )
@@ -3682,6 +3736,40 @@ class MemoryHandler(NumericRefHandler):
                     tags=scope_tags,
                 ),
             )
+        if view == "shape":
+            # gr570722: the reviewer's computed smells over a scope —
+            # the read-side twin of view='smells' (the proposal ledger).
+            from precis.handlers._memory_environment import (
+                count_shape_nodes,
+                render_shape,
+            )
+
+            return self._domain_space_footer(
+                render_shape(
+                    self.store,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    tags=tags,
+                    under=under,
+                    q=q,
+                    page=page,
+                    mode=mode,
+                    scope=scope,
+                    status=status,
+                    sort=sort,
+                ),
+                domain=domain,
+                q=None,
+                exclude_ref_ids=exclude_ref_ids,
+                before=(caller_tags, caller_include),
+                after=(tags, include_ref_ids),
+                count=lambda scope_tags, scope_ids: count_shape_nodes(
+                    self.store,
+                    include_ref_ids=scope_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    tags=scope_tags,
+                ),
+            )
         if view == "rulings":
             return self._domain_space_footer(
                 self._rulings_view(
@@ -3965,7 +4053,7 @@ class MemoryHandler(NumericRefHandler):
         if view != "index":
             raise BadInput(
                 f"unknown view {view!r} for search(kind='memory')",
-                options=["index", "count", "rulings"],
+                options=["index", "count", "reads", "rulings", "shape", "smells"],
                 next=(
                     "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
                     "view='index')"
@@ -4018,7 +4106,10 @@ class MemoryHandler(NumericRefHandler):
         )
         if not hits:
             tag_suffix = f" tagged {normalized}" if normalized else ""
-            return Response(body=f"no {self._sense()} entries match {q!r}{tag_suffix}")
+            return Response(
+                body=f"no {self._sense()} entries match {q!r}{tag_suffix}",
+                result_count=0,
+            )
         self.store.chunks.bump_salience(
             self.store.chunks.card_chunk_ids([ref.id for _, ref, _ in hits])
         )
@@ -4038,7 +4129,7 @@ class MemoryHandler(NumericRefHandler):
                     size=row_size_cell(len(body_text.encode("utf-8"))),
                 )
             )
-        return Response(body="\n".join(lines))
+        return Response(body="\n".join(lines), result_count=len(lines))
 
     def _body_search_hits(
         self,
@@ -4142,7 +4233,9 @@ class MemoryHandler(NumericRefHandler):
             refs = [r for r in refs if r.id not in drop]
         if not refs:
             tag_suffix = f" tagged {normalized}" if normalized else ""
-            return Response(body=f"no {self._sense()} entries{tag_suffix}")
+            return Response(
+                body=f"no {self._sense()} entries{tag_suffix}", result_count=0
+            )
         stamps = recency_stamps(self.store, [r.id for r in refs])
         oldest = datetime.min.replace(tzinfo=UTC)
         refs = sorted(refs, key=lambda r: stamps.get(r.id) or oldest, reverse=True)
@@ -4185,7 +4278,9 @@ class MemoryHandler(NumericRefHandler):
         if cur and len(pages) < page:
             pages.append(cur)
         if len(pages) < page:
-            return Response(body=f"no {self._sense()} entries on page {page}")
+            return Response(
+                body=f"no {self._sense()} entries on page {page}", result_count=0
+            )
         lines = pages[page - 1]
         body = "\n".join(lines)
         shown = sum(len(c) for c in pages)
@@ -4212,7 +4307,7 @@ class MemoryHandler(NumericRefHandler):
                 f"\n… {more} more — next: search(kind='memory'{tags_echo}, "
                 f"view='index', args={{{', '.join(args_echo)}}})"
             )
-        return Response(body=body)
+        return Response(body=body, result_count=len(lines))
 
     # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
 
