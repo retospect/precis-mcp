@@ -2701,16 +2701,9 @@ class DispatchMixin(RuntimeShape):
                     ),
                 )
             if kind is None or self._is_cross_kind_request(str(kind)):
-                eligible = [
-                    k
-                    for k in sorted(self.hub.kinds)
-                    if (h := self.hub.handler_for(k)) is not None
-                    and (m := getattr(h, "search", None)) is not None
-                    and "view" in self._accepted_kwargs(m)
-                ]
                 raise BadInput(
                     "view='count' counts one kind at a time — pass kind=",
-                    options=eligible,
+                    options=sorted(self.hub.kinds),
                     next=(
                         "search(kind='job', view='count', "
                         "args={'group_by': 'meta.job_type,state'})"
@@ -2722,6 +2715,22 @@ class DispatchMixin(RuntimeShape):
             if args.get("folder") is not None:
                 folder_scope, _ = self._resolve_folder_scope(args.pop("folder"))
                 self._intersect_include_ref_ids(args, folder_scope)
+            # Kinds whose handler owns no native count view — the
+            # slug-addressed handlers (pres/structure/draft/conv/web/…)
+            # search blocks, not refs, so their ``search`` never declared
+            # ``view`` and the call died on "does not accept ['view']"
+            # (gr593053). Serve the same question from the store's
+            # ref-level count instead of falling through to that gate.
+            kind_s = self._expand_kind_code(str(kind).strip())
+            handler = None
+            if kind_s in self.hub.kinds:
+                try:
+                    handler = self.hub.handler_for(kind_s)
+                except Exception:  # pragma: no cover — defensive
+                    handler = None
+            search_fn = getattr(handler, "search", None)
+            if search_fn is None or "view" not in self._accepted_kwargs(search_fn):
+                return self._dispatch_generic_count(kind_s, dict(args))
 
         # Introspection views (mcp-introspection gap closures 2026-10-14):
         # ``view='meta'`` = per-kind meta-key inventory, ``view='tags'`` =

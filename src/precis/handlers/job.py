@@ -431,6 +431,18 @@ def _fmt_utc(value: Any) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt is not None else "-"
 
 
+def _fmt_bytes(n: int) -> str:
+    """Human-readable size — ``123 B`` / ``12.3 KiB`` … up to ``TiB``."""
+    size = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            if unit == "B":
+                return f"{n:,} B"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
 def _fmt_interval(seconds: int) -> str:
     """``300`` → ``5m``; whole hours/days collapse, else ``<n>s``."""
     s = int(seconds)
@@ -1077,6 +1089,7 @@ class JobHandler(NumericRefHandler):
             "garden",
             "garden/merges",
             "secrets",
+            "facts",
         )
 
     def get(
@@ -1281,6 +1294,8 @@ class JobHandler(NumericRefHandler):
             return self._render_garden_merges_view(view.partition("?")[2])
         if view == "secrets" or view.startswith("secrets?"):
             return self._render_secrets_view(view.partition("?")[2])
+        if view == "facts" or view.startswith("facts?"):
+            return self._render_facts_view(view.partition("?")[2])
         return super()._list_view(view)
 
     def _render_garden_view(
@@ -1519,6 +1534,156 @@ class JobHandler(NumericRefHandler):
             "lists the checker runs"
         )
         return Response(body="\n".join(lines), result_count=len(snap.entries))
+
+    def _render_facts_view(self, query_string: str) -> Response:
+        """``id='/facts'`` — the storage/health facts block (gr593053).
+
+        The weekly report's "quick facts" wanted numbers no MCP surface
+        carried: refs per kind, exact chunk/embedding counts with
+        coverage, PDF bytes by role, DB size, and the served build.
+        Everything here is read-only SQL over tables this server owns —
+        no host paths, no deploy-side state. One number has no in-DB
+        source today — the nightly DB backup's size and age live in
+        deploy-side stamps (``restic-last-ok``) this process can't see —
+        so the view reads the ``backup.*`` ``app_state`` contract
+        (``backup.last_run_at`` ISO, ``backup.last_size_bytes`` digits,
+        optional ``backup.last_kind``) and says plainly when nothing has
+        written it yet, instead of printing a stale figure from memory.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        if params:
+            raise BadInput(
+                f"unknown /facts filter {sorted(params)}",
+                next="get(kind='job', id='/facts')",
+            )
+        from precis.format import render_agent_table
+
+        with self.store.pool.connection() as conn:
+            kind_rows = conn.execute(
+                "SELECT kind, count(*) FROM refs WHERE retired_at IS NULL "
+                "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM "
+                "'search') GROUP BY kind ORDER BY count(*) DESC, kind"
+            ).fetchall()
+            chunk_row = conn.execute(
+                "SELECT count(*) FROM chunks WHERE retired_at IS NULL"
+            ).fetchone()
+            embed_row = conn.execute(
+                "SELECT count(*) FILTER (WHERE status = 'ok' "
+                "AND vector IS NOT NULL), "
+                "count(DISTINCT chunk_id) FILTER (WHERE status = 'ok' "
+                "AND vector IS NOT NULL), "
+                "count(*) FILTER (WHERE status = 'failed') "
+                "FROM chunk_embeddings"
+            ).fetchone()
+            pdf_rows = conn.execute(
+                "SELECT kind, count(*), sum(size_bytes) FROM ("
+                "SELECT DISTINCT r.kind, r.pdf_sha256, p.size_bytes "
+                "FROM refs r JOIN pdfs p ON p.pdf_sha256 = r.pdf_sha256 "
+                "WHERE r.retired_at IS NULL) t GROUP BY kind "
+                "ORDER BY sum(size_bytes) DESC, kind"
+            ).fetchall()
+            db_row = conn.execute(
+                "SELECT pg_database_size(current_database()), "
+                "pg_size_pretty(pg_database_size(current_database()))"
+            ).fetchone()
+
+        total_refs = sum(int(n) for _k, n in kind_rows)
+        n_chunks = int(chunk_row[0]) if chunk_row else 0
+        n_vectors = int(embed_row[0]) if embed_row else 0
+        n_embedded_chunks = int(embed_row[1]) if embed_row else 0
+        n_failed = int(embed_row[2]) if embed_row else 0
+        coverage = (100.0 * n_embedded_chunks / n_chunks) if n_chunks else 0.0
+        db_bytes = int(db_row[0]) if db_row else 0
+        db_pretty = str(db_row[1]) if db_row else "unknown"
+
+        from precis.handlers.skill import code_stamp
+
+        lines = [
+            "# facts — storage and health (read-only)",
+            "",
+            f"served: {code_stamp()}",
+            "",
+            f"## refs per kind ({total_refs:,} live, {len(kind_rows)} kinds)",
+        ]
+        if kind_rows:
+            lines.append(
+                render_agent_table(
+                    [{"kind": str(k), "refs": f"{int(n):,}"} for k, n in kind_rows],
+                    schema=["kind", "refs"],
+                )
+            )
+        else:
+            lines.append("(no live refs)")
+        lines += [
+            "",
+            "## chunks and embeddings",
+            "",
+            f"chunks: {n_chunks:,} live",
+            f"embeddings: {n_vectors:,} ok vectors "
+            f"({n_embedded_chunks:,} distinct chunks embedded, "
+            f"{coverage:.1f}% of live chunks)"
+            + (f", {n_failed:,} failed rows" if n_failed else ""),
+        ]
+        pdf_total = sum(int(b or 0) for _k, _n, b in pdf_rows)
+        lines += [
+            "",
+            f"## PDFs by role ({len(pdf_rows)} kinds, {_fmt_bytes(pdf_total)} total)",
+        ]
+        if pdf_rows:
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "role": str(k),
+                            "pdfs": f"{int(n):,}",
+                            "bytes": _fmt_bytes(int(b or 0)),
+                        }
+                        for k, n, b in pdf_rows
+                    ],
+                    schema=["role", "pdfs", "bytes"],
+                )
+            )
+        else:
+            lines.append("(no PDFs attached to live refs)")
+        lines += [
+            "",
+            "## database",
+            "",
+            f"db size: {db_pretty} ({db_bytes:,} bytes)",
+        ]
+        backup_at = self.store.get_setting("backup.last_run_at")
+        backup_bytes = self.store.get_setting("backup.last_size_bytes")
+        if backup_at is None and backup_bytes is None:
+            lines.append(
+                "backup: no in-DB record — the nightly dump's size and age "
+                "live in deploy-side stamps this server can't read. A "
+                "deploy-side writer can light this line up by setting "
+                "app_state backup.last_run_at (ISO) and "
+                "backup.last_size_bytes (digits)."
+            )
+        else:
+            when = str(backup_at) if backup_at else "unknown time"
+            try:
+                size = _fmt_bytes(int(str(backup_bytes))) if backup_bytes else "?"
+            except ValueError:
+                size = f"unparseable size {backup_bytes!r}"
+            lines.append(f"backup: {size} — last dump {when}")
+        lines.append("")
+        lines.append(
+            render_next_section(
+                [
+                    (
+                        "get(kind='skill', id='precis-status')",
+                        "build staleness, migrations, latency",
+                    ),
+                    (
+                        "search(kind='paper', view='count')",
+                        "filtered totals on the numeric-ref kinds",
+                    ),
+                ]
+            ).lstrip("\n")
+        )
+        return Response(body="\n".join(lines), result_count=total_refs)
 
     def _render_transcript_view(self, ref: Any) -> Response:
         """``view='transcript'`` — the compact forensic read (gr504491).

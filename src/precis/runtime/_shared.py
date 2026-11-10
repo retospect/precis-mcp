@@ -302,3 +302,6 @@ class RuntimeShape:
         self, view: str, kind: str | None, args: dict[str, Any]
     ) -> Response:
         raise NotImplementedError
+
+    def _dispatch_generic_count(self, kind: str, args: dict[str, Any]) -> Response:
+        raise NotImplementedError

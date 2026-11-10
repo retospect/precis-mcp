@@ -238,7 +238,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-recurring-help` | `meta.schedule` format + the **Watches** umbrella |
 | `precis-minter-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
-| `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /limits, /delta, /builds, /throughput, /cadence |
+| `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /limits, /delta, /builds, /throughput, /cadence, /facts |
 | `precis-fix-gripe-help` | `fix_gripe` job recipe (lane OFF since 2026-10-02; hand-submit only) |
 | `precis-gripe-loop-help` | The builder-wave loop on the gripe: `edit(mode='fix')` for batch/brief/assign/handoff/verdict/landed, `/queue` + `/batch` views |
 | `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |

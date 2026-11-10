@@ -160,6 +160,24 @@ Overrides (operator, no deploy — never hand SQL):
 A write audits to `worker_logs` and lands fleet-wide in ~60 s (30 s
 snapshot TTL).
 
+## Storage and health quick facts
+
+```python
+get(kind='job', id='/facts')
+# → served code stamp, refs per kind (live), chunks + exact embedding
+#   counts with coverage %, PDF count/bytes per role (paper, pres,
+#   datasheet, ...), DB size, and the newest backup's size + age when a
+#   deploy-side writer has recorded it in app_state (backup.last_run_at /
+#   backup.last_size_bytes).
+```
+
+The "how big is the corpus" block the weekly report's quick-facts line
+reads (gr593053) — one call, read-only, no Bash. Everything is SQL over
+tables this server owns; the backup line says `no in-DB record` until a
+writer stamps it rather than reporting a stale figure. Pair with
+`get(kind='skill', id='precis-status')` for build staleness and
+`search(kind=K, view='count')` for filtered totals on one kind.
+
 ## What changed since the last doctor tick?
 
 ```python

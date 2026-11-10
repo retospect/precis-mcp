@@ -4591,7 +4591,10 @@ _INTROSPECTION_POINTERS: tuple[str, ...] = (
     "- tag axes and values in use: `search(kind=K, view='tags')`; "
     "the refs carrying one: `search(kind=K, tags=['<value>'])`",
     "- passages inside one ref: `get(kind=K, id=N, q='<text>' | 're:<regex>')`",
-    "- totals and facets: `search(kind=K, view='count')`",
+    "- totals and facets: `search(kind=K, view='count')` "
+    "(every kind — block-search kinds count live refs)",
+    "- corpus storage facts: `get(kind='job', id='/facts')` "
+    "(refs per kind, chunk coverage, PDF bytes, DB size)",
 )
 
 #: ``(import name, display label, kinds it backs, pip install hint)``.

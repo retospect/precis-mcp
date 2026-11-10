@@ -20,6 +20,17 @@ dispatch-level views serve the same questions over the MCP surface:
 
 Both are single-kind, read-only and bounded — the same shape the
 ``view='count'`` interception established.
+
+A third member joined later: :meth:`_dispatch_generic_count` serves
+``search(kind=K, view='count')`` for kinds whose handler owns no native
+count view (gr593053 — the slug-addressed block kinds' ``search``
+signatures never declared ``view``, so the weekly report's
+"pres: N / structure: N / …" line died on "does not accept ['view']").
+It answers the same question at the refs level through
+``store.count_refs_facets`` — live-ref totals, ``tags=``/``status=``
+filters, ``since=``/``until=`` created_at bounds and ``group_by=``
+facets — and refuses what a ref-level count can't honour (``q=`` block
+matches) instead of silently counting the wrong set.
 """
 
 from __future__ import annotations
@@ -296,3 +307,156 @@ class IntrospectionMixin(RuntimeShape):
             ).lstrip("\n")
         )
         return Response(body="\n".join(lines))
+
+    # ── generic view='count' (gr593053) ───────────────────────────
+
+    #: Top-level args a ref-level count can't honour — named, not
+    #: swallowed, so a typo'd filter fails loudly.
+    _GENERIC_COUNT_UNSUPPORTED_TOP: tuple[str, ...] = (
+        "q",
+        "link",
+        "mode",
+        "under",
+        "cited",
+        "uncited",
+        "hubbed",
+        "scope",
+        "page",
+        "page_size",
+        "id_min",
+        "id_max",
+    )
+    #: args= keys the generic count reads.
+    _GENERIC_COUNT_ALLOWED_EXTRAS: frozenset[str] = frozenset(
+        {"group_by", "include_ref_ids", "exclude_ref_ids"}
+    )
+
+    def _dispatch_generic_count(self, kind: str, args: dict[str, Any]) -> Response:
+        """``search(kind=K, view='count')`` on a kind with no native count view.
+
+        gr593053: the weekly report's "quick facts" wanted
+        ``search(kind='pres'|'structure'|'pathway'|'draft'|'conv'|'web',
+        view='count')`` and each died on ``does not accept ['view']`` —
+        those handlers search *blocks*, not refs, so their ``search``
+        never declared ``view``. This fallback answers the ref-level
+        question they were actually asking ("how many live <kind> refs")
+        through the same :func:`~precis.store.Store.count_refs_facets`
+        primitive the numeric-ref kinds use, so the shape — ``# N
+        <kind> entries`` head, ``label: n`` facet rows — matches what
+        count consumers already parse.
+
+        Honest limits, said out loud: the counted set is refs
+        (``retired_at IS NULL``, the agentlog search-trace rows
+        excluded), filtered by ``tags=``/``status=`` and bounded by
+        ``since=``/``until=`` on ``refs.created_at``; ``group_by=``
+        facets work as on the native view. ``q=`` is refused — a
+        block-match count is a different question these kinds' search
+        would answer, and a title-lexical count wearing the same
+        spelling would lie. The header notes when this is the generic
+        path so a total read beside a numeric kind's filtered count
+        isn't mistaken for one.
+        """
+        from precis.handlers._numeric_ref import (
+            _COUNT_GROUP_LIMIT,
+            _count_facet_label,
+            _count_group_label,
+            _parse_count_facets,
+            _parse_window_bound,
+        )
+
+        if self.store is None:
+            raise Unsupported("view='count' needs a store-backed deployment")
+        bad = next(
+            (a for a in self._GENERIC_COUNT_UNSUPPORTED_TOP if args.get(a) is not None),
+            None,
+        )
+        if bad is not None:
+            raise BadInput(
+                f"{bad}= is not supported with view='count' on kind={kind!r} — "
+                "this kind counts live refs, not block matches",
+                next=(
+                    f"search(kind={kind!r}, view='count') for the ref total, "
+                    f"or search(kind={kind!r}, q='...') for the ranked blocks"
+                ),
+            )
+        raw_extras = args.get("__extras__")
+        extras = raw_extras if isinstance(raw_extras, dict) else {}
+        unknown = sorted(set(extras) - self._GENERIC_COUNT_ALLOWED_EXTRAS)
+        if unknown:
+            raise BadInput(
+                f"args= keys {unknown!r} not supported with view='count' "
+                f"on kind={kind!r}",
+                options=sorted(self._GENERIC_COUNT_ALLOWED_EXTRAS),
+            )
+        status = args.get("status")
+        tags_arg = args.get("tags")
+        filter_tags: list[str] = []
+        if isinstance(tags_arg, str):
+            filter_tags = [tags_arg]
+        elif isinstance(tags_arg, (list, tuple)):
+            filter_tags = [str(t) for t in tags_arg]
+        if status is not None and str(status).strip() and status != "*":
+            filter_tags.append(f"STATUS:{str(status).strip()}")
+        include_ref_ids = extras.get("include_ref_ids")
+        exclude_ref_ids = extras.get("exclude_ref_ids")
+        since_dt = _parse_window_bound(args.get("since"), "since")
+        until_dt = _parse_window_bound(args.get("until"), "until")
+        facets = _parse_count_facets(extras.get("group_by"))
+
+        total, groups = self.store.count_refs_facets(
+            kind=kind,
+            tags=filter_tags or None,
+            include_ref_ids=(
+                [int(i) for i in include_ref_ids] if include_ref_ids else None
+            ),
+            exclude_ref_ids=(
+                [int(i) for i in exclude_ref_ids] if exclude_ref_ids else None
+            ),
+            facets=facets,
+            group_limit=_COUNT_GROUP_LIMIT,
+            since=since_dt,
+            until=until_dt,
+        )
+
+        filters: list[str] = []
+        if filter_tags:
+            filters.append(f"tags={filter_tags!r}")
+        if since_dt is not None or until_dt is not None:
+            lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
+            hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
+            filters.append(f"created [{lo}, {hi})")
+        head = f"# {total} {kind} entr{'y' if total == 1 else 'ies'}"
+        if filters:
+            head += f" ({', '.join(filters)})"
+        head += " — live refs"
+        parts = [head]
+        if facets:
+            parts.append("")
+            parts.append(" × ".join(_count_facet_label(f) for f in facets))
+            for vals, n, _span in groups:
+                parts.append(f"  {_count_group_label(vals, facets)}: {int(n)}")
+            if len(groups) == _COUNT_GROUP_LIMIT:
+                parts.append(
+                    f"  … (top {_COUNT_GROUP_LIMIT} groups by count — "
+                    "narrow the filter set for the rest)"
+                )
+        parts.append("")
+        parts.append(
+            "ref-level count on a kind whose search reads blocks — "
+            "q= block-match counts aren't available here."
+        )
+        parts.append(
+            render_next_section(
+                [
+                    (
+                        f"search(kind={kind!r}, q='...')",
+                        "the ranked block search this kind serves",
+                    ),
+                    (
+                        "get(kind='job', id='/facts')",
+                        "storage facts: refs per kind, chunk coverage, PDF bytes",
+                    ),
+                ]
+            ).lstrip("\n")
+        )
+        return Response(body="\n".join(parts), result_count=total)
