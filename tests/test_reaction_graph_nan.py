@@ -169,7 +169,11 @@ def test_compare_view_shows_na_for_missing_barriers():
         [{"slug": "unknown", "graph": graph, "root": "s0", "target": "s1"}]
     )
     row = next(ln for ln in comparison.splitlines() if ln.startswith("unknown\t"))
-    cells = row.split("\t")
-    # gate, ‡ barrier column, RATE, SPAN and conf are all n/a — none reads "ok"
-    assert cells.count("n/a") == 5
+    header = next(ln for ln in comparison.splitlines() if ln.startswith("{cand\t"))
+    cells = dict(zip(header[1:-1].split("\t"), row.split("\t"), strict=True))
+    _, positions = rg.profile_positions(graph, "s0", "s1")
+    (barrier_column,) = [col["pos"] for col in positions if col["kind"] == "ts"]
+    # Unknown barriers and unsupplied trust fields must never imply measurement.
+    for field in ("gate", "anchor", barrier_column, "RATE", "SPAN", "conf"):
+        assert cells[field] == "n/a"
     assert "ok" not in row

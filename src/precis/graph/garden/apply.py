@@ -2293,10 +2293,12 @@ def apply_retire(
         target, garden, _body = _checked_memory_proposal(
             store, conn, review_id, "retire"
         )
-        _compact_first(store, conn, target)
+        # Stale successor evidence must close retryably before checking
+        # compaction; both checks still precede every retirement write.
         rec = _retirement_snapshot(
             store, conn, target, garden, review_id, successor=None
         )
+        _compact_first(store, conn, target)
         _resolve_memory_apply(
             store,
             conn,

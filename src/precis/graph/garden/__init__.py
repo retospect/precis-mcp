@@ -27,6 +27,7 @@ fresh proposals. Applied find/span pairs must match fresh detector ops; link
 removals refuse, preventing model overrides from expanding detector edit scope.
 Undo terminally rejects restored content, preventing next-tick reapplication.
 Supersede and retire snapshot links for undo, refusing changed endpoints.
+Retirement validates successor evidence before compaction so stale proposals close retryably.
 Supersede checks incoming and outgoing part-of migrations
 before writing and refuses edges that close a containment cycle. A direct
 parent remains a valid successor: migration drops the collapsed self-loop.
