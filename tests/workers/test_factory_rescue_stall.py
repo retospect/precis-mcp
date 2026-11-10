@@ -372,6 +372,73 @@ def test_post_land_write_nothing_new_still_rescues(store: Store) -> None:
     assert "landed: nothing" in comment
 
 
+def test_post_land_write_fill_stops_at_the_revert_handoff(store: Store) -> None:
+    """td626034: a review REVERT resets the gate and requeues the build
+    with a ``handoff: review: REVERT`` comment; after the rebuild's
+    no-diff reland the gate is pending again, and the stall pass must
+    NOT fill it from the build's pre-REVERT ``landed:`` comment — that
+    sha is the commit the revert took off main."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _comment(store, build, "landed: a1b2c3d — the fix")
+    _comment(
+        store,
+        build,
+        "handoff: review: REVERT — breaks prod\n\n(review td7; reverted by "
+        "td9 — rebuild after it lands, from the brief, with this finding "
+        "in mind)",
+    )
+    _comment(
+        store,
+        build,
+        "landed: nothing — branch had no net diff against origin/main "
+        "(already on main)",
+    )
+    gate = _gate(store, root, PENDING_SHA, blocked_by=build)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(gate, "post-land-write", "idle")]
+    assert _rescue_tags(store, gate) == ["rescue:post-land-write"]
+    ref = store.get_ref(kind="todo", id=gate)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == PENDING_SHA
+    # the rescue evidence never names the reverted sha either
+    evidence = "\n".join(_comments(store, gate))
+    assert "a1b2c3d" not in evidence
+
+
+def test_post_land_write_fill_recovers_a_landed_comment_after_the_revert(
+    store: Store,
+) -> None:
+    """The boundary is the REVERT handoff itself: a ``landed:`` comment
+    NEWER than it — the rebuild's own land, its gate write lost — is
+    still the sha the gate waits on (gr576154)."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _comment(store, build, "landed: a1b2c3d — the fix")
+    _comment(
+        store,
+        build,
+        "handoff: review: REVERT — breaks prod\n\n(review td7; reverted by "
+        "td9 — rebuild after it lands, from the brief, with this finding "
+        "in mind)",
+    )
+    _comment(store, build, "landed: d4e5f6a — the rebuild")
+    gate = _gate(store, root, PENDING_SHA, blocked_by=build)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [] and res.would_rescue == []
+    assert _rescue_tags(store, gate) == []
+    ref = store.get_ref(kind="todo", id=gate)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == "d4e5f6a"
+    assert _sig_gripes(store) == []
+    (comment,) = _comments(store, gate)
+    assert comment == f"sha: d4e5f6a — landed by td{build} (stall-pass fill)"
+
+
 # ── holds: a hold is not a stall (one test per hold) ──────────────
 
 

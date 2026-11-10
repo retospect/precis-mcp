@@ -830,6 +830,86 @@ def test_poll_no_diff_reland_fills_the_gate_from_the_landed_comment(
     assert "from the todo's landed comment" in summary
 
 
+def test_poll_no_diff_reland_after_a_revert_leaves_the_gate_pending(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td626034: a REVERT verdict resets the plan's gate and requeues the
+    todo with a ``handoff: review: REVERT`` comment; the rebuild's no-diff
+    reland must NOT recover the old ``landed:`` sha — that comment names
+    the commit the revert took off main."""
+    monkeypatch.setattr(land_slice, "log_plan_event", lambda *a, **k: 1)
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub", "plan:40"),
+        comments=(
+            f"landed: {FULL_SHA[:9]} — {SUBJECT}",
+            "handoff: review: REVERT — breaks prod\n\n"
+            "(review td7; reverted by td9 — rebuild after it lands, from "
+            "the brief, with this finding in mind)",
+        ),
+    )
+    store.add_todo(
+        44,
+        status="open",
+        tags=("plan:40",),
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+    )
+    seams["gates"] = [(44, True)]
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert pctx.meta_set["landed_sha"] is None
+    assert pctx.meta_set["gate_id"] == 44
+    # the reverted sha is not recovered into the reset gate
+    assert store.refs[44].meta["gate"]["args"]["sha"] == PENDING_SHA
+    assert store.comments(44) == []
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "left pending" in summary
+
+
+def test_poll_no_diff_reland_recovers_a_landed_comment_newer_than_the_revert(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boundary is the REVERT handoff itself: a ``landed:`` comment
+    NEWER than it — the rebuild's own land, its gate write lost — is
+    still the sha the gate waits on (gr576154)."""
+    monkeypatch.setattr(land_slice, "log_plan_event", lambda *a, **k: 1)
+    rebuild_sha = "d4e5f6a" + "0" * 33
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub", "plan:40"),
+        comments=(
+            f"landed: {FULL_SHA[:9]} — {SUBJECT}",
+            "handoff: review: REVERT — breaks prod\n\n"
+            "(review td7; reverted by td9 — rebuild after it lands, from "
+            "the brief, with this finding in mind)",
+            f"landed: {rebuild_sha[:9]} — {SUBJECT}",
+        ),
+    )
+    store.add_todo(
+        44,
+        status="open",
+        tags=("plan:40",),
+        meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
+    )
+    seams["gates"] = [(44, True)]
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert pctx.meta_set["gate_id"] == 44
+    # the post-REVERT land's sha is the recoverable one
+    assert store.refs[44].meta["gate"]["args"]["sha"] == rebuild_sha[:9]
+    assert store.comments(44)[-1] == f"sha: {rebuild_sha[:9]} — landed by td42"
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "from the todo's landed comment" in summary
+
+
 def test_poll_green_writes_the_land_when_land_notify_did_not(
     seams: dict[str, Any],
 ) -> None:

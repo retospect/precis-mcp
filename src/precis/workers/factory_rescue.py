@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -445,7 +446,9 @@ def enter_rescue(
 # overrunning, a sha-in-prod gate that never opens, a root closed under
 # an open node, a land's post-land write that never landed (recoverable
 # when the build's ``landed:`` comment names the sha — the pass fills
-# the gate itself first, gr576154) — plus the ``tick-silent`` heartbeat
+# the gate itself first, gr576154, but never a ``landed:`` comment older
+# than the REVERT handoff a review REVERT leaves on the build, td626034)
+# — plus the ``tick-silent`` heartbeat
 # on plan_dispatch itself. A hold is not a
 # stall: ``waiting-for:``, ``halt``, paused, an open ask, ``rescue:`` or
 # a live ``blocked-by`` target exempt a node. Release plans belong to
@@ -865,8 +868,24 @@ def _branch_head(plan: Any, n: Any) -> str | None:
     return None
 
 
-def _landed_line(store: Store, plan: Any, gate: Any) -> str | None:
-    """The ``landed: <sha>`` comment the gate's build left, if any."""
+#: The reset/rearm boundary a review REVERT leaves on the requeued todo
+#: (``plan_dispatch._review_revert``): its ``handoff: review: REVERT — …``
+#: comment. A ``landed:`` comment OLDER than it names a sha the revert
+#: took off main — recovering it would refill the gate with the reverted
+#: commit (td626034). The ``(review td…; reverted by td…`` trailer is the
+#: machine-written half, so a builder's own handoff quoting the verdict
+#: never reads as the boundary.
+_REVERT_HANDOFF_RE = re.compile(
+    r"^handoff: review: REVERT\b[\s\S]*\(review td\d+; reverted by td\d+"
+)
+
+
+def _landed_lines(store: Store, plan: Any, gate: Any) -> Iterator[tuple[int, str]]:
+    """``(build todo id, line)`` for every ``landed:`` line on the gate's
+    ``blocked-by`` targets, newest chunk first. A blocker's scan stops at
+    its newest REVERT handoff (:data:`_REVERT_HANDOFF_RE`): a ``landed:``
+    line older than the reset/rearm boundary names a sha the revert took
+    off main, never one the gate may be filled with (td626034)."""
     for b in plan.blockers.get(gate.id, []):
         chunks = sorted(
             store.chunks.list_chunks_for_ref(b.id),
@@ -874,9 +893,19 @@ def _landed_line(store: Store, plan: Any, gate: Any) -> str | None:
             reverse=True,
         )
         for c in chunks:
-            for line in str(c.text).splitlines():
+            text = str(c.text).strip()
+            if _REVERT_HANDOFF_RE.match(text):
+                break
+            for line in text.splitlines():
                 if line.strip().lower().startswith("landed:"):
-                    return line.strip()
+                    yield b.id, line.strip()
+
+
+def _landed_line(store: Store, plan: Any, gate: Any) -> str | None:
+    """The ``landed: <sha>`` comment the gate's build left, if any — never
+    one older than the reset/rearm boundary (:func:`_landed_lines`)."""
+    for _bid, line in _landed_lines(store, plan, gate):
+        return line
     return None
 
 
@@ -889,18 +918,13 @@ _LANDED_SHA_RE = re.compile(r"^landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 def _landed_sha(store: Store, plan: Any, gate: Any) -> tuple[int, str] | None:
     """``(build todo id, sha)`` the newest ``landed: <sha>`` comment on the
     gate's ``blocked-by`` targets names — the write land_slice owed the
-    gate (gr576154); ``None`` when no landed comment parses to a sha."""
-    for b in plan.blockers.get(gate.id, []):
-        chunks = sorted(
-            store.chunks.list_chunks_for_ref(b.id),
-            key=lambda c: int(c.ord),
-            reverse=True,
-        )
-        for c in chunks:
-            for line in str(c.text).splitlines():
-                m = _LANDED_SHA_RE.match(line.strip())
-                if m is not None and m.group(1).lower() != PENDING_SHA:
-                    return b.id, m.group(1).lower()
+    gate (gr576154); ``None`` when no landed comment parses to a sha.
+    Comments older than the reset/rearm boundary are skipped
+    (:func:`_landed_lines`, td626034)."""
+    for bid, line in _landed_lines(store, plan, gate):
+        m = _LANDED_SHA_RE.match(line)
+        if m is not None and m.group(1).lower() != PENDING_SHA:
+            return bid, m.group(1).lower()
     return None
 
 

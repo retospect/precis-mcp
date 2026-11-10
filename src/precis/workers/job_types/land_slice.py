@@ -36,7 +36,9 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   with :data:`NO_DIFF_NOTE` and no PR is closed (gr561142: main's head is
   another land's commit); the gate stays pending — unless the todo's own
   ``landed:`` comment still names a sha, a reland after the first land's
-  gate write died mid-job, which fills it from that comment (gr576154).
+  gate write died mid-job, which fills it from that comment (gr576154) —
+  never one older than the ``handoff: review: REVERT`` a revert verdict
+  leaves on the todo: that sha is the reverted commit (td626034).
   The land that fills a
   ``gripe-fix`` plan's gate also moves the plan's gripe to the verify rung
   (``resolved: <sha>`` + ``STATUS:verify``, :func:`_notify_gripe`;
@@ -1142,18 +1144,34 @@ def _write_gate(store: Any, gate_id: int, sha: str, todo_id: int) -> None:
 #: (:data:`NO_DIFF_NOTE`) parses to no sha.
 _LANDED_COMMENT_RE = re.compile(r"^landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 
+#: The reset/rearm boundary a review REVERT leaves on the requeued todo
+#: (``plan_dispatch._review_revert``): its ``handoff: review: REVERT — …``
+#: comment. A ``landed:`` comment OLDER than it names a sha the revert
+#: took off main — recovering it would refill the gate with the reverted
+#: commit (td626034). The ``(review td…; reverted by td…`` trailer is the
+#: machine-written half, so a builder's own handoff quoting the verdict
+#: never reads as the boundary.
+_REVERT_HANDOFF_RE = re.compile(
+    r"^handoff: review: REVERT\b[\s\S]*\(review td\d+; reverted by td\d+"
+)
+
 
 def _landed_comment_sha(store: Any, todo_id: int) -> str | None:
     """The sha the todo's newest ``landed: <sha>`` comment names. A reland
     after a land that pushed but died before its gate write finds no diff
     and no new sha — the earlier land's comment is the sha the plan's
     gate waits on (gr576154). ``None`` when no landed comment parses (a
-    ``landed: nothing`` no-diff note, or the todo never landed)."""
+    ``landed: nothing`` no-diff note, the todo never landed, or the only
+    ``landed:`` comments predate the REVERT handoff — those name the
+    reverted commit, td626034)."""
     comments = [
         c for c in _rs._todo_chunks(store, todo_id) if c.chunk_kind == _rs._COMMENT_KIND
     ]
     for c in sorted(comments, key=lambda c: int(c.ord), reverse=True):
-        for line in str(c.text).splitlines():
+        text = str(c.text).strip()
+        if _REVERT_HANDOFF_RE.match(text):
+            break
+        for line in text.splitlines():
             m = _LANDED_COMMENT_RE.match(line.strip())
             if m is not None and m.group(1).lower() != PENDING_SHA:
                 return m.group(1).lower()
