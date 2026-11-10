@@ -197,6 +197,38 @@ class TestLlmSummarizeMemoryTier:
         assert len(interactive) <= limit - bulk_reserve(limit)
         assert len(bulk) >= bulk_reserve(limit)
 
+    def test_reclaim_slice_preserves_bulk_reserve(self, store: Store) -> None:
+        """The reserved reclaim slice cannot spend the bulk floor: at
+        limit=16 two expired memory claims plus a 14-chunk memory burst
+        still leave ``bulk_reserve(16)`` slots for papers — before the
+        fix, reclaim + interactive filled the whole batch."""
+        stale_ids = [_seed_memory(store)[1] for _ in range(2)]
+        mem_ids = [_seed_memory(store)[1] for _ in range(14)]
+        _paper_ref, paper_ids = seed_chunks(store, [_PROSE] * 4)
+
+        limit = 16  # reclaim slice = min(2, 16//8) = 2; bulk_reserve(16) = 2
+        with store.pool.connection() as conn:
+            # Past the 20-minute lease cooldown, inside the 8 h GC window —
+            # the reserved reclaim slice takes both.
+            conn.execute(
+                "INSERT INTO chunk_claims (chunk_id, artifact, claimed_at) "
+                "SELECT cid, 'llm-v1', now() - interval '1 hour' "
+                "FROM unnest(%s::bigint[]) AS cid",
+                (stale_ids,),
+            )
+            claimed = claim_chunks_without_summary(
+                conn, summarizer="llm-v1", limit=limit
+            )
+            conn.commit()
+
+        ids = [c.chunk_id for c in claimed]
+        assert len(ids) == limit
+        assert len([i for i in ids if i in stale_ids]) == 2
+        fresh_mem = [i for i in ids if i in mem_ids]
+        bulk = [i for i in ids if i in paper_ids]
+        assert len(fresh_mem) <= limit - bulk_reserve(limit) - len(stale_ids)
+        assert len(bulk) >= bulk_reserve(limit)
+
 
 class TestBulkReserveShape:
     @pytest.mark.parametrize(

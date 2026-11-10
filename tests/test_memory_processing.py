@@ -151,6 +151,70 @@ def test_queued_position_counts_pending_work_ahead(
     assert ahead >= int(row[0])
 
 
+def test_queue_ahead_counts_pending_despite_shadow_model_artifact(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """An artifact row under a different embedder whose content_sha
+    matches must not satisfy the pending-work predicate — unparsed, the
+    interpolated OR escaped the chunk/model constraints."""
+    first = id_of(handler.put(text=BODY, title="First note").body)
+    second = id_of(handler.put(text=BODY, title="Second note").body)
+    first_body = _chunks(store, first)["memory_body"]
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO embedders (name, dim, is_default) VALUES (%s, %s, false)",
+            ("memory-processing-shadow", store.embedding_dim()),
+        )
+        conn.execute(
+            "INSERT INTO chunk_embeddings "
+            "(chunk_id, embedder, status, content_sha) "
+            "SELECT chunk_id, %s, 'ok', content_sha "
+            "FROM chunks WHERE chunk_id = %s",
+            ("memory-processing-shadow", first_body),
+        )
+    try:
+        stage = _stage(processing_report(store, second), "embed:", "memory_body")
+        match = re.search(r"queue_ahead≈(\d+)", stage.detail)
+        assert match is not None
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM chunks c "
+                "WHERE c.ref_id = %s AND c.retired_at IS NULL",
+                (first,),
+            ).fetchone()
+        assert row is not None
+        # first's chunks plus second's own header card (ord -1) claim
+        # before second's body; the shadow-model row must not hide
+        # first's body chunk.
+        assert int(match.group(1)) == int(row[0]) + 1
+    finally:
+        with store.tx() as conn:
+            conn.execute(
+                "DELETE FROM chunk_embeddings WHERE embedder = %s",
+                ("memory-processing-shadow",),
+            )
+            conn.execute(
+                "DELETE FROM embedders WHERE name = %s",
+                ("memory-processing-shadow",),
+            )
+
+
+def test_keywords_blocked_on_body_embedding_is_not_queued(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The keyword claim gates on a current body embedding, so a body
+    without one is an eligibility delay, not a lane position."""
+    ref_id = id_of(handler.put(text=BODY, title="Blocked keywords").body)
+    stage = _stage(processing_report(store, ref_id), "keywords")
+    assert stage.state == "pending"
+    assert "phase=queued" not in stage.detail
+    assert "phase=awaiting-embedding" in stage.detail
+    _embed(store, [_chunks(store, ref_id)["memory_body"]])
+    stage = _stage(processing_report(store, ref_id), "keywords")
+    assert "phase=queued" in stage.detail
+    assert "lane=interactive tier 1" in stage.detail
+
+
 def test_claim_lease_marks_execution_phase(
     handler: MemoryHandler, store: Store
 ) -> None:

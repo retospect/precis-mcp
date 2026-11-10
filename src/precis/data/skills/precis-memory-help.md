@@ -150,6 +150,8 @@ drain. Each stage line names its `lane=` and, for a queued stage,
 awaiting a worker claim; `phase=claimed`/`phase=attempt-lease` means a
 worker lease is out (executing or abandoned — evidence cannot split those;
 claims re-open on their ~20 min cooldown, axis attempt leases ~60 min).
+`phase=awaiting-embedding` (keywords) is an eligibility delay — the claim
+gates on a current body embedding, so the stage holds no lane position yet.
 `not applicable`/`disabled` is eligibility, not delay. Failed
 embedding/summary rows include the recorded error and an operator next step.
 Dream move categorization has only ref tags, no input revision: an older

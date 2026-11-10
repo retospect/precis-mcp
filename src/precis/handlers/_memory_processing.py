@@ -149,7 +149,10 @@ class ProcessingReport:
             "never for the paper backlog to drain. phase=queued means "
             "eligible and awaiting a worker claim; phase=claimed or "
             "phase=attempt-lease means a worker lease is out — executing or "
-            "abandoned, which stored evidence cannot distinguish. Keyword failures "
+            "abandoned, which stored evidence cannot distinguish; "
+            "phase=awaiting-embedding means the keyword claim's current-"
+            "embedding prerequisite has not landed — the stage is not yet "
+            "eligible and holds no lane position. Keyword failures "
             "and completion times are not persisted. Artifact created_at is "
             "first insertion, not last completion. Worker enablement outside "
             "this DB is not inferred."
@@ -265,9 +268,21 @@ def _keywords(row: dict[str, Any]) -> Stage:
         "compared with current body content_sha; requires current body embedding"
     )
     if not complete:
+        # The claim's gate (claim_chunks_without_keywords): an ok, current
+        # body embedding must exist or the chunk is not claimable — an
+        # eligibility delay, not a lane position.
+        embedding_current = (
+            row["has_vector"]
+            and row["embedding_status"] == "ok"
+            and row["embedding_content_sha"] == row["content_sha"]
+        )
         detail += (
-            "; phase=queued (eligible once the body embedding is current; "
+            "; phase=queued (eligible, awaiting a worker claim; "
             "the keyword pass holds no durable lease)"
+            if embedding_current
+            else "; phase=awaiting-embedding (eligibility delay — the "
+            "claim gates on a current body embedding, so the stage holds "
+            "no lane position until the vector lands)"
         )
     return Stage(
         name,
@@ -367,7 +382,7 @@ _AHEAD_SQL = """
        AND NOT EXISTS (
              SELECT 1 FROM {table} o
               WHERE o.chunk_id = c.chunk_id AND o.{col} = %(model)s
-                AND {pending}
+                AND ({pending})
            )
        AND (c.ref_id < %(ref)s OR (c.ref_id = %(ref)s AND c.ord < %(ord)s))
 """

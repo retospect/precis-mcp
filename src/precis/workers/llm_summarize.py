@@ -620,9 +620,10 @@ _FRESH_TIERS: dict[str, tuple[str, str, str]] = {
 
 #: The interactive lanes — fresh/edited writes that jump the queue. Their
 #: combined claim per batch is capped at ``limit - bulk_reserve(limit)``
-#: (gr563702): a burst reorders the queue but cannot consume the bulk
-#: tiers' whole batch. ``hot``/``rest`` are the bulk side (papers and
-#: every other kind).
+#: minus whatever the reclaim slice already took (gr563702): a burst
+#: reorders the queue but cannot consume the bulk tiers' whole batch, and
+#: the bulk floor survives independently of reclaimed work.
+#: ``hot``/``rest`` are the bulk side (papers and every other kind).
 _INTERACTIVE_TIERS = frozenset({"memory", "draft", "conv"})
 
 
@@ -745,8 +746,9 @@ def claim_chunks_without_summary(
        plain ``ref_id, ord`` order would bury an open write-up or a
        just-minted memory (gr563702) behind the ~1M-chunk paper backlog and
        it would never summarise. The three share an interactive cap of
-       ``limit - bulk_reserve(limit)`` — the bulk tiers always keep a
-       floor of each batch.
+       ``limit - bulk_reserve(limit) - len(reclaimed)`` — the bulk tiers
+       always keep a floor of each batch, and the reserved reclaim slice
+       cannot spend it for them.
     4. **Fresh, hot** — every other never-seen chunk whose ``last_seen`` is
        inside :data:`HOT_WINDOW_MIN` (a document a human just opened in the
        reader, salience-heated via ``bump_salience_for_ref``), ``last_seen
@@ -780,10 +782,12 @@ def claim_chunks_without_summary(
     # (a paper a human just opened, salience-heated) jumps ahead of the
     # cold backlog but sits behind the actively-edited writes. The
     # interactive tiers share a cap of ``limit - bulk_reserve(limit)``
-    # so an interactive burst never consumes the bulk tiers' whole
-    # batch — the fairness floor that keeps papers progressing.
+    # MINUS the slots the reserved reclaim slice already took, so the
+    # bulk floor survives independently of reclaimed work: a reclaimed
+    # memory chunk plus a full interactive burst still leaves
+    # ``bulk_reserve`` slots for the fresh bulk tiers.
     rest_pass = f"summarize:{summarizer}"
-    interactive_cap = limit - bulk_reserve(limit)
+    interactive_cap = limit - bulk_reserve(limit) - len(claimed)
     interactive_claimed = 0
     for tier in ("memory", "draft", "conv", "hot", "rest"):
         if len(claimed) >= limit:
