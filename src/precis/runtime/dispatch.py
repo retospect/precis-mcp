@@ -1823,6 +1823,7 @@ class DispatchMixin(RuntimeShape):
                 if raw is not None
                 else sorted(str(k) for k, v in args.items() if v is not None)
             )
+            body_bytes = len(body.encode("utf-8", errors="replace"))
             record_call(
                 store,
                 ToolCallRecord(
@@ -1840,7 +1841,12 @@ class DispatchMixin(RuntimeShape):
                     profile=os.environ.get("PRECIS_MCP_PROFILE", "typed"),
                     session_id=session_id,
                     seq=seq,
-                    result_bytes=len(body.encode("utf-8", errors="replace")),
+                    result_bytes=body_bytes,
+                    # 0297 (gr604903): the same estimate the mcp_call log
+                    # line prints, recorded for every dispatch — not just
+                    # MCP-surface ones — so tokens-to-first-gold reads off
+                    # this table.
+                    result_tokens_est=body_bytes // 4,
                     error_head=(
                         error_head(body)
                         if is_error

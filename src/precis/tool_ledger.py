@@ -49,7 +49,13 @@ the PRODUCING JOB (``LlmRequest.source``: ``dream``, ``plan_tick``, …) from
 ``result_bytes`` (the UTF-8 byte count of the response text) is also on the
 plain-text ``mcp_call`` log line as ``response_bytes``, next to
 ``response_tokens_est`` (``response_bytes // 4``) — counts only, never
-content (memory-ablation-bench slice 1).
+content (memory-ablation-bench slice 1). Migration 0297 lifts that token
+estimate into ``result_tokens_est`` on this table itself (gr604903): the
+log line only covers MCP-surface calls, but the ledger row is written for
+every dispatch (MCP, CLI, in-process bench alike), so cumulative
+tokens-to-first-gold is one window function over ``(session_id, seq)`` —
+the queryable per-call token log the memory-ablation bench's primary
+metric reads.
 
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).
@@ -169,6 +175,12 @@ class ToolCallRecord:
     seq: int | None = None
     #: Byte length of the rendered response body (0209).
     result_bytes: int | None = None
+    #: Response-token estimate — ``result_bytes // 4`` (0297, gr604903),
+    #: the same estimator as the ``mcp_call`` log line's
+    #: ``response_tokens_est``. Written for every dispatch, not just
+    #: MCP-surface ones, so tokens-to-first-gold is computable from this
+    #: table alone.
+    result_tokens_est: int | None = None
     #: First line of the rendered error body — masked, bounded (0209).
     error_head: str | None = None
     #: Bounded JSON of scalar argument values — masked, truncated,
@@ -207,10 +219,10 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
             INSERT INTO tool_calls (
                 agentlog_id, source, profile, verb, kind, input_keys,
                 outcome, error_type, result_count, latency_ms,
-                session_id, seq, result_bytes, error_head, arg_sample,
-                client
+                session_id, seq, result_bytes, result_tokens_est,
+                error_head, arg_sample, client
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s)
+                      %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 rec.agentlog_id,
@@ -226,6 +238,7 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 rec.session_id,
                 rec.seq,
                 rec.result_bytes,
+                rec.result_tokens_est,
                 rec.error_head,
                 rec.arg_sample,
                 rec.client,
@@ -574,7 +587,7 @@ CALLS_MAX_SINCE_HOURS = DEFAULT_RETENTION_DAYS * 24
 _CALL_COLS = (
     "call_id, ts, agentlog_id, source, profile, verb, kind, input_keys, "
     "outcome, error_type, result_count, latency_ms, session_id, seq, "
-    "result_bytes, error_head, arg_sample, client"
+    "result_bytes, result_tokens_est, error_head, arg_sample, client"
 )
 
 
@@ -714,7 +727,8 @@ def sessions_rollup(
 
     One row per ``session_id`` (0209's key; NULL-session rows — CLI,
     inproc — correlate by ``agentlog_id`` instead and stay out): call
-    count (``hops``), summed ``result_bytes`` (``resp_bytes``), error
+    count (``hops``), summed ``result_bytes`` (``resp_bytes``) and summed
+    ``result_tokens_est`` (``resp_tokens``, 0297), error
     count, calls by verb, the count of *budget refusals* — calls
     :func:`precis._result_budget.fit_result_body` could not fit at all, carried
     on the row as ``error_type='ResultBudgetExceeded'`` — the count of
@@ -758,6 +772,7 @@ def sessions_rollup(
         rows = cur.execute(
             "SELECT session_id, count(*) AS hops, "
             "sum(result_bytes) AS resp_bytes, "
+            "sum(result_tokens_est) AS resp_tokens, "
             "count(*) FILTER (WHERE outcome = 'error') AS errors, "
             "count(*) FILTER (WHERE error_type = %(budget_err)s) "
             "AS budget_refusals, "
@@ -784,6 +799,7 @@ def sessions_rollup(
         for r in rows:
             r["calls_by_verb"] = verb_counts[r["session_id"]]
             r["resp_bytes"] = int(r["resp_bytes"] or 0)
+            r["resp_tokens"] = int(r["resp_tokens"] or 0)
             r["budget_refusals"] = int(r["budget_refusals"])
             r["budget_fits"] = int(r["budget_fits"])
     return {

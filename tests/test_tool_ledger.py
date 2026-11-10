@@ -492,7 +492,8 @@ class TestCallsRead:
 
 class TestSessionsRollup:
     """Block-navigation slice 2 — the per-session meter: hops, summed
-    response bytes, calls by verb, budget refusals, wall span."""
+    response bytes and token estimate, calls by verb, budget refusals,
+    wall span."""
 
     def _session_rows(self, store: Any, tag: str) -> tuple[str, str]:
         """Two tagged sessions. ``sess-<tag>-a``: get ok (100 B) + a get
@@ -583,6 +584,33 @@ class TestSessionsRollup:
         assert "continuations" not in a
         assert a["first_ts"] is not None and a["last_ts"] is not None
         assert isinstance(a["span_seconds"], int)
+
+    def test_rollup_sums_response_tokens(self, store: Any) -> None:
+        """0297 (gr604903): ``resp_tokens`` sums ``result_tokens_est``,
+        NULL-safe for pre-0297 rows that carry bytes but no estimate."""
+        tag = uuid4().hex[:8]
+        sid = f"tok-{tag}"
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                session_id=sid,
+                seq=1,
+                result_bytes=103,
+                result_tokens_est=25,
+            ),
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get", session_id=sid, seq=2, result_bytes=7, result_tokens_est=1
+            ),
+        )
+        tool_ledger.record_call(store, _rec(verb="get", session_id=sid, seq=3))
+        out = tool_ledger.sessions_rollup(store, session=sid, since_hours=1)
+        (row,) = out["rows"]
+        assert row["resp_bytes"] == 110
+        assert row["resp_tokens"] == 26
 
     def test_rollup_wall_span(self, store: Any) -> None:
         tag = uuid4().hex[:8]

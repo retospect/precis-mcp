@@ -193,7 +193,9 @@ def test_ledger_row_and_log_line_agree_on_bytes(
     runtime_with_store, monkeypatch, caplog
 ) -> None:
     """The ``tool_calls.result_bytes`` row and the log line's
-    ``response_bytes`` are the same count for one call."""
+    ``response_bytes`` are the same count for one call — and likewise
+    the token estimate on both surfaces (0297 pins the ledger side, so
+    tokens-to-first-gold no longer depends on grepping the text log)."""
     monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
     with caplog.at_level(logging.INFO, logger="precis.tools.mcp_calls"):
         result = core._dispatch_as_user(
@@ -201,14 +203,17 @@ def test_ledger_row_and_log_line_agree_on_bytes(
         )
     assert isinstance(result, str)
     expected = len(result.encode("utf-8"))
-    assert f"response_bytes={expected} " in caplog.records[-1].getMessage()
+    msg = caplog.records[-1].getMessage()
+    assert f"response_bytes={expected} " in msg
+    assert f"response_tokens_est={expected // 4} " in msg
 
     store = runtime_with_store.store
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT result_bytes FROM tool_calls WHERE verb='get' "
+            "SELECT result_bytes, result_tokens_est FROM tool_calls WHERE verb='get' "
             "AND kind='skill' AND ts > now() - interval '1 minute' "
             "ORDER BY call_id DESC LIMIT 1"
         ).fetchone()
     assert row is not None
     assert row[0] == expected
+    assert row[1] == expected // 4

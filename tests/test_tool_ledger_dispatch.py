@@ -427,6 +427,52 @@ def test_dispatch_ledger_result_bytes_equals_body_length(
     assert row[0] == len(body.encode("utf-8"))
 
 
+def test_dispatch_ledger_result_tokens_est_populated(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """0297 (gr604903) — the direct confirmation the quest tick asked for:
+    every dispatch writes ``result_tokens_est`` (``result_bytes // 4``,
+    the same estimator as the ``mcp_call`` log line) on its ledger row,
+    including in-process dispatches the log line never sees — so
+    tokens-to-first-gold is computable from ``tool_calls`` alone."""
+    tag = uuid4().hex[:8]
+    _, is_error = runtime_with_store.dispatch_with_status(
+        "put",
+        {"kind": "memory", "text": f"body-{tag}", "title": f"tok-{tag}"},
+    )
+    assert is_error is False
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind='memory' AND title=%s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (f"tok-{tag}",),
+        ).fetchone()
+    assert row is not None
+    ref_id = int(row[0])
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": str(ref_id)}
+    )
+    assert is_error is False, body
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT result_bytes, result_tokens_est FROM tool_calls "
+            "WHERE verb='get' AND kind='memory' "
+            "AND arg_sample::text LIKE %s "
+            "AND ts > now() - interval '1 minute' "
+            "ORDER BY call_id DESC LIMIT 1",
+            (f'%"{ref_id}"%',),
+        ).fetchone()
+    assert row is not None
+    body_bytes = len(body.encode("utf-8"))
+    assert row[0] == body_bytes
+    assert row[1] == body_bytes // 4
+
+
 def test_dispatch_survives_ledger_write_failure(
     runtime_with_store: PrecisRuntime, monkeypatch: Any
 ) -> None:

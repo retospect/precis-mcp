@@ -166,7 +166,10 @@ def _log_tool_call(
     returned to the client, error text included; ``-`` when unmeasured)
     and ``response_tokens_est`` (``response_bytes // 4``, a rough token
     count). Counts only, never content; the same byte count lands in
-    ``tool_calls.result_bytes`` (``precis.tool_ledger``).
+    ``tool_calls.result_bytes`` and the same estimate in
+    ``tool_calls.result_tokens_est`` (0297) — the ledger records both for
+    every dispatch, the log line only for MCP-surface calls
+    (``precis.tool_ledger``).
     """
     import os
 
