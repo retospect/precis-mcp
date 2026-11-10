@@ -1213,6 +1213,7 @@ def claim_executor_jobs(
     respect_reserve: bool = False,
     check_job_type_requires: bool = False,
     reclaim_counts_toward_limit: bool = False,
+    exclude_job_types: frozenset[str] = frozenset(),
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
@@ -1401,6 +1402,15 @@ def claim_executor_jobs(
     above is unsafe for a Yield-heavy coordinator job_type like
     ``quest_tick``). Off by default: every other caller is unaffected.
 
+    **Process-local exclusion (gr623024).** ``exclude_job_types`` is the
+    claiming PROCESS's own "cannot run" list (``job_inproc`` passes the
+    job_types whose needed capability, e.g. ``repo_checkout``, this process
+    lacks). The host-level gate above reads ``resource_slots``, which is
+    keyed per HOST: a sibling worker process with the capability makes the
+    host advertise it for every process on it. The names join the operator
+    suspend list in the candidate SQL, so the row stays queued, untouched,
+    for a capable process — never claimed-then-released.
+
     **Placement gate (td543917).** Always on: a row whose job_type's
     ``ServiceSpec.placement`` (:func:`placement_requires`) names a token the
     running host does not advertise is dropped the same way
@@ -1486,7 +1496,7 @@ def claim_executor_jobs(
     # wait in place; in-flight rows keep polling/finishing normally. The
     # COALESCE keeps a job with no ``meta.job_type`` claimable (it can't
     # match any suspended name).
-    suspended = suspended_job_types()
+    suspended = suspended_job_types() | exclude_job_types
     suspend_sql = ""
     suspend_params: tuple[list[str], ...] = ()
     if suspended:

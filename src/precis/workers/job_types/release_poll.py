@@ -2872,9 +2872,53 @@ def run_pass(
     return res
 
 
+#: A checkout-less process re-parks the poll at most this many times (two
+#: minutes apiece, ~48 min) before the job fails with a named reason.
+_NO_CHECKOUT_PARK_CAP = 24
+_NO_CHECKOUT_PARK_S = 120
+
+
+def _defer_without_checkout(ctx: Any) -> bool:
+    """``True`` when this process has no repo checkout and the poll was
+    handed back (gr623024).
+
+    The claim filter keeps the poll off a checkout-less ``job_inproc``
+    process (:func:`precis.workers.executors.job_inproc.
+    process_unclaimable_job_types`); this is the backstop for a claim that
+    still lands (an env change since the process probed, a reclaim). The
+    gate scan would raise out of ``run_slice.slice_root`` and the poll end
+    "blocked — engine review gate unreadable … fail closed", which reads
+    as a finished tick and blocks minting for hours. Instead the job parks
+    (``ctx.defer`` -> ``STATUS:waiting_time``, re-queued by the wake runner)
+    for a capable process to pick up; these placement parks count under
+    ``placement_parks``, not the pause-park cap. Past
+    :data:`_NO_CHECKOUT_PARK_CAP` or without ``ctx.defer`` the job fails
+    with the reason, never succeeds."""
+    from precis.workers import capability_probe
+
+    if capability_probe._probe_repo_checkout() != 0:
+        return False
+    reason = (
+        "release_poll: no repo checkout on this worker process "
+        "(run_slice.slice_root unresolved); next: a process with "
+        "PRECIS_SLICE_ROOT claims it — set it on every job_inproc lane "
+        "(deploy/playbooks/20d-precis-worker-drain.yml)"
+    )
+    parks = int(ctx.meta.get("placement_parks") or 0) + 1
+    if parks <= _NO_CHECKOUT_PARK_CAP and ctx.defer is not None:
+        ctx.set_meta(pause_parks=0, placement_parks=parks)
+        wake = datetime.now(UTC) + timedelta(seconds=_NO_CHECKOUT_PARK_S)
+        if ctx.defer(wake, reason):
+            return True
+    ctx.record_failure(reason)
+    return True
+
+
 def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     """``job_inproc`` plugin dispatcher: one pass, summary on the job."""
     del spec
+    if _defer_without_checkout(ctx):
+        return
     params = dict(ctx.meta.get("params") or {})
     try:
         res = run_pass(

@@ -45,6 +45,7 @@ immediately.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import time
@@ -130,6 +131,53 @@ def _lease_seconds() -> int:
         return _DEFAULT_LEASE_S
 
 
+@functools.cache
+def process_unclaimable_job_types() -> frozenset[str]:
+    """Job types THIS process cannot run, computed once per process
+    (gr623024).
+
+    The claim gate's host-level capability check reads ``resource_slots``,
+    keyed per HOST: when one worker process on a host has
+    ``PRECIS_SLICE_ROOT`` the host advertises ``repo_checkout`` and every
+    checkout-less ``job_inproc`` process beside it passes the gate, claims
+    ``release_poll`` and fails closed in ``run_slice.slice_root()``. The
+    process-local capabilities are probed here instead — only ``repo_checkout``
+    differs between processes on one host (env-driven); the rest stay with
+    the host-level gate. A probe of ``None`` (unknown) excludes nothing. A
+    job_type whose ``requires`` / ``conditional_requires`` names a missing
+    capability is returned, to be excluded in the claim SQL so the row stays
+    queued for a capable process.
+    """
+    from precis.workers import capability_probe
+
+    missing: set[str] = set()
+    if capability_probe._probe_repo_checkout() == 0:
+        missing.add("repo_checkout")
+    if not missing:
+        return frozenset()
+    out: set[str] = set()
+    for name in known_job_types():
+        try:
+            spec = get_job_type(name)
+        except Exception:  # a broken plugin must not wedge the claim
+            log.warning("job_inproc: job_type %r failed to load", name, exc_info=True)
+            continue
+        if spec is None:
+            continue
+        needs = set(spec.requires)
+        if spec.conditional_requires is not None:
+            needs |= spec.conditional_requires({})
+        if needs & missing:
+            out.add(name)
+    if out:
+        log.info(
+            "job_inproc: no %s on this process; leaving %s queued for a capable one",
+            sorted(missing),
+            sorted(out),
+        )
+    return frozenset(out)
+
+
 def renew_own_lease(store: Store, ref_id: int, meta: dict[str, Any]) -> bool:
     """Renew THIS job's own lease mid-drain — called by a long-running
     job_type's dispatch loop (``embed_batch``'s ``claim_batch`` iteration)
@@ -174,6 +222,9 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     gate (gr537770) — a job_type's declared host capabilities
     (``paper_pull``'s upload leg needs ``upload_staging``) hold the row
     queued on a host that doesn't advertise them, for one that does.
+    ``exclude_job_types`` is the additional per-PROCESS filter (gr623024,
+    :func:`process_unclaimable_job_types`): a sibling process's checkout
+    makes the host advertise ``repo_checkout`` for every process on it.
     """
     node = os.environ.get("PRECIS_NODE")
     poisoned = 0
@@ -187,6 +238,7 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             reclaim_stale_running=True,
             respect_reserve=True,
             check_job_type_requires=True,
+            exclude_job_types=process_unclaimable_job_types(),
         )
         if not rows:
             conn.commit()
