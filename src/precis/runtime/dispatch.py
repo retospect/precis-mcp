@@ -645,6 +645,76 @@ def _alias_parent_id(
     kw["parent_id"] = kw.pop("parent")
 
 
+def _fold_get_full_flag(
+    cls: type[Handler],
+    method: Any,
+    kind: str,
+    args: dict[str, Any],
+    extras: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Fold a caller's ``full=`` flag onto ``view='full'`` (gr593337).
+
+    ``full`` is get's verb-declared skill knob (``tools/core.py::get`` —
+    it forces a full re-serve past ``have=<rev>``); no other kind's get
+    declares it, but callers generalise the spelling anyway — the prod
+    ledger showed ``get(kind='todo', id=…, full=true)`` refused 8× in
+    one session. On a kind whose ``get`` doesn't declare it the flag
+    has exactly one reading — "the complete read" — which is what
+    ``view='full'`` already spells family-wide (todo/gripe/memory/job
+    fold it to the complete card; a kind that doesn't know the view
+    refuses with its own vocabulary). Normalise before the kwargs
+    gates, like ``args={'retired': True}`` above: both the verb-level
+    top-level kwarg and the ``args={'full': …}`` near-miss.
+
+    A handler that declares ``full`` itself (skill) or tolerates extra
+    kwargs (random) keeps it untouched; ``full=false`` asserts nothing
+    and drops. ``full=true`` against an explicit ``view=`` other than
+    'full' refuses — two readings can't collapse silently.
+    """
+    if getattr(
+        method, TOLERATES_EXTRA_KWARGS_ATTR, False
+    ) or "full" in _handler_accepted_kwargs(cls, "get"):
+        return extras
+    flag = args.pop("full", None)
+    if isinstance(extras, dict) and "full" in extras:
+        extras = dict(extras)
+        nested = extras.pop("full")
+        if (
+            flag is not None
+            and nested is not None
+            and _flag_truthy(flag) != _flag_truthy(nested)
+        ):
+            raise BadInput(
+                f"full={flag!r} and args={{'full': {nested!r}}} disagree — "
+                "the complete-read flag is one argument",
+                next=f"get(kind={kind!r}, id=<ref>, view='full')",
+            )
+        if flag is None:
+            flag = nested
+    if not _flag_truthy(flag):
+        return extras
+    if args.get("view") not in (None, "full"):
+        raise BadInput(
+            f"full=True conflicts with view={args['view']!r} — "
+            "the complete read is view='full'",
+            next=f"get(kind={kind!r}, id=<ref>, view='full')",
+        )
+    args["view"] = "full"
+    return extras
+
+
+def _flag_truthy(value: Any) -> bool:
+    """Truthiness of a caller flag that may arrive as a JSON string —
+    undeclared keys aren't schema-coerced, so ``full='false'`` must not
+    read as set."""
+    if isinstance(value, str):
+        try:
+            return bool(json.loads(value))
+        except ValueError:
+            return bool(value.strip())
+    return bool(value)
+
+
 #: Top-level parameters each slim verb advertises (30-day prod ledger).
 CORE_PARAMS: dict[str, tuple[str, ...]] = {
     "put": (
@@ -3691,6 +3761,8 @@ class DispatchMixin(RuntimeShape):
                         next="get(id=<handle>, view='retired')",
                     )
                 args["view"] = "retired"
+        if verb == "get":
+            extras = _fold_get_full_flag(type(handler), method, kind, args, extras)
         if extras:
             accepted = self._accepted_kwargs(method)
             # Handlers that opt into an explicit ``args: dict``

@@ -974,7 +974,9 @@ def get(
     # to one tags:/kinds: frontmatter axis value — distinct from a
     # per-ref smart-toc (see precis-toc-help), which these don't touch.
     # Declared at the verb level so strict-schema MCP clients don't
-    # strip them; other kinds' get() ignore them.
+    # strip them. On a kind whose get() doesn't declare `full` the flag
+    # folds to `view='full'` — the complete-read spelling callers
+    # generalise from here (gr593337).
     full: bool | None = None,
     tag: str | None = None,
     kinds: str | None = None,
@@ -1001,7 +1003,8 @@ def get(
     counts; expand with `q='<kind>:<label>'`); any rung + '+recall'
     (similar unlinked refs).
     `project=`: draft's owning todo. `spec=`: component bom. `full=`,
-    `tag=`, `kinds=`: skill. NotFound "unknown kind" with "routes through
+    `tag=`, `kinds=`: skill (`full` folds to `view='full'` on other
+    kinds). NotFound "unknown kind" with "routes through
     host(s)": see the full reference.
 
     Full reference: get(kind='skill', id='precis-get-help').
