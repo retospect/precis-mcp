@@ -89,7 +89,11 @@ Review rows and trust acts retain the original model string.
    general ancestry oracle and thread_shape needs no network or git.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate renders it into a structured verdict
-   (``accept``/rationale). Model placement is configuration: the call
+   (``accept``/rationale). Memory-body candidates (the memory detectors)
+   get the node's fisheye+1hop plus the ``precis-fix-memory-gripe-help``
+   checklist pinned verbatim and answer the one-action JSON:
+   rewrite / qualify / supersede / retire / no-change / ask (gr560762).
+   Model placement is configuration: the call
    carries ``source='graph_garden:propose'`` (an ``llm.op.*`` row steers
    it; see ``precis.utils.llm.operations``). Nothing is pinned to a
    host or model name in code.
@@ -119,7 +123,9 @@ Review rows and trust acts retain the original model string.
    share this review budget. Eligibility and apply-time re-checks use one
    detector registry so proposals that cannot apply do not spend a review.
    The six ``memory-review`` detectors stay pending without consumer review
-   or state changes. ``qualify`` and ``ask`` remain outside that consumer.
+   or state changes. ``qualify`` and ``ask`` remain outside that consumer;
+   an ``ask`` verdict files a ``memory-review`` todo from the runner
+   (tiered by smell class), never a proposal.
 
 **Memory reconciliation.** Memory candidates (including ``dup_pair``) and the
 interactive ``precis-make-memory`` skill share the packaged memory-help policy

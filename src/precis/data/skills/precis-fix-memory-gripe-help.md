@@ -8,6 +8,7 @@ answers:
   - what if two memories disagree about the same thing?
   - what if apparently contradictory memories name different referents?
   - how do I handle an undecidable memory dispute?
+  - what does a sound memory body need for its section type?
 applies-to: get/search/edit/link/tag (kind='memory'), get/put (kind='gripe')
 tags: [workflow, troubleshooting]
 kinds: [memory, gripe]
@@ -44,6 +45,51 @@ status: active
 vocabulary in the handoff; keep the dispute explicit in the edge and review
 todo, and leave the gripe open. Do not invent a substitute tag or silently
 close it.
+
+## The memory-body checklist
+
+Judge a memory body against its section type before proposing any
+action. The candidate's detector evidence says what was checked; this
+table says what a sound body needs. Title shape applies on every type:
+the title states the body's conclusion in about twelve words, with no
+dangling it/this.
+
+| Type | Checks |
+|---|---|
+| reference | Route present (an evidence edge, a `Source:` line or a `route:` tag); confident wording on one root; the quoted span supports the claim; anchors resolve. |
+| gotchas | One dated case — a handle resolving to a dated gripe/todo counts as the dated case, so resolve handles before claiming "no dated case"; the cause is already fixed; the scope is stated. |
+| runbooks | Every named script/flag exists; preconditions stated; last run dated. |
+| workflow, rulings | Who, when, in force, absorbed where; no conflict with another in-force ruling. No route check: an imperative has authority and scope, not truth. |
+| threads | `Left:` current; due items linked. |
+| DREAM | Duplicate/merge only — never bulk-retire dreams. |
+
+On every type:
+
+- A rewrite states the claim, never a label: "put ops wipe" is a trap's
+  name, not the trap — write what bites, when, and what to do, or point
+  at the atomic node whose title says it. A list of child titles in a
+  body restates the `part-of` edges; drop it.
+- Unanchored plan labels ("slice 4a", "round 6", "R17", "leg C", "wave
+  3") with no handle or date: resolve to the todo/gripe/spec section or
+  drop. A slice is a unit of work and has its own ref.
+- Commit shas in standing-claim sentences age out after 30 days: keep
+  the date, drop the sha. A sentence that only records "X landed at
+  <sha>" is history and goes.
+- Handoff/resume blocks and dated campaign narratives older than 14 days
+  in a non-thread node are history; the thread file and git hold them.
+- Token grammars, naming standards, coding conventions and door
+  descriptions already in a skill or `docs/conventions` are promoted (a
+  promote-to-doc list for Reto) or deleted as a restatement; the memory
+  keeps the pointer and the ruling date.
+- An instance is one dated clause ("pa5837, 2026-08-27"); the repair
+  narrative is history.
+- One claim per node, the title is the claim. A grab-bag under one
+  campaign title is a split candidate, not a rewrite target.
+
+Forward rule for memory writes: the mention's role is the edge's
+relation — evidence is `cites`/`derived-from`, scope is `qualifies`, a
+bare prose mention means see-also only — so a future dangling edge
+resolves by its relation.
 
 ## Rewrite to the standard of done
 

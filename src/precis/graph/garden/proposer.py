@@ -19,6 +19,18 @@ castor gpt-oss rung, which then spent the 400 on reasoning and returned
 nothing (gr504896). The cap is the op row's call. A reply cut on the
 length cap is counted apart from other errors (``Verdict.truncated``)
 so a too-small cap shows up as itself.
+
+**Memory-body mode** (gr560762): a candidate from a memory detector is
+judged as a memory body, not a structural pair. The prompt carries the
+target node's fisheye+1hop render (the 600-char excerpt stays only as
+the floor when the render fails), the detector's evidence, and the
+memory-body checklist pinned verbatim from the ``precis-fix-memory-gripe-help``
+skill (:func:`~precis.utils.memory_reconcile.memory_body_checklist`) —
+the same sections the hand repair path reads. The reply is the one-action
+JSON: rewrite / qualify / supersede / retire / no-change / ask. Code
+holds only that output contract and the evidence semantics; the
+judgment criteria live in the skill. ``ask`` comes back as
+``Verdict.ask`` and the runner files it as a memory-review todo.
 """
 
 from __future__ import annotations
@@ -31,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from precis.graph.garden.candidates import GardenCandidate
 from precis.utils.handle_registry import parse as parse_handle
 from precis.utils.memory_reconcile import (
+    memory_body_checklist,
     memory_policy_version,
     memory_reconciliation_policy,
     uses_memory_policy,
@@ -49,6 +62,10 @@ OP_SOURCE = "graph_garden:propose"
 #: same-titled memories apart, small enough that a pair stays well under
 #: the prompt budget.
 EXCERPT_CHARS = 600
+
+#: Bound on the memory-body mode's fisheye+1hop render — the render is
+#: self-capping per ring, this is the whole-prompt safety valve.
+MEMORY_EYE_CHARS = 8000
 
 #: Stamped on every proposer rejection row; a rejection blocks a re-ask
 #: only under the same version. Bump it with any change to the prompt or
@@ -105,6 +122,60 @@ were minted as distinct children of that parent: accept only when the
 excerpts define the same thing. One term narrower than the other (cost
 per unit mass under unit cost) is a relink, not a merge: reject.
 """
+
+#: The one-action output contract for memory-body candidates (gr560762).
+#: The judgment criteria are NOT here: the per-type checklist, the
+#: disagreement shapes and the standard of done with its never-list are
+#: pinned verbatim from the ``precis-fix-memory-gripe-help`` skill — the
+#: same sections the hand repair path reads (DRY rule). ``__ACTIONS__``
+#: and ``__CHECKLIST__`` are substituted per candidate.
+_MEMORY_CONTRACT = """You are the graph gardener's memory-body evaluator for a knowledge graph
+(refs = typed nodes, links = typed edges, tags = closed namespaces).
+
+You are given ONE memory-body candidate: the node's fisheye+1hop, the
+detector's evidence, and the pinned memory-body checklist. Judge the
+body against the checklist for its section type and answer with EXACTLY
+ONE action, as a single JSON object:
+
+{"action": "rewrite", "reason": "why",
+ "ops": [{"find": "exact old text", "text": "verified replacement"}]}
+{"action": "qualify", "reason": "why", "caveat": "caveat line"}
+{"action": "qualify", "reason": "why", "qualifies_from": "meNNN"}
+{"action": "supersede", "reason": "why", "successor": "meNNN"}
+{"action": "retire", "reason": "why"}
+{"action": "no-change", "reason": "why the body stands"}
+{"action": "ask", "reason": "what needs a human"}
+
+For this candidate the payload actions are __ACTIONS__; "no-change" and
+"ask" are always available. Any other action reads as "no-change".
+You are a gate, not a cheerleader: false positives cost a human's review
+time, so act only when the evidence and the checklist support it. Never
+invent a reason that cites nothing in the evidence or the node; when
+unsure, answer "no-change". "fisheye" is the target node's own
+fisheye+1hop render; "excerpts" holds each other named ref's bounded
+text.
+
+A rewrite states the claim as currently true — never a label — with one
+live anchor and a date or sha; the pinned standard of done is binding.
+"ops" replaces the detector's anchored ops only when yours are better;
+"find" must match the body verbatim. "supersede" names a LIVE node that
+already states the truth. "ask" is the only fallback when the fact needs
+a human: the reason lands on a memory-review todo.
+
+The pinned memory-body checklist (one source with the hand repair path):
+
+__CHECKLIST__
+"""
+
+
+def _memory_contract(detector: str) -> str:
+    """The contract with this detector's payload actions and the pinned
+    checklist substituted in."""
+    actions = "|".join(MEMORY_ACTIONS.get(detector, ()))
+    return _MEMORY_CONTRACT.replace("__ACTIONS__", f'"{actions}"').replace(
+        "__CHECKLIST__", memory_body_checklist()
+    )
+
 
 _MEMORY_RULES = """
 source_drift and entity_claim_stale are proposal-only change signals, not
@@ -191,6 +262,10 @@ class Verdict:
     #: The reply stopped on the completion-length cap (empty, or JSON cut
     #: off) — an error, counted apart so a too-small cap is visible.
     truncated: bool = False
+    #: Memory-body mode only (gr560762): the evaluator's "ask" — the
+    #: reason a human is needed. The runner files it as a memory-review
+    #: todo; no proposal row is emitted.
+    ask: str | None = None
 
 
 #: ``LlmResult.stop_reason`` values meaning the length cap ended the reply.
@@ -250,8 +325,33 @@ def ref_excerpts(
     return out
 
 
+def _memory_eye(store: Store, candidate: GardenCandidate) -> str | None:
+    """The target memory's fisheye+1hop render for memory-body candidates,
+    bounded to :data:`MEMORY_EYE_CHARS`. ``None`` for other candidates or
+    when the render fails — the bounded excerpt stays as the floor."""
+    if candidate.detector not in MEMORY_ACTIONS or candidate.target_kind != "ref":
+        return None
+    try:
+        from precis.utils.eye_render import render_eye
+
+        rendered = render_eye(store, f"memory:{candidate.target_id}", "fisheye+1hop")
+    except Exception:
+        log.warning(
+            "garden proposer: fisheye+1hop failed for memory:%s",
+            candidate.target_id,
+            exc_info=True,
+        )
+        return None
+    if len(rendered) > MEMORY_EYE_CHARS:
+        rendered = rendered[:MEMORY_EYE_CHARS].rstrip() + "…"
+    return rendered
+
+
 def _prompt_for(
-    candidate: GardenCandidate, excerpts: dict[str, str] | None = None
+    candidate: GardenCandidate,
+    excerpts: dict[str, str] | None = None,
+    *,
+    eye: str | None = None,
 ) -> str:
     body: dict[str, Any] = {
         "detector": candidate.detector,
@@ -262,16 +362,14 @@ def _prompt_for(
         "evidence": candidate.evidence,
         "payload": candidate.payload,
     }
+    if eye:
+        body["fisheye"] = eye
     if excerpts:
         body["excerpts"] = excerpts
-    head = _PROMPT_HEAD
     if candidate.detector in MEMORY_ACTIONS:
-        head = (
-            head.replace(
-                "|".join(_LEGACY_ACTIONS), "|".join(MEMORY_ACTIONS[candidate.detector])
-            )
-            + _MEMORY_RULES
-        )
+        head = _memory_contract(candidate.detector) + _MEMORY_RULES
+    else:
+        head = _PROMPT_HEAD
     if uses_memory_policy(candidate.detector, candidate.evidence, candidate.payload):
         head += "\n" + memory_reconciliation_policy()
     if candidate.detector in {"dangling_mention", "anchor_rot", "thread_shape"}:
@@ -300,6 +398,60 @@ def _parse_verdict(text: str) -> dict[str, Any] | None:
     return out if isinstance(out, dict) else None
 
 
+#: The one-action vocabulary for memory-body candidates (gr560762).
+_ONE_ACTIONS = frozenset(
+    {"rewrite", "qualify", "supersede", "retire", "no-change", "ask"}
+)
+
+
+def _one_action_verdict(
+    body: dict[str, Any], candidate: GardenCandidate, *, model: str | None
+) -> Verdict:
+    """Map the memory-body one-action JSON to a :class:`Verdict`.
+
+    A missing, unknown or out-of-family action reads as ``no-change`` —
+    the gate stance: the model never refines outside the detector's
+    action set. ``ask`` carries the human-need reason for the runner's
+    memory-review todo.
+    """
+    action = body.get("action")
+    reason = str(body.get("reason") or body.get("rationale") or "")
+    allowed = set(MEMORY_ACTIONS.get(candidate.detector, ())) | {"no-change", "ask"}
+    if not isinstance(action, str) or action not in allowed or action == "no-change":
+        return Verdict(accept=False, rationale=reason, model=model)
+    if action == "ask":
+        return Verdict(accept=False, rationale=reason, ask=reason or None, model=model)
+    overrides: dict[str, Any] = {}
+    if action == "rewrite":
+        ops = body.get("ops")
+        if (
+            isinstance(ops, list)
+            and ops
+            and all(
+                isinstance(op, dict) and isinstance(op.get("text"), str) for op in ops
+            )
+        ):
+            overrides["ops"] = ops
+    elif action == "qualify":
+        caveat = body.get("caveat")
+        qualifies_from = body.get("qualifies_from")
+        if isinstance(caveat, str) and caveat:
+            overrides["caveat"] = caveat
+        if isinstance(qualifies_from, str) and qualifies_from:
+            overrides["qualifies_from"] = qualifies_from
+    elif action == "supersede":
+        successor = body.get("successor")
+        if isinstance(successor, str | int) and not isinstance(successor, bool):
+            overrides["successor"] = successor
+    return Verdict(
+        accept=True,
+        rationale=reason,
+        action=action,
+        payload_overrides=overrides,
+        model=model,
+    )
+
+
 def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
     """The default proposer — one routed LLM call. ``store`` reads the
     excerpts of the refs the candidate names, so the judge sees their
@@ -310,7 +462,11 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
     result = route(
         LlmRequest(
             tier=Tier.MEDIUM,
-            prompt=_prompt_for(candidate, ref_excerpts(store, _excerpt_ids(candidate))),
+            prompt=_prompt_for(
+                candidate,
+                ref_excerpts(store, _excerpt_ids(candidate)),
+                eye=_memory_eye(store, candidate),
+            ),
             source=OP_SOURCE,
             ref_id=candidate.target_id if candidate.target_kind == "ref" else None,
             log_blobs=False,
@@ -329,6 +485,8 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
             model=result.model,
             truncated=truncated,
         )
+    if candidate.detector in MEMORY_ACTIONS:
+        return _one_action_verdict(body, candidate, model=result.model)
     overrides = body.get("payload_overrides")
     return Verdict(
         accept=bool(body.get("accept")),
@@ -344,6 +502,7 @@ def propose_llm(store: Store, candidate: GardenCandidate) -> Verdict:
 
 __all__ = [
     "EXCERPT_CHARS",
+    "MEMORY_EYE_CHARS",
     "OP_SOURCE",
     "PROMPT_VERSION",
     "Verdict",

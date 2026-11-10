@@ -3,8 +3,9 @@
 :func:`run_garden_tick` is the whole pass the ``graph_garden`` job runs:
 collect candidates (bounded), skip keys already pending or already
 rejected, ask the proposer, emit accepted proposals and record rejected
-ones (so the next run does not re-ask; gr506046). It never touches the
-graph — the only writes are ``reviews`` rows.
+ones (so the next run does not re-ask; gr506046). The only writes are
+``reviews`` rows — plus, for an evaluator ``ask`` on a memory-body
+candidate, one ``memory-review`` todo pointing at the memory (gr560762).
 
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
@@ -54,6 +55,49 @@ log = logging.getLogger(__name__)
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_PROPOSALS = 20
 
+#: The evaluator's "ask" lands as a memory-review todo (gr560762); the
+#: tier follows the smell class — content smells need repo/entity
+#: archaeology (opus), shape smells are mechanical (sonnet).
+_ASK_LLM_TIERS = {
+    "anchor_rot": "opus",
+    "dangling_mention": "opus",
+    "entity_claim_stale": "opus",
+    "negative_undated": "opus",
+    "restated_claim": "opus",
+    "review_due": "opus",
+    "source_drift": "opus",
+    "thread_shape": "sonnet",
+    "title_shape": "sonnet",
+}
+
+
+def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> None:
+    """File the evaluator's ask: one ``memory-review`` todo pointing at
+    the memory, deduped on an already-open review todo (the key's
+    rejection row stops the re-ask; the todo tracks the human follow-up).
+    """
+    from precis.store.types import Tag
+    from precis.utils.memory_hubs import REVIEW_TAG, review_todos
+
+    if review_todos(store, [cand.target_id]):
+        return
+    title = f"review memory me{cand.target_id}: {cand.title}"[:200]
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=title,
+        meta={"llm_tier": _ASK_LLM_TIERS.get(cand.detector, "opus")},
+    )
+    for tag in (Tag.parse_strict("STATUS:open", kind="todo"), Tag.open(REVIEW_TAG)):
+        store.add_tag(ref.id, tag, set_by="system")
+    store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=cand.target_id,
+        relation="raises-concern-about",
+        set_by="system",
+    )
+
+
 ProposerFn = Callable[["Store", GardenCandidate], "Verdict | None"]
 
 
@@ -73,6 +117,10 @@ class GardenOutcome:
     #: (:data:`~precis.graph.garden.candidates.CONSIDERED_DAYS`).
     skipped_considered: int = 0
     rejected: int = 0
+    #: Evaluator "ask" verdicts on memory-body candidates — each files a
+    #: memory-review todo and closes the key under this prompt version
+    #: (gr560762).
+    asked: int = 0
     #: Rejected by the short-sibling rule before any model call
     #: (``reason='sibling_distinct_names'`` on the row; gr504843).
     rule_rejected: int = 0
@@ -191,6 +239,18 @@ def run_garden_tick(
         if verdict.error is not None:
             out.llm_errors += 1
             out.llm_truncated += int(verdict.truncated)
+            return False
+        if verdict.ask is not None:
+            out.asked += 1
+            _file_review_todo(store, cand, verdict)
+            record_rejection(
+                store,
+                cand,
+                rationale=verdict.ask,
+                prompt_version=prompt_version,
+                model=verdict.model,
+                reason="asked",
+            )
             return False
         if not verdict.accept:
             out.rejected += 1

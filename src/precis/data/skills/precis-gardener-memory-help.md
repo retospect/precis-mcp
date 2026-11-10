@@ -124,6 +124,28 @@ in `not_checked`. Unverifiable-only bodies produce no proposal. The evaluator
 compares the claim with the new text and rejects unchanged meaning or dated
 history. Both detectors propose rewrites only; neither adds an apply path.
 
+## The memory-body evaluator
+
+Memory-body candidates are judged as bodies, not structural pairs
+(gr560762). The prompt carries the target node's `fisheye+1hop`, the
+detector's evidence, and the memory-body checklist pinned verbatim from
+[[precis-fix-memory-gripe-help]] — the per-type checks, the disagreement
+shapes and the standard of done, the same sections the hand repair path
+reads. Prompt code holds only the one-action output contract.
+
+The evaluator answers with exactly one action: `rewrite` (anchored
+find/text ops plus reason), `qualify` (a caveat line, or a `qualifies`
+edge from a named gotcha), `supersede` (by a named live node), `retire`,
+`no-change` (with why; closes the key under the current memory prompt
+version, as a proposer reject does), or `ask` — the only fallback when
+the fact needs a human. An `ask` files a `memory-review` todo linked to
+the memory (`raises-concern-about`), its `meta.llm_tier` set by smell
+class: content smells that need repo/entity archaeology dispatch on
+`opus`, shape smells on `sonnet`. The rejection row closes the key under
+the current prompt version, so an asked candidate is not re-billed each
+tick. `qualify` and `ask` proposals stay outside the consumer; an `ask`
+writes no proposal at all.
+
 ## Reviewed memory actions
 
 The memory apply gate defaults **off**. While off, the consumer

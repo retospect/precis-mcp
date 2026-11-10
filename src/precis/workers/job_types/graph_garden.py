@@ -206,6 +206,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         "skipped_rejected": outcome.skipped_rejected,
         "skipped_considered": outcome.skipped_considered,
         "rejected": outcome.rejected,
+        "asked": outcome.asked,
         "rule_rejected": outcome.rule_rejected,
         "llm_errors": outcome.llm_errors,
         "llm_truncated": outcome.llm_truncated,

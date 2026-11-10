@@ -120,9 +120,6 @@ def _result(text: str, stop: str | None = "stop") -> LlmResult:
     ("detector", "allowed"),
     [
         ("dup_pair", ("merge", "split", "relink", "prune", "tag")),
-        ("dangling_mention", ("rewrite",)),
-        ("thread_shape", ("supersede", "retire")),
-        ("anchor_rot", ("rewrite",)),
     ],
 )
 def test_action_refinements_stay_in_detector_family(
@@ -186,7 +183,8 @@ def test_memory_prompt_has_its_rules_and_actions(detector: str, actions: str) ->
         detector=detector, action=actions.split("|")[0], target_kind="ref", target_id=1
     )
     prompt = proposer._prompt_for(candidate)
-    assert f'"action": "{actions}"' in prompt
+    assert f'the payload actions are "{actions}"' in prompt
+    assert "answer with EXACTLY\nONE action" in prompt
     assert "text=null means unresolved, never delete" in prompt
     assert "SHA ancestry on\norigin/prod has not been checked" in prompt
     assert "not_checked\nanchors are unverifiable" in prompt

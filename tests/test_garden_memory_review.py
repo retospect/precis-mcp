@@ -366,7 +366,7 @@ def test_memory_review_prompts_and_actions_stay_proposal_only(detector: str) -> 
         detector=detector, action="rewrite", target_kind="ref", target_id=1
     )
     prompt = _prompt_for(candidate)
-    assert f'"action": "{"|".join(MEMORY_ACTIONS[detector])}"' in prompt
+    assert f'the payload actions are "{"|".join(MEMORY_ACTIONS[detector])}"' in prompt
     assert "All three detectors are proposal-only" in prompt
     assert "no apply or auto-apply path" in prompt
     assert "never invent a fix" in prompt
