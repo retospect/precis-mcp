@@ -1334,10 +1334,31 @@ class ChunkStore:
             ).fetchall()
             if not rows and _or_retry(q, scope_ref_id):
                 # Recall fallback (gr510534 scoped, gr614169 unscoped):
-                # the AND tsquery missed — retry every term OR-ed.
-                rows = conn.execute(
-                    _sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
-                ).fetchall()
+                # the AND tsquery missed — retry every term OR-ed. The
+                # trigger is strict-universe emptiness, not page
+                # emptiness: past the last strict hit OFFSET returns an
+                # empty page while strict matches sit before it, and the
+                # honest page is empty — OR rows there would resurface
+                # chunks the earlier strict pages already outranked
+                # (td615185). An offset=0 empty page already proves the
+                # universe empty; a deeper page probes it without
+                # LIMIT/OFFSET — the same EXISTS shape the fused leg's
+                # unscoped guard runs.
+                strict_empty = offset == 0
+                if not strict_empty:
+                    probe = conn.execute(
+                        "SELECT EXISTS(SELECT 1 FROM chunks c "
+                        "JOIN refs r ON r.ref_id = c.ref_id, "
+                        "websearch_to_tsquery('english', %s) qq(qq) "
+                        f"WHERE {' AND '.join(clauses)})",
+                        params[:-2],
+                    ).fetchone()
+                    assert probe is not None
+                    strict_empty = not probe[0]
+                if strict_empty:
+                    rows = conn.execute(
+                        _sql(f"(SELECT {_OR_TSQUERY})"), [q, *params[1:]]
+                    ).fetchall()
         unpacked = [_unpack_search_row(r) for r in rows]
         if search_trace.active():
             for rank, (block, ref, _score) in enumerate(unpacked, offset + 1):

@@ -222,6 +222,48 @@ def test_unscoped_and_matches_keep_strict_results(store: Store) -> None:
     assert or_only not in body
 
 
+def _seed_and_plus_or(store: Store, *, slug: str = "and-page-paper") -> tuple[int, int]:
+    """One strict-AND chunk plus a one-term-only decoy — a strict
+    universe of exactly one, with an OR-only row behind it."""
+    ref = store.insert_ref(kind="paper", slug=slug, title="AND paging probe", year=2024)
+    rows = store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=0, text="a paragraph about weakening only"),
+            ChunkInsert(ord=1, text="AMOC weakening under MCB forcing, in one chunk."),
+        ],
+    )
+    return ref.id, rows[1].id
+
+
+def test_scoped_page_past_strict_hits_stays_empty(store: Store) -> None:
+    """td615185 regression: the OR trigger is strict-universe emptiness,
+    not page emptiness. Page 2 sits past the one strict hit — an OR
+    retry there would return the decoy page 1's strict leg excluded."""
+    ref_id, and_hit = _seed_and_plus_or(store)
+    page1 = store.chunks.search_chunks_lexical(
+        q="AMOC weakening MCB", scope_ref_id=ref_id, limit=1
+    )
+    assert [b.id for b, _r, _s in page1] == [and_hit]
+    page2 = store.chunks.search_chunks_lexical(
+        q="AMOC weakening MCB", scope_ref_id=ref_id, limit=1, offset=1
+    )
+    assert page2 == []
+
+
+def test_unscoped_page_past_strict_hits_stays_empty(store: Store) -> None:
+    """Same regression corpus-wide: a page past the strict hits probes
+    the strict universe (no LIMIT/OFFSET) and stays empty — the
+    three-word query earns the OR retry, but only on a truly empty leg."""
+    _ref_id, and_hit = _seed_and_plus_or(store, slug="and-page-unscoped")
+    page1 = store.chunks.search_chunks_lexical(q="AMOC weakening MCB", limit=1)
+    assert [b.id for b, _r, _s in page1] == [and_hit]
+    page2 = store.chunks.search_chunks_lexical(
+        q="AMOC weakening MCB", limit=1, offset=1
+    )
+    assert page2 == []
+
+
 def test_scoped_count_mirrors_the_or_retry(store: Store) -> None:
     """``count_chunks_lexical`` is the "N of K" denominator for the leg
     the search actually ran — it must count the OR universe when the
