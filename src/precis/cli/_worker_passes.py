@@ -1407,6 +1407,7 @@ def build_ref_passes(
     # still bounds the run either way.
     if _register("idea_feed"):
         from precis.workers.idea_feed import run_idea_feed_pass
+        from precis.workers.runner import BatchResult as _BatchResult
 
         def _idea_feed_pass(batch_size: int) -> _BatchResult:
             r = run_idea_feed_pass(store, enabled=True)
