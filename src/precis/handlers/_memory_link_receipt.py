@@ -5,7 +5,11 @@ returned by successful additions. Preview uses the same selection and resolver,
 without minting parts, queuing jobs or writing links. Retained mention edges
 keep their row (and its ``asserted_fingerprint``) — an edge the rewritten
 text still names is not a graph change, not even a remove+re-add the receipt
-could hide.
+could hide. The sync also flags explicit handle mentions that resolve to
+nothing live (a ``[meN]`` bracket naming a not-yet-existing node) into its
+notices, so the write-time ack names the dead handle instead of letting a
+later mint under the same number leave the stale bracket pointing at the
+wrong node (gr570723).
 Context-local collection keeps handler instances safe for concurrent requests;
 a retry replaces its prior attempt's collector. Rendering lives here so memory
 authoring lanes need only a decorator and a preview hook in the handler.
@@ -93,9 +97,25 @@ class MentionSync:
             sink[ref_id] = self
 
     def resolve(self, text: str) -> list[LinkTarget]:
-        return mentions.resolve_link_targets(
+        targets = mentions.resolve_link_targets(
             self.store, text, exclude_ref_id=self.ref_id
         )
+        # Surface dead handles at write time (gr570723): a bracketed
+        # ``[meN]`` that never existed mints no edge and used to pass
+        # silently, so a later mint under the same number would leave the
+        # stale bracket pointing at the wrong node.
+        verb = "would be" if self.dry_run else "was"
+        for token in mentions.unresolved_handle_mentions(
+            self.store, text, exclude_ref_id=self.ref_id
+        ):
+            notice = (
+                f"Mention [{token}] does not resolve to a live ref; no mention "
+                f"edge {verb} created for it. Fix the handle or create the "
+                "target, then edit to re-link."
+            )
+            if notice not in self.notices:
+                self.notices.append(notice)
+        return targets
 
     def unmentioned_removals(self, targets: Iterable[LinkTarget]) -> list[Link]:
         """Removal candidates whose target the text no longer names.
@@ -174,6 +194,9 @@ class MentionSync:
             # add_link's conflict path leaves explicit provenance untouched.
             self.after.setdefault(edge.key, edge)
 
+    def notices_block(self) -> str:
+        return "".join(f"\n\n{notice}" for notice in self.notices)
+
     def render(self) -> str:
         # Edge-validity keys (asserted_fingerprint, suspect_cleared_*) are
         # store-stamped, not caller meta: add_link refuses them and a
@@ -182,7 +205,7 @@ class MentionSync:
 
         removed = [v for k, v in self.before.items() if k not in self.after]
         added = [v for k, v in self.after.items() if k not in self.before]
-        notices = "".join(f"\n\n{notice}" for notice in self.notices)
+        notices = self.notices_block()
         if not removed and not added:
             return notices
         refs = self.store.fetch_refs_by_ids(
@@ -265,6 +288,34 @@ def link_effect_receipt[**P](fn: Callable[P, Response]) -> Callable[P, Response]
         try:
             response = fn(*args, **kwargs)
             suffix = "".join(effect.render() for effect in effects.values())
+            return (
+                replace(response, body=response.body + suffix) if suffix else response
+            )
+        finally:
+            _COLLECT.reset(token)
+
+    return wrapped
+
+
+def unresolved_mention_notice[**P](fn: Callable[P, Response]) -> Callable[P, Response]:
+    """Append unresolved-handle notices to a create ack (gr570723).
+
+    Sibling of :func:`link_effect_receipt` for the create path: the write
+    already collects each ``MentionSync``'s notices while ``_COLLECT`` is
+    set, but a create ack has never listed its mention edges and that
+    stays so — only the notices render. No-op when nothing dangles, so
+    ordinary creates are byte-identical to before.
+    """
+
+    @wraps(fn)
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> Response:
+        if _COLLECT.get() is not None:
+            return fn(*args, **kwargs)
+        effects: dict[int, MentionSync] = {}
+        token = _COLLECT.set(effects)
+        try:
+            response = fn(*args, **kwargs)
+            suffix = "".join(effect.notices_block() for effect in effects.values())
             return (
                 replace(response, body=response.body + suffix) if suffix else response
             )

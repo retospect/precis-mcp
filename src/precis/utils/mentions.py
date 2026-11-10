@@ -524,6 +524,37 @@ def resolve_handle_target(store: Store, token: str) -> LinkTarget | None:
     return LinkTarget(int(r.ref_id), pos)
 
 
+def unresolved_handle_mentions(
+    store: Any,
+    body: str,
+    *,
+    exclude_ref_id: int | None = None,
+) -> list[str]:
+    """Explicit handle mentions that name nothing live (gr570723).
+
+    Scans only the unambiguous mention forms — ``[me5]``, ``[text](me5)``,
+    ``[[me5]]`` — not bare prose tokens, which stay literal by design on
+    the read side. Returns the well-formed tokens that resolve to no live
+    ref (the never-existed case the gardener's ``dangling_mention``
+    detector only sees later, once a handle is retired), normalised,
+    appearance-ordered, deduplicated. A token resolving to
+    ``exclude_ref_id`` (the note being written) is a self-mention: it
+    resolves, the mention sync just never self-links, so it is not
+    reported. ``store`` stays ``Any`` for the same reason as
+    :func:`resolve_link_targets`.
+    """
+    out: list[str] = []
+    for token in _universal_handle_tokens(body):
+        norm = handle_registry.normalize(token)
+        if not handle_registry.is_well_formed(norm) or norm in out:
+            continue
+        tgt = resolve_handle_target(store, token)
+        if tgt is None:
+            out.append(norm)
+        # A token that resolves (self-mention or otherwise) is not dangling.
+    return out
+
+
 def resolve_handle_tokens(
     # ``store`` stays Any, same as ``resolve_link_targets``: tests pass a
     # hand-rolled fake carrying only ``pool.connection``.

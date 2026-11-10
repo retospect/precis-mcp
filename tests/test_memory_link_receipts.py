@@ -607,3 +607,86 @@ def test_tilde_slug_restore_call_names_the_handle(
 
     assert f"target={handle!r}" in receipt
     assert "source~notes" not in receipt
+
+
+# ---------------------------------------------------------------------------
+# Unresolved handle mentions (gr570723) — the write-time never-existed case
+# the gardener's dangling_mention detector only sees once a handle is retired.
+# ---------------------------------------------------------------------------
+
+#: No ref in a test store gets anywhere near this id.
+_DEAD_HANDLE = "me99999999"
+
+
+def test_put_ack_names_unresolved_bracket_handle(
+    handler: MemoryHandler, store: Store
+) -> None:
+    receipt = handler.put(
+        text=f"Evidence ties the network to [{_DEAD_HANDLE}], not the hardware.",
+        title="Unresolved mention fixture",
+    ).body
+
+    assert (
+        f"Mention [{_DEAD_HANDLE}] does not resolve to a live ref; no "
+        "mention edge was created for it."
+    ) in receipt
+    source = id_of(receipt)
+    assert not store.links_for(source, direction="out")
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_edit_receipt_names_unresolved_bracket_handle(
+    handler: MemoryHandler, store: Store, dry_run: bool
+) -> None:
+    source = _memory(handler, "Original account")
+
+    receipt = handler.edit(
+        id=source,
+        mode="append",
+        text=f" See [{_DEAD_HANDLE}].",
+        dry_run=dry_run,
+    ).body
+
+    verb = "would be" if dry_run else "was"
+    assert (
+        f"Mention [{_DEAD_HANDLE}] does not resolve to a live ref; no "
+        f"mention edge {verb} created for it."
+    ) in receipt
+    assert not store.links_for(source, direction="out")
+
+
+def test_resolved_bracket_handle_stays_silent(
+    handler: MemoryHandler, store: Store
+) -> None:
+    target = _memory(handler, "Live evidence")
+
+    receipt = handler.put(
+        text=f"Evidence [me{target}].", title="Live mention fixture"
+    ).body
+
+    assert "does not resolve" not in receipt
+    source = id_of(receipt)
+    assert {link.dst_ref_id for link in store.links_for(source, direction="out")} == {
+        target
+    }
+
+
+def test_non_handle_brackets_stay_silent(handler: MemoryHandler) -> None:
+    """``[ab12]`` matches the bracket shape but no registered code; the
+    read side keeps it literal and the write side must not flag it."""
+
+    receipt = handler.put(
+        text="The [hardware] note and [ab12] stay literal.",
+        title="Literal bracket fixture",
+    ).body
+
+    assert "does not resolve" not in receipt
+
+
+def test_self_mention_is_not_flagged(handler: MemoryHandler, store: Store) -> None:
+    source = _memory(handler, "Self account")
+
+    receipt = handler.edit(id=source, mode="append", text=f" See [me{source}].").body
+
+    assert "does not resolve" not in receipt
+    assert not store.links_for(source, direction="out")

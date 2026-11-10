@@ -150,6 +150,7 @@ from precis.handlers._interpret import interpreted
 from precis.handlers._memory_link_receipt import (
     link_effect_receipt,
     preview_link_effects,
+    unresolved_mention_notice,
 )
 from precis.handlers._memory_shape import ShapeAudit, audit_shape
 from precis.handlers._memory_smells import (
@@ -1189,6 +1190,7 @@ class MemoryHandler(NumericRefHandler):
 
     # ── put / create: ref (title) + memory_body chunk ───────────────
 
+    @unresolved_mention_notice
     def put(
         self,
         *,
@@ -1219,6 +1221,11 @@ class MemoryHandler(NumericRefHandler):
         ``Next:`` block (``id='<new>'`` for the memory it would create), the
         nearest same-SPACE memories by embedding distance, and a proposed
         kind by rule (:mod:`precis.handlers._put_preview`).
+
+        A handle mention that resolves to nothing live — a ``[meN]`` bracket
+        naming a node that does not exist yet — is named in the ack instead
+        of passing silently: no mention edge is created for it, and the
+        notice says so at write time (gr570723).
 
         When ``title=`` is omitted it's derived from the body's first line
         (capped at 80 chars) — but an explicit title reads better and is
