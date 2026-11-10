@@ -511,8 +511,12 @@ class PatentHandler(Handler):
         Returns an empty list when q= is empty AND no scope/tags are
         set — there's nothing to rank against.
 
-        ``query_vec=`` may be pre-supplied by the runtime cross-kind
-        dispatcher to avoid an embed_one(q) per kind in the fan-out.
+        ``query_vec=`` arrives caller-resolved (the runtime cross-kind
+        dispatcher pre-supplies it to avoid an embed_one(q) per kind in
+        the fan-out): ``None`` here means the lexical leg, never "embed
+        now" — a retry inside this helper would hand the store a vector
+        the caller's ``scores_are_distances`` flag doesn't know about
+        (gr614312).
         ``mode='lexical'`` forces the keyword leg (no embed).
         ``hard_cut`` drops uncorroborated semantic hits past the shared
         query-relative gap/corpus boundary; the cross-kind stream sets it.
@@ -521,8 +525,6 @@ class PatentHandler(Handler):
             return []
         if (mode or "").strip().lower() == "lexical":
             query_vec = None
-        elif query_vec is None:
-            query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,

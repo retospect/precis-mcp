@@ -6109,8 +6109,13 @@ class StructureHandler(Handler):
                 "search(kind='structure') requires q=",
                 next="search(kind='structure', q='OH on Pd(111)')",
             )
+        # Resolve once here — ``_card_search`` never embeds, so the vec the
+        # store sees is always the one the caller resolved (gr614312).
+        query_vec = None
+        if (mode or "").strip().lower() != "lexical":
+            query_vec = embed_query(self.embedder, str(q))
         triples = self._card_search(
-            str(q), query_vec=None, mode=mode, page_size=page_size
+            str(q), query_vec=query_vec, mode=mode, page_size=page_size
         )
         if not triples:
             return Response(
@@ -6145,13 +6150,16 @@ class StructureHandler(Handler):
         mode: str | None,
         page_size: int,
     ) -> list[Any]:
-        """Fused search over the per-design ``card_combined`` chunks."""
+        """Fused search over the per-design ``card_combined`` chunks.
+
+        ``query_vec`` arrives caller-resolved: ``None`` here means the
+        lexical leg, never "embed now" — a retry inside this helper would
+        hand the store a vector the caller's ``scores_are_distances`` flag
+        doesn't know about (gr614312)."""
         if not (q and q.strip()):
             return []
         if (mode or "").strip().lower() == "lexical":
             query_vec = None
-        elif query_vec is None:
-            query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,

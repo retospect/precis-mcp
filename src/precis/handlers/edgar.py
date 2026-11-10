@@ -327,12 +327,14 @@ class EdgarHandler(Handler):
         query_vec: list[float] | None = None,
         mode: str | None = None,
     ) -> list[tuple[Any, Ref, float]]:
+        """``query_vec`` arrives caller-resolved: ``None`` here means the
+        lexical leg, never "embed now" — a retry inside this helper would
+        hand the store a vector the caller's ``scores_are_distances`` flag
+        doesn't know about (gr614312)."""
         if not (q and q.strip()):
             return []
         if (mode or "").strip().lower() == "lexical":
             query_vec = None
-        elif query_vec is None:
-            query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,

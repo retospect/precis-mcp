@@ -3985,8 +3985,13 @@ class SeHandler(Handler):
             narrowed_slugs: set[str] | None = None
             narrow_note = ""
             if q is not None and str(q).strip():
+                # Resolve once here — ``_card_search`` never embeds
+                # (gr614312).
+                query_vec = None
+                if (mode or "").strip().lower() != "lexical":
+                    query_vec = embed_query(self.embedder, str(q))
                 triples = self._card_search(
-                    str(q), query_vec=None, mode=mode, page_size=500
+                    str(q), query_vec=query_vec, mode=mode, page_size=500
                 )
                 slugs = {ref.slug for _b, ref, _s in triples}
                 if slugs:
@@ -4012,8 +4017,12 @@ class SeHandler(Handler):
                 "search(kind='se') requires q=",
                 next="search(kind='se', q='caster fork wheel')",
             )
+        # Resolve once here — ``_card_search`` never embeds (gr614312).
+        query_vec = None
+        if (mode or "").strip().lower() != "lexical":
+            query_vec = embed_query(self.embedder, str(q))
         triples = self._card_search(
-            str(q), query_vec=None, mode=mode, page_size=page_size
+            str(q), query_vec=query_vec, mode=mode, page_size=page_size
         )
         if not triples:
             return Response(
@@ -4035,12 +4044,14 @@ class SeHandler(Handler):
         mode: str | None,
         page_size: int,
     ) -> list[Any]:
+        """``query_vec`` arrives caller-resolved: ``None`` here means the
+        lexical leg, never "embed now" — a retry inside this helper would
+        hand the store a vector the caller's ``scores_are_distances`` flag
+        doesn't know about (gr614312)."""
         if not (q and q.strip()):
             return []
         if (mode or "").strip().lower() == "lexical":
             query_vec = None
-        elif query_vec is None:
-            query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,

@@ -1826,7 +1826,14 @@ class CadHandler(Handler):
                 next="search(kind='cad', q='6-bolt flange')",
             )
         q = str(q)
-        triples = self._card_search(q, query_vec=None, mode=mode, page_size=page_size)
+        # Resolve once here — ``_card_search`` never embeds, so the vec the
+        # store sees is always the one the caller resolved (gr614312).
+        query_vec = None
+        if (mode or "").strip().lower() != "lexical":
+            query_vec = embed_query(self.embedder, q)
+        triples = self._card_search(
+            q, query_vec=query_vec, mode=mode, page_size=page_size
+        )
         if not triples:
             return Response(
                 body=f"no cad designs match {q!r}\n\n"
@@ -1851,13 +1858,16 @@ class CadHandler(Handler):
         page_size: int,
     ) -> list[Any]:
         """The shared leg behind search() and search_hits(): a fused search
-        over the per-design ``card_combined`` chunks."""
+        over the per-design ``card_combined`` chunks.
+
+        ``query_vec`` arrives caller-resolved: ``None`` here means the
+        lexical leg, never "embed now" — a retry inside this helper would
+        hand the store a vector the caller's ``scores_are_distances`` flag
+        doesn't know about (gr614312)."""
         if not (q and q.strip()):
             return []
         if (mode or "").strip().lower() == "lexical":
             query_vec = None
-        elif query_vec is None:
-            query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
