@@ -79,7 +79,8 @@ Review rows and trust acts retain the original model string.
    and prompt version so their rules cannot reopen existing v2 rejections.
    These rewrites can use the reviewed memory door behind the default-off
    ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate; a mention whose successor
-   is a verified duplicate (merge-made redirect, or a same-title
+   is a verified duplicate (merge-made redirect whose target is the
+   tombstone's recorded merge winner, or a same-title
    ``supersedes`` target — ``evidence.mentions[].duplicate_successor``)
    applies with no model call, recorded ``garden.applied='mention'``
    (gr564554).

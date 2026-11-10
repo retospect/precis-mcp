@@ -180,10 +180,11 @@ existing bounded Opus review pass; it does not bypass review. The sampled
 reviewer and Fable cross-check remain non-terminal. One cell needs no
 review (gr564554): a `dangling_mention` rewrite whose every op is a bare
 handle swap onto a verified duplicate successor — a merge-made redirect
-(`meta.garden_merge` on the tombstone) or a `supersedes` edge to a node
-with the same normalised title — applies with no model call, recorded
-`garden.applied='mention'` with the before/after spans and the undo
-`rewrite_id`. A supersedes to different content stays reviewed.
+whose resolved successor is the tombstone's recorded merge winner, or a
+`supersedes` edge to a node with the same normalised title — applies with
+no model call, recorded `garden.applied='mention'` with the before/after
+spans and the undo `rewrite_id`. A redirect chain that walked past the
+merge winner, and a supersedes to different content, stay reviewed.
 
 Before a memory action applies, its door checks that the proposal is
 still pending and current, the node's pinned SHA holds, and the detector

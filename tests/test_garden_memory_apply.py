@@ -2170,3 +2170,40 @@ def test_duplicate_successor_swap_holds_a_protected_memory(
     )
     assert {p.review_id for p in pending_proposals(store)} == {review_id}
     assert _body(store, target) == body
+
+
+@pytest.mark.parametrize("hop", ["supersede", "merge"])
+def test_merge_then_redirect_past_winner_stays_reviewed(
+    store: Store, monkeypatch: pytest.MonkeyPatch, hop: str
+) -> None:
+    """A mention of A may not auto-swap past the merge winner (td627131).
+
+    A merged into B proves only that A's content lives in B. When B is
+    later retired into different-content C — by an agent-written supersede
+    or by a second merge — the resolved successor is C, and the tombstone's
+    ``garden_merge`` record (winner B) no longer verifies the swap.
+    """
+    monkeypatch.setenv("PRECIS_GARDEN_MEMORY_APPLY", "1")
+    winner = _memory(store, "Current facts.")
+    loser = _memory(store, "Former facts.")
+    doors.apply_merge(store, loser, winner, actor="fixture")
+    final = _memory(store, "Different facts.")
+    if hop == "supersede":
+        store.stamp_ref_meta(winner, {"superseded_by": final})
+        store.retire_ref(winner)
+    else:
+        doors.apply_merge(store, winner, final, actor="fixture")
+    target = _memory(store, f"Résumé: use me{loser}.")
+    candidate, review_id = _mention_proposal(store, target)
+    mention = candidate.evidence["mentions"][0]
+    assert mention["successor"] == f"me{final}"
+    assert mention["duplicate_successor"] is None
+
+    report = consume_proposals(store, review=_approve)
+
+    assert (report.attempts, report.reviewed, report.applied) == (1, 1, 1)
+    assert report.mentions == []
+    garden = _applied_decision(store, target, review_id)
+    assert garden["applied"] == f"garden-rewrite:{target}:{review_id}"
+    assert "spans" not in garden
+    assert _body(store, target) == f"Résumé: use me{final}."

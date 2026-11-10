@@ -72,9 +72,10 @@ both run by the ``graph_garden`` job right after its tick
    ``precis garden apply <review_id>``.
    One cell needs no review at all (gr564554): a ``dangling_mention``
    rewrite whose every op is a bare handle swap onto a successor the
-   detector verified as a duplicate — a merge-made redirect
-   (``meta.garden_merge`` on the tombstone) or a ``supersedes`` edge to a
-   node with the same normalised title — applies through ``apply_rewrite``
+   detector verified as a duplicate — a merge-made redirect whose resolved
+   successor is the tombstone's recorded merge winner, or a ``supersedes``
+   edge to a node with the same normalised title — applies through
+   ``apply_rewrite``
    recorded as ``garden.applied='mention'`` with the before/after spans and
    the undo ``rewrite_id``, sharing the per-tick review budget without
    spending a call. An agent-written supersedes to different content stays

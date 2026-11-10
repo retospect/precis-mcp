@@ -797,7 +797,7 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             "JOIN refs r USING (ref_id) WHERE c.chunk_id = ANY(%s)) "
             "SELECT m.kind, m.is_chunk, m.pk, r.ref_id, r.retired_at, "
             "r.meta->>'superseded_by', s.ref_id, s.kind, s.title, r.title, "
-            "(r.meta->'garden_merge') IS NOT NULL "
+            "r.meta->'garden_merge'->>'winner' "
             "FROM mentioned m JOIN refs r USING (ref_id) "
             "LEFT JOIN LATERAL (SELECT live.ref_id, live.kind, live.title "
             "FROM links l "
@@ -816,12 +816,12 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
             for rid in {int(row[3]) for row in rows if row[5]}
         }
     by_address = {}
-    for kind, chunk, pk, rid, retired, raw, sid, skind, stitle, rtitle, merged in rows:
+    for kind, chunk, pk, rid, retired, raw, sid, skind, stitle, rtitle, winner in rows:
         successor = successors.get(int(rid))
         if successor is None and sid is not None:
             successor = try_format(str(skind), int(sid))
         duplicate = _duplicate_successor(
-            successor, merged=bool(merged), sid=sid, rtitle=rtitle, stitle=stitle
+            successor, merge_winner=winner, sid=sid, rtitle=rtitle, stitle=stitle
         )
         by_address[(kind, bool(chunk), int(pk))] = {
             "retired_ref": try_format(str(kind), int(rid)),
@@ -840,7 +840,7 @@ def _retired_mentions(store: Store, tokens: set[str]) -> dict[str, dict[str, Any
 def _duplicate_successor(
     successor: str | None,
     *,
-    merged: bool,
+    merge_winner: Any,
     sid: Any,
     rtitle: Any,
     stitle: Any,
@@ -848,9 +848,13 @@ def _duplicate_successor(
     """Whether a mention's resolved successor is a duplicate of the retired
     ref — the one fate whose handle swap needs no model judgment (gr564554):
 
-    - ``"merge"``: the tombstone carries ``meta.garden_merge`` — a merge
-      folded the node into the successor, so the handle swap cannot change
-      the referent.
+    - ``"merge"``: the tombstone's ``meta.garden_merge`` names the merge
+      winner and the resolved successor *is* that winner, so the merge
+      folded the node into the successor and the handle swap cannot change
+      the referent. A redirect chain that walked past the winner — the
+      winner itself later retired, superseded into different content —
+      breaks that identity: the verdict is ``None`` and the mention stays
+      with the evaluator (td627131).
     - ``"same_title"``: the resolved successor is exactly the live ref whose
       inbound ``supersedes`` edge claims the replacement, and both titles
       normalise equal — the restated claim is the same node. An
@@ -859,9 +863,15 @@ def _duplicate_successor(
     """
     if successor is None:
         return None
-    if merged:
-        return "merge"
     parsed = parse_handle(successor)
+    if merge_winner is not None:
+        try:
+            winner_id = int(merge_winner)
+        except (TypeError, ValueError):
+            return None
+        if parsed is not None and not parsed[1] and parsed[2] == winner_id:
+            return "merge"
+        return None
     retired_title = normalize_name(str(rtitle or ""))
     if (
         sid is not None
