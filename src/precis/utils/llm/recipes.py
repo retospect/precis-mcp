@@ -10,7 +10,9 @@ the full TTL. A request's task kind, consequence and privacy ride along
 without touching routing, blob policy or request hashes;
 ``route_log.record_call`` stamps every writer, including agent-cost records.
 The scheduler's six-hour ``recipe_gap`` scan reports unknown sources with
-daily deduplication instead of writing gripes from the router.
+daily deduplication instead of writing gripes from the router, skipping
+sources a live recipe already covers (stale ``unknown.`` rows outlive the
+registration that resolved their gripe by up to 24 h).
 """
 
 from __future__ import annotations

@@ -264,6 +264,21 @@ def test_recipe_gap(existing: tuple[int] | None, expected: int) -> None:
         }
 
 
+def test_recipe_gap_skips_recipe_covered_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr572095: a live recipe covers the source — stale ``unknown.`` rows in
+    the 24 h window must not refile the gripe after it is resolved."""
+    store = MagicMock()
+    store.pool.connection.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = [
+        ("axis:role",)
+    ]
+    rows = {"axis:": Recipe("axis:", "chunk.classify", consequence="low")}
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    assert run_recipe_gap(cast(Store, store)) == 0
+    store.insert_ref.assert_not_called()
+
+
 def test_seed_sources() -> None:
     # Independent transcription of seed v0, including literal prefix families.
     sources: list[str] = [
@@ -459,6 +474,28 @@ def test_gap_daily_and_open_dedupe(store: Store) -> None:
         )
         conn.commit()
     assert run_recipe_gap(store) == 1
+
+
+@pytest.mark.db
+def test_gap_skips_recipe_covered_source(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr572095: with the ``axis:`` family row live, ``axis:role`` resolves —
+    the stale ``unknown.axis:role`` row must not file a gripe."""
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM llm_call_log")
+        conn.execute(
+            "INSERT INTO llm_call_log (source, features, errored) "
+            "VALUES ('axis:role', '{\"task_kind\":\"unknown.axis:role\"}', false)"
+        )
+        conn.execute(
+            "INSERT INTO task_recipes (source, task_kind, lane_class, consequence, "
+            "classify) VALUES ('axis:', 'chunk.classify', 'none', 'low', false) "
+            "ON CONFLICT (source) DO NOTHING"
+        )
+        conn.commit()
+    monkeypatch.setattr(route_log, "bound_store", lambda: store)
+    assert run_recipe_gap(store) == 0
 
 
 def test_gap_cadence() -> None:

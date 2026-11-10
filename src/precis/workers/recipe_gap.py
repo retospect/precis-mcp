@@ -13,9 +13,15 @@ def run_recipe_gap(store: Store) -> int:
 
     The scheduler leases this pass fleet-wide; each source's duplicate check and
     write share a transaction. Closed gripes suppress repeats only on filing day.
+    A source a live recipe already covers is skipped: logged rows keep their
+    ``unknown.`` task kind for the rolling 24 h window, so once the gripe is
+    resolved the stale rows would refile it the next UTC day (gr572095 — the
+    ``axis:`` family row covers ``axis:role``; rows logged before the
+    registration still match the scan's filter).
     """
     from precis.store.types import ChunkInsert, Tag
     from precis.utils.dispatch_score import SCORE_META_KEY
+    from precis.utils.llm import recipes
     from precis.workers.auto_gripe import AUTO_SCORE
 
     with store.pool.connection() as conn:
@@ -26,6 +32,8 @@ def run_recipe_gap(store: Store) -> int:
         ).fetchall()
     filed = 0
     for (source,) in sources:
+        if recipes.lookup(source) is not None:
+            continue
         fingerprint = f"recipe-gap:{source or '(empty)'}"
         with store.tx() as conn:
             # Also serializes direct/manual invocations beside the cadence.
