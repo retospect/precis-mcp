@@ -274,4 +274,8 @@ def render_reads(
             next=recovery
             + f"search(kind='memory', view='reads'{tags_echo}, args={args!r})",
         )
-    return Response(body=body, result_count=len(rows))
+    return Response(
+        body=body,
+        result_count=len(rows),
+        result_ids=[int(r[0]) for r in records[:page_size]],
+    )

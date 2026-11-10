@@ -297,6 +297,7 @@ class EdgarHandler(Handler):
                 body=response.body + "\n\n" + trailer,
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         return response

@@ -453,7 +453,11 @@ def merge_and_render(
     else:
         for i, hit in enumerate(rendered, 1):
             lines.append(_render_hit(i, hit, show_label=show_label))
-    return Response(body="\n".join(lines), result_count=len(rendered))
+    return Response(
+        body="\n".join(lines),
+        result_count=len(rendered),
+        result_ids=[int(h.ref_id) for h in rendered if h.ref_id is not None],
+    )
 
 
 # ---------------------------------------------------------------------------

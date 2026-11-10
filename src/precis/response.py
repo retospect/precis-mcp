@@ -87,3 +87,12 @@ class Response:
     #: :class:`ResponseImage`. Empty on nearly every response. Kept last
     #: so positional construction is unaffected.
     images: tuple[ResponseImage, ...] = ()
+
+    #: The ref ids the body enumerates — the recall-audit half of
+    #: ``result_count`` (``tool_calls.result_ids``, migration 0304):
+    #: a search that surfaces memories records WHICH ones, not just how
+    #: many. ``None`` where the response doesn't enumerate a result
+    #: set. Set it where the ids are already in hand — never an extra
+    #: query for the ledger's sake. Last so positional construction is
+    #: unaffected.
+    result_ids: list[int] | None = None

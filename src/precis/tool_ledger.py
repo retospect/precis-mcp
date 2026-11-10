@@ -37,7 +37,11 @@ bound session or no declaration.
 :attr:`precis.response.Response.result_count`, which collection-rendering
 code paths set (search/list/count views, batch gets, links/log views on
 the numeric-ref family, ``utils.search_merge.merge_and_render``);
-``None`` where the response doesn't enumerate a result set. Correlation:
+``None`` where the response doesn't enumerate a result set. ``result_ids``
+(0304) carries the recall audit's other half — WHICH ref ids the body
+enumerated (:attr:`precis.response.Response.result_ids`, capped at
+:data:`RESULT_IDS_MAX` at write): "what handles did that memory search
+surface" answers off the row itself, no body re-parsing. Correlation:
 ``session_id``/``seq`` bind MCP-session calls; ``agentlog_id``/``source``
 cover the in-process agent loop via ``LlmRequest.env_overlay`` →
 :func:`precis.utils.llm.router._overlay_tick_context` (the spawned-claude
@@ -144,6 +148,11 @@ _GC_LOCK = 0x746F6F6C6763
 #: every error-mining query filters ``outcome = 'error'``.
 BUDGET_FITTED = "ResultBudgetFitted"
 
+#: Cap on ``result_ids`` per row (0304) — a bounded audit trail like
+#: ``arg_sample``; ``result_count`` still names the full set size, so a
+#: truncated list is visible as ``len(result_ids) < result_count``.
+RESULT_IDS_MAX = 256
+
 
 @dataclass(frozen=True, slots=True)
 class ToolCallRecord:
@@ -164,6 +173,10 @@ class ToolCallRecord:
     #: Items the response enumerated (:attr:`Response.result_count`) —
     #: 0133's "reserved" column, populated since the handlers carry it.
     result_count: int | None = None
+    #: Ref ids the response enumerated (:attr:`Response.result_ids`) —
+    #: 0304's recall-audit column; truncated to :data:`RESULT_IDS_MAX`
+    #: at write, NULL when the response enumerates nothing.
+    result_ids: list[int] | None = None
     latency_ms: int | None = None
     agentlog_id: int | None = None
     source: str | None = None
@@ -220,9 +233,9 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 agentlog_id, source, profile, verb, kind, input_keys,
                 outcome, error_type, result_count, latency_ms,
                 session_id, seq, result_bytes, result_tokens_est,
-                error_head, arg_sample, client
+                error_head, arg_sample, client, result_ids
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s)
+                      %s, %s, %s, %s, %s, %s, %s, %s::bigint[])
             """,
             (
                 rec.agentlog_id,
@@ -242,6 +255,11 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 rec.error_head,
                 rec.arg_sample,
                 rec.client,
+                (
+                    [int(i) for i in rec.result_ids[:RESULT_IDS_MAX]]
+                    if rec.result_ids
+                    else None
+                ),
             ),
         )
         conn.commit()
@@ -587,7 +605,8 @@ CALLS_MAX_SINCE_HOURS = DEFAULT_RETENTION_DAYS * 24
 _CALL_COLS = (
     "call_id, ts, agentlog_id, source, profile, verb, kind, input_keys, "
     "outcome, error_type, result_count, latency_ms, session_id, seq, "
-    "result_bytes, result_tokens_est, error_head, arg_sample, client"
+    "result_bytes, result_tokens_est, error_head, arg_sample, client, "
+    "result_ids"
 )
 
 
@@ -630,7 +649,7 @@ def memory_route(store: Store) -> list[dict[str, Any]] | None:
             conn.execute("SET LOCAL statement_timeout = '250ms'")
             with conn.cursor(row_factory=dict_row) as cur:
                 rows = cur.execute(
-                    "SELECT session_id, seq, verb, kind, arg_sample "
+                    "SELECT session_id, seq, verb, kind, arg_sample, result_ids "
                     "FROM tool_calls WHERE session_id = %s "
                     "AND (kind = 'memory' OR (kind IS NULL AND verb = 'get' "
                     "AND btrim(arg_sample->>'id') "
@@ -854,6 +873,7 @@ __all__ = [
     "CALLS_MAX_LIMIT",
     "CALLS_MAX_SINCE_HOURS",
     "DEFAULT_RETENTION_DAYS",
+    "RESULT_IDS_MAX",
     "RETENTION_DAYS_ENV",
     "ToolCallRecord",
     "arg_sample",

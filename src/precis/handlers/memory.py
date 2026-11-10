@@ -1095,7 +1095,11 @@ class MemoryHandler(NumericRefHandler):
                 f"{'s' if non_memory != 1 else ''} not listed "
                 f"(view='links' shows them)"
             )
-        return Response(body=body)
+        return Response(
+            body=body,
+            result_count=len(lines),
+            result_ids=[int(r.id) for r in rest[: len(lines)]],
+        )
 
     def _get_section(self, *, id: str, view: str | None, q: str | None) -> Response:
         """``get(id='<id>~<section>')`` — one headed part of the body.
@@ -3978,14 +3982,14 @@ class MemoryHandler(NumericRefHandler):
                     "search(kind='memory', q='<words>', tags=['ruling'])"
                 ),
             )
-        body = render_rulings(
+        body, ruling_ids = render_rulings(
             self.store,
             status=status,
             tags=tags,
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
         )
-        return Response(body=body)
+        return Response(body=body, result_count=len(ruling_ids), result_ids=ruling_ids)
 
     def _search_inner(
         self,
@@ -4129,7 +4133,11 @@ class MemoryHandler(NumericRefHandler):
                     size=row_size_cell(len(body_text.encode("utf-8"))),
                 )
             )
-        return Response(body="\n".join(lines), result_count=len(lines))
+        return Response(
+            body="\n".join(lines),
+            result_count=len(lines),
+            result_ids=[int(ref.id) for _block, ref, _rank in hits],
+        )
 
     def _body_search_hits(
         self,
@@ -4249,8 +4257,8 @@ class MemoryHandler(NumericRefHandler):
                 next="search(kind='memory', view='index', args={'page': 1})",
             ) from None
         budget = max(200, result_context_cap() - _PAGED_FOOTER_BYTES)
-        pages: list[list[str]] = []
-        cur: list[str] = []
+        pages: list[list[tuple[int, str]]] = []
+        cur: list[tuple[int, str]] = []
         used = 0
         for ref in refs:
             if len(pages) == page:
@@ -4273,7 +4281,7 @@ class MemoryHandler(NumericRefHandler):
                 cur, used = [], 0
                 if len(pages) == page:
                     break
-            cur.append(line)
+            cur.append((int(ref.id), line))
             used += cost
         if cur and len(pages) < page:
             pages.append(cur)
@@ -4281,7 +4289,8 @@ class MemoryHandler(NumericRefHandler):
             return Response(
                 body=f"no {self._sense()} entries on page {page}", result_count=0
             )
-        lines = pages[page - 1]
+        page_rows = pages[page - 1]
+        lines = [ln for _rid, ln in page_rows]
         body = "\n".join(lines)
         shown = sum(len(c) for c in pages)
         more = len(refs) - shown
@@ -4307,7 +4316,11 @@ class MemoryHandler(NumericRefHandler):
                 f"\n… {more} more — next: search(kind='memory'{tags_echo}, "
                 f"view='index', args={{{', '.join(args_echo)}}})"
             )
-        return Response(body=body, result_count=len(lines))
+        return Response(
+            body=body,
+            result_count=len(lines),
+            result_ids=[rid for rid, _ln in page_rows],
+        )
 
     # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
 

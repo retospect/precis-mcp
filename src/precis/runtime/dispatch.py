@@ -1697,6 +1697,7 @@ class DispatchMixin(RuntimeShape):
                     response.result_count,
                     budget_fitted=budget_fitted,
                     scope_verdict=scope_verdict,
+                    result_ids=response.result_ids,
                 )
                 images_sink = _RESPONSE_IMAGES.get()
                 if images_sink is not None and response.images:
@@ -1753,6 +1754,7 @@ class DispatchMixin(RuntimeShape):
         *,
         budget_fitted: bool = False,
         scope_verdict: Any = None,
+        result_ids: list[int] | None = None,
     ) -> None:
         """Best-effort tool-call ledger write (migration 0133).
 
@@ -1833,6 +1835,9 @@ class DispatchMixin(RuntimeShape):
                     outcome="error" if is_error else "ok",
                     error_type=error_type,
                     result_count=result_count,
+                    # 0304: which refs the body enumerated — the recall
+                    # audit's "what did this search surface" answer.
+                    result_ids=result_ids,
                     latency_ms=int((time.monotonic() - started) * 1000),
                     agentlog_id=current_from_env(),
                     # The producing JOB ("dream", "plan_tick"), not the model

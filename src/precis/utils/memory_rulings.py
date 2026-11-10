@@ -366,10 +366,11 @@ def render_rulings(
     exclude_ref_ids: Collection[int] | None = None,
     today: date | None = None,
     budget: int | None = None,
-) -> str:
+) -> tuple[str, list[int]]:
     """The ``view='rulings'`` body: rulings grouped by status, each with its
     governed nodes. ``status=None`` shows in-force only and counts the rest;
-    ``'*'`` shows all."""
+    ``'*'`` shows all. Returns ``(body, rendered ref ids)`` — the ids feed
+    the ledger's ``result_ids`` audit column."""
     today = today or today_utc()
     rows, hidden = _ruling_rows(
         store,
@@ -390,6 +391,7 @@ def render_rulings(
         )
     cap = (budget if budget is not None else result_context_cap()) - 400
     used = sum(len(ln) + 1 for ln in lines)
+    shown_ids: list[int] = []
     current = ""
     for i, row in enumerate(rows):
         row.governed = _governed(store, row.ref.id)
@@ -423,12 +425,13 @@ def render_rulings(
             break
         lines.extend(block)
         used += cost
+        shown_ids.append(int(row.ref.id))
     if not rows:
         lines.append(
             "no rulings match; file one with put(kind='memory', "
             "tags=['ruling'], text='…', meta={'ruled_by': '…'})"
         )
-    return "\n".join(lines)
+    return "\n".join(lines), shown_ids
 
 
 #: ``Meta: ruled_by: Reto; ruled_on: 2026-11-01; status: in-force`` — the

@@ -474,6 +474,7 @@ class PatentHandler(Handler):
                 body=response.body + "\n\n" + trailer,
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         return response
@@ -862,6 +863,7 @@ class PatentHandler(Handler):
                 + f"\n\n_See Espacenet: {_espacenet_search_url(cql)}_",
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
         return response
 

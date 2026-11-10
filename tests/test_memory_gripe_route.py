@@ -32,6 +32,9 @@ def memory_ledger(store: Store) -> Iterator[list[dict[str, Any]]]:
                 {"kind": "memory", "q": f"claim {seq}", "token": "private-value"}
             )
             assert sample is not None
+            # One search row carries the recall-audit ids (0304); the
+            # rest stay NULL like gets and pre-column rows.
+            ids = [101, 102] if verb == "search" and seq == 14 else None
             tool_ledger.record_call(
                 store,
                 tool_ledger.ToolCallRecord(
@@ -42,6 +45,7 @@ def memory_ledger(store: Store) -> Iterator[list[dict[str, Any]]]:
                     session_id=session_id,
                     seq=seq,
                     arg_sample=sample,
+                    result_ids=ids,
                 ),
             )
             expected.append(
@@ -51,6 +55,7 @@ def memory_ledger(store: Store) -> Iterator[list[dict[str, Any]]]:
                     "verb": verb,
                     "kind": "memory",
                     "arg_sample": json.loads(sample),
+                    "result_ids": ids,
                 }
             )
         for seq, handle in ((15, "me123"), (16, "memory:456"), (17, "memory:me789")):
@@ -75,6 +80,7 @@ def memory_ledger(store: Store) -> Iterator[list[dict[str, Any]]]:
                     "verb": "get",
                     "kind": None,
                     "arg_sample": json.loads(sample),
+                    "result_ids": None,
                 }
             )
         for sid, kind, verb in (

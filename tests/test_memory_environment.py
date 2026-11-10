@@ -345,6 +345,134 @@ def test_shape_co_read_pairs_disconnected_nodes(
     assert f"me{a} ↔ me{b}: 3 sessions, 3 hops" in out
 
 
+def test_environment_counts_children_past_the_hop_cut(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td627401: a part-of child beyond the hop boundary still counts —
+    the cut must not invent a leaf for ``mention-fan-leaf``."""
+    focus = _memory(store, "Focus", section="reference")
+    fan = _memory(store, "Cited member", section="reference")
+    child = _memory(store, "Child outside the cut", section="reference")
+    store.add_link(src_ref_id=fan, dst_ref_id=focus, relation="related-to")
+    store.add_link(src_ref_id=child, dst_ref_id=fan, relation="part-of")
+    for i in range(12):
+        other = _memory(store, f"Citing {i}", section="reference")
+        store.add_link(src_ref_id=other, dst_ref_id=fan, relation="related-to")
+
+    out = _environment(runtime_with_store, focus, hops=1)
+
+    assert f"me{child}" not in out  # the boundary cut dropped it
+    assert "mention-fan-leaf" not in _smell_lines(out)
+
+
+def test_shape_counts_children_outside_the_tag_scope(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td627401: same boundary rule on the ``view='shape'`` side — a
+    tag-filtered scope keeps the member but drops its child."""
+    hub = _memory(store, "Hub", section="index")
+    fan = _memory(store, "Cited member", section="reference", space="personal")
+    child = _memory(store, "Child outside the cut", section="reference")
+    store.add_link(src_ref_id=fan, dst_ref_id=hub, relation="part-of")
+    store.add_link(src_ref_id=child, dst_ref_id=fan, relation="part-of")
+    for i in range(12):
+        other = _memory(store, f"Citing {i}", section="reference")
+        store.add_link(src_ref_id=other, dst_ref_id=fan, relation="related-to")
+
+    out = _shape(runtime_with_store, under=f"me{hub}", tags=["SPACE:personal"])
+
+    assert f"me{child}" not in out
+    assert "mention-fan-leaf" not in _smell_lines(out)
+
+
+def test_environment_smell_lines_carry_their_evidence(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td627401: each flagged handle renders its computed evidence, not
+    just the detector's gloss."""
+    slug = _memory(store, "snake_case_title", section="reference")
+    churn = _memory(store, "Churned claim", section="workflow")
+    dead = _memory(store, "Hot dead end", section="reference")
+    _revisions(store, churn, 10)
+    for i in range(4):
+        _get_call(store, dead, f"s{i}")
+    for ref_id in (churn, dead):
+        store.add_link(src_ref_id=ref_id, dst_ref_id=slug, relation="related-to")
+
+    out = _environment(runtime_with_store, slug, hops=1)
+    smells = _smell_lines(out)
+
+    assert f"me{churn} — " in smells and "edits by" in smells
+    assert f"me{dead} — 4 sessions, 1 mentions, 0 typed edges" in smells
+
+
+def test_shape_co_read_pairs_ignore_paths_through_excluded_nodes(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td627401: a bridge node the scope cut excluded is no gap — two
+    hops through it means the pair is already linked."""
+    hub = _memory(store, "Hub", section="index")
+    mid = _memory(store, "Inner middle", section="reference")
+    a = _memory(store, "Pair member A", section="reference", space="personal")
+    b = _memory(store, "Pair member B", section="reference", space="personal")
+    bridge = _memory(store, "Bridge excluded", section="reference")
+    store.add_link(src_ref_id=a, dst_ref_id=hub, relation="part-of")
+    store.add_link(src_ref_id=mid, dst_ref_id=hub, relation="part-of")
+    store.add_link(src_ref_id=b, dst_ref_id=mid, relation="part-of")
+    store.add_link(src_ref_id=a, dst_ref_id=bridge, relation="related-to")
+    store.add_link(src_ref_id=bridge, dst_ref_id=b, relation="related-to")
+    for i in range(3):
+        session = f"s{i}"
+        _get_call(store, a, session)
+        _get_call(store, b, session)
+
+    out = _shape(runtime_with_store, under=f"me{hub}", tags=["SPACE:personal"])
+
+    assert "co-read pairs" not in out
+
+
+def test_memory_renders_record_result_ids(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td627401: the ledger row records WHICH refs a call returned —
+    the recall audit's missing half (gr570722)."""
+    a = _memory(store, "Parchment memory", body="parchment body")
+    b = _memory(store, "Second memory", body="other body")
+
+    def last_ids() -> list[int] | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT result_ids FROM tool_calls ORDER BY call_id DESC LIMIT 1"
+            ).fetchone()
+        assert row is not None
+        return row[0]
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "view": "index"}
+    )
+    assert not is_error, body
+    assert sorted(last_ids() or []) == sorted([a, b])
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "q": "parchment"}
+    )
+    assert not is_error, body
+    assert last_ids() == [a]
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": a, "view": "environment"}
+    )
+    assert not is_error, body
+    assert last_ids() == [a]
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "view": "shape"}
+    )
+    assert not is_error, body
+    # Both nodes are untyped — ``no-section`` flags them both.
+    assert sorted(last_ids() or []) == sorted([a, b])
+
+
 def test_index_search_records_result_count(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

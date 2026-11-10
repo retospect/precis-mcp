@@ -189,6 +189,9 @@ class _Scope:
     #: ``ref_tags_bulk`` over scope ∪ live part-of parents — the gotcha
     #: detail node's inherit check reads its summary's tags too.
     tag_map: dict[int, list[tuple[str, str]]] = field(default_factory=dict)
+    #: Scoped ids ∪ live memory endpoints of ``edges`` — the node set a
+    #: co-read distance may hop through (one cut past the scope).
+    live_memory: set[int] = field(default_factory=set)
 
 
 def _handle(ref_id: int) -> str:
@@ -313,7 +316,9 @@ def _gather(store: Store, ids: list[int], now: datetime) -> _Scope:
     reads / revisions / links), one tool_calls window scan (it rides the
     ``(verb, kind, ts)`` index), one endpoint-kind lookup. A scoped
     node's structural counts use *all* its edges, not just the inner
-    ones — a mention fan reads the same inside and outside the cut.
+    ones — a mention fan reads the same inside and outside the cut, and
+    ``children`` counts live children past the boundary too, so the cut
+    can't invent a leaf.
     """
     empty = _Scope({}, [], [], [])
     if not ids:
@@ -362,6 +367,9 @@ def _gather(store: Store, ids: list[int], now: datetime) -> _Scope:
             }
     live_set = set(live_ids)
     inner = [e for e in edges if e.src in live_set and e.dst in live_set]
+    # Live memory endpoints one edge past the scope — the co-read
+    # distance's boundary hop set.
+    live_memory = live_set | {r for r, k in kinds.items() if k == "memory"}
 
     # Parent/child and the gotcha-inherits check read live parents
     # outside the scope too — a gotcha detail node inherits its
@@ -376,10 +384,19 @@ def _gather(store: Store, ids: list[int], now: datetime) -> _Scope:
     per_node_calls: dict[int, list[tuple[str | None, datetime]]] = defaultdict(list)
     for rid, session, ts in calls:
         per_node_calls[rid].append((session, ts))
-    children_of: dict[int, int] = defaultdict(int)
-    for member, parents in parents_map.items():
-        for parent in parents:
-            children_of[parent] += 1
+    # Live part-of/contains children — counted through the boundary
+    # edges, not via scoped members, so a child the cut excluded still
+    # counts against a leaf smell.
+    children_of: dict[int, set[int]] = defaultdict(set)
+    for e in edges:
+        if e.relation == "part-of":
+            child_id, parent_id = e.src, e.dst
+        elif e.relation == "contains":
+            child_id, parent_id = e.dst, e.src
+        else:
+            continue
+        if parent_id in live_set and child_id != parent_id and child_id in kinds:
+            children_of[parent_id].add(child_id)
 
     nodes: dict[int, _Node] = {}
     for ref_id, title, created_at, updated_at in refs:
@@ -418,13 +435,13 @@ def _gather(store: Store, ids: list[int], now: datetime) -> _Scope:
             edits=edits,
             editors=editors,
             hub_id=hub_list[0] if hub_list else None,
-            children=children_of.get(ref_id, 0),
+            children=len(children_of.get(ref_id, ())),
             parents=tuple(parents_map.get(ref_id, [])),
             typed=typed,
             mentions=mentions,
             cross_kind=cross_kind,
         )
-    return _Scope(nodes, inner, edges, calls, tag_map)
+    return _Scope(nodes, inner, edges, calls, tag_map, live_memory)
 
 
 # ── smells ────────────────────────────────────────────────────────────
@@ -645,15 +662,21 @@ def compute_smells(scope: _Scope, now: datetime) -> list[_Smell]:
 
 
 def _adjacency(scope: _Scope) -> dict[int, set[int]]:
+    """Undirected adjacency over live memory endpoints — inner edges
+    plus boundary links to memories the scope cut excluded, so a pair
+    joined inside the hop budget through an excluded node measures
+    honestly."""
     adj: dict[int, set[int]] = {rid: set() for rid in scope.nodes}
-    for e in scope.inner:
-        adj[e.src].add(e.dst)
-        adj[e.dst].add(e.src)
+    for e in scope.edges:
+        if e.src in scope.live_memory and e.dst in scope.live_memory:
+            adj.setdefault(e.src, set()).add(e.dst)
+            adj.setdefault(e.dst, set()).add(e.src)
     return adj
 
 
 def _distance(adj: dict[int, set[int]], a: int, b: int) -> int | None:
-    """Undirected hops a→b inside the scope; ``None`` when disconnected."""
+    """Undirected hops a→b over the gathered edges; ``None`` when
+    disconnected in what they show."""
     if a == b:
         return 0
     seen = {a}
@@ -675,6 +698,11 @@ def co_read_pairs(scope: _Scope) -> list[tuple[int, int, int, int | None]]:
     than ``_CO_READ_MIN_DISTANCE`` hops apart (or disconnected). Sorted
     by session count desc. Missing-link candidates: readers keep
     fetching them together, but the graph doesn't know they're related.
+
+    Distance runs over live memory nodes one cut past the scope, so a
+    bridge node the scope excluded no longer reads as a gap; a path
+    needing two or more excluded intermediates still measures
+    disconnected — the gathered edges can't see further.
     """
     sessions: dict[str, set[int]] = defaultdict(set)
     for rid, session, _ts in scope.calls:
@@ -830,12 +858,13 @@ def _smell_block(smells: list[_Smell]) -> str:
         f"over {len({r for s in smells for r in s.nodes})} nodes"
     ]
     for s in smells:
-        shown = ", ".join(_handle(r) for r in s.nodes[:_MAX_SMELL_HANDLES])
+        lines.append(f"- {s.code} ({len(s.nodes)}): {s.gloss}")
+        for r in s.nodes[:_MAX_SMELL_HANDLES]:
+            detail = s.detail.get(r)
+            lines.append(f"  {_handle(r)}" + (f" — {detail}" if detail else ""))
         more = len(s.nodes) - _MAX_SMELL_HANDLES
-        lines.append(
-            f"- {s.code} ({len(s.nodes)}): {s.gloss}\n"
-            f"  {shown}{f' … +{more}' if more > 0 else ''}"
-        )
+        if more > 0:
+            lines.append(f"  … +{more} more")
     return "\n".join(lines)
 
 
@@ -919,7 +948,11 @@ def render_environment(store: Store, ref: Ref, *, hops: int, mermaid: bool) -> R
             ]
         )
     )
-    return Response(body="\n\n".join(parts), result_count=len(ordered))
+    return Response(
+        body="\n\n".join(parts),
+        result_count=len(ordered),
+        result_ids=sorted(scope.nodes),
+    )
 
 
 def _scope_nodes(
@@ -1045,7 +1078,11 @@ def render_shape(
         )
     )
     flagged = {r for s in smells for r in s.nodes}
-    return Response(body="\n\n".join(parts), result_count=len(flagged))
+    return Response(
+        body="\n\n".join(parts),
+        result_count=len(flagged),
+        result_ids=sorted(flagged),
+    )
 
 
 def count_shape_nodes(

@@ -1510,7 +1510,11 @@ class NumericRefHandler(Handler):
         if trunc:
             parts.append(trunc)
         parts.append(table)
-        return Response(body="\n".join(parts), result_count=len(hit_refs))
+        return Response(
+            body="\n".join(parts),
+            result_count=len(hit_refs),
+            result_ids=[int(r.id) for r in hit_refs],
+        )
 
     def _fold_project_arg(
         self,
@@ -2396,7 +2400,11 @@ class NumericRefHandler(Handler):
                     "args={'id_min': N, 'id_max': M}"
                 )
             parts.append(line)
-        return Response(body="\n".join(parts), result_count=len(refs))
+        return Response(
+            body="\n".join(parts),
+            result_count=len(refs),
+            result_ids=[int(r.id) for r in refs],
+        )
 
     def _list_summary(
         self,
@@ -2526,7 +2534,11 @@ class NumericRefHandler(Handler):
             if compact
             else self._render_hits_table(page_rows)
         )
-        return Response(body="\n".join(parts), result_count=len(page_rows))
+        return Response(
+            body="\n".join(parts),
+            result_count=len(page_rows),
+            result_ids=[int(r.id) for r in page_rows],
+        )
 
     def _axis_in_use(self, prefix: str) -> bool:
         """gr504808: an UPPERCASE axis the ``tags`` table carries is a
@@ -3064,7 +3076,11 @@ class NumericRefHandler(Handler):
             # the honest verdict, ahead of the hint.
             lines[0] = f"no strong match for {q!r}"
             return Response(body="\n".join(lines), result_count=0)
-        return Response(body="\n".join(lines), result_count=len(shown))
+        return Response(
+            body="\n".join(lines),
+            result_count=len(shown),
+            result_ids=[int(ref.id) for _, ref, _ in shown],
+        )
 
     def _hit_text(self, ref: Ref, block: Any) -> str:
         """Display text for a best-hit chunk. Default: the chunk itself;

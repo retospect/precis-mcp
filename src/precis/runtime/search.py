@@ -297,8 +297,14 @@ def _stamp_non_production_embedder(
             body="\n".join(lines),
             cost=response.cost,
             result_count=response.result_count,
+            result_ids=response.result_ids,
         )
-    return Response(body=marker, cost=response.cost, result_count=response.result_count)
+    return Response(
+        body=marker,
+        cost=response.cost,
+        result_count=response.result_count,
+        result_ids=response.result_ids,
+    )
 
 
 def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) -> str:
@@ -1707,6 +1713,7 @@ class SearchMixin(RuntimeShape):
                     body="\n".join(lines),
                     cost=response.cost,
                     result_count=response.result_count,
+                    result_ids=response.result_ids,
                 )
         response = _stamp_non_production_embedder(response, embedder)
         # gr608577: a page that fits still names its continuation, and a
@@ -2532,6 +2539,7 @@ class SearchMixin(RuntimeShape):
                     body="\n".join(lines),
                     cost=response.cost,
                     result_count=response.result_count,
+                    result_ids=response.result_ids,
                 )
 
         # Partial failure is not silence either: a kind that errored is
@@ -2555,6 +2563,7 @@ class SearchMixin(RuntimeShape):
                 body="\n".join(lines),
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         # The domain fence's skipped-kinds footer (gr572720) — the same
@@ -2571,6 +2580,7 @@ class SearchMixin(RuntimeShape):
                 body="\n".join(lines),
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         # Broad-pass finding #7: when cross-kind ran with the wildcard
@@ -2601,6 +2611,7 @@ class SearchMixin(RuntimeShape):
                     body="\n".join(lines),
                     cost=response.cost,
                     result_count=response.result_count,
+                    result_ids=response.result_ids,
                 )
 
         if uncited_dropped_kinds:
@@ -2620,6 +2631,7 @@ class SearchMixin(RuntimeShape):
                 body="\n".join(lines),
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         # gr485250: a C-number query is almost certainly a part lookup.
@@ -2640,6 +2652,7 @@ class SearchMixin(RuntimeShape):
                 body="\n".join(lines),
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         # Majority failure leads, not trails: the ranked list stays (the
@@ -2658,6 +2671,7 @@ class SearchMixin(RuntimeShape):
                 body="\n".join(lines),
                 cost=response.cost,
                 result_count=response.result_count,
+                result_ids=response.result_ids,
             )
 
         return _stamp_non_production_embedder(response, embedder)
@@ -2737,7 +2751,11 @@ class SearchMixin(RuntimeShape):
             body = "\n".join(lines)
         if domain_footer is not None:
             body += f"\n_({domain_footer})_"
-        return Response(body=body, result_count=len(refs))
+        return Response(
+            body=body,
+            result_count=len(refs),
+            result_ids=[int(r.id) for r in refs],
+        )
 
     def _resolve_folder_scope(self, value: Any) -> tuple[set[int], str]:
         """Resolve a ``folder=`` argument to ``(subtree_ref_ids, label)``.
