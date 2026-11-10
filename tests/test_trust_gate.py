@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from precis.utils import trust_gate
-from precis_pathway.toon_views import trust_toon
+from precis_pathway.toon_views import compare_toon, gate_verdict, trust_toon
 
 
 @pytest.fixture(autouse=True)
@@ -1041,3 +1041,150 @@ def test_trust_toon_newer_engine_row_passes() -> None:
     assert "pass" in row and "not older than" in row
     assert "engine:stale" not in body
     assert "verdict: PASS" in body
+
+
+class _BatchStore:
+    """``sibling_evidence_batch``'s one scan returns ``(ref_id, meta)``
+    pairs, unlike ``_FakeStore``'s ref-id-only rows — the batch never
+    calls ``fetch_refs_by_ids``."""
+
+    def __init__(self, metas: dict[int, dict[str, Any]]) -> None:
+        rows = list(metas.items())
+
+        class _Conn:
+            def __enter__(self) -> _Conn:
+                return self
+
+            def __exit__(self, *_a: Any) -> None:
+                return None
+
+            def execute(self, *_a: Any, **_kw: Any) -> _Conn:
+                return self
+
+            def fetchall(self) -> list[tuple[int, dict[str, Any]]]:
+                return rows
+
+        class _Pool:
+            def connection(self) -> _Conn:
+                return _Conn()
+
+        self.pool = _Pool()
+
+
+def test_sibling_evidence_batch_matches_per_pathway_rules() -> None:
+    """gr592278: view='compare' replays the seed gate for every row, so
+    the batch must apply exactly ``sibling_evidence``'s rules — ready,
+    full sibling_key match, self excluded — for one store scan instead of
+    one per row."""
+    ident = [_ident(st, 2, -10.0) for st in _STATES]
+    stored: dict[int, dict[str, Any]] = {
+        20: {**_SIB, "results": {"seeds": [0, 1]}},
+        21: {**_SIB, "results": {"seeds": [3]}},
+        30: {**_SIB, "results": {"seeds": [2], "trust": ident}},
+        # a different candidate_ref: returned by the scan, re-checked out
+        31: {**_SIB, "candidate_ref": 999999, "results": {"seeds": [7]}},
+        # not ready: contributes nothing
+        32: {**_SIB, "status": "computing", "results": {"seeds": [8]}},
+    }
+    store = _BatchStore(stored)
+    out = trust_gate.sibling_evidence_batch(
+        store, metas={20: stored[20], 21: stored[21]}
+    )
+    # each row pools the other's declared seed and sibling 30's records,
+    # never its own, never the mis-keyed or unready rows
+    assert out[20] == ({2, 3}, ident)
+    # 21 also pools 20's declared seeds — pooling is symmetric
+    assert out[21] == ({0, 1, 2}, ident)
+    # a pathway whose key can't form pools with itself only
+    out2 = trust_gate.sibling_evidence_batch(store, metas={40: {"status": "ready"}})
+    assert out2 == {40: (set(), [])}
+
+
+def test_gate_verdict_blocks_and_collapses_families() -> None:
+    """gr592278, the gripe's shape: an on-route detachment fatal reads
+    blocked, and the `why` collapses the record blocker to its check
+    family."""
+    records = _records([0])
+    verdict, why = gate_verdict(_meta(_results(records, [0])))
+    assert verdict == "blocked"
+    assert why == "detachment"
+    # a clean-but-1-seed run blocks on the seed gate — and the stored
+    # available=true fails closed against the replay's blocker
+    short = _records([0], hi_states=(), with_detachment=False)
+    results = _results(short, [0])
+    results["trust_summary"]["barrier"] = {"available": True, "blocked_by": []}
+    verdict, why = gate_verdict(_meta(results))
+    assert verdict == "blocked"
+    assert why == "seeds:1-independent"
+
+
+def test_gate_verdict_pass_and_lookup_failure() -> None:
+    """A clean 2-seed run passes with an empty `why`; a sibling-lookup
+    failure blocks (review item 10), never a silent pass."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]))
+    assert gate_verdict(meta) == ("pass", "")
+    verdict, why = gate_verdict(meta, seed_lookup_failed=True)
+    assert verdict == "blocked"
+    assert why == "seeds:lookup-failed"
+
+
+def test_gate_verdict_stale_engine_blocks_despite_clean_summary() -> None:
+    """The pw452097 half of the gripe: stored summary clean, engine
+    0.22.0 stale — the engine-staleness guard fails and the row blocks."""
+    records = _records([0, 1], hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, [0, 1]), autocatpath_version="0.22.0")
+    verdict, why = gate_verdict(meta)
+    assert verdict == "blocked"
+    assert "engine staleness" in why
+
+
+def test_gate_verdict_fails_closed_when_stored_summary_disagrees() -> None:
+    """A stored ``available=true`` the record replay contradicts never
+    reads pass here — the column picks candidates, so it fails closed
+    (view='trust' prints the same disagreement as DISAGREES)."""
+    records = _records([0])
+    results = _results(records, [0])
+    results["trust_summary"]["barrier"] = {"available": True, "blocked_by": []}
+    verdict, _why = gate_verdict(_meta(results))
+    assert verdict == "blocked"
+
+
+def test_gate_verdict_na_without_trust_records() -> None:
+    assert gate_verdict({"results": {}}) == ("n/a", "pre-trust-schema")
+    meta = _meta(_results([], [0]))
+    assert gate_verdict(meta) == ("n/a", "no trust records")
+
+
+def test_compare_toon_renders_gate_column_and_legends() -> None:
+    """The compare table names the gate per row and footnotes that conf
+    is the rate-limiting step's spread only — the two readings the
+    gr592278 route conflated."""
+    from precis.utils import reaction_graph as analysis
+
+    meta = _meta(_results(_records([0]), [0]))
+    graph = meta["graph"]
+    root, target = analysis.roots(graph, meta["results"])
+    candidates = [
+        {
+            "slug": "blocked-run",
+            "lever": "Pd",
+            "graph": graph,
+            "root": root,
+            "target": target,
+            "gate": "blocked (detachment · seeds:1-independent)",
+        },
+        {
+            "slug": "clean-run",
+            "lever": "Pt",
+            "graph": graph,
+            "root": root,
+            "target": target,
+        },
+    ]
+    out = compare_toon(candidates)
+    assert "{cand\tcandidate\tgate" in out  # schema carries the column
+    assert "blocked (detachment" in out
+    assert "n/a" in out  # no gate supplied → n/a, never a blank
+    assert "NOT the trust gate" in out
+    assert "view='trust'" in out

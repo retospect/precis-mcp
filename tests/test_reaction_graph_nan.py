@@ -94,7 +94,8 @@ def test_unknown_span_is_rendered_as_na():
     comparison = compare_toon(
         [{"slug": "unknown", "graph": graph, "root": "s0", "target": "s2"}]
     )
-    assert comparison.splitlines()[-1].split("\t")[-2] == "n/a"
+    row = next(ln for ln in comparison.splitlines() if ln.startswith("unknown\t"))
+    assert row.split("\t")[-2] == "n/a"  # SPAN
 
 
 def test_missing_barrier_has_no_measured_spread_or_verdict():
@@ -154,9 +155,10 @@ def test_analysis_view_shows_real_values_when_barriers_exist():
     comparison = compare_toon(
         [{"slug": "measured", "graph": meta["graph"], "root": "s0", "target": "s2"}]
     )
-    last = comparison.splitlines()[-1].split("\t")
+    row = next(ln for ln in comparison.splitlines() if ln.startswith("measured\t"))
+    last = row.split("\t")
     assert last[-2] == "0.70" and last[-1] == "ok"  # SPAN, conf
-    assert "n/a" not in comparison
+    assert last[2] == "n/a"  # no gate supplied → n/a, never a blank or fake pass
 
 
 def test_compare_view_shows_na_for_missing_barriers():
@@ -166,7 +168,8 @@ def test_compare_view_shows_na_for_missing_barriers():
     comparison = compare_toon(
         [{"slug": "unknown", "graph": graph, "root": "s0", "target": "s1"}]
     )
-    last = comparison.splitlines()[-1].split("\t")
-    # ‡ barrier column, RATE, SPAN and conf are all n/a — none reads "ok"
-    assert last.count("n/a") == 4
-    assert "ok" not in last
+    row = next(ln for ln in comparison.splitlines() if ln.startswith("unknown\t"))
+    cells = row.split("\t")
+    # gate, ‡ barrier column, RATE, SPAN and conf are all n/a — none reads "ok"
+    assert cells.count("n/a") == 5
+    assert "ok" not in row

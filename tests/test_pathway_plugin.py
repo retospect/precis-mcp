@@ -4238,3 +4238,123 @@ def test_search_args_filters_and_bad_input(pathway_store: Store) -> None:
         h.search(q="run", args={"candidate": "no-such-structure"})
     with pytest.raises(BadInput):
         h.search()
+
+
+def _stamp_trust(store: Store, slug: str, trust_payload: dict[str, Any]) -> None:
+    """Merge a trust-records payload into a stored synthetic pathway's
+    results — the fixture runs carry no trust records of their own."""
+    import json
+
+    ref = store.get_ref(kind="pathway", id=slug)
+    assert ref is not None
+    meta = dict(ref.meta)
+    meta["results"] = {**meta["results"], **trust_payload}
+    with store.pool.connection() as c:
+        c.execute(
+            "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+            (json.dumps(meta), ref.id),
+        )
+
+
+def _clean_trust() -> dict[str, Any]:
+    return {
+        "trust_schema": 2,
+        "seeds": [0, 1],
+        "trust": [
+            {
+                "check": "neb_convergence",
+                "verdict": "pass",
+                "severity": "fatal",
+                "seed": 0,
+                "step": "A->B",
+                "evidence": {},
+                "id": "c0",
+            },
+            {
+                "check": "neb_convergence",
+                "verdict": "pass",
+                "severity": "fatal",
+                "seed": 1,
+                "step": "A->B",
+                "evidence": {},
+                "id": "c1",
+            },
+        ],
+        "trust_summary": {"barrier": {"available": True, "blocked_by": []}},
+    }
+
+
+def _failing_trust() -> dict[str, Any]:
+    return {
+        "trust_schema": 2,
+        "seeds": [0, 1],
+        "trust": [
+            {
+                "check": "detachment",
+                "verdict": "fail",
+                "severity": "fatal",
+                "seed": 0,
+                "step": "A->B",
+                "evidence": {"image": 3, "closest_A": 4.8},
+                "id": "d0",
+            },
+            {
+                "check": "neb_convergence",
+                "verdict": "pass",
+                "severity": "fatal",
+                "seed": 1,
+                "step": "A->B",
+                "evidence": {},
+                "id": "c1",
+            },
+        ],
+        "trust_summary": {"barrier": {"available": False, "blocked_by": ["d0"]}},
+    }
+
+
+def test_compare_gate_column_and_filter(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr592278: every compare row carries the trust-gate verdict replayed
+    per row like view='trust' (a tight rate-limiting spread used to read as
+    `conf=ok` on gate-BLOCKED candidates), and args={'gate': ...} filters
+    on it."""
+    from precis.errors import BadInput
+    from precis.quest import compute as compute_mod
+
+    # the synthetic fixture stamps engine "test"; pin the version floor
+    # there so a stamped row is judged on its records, not fixture provenance
+    monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "test")
+
+    h = _handler(pathway_store)
+    _store_synthetic_pathway(pathway_store, "gate-pd", element="Pd")
+    _store_synthetic_pathway(pathway_store, "gate-pt", element="Pt")
+
+    out = h.get(id="gate-pd", view="compare").body
+    assert "{cand\tcandidate\tgate" in out  # schema carries the column
+    assert "n/a (pre-trust-schema)" in out  # synthetic runs: no trust records
+    assert "NOT the trust gate" in out  # conf footnote
+
+    # gate applies to view='compare' only; values are pass|blocked
+    with pytest.raises(BadInput, match="view='compare' only"):
+        h.get(id="gate-pd", view="analysis", args={"gate": "pass"})
+    with pytest.raises(BadInput, match="gate is 'pass' or 'blocked'"):
+        h.get(id="gate-pd", view="compare", args={"gate": "yes"})
+
+    # filtering rows that are all n/a: an honest empty, with the tally
+    msg = h.get(id="gate-pd", view="compare", args={"gate": "pass"}).body
+    assert "no pathways with gate='pass'" in msg
+    assert "2 compared" in msg
+
+    # one clean 2-seed run (stored summary available) and one with an
+    # on-route detachment fatal
+    _stamp_trust(pathway_store, "gate-pd", _clean_trust())
+    _stamp_trust(pathway_store, "gate-pt", _failing_trust())
+
+    out = h.get(id="gate-pd", view="compare").body
+    assert "pass" in out and "blocked (detachment)" in out
+
+    keep = h.get(id="gate-pd", view="compare", args={"gate": "pass"}).body
+    assert "gate-pd" in keep and "gate-pt" not in keep
+    drop = h.get(id="gate-pd", view="compare", args={"gate": "blocked"}).body
+    assert "gate-pt" in drop and "gate-pd" not in drop

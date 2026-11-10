@@ -398,20 +398,12 @@ def _sibling_metas(
     return engine, metas
 
 
-def sibling_evidence(
-    store: Any,
-    *,
-    meta: dict[str, Any],
-    exclude_ref_id: int | None = None,
+def _pool_evidence(
+    engine: str, metas: Iterable[dict[str, Any]]
 ) -> tuple[set[int], list[dict[str, Any]]]:
-    """The union material this pathway's READY same-key siblings
-    contribute (gr517804 R6 + round-2 R1): ``(pooled seeds, pooled
-    endpoint_identity records)``. Each returned record carries a ``seed``
-    the sibling actually ran (:func:`run_seeds` rules apply per sibling)
-    and is non-stale at the shared engine — the material
-    :func:`endpoint_union_blocker` replays agreement over. ``(set(),
-    [])`` when this pathway's key can't be formed."""
-    engine, metas = _sibling_metas(store, meta=meta, exclude_ref_id=exclude_ref_id)
+    """The union material a list of ready same-key sibling metas
+    contributes — the per-sibling loop shared by :func:`sibling_evidence`
+    and :func:`sibling_evidence_batch`."""
     seeds: set[int] = set()
     identity: list[dict[str, Any]] = []
     for smeta in metas:
@@ -430,6 +422,74 @@ def sibling_evidence(
             and not is_stale(r, engine)
         ]
     return seeds, identity
+
+
+def sibling_evidence(
+    store: Any,
+    *,
+    meta: dict[str, Any],
+    exclude_ref_id: int | None = None,
+) -> tuple[set[int], list[dict[str, Any]]]:
+    """The union material this pathway's READY same-key siblings
+    contribute (gr517804 R6 + round-2 R1): ``(pooled seeds, pooled
+    endpoint_identity records)``. Each returned record carries a ``seed``
+    the sibling actually ran (:func:`run_seeds` rules apply per sibling)
+    and is non-stale at the shared engine — the material
+    :func:`endpoint_union_blocker` replays agreement over. ``(set(),
+    [])`` when this pathway's key can't be formed."""
+    engine, metas = _sibling_metas(store, meta=meta, exclude_ref_id=exclude_ref_id)
+    return _pool_evidence(engine, metas)
+
+
+def sibling_evidence_batch(
+    store: Any,
+    *,
+    metas: Mapping[int, dict[str, Any]],
+) -> dict[int, tuple[set[int], list[dict[str, Any]]]]:
+    """Batched :func:`sibling_evidence` over many pathways — ONE store scan
+    for the whole caller, where the per-pathway function would scan once
+    per pathway (gr592278: ``view='compare'`` replays the seed gate for
+    every compared row). ``metas`` maps pathway ref_id → its meta; the
+    result carries every input ref_id — a pathway whose
+    :func:`sibling_key` can't be formed pools with itself only, the batch
+    equivalent of :func:`sibling_evidence`'s ``(set(), [])``. Sibling
+    semantics are unchanged: ready, full key match, non-stale records."""
+    keyed: dict[tuple[str, str, str, str, str], list[int]] = {}
+    for ref_id, meta in metas.items():
+        key = sibling_key(meta)
+        if key is not None:
+            keyed.setdefault(key, []).append(int(ref_id))
+    empty: tuple[set[int], list[dict[str, Any]]] = (set(), [])
+    out: dict[int, tuple[set[int], list[dict[str, Any]]]] = {
+        int(r): empty for r in metas
+    }
+    if not keyed:
+        return out
+    cand_refs = sorted({key[0] for key in keyed})
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'pathway' "
+            "AND retired_at IS NULL "
+            "AND meta->>'candidate_ref' = ANY(%s)",
+            (cand_refs,),
+        ).fetchall()
+    buckets: dict[tuple[str, str, str, str, str], dict[int, dict[str, Any]]] = {}
+    for row in rows:
+        smeta = row[1] if isinstance(row[1], dict) else {}
+        key = sibling_key(smeta)
+        if key is None or key not in keyed:
+            continue
+        buckets.setdefault(key, {})[int(row[0])] = smeta
+    for key, ref_ids in keyed.items():
+        members = buckets.get(key, {})
+        for ref_id in ref_ids:
+            sibs = [
+                smeta
+                for sid, smeta in members.items()
+                if sid != ref_id and smeta.get("status") == "ready"
+            ]
+            out[ref_id] = _pool_evidence(key[1], sibs)
+    return out
 
 
 def sibling_seeds(

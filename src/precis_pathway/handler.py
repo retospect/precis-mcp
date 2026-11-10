@@ -138,6 +138,23 @@ def _point_args(args: dict[str, Any] | None) -> tuple[float | None, float | None
     return u, ph
 
 
+def _gate_arg(args: dict[str, Any]) -> str | None:
+    """``args['gate']`` — the ``view='compare'`` row filter: 'pass' or
+    'blocked' (gr592278). Absent → ``None``. Pops the key so
+    :func:`_point_args` keeps rejecting every other unknown arg."""
+    if "gate" not in args:
+        return None
+    raw = args.pop("gate")
+    val = str(raw).strip().lower()
+    if val not in ("pass", "blocked"):
+        raise BadInput(
+            f"args={{'gate': {raw!r}}}: gate is 'pass' or 'blocked'",
+            next="get(kind='pathway', id=<slug>, view='compare', "
+            "args={'gate': 'pass'})",
+        )
+    return val
+
+
 def _potential_arg(args: dict[str, Any] | None) -> float | None:
     """``args['U']`` as a finite float (V vs RHE), or None when absent."""
     return _point_args(args)[0]
@@ -1144,6 +1161,13 @@ class PathwayHandler(Handler):
             # at an example slug that never existed.
             return Response(body=self._list(store))
         point_args = {k: val for k, val in (args or {}).items() if k != "environment"}
+        gate = _gate_arg(point_args)
+        if gate is not None and (view or "").lower() != "compare":
+            raise BadInput(
+                f"args={{'gate': {gate!r}}} applies to view='compare' only",
+                next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
+                f"args={{'gate': {gate!r}}})",
+            )
         U, pH = _point_args(point_args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
@@ -1171,7 +1195,9 @@ class PathwayHandler(Handler):
             resp = (
                 self._get_step(store, ref, step_label)
                 if sep
-                else self._get_view(store, ref, id=id, view=view, args=args, U=U, pH=pH)
+                else self._get_view(
+                    store, ref, id=id, view=view, args=args, U=U, pH=pH, gate=gate
+                )
             )
         # gr553326: every read carries the pw<id> handle + the web reader
         # path — a bare slug reached neither. It leads prose views; config
@@ -1300,6 +1326,7 @@ class PathwayHandler(Handler):
         args: dict[str, Any] | None,
         U: float | None,
         pH: float | None,
+        gate: str | None = None,
         environment: Environment | None = None,
     ) -> Response:
         """The per-view dispatch behind :meth:`get` — resolved ref in,
@@ -1368,7 +1395,7 @@ class PathwayHandler(Handler):
 
             return Response(body=objective_text(store, ref))
         if v == "compare":
-            return Response(body=self._compare(store, ref, meta, U=U))
+            return Response(body=self._compare(store, ref, meta, U=U, gate=gate))
         if v == "staircase":
             return Response(
                 # U alone is the plain re-tilt (the structure view always
@@ -1657,15 +1684,28 @@ class PathwayHandler(Handler):
         return "\n".join(lines)
 
     def _compare(
-        self, store: Store, ref: Any, meta: dict[str, Any], *, U: float | None = None
+        self,
+        store: Store,
+        ref: Any,
+        meta: dict[str, Any],
+        *,
+        U: float | None = None,
+        gate: str | None = None,
     ) -> str:
         """Compare this pathway against every computed sibling sharing the same
         substrate→target (same reaction), as one interleaved TOON table. With
         ``U`` (V vs RHE) every CHE-stamped candidate is re-levered first and
-        the table ranks by energetic span at that potential."""
-        from precis.utils import reaction_graph as analysis
+        the table ranks by energetic span at that potential.
 
-        from .toon_views import compare_toon
+        Every row carries a ``gate`` column — the trust-gate verdict replayed
+        per row, exactly the gate view='trust' renders (gr592278: a tight
+        rate-limiting spread used to read as ``conf=ok`` on gate-BLOCKED
+        candidates). ``gate='pass'|'blocked'`` filters rows by that verdict;
+        ``n/a`` rows (pre-trust-schema) never survive a filter."""
+        from precis.utils import reaction_graph as analysis
+        from precis.utils import trust_gate
+
+        from .toon_views import compare_toon, gate_verdict
 
         r = meta.get("results", {})
         substrate, target = r.get("substrate"), r.get("target")
@@ -1673,10 +1713,11 @@ class PathwayHandler(Handler):
             return "cannot compare: this pathway has no computed results yet."
         with store.pool.connection() as conn:
             # Same `cand` join as _list (gr592665): the candidate structure's
-            # handle + title rides each compare row.
+            # handle + title rides each compare row; its meta feeds the
+            # gate's precis-side guard rows (absurd magnitude, twin).
             rows = conn.execute(
                 "SELECT refs.ref_id, slug_id.id_value, refs.meta, "
-                "cand.ref_id, cand.title FROM refs "
+                "cand.ref_id, cand.title, cand.meta FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
                 "LEFT JOIN refs cand ON cand.kind = 'structure' "
@@ -1688,10 +1729,17 @@ class PathwayHandler(Handler):
                 (substrate, target),
             ).fetchall()
         candidates = []
-        for ref_id, slug, m, cand_id, cand_title in rows:
+        row_metas: dict[int, dict[str, Any]] = {}
+        cand_meta_by_ref: dict[int, dict[str, Any] | None] = {}
+        for ref_id, slug, m, cand_id, cand_title, cand_meta in rows:
             g = (m or {}).get("graph")
             if not g:
                 continue
+            rid = int(ref_id)
+            row_metas[rid] = dict(m or {})
+            cand_meta_by_ref[rid] = (
+                dict(cand_meta) if isinstance(cand_meta, dict) else None
+            )
             c_root, c_target = analysis.roots(g, m.get("results", {}))
             cand_cell = "-"
             if cand_id is not None:
@@ -1713,7 +1761,47 @@ class PathwayHandler(Handler):
                     "target": c_target,
                 }
             )
-        if len(candidates) < 2:
+        # The seed-independence gate pools each pathway's READY same-key
+        # siblings — one batched scan for every row, not one per row
+        # (sibling_evidence_batch, gr592278). A lookup failure blocks every
+        # row (review item 10), never a silent pass.
+        seed_lookup_failed = False
+        try:
+            evidence = trust_gate.sibling_evidence_batch(store, metas=row_metas)
+        except Exception:
+            seed_lookup_failed = True
+            evidence = {}
+            log.warning(
+                "pathway %s compare: sibling seed lookup failed",
+                ref.id,
+                exc_info=True,
+            )
+        for c in candidates:
+            rid = int(c["ref_id"])
+            pooled, identity = evidence.get(rid, (set(), []))
+            verdict, why = gate_verdict(
+                row_metas[rid],
+                candidate_meta=cand_meta_by_ref.get(rid),
+                pooled_seeds=pooled,
+                pooled_identity=identity,
+                seed_lookup_failed=seed_lookup_failed,
+            )
+            c["gate"] = f"{verdict} ({why})" if why else verdict
+        if gate is not None:
+            surviving = [c for c in candidates if str(c["gate"]).startswith(gate)]
+            if not surviving:
+                counts: dict[str, int] = {}
+                for c in candidates:
+                    v = str(c["gate"]).split(" ", 1)[0]
+                    counts[v] = counts.get(v, 0) + 1
+                tally = ", ".join(f"{n} {v}" for v, n in sorted(counts.items()))
+                return (
+                    f"no pathways with gate='{gate}' for {substrate}→{target} "
+                    f"({len(candidates)} compared: {tally}). Drop the filter "
+                    "for every row's verdict, or read view='trust' on one row."
+                )
+            candidates = surviving
+        if len(candidates) < 2 and gate is None:
             return (
                 f"only 1 computed pathway for {substrate}→{target}; nothing to "
                 "compare yet. Run variants (different surface/dopant) to build a "

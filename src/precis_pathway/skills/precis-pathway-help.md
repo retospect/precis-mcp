@@ -484,6 +484,15 @@ handle + title), the **reaction coordinate is the columns** (state energies +
 a row for one candidate's whole landscape. Add `args={'U': x}` to rank the same
 table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
+Each row carries a `gate` column — the barrier trust-gate verdict, replayed
+per row exactly like `view='trust'` (`pass` | `blocked (why)` | `n/a` for
+pre-trust-schema runs). `conf` is **only** the rate-limiting step's seed-spread
+verdict (`ok` = std within tolerance) — NOT the gate: a candidate can read
+`conf=ok` and still be gate-`blocked`, so pick candidates by `gate`, not
+`conf`. `args={'gate': 'pass'}` keeps only gate-passing rows;
+`args={'gate': 'blocked'}` the failures. The credit anchor a `pass` stands on
+is the `anchor:` line of `view='trust'` on that row.
+
 ## The staircase read — per-rung ΔG(U), U_L and the reset contour
 
 - `view='staircase'` — the reaction staircase from the engine's affine CHE
