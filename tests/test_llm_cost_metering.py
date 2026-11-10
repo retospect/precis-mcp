@@ -348,8 +348,12 @@ def test_claude_p_unparseable_envelope_keeps_cost_usage_and_flags(
 
     exc = ei.value
     assert exc.reply == "a prose answer, no JSON"
-    assert exc.cost_usd == 0.0123
-    assert exc.usage is not None and exc.usage["output_tokens"] == 20
+    # The prose reply triggers the ``--json-schema`` resample (gr622034);
+    # this stub replays the same envelope, so the raised error carries the
+    # SUM of both runs' spend/usage — the retry's cost is billed too
+    # (td623635).
+    assert exc.cost_usd == 0.0246
+    assert exc.usage is not None and exc.usage["output_tokens"] == 40
     assert exc.is_error is False
     assert exc.subtype == "success"
 

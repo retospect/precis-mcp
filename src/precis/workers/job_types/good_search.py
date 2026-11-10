@@ -671,6 +671,12 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
                 "job_event",
                 f"triage attempt {attempt}: judge call failed: {res.error}",
             )
+            if res.reason_class == "unparseable":
+                # ``call_claude_p`` already resampled this exact call once
+                # under ``--json-schema`` (gr622034) — that resample IS the
+                # one format-flake retry this loop used to provide, so a
+                # second dispatch would re-pay the same flake.
+                break
             continue
         verdicts = _validate_verdicts(res.data or {}, known_handles)
         if verdicts is not None:
