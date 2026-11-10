@@ -159,8 +159,9 @@ link(kind="todo", id=141, rel="parent", mode="remove")  # detach 141 to a top-le
 A move that would form a cycle, nest deeper than the tree's depth
 cap, or touch a strategic / tactical node from a worker source is
 rejected. To set the parent when *creating* a todo, pass `args={'parent_id': N}`
-on `put` instead. The current parent shows under `## parent` in
-`get(kind='todo', id=141, view='links')`.
+on `put` instead. (`args={'parent': N}` — the rel's name — is a common
+mis-spelling; it reads as `parent_id`.) The current parent shows under
+`## parent` in `get(kind='todo', id=141, view='links')`.
 
 ## Rewrite a todo's text
 ## Edit / fix the wording of a todo

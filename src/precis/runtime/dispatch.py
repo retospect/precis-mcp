@@ -610,6 +610,41 @@ def _alias_prose_field(
     clean[canon] = clean.pop(alias)
 
 
+def _alias_parent_id(
+    accepted: set[str] | frozenset[str],
+    verb: str,
+    kind: str,
+    kw: dict[str, Any],
+    top: dict[str, Any] | None = None,
+) -> None:
+    """Rewrite the ``parent`` near-miss onto the declared ``parent_id``.
+
+    ``parent`` is the name of the rel that parents a todo
+    (``link(kind='todo', rel='parent')``), so callers generalise that
+    spelling into the create call — gr581237: three sessions rejected on
+    ``args={'parent': N}`` before real work. ``parent_id`` is the
+    parenting kwarg on every kind that takes one (todo / job / finding
+    ``put``), so the near-miss has exactly one reading and aliases — the
+    :func:`_alias_prose_field` contract, applied at the kwargs gates
+    because no verb advertises ``parent`` as a name of its own.
+
+    ``kw`` is the dict the gate is about to check (``extras`` at the
+    ``args=`` gate, ``clean`` at the top-level gate); ``top`` carries
+    the already-promoted top-level kwargs for the collision check. Both
+    spellings at once stay refused: two values can't collapse into one
+    slot silently.
+    """
+    if "parent" not in kw or "parent" in accepted or "parent_id" not in accepted:
+        return
+    if "parent_id" in kw or (top is not None and top.get("parent_id") is not None):
+        raise BadInput(
+            f"{verb}(kind={kind!r}): parent and parent_id name the same "
+            "slot on this kind — pass one, not both",
+            next=f"{verb}(kind={kind!r}, args={{'parent_id': N}})",
+        )
+    kw["parent_id"] = kw.pop("parent")
+
+
 #: Top-level parameters each slim verb advertises (30-day prod ledger).
 CORE_PARAMS: dict[str, tuple[str, ...]] = {
     "put": (
@@ -3685,6 +3720,10 @@ class DispatchMixin(RuntimeShape):
                     else dict(extras)
                 )
             else:
+                # gr581237: ``args={'parent': N}`` is the near-miss
+                # spelling of the parenting kwarg (``parent`` is the
+                # todo link rel's name) — alias it before the gate.
+                _alias_parent_id(accepted, verb, kind, extras, args)
                 unknown = self._unknown_extras(method, extras)
                 if unknown:
                     # Core params are top-level on the slim schema; list
@@ -3745,6 +3784,9 @@ class DispatchMixin(RuntimeShape):
         # design) opts out with ``@tolerates_extra_kwargs``.
         if not getattr(method, TOLERATES_EXTRA_KWARGS_ATTR, False):
             accepted_top = _handler_accepted_kwargs(type(handler), verb)
+            # Same near-miss at the top level (direct-dispatch payloads
+            # only — no verb advertises ``parent`` to MCP clients).
+            _alias_parent_id(accepted_top, verb, kind, clean)
             unknown_top = sorted(
                 k
                 for k in clean

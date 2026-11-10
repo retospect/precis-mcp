@@ -48,7 +48,9 @@ put(
 
 The handler validates the `type` against the registered evaluators
 at write time, so a typo lands as an error, not a silently-broken
-leaf.
+leaf. The parenting kwarg is `parent_id` (`args={'parent_id': N}` on
+the slim schema) — `parent`, the link rel's name, is the near-miss
+spelling and reads as `parent_id`.
 
 ## Evaluator catalogue
 
