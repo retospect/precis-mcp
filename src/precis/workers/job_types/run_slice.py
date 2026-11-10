@@ -1161,7 +1161,8 @@ _SHIP_LINT_STEPS: tuple[str, ...] = (
     "uv run pytest -q -n0 -p no:cacheprovider -rfE"
     " tests/test_skill_ingest.py tests/test_skill_vocabulary.py"
     " tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py"
-    " tests/test_mcp_raise_next_ratchet.py",
+    " tests/test_mcp_raise_next_ratchet.py tests/test_next_literal_ratchet.py"
+    " tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py",
     "uv run pytest -q -n0 -p no:cacheprovider tests/test_skill_size.py",
 )
 

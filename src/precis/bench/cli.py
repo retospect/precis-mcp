@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from precis.bench import corpus, runner
+from precis.config import load_config
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -128,13 +129,13 @@ def _parser() -> argparse.ArgumentParser:
 def _ingest(args: argparse.Namespace) -> int:
     import psycopg
 
-    dsn = os.environ.get("PRECIS_DATABASE_URL", "")
+    dsn = load_config().database_url or ""
     if not dsn:
         print("PRECIS_DATABASE_URL is unset; run via scripts/bench", file=sys.stderr)
         return 2
     corpus.assert_throwaway_dsn(dsn)
     manifest = corpus.load_manifest(args.manifest)
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=15) as conn:
         report = corpus.ingest_set(
             conn, args.set_name, manifest=manifest, cache=args.cache
         )
@@ -199,7 +200,7 @@ def _tasks(args: argparse.Namespace) -> int:
 
 
 def _dsn() -> str:
-    dsn = os.environ.get("PRECIS_DATABASE_URL", "")
+    dsn = load_config().database_url or ""
     if not dsn:
         raise corpus.BenchCorpusError(
             "PRECIS_DATABASE_URL is unset; run via scripts/bench"

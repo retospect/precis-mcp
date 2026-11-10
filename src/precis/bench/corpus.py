@@ -158,6 +158,30 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _download_once(url: str, part: Path, sha256: str | None) -> None:
+    """One SSRF-guarded download attempt into ``part``, size-capped and hashed."""
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_stream
+
+    size = 0
+    with http_client(timeout=120.0) as client:
+        with safe_stream(client, "GET", url) as resp:
+            resp.raise_for_status()
+            with part.open("wb") as out:
+                for block in resp.iter_bytes(chunk_size=1 << 16):
+                    size += len(block)
+                    if size > MAX_ARCHIVE_BYTES:
+                        raise BenchCorpusError(
+                            f"{url} exceeds the {MAX_ARCHIVE_BYTES}-byte cap"
+                        )
+                    out.write(block)
+    got = _file_sha256(part)
+    if sha256 is not None and got != sha256:
+        raise BenchCorpusError(
+            f"{url} sha256 {got} != pinned {sha256}; the upstream file changed"
+        )
+
+
 def fetch_archive(
     cache: Path | None = None,
     *,
@@ -170,8 +194,7 @@ def fetch_archive(
     re-fetched once; a fresh download that disagrees raises. ``sha256=None``
     skips verification (only the manifest builder bootstrapping a new pin).
     """
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_stream
+    from precis.utils.http import call_with_backoff
 
     root = cache if cache is not None else cache_dir()
     root.mkdir(parents=True, exist_ok=True)
@@ -182,24 +205,14 @@ def fetch_archive(
         log.warning("bench cache %s fails its pin; re-fetching", dest)
         dest.unlink()
     part = dest.with_suffix(".part")
-    size = 0
     try:
-        with http_client(timeout=120.0) as client:
-            with safe_stream(client, "GET", url) as resp:
-                resp.raise_for_status()
-                with part.open("wb") as out:
-                    for block in resp.iter_bytes(chunk_size=1 << 16):
-                        size += len(block)
-                        if size > MAX_ARCHIVE_BYTES:
-                            raise BenchCorpusError(
-                                f"{url} exceeds the {MAX_ARCHIVE_BYTES}-byte cap"
-                            )
-                        out.write(block)
-        got = _file_sha256(part)
-        if sha256 is not None and got != sha256:
-            raise BenchCorpusError(
-                f"{url} sha256 {got} != pinned {sha256}; the upstream file changed"
-            )
+        # One ``host:<netloc>`` limiter token per attempt, full-jitter backoff
+        # on transport/429/5xx only (invariants: outbound calls are polite).
+        call_with_backoff(
+            lambda: _download_once(url, part, sha256),
+            service="bench-corpus",
+            url=url,
+        )
         part.replace(dest)
     finally:
         part.unlink(missing_ok=True)

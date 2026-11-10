@@ -308,8 +308,12 @@ the next release.
 ## /qland — pytest-ungated burst-land (the default lane)
 
 `--quick`: ruff + secret scan + the fast DB-free guards (skill vocabulary,
-render, type-ignore ratchet); mypy, import contracts and all pytest run at
-the release gate (Reto 2026-10-30: "Don't even bother with python checks,
+render, type-ignore ratchet, next-literal ratchet, ruff scripts-excludes sync,
+scripts-use-uv shebangs) + mypy on the changed `src/`/`tests/` python
+files (`scripts/lib/mypy_changed.py`: only errors in those files fail, so a
+red in an imported module never blocks an unrelated land; gr579772;
+`PRECIS_SHIP_QUICK_MYPY=0` skips it); full mypy, import contracts and all
+pytest run at the release gate (Reto 2026-10-30: "Don't even bother with python checks,
 we'll do it all as a batch in the release branch"). The secret scan
 (`tests/test_deploy_tree_no_secrets.py`) stays because the repo is public and
 a qland push publishes at once; the guards joined after r229-r231 each went
@@ -321,8 +325,8 @@ hygiene tests in their lint.
 main's last all-green shard matrix is 24h old, refuses at 48h — a burst that
 outran its verdicts wants a `/go`, not another qland; never refuses on an age
 it could not look up) → **pre-qland lint** (ruff · secret scan · fast
-DB-free guards — no mypy, import contracts, rest of the hygiene batch or
-pytest, no gate slot;
+DB-free guards · mypy on the changed files — no full mypy, import contracts,
+rest of the hygiene batch or pytest, no gate slot;
 `PRECIS_QLAND_LINT=0` to skip) → squash-merge. For when many trees are in
 flight — qland them one by one, then one `/go` releases the integrated
 `main` (ship lands nothing when the tree already equals main).

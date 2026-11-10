@@ -495,8 +495,11 @@ def test_all_on_is_byte_identical_to_no_switches(
 
     def norm(text: str) -> str:
         # the head's age/read chip ticks (and the first dispatched read adds
-        # its read count); neither is a switch effect
-        return re.sub(r"\[created [^\]]*\]", "[created]", text)
+        # its read count) and so does a linked neighbour's relative-age chip
+        # ("· -0s" -> "· -1s" when a second boundary falls between the two
+        # renders, which is what flaked in CI); none is a switch effect
+        text = re.sub(r"\[created [^\]]*\]", "[created]", text)
+        return re.sub(r" · -\d+(?:s|m|h|d|mo|y)\b", " · -AGE", text)
 
     def surface() -> dict[str, str]:
         out: dict[str, str] = {}

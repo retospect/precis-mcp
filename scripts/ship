@@ -35,7 +35,7 @@
 #                             pointer gate instead). Red gate aborts (never red).
 #                             --impacted (/land) narrows pytest to testmon's
 #                             affected-tests set; full suite otherwise (/go);
-#                             --quick (/qland) runs ruff + the secret scan + the fast DB-free guards (mypy, import contracts, all pytest wait for the release gate);
+#                             --quick (/qland) runs ruff + the secret scan + the fast DB-free guards + mypy on the changed python files (PRECIS_SHIP_QUICK_MYPY=0 skips; full mypy, import contracts, all pytest wait for the release gate);
 #                             --checked runs lint + a cheap selected pytest
 #                             (scripts/impacted-tests) — the middle rung.
 #                    · ship   (under the lock) squash `commit-tree` onto
@@ -1281,7 +1281,8 @@ run_gate() {
         # TEST-ONLY seam (tests/test_ship_narrow_lock.py): run this host command instead of the container gate.
         # tee'd into GATE_RUN_LOG so the same network-vs-code-red split below
         # can read the fake gate's output.
-        bash -c "$PRECIS_SHIP_TEST_GATE_CMD" 2>&1 | tee "$GATE_RUN_LOG" || rc=$?
+        # PRECIS_SHIP_TEST_GATE_ARG hands the fake gate the command it would have run.
+        PRECIS_SHIP_TEST_GATE_ARG="$1" bash -c "$PRECIS_SHIP_TEST_GATE_CMD" 2>&1 | tee "$GATE_RUN_LOG" || rc=$?
     elif [[ "$GATE_MODE" == warm ]]; then
         if ! sync_to_container; then
             gate_slot_release
@@ -2599,14 +2600,14 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # seed rode a --quick land to a red r97 release gate (gr514386) —
         # DB-free and seconds, so the qland lane pays it like the ratchets.
         HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py tests/test_deploy_tree_no_secrets.py tests/test_vocab_lint.py tests/test_paper_text_gate.py'
-        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots'
+        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots tests/test_next_literal_ratchet.py tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py'
         # Plain --quick runs ruff, this secret scan and the fast DB-free
         # hygiene guards (Reto 2026-10-30: "don't even bother with python
         # checks, we'll do it all as a batch in the release branch"; the
         # guards joined after r229-r231 each went red on a guard --quick
         # had skipped — gr573555). The repo is PUBLIC and a qland push to
         # main publishes at once, so the secret-tree scan cannot wait for
-        # the release gate. Import contracts, mypy and the rest of the
+        # the release gate. Import contracts, full mypy and the rest of the
         # hygiene batch run in --checked / --release and at the release
         # gate.
         SECRET_SCAN='uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py'
@@ -2617,7 +2618,12 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # skill_ingest is all-DB-free, so only its size/shape members join
         # by node id: the three oversized-chunk checker tests plus the two
         # real-corpus scans that fail on a >4000-char skill section.
-        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots'
+        # The next-literal ratchet, the ruff scripts-excludes sync and the
+        # scripts-use-uv shebang guard joined after the bench quick-lands
+        # reddened the gate on all three (each under ~6 s). The env-config,
+        # outbound-timeout and outbound-polite ratchets stay out: each is a
+        # 13-28 s src sweep.
+        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots tests/test_next_literal_ratchet.py tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
@@ -2658,7 +2664,30 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                 # --checked and --release keep all of them.
                 QLAND_MYPY=""
                 QLAND_TAIL="$SECRET_SCAN && $QUICK_GUARDS"
-                QLAND_WHAT="ruff autofix · secret-scan · fast guards (skill-vocab, render, type-ignore, raise-hint, skill-size); mypy, import contracts and the other tests run at the release gate"
+                QLAND_WHAT="ruff autofix · secret-scan · fast guards (skill-vocab, render, type-ignore, raise-hint, skill-size, next-literal, ruff-excludes, scripts-use-uv); full mypy, import contracts and the other tests run at the release gate"
+                # mypy on the CHANGED python files only (gr579772): quick lands
+                # of a type error reddened main three times in one day. The
+                # list is computed here (the warm gate has no .git); the helper
+                # reports only errors in these files, so a pre-existing red in
+                # an imported module never blocks an unrelated land. Opt out:
+                # PRECIS_SHIP_QUICK_MYPY=0.
+                if [[ "$CHECKED" != 1 && "$RELEASE" != 1 && "${PRECIS_SHIP_QUICK_MYPY:-1}" != 0 ]]; then
+                    qm_files=""
+                    while IFS= read -r f; do
+                        [[ -n "$f" && -f "$f" ]] || continue
+                        case "$f" in
+                            src/*.py | src/*.pyi | tests/*.py | tests/*.pyi) ;;
+                            *) continue ;;
+                        esac
+                        # Inlined into a `sh -c` string: anything but plain path chars is skipped, not quoted.
+                        [[ "$f" =~ ^[A-Za-z0-9_./+-]+$ ]] || continue
+                        qm_files="$qm_files $f"
+                    done <<< "$(git diff --name-only --diff-filter=AMR "$(git merge-base origin/main HEAD)" HEAD)"
+                    if [[ -n "$qm_files" ]]; then
+                        QLAND_MYPY="uv run python scripts/lib/mypy_changed.py${qm_files} && "
+                        QLAND_WHAT="ruff autofix · secret-scan · mypy on the changed files · fast guards (skill-vocab, render, type-ignore, raise-hint, skill-size, next-literal, ruff-excludes, scripts-use-uv); full mypy, import contracts and the other tests run at the release gate"
+                    fi
+                fi
                 if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then
                     QLAND_MYPY="uv run mypy src tests && "
                     QLAND_TAIL="uv run lint-imports && $HYGIENE $CODE_HYGIENE"
@@ -3125,7 +3154,7 @@ else
         elif [[ "$QLAND_LINT_RAN" != 1 ]]; then
             printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
         else
-            printf '\n\033[33m⚡ UNTESTED ship — only ruff, the secret scan and the fast DB-free guards passed; mypy,\n  import contracts and all pytest did NOT run. main is untested until the release gate (/go).\033[0m\n'
+            printf '\n\033[33m⚡ UNTESTED ship — only ruff, the secret scan and the fast DB-free guards (and mypy on the changed files) passed;\n  full mypy, import contracts and all pytest did NOT run. main is untested until the release gate (/go).\033[0m\n'
         fi
     fi
 fi

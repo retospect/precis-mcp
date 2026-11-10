@@ -457,10 +457,16 @@ def _search_args(task: BenchTask, k: int) -> dict[str, Any]:
     }
 
 
+#: Where the rendered trailer starts. This only *parses* a server response
+#: (``utils/next_block.py`` is the emitter), so the pattern is a regex and not
+#: a hand-built literal trailer (tests/test_next_literal_ratchet.py).
+_NEXT_TRAILER_RE = re.compile(r"\nNext\s*:")
+
+
 def parse_hits(task: BenchTask, body: str) -> list[str]:
     """Hit handles in rank order from a ``search`` body (rows only, not the
     ``Next:`` suggestions)."""
-    rows = body.split("\nNext:", 1)[0]
+    rows = _NEXT_TRAILER_RE.split(body, maxsplit=1)[0]
     if task.is_memory:
         return [f"me{m}" for m in _MEMORY_HIT_RE.findall(rows)]
     from precis.mesh_eval.retrieval import extract_chunk_handles
@@ -858,6 +864,10 @@ def arm_table(
     return out
 
 
+#: Cap on each ``git`` call in :func:`git_sha` (a hung git reads as unknown).
+_GIT_TIMEOUT_S = 30
+
+
 def git_sha() -> tuple[str, bool | None]:
     """``(sha, dirty)`` of the checkout: ``PRECIS_BENCH_GIT_SHA`` /
     ``PRECIS_BENCH_GIT_DIRTY`` (set by ``scripts/bench``, since the container
@@ -873,6 +883,7 @@ def git_sha() -> tuple[str, bool | None]:
             text=True,
             encoding="utf-8",
             check=True,
+            timeout=_GIT_TIMEOUT_S,
         ).stdout.strip()
         dirty = bool(
             subprocess.run(
@@ -881,10 +892,11 @@ def git_sha() -> tuple[str, bool | None]:
                 text=True,
                 encoding="utf-8",
                 check=True,
+                timeout=_GIT_TIMEOUT_S,
             ).stdout.strip()
         )
         return sha, dirty
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.SubprocessError):
         return "unknown", None
 
 

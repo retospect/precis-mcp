@@ -513,6 +513,9 @@ POLICIES: dict[str, Policy] = {
     "provenance-rw": Policy(attempts=4, base=2.0, label="Retraction Watch"),
     "secret-probe": Policy(attempts=3, base=2.0, cap=20.0, label="credential probe"),
     "datasheet-pull": Policy(attempts=3, base=2.0, cap=30.0, label="datasheet fetch"),
+    # The bench's one pinned QASPER archive download (precis.bench.corpus):
+    # a single large file, host:<netloc> lane from url=, a few patient tries.
+    "bench-corpus": Policy(attempts=3, base=2.0, cap=30.0, label="bench corpus"),
     "cif-fetch": Policy(attempts=3, base=2.0, cap=30.0, label="CIF fetch"),
     # LCSC product pages + their og:image thumbnails (precis_web.pcb_parts) —
     # a hover-card convenience, so give up fast rather than hold a request.

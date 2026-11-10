@@ -1404,6 +1404,9 @@ _QUICK_GUARD_FILES = (
     "tests/test_render_dry_guard.py",
     "tests/test_type_ignore_ratchet.py",
     "tests/test_mcp_raise_next_ratchet.py",
+    "tests/test_next_literal_ratchet.py",
+    "tests/test_ruff_scripts_excludes.py",
+    "tests/test_scripts_use_uv.py",
 )
 
 #: test_skill_ingest.py is all-DB-free; only its size/shape members ride
@@ -1482,6 +1485,9 @@ def test_quick_lint_runs_the_fast_guards() -> None:
         assert nodeid in m.group(1), nodeid
     assert "test_mode_spec_parity" not in ship
     assert "test_outbound_polite_ratchet" not in m.group(1)
+    # the other src-sweep ratchets are 13-28 s each: release-gate only
+    assert "test_env_config_policy" not in m.group(1)
+    assert "test_outbound_timeout_ratchet" not in m.group(1)
     # a docs/config-only --quick carries the vocabulary and skill-size
     # guards: a skill .md diff is docs-only and can still drop a registry
     # name or grow a section past the 4000-char cap

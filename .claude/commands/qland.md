@@ -16,7 +16,7 @@ pytest run at the release gate (Reto 2026-10-30: "Don't even bother with
 python checks, we'll do it all as a batch in the release branch"). The
 **pre-qland lint** (ruff autofix · the secret-tree scan, kept because the
 repo is public · the fast guards — skill vocabulary, render, type-ignore
-ratchet — ~22 s, no test DB) runs before the squash-merge and no fleet gate slot, so it never queues behind a sibling's suite.
+ratchet, next-literal ratchet, ruff scripts-excludes, scripts-use-uv — ~30 s, no test DB) runs before the squash-merge and no fleet gate slot, so it never queues behind a sibling's suite.
 Do NOT run ruff, mypy or tests yourself beforehand: the ship does ruff for
 you, mypy, import contracts and pytest run at the release gate, and running the suite is the congestion this command exists to
 avoid. If the pre-qland lint goes red, fix it — it does not get deferred,
@@ -78,12 +78,13 @@ Optional ship message from the user: `$ARGUMENTS`
    `commit-tree` + CAS push → fast-forward the local `main` → release the lock →
    reset the branch to the shipped `main`. The migration-number and backlog advisories
    still print, and the pre-qland lint (ruff autofix · secret scan · fast
-   DB-free guards) runs and is
-   blocking; mypy, import contracts, the other hygiene tests, pytest and the
+   DB-free guards · mypy on the changed `src/`/`tests/` files only —
+   `PRECIS_SHIP_QUICK_MYPY=0` skips just that leg) runs and is
+   blocking; full mypy, import contracts, the other hygiene tests, pytest and the
    diff-coverage gate do not (the release gate runs them).
 
 4. **Handle failures** — merge machinery, plus the pre-qland lint:
-   - **Pre-qland lint RED** — ruff, the secret scan or a fast guard (the
+   - **Pre-qland lint RED** — ruff, the secret scan, mypy on a changed file or a fast guard (the
      `FAILED tests/...` line names it). Fix the
      failure printed above the `✖` and re-run `scripts/ship --quick`. Do not
      reach for `PRECIS_QLAND_LINT=0` to get past it; that override is for a
