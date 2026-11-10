@@ -51,7 +51,9 @@ tags=['STATUS:done'])`; removals go through `tag(remove=[...])`. `get`
 shows the newest 3 in full, older ones as one-liners, and
 `get(kind='todo', id=122, view='comments')` shows all. The details body
 reads alone via `view='body'` (title + untruncated `todo_body` — the call a
-`… cut:` marker names when the whole card can't fit). Hide a stale one with
+`… cut:` marker names when the whole card can't fit). The ref's `meta`
+dict (workspace, llm_tier, op, …) reads via `view='meta'`.
+Hide a stale one with
 `delete(kind='todo', id=122, args={'comment': 2})` (`'restore': True` undoes it).
 Edit the details body in place with `edit(kind='todo', id=122,
 mode='find-replace', find='old', text='new')` (or `mode='insert'`).

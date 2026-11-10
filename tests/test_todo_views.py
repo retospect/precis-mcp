@@ -687,6 +687,58 @@ def test_raw_view_in_unknown_view_options(handler: TodoHandler) -> None:
     assert "raw" in (exc.value.options or [])
 
 
+# ── view='meta' (gr573038) ───────────────────────────────────────
+
+
+def test_get_view_meta_returns_the_meta_dict(handler: TodoHandler) -> None:
+    """gr573038: ``view='meta'`` serves the ref's ``meta`` dict as JSON —
+    prod sessions kept re-issuing the refused call (the card shows
+    title/body/tags, never the behavioural keys)."""
+    r = handler.put(
+        text="Meta view fixture.",
+        meta={"llm_tier": "sonnet", "workspace": {"lane": "kimi"}},
+    )
+    rid = _id_of(r.body)
+    out = handler.get(id=rid, view="meta")
+    assert f"# todo {rid} — meta" in out.body
+    assert '"llm_tier": "sonnet"' in out.body
+    assert '"lane": "kimi"' in out.body
+
+
+def test_get_view_meta_renders_the_write_time_keys_too(
+    handler: TodoHandler,
+) -> None:
+    """Meta the write path stamps itself (``filed_by``) shows up as well —
+    the view is the whole dict, not just caller-supplied keys."""
+    r = handler.put(text="No meta fixture.")
+    rid = _id_of(r.body)
+    out = handler.get(id=rid, view="meta")
+    assert '"filed_by"' in out.body
+
+
+def test_get_view_meta_needs_an_id(handler: TodoHandler) -> None:
+    """``view='meta'`` is a single-ref read — no id gets the same
+    requires-id refusal as 'body' (an id-less get(view='meta') is the
+    kind-wide introspection inventory, served on search)."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="require"):
+        handler.get(view="meta")
+
+
+def test_get_view_meta_in_unknown_view_options(handler: TodoHandler) -> None:
+    """A near-miss spelling ('metta') gets 'meta' as the nearest option,
+    so the next call lands on the working view."""
+    from precis.errors import Unsupported
+
+    r = handler.put(text="A todo.")
+    rid = _id_of(r.body)
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=rid, view="metta")
+    assert "meta" in (exc.value.options or [])
+    assert "view='meta'" in (exc.value.next or "")
+
+
 # ── gr547804: get view aliases and the unknown-view vocabulary ─────
 
 

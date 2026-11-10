@@ -671,6 +671,13 @@ class TodoHandler(NumericRefHandler):
                     "matching passages when the body alone is over budget"
                 ),
             )
+        if view == "meta":
+            # gr573038: the meta-dict read — the card shows title/body/
+            # tags but not the ref's ``meta`` (workspace, llm_tier, op,
+            # …); prod sessions kept re-issuing the refused call. The
+            # same fold pres/quest already serve.
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_meta_view(ref), result_count=1)
         if view is not None and view in _TREE_GET_VIEWS:
             # Future tree-flavoured get views land here.
             raise Unsupported(
@@ -693,7 +700,7 @@ class TodoHandler(NumericRefHandler):
             # 'brief', 'tags') without an id fall through to the
             # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
-            views_list = ["body", "comments", "tree", "full", *_BASE_VIEWS]
+            views_list = ["body", "comments", "meta", "tree", "full", *_BASE_VIEWS]
             near = difflib.get_close_matches(view, views_list, n=1)
             lead = f"nearest is view={near[0]!r}. " if near else ""
             raise Unsupported(
@@ -702,8 +709,9 @@ class TodoHandler(NumericRefHandler):
                 next=(
                     lead + "get(kind='todo', id=<id>) — the card (text, "
                     "tags, status); view='body' the untruncated details "
-                    "body; view='comments' the timeline; "
-                    "view='tree' the subtree; list views are search-side: "
+                    "body; view='comments' the timeline; view='meta' the "
+                    "raw meta dict; view='tree' the subtree; list views "
+                    "are search-side: "
                     "search(kind='todo', view='projects'|'doable'|'active')"
                 ),
             )
@@ -2715,6 +2723,18 @@ class TodoHandler(NumericRefHandler):
         bounded read the cut/fitted markers name when comments and
         links push the whole card over budget (gr554136)."""
         return "\n".join(self._card_lines(ref, tags))
+
+    def _render_meta_view(self, ref: Ref) -> str:
+        """``view='meta'`` — the ref's full ``meta`` dict as JSON
+        (gr573038). The card surfaces title/body/tags; behavioural keys
+        (``workspace``, ``llm_tier``, ``op``, ``executor``, …) are
+        readable here and in ``view='raw'`` — callers kept guessing
+        ``view='meta'`` for exactly this (the fold pres/quest serve)."""
+        import json
+
+        return f"# todo {ref.id} — meta\n" + json.dumps(
+            ref.meta or {}, indent=2, sort_keys=True, default=str
+        )
 
     def _card_lines(self, ref: Ref, tags: list[Tag]) -> list[str]:
         """Header + title + details body + tags — everything a todo owns
