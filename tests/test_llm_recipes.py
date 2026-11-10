@@ -580,3 +580,39 @@ def test_quest_tick_lane_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
             "default",
             "recipe",
         )
+
+
+def test_axis_studytype_recipe_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr572097: ``axis:studytype`` resolves through the ``axis:``
+    prefix-family recipe (the ``review:`` mechanism), so this axis — and
+    the next enabled one — does not refile the gripe."""
+    sql = (
+        Path(__file__).parents[1]
+        / "src/precis/migrations/0302_task_recipe_axis_studytype.sql"
+    ).read_text(encoding="utf-8")
+    seeded = re.findall(
+        r"^    \('([^']+)', '([^']+)', '([^']+)', '([^']+)', (true|false)\)",
+        sql,
+        flags=re.MULTILINE,
+    )
+    rows = {
+        src: Recipe(
+            src,
+            kind,
+            lane_class=lane,
+            consequence=cons,
+            classify=flag == "true",
+        )
+        for src, kind, lane, cons, flag in seeded
+    }
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    recipe = recipes.lookup("axis:studytype")
+    assert recipe is not None
+    assert (recipe.task_kind, recipe.consequence) == ("chunk.classify", "low")
+    assert recipes.lookup("axis:studytype:local") == recipe
+    assert recipes.resolve("axis:studytype") == (
+        "chunk.classify",
+        "low",
+        "default",
+        "recipe",
+    )
