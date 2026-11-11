@@ -11,7 +11,7 @@ design-review: yes
 - **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); catalogue R17 variant A (spec `me628806`).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
-- **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use spec `me628775` and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** window9 thread01a108d5-fdb3-7b91-a50b-c3bc5532aa56; work/hexfold/y-junction-a, codex-hexfold/.scratch/y-junction-a. The source branch, dirty pillar notes and all earlier scratch/branches remain untouched.
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -221,7 +221,7 @@ removed as met — the transport move it waited on happened 09-29)
 
 ## Do next
 
-1. **backlog/hexfold-ideal-surface-then-tile.md — ideal smooth surface
+1. **spec `me628775` — ideal smooth surface
    first, then tile it** (Reto 2026-10-03, via nanobuds-paper-25; the
    nanobuds hero dr173020 waits on it).
    - The ask: author the ideal surface (flat sheet, a fillet of chosen
@@ -481,8 +481,7 @@ removed as met — the transport move it waited on happened 09-29)
        washer seed item; needs a design note of its own.
        - **Next (Reto, 2026-10-11): probe the surface tiler first.** One
          probe: can `precis_surface` (`plan_foot`/`plan_scene`, the
-         [ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md)
-         path) express a tube flaring into annular flanges at both ends,
+         spec `me628775` path) express a tube flaring into annular flanges at both ends,
          plus the `_oh` variant? If yes, rebuild the example via the
          tiler. If not, do the joint cycle solve that lets the washers
          bend (Reto: acceptable).

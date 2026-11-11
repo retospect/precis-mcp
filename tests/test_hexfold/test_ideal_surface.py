@@ -1,4 +1,4 @@
-"""S2 of docs/backlog/hexfold-ideal-surface-then-tile.md: the Gauss–Bonnet
+"""Spec me628792 (group me628775): the Gauss–Bonnet
 defect census of an authored surface of revolution, and the 3+3 foot
 planner that realises it (anchors pinned before and after the census)."""
 

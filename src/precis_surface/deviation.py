@@ -1,5 +1,5 @@
 """precis_surface.deviation -- how far a built structure sits from an
-authored surface (docs/backlog/hexfold-ideal-surface-then-tile.md, S1).
+authored surface (spec me628788, group me628775).
 
 A scene is a flat sheet, the plane ``z = 0`` of the caller's frame, carrying
 axisymmetric features. Each feature is an authored meridian

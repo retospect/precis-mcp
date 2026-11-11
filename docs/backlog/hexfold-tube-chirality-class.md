@@ -56,7 +56,7 @@ attach), and `fit.propagated` records the type prune as its own
 naming the type and the `N` the neighbours needed. A fixed
 `tube(10,0, electronic=metallic)` is an ERROR (`tube.class.mismatch`)
 naming the nearest satisfying (n,m). Same meta on the surface-then-tile
-path ([hexfold-ideal-surface-then-tile](hexfold-ideal-surface-then-tile.md)):
+path (spec `me628775`):
 the tube feature of the authored surface carries `class=`/`electronic=`,
 and the tiler chooses the (n,m) that matches the authored radius and the
 type.

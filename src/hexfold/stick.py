@@ -171,8 +171,8 @@ def stick_relax_pinned(
     surface by a normal-only spring (it slides along the surface, it does
     not leave it); the feet are re-read from ``tether`` every
     ``_TETHER_EVERY`` iterations, so the loop runs in chunks of that length.
-    The surface is the caller's and never moves (docs/backlog/
-    hexfold-ideal-surface-then-tile.md, S3). Off by default: without it the
+    The surface is the caller's and never moves (spec me628793, group
+    me628775). Off by default: without it the
     loop is the single unchunked call it always was.
     """
     pos = pos.copy()

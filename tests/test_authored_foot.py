@@ -1,5 +1,5 @@
-"""The authored-foot planner (docs/backlog/hexfold-ideal-surface-then-tile.md,
-S3): k by measurement, bars on every row."""
+"""The authored-foot planner (spec me628793, group me628775):
+k by measurement, bars on every row."""
 
 from __future__ import annotations
 

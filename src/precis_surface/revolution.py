@@ -354,7 +354,7 @@ def authored_meridian(
     r0: float, pieces: Sequence[tuple[str, float] | tuple[str, float, float]]
 ) -> Meridian:
     """A meridian written down rather than derived: the ideal surface the
-    tiler must follow (docs/backlog/hexfold-ideal-surface-then-tile.md, S1).
+    tiler must follow (spec me628788, group me628775).
 
     Starts on the sheet at ``(r0, 0)`` heading toward the axis, then walks
     ``("line", length)`` and ``("arc", radius, turn_deg)`` pieces in order.

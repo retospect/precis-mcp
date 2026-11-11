@@ -1,5 +1,5 @@
 """The authored surface and the deviation judge
-(docs/backlog/hexfold-ideal-surface-then-tile.md, S1)."""
+(spec me628788, group me628775)."""
 
 from __future__ import annotations
 

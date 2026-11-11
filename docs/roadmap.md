@@ -166,8 +166,8 @@ ratchet valve** (`hexfold` spec §28); the **T-handle bearing**
 part** (`backlog/se-chain-wrap-around-part.md`); the cross-scale flagship,
 a bistable azobenzene driving a folding-chair tensegrity switched by two
 wavelengths (spec `me628475` Addendum A1); the running mechanical example, the
-unicycle. Authored smooth surfaces and their carbon tiling are tracked by
-`backlog/hexfold-ideal-surface-then-tile.md`; instrumentation integration
+unicycle. Authored smooth surfaces and their carbon tiling are tracked by the
+carbon-topology spec `me628772` (group `me628775`); instrumentation integration
 remains `backlog/hexfold-instrumentation-leg.md`. A generated surface alone
 does not establish relaxed carbon stability.
 

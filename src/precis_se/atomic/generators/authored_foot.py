@@ -1,6 +1,6 @@
 """Tile an authored fillet foot: sheet → fillet of radius ``R`` → an
 ``(n, 0)`` tube, built by hexfold and pinned to the authored surface
-(docs/backlog/hexfold-ideal-surface-then-tile.md, S3).
+(spec me628793, group me628775).
 
 The surface comes first and never moves: :func:`foot_meridian` writes it
 from the author's radius (:func:`precis_surface.revolution.authored_meridian`),
@@ -330,7 +330,7 @@ def census(
     tubes: Sequence[tuple[int, int]] = (),
 ) -> Census:
     """Gauss–Bonnet defect census of an authored surface of revolution
-    (docs/backlog/hexfold-ideal-surface-then-tile.md, S2).
+    (spec me628792, group me628775).
 
     Each band's integrated Gaussian curvature fixes its net defect charge;
     the charge is split into ``C_order`` rows of one ring each.  Lines carry

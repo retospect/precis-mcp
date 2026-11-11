@@ -1,7 +1,6 @@
 """The ``hexfold_scene`` generator — several authored fillet feet on one
 sheet, planned and relaxed by :func:`~precis_se.atomic.generators.authored_foot.plan_scene`
-and minted as one block (docs/backlog/hexfold-ideal-surface-then-tile.md,
-S4b). Where :mod:`~precis_se.atomic.generators.hexfold_spec` takes a ``.hx``
+and minted as one block (spec me628793, group me628775). Where :mod:`~precis_se.atomic.generators.hexfold_spec` takes a ``.hx``
 text and a free stick relaxation, this takes the *scene*: a sheet, and per
 feature a hole cell, an ``(n, 0)`` tube, the fillet radius the author wants
 and a top (``open``/``lid``/``ball``/``sphere``); the planner writes the spec, picks

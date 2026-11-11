@@ -46,8 +46,8 @@ Modules:
 - :mod:`precis_surface.revolution` -- smooth targets as surfaces of
   revolution: catenoid bends, table-picked fillets, defect-row radii,
   ``revolve`` to a mesh (the smooth-drum slice); ``authored_meridian``,
-  the ideal surface written down with the author's radii (S1 of
-  docs/backlog/hexfold-ideal-surface-then-tile.md).
+  the ideal surface written down with the author's radii (spec
+  me628788, group me628775).
 - :mod:`precis_surface.deviation` -- a sheet scene of authored
   axisymmetric features and each point's distance to it: the judge a
   tiling of a fixed surface is measured by. Feature membership uses the

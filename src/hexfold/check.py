@@ -863,9 +863,8 @@ def geometry_findings(
     the throwaway check echo (gr454488 residual 3).  ``relaxed`` (a
     :class:`Relaxed`: coordinates, their own final max force, a label)
     judges the caller's coordinates instead of
-    re-relaxing: a tethered relax (docs/backlog/
-    hexfold-ideal-surface-then-tile.md, S4) would otherwise be judged on a
-    different, untethered geometry.  ``geom.seed_overlap`` still reads
+    re-relaxing: a tethered relax (spec me628793, group me628775) would
+    otherwise be judged on a different, untethered geometry.  ``geom.seed_overlap`` still reads
     ``net.seed3``.  ``zones`` (name, seed atoms) tags ``geom.clash`` /
     ``geom.nearest_not_bonded`` data with the ``zone`` the pair falls in
     (within :data:`ZONE_REACH_A` of a zone's seeds) or ``none``."""
