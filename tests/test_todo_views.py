@@ -639,6 +639,91 @@ def test_fitted_default_card_names_the_body_view(
     assert f"get(kind='todo', id={rid}, view='body')" in body
 
 
+# ── view='scratch' (gr605672) ────────────────────────────────────────
+
+
+def _scratch_mem(hub: Hub, text: str, owner: str) -> int:
+    """Mint one task-owned scratch memory; returns its ref_id."""
+    from precis.cli.memory import _created_id
+    from precis.handlers.memory import MemoryHandler
+
+    r = MemoryHandler(hub=hub).put(text=text, scratch_for=owner)
+    return _created_id(r)
+
+
+def test_scratch_view_lists_owned_nodes(handler: TodoHandler, hub: Hub) -> None:
+    rid = _id_of(handler.put(text="Fix the thing.").body)
+    a = _scratch_mem(hub, "probe: first-line claim A", f"td{rid}")
+    b = _scratch_mem(hub, "dead end: claim B", f"td{rid}")
+    out = handler.get(id=rid, view="scratch")
+    assert f"# 2 scratch nodes owned by td{rid}" in out.body
+    assert f"me{a}" in out.body
+    assert f"me{b}" in out.body
+    assert "probe: first-line claim A" in out.body
+    assert "dead end: claim B" in out.body
+
+
+def test_scratch_view_excludes_other_tasks_and_other_spaces(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """The owner tag is the partition: another task's scratch, ownerless
+    scratch, and a node tagged ``scratch-for:`` without ``SPACE:scratch``
+    all stay out of the listing."""
+    from precis.cli.memory import _created_id
+    from precis.handlers.memory import MemoryHandler
+
+    rid = _id_of(handler.put(text="Task one.").body)
+    other = _id_of(handler.put(text="Task two.").body)
+    _scratch_mem(hub, "mine", f"td{rid}")
+    _scratch_mem(hub, "theirs", f"td{other}")
+    _created_id(MemoryHandler(hub=hub).put(text="ownerless", tags=["SPACE:scratch"]))
+    _created_id(
+        MemoryHandler(hub=hub).put(text="not scratch", tags=[f"scratch-for:td{rid}"])
+    )
+    out = handler.get(id=rid, view="scratch")
+    assert "# 1 scratch node" in out.body
+    assert "mine" in out.body
+    assert "theirs" not in out.body
+    assert "ownerless" not in out.body
+    assert "not scratch" not in out.body
+
+
+def test_scratch_view_empty_state(handler: TodoHandler) -> None:
+    rid = _id_of(handler.put(text="No scratch here.").body)
+    out = handler.get(id=rid, view="scratch")
+    assert f"td{rid} owns no scratch" in out.body
+    assert "scratch_for" in out.body
+
+
+def test_scratch_view_requires_id(handler: TodoHandler) -> None:
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="requires id="):
+        handler.get(view="scratch")
+
+
+def test_scratch_view_in_unknown_view_options(handler: TodoHandler) -> None:
+    from precis.errors import Unsupported
+
+    rid = _id_of(handler.put(text="A todo.").body)
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=rid, view="frobnicate")
+    assert "scratch" in (exc.value.options or [])
+
+
+def test_scratch_view_survives_dispatch(runtime_with_store: Any) -> None:
+    """The view routes through the dispatcher's get verb, not only the
+    handler — the shape a closing agent actually issues."""
+    rt = runtime_with_store
+    h = rt.hub.handler_for("todo")
+    rid = _id_of(h.put(text="Dispatch-scratch fixture.").body)
+    mh = rt.hub.handler_for("memory")
+    mh.put(text="probe via dispatch", scratch_for=f"td{rid}")
+    body = rt.dispatch("get", {"kind": "todo", "id": rid, "view": "scratch"})
+    assert "probe via dispatch" in str(body)
+    assert f"td{rid}" in str(body)
+
+
 # ── view='raw' (universal debug view) ─────────────────────────────
 
 
@@ -806,6 +891,7 @@ def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
         "comments",
         "tree",
         "body",
+        "scratch",
         # Base views (links/log/raw/history/diff).
         "links",
         "log",

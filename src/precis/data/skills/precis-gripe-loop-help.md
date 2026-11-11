@@ -13,6 +13,7 @@ answers:
   - how do I hold a work item behind another fix or until a date?
   - how do I resume a wave after a crash with no files left?
   - where does a builder's task scratch live so other tasks can't recall it?
+  - what happens to a builder's scratch when the todo closes?
 applies-to: put/tag/link(kind='todo') under the 'Code work from gripes' root; put(kind='gripe') work: mirrors; edit(kind='gripe', mode='fix') state stays readable
 tags: workflow
 kinds: [gripe, todo]
@@ -54,6 +55,7 @@ derivation (`/queue`, `/batch` still render pre-phase-1 gripes).
 | 5b fix round | `put(id=T, text='brief: round <n>: …')` | `attempt:<n>` bump |
 | 6 landed on main | squash subject ends `(gr<N>, td<T>)`; land-notify moves both | todo `done` + `landed:`; gripe `auto_verify` + `resolved:` |
 | 7 deployed | nothing by hand — gripe-validate closes a check-less gripe; a `meta.fix.check` line on the todo makes the `gripe_autoclose` pass run it in prod and own the close | gripe `done` |
+| 8 close: harvest | `get(kind='todo', id=T, view='scratch')` → `put(id=T, text='harvest: none\|me<N> — …')` | — |
 
 A red attempt is not a queue either: the todo goes back to `open` (the
 claim drops, `attempt:<n>` bumps, the `handoff:` comment says why) and
@@ -290,6 +292,48 @@ gets a `shipped in r<N>` note instead of `STATUS:done`. A gripe a human
 closes mid-work (dup, not-a-bug) also notes the todo via the cascade —
 close the todo `STATUS:won't-do` and say why.
 
+## Step 8 — harvest the scratch at close
+
+A task's working notes — probes, dead ends, drafts, the tangled path
+to the answer — live in `SPACE:scratch` owned by its todo (see "Builder
+scratch" below). When the task closes, that residue is either promoted
+into one clean memory or left to dissolve; until it is harvested, the
+owner-close expiry retires it unread. The closer — the agent finishing
+the task, never a worker (the worker cannot judge what is durable) —
+makes that call in one read:
+
+```python
+get(kind="todo", id=T, view="scratch")   # every scratch-for:td<T> node, first line each
+```
+
+- Nothing durable → post `harvest: none` on the todo and close; the
+  nodes dissolve on the owner-close expiry (gr605668).
+- A durable residue → write ONE clean node where it belongs — a
+  `SPACE:repo-dev` gotcha/ruling child of its hub, or the thread
+  node's next `Left:` — link `supersedes` from the clean node to every
+  scratch node it condenses, then post `harvest: me<N>` naming it:
+
+```python
+put(kind="memory", text="<the one clean claim, shape-card form>",
+    tags=["SPACE:repo-dev", "section:gotchas"],
+    link="memory:<hub>", rel="part-of")
+link(kind="memory", id=<new>, target="memory:<scratch-id>", rel="supersedes")  # per condensed node
+put(kind="todo", id=T, text="harvest: me<N> — <one line: what it condenses>")
+```
+
+The `supersedes` edge keeps the tangle readable from the clean node
+after the scratch dissolves, and scratch already sits outside every
+other space's recall — the probes drop out of recall the moment the
+clean node owns the claim. Do NOT hand-delete the scratch: the
+owner-close expiry is its retirement path, and unlinked nodes
+dissolving is the designed default, not a leak.
+
+Required on every gripe-fix todo — that is where multi-agent scratch
+accumulates (builders, reviewers, fix rounds) — and advisory anywhere
+else a task carries scratch. The `harvest:` line is how the next
+coordinator, and the planned gardener detector for unharvested
+scratch, see the close was read before the dissolve.
+
 ## Builder scratch — `scratch-for:td<T>`, not the shared bucket
 
 A builder's working notes — probes, dead ends, draft text — go to
@@ -310,11 +354,13 @@ get(kind="memory", id="me<N>", extent="fisheye+1hop+recall",
 ```
 
 The owner tag is the key the task-close expiry (gr605668) reads — one
-tag serves the recall partition and the close-out; until that lands the
-wall-clock TTL sweep applies as before. Durable findings still land
-where they always did: a `part-of` child on the repo-dev hub,
-`work:`/`handoff:` lines on the refs — scratch is for what nobody must
-remember to delete.
+tag serves the recall partition and the close-out: while the owner is
+open the only limit is the 30-day floor from the last touch; once it
+closes, the node dissolves at the close + 3-day grace. Durable
+findings still land where they always did: a `part-of` child on the
+repo-dev hub, `work:`/`handoff:` lines on the refs — scratch is for
+what nobody must remember to delete; the close step above decides what
+survives the dissolve.
 
 ## Ask Reto mid-build, or hold the item
 

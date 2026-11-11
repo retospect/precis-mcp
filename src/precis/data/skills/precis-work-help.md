@@ -51,18 +51,6 @@ running (1)
     td540848 ◀ claimed-by:slice-td540848 prio=3 agents=1 jobs=2(1 live) — Skill precis-work-help …
     gr541510 open — precis-todo-tree-help~8 omits releasing a lease …
   jo541880 [running] run_slice · under td540848
-
-queued (1)
-◆ qu572010 queued [active] prio=5 next=td572033 20m ago — Hydrate the datasheet mesh …
-
-idle (1)
-◆ qu460002 idle [dormant] prio=5 2d ago — Pourbaix quest …
-
-unassigned roots (4) — serve no quest
-unplaced gripes (37) — open, thread matches no root
-
-hosts
-  mac-a reported 3m ago
 ```
 
 Blocks, top to bottom:
@@ -76,16 +64,15 @@ Blocks, top to bottom:
 | `unassigned roots (N)` | strategic roots that serve no quest, ranked against none |
 | `unassigned jobs (N)` | live jobs with no quest path: the health signal, work no quest owns |
 | `platform (N)` | live jobs with no todo parent, filed under qu540835: scheduled upkeep, one line by job type |
-| `unplaced gripes (N)` | open gripes whose `thread:` tag matches no root (see the gripe section) |
+| `unplaced gripes (N)` | open gripes whose `thread:` tag matches no root |
 | `hosts` | each fleet host and its last report; `none reported` means no agent count is real |
 
-A job resolves to a quest two ways: its `parent_id` chain walks up
-through live todos to the nearest ancestor that `serves` one, else its
-own meta answers (`params.quest_id`, `coordinator_state.quest_id`, or
-its structure's `quest:<id>` tag). A job that resolves to a quest but
-sits outside its served trees still joins that quest's job lines. A todo
-that serves a quest directly and also sits inside another served root
-renders once, inside the larger tree.
+A job resolves to a quest two ways: its `parent_id` chain walks up to
+the nearest ancestor that `serves` one, else its own meta answers
+(`params.quest_id`, `coordinator_state.quest_id`, or its structure's
+`quest:<id>` tag). A resolved job outside its quest's served trees still
+joins that quest's job lines; a todo serving a quest directly and also
+sitting inside another served root renders once, inside the larger tree.
 
 Blocked-only quests leave the idle group and sort by who can unblock
 them (gr573557): a quest whose live leaf rows are all blocked lands in
@@ -125,12 +112,12 @@ get(kind="todo", id=540836, view="tree")  # one root in full
 ```
 
 The web `/work` page renders the same board, one collapsed line per
-quest. A signed-in caller also sees
-a **Pause**/**Resume** button on each slice row and quest line: the
-twin of `tag(kind="todo", ..., add=["STATUS:paused"])` and
+quest; a signed-in caller sees a **Pause**/**Resume** button per
+slice row and quest line (the twin of
+`tag(kind="todo", ..., add=["STATUS:paused"])` and
 `edit(kind="quest", ..., mode="pause"|"resume")`
-([[precis-quest-help]]). Pausing a quest also parks every live strategic
-root serving it; neither button cancels a job.
+([[precis-quest-help]]). Pausing a quest parks every live strategic root
+serving it; neither button cancels a job.
 
 ## What blocks a lane, and what waits on the owner?
 ## Which questions are waiting for a human decision?
@@ -330,14 +317,6 @@ on one signature leave a line each on the shared gripe.
 
 ```python
 search(kind="todo", view="rescue")
-```
-
-```
-# rescue (2)
-
-builder (2)
-  td540990 builder       — Fix the flake · sig gr574801
-  td541002 builder       — Port the shim · sig gr574801
 ```
 
 The work view carries the same queue as a `rescue (N)` group after the

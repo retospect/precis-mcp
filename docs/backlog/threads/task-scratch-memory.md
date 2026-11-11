@@ -8,13 +8,19 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Do next 3 (gr605672, harvest). Do next 1 (gr605668) shipped
-  on main (`scratch-for:<owner>` tag + owner-keyed expiry, td606756);
-  Do next 2 (gr605669) is built on `slice/606761`: `RingFilter` gained
-  the `tags` dimension (first hop, second hop, `+recall`),
+- **Next:** Do next 3 (gr605672, harvest) is built on `slice/636424`:
+  `get(kind='todo', id=T, view='scratch')` renders the task's
+  `scratch-for:td<T>` nodes (first line each) and
+  `precis-gripe-loop-help` gained step 8 — the closer posts
+  `harvest: none|me<N>` after one read; `precis-todo-tree-help`
+  documents the view. Land re-evaluates; then only the Horizon's
+  gardener detector remains. Do next 1 (gr605668) shipped on main
+  (`scratch-for:<owner>` tag + owner-keyed expiry, td606756);
+  Do next 2 (gr605669) shipped 2026-11-09 (`RingFilter` gained the
+  `tags` dimension (first hop, second hop, `+recall`),
   `put(args={'scratch_for': 'td<T>'})` stamps `SPACE:scratch` +
   `scratch-for:<owner>`, and the three skills carry the text in the
-  same commit. Builder tier: Opus (Reto 2026-11-09): every item here
+  same commit). Builder tier: Opus (Reto 2026-11-09): every item here
   lands skill text (`precis-memory-help`, `precis-gripe-loop-help`) in
   the same commit as its code; the skill text is the deliverable the
   cluster agents read, so a mechanical tier does not qualify.
@@ -53,9 +59,11 @@ ordered by dependency (the owner tag first, then what reads it).
 2. **gr605669** — thread-scoped scratch recall (`RingFilter` tags
    dimension, `put(args={'scratch_for': …})`). Same tag; without it
    concurrent builders recall each other's probes.
-3. **gr605672** — harvest step at the loop's close (`view='scratch'` on the
-   todo, `harvest:` line, `supersedes` from the clean node). Last because it
-   reads the tag and the view; without it durable residue dissolves unread.
+3. ~~gr605672~~ — harvest step at the loop's close (`view='scratch'` on the
+   todo, `harvest:` line, `supersedes` from the clean node). **Built**
+   (slice/636424): `precis.todo.views.render_scratch` + the get wiring,
+   step 8 in `precis-gripe-loop-help`, the view section in
+   `precis-todo-tree-help`; land and re-evaluate.
 
 ## Horizon
 

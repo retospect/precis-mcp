@@ -916,6 +916,89 @@ def _status_icon(
     return "○"  # open / unknown — doable candidate
 
 
+# ── view: scratch (task-owned scratch index on a todo get) ──────────
+
+
+def render_scratch(store: Store, ref_id: int) -> Response:
+    """``get(kind='todo', id=N, view='scratch')`` — the task's scratch
+    index (gr605672).
+
+    One line per live ``SPACE:scratch`` memory the todo owns through the
+    ``scratch-for:td<N>`` tag: handle + the body's first line. This is
+    the single read the closing agent makes before posting ``harvest:``
+    on the todo — the promote-or-dissolve decision needs every probe,
+    dead end and draft visible at a glance, not a paged search. The
+    owner tag is the partition: ownerless scratch and other tasks'
+    scratch stay out.
+    """
+    owner_tag = f"scratch-for:{_h(ref_id)}"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title
+              FROM refs r
+             WHERE r.kind = 'memory'
+               AND r.retired_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'SPACE' AND t.value = 'scratch')
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN' AND t.value = %s)
+             ORDER BY r.ref_id
+            """,
+            (owner_tag,),
+        ).fetchall()
+    owner = _h(ref_id)
+    if not rows:
+        body = f"{owner} owns no scratch"
+        body += render_next_section(
+            [
+                (
+                    f"put(kind='memory', text='probe: …', "
+                    f"args={{'scratch_for': '{owner}'}})",
+                    "write scratch owned by this task",
+                ),
+                (
+                    "get(kind='skill', id='precis-memory-help')",
+                    "the scratch space + owner-tag contract",
+                ),
+            ]
+        )
+        return Response(body=body)
+    ids = [int(r[0]) for r in rows]
+    # First line of the body is the note's claim; the title is the same
+    # line when the writer didn't pass an explicit header, so the body
+    # read wins and the title is only the fallback (one bulk query).
+    from precis.utils.eye_render import _first_body_lines
+
+    firsts = _first_body_lines(store, ids)
+    sizes = store.chunks.body_byte_counts(ids)
+    n = len(ids)
+    lines = [f"# {n} scratch {'node' if n == 1 else 'nodes'} owned by {owner}", ""]
+    for rid, title in rows:
+        rid = int(rid)
+        lead = firsts.get(rid) or (title or "").split("\n", 1)[0]
+        if len(lead) > 100:
+            lead = lead[:100].rstrip() + "…"
+        cell = size_cell(sizes.get(rid, 0))
+        sz = f" · {cell}" if cell else ""
+        lines.append(f"  me{rid}  {lead}{sz}")
+    body = "\n".join(lines)
+    body += render_next_section(
+        [
+            (f"get(kind='memory', id={ids[0]})", "read one whole"),
+            (
+                f"search(kind='memory', tags=['SPACE:scratch', '{owner_tag}'])",
+                "the same set through search",
+            ),
+        ]
+    )
+    return Response(body=body, result_count=n)
+
+
 # ── view: doable ───────────────────────────────────────────────────
 
 

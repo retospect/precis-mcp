@@ -193,6 +193,22 @@ Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 `⏸` waiting / paused / ask-user · `✓` done · `✗` won't-do ·
 `⚙` job (execution attempt under a todo parent).
 
+## Read a todo's task scratch — view='scratch'
+
+```python
+get(kind="todo", id=42, view="scratch")
+```
+
+One line per live `SPACE:scratch` memory the todo owns through the
+`scratch-for:td42` tag — handle + the note's first line. This is the
+close-out read: the agent closing the task scans every probe and dead
+end in one call and decides what to promote before the owner-close
+expiry dissolves the rest. Ownerless scratch and other tasks' scratch
+stay out — the owner tag is the partition. The harvest rule itself
+(what to post on the todo, and where it is required) lives in
+[[precis-gripe-loop-help]]; the scratch space contract in
+[[precis-memory-help]] §Scratch memories.
+
 ## Doable leaves — what to pull next
 
 ```python

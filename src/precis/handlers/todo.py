@@ -26,7 +26,7 @@ shape with four first-class extensions:
    :class:`TodoView` closed vocabulary; the :data:`_TREE_SEARCH_VIEWS`
    dispatch table maps each to a renderer in
    :mod:`precis.todo.views`), plus ``view='tree'`` / ``'comments'`` /
-   ``'body'`` on ``get``.
+   ``'body'`` / ``'scratch'`` on ``get``.
    ``projects`` lists strategic roots that own a ``meta.workspace``;
    ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
    and halted todos.
@@ -43,7 +43,7 @@ Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
                               |'active'|'doing'|'done'|'work'|'asks')
-    get(kind='todo', id=N, view='tree'|'comments'|'body')
+    get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch')
 
 ``view='comments'`` is selectable: ``args={'comment': K}`` reads one
 comment, ``args={'comments': K}`` the newest K, ``args={'comments':
@@ -66,6 +66,13 @@ tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
 blocked-by link from that slice and makes the row a showstopper); answer
 it with a comment ``answer: …`` and ``tag`` ``STATUS:done`` + remove
 ``ask-user``.
+
+``view='scratch'`` (gr605672) is the task-scratch index: one line per
+live ``SPACE:scratch`` memory the todo owns through ``scratch-for:td<N>``
+— the single read the closing agent makes before posting ``harvest:``
+on the todo (precis-gripe-loop-help's close step). The renderer lives
+with the other get views in :mod:`precis.todo.views` too
+(:func:`precis.todo.views.render_scratch`).
 ``id='/<view>'`` paths (/open /queue /doing /blocked /done) are
 deprecated aliases — same render, plus a pointer at the ``view=``
 spelling ('/open' and '/queue' land on ``view='active'``).
@@ -671,6 +678,17 @@ class TodoHandler(NumericRefHandler):
                     "matching passages when the body alone is over budget"
                 ),
             )
+        if view == "scratch":
+            # gr605672: the task-scratch index — one line per
+            # ``scratch-for:td<N>`` memory. The read the closing agent
+            # makes before posting ``harvest:`` on the todo.
+            if id is None:
+                raise BadInput(
+                    "view='scratch' requires id=",
+                    next="get(kind='todo', id=N, view='scratch')",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return views.render_scratch(self.store, ref.id)
         # ``view='meta'`` (gr573038) is a base view now — the ref's
         # meta dict as JSON, shared by every numeric-ref kind
         # (gr613470); it rides ``_BASE_VIEWS`` into the base dispatch.
@@ -696,7 +714,7 @@ class TodoHandler(NumericRefHandler):
             # 'brief', 'tags') without an id fall through to the
             # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
-            views_list = ["body", "comments", "tree", "full", *_BASE_VIEWS]
+            views_list = ["body", "comments", "scratch", "tree", "full", *_BASE_VIEWS]
             near = difflib.get_close_matches(view, views_list, n=1)
             lead = f"nearest is view={near[0]!r}. " if near else ""
             raise Unsupported(
