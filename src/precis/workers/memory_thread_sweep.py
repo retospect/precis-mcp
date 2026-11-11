@@ -50,8 +50,11 @@ two passes. The scratch pass is just as narrow: ``kind='memory'``
 rows carrying ``SPACE:scratch`` and no other ``SPACE:`` value, hubs
 excluded the same way. Retirement is the normal
 soft-delete (:meth:`Store.retire_ref`), recoverable at the SQL layer —
-never a hard delete. Every retirement logs one greppable line with the
-rule letter::
+never a hard delete. A scratch tombstone keeps its inbound
+``supersedes`` edges: the harvest's clean node links ``supersedes``
+each scratch it condenses, and that edge is the provenance the skill
+promises survives the dissolve. Every retirement logs one greppable
+line with the rule letter::
 
     memory_thread_sweep: retired me<id> rule=c — untouched 21d (todo=td<n>)
 
@@ -589,7 +592,11 @@ def run_scratch_sweep_pass(
     ``claimed`` = scratch nodes due this fire; ``ok`` = actually retired
     (0 in dry-run); ``failed`` = candidates whose retire raised (logged,
     the pass continues). Same transaction shape as the thread pass —
-    edges drop before the tombstone (gr503031)."""
+    edges drop before the tombstone (gr503031) — except inbound
+    ``supersedes`` edges: the scratch harvest (precis-gripe-loop-help
+    step 8) links the clean node ``supersedes`` each scratch it
+    condenses, and that edge is the promised provenance the survivor
+    reads after the dissolve."""
     plan = plan_scratch_sweep(store, now=now)
     retired = 0
     failed = 0
@@ -604,7 +611,14 @@ def run_scratch_sweep_pass(
             continue
         try:
             with store.tx() as conn:
-                store.unlink_ref(item.ref_id, conn=conn)
+                # Inbound ``supersedes`` edges stay (gr503546's tombstone
+                # trail, same as the memory delete door): a harvest's
+                # clean node keeps its "supersedes me<scratch>" edge
+                # readable after the scratch dissolves. Every other edge
+                # drops (gr503031).
+                store.unlink_ref(
+                    item.ref_id, conn=conn, preserve_inbound_supersedes=True
+                )
                 store.retire_ref(item.ref_id, conn=conn)
             retired += 1
             log.info(

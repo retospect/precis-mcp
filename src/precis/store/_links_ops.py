@@ -2380,20 +2380,33 @@ class LinksMixin:
         )
         return cur.rowcount or 0
 
-    def unlink_ref(self, ref_id: int, *, conn: Connection) -> int:
-        """Hard-delete every link row touching ``ref_id``, both directions.
+    def unlink_ref(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection,
+        preserve_inbound_supersedes: bool = False,
+    ) -> int:
+        """Hard-delete link rows touching ``ref_id``, both directions.
 
         The memory soft-delete's edge cleanup (gr503031): a retired ref
         leaves dead ends in every neighbour's fisheye ring, so the delete
         drops its edges in the same transaction rather than orphaning
         them. ``supersedes`` edges to *this* node die with it — the
         tombstone trail lives on ``meta.superseded_by``, not on a ring
-        edge. Caller supplies ``conn`` so the delete and the retire are
-        atomic. Returns the row count.
+        edge — unless ``preserve_inbound_supersedes`` is set, which keeps
+        inbound ``supersedes`` edges the way the memory delete door does:
+        "new supersedes old" IS the tombstone trail (dangling_links skips
+        them by design), and the scratch harvest relies on it staying
+        readable from the survivor after the scratch node dissolves.
+        Caller supplies ``conn`` so the delete and the retire are atomic.
+        Returns the row count.
         """
         cur = conn.execute(
-            "DELETE FROM links WHERE src_ref_id = %s OR dst_ref_id = %s",
-            (ref_id, ref_id),
+            "DELETE FROM links WHERE (src_ref_id = %(r)s OR dst_ref_id = %(r)s)"
+            " AND NOT (%(keep)s AND dst_ref_id = %(r)s"
+            "   AND relation = 'supersedes')",
+            {"r": ref_id, "keep": preserve_inbound_supersedes},
         )
         return cur.rowcount or 0
 

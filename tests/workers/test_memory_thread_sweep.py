@@ -454,6 +454,40 @@ def test_rule_s_retirement_drops_links(store: Any, handler: MemoryHandler) -> No
     assert n is not None and int(n[0]) == 0
 
 
+def test_rule_s_retirement_keeps_inbound_supersedes_edges(
+    store: Any, handler: MemoryHandler
+) -> None:
+    """Regression (td637619 on td636424): the harvest links the clean
+    node ``supersedes`` each scratch it condenses, and that edge is the
+    provenance the survivor reads after the scratch dissolves — the
+    sweep must not unlink it. Every other edge still drops."""
+    sid = _scratch(handler, "harvested probe")
+    clean = _memory(handler, "the durable claim", tags=["section:gotchas"])
+    store.add_link(
+        src_ref_id=clean, dst_ref_id=sid, relation="supersedes", set_by="agent"
+    )
+    store.add_link(
+        src_ref_id=clean, dst_ref_id=sid, relation="qualifies", set_by="agent"
+    )
+    store.add_link(
+        src_ref_id=sid, dst_ref_id=clean, relation="related-to", set_by="agent"
+    )
+    _age(store, sid, SCRATCH_TTL_DAYS + 1)
+
+    run_scratch_sweep_pass(store)
+
+    assert _retired(store, sid)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id, relation FROM links "
+            "WHERE src_ref_id = %s OR dst_ref_id = %s",
+            (sid, sid),
+        ).fetchall()
+    assert [(int(r[0]), int(r[1]), str(r[2])) for r in rows] == [
+        (clean, sid, "supersedes")
+    ]
+
+
 def test_rule_s_re_run_is_a_no_op(store: Any, handler: MemoryHandler) -> None:
     sid = _scratch(handler, "a probe")
     _age(store, sid, SCRATCH_TTL_DAYS + 1)
