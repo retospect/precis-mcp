@@ -801,3 +801,22 @@ class TestAssignCaptions:
         got = assign_captions([(6, 6, HA)], [(1, 5, long_cap)])
         cid, cap = got[6]
         assert cid == 1 and len(cap) == 300
+
+    def test_numbering_scopes_to_the_owning_ref(self) -> None:
+        # td634405 repro: the merged paper+supplement chunk list numbered
+        # logical tables globally — the supplement's own "Table 1."
+        # landed on group index 2 and its number check failed. ``ref_of``
+        # restarts the numbering at each ref boundary, so the SI's
+        # "Table 1." meets the SI's first table.
+        tables = [(10, 10, HA), (11, 12, HB), (20, 1_000_004, HC)]
+        neighbours = [
+            (9, 9, "Table 1. Main rates."),
+            (30, 1_000_003, "Table 1. Supplementary rates."),
+        ]
+        # Global numbering leaves the SI caption unpaired.
+        assert assign_captions(tables, neighbours) == {10: (9, "Table 1. Main rates.")}
+        ref_of = {9: 7, 10: 7, 11: 7, 20: 8, 30: 8}
+        assert assign_captions(tables, neighbours, ref_of=ref_of) == {
+            10: (9, "Table 1. Main rates."),
+            20: (30, "Table 1. Supplementary rates."),
+        }

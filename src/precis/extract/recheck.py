@@ -38,6 +38,7 @@ from precis.errors import BadInput
 from precis.extract import recipes as _recipes
 from precis.extract.proposals import vocab_entry
 from precis.extract.tables import (
+    REF_ORD_STRIDE,
     assign_captions,
     header_unit,
     parse_table,
@@ -45,6 +46,7 @@ from precis.extract.tables import (
     table_runs,
     table_sig,
 )
+from precis.store.si_links import supplement_children
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -53,30 +55,42 @@ if TYPE_CHECKING:
 
 
 def _paper_chunks(store: Store, paper: int) -> list[dict[str, Any]]:
-    """The paper's live body chunks, ord order — the same SELECT as
-    ``survey_extract``'s ``_chunks``."""
+    """The paper's live body chunks plus its supplements', ord order per
+    ref, the main ref first — the same scope and per-ref ord scoping as
+    ``survey_extract``'s ``_chunks`` (gr632957), so a row anchored on an
+    SI table re-parses against its own ref's grid and numbering instead
+    of reporting unlocated."""
     with store.pool.connection() as conn:
+        refs = [paper] + [r[0] for r in supplement_children(conn, paper)]
         rows = conn.execute(
-            "SELECT chunk_id, ord, chunk_kind, text FROM chunks "
-            "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL ORDER BY ord",
-            (paper,),
+            "SELECT chunk_id, ord, chunk_kind, text, ref_id FROM chunks "
+            "WHERE ref_id = ANY(%s) AND ord >= 0 AND retired_at IS NULL "
+            "ORDER BY CASE WHEN ref_id = %s THEN 0 ELSE 1 END, ref_id, ord",
+            (refs, paper),
         ).fetchall()
-    return [
-        {
-            "chunk_id": int(cid),
-            "ord": int(ord_),
-            "chunk_kind": str(kind),
-            "text": str(text or ""),
-        }
-        for cid, ord_, kind, text in rows
-    ]
+    rank: dict[int, int] = {}
+    out = []
+    for cid, ord_, kind, text, ref in rows:
+        owner = int(ref)
+        out.append(
+            {
+                "chunk_id": int(cid),
+                "ref_id": owner,
+                "ord": rank.setdefault(owner, len(rank)) * REF_ORD_STRIDE + int(ord_),
+                "chunk_kind": str(kind),
+                "text": str(text or ""),
+            }
+        )
+    return out
 
 
 def table_index(chunks: list[dict[str, Any]]) -> dict[str, Any]:
     """One paper's table lookups: logical-table numbers, continuation
     headers and caption pairings — the same ``table_runs`` /
     ``run_headers`` / ``assign_captions`` computation the extract pass
-    runs (gr506762 subset-4)."""
+    runs (gr506762 subset-4), captions numbered per owning ref so an
+    SI's own ``Table 1.`` pairs at review exactly as it did when the
+    recipe wrote the row (td634405)."""
     table_seq = [
         (c["chunk_id"], c["ord"], table_sig(c["text"]))
         for c in chunks
@@ -89,6 +103,7 @@ def table_index(chunks: list[dict[str, Any]]) -> dict[str, Any]:
             for c in chunks
             if c["chunk_kind"] != "table"
         ],
+        ref_of={c["chunk_id"]: c["ref_id"] for c in chunks},
     )
     runs = table_runs(table_seq)
     return {

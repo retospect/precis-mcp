@@ -103,6 +103,7 @@ from precis.extract.proposals import (
     vocab_entry,
 )
 from precis.extract.tables import (
+    REF_ORD_STRIDE,
     assign_captions,
     parse_table,
     run_headers,
@@ -195,12 +196,6 @@ def _paper_glyph_flag(store: Store, ref_id: int) -> bool:
     return glyph_suspected(row[0] if row else None)
 
 
-#: The ``ord`` window one ref's chunks occupy inside a paper's scoped
-#: chunk list — no real ref approaches it (the pilot's extreme was a
-#: 634-chunk paper, jo504632).
-_REF_ORD_STRIDE = 1_000_000
-
-
 def _chunks(store: Store, paper: int) -> list[dict[str, Any]]:
     """The paper's live body chunks plus its supplements', ord order per
     ref, the main ref first.
@@ -210,7 +205,7 @@ def _chunks(store: Store, paper: int) -> list[dict[str, Any]]:
     ``Table S*`` / ``Fig. S*`` values the comparison sets cite, so the
     pass reads them too (gr632957). Each chunk carries its owning
     ``ref_id`` — the anchor and its ``quantifies`` edge land on it —
-    and a per-ref scoped ``ord`` (``rank * _REF_ORD_STRIDE + ord``) so
+    and a per-ref scoped ``ord`` (``rank * REF_ORD_STRIDE + ord``) so
     the table-run grouping and caption pairing the recipe bookkeeping
     derives from ``ord`` adjacency never fuses or pairs chunks across
     the ref boundary.
@@ -231,7 +226,7 @@ def _chunks(store: Store, paper: int) -> list[dict[str, Any]]:
         if isinstance(section, list) and section:
             sec = str(section[-1])
         owner = int(ref)
-        scoped_ord = rank.setdefault(owner, len(rank)) * _REF_ORD_STRIDE + int(ord_)
+        scoped_ord = rank.setdefault(owner, len(rank)) * REF_ORD_STRIDE + int(ord_)
         out.append(
             {
                 "chunk_id": int(cid),
@@ -1100,8 +1095,9 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
 
     # The recipe path's caption/table-number lookups, computed once over
     # the loaded chunks — slice 1's assign_captions pairing (one-to-one,
-    # number-checked) and table_runs' logical-table ordinals (the T<n>
-    # meta.table.table carries).
+    # number-checked, numbered per owning ref so a supplement's own
+    # "Table 1." meets its first table, td634405) and table_runs'
+    # logical-table ordinals (the T<n> meta.table.table carries).
     table_seq = [
         (c["chunk_id"], c["ord"], table_sig(c["text"]))
         for c in chunks
@@ -1114,6 +1110,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
             for c in chunks
             if c["chunk_kind"] != "table"
         ],
+        ref_of={c["chunk_id"]: c["ref_id"] for c in chunks},
     )
     runs = table_runs(table_seq)
     table_no = {cid: g_idx + 1 for g_idx, run in enumerate(runs) for cid, _ord in run}

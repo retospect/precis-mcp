@@ -358,6 +358,17 @@ def table_sig(text: str) -> TableSig:
     return TableSig(header, ncols, _CAPTION_RE.match(text) is not None)
 
 
+#: The ``ord`` window one ref's chunks occupy when a paper's merged
+#: chunk list spans several refs (``rank * REF_ORD_STRIDE + ord`` — the
+#: main ref first, then its ``part-of`` supplements, gr632957). No real
+#: ref approaches it (the castor pilot's extreme was a 634-chunk paper,
+#: jo504632) and it keeps the ord-adjacency :func:`table_runs` groups
+#: on and the ±``window`` :func:`assign_captions` measures from ever
+#: crossing a ref boundary. The loaders that apply it are
+#: ``survey_extract._chunks`` and ``recheck._paper_chunks``.
+REF_ORD_STRIDE = 1_000_000
+
+
 def table_runs(
     tables: Sequence[tuple[int, int, TableSig]],
 ) -> list[list[tuple[int, int]]]:
@@ -418,6 +429,7 @@ def assign_captions(
     tables: Sequence[tuple[int, int, TableSig]],
     neighbours: Sequence[tuple[int, int, str]],
     window: int = 2,
+    ref_of: Mapping[int, int] | None = None,
 ) -> dict[int, tuple[int, str]]:
     """Pair each logical table with at most one caption chunk, one-to-one.
 
@@ -440,7 +452,28 @@ def assign_captions(
     ``neighbours`` is ``(chunk_id, ord, text)`` — the non-table chunks
     around the tables. Returns ``{table_chunk_id: (caption_chunk_id,
     first 300 chars)}``.
+
+    ``ref_of`` maps each chunk_id to its owning ref_id; when given, the
+    pairing runs per owning ref — each ref's logical tables number
+    from 1, so a supplement's own ``Table 1.`` attaches to the
+    supplement's first table rather than missing against the merged
+    list's global count (td634405: numbering paper+supplement tables as
+    one sequence rejected every numbered SI caption). Entries whose id
+    is absent from ``ref_of`` group together under ``None`` — a
+    single-ref caller can pass a partial map and keeps the old
+    behaviour.
     """
+    if ref_of is not None:
+        tabs_by_ref: dict[int | None, list[tuple[int, int, TableSig]]] = {}
+        nbrs_by_ref: dict[int | None, list[tuple[int, int, str]]] = {}
+        for t in tables:
+            tabs_by_ref.setdefault(ref_of.get(t[0]), []).append(t)
+        for n in neighbours:
+            nbrs_by_ref.setdefault(ref_of.get(n[0]), []).append(n)
+        per_ref: dict[int, tuple[int, str]] = {}
+        for ref, t_seq in tabs_by_ref.items():
+            per_ref.update(assign_captions(t_seq, nbrs_by_ref.get(ref, []), window))
+        return per_ref
     cands: list[tuple[int, int, int | None, str]] = []
     for chunk_id, ord_, text in neighbours:
         m = _CAPTION_RE.match(text or "")

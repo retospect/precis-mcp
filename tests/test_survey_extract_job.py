@@ -3291,6 +3291,80 @@ class TestTableRecipes:
         assert all(r["span"][0] == cap_id for r in ins)
         assert all(r["extraction_status"] == "anchor_matched" for r in ins)
 
+    def test_supplement_caption_pairs_with_its_own_table(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """td634405: captions number within their owning ref — the
+        supplement's own "Table 1." pairs with the SI's first table even
+        though the main paper already printed a Table 1 (numbering the
+        merged chunk list globally rejected the SI caption and dropped
+        its conditions)."""
+        store = world["store"]
+        make_taxon(store, "temperature", unit="K", parent=world["root"])
+        cap_id = _seed_body_chunk(store, world["paper"], ord_=3, text=self.CAPTION1)
+        t_id = _seed_body_chunk(
+            store, world["paper"], ord_=4, text=self.TABLE1, chunk_kind="table"
+        )
+        si = seed_ref(store, title="Supporting information", kind="paper")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET pdf_role = 'supplement' WHERE ref_id = %s",
+                (si,),
+            )
+        store.add_link(
+            src_ref_id=si,
+            dst_ref_id=world["paper"],
+            relation="part-of",
+            meta={"role": "supplement"},
+        )
+        si_cap = seed_chunk(
+            store, ref_id=si, ord=0, text="Table 1. Supplementary rates at 300 K."
+        )
+        si_tab = seed_chunk(
+            store, ref_id=si, ord=1, text=self.TABLE1, chunk_kind="table"
+        )
+        recipe = json.dumps(
+            self._recipe(
+                {
+                    "index": 1,
+                    "measurand": "faradaic-efficiency",
+                    "unit": "%",
+                    "role": "output",
+                },
+                conditions=[
+                    {
+                        "condition": "temperature",
+                        "measurand": "temperature",
+                        "literal": "300 K",
+                        "role": "context",
+                        "source": "caption",
+                    }
+                ],
+            )
+        )
+        _calls, _route = self._router([recipe, recipe])
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        rows = store.measures_for(world["paper"], include_superseded=True)
+        outs = [r for r in rows if r["direction"] == "output"]
+        si_outs = [r for r in outs if r["meta"]["table"]["chunk"] == si_tab]
+        assert len(si_outs) == 2  # 1 series × 2 grid rows
+        for r in si_outs:
+            tm = r["meta"]["table"]
+            assert tm["caption_chunk"] == si_cap
+            assert tm["caption"].startswith("Table 1. Supplementary")
+        main_outs = [r for r in outs if r["meta"]["table"]["chunk"] == t_id]
+        assert len(main_outs) == 2
+        assert all(r["meta"]["table"]["caption_chunk"] == cap_id for r in main_outs)
+        # The caption-sourced condition anchors on the SI caption chunk —
+        # with the global numbering it dropped ("unpaired") instead.
+        si_ins = [
+            r for r in rows if r["direction"] == "input" and r["span"][0] == si_cap
+        ]
+        assert len(si_ins) == 2
+        assert all(r["extraction_status"] == "anchor_matched" for r in si_ins)
+
     def test_tables_buckets_and_drops_by_reason(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4190,6 +4264,66 @@ class TestMeasureRecheck:
                 (bad,),
             ).fetchone()
         assert n is not None and n[0] == 0
+
+    def test_supplement_anchored_rows_are_checked(self, store: Store) -> None:
+        """td634405: ``_paper_chunks`` reads the paper's supplements too —
+        a recipe row anchored on an SI table chunk re-parses against the
+        SI's own grid instead of counting ``unlocated``."""
+        from precis.extract import recheck as _recheck
+        from precis.extract.tables import parse_table as _pt
+
+        w = self._world(store)
+        si = seed_ref(store, title="Supporting information", kind="paper")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET pdf_role = 'supplement' WHERE ref_id = %s", (si,)
+            )
+        store.add_link(
+            src_ref_id=si,
+            dst_ref_id=w["paper"],
+            relation="part-of",
+            meta={"role": "supplement"},
+        )
+        si_tid = seed_chunk(
+            store, ref_id=si, ord=0, text=self.TABLE, chunk_kind="table"
+        )
+        parsed = _pt(si_tid, self.TABLE)
+        assert parsed is not None
+        c = parsed.rows[0][1]
+        mid = (
+            w["store"]
+            .insert_measure(
+                MeasureSpec(
+                    measurand_ref_id=w["ads"],
+                    literal="3",
+                    subject_ref_id=w["paper"],
+                    reported_unit="eV",
+                    tier="measured",
+                    source_attribution="own_work",
+                    anchor=MeasureAnchor(
+                        si, si_tid, "offsets", [si_tid, c.start, c.end]
+                    ),
+                    meta={
+                        "extraction_run": "test-run",
+                        "extraction": {"prompt": "table-r1"},
+                        "table": {
+                            "chunk": si_tid,
+                            "table": 1,
+                            "row": 1,
+                            "col": 2,
+                            "header": "Number of oxide layers",
+                            "orientation": "columns",
+                        },
+                    },
+                ),
+                actor="test",
+            )
+            .output_id
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=True)
+        assert result["checked"] == 1
+        assert result["unlocated"] == 0
+        assert {r["id"] for r in result["refused"]} == {mid}
 
     def test_apply_records_rejected_reviews(self, store: Store) -> None:
         from precis.extract import recheck as _recheck
