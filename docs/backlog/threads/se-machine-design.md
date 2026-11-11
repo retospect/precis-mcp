@@ -253,11 +253,12 @@ off that gap until it closes.
 1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
-2. **backlog/ts-stabilizing-pocket.md** — transition-state pocket
+2. **spec `me629051`** — transition-state pocket
    (Reto 2026-10-01): derive an se pocket spec from a reaction's
    transition state and realise it as a backboned scaffold. Blocked
    on Do next 1 and 5; the chemistry thread consumes it and measures
-   the barrier. Unparks when the realize loop lands.
+   the barrier. Unparks when the realize loop lands (the retired
+   backlog/ts-stabilizing-pocket.md).
 2a. [se-protein-interface-first](../se-protein-interface-first.md) — draft;
     shares the pocket-first seam, adding required non-repeating contacts
     and a rigid protein scaffold without folding predictors (Reto, 2026-10-31).

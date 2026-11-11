@@ -38,8 +38,8 @@ Two pocket cases:
 - **Case b, held shape.** Pose NH3, remove one H, and keep the remaining
   NH2 frozen at the NH3 geometry. The pocket must hold that shape and
   keep the vacancy open toward the H source. This is transition-state
-  (entatic-state) stabilisation, a concrete instance of
-  [ts-stabilizing-pocket](ts-stabilizing-pocket.md).
+  (entatic-state) stabilisation, a concrete instance of spec `me629051`
+  (graph memory).
 
 ## What exists
 
@@ -454,8 +454,8 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     per-vertex colours now; move to the shared molecule viewer later.
 11. **Case b stabilisation.** Is "at least the strain energy" measured
     as binding of the held fragment, or as the margin between held and
-    relaxed NH2 in the same pocket (ts-stabilizing-pocket's differential
-    form)?
+    relaxed NH2 in the same pocket (the differential form in spec
+    `me629051`)?
     **Answered (requirement).** Reto 2026-10-17: the pocket should
     mechanochemically entice addition of the missing H: the held,
     strained NH2 should make H uptake downhill and low-barrier. The
