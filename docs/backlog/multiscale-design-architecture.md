@@ -73,7 +73,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | DFA soft costs, objective vector | `se-feasibility-and-cost.md` | open |
 | molecular fragment library, states, joining chemistry | `src/precis_se/__init__.py` docstring + star-schema facts | shipped |
 | interaction-aware module placement (graded π-stack, kT thresholds, pose solve, fisheye read) | spec `me628840` (π-stack `me628941`, solve `me628943`, kT `me628945`, fisheye `me628947`) | spec ready 2026-09-11 |
-| photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
+| photoswitch physics, channel budget, photo-charge | `me630037`, `me630035`, `me630042`, `me630039`, `me630036`, `me630041` (group `me628512`) | transferred to graph 2026-11-11 |
 | toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11); rung 4 nonplanar member sweeps added 2026-09-14 |
 | scenarios + three-verdict rule table | **here, §Scenarios** | new |
 | complementarity solver | **here, §Complementarity** | core + se bridge BUILT (active-set solve e49fb80a; se side 2026-10-13 — `precis_se/stability.py` taut/slack `view='stability'` section, `completeness` findings in `view='drc'`/`validate`, `bistable` arg; named load cases are a view-layer arg, no objectives schema); screw-clamp must-contact wiring OPEN (no se vocabulary — `unseated` unreachable from se; `complementarity-solver.md`) |
@@ -477,7 +477,7 @@ spec `me628941` (group `me628840`) specs the graded π-stack pair potential
 intent) with H-bond and charge as its named next terms; ratchets/
 bistability (asymmetric barrier = one-way ratchet; hysteresis from
 barrier vs kT) → design content for quest loops, with the physics
-evidence in `photoswitch-states-and-spectral-dof.md`. Photon
+evidence in `me630036` (switch numbers, molecular tier `me628512`). Photon
 interaction (absorption cross-sections, self-shadowing, wavelength
 selectivity) and environment (solvent explicit or dielectric; entropy at
 temperature — marginal-at-0 K is not a design) → the spec's open list

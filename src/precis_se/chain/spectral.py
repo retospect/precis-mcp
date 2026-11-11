@@ -2,10 +2,11 @@
 (and reaction) channels a design's state machines spend, and whether two
 of them can be told apart.
 
-``docs/backlog/photoswitch-states-and-spectral-dof.md`` ruled that the
-number of orthogonal optical channels is a scarce budget the designer
-spends, not a free dimension: organic absorption bands are tens of nm wide,
-so a lab addresses a handful of switches independently, never dozens. This
+Spec ``me630042`` (photoswitch channel budget, under the multiscale-design
+molecular tier ``me628512``) ruled that the number of orthogonal optical
+channels is a scarce budget the designer spends, not a free dimension:
+organic absorption bands are tens of nm wide, so a lab addresses a
+handful of switches independently, never dozens. This
 module is the DRC that item asked for, built here because the walker
 (``se-walker-light-protocol``) is the first design that spends several
 channels at once.
@@ -70,7 +71,7 @@ __all__ = [
 ]
 
 #: Assumed band width when the driving block has no ``fwhm`` row — the
-#: "tens of nm" the photoswitch item quotes for organic chromophores
+#: "tens of nm" the photoswitch evidence (``me630036``) quotes for organic chromophores
 #: (azobenzene's ππ* band is ~50 nm FWHM; 40 keeps the assumption on the
 #: optimistic side so a real datasheet can only make a warning louder).
 DEFAULT_FWHM_NM = 40.0

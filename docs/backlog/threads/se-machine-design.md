@@ -280,7 +280,11 @@ off that gap until it closes.
 13. **backlog/cad-diagnose-apply-loop.md**
 14. **backlog/printable-atomic-models.md**
 15. **backlog/se-fret-round-2.md**
-16. **backlog/photoswitch-states-and-spectral-dof.md**
+16. **spec `me628512` §photoswitch (`me630037`, `me630042`,
+    `me630039`, `me630035`, `me630036`, `me630041`)** — bistable
+    block states, the spectral channel budget and photo-charge
+    coupling (the retired
+    backlog/photoswitch-states-and-spectral-dof.md).
 17. **spec `me628840`** — interaction-aware module pose solve (graded
     π-stack, form-finder seeded; the retired
     backlog/nm-stick-placement.md).

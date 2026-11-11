@@ -87,7 +87,7 @@ sync by a human.
   bistable azobenzene structure switched between states by two
   wavelengths, driving a folding-chair-like tensegrity mechanism with
   springs, is designed and checked as one se assembly. Its parts:
-  `photoswitch-states-and-spectral-dof.md` (switch states + channel
+  `me630037`/`me630042` under `me628512` (switch states + channel
   budget), `structural-solution-space.md` (the tensegrity), and
   `complementarity-solver.md` (bistability / unilateral analysis).
 

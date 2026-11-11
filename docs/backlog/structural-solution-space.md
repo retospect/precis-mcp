@@ -51,7 +51,8 @@ stability**: run the classifier once per declared state. A tensegrity whose
 tie is a photoswitch is an *actuated* tensegrity — actuation is the
 equilibrium/prestress state changing between block states, and "does the
 cis frame still hold shape" is the same `m − s` question asked twice.
-Physics stays in `photoswitch-states-and-spectral-dof.md`.
+Physics stays in graph memory: `me630037` (states), `me630042`
+(channel budget) under the molecular tier `me628512`.
 
 ## The model: ONE axial member, an asymmetric capacity pair
 
