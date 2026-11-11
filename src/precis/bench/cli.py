@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from precis.bench import corpus, raw, runner
+from precis.bench import corpus, figure, raw, runner
 from precis.config import load_config
 
 
@@ -129,6 +129,14 @@ def _parser() -> argparse.ArgumentParser:
         "(one per caller) are also compared side by side",
     )
     rep.add_argument("results", type=Path, nargs="+")
+    rep.add_argument(
+        "--figure",
+        type=Path,
+        default=None,
+        metavar="OUT.svg|OUT.png",
+        help="also write the recall@k vs median tokens-to-gold figure, one "
+        "series per arm (and per file)",
+    )
 
     raw_p = sub.add_parser(
         "raw",
@@ -309,6 +317,14 @@ def _report(args: argparse.Namespace) -> int:
         print(runner.report_markdown(run))
     if len(runs) > 1:
         print(runner.compare_markdown(runs))
+    if args.figure is not None:
+        if args.figure.suffix.lower() not in (".svg", ".png"):
+            raise runner.BenchRunError("--figure takes a .svg or .png path")
+        try:
+            figure.write_figure(runs, args.figure)
+        except ValueError as exc:
+            raise runner.BenchRunError(str(exc)) from exc
+        print(f"figure: {args.figure}")
     return 0
 
 
