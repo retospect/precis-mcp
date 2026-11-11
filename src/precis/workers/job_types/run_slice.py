@@ -11,7 +11,9 @@ Detached submit/poll pair under ``ssh_node`` (the protocol
 that holds the lane's credentials with ``params.target_node``):
 
 * :func:`submit` renders the brief (todo title + body + the newest
-  ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction),
+  ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction —
+  after a failed attempt the newest ``brief:`` wins over the dead
+  session's ``handoff:``, gr571311),
   picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one
   (a pinned lane at its cap parks the job like a full pick does) —
@@ -20,7 +22,9 @@ that holds the lane's credentials with ``params.target_node``):
   stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
   the job, takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
-  ``origin/main`` under the checkout root (:func:`slice_root`), writes
+  ``origin/main`` under the checkout root (:func:`slice_root`) — a reused
+  tree is reset to a clean checkout of its branch tip first
+  (:func:`_reset_reused_worktree`, gr571311) — writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
@@ -1234,11 +1238,16 @@ def render_brief(
         f"You are a headless build session on lane `{lane}` "
         f"(model `{model or 'account default'}`, "
         f"effort `{effort}`), in git worktree `{name}` on branch "
-        f"`{slice_branch(todo_id)}`, cut from `origin/main`. Work only in this "
-        "worktree. Read CLAUDE.md and AGENTS.md here before editing; their "
-        "rules bind you — except the round rule: a slice is not a round "
-        "peer, so never run `scripts/round` (any verb); the mark belongs "
-        "to the coordinator.",
+        f"`{slice_branch(todo_id)}`, cut from `origin/main`. You get one "
+        "turn: when your turn ends the session ends and any subagents "
+        "still running are killed with it — never start a background "
+        "subagent and wait for it; do your research in the foreground, "
+        "then finish the work in this same turn (gr571311: a builder "
+        "that yielded to wait on forks lost the whole session). Work "
+        "only in this worktree. Read CLAUDE.md and AGENTS.md here before "
+        "editing; their rules bind you — except the round rule: a slice "
+        "is not a round peer, so never run `scripts/round` (any verb); "
+        "the mark belongs to the coordinator.",
     ]
     if not mcp:
         if read_mcp == "reader":
@@ -1379,19 +1388,38 @@ def render_brief(
 
 
 def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
-    """``(body, newest brief:/handoff: comment)`` of the todo."""
+    """``(body, newest brief:/handoff: comment)`` of the todo.
+
+    gr571311: a failed attempt still posts its session's last message as
+    a ``handoff:`` comment — a dead session's one-liner is not a brief,
+    so while an ``attempt:<n>`` tag stands (the last run failed) the
+    newest ``brief:`` wins over a newer ``handoff:`` that would shadow
+    the real instructions for the retry."""
     chunks = _todo_chunks(store, todo_id)
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
     )
     latest: str | None = None
     latest_ord = -1
+    brief: str | None = None
+    brief_ord = -1
     for c in chunks:
         if c.chunk_kind != _COMMENT_KIND:
             continue
         text = str(c.text or "").lstrip()
-        if text.lower().startswith(_BRIEF_PREFIXES) and int(c.ord) > latest_ord:
+        lowered = text.lower()
+        if not lowered.startswith(_BRIEF_PREFIXES):
+            continue
+        if int(c.ord) > latest_ord:
             latest, latest_ord = text, int(c.ord)
+        if lowered.startswith("brief:") and int(c.ord) > brief_ord:
+            brief, brief_ord = text, int(c.ord)
+    if (
+        latest_ord > brief_ord
+        and brief is not None
+        and any(_ATTEMPT_RE.match(v) for v in _open_tag_values(store, todo_id))
+    ):
+        latest = brief
     return body, latest
 
 
@@ -1485,15 +1513,55 @@ def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
         )
 
 
+def _reset_reused_worktree(tree: Path, branch: str) -> None:
+    """Return a reused worktree to a clean checkout of ``branch``'s tip:
+    abort an in-flight merge/rebase, switch back to the slice branch,
+    drop a dead attempt's uncommitted edits — staged or not — and its
+    untracked leftovers (gr571311: a retry launched into the dirty tree
+    read the predecessor's partial work as the starting state). Committed
+    work keeps — the branch tip is the retry's base as before. The
+    gitignored ``scratch/``/``.devin/``/``.claude/`` dirs get an ``-x``
+    clean of their own: a stale ``commit-msg.txt``, MCP config or
+    settings.local must not leak into the retry either; ``.venv`` and
+    other ignored state stay so the retry keeps its environment."""
+    for op in ("rebase", "merge", "cherry-pick", "am"):
+        _git([op, "--abort"], tree)  # exits non-zero when nothing is in flight
+    for args in (
+        ["checkout", "-f", branch],
+        ["reset", "--hard", "HEAD"],
+        ["clean", "-fd"],
+    ):
+        proc = _git(args, tree)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"git {' '.join(args)} in reused worktree failed: "
+                f"{proc.stderr.strip()[:200]}"
+            )
+    for stale in ("scratch", ".devin", ".claude"):
+        if (tree / stale).is_dir():
+            proc = _git(["clean", "-fdx", "--", stale], tree)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"git clean -fdx {stale} in reused worktree failed: "
+                    f"{proc.stderr.strip()[:200]}"
+                )
+    # The -x clean may have removed a nested worktree a session cut under
+    # its own .claude/worktrees/; drop stale registrations. Best-effort.
+    _git(["worktree", "prune"], tree)
+
+
 def _ensure_worktree(root: Path, todo_id: int) -> Path:
     """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
     ``slice/<id>``, cut from ``origin/main``. A retry reuses an existing
     tree and branch (the branch stays owned by its slice until it lands or
-    is abandoned); a legacy ``slice-td<id>`` branch is renamed first."""
+    is abandoned) — reset to a clean checkout of the branch tip first
+    (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
+    renamed first."""
     tree = worktrees_dir(root) / slice_name(todo_id)
     branch = slice_branch(todo_id)
     _adopt_legacy_branch(root, todo_id)
     if tree.exists():
+        _reset_reused_worktree(tree, branch)
         return tree
     fetch = _git(["fetch", "origin", "main"], root)
     if fetch.returncode != 0:

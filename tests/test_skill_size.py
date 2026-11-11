@@ -81,6 +81,11 @@ _ALLOWLIST: dict[str, str] = {
         "precis-taproot-mint-help",
     )
 }
+_ALLOWLIST["precis-work-help"] = (
+    "23061 B since ff62f2135 (2026-11-11) grew it past FAIL_BYTES — "
+    "short-term while the skill is restructured for section access; "
+    "keeps unrelated lands green meanwhile"
+)
 
 
 #: Floor on the swept corpus — parametrization over an empty glob

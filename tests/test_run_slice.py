@@ -674,6 +674,66 @@ def test_brief_render_takes_newest_brief_or_handoff(seams: dict[str, Any]) -> No
     assert "put(kind='todo', id=42" not in brief
 
 
+def test_brief_states_the_one_turn_rule() -> None:
+    """gr571311: a print-mode session has no next turn — the brief must
+    say so up front, or a builder backgrounds research forks and yields
+    the session away (the harness then kills the forks). It rides the
+    header so every role gets it."""
+    for generator, role in ((False, None), (True, None), (True, "reviewer")):
+        brief = run_slice.render_brief(
+            todo_id=42,
+            title="Build the widget",
+            body="Do X.",
+            latest=None,
+            lane="claude-sub",
+            model="m",
+            effort="high",
+            generator=generator,
+            role=role,
+        )
+        assert "You get one turn" in brief
+        assert "never start a background subagent and wait for it" in brief
+
+
+def test_brief_parts_prefers_brief_over_dead_attempt_handoff() -> None:
+    """gr571311: a failed attempt's last message is posted as a
+    ``handoff:`` comment; while an ``attempt:`` tag stands it must not
+    shadow the real ``brief:`` for the retry. With no attempt tag the
+    newest handoff still wins (existing rule)."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Build the widget",
+        body="Do X, then Y.",
+        comments=(
+            "brief: the real brief",
+            "handoff: first fork is back; waiting on the other three",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 42)
+    assert latest == "brief: the real brief"
+    # No failed attempt: the newest brief-ish comment decides, as before.
+    store.remove_tag(42, Tag.open("attempt:1"))
+    _body, latest = run_slice._brief_parts(store, 42)
+    assert latest == "handoff: first fork is back; waiting on the other three"
+
+
+def test_brief_parts_keeps_dead_attempt_handoff_when_no_brief() -> None:
+    """A failed attempt's handoff still answers when the todo never got
+    a ``brief:`` comment — it is the only steer the retry has."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Build the widget",
+        body="Do X.",
+        comments=("handoff: got as far as the parser",),
+        tags=("attempt:2",),
+    )
+    _body, latest = run_slice._brief_parts(store, 42)
+    assert latest == "handoff: got as far as the parser"
+
+
 def test_generator_brief_creates_children_and_never_lands(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -1207,6 +1267,47 @@ def test_submit_launches_and_claims(
     assert kw["cwd"] == tree
     assert kw["stdin"] == tree / "scratch" / "brief.md"
     assert kw["env"]["PRECIS_SLICE_ID"] == "td42"
+
+
+def test_submit_retry_resets_the_reused_worktree(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr571311: a retry reuses the dead attempt's worktree — reset to a
+    clean checkout of the branch tip first, never launched into the
+    predecessor's uncommitted leftovers."""
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    (tree / "scratch").mkdir(parents=True)
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None
+    cmds = [args for args, _cwd in seams["git"]]
+    assert not any(c[:2] == ["worktree", "add"] for c in cmds)
+    assert ["checkout", "-f", "slice/42"] in cmds
+    assert ["reset", "--hard", "HEAD"] in cmds
+    assert ["clean", "-fd"] in cmds
+    # Gitignored session scratch gets the -x pass; .devin/.claude absent.
+    assert ["clean", "-fdx", "--", "scratch"] in cmds
+    assert ["worktree", "prune"] in cmds
+
+
+def test_reset_reused_worktree_failure_refuses_the_reuse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A reused tree git cannot reset is not launched into — the same
+    failure a broken ``worktree add`` would produce."""
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    tree.mkdir(parents=True)
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["checkout"]:
+            return _proc("bogus ref", rc=1)
+        return _proc()
+
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    with pytest.raises(RuntimeError, match="checkout"):
+        run_slice._ensure_worktree(tmp_path, 42)
 
 
 def test_submit_unpinned_child_uses_lane_default_model(
