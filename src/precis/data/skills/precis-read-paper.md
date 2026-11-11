@@ -290,10 +290,10 @@ to the caller, with each hub labelled new or existing.
 
 ## See also
 
-- `get(kind='skill', id='precis-read-for-question')` — the question-driven loop; same hub door.
-- `get(kind='skill', id='precis-paper-help')` — toc, summaries, ranges, scoped search, notes.
-- `get(kind='skill', id='precis-taproot-mint-help')` — admissibility, scope keys, convergence.
-- `get(kind='skill', id='precis-measure-help')` — measure runs, conditions, flags, the extraction job.
-- `get(kind='skill', id='precis-make-memory')` — the reconciliation policy step 4 applies.
-- `get(kind='skill', id='precis-relations')` — `qualifies`, `derived-from`, `cites`, `disputes`.
-- `get(kind='skill', id='precis-classify-help')` — attaching refs to taxonomy nodes.
+- [[precis-read-for-question]] — the question-driven loop; same hub door.
+- [[precis-paper-help]] — toc, summaries, ranges, scoped search, notes.
+- [[precis-taproot-mint-help]] — admissibility, scope keys, convergence.
+- [[precis-measure-help]] — measure runs, conditions, flags, the extraction job.
+- [[precis-make-memory]] — the reconciliation policy step 4 applies.
+- [[precis-relations]] — `qualifies`, `derived-from`, `cites`, `disputes`.
+- [[precis-classify-help]] — attaching refs to taxonomy nodes.

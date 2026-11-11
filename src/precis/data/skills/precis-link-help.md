@@ -126,7 +126,7 @@ link(kind="memory", id=42, target="pc38", rel="cites")
 ```
 
 A chunk-pinned `qualifies` from a setup note marks the conditions a
-result holds under (`precis-read-paper`).
+result holds under ([[precis-read-paper]]).
 
 ## Workflow blocker between tasks
 
