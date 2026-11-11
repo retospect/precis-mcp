@@ -47,6 +47,8 @@ _EXEMPT: set[str] = {
     # Names "scripts/ship" as a deny-glob operand; the real exec is
     # sys.executable on the probe .py files.
     "tests/test_boundary_probe.py",
+    # Names "scripts/ship" as a hard-stop path operand; the real exec is git.
+    "tests/test_red_waiver.py",
 }
 
 #: Stdlib modules that do not exist on Windows — importing one at module
