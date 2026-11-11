@@ -1038,21 +1038,21 @@ def arm_table(
     rows: Sequence[Mapping[str, Any]],
     *,
     embedder_id: str | None,
-    arm_coverage: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-arm header block: switches, vacuity (predicted from coverage and
     observed as transcript identity), degeneracy, embedder caveat.
 
-    ``arm_coverage`` overrides ``cov`` per arm — a re-ingest arm's world has
-    its own coverage (``no-links`` in a base DB that has edges is only
-    vacuous in *its* world)."""
+    ``cov`` is the *control* corpus's layer coverage and it judges every
+    arm — a re-ingest arm's own world cannot attest the layer it removes
+    (``no-links``'s world is edgeless by construction, so judging it there
+    marks it vacuous always); whether the arm removed anything is a
+    question about the corpus its world was cut from."""
     from precis.bench import layers
 
     same = identical_to_all_on(rows)
     out: dict[str, dict[str, Any]] = {}
     for arm in arms:
-        acov = (arm_coverage or {}).get(arm, cov)
-        vac = layers.arm_vacuity(arm, acov, embedder_id=embedder_id)
+        vac = layers.arm_vacuity(arm, cov, embedder_id=embedder_id)
         if arm in COMBINED_ARMS:
             # vacuous only if every layer it removes is empty
             parts = [
@@ -1519,12 +1519,11 @@ def run_cli(
         # qasper:<id> ref cannot exist twice in one DB under two chunkings.
         worlds: dict[str, World] = {}
         worlds_meta: dict[str, Any] = {}
-        arm_coverage: dict[str, Any] = {}
         for arm in arm_list:
             variant = corpus.variant_for_arm(arm)
             if variant is None:
                 continue
-            vdsn = corpus.variant_dsn(dsn, arm)
+            vdsn = corpus.variant_dsn(dsn, arm, set_name, manifest)
             print(f"{arm}: provisioning world …", file=sys.stderr)
             prov = corpus.provision_variant(
                 vdsn, variant, set_name=set_name, manifest=manifest
@@ -1548,7 +1547,6 @@ def run_cli(
                 ),
                 catalog=Catalog(vstore),
             )
-            arm_coverage[arm] = vcov
             worlds_meta[arm] = {
                 "database": corpus.variant_dbname(vdsn),
                 "variant": {
@@ -1595,9 +1593,7 @@ def run_cli(
     ended = utc_stamp()
     emb_id = getattr(embedder, "model", embedder_name)
     meaningful = not layers.hash_embedder(emb_id)
-    arms_block = arm_table(
-        arm_list, cov, rows, embedder_id=emb_id, arm_coverage=arm_coverage
-    )
+    arms_block = arm_table(arm_list, cov, rows, embedder_id=emb_id)
     header = {
         "schema": RESULTS_SCHEMA,
         "tier": "scripted",

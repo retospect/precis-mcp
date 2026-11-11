@@ -1558,20 +1558,15 @@ def test_no_links_vacuity_reads_the_edges_layer():
     )
 
 
-def test_arm_table_uses_the_world_arms_own_coverage():
+def test_arm_table_judges_no_links_vacuity_on_the_control_corpus():
     rows = [_row("t1", "all-on", "a"), _row("t1", "no-links", "b")]
     edged = {**ZERO, "refs_with_edge_frac": 0.9}
-    # judged on the base DB's coverage no-links looks live; judged on its own
-    # (edgeless) world's coverage it is vacuous
+    # the control corpus holds edges to remove: no-links is a live arm even
+    # though its own world is edgeless by construction
     block = runner.arm_table(["all-on", "no-links"], edged, rows, embedder_id="bge-m3")
     assert block["no-links"]["vacuous"] is False
-    block = runner.arm_table(
-        ["all-on", "no-links"],
-        edged,
-        rows,
-        embedder_id="bge-m3",
-        arm_coverage={"no-links": ZERO},
-    )
+    # an edgeless control corpus leaves nothing to remove: vacuous
+    block = runner.arm_table(["all-on", "no-links"], ZERO, rows, embedder_id="bge-m3")
     assert block["no-links"]["vacuous"] is True
 
 
@@ -1665,7 +1660,7 @@ def test_run_cli_provisions_worlds_and_records_them(
         calls.append(variant.arm)
         return {"arm": variant.arm, "set": kw.get("set_name"), "already": True}
 
-    monkeypatch.setattr(corpus, "variant_dsn", lambda dsn, arm: dsn)
+    monkeypatch.setattr(corpus, "variant_dsn", lambda dsn, arm, set_name, manifest: dsn)
     monkeypatch.setattr(corpus, "provision_variant", _fake_provision)
     out = tmp_path / "res" / "w.json"
     path = runner.run_cli(
@@ -1693,7 +1688,7 @@ def test_run_cli_provisions_worlds_and_records_them(
     assert h["worlds"]["no-links"]["variant"]["links"] is False
     assert h["worlds"]["no-links"]["provision"]["already"] is True
     assert "coverage" in h["worlds"]["no-links"]
-    # the no-links world's coverage has no edges: vacuous on its own numbers
+    # the control corpus has no edges for no-links to remove: vacuous
     assert h["arms"]["no-links"]["vacuous"] is True
     # planted/memory rows stay out of the world arms' runs
     pairs = {(r["arm"], r["source"]) for r in res["rows"]}

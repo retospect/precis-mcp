@@ -585,25 +585,34 @@ def test_variant_registry_names_the_reingest_arms():
         assert corpus.variant_for_arm(bogus) is None, bogus
 
 
-def test_variant_dsn_derives_a_throwaway_dbname():
+def test_variant_dsn_derives_a_throwaway_dbname(fake_papers):
     from psycopg.conninfo import conninfo_to_dict
 
+    man = corpus.build_manifest(fake_papers, quick_n=1, full_n=2)
+    sha = man["corpus_sha256"]["full"][:12]
     dsn = "postgresql://u@localhost:5432/precis_dev"
-    out = corpus.variant_dsn(dsn, "chunk-fixed-512")
-    assert conninfo_to_dict(out)["dbname"] == "precis_dev__chunk_fixed_512"
+    out = corpus.variant_dsn(dsn, "chunk-fixed-512", "full", man)
+    assert conninfo_to_dict(out)["dbname"] == f"precis_dev__full_{sha}__chunk_fixed_512"
     assert conninfo_to_dict(out)["host"] == "localhost"
-    assert corpus.variant_dbname(out) == "precis_dev__chunk_fixed_512"
+    assert corpus.variant_dbname(out) == f"precis_dev__full_{sha}__chunk_fixed_512"
+    # the corpus identity is part of the world name: another set (or a
+    # re-pinned manifest) is another world, never a silent reuse
+    quick = corpus.variant_dsn(dsn, "chunk-fixed-512", "quick", man)
+    assert str(conninfo_to_dict(quick)["dbname"]).startswith("precis_dev__quick_")
+    assert conninfo_to_dict(quick)["dbname"] != conninfo_to_dict(out)["dbname"]
     for name in ("precis_test_abc123", "precis_bench_x"):
         assert (
             conninfo_to_dict(
-                corpus.variant_dsn(f"postgresql://localhost/{name}", "no-links")
+                corpus.variant_dsn(
+                    f"postgresql://localhost/{name}", "no-links", "full", man
+                )
             )["dbname"]
-            == f"{name}__no_links"
+            == f"{name}__full_{sha}__no_links"
         )
     with pytest.raises(corpus.BenchCorpusError, match="not a re-ingest arm"):
-        corpus.variant_dsn(dsn, "all-on")
+        corpus.variant_dsn(dsn, "all-on", "full", man)
     with pytest.raises(corpus.BenchCorpusError):
-        corpus.variant_dsn("postgresql://localhost/prod_main", "no-links")
+        corpus.variant_dsn("postgresql://localhost/prod_main", "no-links", "full", man)
 
 
 def test_select_distractors_is_deterministic_and_excludes_gold_sets():
@@ -680,8 +689,8 @@ def test_provision_variant_creates_ingests_then_reports_already(
     monkeypatch.setattr(
         corpus, "ensure_database", lambda dsn: _clone_template(store, dsn)
     )
-    vdsn = corpus.variant_dsn(store.dsn, "chunk-fixed-512")
     man = corpus.build_manifest(fake_papers, quick_n=1, full_n=2)
+    vdsn = corpus.variant_dsn(store.dsn, "chunk-fixed-512", "full", man)
     variant = corpus.variant_for_arm("chunk-fixed-512")
     assert variant is not None
     try:
@@ -711,8 +720,8 @@ def test_provision_variant_distractor_pads_with_flagged_non_gold_papers(
         corpus, "ensure_database", lambda dsn: _clone_template(store, dsn)
     )
     papers = {**fake_papers, "9901.00004": ("train", _fake_paper(4))}
-    vdsn = corpus.variant_dsn(store.dsn, "distractor-1")
     man = corpus.build_manifest(fake_papers, quick_n=1, full_n=2)
+    vdsn = corpus.variant_dsn(store.dsn, "distractor-1", "full", man)
     variant = corpus.variant_for_arm("distractor-1")
     assert variant is not None
     try:
@@ -736,6 +745,55 @@ def test_provision_variant_distractor_pads_with_flagged_non_gold_papers(
             "9901.00003": "true",
             "9901.00004": "true",
         }
+        again = corpus.provision_variant(
+            vdsn, variant, set_name="full", manifest=man, papers=papers
+        )
+        assert again["already"] is True
+    finally:
+        _drop_db(store, vdsn)
+
+
+def test_provision_variant_resumes_an_under_padded_distractor_world(
+    store, fake_papers, monkeypatch
+):
+    import psycopg
+
+    from precis.ingest.db_writer import write_paper
+
+    monkeypatch.setattr(
+        corpus, "ensure_database", lambda dsn: _clone_template(store, dsn)
+    )
+    papers = {**fake_papers, "9901.00004": ("train", _fake_paper(4))}
+    man = corpus.build_manifest(fake_papers, quick_n=1, full_n=2)
+    vdsn = corpus.variant_dsn(store.dsn, "distractor-1", "full", man)
+    variant = corpus.variant_for_arm("distractor-1")
+    assert variant is not None
+    want, _base = corpus._distractor_pick(man["full"], papers, man, times=1)
+    assert len(want) == 2
+    try:
+        # an interrupted pad: the whole set is ingested but only one of the
+        # two expected distractor papers landed — not "already provisioned"
+        corpus.ensure_database(vdsn)
+        with psycopg.connect(vdsn, autocommit=True) as conn:
+            corpus.ingest_papers(conn, man["full"], papers, set_name="full")
+            split, paper = papers[want[0]]
+            with conn.transaction():
+                write_paper(
+                    corpus.paper_to_write(want[0], split, paper, distractor=True),
+                    conn=conn,
+                )
+        rep = corpus.provision_variant(
+            vdsn, variant, set_name="full", manifest=man, papers=papers
+        )
+        assert rep["already"] is False
+        assert rep["distractors"]["inserted"] == len(want) - 1
+        with psycopg.connect(vdsn, autocommit=True) as conn:
+            got = conn.execute(
+                "SELECT meta->'qasper'->>'id' FROM refs "
+                "WHERE kind = 'paper' AND retired_at IS NULL "
+                "AND meta->'qasper'->>'bench_distractor' = 'true'"
+            ).fetchall()
+        assert sorted(r[0] for r in got) == sorted(want)
         again = corpus.provision_variant(
             vdsn, variant, set_name="full", manifest=man, papers=papers
         )

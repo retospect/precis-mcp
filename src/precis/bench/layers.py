@@ -37,8 +37,9 @@ ARM_LAYER: Mapping[str, str] = {
     "no-fisheye": "edges",
     "no-recall": "embeddings",
     "lexical-only": "embeddings",
-    # ``no-links`` is a world (re-ingest) arm, not a switch: its coverage
-    # check runs against its own database's links table.
+    # ``no-links`` is a world (re-ingest) arm, not a switch: its own world is
+    # edgeless by construction, so the runner judges the edges layer on the
+    # control corpus — the base DB its world was derived from.
     "no-links": "edges",
 }
 

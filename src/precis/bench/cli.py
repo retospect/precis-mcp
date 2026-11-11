@@ -217,12 +217,13 @@ def _variant(args: argparse.Namespace) -> int:
             f"unknown re-ingest arm {args.arm!r}; known: "
             f"{', '.join(v.arm for v in corpus.VARIANTS)} and distractor-<N>"
         )
-    dsn = corpus.variant_dsn(_dsn(), variant.arm)
+    manifest = corpus.load_manifest(args.manifest)
+    dsn = corpus.variant_dsn(_dsn(), variant.arm, args.set_name, manifest)
     report = corpus.provision_variant(
         dsn,
         variant,
         set_name=args.set_name,
-        manifest=corpus.load_manifest(args.manifest),
+        manifest=manifest,
         cache=args.cache,
     )
     print(

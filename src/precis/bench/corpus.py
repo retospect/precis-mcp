@@ -78,7 +78,9 @@ own throwaway database — the same ``qasper:<id>`` ref cannot exist twice in
 one DB (``existing_ref`` is the idempotency key). :class:`Variant` names each
 arm's world: which ``chunker`` cut it, whether it writes links, and how much
 non-gold padding it carries. :func:`variant_dsn` derives the world's DSN
-(``<base dbname>__<arm with dashes as _>``, still ``precis_dev*``-shaped),
+(``<base dbname>__<set>_<corpus sha256 prefix>__<arm with dashes as _>``,
+still ``precis_dev*``-shaped — the corpus identity is in the name, so a
+``quick`` run never lands in a ``full`` world or a re-pinned manifest's),
 :func:`ensure_database` creates and migrates it, and
 :func:`provision_variant` runs the ingest. Each chunk meta still carries
 ``doc_char_start`` / ``doc_char_end``, so
@@ -963,10 +965,17 @@ def variant_dbname(dsn: str) -> str:
     return str(conninfo_to_dict(dsn).get("dbname") or "")
 
 
-def variant_dsn(dsn: str, arm: str) -> str:
-    """The DSN of ``arm``'s own throwaway database, derived from the base
-    ``dsn``: same server, database ``<base dbname>__<arm with dashes as _>``
-    (``precis_dev`` -> ``precis_dev__chunk_fixed_512``)."""
+def variant_dsn(dsn: str, arm: str, set_name: str, manifest: Mapping[str, Any]) -> str:
+    """The DSN of ``arm``'s own throwaway database for one corpus, derived
+    from the base ``dsn``: same server, database
+    ``<base dbname>__<set>_<corpus sha256 prefix>__<arm with dashes as _>``
+    (``precis_dev``, ``quick`` -> ``precis_dev__quick_<sha>__no_links``).
+
+    The set and its ``corpus_sha256`` are part of the name — the world's
+    identity is the corpus's: a ``quick`` run never reuses a ``full``
+    world (nor a re-pinned manifest's), and a ``distractor-<N>`` world is
+    never padded for another set's paragraph base.
+    """
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
     assert_throwaway_dsn(dsn)
@@ -975,8 +984,18 @@ def variant_dsn(dsn: str, arm: str) -> str:
             f"{arm!r} is not a re-ingest arm; known: "
             f"{', '.join(sorted(_VARIANT_BY_ARM))} and distractor-<N>"
         )
+    if not re.fullmatch(r"[a-z0-9_]+", set_name):
+        raise BenchCorpusError(
+            f"set name {set_name!r} is not database-name safe ([a-z0-9_]+)"
+        )
+    try:
+        corpus_id = str(manifest["corpus_sha256"][set_name])
+    except KeyError:
+        raise BenchCorpusError(
+            f"manifest has no corpus_sha256 for set {set_name!r}"
+        ) from None
     name = str(conninfo_to_dict(dsn).get("dbname") or "")
-    vname = f"{name}__{arm.replace('-', '_')}"
+    vname = f"{name}__{set_name}_{corpus_id[:12]}__{arm.replace('-', '_')}"
     if not _SAFE_DBNAME_RE.match(vname):
         raise BenchCorpusError(
             f"variant database name {vname!r} is not throwaway-shaped"
@@ -1051,6 +1070,24 @@ def select_distractors(
     return picked
 
 
+def _distractor_pick(
+    records: Sequence[Mapping[str, Any]],
+    papers: Mapping[str, tuple[str, Mapping[str, Any]]],
+    manifest: Mapping[str, Any],
+    *,
+    times: int,
+) -> tuple[list[str], int]:
+    """``(the deterministic distractor id list, the set's body-paragraph
+    base it was sized from)`` — the padding a ``distractor-<N>`` world must
+    hold *in full* before it counts as provisioned."""
+    excluded = {str(r["qasper_id"]) for name in SET_SIZES for r in manifest[name]}
+    base = sum(_body_paragraphs(papers[str(r["qasper_id"])][1]) for r in records)
+    ids = select_distractors(
+        papers, exclude=excluded, times=times, base_paragraphs=base
+    )
+    return ids, base
+
+
 def ingest_distractors(
     conn: Any,
     records: Sequence[Mapping[str, Any]],
@@ -1064,11 +1101,7 @@ def ingest_distractors(
     papers (:func:`select_distractors`), idempotent per paper. ``records`` is
     the ingested set's manifest rows; ``manifest`` supplies the excluded id
     pool (every set)."""
-    excluded = {str(r["qasper_id"]) for name in SET_SIZES for r in manifest[name]}
-    base = sum(_body_paragraphs(papers[str(r["qasper_id"])][1]) for r in records)
-    ids = select_distractors(
-        papers, exclude=excluded, times=times, base_paragraphs=base
-    )
+    ids, base = _distractor_pick(records, papers, manifest, times=times)
     inserted = 0
     paragraphs = 0
     for qid in ids:
@@ -1102,8 +1135,12 @@ def provision_variant(
 ) -> dict[str, Any]:
     """Bring ``arm``'s database up: create + migrate when missing, ingest the
     set under the variant's chunker, pad its distractors, drop its edges for
-    ``no-links``. Idempotent — a provisioned DB is left alone (the archive is
-    not even read), a partial one resumes."""
+    ``no-links``. Idempotent — a provisioned DB is left alone, a partial one
+    resumes. "Provisioned" includes the padding: a ``distractor-<N>`` world
+    is ready only when *every* paper of the deterministic distractor pick is
+    present — one flagged ref is not proof (an interrupted ingest left a
+    partial pick that used to report ``already`` and silently run
+    under-padded) — so distractor arms do read the archive to check."""
     import psycopg
 
     ensure_database(dsn)
@@ -1127,21 +1164,23 @@ def provision_variant(
         have = 0 if row is None else int(row[0])
         ready = have == len(qids)
         if ready and variant.distractor:
-            ready = (
-                conn.execute(
-                    "SELECT 1 FROM refs WHERE kind = 'paper' AND retired_at IS NULL "
-                    "AND meta->'qasper'->>'bench_distractor' = 'true' LIMIT 1"
-                ).fetchone()
-                is not None
+            if papers is None:
+                papers = load_set_papers(man, set_name, cache)
+            want, _base = _distractor_pick(
+                records, papers, man, times=variant.distractor
             )
+            row = conn.execute(
+                "SELECT count(DISTINCT meta->'qasper'->>'id') FROM refs "
+                "WHERE kind = 'paper' AND retired_at IS NULL "
+                "AND meta->'qasper'->>'id' = ANY(%s)",
+                (want,),
+            ).fetchone()
+            ready = row is not None and int(row[0]) == len(want)
         if ready:
             report["already"] = True
         else:
             if papers is None:
-                archive = fetch_archive(
-                    cache, sha256=man["dataset"]["archive"]["sha256"]
-                )
-                papers = load_archive(archive)
+                papers = load_set_papers(man, set_name, cache)
             report["ingest"] = ingest_papers(
                 conn,
                 records,
