@@ -2217,6 +2217,25 @@ class TestPromptAndView:
         assert "no code fences" in p
         assert "$…$` math" in p
 
+    def test_prompt_demands_falsification_checks_on_insights(self, store: Any) -> None:
+        """gr626717 / contract me626711 — the research reasoning prompt asks
+        each dossier insight for a falsifier, the strongest opposing
+        reading, the conditions it holds under and what follows downstream;
+        the four-heading dossier spec is gone; source-vs-synthesis stays
+        distinct. Both quest bodies share the reasoning ask."""
+        qid = _mk_quest(store, "A striving")
+        quest = store.get_ref(kind="quest", id=qid)
+        for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
+            prompt = build_tick_prompt(store, quest, quest_body=body)
+            assert "FALSIFY" in prompt
+            assert "STRONGEST OPPOSING READING" in prompt
+            assert "DOWNSTREAM" in prompt
+            assert "scope and caveats" in prompt
+            assert "is synthesis" in prompt
+            assert "flag it unsourced" in prompt
+            assert "best leads so far" not in prompt
+            assert '"dossier_text"' in prompt
+
     def test_prompt_names_the_ladder_prio(self, store: Any) -> None:
         """gr592664 — the tick prompt's ``priority`` line spells the same
         ladder name the reads render (``priority 3 (high)``); an unset

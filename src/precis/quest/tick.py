@@ -2328,6 +2328,17 @@ Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \
 dossier to reflect current understanding.
 
+**Evaluate supported insights, not restatements.** For each insight the \
+dossier asserts, name: what would FALSIFY it — the observation or \
+measurement that would kill it; the STRONGEST OPPOSING READING of the same \
+evidence; the CONDITIONS it holds under — its scope and caveats; and what \
+follows DOWNSTREAM — the question, search or test it sets up next. An \
+insight you can name no falsifier for is a restatement, not a finding — \
+drop it or flag it unsourced. Keep source and synthesis distinct: what a \
+source STATES keeps that source's handle; what YOU infer across sources is \
+synthesis — label it as such; an inferred step never wears a source's \
+authority.
+
 **Progress means new external evidence, not more restating.** If there are open \
 hypotheses above, your job is to *close* them — resolve one with evidence \
 (a `result`) or kill it (a `dead-end`) — NOT to restate it as a fresh \
@@ -2405,9 +2416,10 @@ or {{\"query\": \"<short keyword phrasing, for the external engine>\", \
 \"hypothetical\": \"<optional — one or two sentences that could appear \
 verbatim in the abstract of the paper you wish existed, not a question \
 (HyDE)>\"}}>"],
-  "dossier_text": "<the FULL rewritten dossier: current understanding, best \
-leads so far, what's ruled out, open questions — plain prose per the format \
-above>",
+  "dossier_text": "<the FULL rewritten dossier: each insight evaluated — \
+its support, its falsifier, the strongest opposing reading of the same \
+evidence, the conditions it holds under and what follows downstream — \
+plain prose per the format above>",
   "ledger_ops": [
     {{"op": "add", "text": "<one durable, permanently-pinned direction — a \
 strategy tried/killed/still open, not a single candidate material>",
@@ -2606,6 +2618,17 @@ state, pick the most promising next direction to close a gap, and note what \
 you'd try (a search to run, a question to resolve, a synthesis to write). Then \
 rewrite the dossier to reflect current understanding.
 
+**Evaluate supported insights, not restatements.** For each insight the \
+dossier asserts, name: what would FALSIFY it — the observation or \
+measurement that would kill it; the STRONGEST OPPOSING READING of the same \
+evidence; the CONDITIONS it holds under — its scope and caveats; and what \
+follows DOWNSTREAM — the question, search or test it sets up next. An \
+insight you can name no falsifier for is a restatement, not a finding — \
+drop it or flag it unsourced. Keep source and synthesis distinct: what a \
+source STATES keeps that source's handle; what YOU infer across sources is \
+synthesis — label it as such; an inferred step never wears a source's \
+authority.
+
 **Progress means new external evidence, not more restating.** If there are open \
 hypotheses above, your job is to *close* them — resolve one with evidence \
 (a `result`) or kill it (a `dead-end`) — NOT to restate it as a fresh \
@@ -2682,9 +2705,10 @@ or {{\"query\": \"<short keyword phrasing, for the external engine>\", \
 \"hypothetical\": \"<optional — one or two sentences that could appear \
 verbatim in the abstract of the paper you wish existed, not a question \
 (HyDE)>\"}}>"],
-  "dossier_text": "<the FULL rewritten dossier: current understanding, best \
-leads so far, what's ruled out, open questions — plain prose per the format \
-above>",
+  "dossier_text": "<the FULL rewritten dossier: each insight evaluated — \
+its support, its falsifier, the strongest opposing reading of the same \
+evidence, the conditions it holds under and what follows downstream — \
+plain prose per the format above>",
   "ledger_ops": [
     {{"op": "add", "text": "<one durable, permanently-pinned direction — a \
 strategy tried/settled/still open, not a single fact or citation>",

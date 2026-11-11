@@ -412,8 +412,9 @@ announcements — serves-linked, rendered next tick), `proposals` /
 
 A quest keeps *two* records. The **logbook** is episodic (what happened,
 when — WORM). The **dossier** is semantic: a `draft` the quest owns
-(`dossier-of`), the *living synthesis* — current understanding, best
-leads, what's ruled out, open questions — **rewritten each cycle**. It
+(`dossier-of`), the *living synthesis* — supported insights evaluated by
+their support, falsifier, strongest opposing reading, conditions and
+downstream implications — **rewritten each cycle**. It
 doubles as the loop's rolling context.
 
 ```python

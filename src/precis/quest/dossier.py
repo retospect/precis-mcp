@@ -9,8 +9,10 @@ set is migration-free, the coupling lives only in this module's Python.
 
 An owning process keeps *two* records: the append-only ``quest_log``
 LOGBOOK (episodic, immutable; :mod:`precis.quest.logbook`) and the DOSSIER —
-a ``draft`` held via ``dossier-of`` (semantic: current understanding, best
-leads, ruled-out, open questions), **rewritten every research cycle** and
+a ``draft`` held via ``dossier-of`` (semantic: supported insights,
+evaluated — each with its support, its falsifier, the strongest opposing
+reading, the conditions it holds under and what follows downstream),
+**rewritten every research cycle** and
 doubling as the loop's *rolling context* (each tick reads the compact
 dossier, not the whole logbook — context stays bounded).
 
@@ -142,8 +144,9 @@ _PAPER_RELATION = "paper-of"
 
 _SEED = (
     "_(No synthesis yet — this dossier is rewritten each research cycle. The "
-    "first tick will replace this seed with the current understanding, "
-    "the best leads so far, what's been ruled out, and the open questions.)_"
+    "first tick will replace this seed with the current understanding, each "
+    "insight evaluated by its support, its falsifier, the strongest opposing "
+    "reading, the conditions it holds under and what follows downstream.)_"
 )
 
 #: ``meta.pinned`` value stamped on every ledger tree-node chunk (as opposed
