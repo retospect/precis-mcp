@@ -400,7 +400,7 @@ fuse — `N` is the only hard rule). The type is derived and is **not** written 
 the authored sections (content hash unchanged); the se generator carries
 it in its port payload (`GeneratedPort.lattice = "sp2-hex"`, `payload =
 {kind: rim, word, N, type}`) — the sp² instance of the port type that
-makes se generic across lattices (`docs/backlog/diamondoid-pattern-language.md`).
+makes se generic across lattices (spec `me630884`).
 
 Boundary term `B` in §6: each rim contributes its combinatorial
 attribution (consistency value); the JSON form carries `B` per rim plus

@@ -57,7 +57,7 @@ from .stick import _ITERS, stick_relax_pinned
 #: SPEC 11.3/22.2 "Seam decay, measured": shells of unperturbed geometry
 #: beyond which a block's own atoms are safe to leave frozen during a
 #: join's re-relax, by rim type.  Conservative (rounded up from the
-#: measured decay lengths in `docs/backlog/diamondoid-pattern-language.md`
+#: measured decay lengths in spec `me630890`
 #: "Seam decay, measured": zigzag decays over 5-8 shells depending on tube
 #: length, armchair over 1); a mixed rim (mismatched dangling pattern, no
 #: ``rim_type``) has no measurement of its own and falls back to the

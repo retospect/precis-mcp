@@ -1,4 +1,4 @@
-"""se flagellar motor — slice 1 of docs/backlog/se-flagellar-motor.md.
+"""se flagellar motor — slice 1 of spec `me630882`.
 
 A rotary motor is two blocks (stator, rotor) ``connect``ed port-to-port
 with ``joint={"class": "revolute", ...}`` — existing grammar, nothing
@@ -55,7 +55,7 @@ def _output_torque(tree: Any, measure: Any) -> tuple[float | None, str | None]:
 
 
 #: measurand slug -> computer, registered in
-#: :data:`precis_se.properties.COMPUTERS` (se-flagellar-motor.md slice 1).
+#: :data:`precis_se.properties.COMPUTERS` (spec me630882 slice 1).
 MOTOR_COMPUTERS: dict[str, Any] = {
     "output-torque": _Computer(_output_torque),
 }

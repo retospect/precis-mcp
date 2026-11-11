@@ -65,7 +65,7 @@ of the `me630415`–`me630430` set:*
    its implementation), motion planning or torque budgeting (the
    DRC-vs-planner boundary the `se-3d-viewer` thread draws), and the
    incommensurate-lattice shaft-in-sleeve bearing
-   (`diamondoid-pattern-language.md` open question 3 — the sp³
+   (`me630889` — the sp³
    diamondoid variant; this is an sp² hexfold bud-race bearing, a
    different lattice regime). Acceptance — the piece builds, `check`s
    clean under the existing notation, round-trips through `generate`
@@ -124,7 +124,7 @@ the first real consumer of the se joint sweep
   same DRC-vs-planner boundary `se-3d-viewer`'s thread draws (a check, not
   a planner).
 - The incommensurate-lattice question for shaft-in-sleeve bearings
-  (`diamondoid-pattern-language.md` open question 3) — that's the sp³
+  (`me630889`) — that's the sp³
   diamondoid bearing variant; this is an sp² hexfold bud-race bearing, a
   different lattice regime.
 
@@ -150,6 +150,6 @@ machinery expected — reuses the box/valve revolute-joint pattern.
 
 Closest existing items: the rotary ratchet valve spec `me628980` (the
 same revolute-joint pattern, prior instance),
-`diamondoid-pattern-language.md` (shaft-in-sleeve bearing, sp³ variant,
+spec `me630880` (shaft-in-sleeve bearing, sp³ variant,
 the incommensurate-lattice question), spec `me628772` (the retired hexfold-integration.md).
 Thread: `docs/backlog/threads/hexfold-toolkit.md`.

@@ -3,7 +3,7 @@
 ruling step 6); spec `me628776` (graph memory)).
 
 Resolution is keyed to the local environment, not the instance
-(`docs/backlog/diamondoid-pattern-language.md`): a *rim type* (zigzag/
+(spec `me630887`): a *rim type* (zigzag/
 armchair) at a given dangling count ``N``, on a given relax rung, decays
 the same way wherever it occurs, so `compose`'s seam radius and leak
 threshold can be looked up rather than baked into module constants.  This

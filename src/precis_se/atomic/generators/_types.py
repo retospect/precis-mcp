@@ -116,7 +116,7 @@ class GeneratedPort:
     #: named in `me630415`, the retired docs/backlog/hexfold-integration.md).
     atoms: list[int] | None = None
     #: The port's **type**, the one thing that makes se generic across
-    #: shape languages (docs/backlog/diamondoid-pattern-language.md):
+    #: shape languages (spec `me630884`):
     #: ``lattice`` names the lattice family the port belongs to
     #: (``"sp2-hex"`` for hexfold rims; ``"sp3-diamond"`` reserved for the
     #: diamondoid facet ports) and ``payload`` is that language's typed

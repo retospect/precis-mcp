@@ -1,5 +1,5 @@
 """Seam decay length on the geo rung -- the number behind the hierarchical
-resolved block (docs/backlog/diamondoid-pattern-language.md, "Three-zone
+resolved block (spec `me630887`, "Three-zone
 resolved block"): relax a part once, freeze its interior, re-relax only a
 seam radius around each join.  That scheme holds iff the perturbation a
 join makes on a part's geometry is localised to a few shells of atoms

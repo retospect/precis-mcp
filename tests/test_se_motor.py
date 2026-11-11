@@ -1,4 +1,4 @@
-"""precis_se.motor — se-flagellar-motor.md slice 1: the linear
+"""precis_se.motor — spec me630882 slice 1: the linear
 torque-speed motor computer (``MOTOR_COMPUTERS['output-torque']``) on a
 stator/rotor revolute pair."""
 

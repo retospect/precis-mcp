@@ -99,7 +99,7 @@ class _LazyComputer:
 #: (:mod:`precis_se.properties.computers`, spec me629031),
 #: the flow-chamber computers (:mod:`precis_se.flow`,
 #: se-flow-kernel slice 2) and the flagellar-motor computer
-#: (:mod:`precis_se.motor`, se-flagellar-motor.md slice 1) — every other
+#: (:mod:`precis_se.motor`, spec me630882 slice 1) — every other
 #: measurand stays declared-but-unchecked.
 COMPUTERS: dict[str, Computer] = {
     slug: _LazyComputer(slug)

@@ -276,7 +276,8 @@ off that gap until it closes.
    buildable.
 7. **backlog/rack-19in-helper.md** — 19-inch rack helper (Reto
    2026-10-01); first consumer of the T-slot library.
-8. **backlog/diamondoid-pattern-language.md**
+8. **spec `me630880`** — the diamondoid sp³ shape language (transferred
+   from `backlog/diamondoid-pattern-language.md`, gr629128)
 9. **backlog/cad-machine-spec.md**
 12. **backlog/cad-assembly-checklist-seed-items.md**
 13. **backlog/cad-diagnose-apply-loop.md**
