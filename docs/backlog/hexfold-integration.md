@@ -8,6 +8,14 @@ model: opus
 
 # hexfold fold-in
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, target spec `me628772`, gripe `gr629120`. Not read in the
+2026-11-11 transfer pass; the builder lane had no precis MCP. Do not
+delete this file until its `section:reference` nodes are written under
+`me628772`, the hub reading order carries their handles, and the
+source/backlog references are repointed — retiring ahead of the
+transfer was reverted once already (`a331c87a4`).)*
+
 **What to do next is ranked in
 [`threads/hexfold-toolkit.md`](./threads/hexfold-toolkit.md)** — this file
 is the thread's living state and history; that one is its running order.
