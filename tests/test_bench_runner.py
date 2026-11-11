@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from precis.bench import (
+    cli,
     corpus,
     gold,
     layers,
@@ -488,6 +489,77 @@ def test_raw_reader_tolerates_schema1_rows_without_call_log():
     assert "task t1" in md and "tok→gold 100.0" in md
     assert "calls 4" in md  # the summary still prints
     assert "\n  1." not in md  # but no call lines
+
+
+def test_raw_reader_next_hint_replays_path_and_selectors(tmp_path: Path):
+    """``offset`` pages the *filtered* selection, so the ``Next:`` call must
+    replay the file and every active selector — without them it would page
+    the unfiltered table at the filtered ``end`` (review of td626657)."""
+    res = _raw_results()
+    res["rows"] += [
+        {
+            **_row(
+                "t3",
+                "all-on",
+                "d",
+                abstention=True,
+                found=None,
+                tokens_to_first_gold=None,
+            ),
+            "call_log": [],
+        },
+        {
+            **_row(
+                "t4",
+                "all-on",
+                "e",
+                abstention=True,
+                found=None,
+                tokens_to_first_gold=None,
+            ),
+            "call_log": [],
+        },
+    ]
+    page = raw.raw_markdown(
+        res,
+        arms=("all-on", "no-kwd"),
+        source="qasper",
+        limit=1,
+        results_path=tmp_path / "run 1.json",
+    )
+    assert (
+        f"scripts/bench raw '{tmp_path}/run 1.json' --arm all-on "
+        "--arm no-kwd --source qasper --offset 1 --limit 1"
+    ) in page
+    by_task = raw.raw_markdown(res, task="t1", limit=1, results_path="r.json")
+    assert "scripts/bench raw r.json --task t1 --offset 1 --limit 1" in by_task
+    only = raw.raw_markdown(res, abstention=True, limit=1, results_path="r.json")
+    assert "scripts/bench raw r.json --abstention --offset 1 --limit 1" in only
+    # no path known: the parse-only placeholder stands in
+    page = raw.raw_markdown(res, limit=1)
+    assert "scripts/bench raw <results.json> --offset 1 --limit 1" in page
+
+
+def test_raw_cli_next_hint_carries_the_real_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(_raw_results()), encoding="utf-8")
+    assert cli.main(["raw", str(p), "--arm", "all-on", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert f"scripts/bench raw {p} --arm all-on --offset 1 --limit 1" in out
+
+
+def test_raw_cli_bad_paging_is_an_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(_raw_results()), encoding="utf-8")
+    for bad in (["--offset", "-1"], ["--limit", "0"]):
+        assert cli.main(["raw", str(p), *bad]) == 1
+        assert capsys.readouterr().err.startswith(
+            "error: offset must be >= 0 and limit >= 1"
+        )
 
 
 # ---------------------------------------------------------------------------

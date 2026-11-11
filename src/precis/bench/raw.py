@@ -37,6 +37,7 @@ can interleave unrelated calls).
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -166,10 +167,14 @@ def raw_markdown(
     abstention: bool = False,
     offset: int = 0,
     limit: int = DEFAULT_LIMIT,
+    results_path: Path | str | None = None,
 ) -> str:
     """The raw log in one bounded slice: a header line naming the window, one
     block per matching row (summary line, then its per-call token log), and a
-    ``Next:`` continuation line when rows remain past the window."""
+    ``Next:`` continuation line when rows remain past the window. The hinted
+    call names ``results_path`` and replays the active selectors, since
+    ``offset`` pages the *filtered* selection — without them it would page
+    the unfiltered table at the filtered ``end``."""
     if offset < 0 or limit < 1:
         raise ValueError("offset must be >= 0 and limit >= 1")
     sel = select_rows(
@@ -186,12 +191,22 @@ def raw_markdown(
         out.append("")
         out.append(row_block(r))
     if end < len(sel):
+        target = shlex.quote(str(results_path)) if results_path else "<results.json>"
+        call = f"scripts/bench raw {target}"
+        for a in arms or ():
+            call += f" --arm {shlex.quote(str(a))}"
+        if task is not None:
+            call += f" --task {shlex.quote(task)}"
+        if source is not None:
+            call += f" --source {shlex.quote(source)}"
+        if abstention:
+            call += " --abstention"
+        call += f" --offset {end} --limit {limit}"
         out.append(
             render_next_section(
                 [
                     (
-                        f"scripts/bench raw <results.json> --offset {end} "
-                        f"--limit {limit}",
+                        call,
                         f"read rows {end}-{min(end + limit, len(sel))} of {len(sel)}",
                     )
                 ]

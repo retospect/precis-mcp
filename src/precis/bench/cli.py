@@ -302,17 +302,21 @@ def _report(args: argparse.Namespace) -> int:
 
 def _raw(args: argparse.Namespace) -> int:
     results = runner.load_results(args.results)
-    print(
-        raw.raw_markdown(
-            results,
-            arms=args.arm or None,
-            task=args.task,
-            source=args.source,
-            abstention=args.abstention,
-            offset=args.offset,
-            limit=args.limit,
+    try:
+        print(
+            raw.raw_markdown(
+                results,
+                arms=args.arm or None,
+                task=args.task,
+                source=args.source,
+                abstention=args.abstention,
+                offset=args.offset,
+                limit=args.limit,
+                results_path=args.results,
+            )
         )
-    )
+    except ValueError as exc:
+        raise runner.BenchRunError(str(exc)) from exc
     return 0
 
 
