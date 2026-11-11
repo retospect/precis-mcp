@@ -1346,6 +1346,17 @@ def _waived_verdict(sha: str) -> dict[str, Any] | None:
     marker = best.get("waived")
     if not isinstance(marker, dict) or not isinstance(marker.get("gripe"), int):
         return None
+    # The waiver binds to ONE run: its id and attempt (a marker without
+    # them, or with junk, is not honored — fail closed).
+    run_id = str(marker.get("run_id") or "")
+    attempt = marker.get("attempt")
+    if (
+        not run_id.isdigit()
+        or isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or attempt < 1
+    ):
+        return None
     try:
         then = datetime.strptime(str(best.get("at")), "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=UTC
@@ -1358,7 +1369,8 @@ def _waived_verdict(sha: str) -> dict[str, Any] | None:
     tests = marker.get("tests")
     return {
         "gripe": marker["gripe"],
-        "run_id": str(best.get("run_id") or ""),
+        "run_id": run_id,
+        "attempt": attempt,
         "at": str(best["at"]),
         "age_hours": age,
         "tests": [str(t) for t in tests] if isinstance(tests, list) else [],
@@ -1374,6 +1386,20 @@ def _apply_waiver(facts: dict[str, Any], head: str) -> None:
     w = _waived_verdict(head)
     if w is None:
         return
+    # Bound to the run it waived: the head's newest check.yml run (id and
+    # attempt, from the exact verdict) must be exactly that one. A newer
+    # run or a rerun on the same head voids the waiver — its own verdict
+    # governs — and so does a verdict that names no run.
+    if str(facts.get("run_id") or "") != w["run_id"] or facts.get("attempt") != w[
+        "attempt"
+    ]:
+        print(
+            f"scripts/round: the waiver gr{w['gripe']} on {head[:9]} was for run "
+            f"{w['run_id']}#{w['attempt']}, the head's newest is "
+            f"{facts.get('run_id') or '?'}#{facts.get('attempt') or '?'} — void",
+            file=sys.stderr,
+        )
+        return
     facts.update(
         candidate=head,
         candidate_state="waived",
@@ -1382,6 +1408,7 @@ def _apply_waiver(facts: dict[str, Any], head: str) -> None:
             "sha": head,
             "waived": {"gripe": w["gripe"], "tests": w["tests"]},
             "run_id": w["run_id"],
+            "attempt": w["attempt"],
             "completed_at": w["at"],
         },
     )

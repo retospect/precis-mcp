@@ -828,10 +828,14 @@ def test_race_retry_prints_budget_and_elapsed(rig: Rig) -> None:
 
 
 def test_migration_number_collision_with_merged_range_dies(rig: Rig) -> None:
+    """The in-lock backstop with the auto-renumber off (PRECIS_SHIP_RENUMBER=0):
+    the collision the merged-in range introduces still refuses, main unchanged."""
     wt = rig.worktree(
         "m", {"src/precis/migrations/0002_ours.sql": "select 2;\n", "m.txt": "m\n"}
     )
-    p, log = rig.ship(wt, hold=True, PRECIS_SHIP_MAX_ATTEMPTS="1")
+    p, log = rig.ship(
+        wt, hold=True, PRECIS_SHIP_MAX_ATTEMPTS="1", PRECIS_SHIP_RENUMBER="0"
+    )
     rig.wait_lint_started(wt)
     racer_sha = rig.race({"src/precis/migrations/0002_theirs.sql": "select 3;\n"})
     rig.release()
@@ -842,6 +846,100 @@ def test_migration_number_collision_with_merged_range_dies(rig: Rig) -> None:
     assert "0002_ours.sql" in out and "0002_theirs.sql" in out
     assert rig.origin_ref("main") == racer_sha, "main must be unchanged"
     assert not rig.lockdir().exists(), "the lock must be released after the die"
+
+
+def test_migration_collision_in_the_lock_window_is_renumbered(rig: Rig) -> None:
+    """gr627889: a sibling lands 0002 while our lint runs (after the sync-time
+    check, so only the in-lock forward merge sees it). The add is renumbered to
+    0003 against the tip being merged in, the stem rewritten, and the ship
+    lands instead of dying and burning a retry."""
+    wt = rig.worktree(
+        "m",
+        {
+            "src/precis/migrations/0002_ours.sql": "-- 0002_ours.sql\nselect 2;\n",
+            "m.txt": "m\n",
+        },
+    )
+    p, log = rig.ship(wt, "--quick", hold=True)
+    rig.wait_lint_started(wt)
+    rig.race({"src/precis/migrations/0002_theirs.sql": "select 3;\n"})
+    rig.release()
+    out = _finish(p, log)
+    assert "renumbered stale migration mint at land: 0002→0003" in out, out
+    files = _tree_files(rig)
+    assert "src/precis/migrations/0002_theirs.sql" in files
+    assert "src/precis/migrations/0003_ours.sql" in files
+    assert "src/precis/migrations/0002_ours.sql" not in files
+    sql = rig.g(rig.primary, "show", "origin/main:src/precis/migrations/0003_ours.sql")
+    assert sql == "-- 0003_ours.sql\nselect 2;"
+    assert not rig.lockdir().exists()
+
+
+def test_two_branches_minting_the_same_number_both_land(rig: Rig) -> None:
+    """The factory shape: two builder slices mint 0002_x / 0002_y off the same
+    main. The first lands as minted; the second is renumbered to 0003 and
+    passes — no hand renumber, no merge commit."""
+    a = rig.worktree("a", {"src/precis/migrations/0002_x.sql": "-- 0002_x.sql\n"})
+    b = rig.worktree("b", {"src/precis/migrations/0002_y.sql": "-- 0002_y.sql\n"})
+    pa, la = rig.ship(a, "--quick", sleep=1)
+    _finish(pa, la)
+    pb, lb = rig.ship(b, "--quick", sleep=1)
+    out = _finish(pb, lb)
+    assert "renumbered stale migration mint at land: 0002→0003" in out, out
+    files = _tree_files(rig)
+    assert "src/precis/migrations/0002_x.sql" in files
+    assert "src/precis/migrations/0003_y.sql" in files
+    assert "src/precis/migrations/0002_y.sql" not in files
+    sql = rig.g(rig.primary, "show", "origin/main:src/precis/migrations/0003_y.sql")
+    assert sql == "-- 0003_y.sql"
+
+
+def test_migration_already_on_main_under_the_same_name_is_not_renumbered(
+    rig: Rig,
+) -> None:
+    """A sibling lands a migration of the same number AND name while our lint
+    runs (in the lock window; at sync time git's own add/add rebase conflict
+    already refuses it). Renumbering ours would mint a duplicate of it, so the
+    in-lock renumber refuses, nothing is pushed and the file is left alone."""
+    wt = rig.worktree("m", {"src/precis/migrations/0002_same.sql": "select 2;\n"})
+    p, log = rig.ship(wt, "--quick", hold=True)
+    rig.wait_lint_started(wt)
+    racer_sha = rig.race({"src/precis/migrations/0002_same.sql": "select 3;\n"})
+    rig.release()
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "already on" in out and "0002_same.sql" in out, out
+    assert rig.origin_ref("main") == racer_sha
+    assert (wt / "src/precis/migrations/0002_same.sql").exists()
+    assert not (wt / "src/precis/migrations/0003_same.sql").exists()
+    assert not rig.lockdir().exists()
+
+
+def test_branch_with_a_merge_commit_lands_under_the_squash_subject(rig: Rig) -> None:
+    """gr627889: a builder resolves a collision with a merge commit whose
+    subject is not type(scope). The land squashes the branch anyway, so the
+    merge subject never reaches the lint: main gets one commit under the
+    squash subject."""
+    wt = rig.worktree("m", {"m.txt": "m\n"})
+    rig.race({"racer.txt": "r\n"})
+    rig.g(wt, "fetch", "-q", "origin", "main")
+    rig.g(
+        wt,
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge origin/main into slice/9",
+        "origin/main",
+    )
+    assert rig.g(wt, "rev-list", "--merges", "--count", "origin/main..HEAD") != "0"
+    p, log = rig.ship(wt, "--quick", sleep=1, msg="fix(ship): land past a merge")
+    _finish(p, log)
+    assert rig.g(rig.origin, "log", "-1", "--format=%s", "refs/heads/main") == (
+        "fix(ship): land past a merge"
+    )
+    assert {"m.txt", "racer.txt"} <= _tree_files(rig)
 
 
 def test_migrations_are_numbered_per_plugin_dir(rig: Rig) -> None:

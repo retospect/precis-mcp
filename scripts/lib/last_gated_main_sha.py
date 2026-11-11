@@ -242,6 +242,10 @@ def exact_verdict(sha: str) -> dict[str, Any]:
         run_id, attempt = int(run["databaseId"]), int(run["runAttempt"])
         if run_id <= 0 or attempt <= 0:
             return facts
+        # The head's newest check.yml run, green or not: the red-test
+        # waiver (precis.plans.red_waiver) binds to exactly this run id and
+        # attempt, so a newer run on the same head voids it.
+        facts.update(run_id=run_id, attempt=attempt)
         runs = _suite_runs(intended, run_id, attempt)
         relevant = [
             r

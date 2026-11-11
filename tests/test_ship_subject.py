@@ -109,6 +109,23 @@ def test_several_commits_carry_their_trailers_deduped(tmp_path: Path) -> None:
     )
 
 
+def test_merge_commit_subject_never_labels_the_squash(tmp_path: Path) -> None:
+    """gr627889: a builder's `Merge origin/main into slice/N` commit is not a
+    candidate subject — the branch's own commit labels the squash and the
+    lint never sees the merge subject."""
+    repo = _repo(tmp_path, [])
+    _git(repo, "switch", "-q", "-c", "slice")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "fix(a): the real change")
+    _git(repo, "switch", "-q", "main")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "feat(b): sibling")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "switch", "-q", "slice")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge origin/main into slice/9", "main")
+    r = _resolve(repo)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "fix(a): the real change\n"
+
+
 def test_several_same_prefix_commits_oldest_subject_plus_also(tmp_path: Path) -> None:
     repo = _repo(
         tmp_path,

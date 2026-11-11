@@ -377,6 +377,51 @@ def test_exact_verdict_red_chosen_run_is_not_rescued_by_a_green_sibling(
     assert "certificate" not in facts
 
 
+def test_exact_verdict_names_the_newest_check_yml_run_even_when_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The red-test waiver binds to the head's newest check.yml run id and
+    attempt: a red (non-certifying) verdict still reports which run it
+    judged; a scheduled sibling never counts as the newest run."""
+    mod = _load()
+    old = _completed(_shards())
+    red = _completed(_shards())
+    red[0]["conclusion"] = "FAILURE"
+    graph = _exact_graph(
+        GATED,
+        [
+            _exact_suite(old, run_id=42, attempt=1),
+            _exact_suite(red, run_id=50, attempt=2),
+            _exact_suite(old, run_id=99, attempt=1, event="schedule"),
+        ],
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: graph if a[2] == "graphql" else _exact_jobs(red, run_id=50),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
+    assert (facts["run_id"], facts["attempt"]) == (50, 2)
+
+
+def test_exact_verdict_without_a_check_yml_run_names_no_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load()
+    graph = _exact_graph(
+        GATED,
+        [
+            _exact_suite(
+                _completed(_shards()), run_id=43, path=".github/workflows/nightly.yml"
+            )
+        ],
+    )
+    monkeypatch.setattr(mod, "_run", lambda *a: graph)
+    facts = mod.exact_verdict(GATED)
+    assert "run_id" not in facts and "attempt" not in facts
+
+
 def test_exact_verdict_ignores_a_scheduled_sibling_suite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

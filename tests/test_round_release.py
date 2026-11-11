@@ -3695,21 +3695,35 @@ def _waived_row(head: str, **over: Any) -> dict[str, Any]:
         "verdict": "green",
         "run_id": "31",
         "at": _utc(1.0),
-        "waived": {"gripe": 77, "tests": ["tests/test_w.py::test_a"]},
+        "waived": {
+            "gripe": 77,
+            "tests": ["tests/test_w.py::test_a"],
+            "run_id": "31",
+            "attempt": 1,
+        },
     }
     row.update(over)
     return row
 
 
 def _waiver_facts(
-    rig: Rig, monkeypatch: pytest.MonkeyPatch, prod: Any
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    prod: Any,
+    *,
+    run: tuple[int, int] | None = (31, 1),
 ) -> tuple[ModuleType, str, dict[str, Any]]:
+    """The gate facts of a red release head whose newest check.yml run is
+    ``run`` = (id, attempt) — the exact verdict names it (``None``: it
+    names no run)."""
     head = _cut(rig)
     _push_branch(rig, "gated", rig.shas["c0"])
     _push_branch(rig, "prod", rig.shas["c0"])
     mod = _published(rig, monkeypatch, prod)
-    exact = _verdict(head, state="release_not_green")["LGM_EXACT"]
-    monkeypatch.setenv("LGM_EXACT", exact)
+    exact = json.loads(_verdict(head, state="release_not_green")["LGM_EXACT"])
+    if run is not None:
+        exact.update(run_id=run[0], attempt=run[1])
+    monkeypatch.setenv("LGM_EXACT", json.dumps(exact))
     return mod, head, mod._gate_facts(rig.root)
 
 
@@ -3723,6 +3737,10 @@ def test_waived_head_becomes_the_candidate_and_names_the_gripe(
         "gripe": 77,
         "tests": ["tests/test_w.py::test_a"],
     }
+    assert (facts["certificate"]["run_id"], facts["certificate"]["attempt"]) == (
+        "31",
+        1,
+    )
     assert 0.9 < facts["age_hours"] < 1.2
     assert prod.calls == [["settings", "get", "release.ci_verdicts"]]
     assert "WAIVED by gr77" in capsys.readouterr().err
@@ -3762,6 +3780,49 @@ def test_only_a_well_formed_green_waived_row_on_this_sha_counts(
     assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
     assert "waived" not in (facts.get("certificate") or {})
     assert "no full green CI verdict" in mod._refusal(rig.root, facts)
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        (32, 1),  # a NEWER run on the same head: its own verdict governs
+        (30, 1),  # an older id is no match either
+        (31, 2),  # the same run re-run: a new attempt voids the waiver
+        None,  # a verdict that names no run cannot confirm the binding
+    ],
+)
+def test_a_waiver_is_void_unless_the_heads_newest_run_is_the_waived_one(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    run: tuple[int, int] | None,
+) -> None:
+    prod = _Verdicts([_waived_row(rig.shas["c2"])])
+    mod, _head, facts = _waiver_facts(rig, monkeypatch, prod, run=run)
+    assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
+    assert "waived" not in (facts.get("certificate") or {})
+    assert "void" in capsys.readouterr().err
+    assert "no full green CI verdict" in mod._refusal(rig.root, facts)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"gripe": 77, "tests": []},  # an old marker with no binding
+        {"gripe": 77, "run_id": "31"},  # no attempt
+        {"gripe": 77, "attempt": 1},  # no run id
+        {"gripe": 77, "run_id": "31", "attempt": 0},
+        {"gripe": 77, "run_id": "31", "attempt": "1"},
+        {"gripe": 77, "run_id": "31", "attempt": True},
+        {"gripe": 77, "run_id": "abc", "attempt": 1},
+    ],
+)
+def test_a_marker_that_does_not_bind_a_run_is_never_honored(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, marker: dict[str, Any]
+) -> None:
+    prod = _Verdicts([_waived_row(rig.shas["c2"], waived=marker)])
+    _mod, _head, facts = _waiver_facts(rig, monkeypatch, prod)
+    assert facts["candidate"] == "" and facts["candidate_state"] == "release_not_green"
 
 
 @pytest.mark.parametrize("rows", [None, "junk", {"sha": "x"}, []])

@@ -1113,13 +1113,15 @@ def ci_verdict_rows(
     }
     if verdict == "red" and any(
         isinstance(r.get("waived"), dict)
+        and str(r["waived"].get("run_id") or "") == row["run_id"] != ""
         for r in previous
         if str(r.get("sha", ""))[:LANDED_SHA_LEN] == row["sha"]
     ):
         # The red-test waiver (precis.plans.red_waiver) is a standing
-        # decision on this sha: a red read after it (a gate that could not
-        # read the waiver, a retried poll) must not erase the row. Only a
-        # fresh green replaces it.
+        # decision on ONE run: a red read from that same run (a gate that
+        # could not read the waiver, a retried poll) must not erase the
+        # row. A red from a different run on the head is that run's own
+        # verdict and replaces it, as does any green.
         return list(previous)
     kept = [r for r in previous if str(r.get("sha", ""))[:LANDED_SHA_LEN] != row["sha"]]
     return [*kept, row][-MAX_CI_VERDICTS:]

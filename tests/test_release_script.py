@@ -1628,11 +1628,25 @@ def test_a_red_never_overwrites_a_waived_row_but_a_green_does(
         "verdict": "green",
         "run_id": "31",
         "at": "2026-11-10T11:00:00Z",
-        "waived": {"gripe": 77, "tests": ["tests/t.py::a"]},
+        "waived": {
+            "gripe": 77,
+            "tests": ["tests/t.py::a"],
+            "run_id": "31",
+            "attempt": 1,
+        },
     }
     other = {"sha": "1" * 12, "verdict": "red", "run_id": "1", "at": "x"}
     prev = [other, waived]
-    assert mod.ci_verdict_rows(head, "a..b", "red", "99", prev, now) == prev
+    # a red from the SAME run (31) leaves the waiver
+    assert mod.ci_verdict_rows(head, "a..b", "red", "31", prev, now) == prev
+    # a red from a NEWER run on the head is that run's own verdict
+    newer = mod.ci_verdict_rows(head, "a..b", "red", "99", prev, now)
+    assert [(r["verdict"], r["run_id"]) for r in newer] == [("red", "1"), ("red", "99")]
+    assert all("waived" not in r for r in newer)
+    # a waiver marker with no run id never protects the row
+    loose = {**waived, "waived": {"gripe": 77}}
+    rows = mod.ci_verdict_rows(head, "a..b", "red", "", [loose], now)
+    assert [r["verdict"] for r in rows] == ["red"] and "waived" not in rows[0]
     rows = mod.ci_verdict_rows(head, "a..b", "green", "99", prev, now)
     assert [r["verdict"] for r in rows] == ["red", "green"]
     assert "waived" not in rows[-1] and rows[-1]["run_id"] == "99"
