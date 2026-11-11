@@ -5,10 +5,13 @@ measurand terms had no precis measurand taxon — ``drop:no_fitting_measurand``
 was 85% of survey_extract reader drops. 0305 seeds the standard
 electrochem/materials quantities; the variants (the three specialised
 overpotentials, vacancy formation energy) specialise their parent measurand,
-never the root (me628309).
+never the root (me628309). 0306 then corrects the seed's two review findings
+(td633663): ``double-layer-capacitance`` is the TOTAL capacitance (F) and the
+0305 F/m^2 node is renamed ``areal-double-layer-capacitance``; and
+``xrd-peak-position`` loses the "Bragg angle" alias (θ ≠ 2θ).
 
 Real PG. The ``store`` fixture's per-test TRUNCATE leaves ``refs`` empty, so
-each test replays 0174 (the ``measurand`` start node) + 0305; a replay
+each test replays 0174 (the ``measurand`` start node) + 0305 + 0306; a replay
 inserts nothing, and a DB without the start node inserts nothing.
 """
 
@@ -35,6 +38,7 @@ def _run_migration(name: str) -> None:
 
 
 _SEED = "0305_survey_measurand_seed.sql"
+_FIX = "0306_survey_measurand_fixes.sql"
 
 _SEEDED = (
     "overpotential",
@@ -43,6 +47,7 @@ _SEEDED = (
     "exchange-current-density",
     "charge-transfer-resistance",
     "double-layer-capacitance",
+    "areal-double-layer-capacitance",
     "cell-voltage",
     "coulombic-efficiency",
     "capacity-retention",
@@ -88,7 +93,8 @@ _UNITS = {
     "overpotential": ("V", "mV"),
     "tafel-slope": ("V", "mV"),
     "charge-transfer-resistance": ("ohm", "ohm"),
-    "double-layer-capacitance": ("F/m^2", "uF/cm^2"),
+    "double-layer-capacitance": ("F", "uF"),
+    "areal-double-layer-capacitance": ("F/m^2", "uF/cm^2"),
     "specific-capacity": ("A*s/kg", "mAh/g"),
     "ecsa": ("m^2", "cm^2"),
     "band-gap": ("J", "eV"),
@@ -121,9 +127,10 @@ _HIGHER_IS_BETTER = {
 
 @pytest.fixture
 def taxonomy(store: Store) -> Store:
-    """The measurand start node (0174), then the survey seed."""
+    """The measurand start node (0174), then the survey seed and its fix."""
     _run_migration("0174_taxon_seed.sql")
     _run_migration(_SEED)
+    _run_migration(_FIX)
     return store
 
 
@@ -144,6 +151,7 @@ def test_seed_inserts_each_measurand_once_and_is_idempotent(
     first = _taxa(store)
     assert sorted(m["slug"] for _i, _t, m in first) == sorted(_SEEDED)
     _run_migration(_SEED)
+    _run_migration(_FIX)
     assert _taxa(store) == first  # replay inserts nothing
 
     by_slug = {m["slug"]: (rid, title, m) for rid, title, m in first}
@@ -189,9 +197,28 @@ def test_seed_inserts_each_measurand_once_and_is_idempotent(
     _rid_tof, _t, tof = by_slug["tof"]
     assert tof.get("required_conditions") == ["product"]
 
+    # 0306: the generic name is the TOTAL capacitance (canonical F); the
+    # 0305 F/m^2 node was renamed areal — no shared lookup keys, so a
+    # farad value and an F/m^2 value each pair with a node it converts
+    # into.
+    _rid_c, cdl_title, cdl = by_slug["double-layer-capacitance"]
+    assert cdl_title == "Double-layer capacitance"
+    assert cdl["si_vector"] == "-2,-1,4,2,0,0,0"
+    assert set(cdl["aliases"]) == {"Cdl", "C_dl", "double layer capacitance"}
+    _rid_a, areal_title, areal = by_slug["areal-double-layer-capacitance"]
+    assert areal_title == "Areal double-layer capacitance"
+    assert areal["si_vector"] == "-4,-1,4,2,0,0,0"
+    assert "double layer capacitance" not in areal["aliases"]
+
+    # 0306: θ (the Bragg angle) is half the measured 2θ position — the
+    # conflating alias is gone.
+    _rid_x, _t, xrd = by_slug["xrd-peak-position"]
+    assert "Bragg angle" not in xrd["aliases"]
+
 
 def test_seed_is_a_noop_without_the_measurand_root(store: Store) -> None:
     """A database whose taxonomy is gone inserts nothing — never unrooted
     nodes, never a failed chain."""
     _run_migration(_SEED)
+    _run_migration(_FIX)
     assert _taxa(store) == []
