@@ -276,7 +276,9 @@ off that gap until it closes.
 14. **backlog/printable-atomic-models.md**
 15. **backlog/se-fret-round-2.md**
 16. **backlog/photoswitch-states-and-spectral-dof.md**
-17. **backlog/nm-stick-placement.md**
+17. **spec `me628840`** — interaction-aware module pose solve (graded
+    π-stack, form-finder seeded; the retired
+    backlog/nm-stick-placement.md).
 18. **spec `me628828`** — boxel-assembly face codes, fit/reject and the
     off-O(N²) plan (the retired backlog/nm-face-codes-and-scale.md).
 19. **backlog/se-process-skills-as-rewrites.md**

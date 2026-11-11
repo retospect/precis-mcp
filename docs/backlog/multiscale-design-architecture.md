@@ -72,7 +72,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | tool access / swept volumes / assembly order | `se-off-the-shelf-fabrication.md` rung 3b; `se-feasibility-and-cost.md` rungs 5–6 | open |
 | DFA soft costs, objective vector | `se-feasibility-and-cost.md` | open |
 | molecular fragment library, states, joining chemistry | `src/precis_se/__init__.py` docstring + star-schema facts | shipped |
-| interaction-aware module placement (graded π-stack, kT thresholds, pose solve, fisheye read) | `nm-stick-placement.md` | spec ready 2026-09-11 |
+| interaction-aware module placement (graded π-stack, kT thresholds, pose solve, fisheye read) | spec `me628840` (π-stack `me628941`, solve `me628943`, kT `me628945`, fisheye `me628947`) | spec ready 2026-09-11 |
 | photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
 | toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11); rung 4 nonplanar member sweeps added 2026-09-14 |
 | scenarios + three-verdict rule table | **here, §Scenarios** | new |
@@ -100,7 +100,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | BO as adaptive surrogate: inner-solve stand-in, contested decisions, Pareto-front extension, per-objective fitting before Chebyshev | addendum A7 (`complementarity-solver.md`; house guard stays §Optimisation here) | spec'd 2026-09-12 |
 | load-sign idioms + sign-aware completeness check | addendum A6 (`complementarity-solver.md`; mechanics stay §Complementarity here) | spec'd 2026-09-12 |
 | laser/die/turning processes; 2.5D sheet kernel serving three processes | addendum A8 → `se-off-the-shelf-fabrication.md` rungs 4–5 (turning new) | spec'd 2026-09-12 |
-| non-bonded menu (charge/H-bond/vdW), ratchets, hysteresis caching rule, DFT spacer library, synthesis-route choice | addendum A9 → stick-placement / photoswitch / design-core states / blocktree | spec'd 2026-09-12 |
+| non-bonded menu (charge/H-bond/vdW), ratchets, hysteresis caching rule, DFT spacer library, synthesis-route choice | addendum A9 → stick-placement (spec `me628840`) / photoswitch / design-core states / blocktree | spec'd 2026-09-12 |
 | process projection composability; reaction yield (open questions) | addendum A10 → spec §6.2 | spec'd 2026-09-12 |
 | level-set shape-functional inner layer (single boundary velocity field; scoped to phase-3 polish over the shipped SIMP screen) | `multiscale-optimisation-method.md` §2 | spec'd 2026-09-15; per-block first, multiphase + topological-derivative nucleation as upgrades |
 | preferred-number term (differentiable, min-of-offset-wells; generalises spec §4.6 lattice preference to declared measurements) | `multiscale-optimisation-method.md` §4; slice 1 = `precis/structsolve/preferred.py` | term SHIPPED 2026-09-15 (pure numpy); attachment to se measures → `se-datum-measure-eval.md` |
@@ -414,7 +414,7 @@ render ISO units with scale-appropriate prefixes.**
   policy covers the geometry currency (lengths, forces, angles,
   tolerances) only. Interaction physics — kT thresholds, π-stack
   energies, nm mechanics capacities — keeps its own native quantities in
-  its own modules (`nm-stick-placement.md`, `precis_nm/mechanics.py`) and
+  its own modules (spec `me628840`, `precis_nm/mechanics.py`) and
   is never routed through the unit-defaulting ladder: cost terms *over*
   the geometry, not lengths *in* it.
 
@@ -472,7 +472,7 @@ assemble combinatorially, re-run DFT only at junctions) → the blocktree
 plan + star-schema facts. The non-bonded interaction menu (vdW,
 electrostatic, H-bond, π-stack, cation–π, steric, hydrophobic — each a
 signed want/avoid term) now has an owner for its first instance:
-`nm-stick-placement.md` specs the graded π-stack pair potential
+spec `me628941` (group `me628840`) specs the graded π-stack pair potential
 (screening tier, kT acceptance thresholds, engaged/avoid as declared
 intent) with H-bond and charge as its named next terms; ratchets/
 bistability (asymmetric barrier = one-way ratchet; hysteresis from
@@ -480,7 +480,8 @@ barrier vs kT) → design content for quest loops, with the physics
 evidence in `photoswitch-states-and-spectral-dof.md`. Photon
 interaction (absorption cross-sections, self-shadowing, wavelength
 selectivity) and environment (solvent explicit or dielectric; entropy at
-temperature — marginal-at-0 K is not a design) → that doc's open list.
+temperature — marginal-at-0 K is not a design) → the spec's open list
+(`me628950`).
 Yield/kinetics: feasibility is not enough — activation barriers decide
 rate; TS searches are expensive, so screen early by penalising strained
 geometries and crowded sites, evaluate barriers only on finalists. The
@@ -544,7 +545,8 @@ CUDA path only if a real workload ever forces it.
    member machinery), not large-deflection FEA.
 3. **Cost spine + placement**: feasibility-and-cost rungs 1–4 ·
    off-the-shelf 2b/3b + three-verdict scenario rule table ·
-   nm-stick-placement · complementarity solver · termination nodes +
+   nm stick placement (spec `me628840`) · complementarity solver ·
+   termination nodes +
    representation escalation · viewer round 2 (argue-with-points, notes,
    3D route).
 4. **Optimiser + processes**: processes as first-class objects +

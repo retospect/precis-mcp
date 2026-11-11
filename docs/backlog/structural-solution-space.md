@@ -118,7 +118,8 @@ generator/checker split.
 - **`formfind.py`** (shipped) — force-density form-finding: topology +
   force-density ratios + anchors → one sparse solve → equilibrium node
   geometry. Unit-agnostic; se feeds metres, nm will feed Å. Second
-  consumer, named: `nm-stick-placement.md` stage 1 rents it topology-only
+  consumer, named: the nm stick placement spec (`me628840`; two-stage
+  solve `me628943`) stage 1 rents it topology-only
   (no initial guess) as the skeleton seed for its rigid-body pose relax,
   copying `precis_se/formfind.py`'s write-back contract verbatim.
 - **`simp.py` — 3D density-field SIMP (the nTop leg, slice 4; engine
