@@ -1,6 +1,5 @@
 """precis_surface.remesh -- COLLAPSE + SPLIT + FLIP + SMOOTH + REPROJECT
-acceptance checks (docs/backlog/precis-surface-kernel.md "Slice 1 -- the
-dual route").
+acceptance checks (remesh spec ``me630855``).
 
 Numpy only. The acceptance criterion (every welded degree in {5,6,7}) is
 measured, not assumed: with collapse and vertex-split added, Schwarz P at

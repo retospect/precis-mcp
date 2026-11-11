@@ -1,5 +1,5 @@
 """precis_surface.dual -- the dual-route acceptance checks
-(docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual route").
+(dual-route spec ``me630854``).
 
 Numpy only. Invariants checked mesh-derived (never hardcoded beyond the
 topological identities `hexfold.defects.counting_residual` itself states):

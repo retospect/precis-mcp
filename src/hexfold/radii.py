@@ -1,5 +1,4 @@
-"""Carbon radius tables for smooth targets (docs/backlog/precis-surface-kernel.md
-"Slice -- smooth drum").
+"""Carbon radius tables for smooth targets (smooth-drum spec ``me630861``).
 
 Every radius a graphene shell can take is quantised, so a smooth target is
 assembled from table values rather than solved for:

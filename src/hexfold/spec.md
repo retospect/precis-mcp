@@ -1379,7 +1379,7 @@ algebra cannot see.
 Each step is a spec that must `check` clean and round-trip through the
 precis generator on the dev DB. Small scale first. **This section is the
 one roadmap**: `me630417` (steps 1–3, 7 — the retired `docs/backlog/hexfold-integration.md`) and
-`docs/backlog/precis-surface-kernel.md` (steps 4–6, 8) carry only tick
+`me630853` (steps 4–6, 8 — transferred `docs/backlog/precis-surface-kernel.md`) carry only tick
 state against these numbers, never a second ordering. Test pieces that
 drive the order: the box (step 3) and the rotary ratchet valve
 (spec `me628980`, group `me628987`; steps 3 and 8).

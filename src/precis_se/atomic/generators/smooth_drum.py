@@ -1,5 +1,5 @@
-"""The ``smooth_drum`` generator (docs/backlog/precis-surface-kernel.md
-"Slice -- smooth drum"): the "carbon wrapper" -- a sp2 carbon sheet that
+"""The ``smooth_drum`` generator (smooth-drum spec ``me630861``/``me630862``):
+the "carbon wrapper" -- a sp2 carbon sheet that
 rises through a catenoid foot into a zigzag ``(n, 0)`` stalk, flares back
 out through a second catenoid onto the floor of a wider zigzag ``(w, 0)``
 drum, and closes over a flat lid, with filleted corners picked from the
@@ -296,7 +296,7 @@ def build_smooth_drum(raw: dict[str, Any]) -> GeneratedBlock:
         "table) -- surface of revolution (catenoid bends, table fillets) -> "
         "row-lofted triangulation with the planned defect rows -> dual "
         f"hex net ({pentagons} pentagons, {heptagons} heptagons; "
-        "docs/backlog/precis-surface-kernel.md 'Slice -- smooth drum') -> "
+        "smooth-drum spec me630861/me630862) -> "
         + (
             "spring + umbrella FIRE relaxation (precis_surface.relax). "
             if relax

@@ -9,7 +9,7 @@ measurements in one place makes "did it work" a table anyone can re-run
 rather than a sentence someone wrote.
 
 It has a second job, and the two are deliberately the same object. The
-remesh loop (docs/backlog/precis-surface-kernel.md, slice 1's sequencing
+remesh loop (``me630857``, the slice-1 sequencing
 note) may not enable curvature-driven degree optimisation until the
 discretisation noise has been cleaned up -- 5-20% of a raw
 marching-cubes mesh's vertices carry spurious *positive* angle defect,

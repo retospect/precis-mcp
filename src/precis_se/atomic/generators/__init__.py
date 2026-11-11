@@ -50,8 +50,8 @@ compiler), with hexfold itself a lazy optional import, not a declared
 dependency. Round 5: ``tpms``/``schwarzite``
 (:mod:`precis_se.atomic.generators.tpms`) — periodic Schwarz P/D/gyroid
 carbon scaffolds via :mod:`precis_surface`'s level-set/marching-cubes/dual
-pipeline (docs/backlog/precis-surface-kernel.md "Slice 1 — the dual
-route"), a preview scaffold ahead of the degree-controlled remesh loop.
+pipeline (dual-route spec ``me630854``), a preview scaffold ahead of the
+degree-controlled remesh loop.
 Round 6: ``smooth_drum`` (:mod:`precis_se.atomic.generators.smooth_drum`) —
 a sheet-stalk-drum carbon wrapper on a smooth surface of revolution with
 exactly 12 pentagons and 12 heptagons, spring-relaxed and gated on

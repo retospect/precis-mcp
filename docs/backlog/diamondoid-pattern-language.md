@@ -26,7 +26,7 @@ regimes, of which the tree has one and a half:
    struts and axles (capped tubes), housings (`junction(k)`), lids.
 2. **Freeform sp² surfaces** — a target field tiled and relaxed, validated
    after. This is `precis_surface`, spec §28 steps 5–6; the corrected
-   energy plan for it is parked (`precis-surface-kernel.md`).
+   energy plan for it is parked (`me630853`).
 3. **Diamondoid solids** — Drexler's canonical *Nanosystems* machines (the
    bearings, gears, the fine-motion controller) are sp³ diamond lattice: a
    **volume** with terminated facets, not a surface with rims. Nothing in

@@ -1,5 +1,5 @@
-"""Row fit of a hex-lattice net to a smooth drum (docs/backlog/
-precis-surface-kernel.md "Slice -- smooth drum", step 3): the planned
+"""Row fit of a hex-lattice net to a smooth drum (smooth-drum spec
+``me630862``, step 3): the planned
 defects and only those, spread apart, near the smooth radii."""
 
 from __future__ import annotations

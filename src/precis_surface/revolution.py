@@ -1,5 +1,5 @@
 """precis_surface.revolution -- smooth targets as surfaces of revolution
-(docs/backlog/precis-surface-kernel.md "Slice -- smooth drum").
+(smooth-drum spec ``me630861``).
 
 A meridian is a chain of analytic segments in the ``(r, z)`` half-plane,
 revolved about the ``z`` axis. Each segment's shape comes from bending

@@ -1,5 +1,5 @@
 """precis_surface.level_set — closed-form TPMS nodal approximations
-(docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual route").
+(dual-route spec ``me630854``).
 
 Schwarz P, Schwarz D and the gyroid, each as the classic *nodal
 approximation*: a low-order trigonometric polynomial whose zero set sits
@@ -16,7 +16,7 @@ has mean curvature ``H = 0`` everywhere, which forces ``K <= 0`` via
 ``k1 = -k2``. A nodal surface's Gaussian curvature is *not* guaranteed
 non-positive everywhere -- it merely tracks the true minimal surface
 closely near the zero set of the exact solution. So any ``K <= 0`` check
-run against a nodal mesh (docs/backlog/precis-surface-kernel.md's
+run against a nodal mesh (``me630854``'s
 acceptance section, via :mod:`precis_surface.curvature`) is an INFO-level
 report, never an assertion, here or in the integration test that
 exercises curvature. This module's own combinatorial guarantees

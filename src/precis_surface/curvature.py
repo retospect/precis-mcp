@@ -1,6 +1,6 @@
 """precis_surface.curvature — discrete differential-geometry operators on
-triangle meshes (docs/backlog/precis-surface-kernel.md "Slice 1 — the dual
-route", hexfold spec.md §20.4, [S17] Meyer/Desbrun/Schroder/Barr 2003,
+triangle meshes (dual-route spec ``me630854``, hexfold spec.md §20.4, [S17]
+Meyer/Desbrun/Schroder/Barr 2003,
 "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds").
 
 Takes the interface contract's bare ``Mesh = (verts, tris)`` tuple

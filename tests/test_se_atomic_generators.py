@@ -658,8 +658,7 @@ def test_generate_block_is_a_generated_block_type() -> None:
     assert block.provenance
 
 
-# ── tpms (docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual
-#    route") ───────────────────────────────────────────────────────────
+# ── tpms (dual-route spec ``me630854``) ──────────────────────────────────
 
 
 def test_tpms_p_reachable_through_the_registry_like_cnt() -> None:

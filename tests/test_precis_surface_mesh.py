@@ -1,5 +1,5 @@
 """precis_surface periodic marching cubes -- slice 1 acceptance
-(docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual route").
+(dual-route spec ``me630854``).
 
 Combinatorial checks only: welded-quotient edge-manifold closure and
 mesh-derived ``V - E + F`` on each nodal family's SIMPLE-CUBIC cell (the

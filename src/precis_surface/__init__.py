@@ -1,5 +1,5 @@
-"""precis_surface — lattice-agnostic smooth-surface kernel
-(docs/backlog/precis-surface-kernel.md).
+"""precis_surface — lattice-agnostic smooth-surface kernel (spec
+``me630850``).
 
 Surfaces as a first-class geometric object, independent of any one
 lattice or material: patches, rims as Dirichlet curves, seams as Plateau
@@ -15,7 +15,7 @@ House rules, same as :mod:`precis.structsolve` and :mod:`precis.cad`:
 IO and units. Every function is unit-agnostic (metres, bond-lengths, the
 numbers never know); numpy only, scipy is not a core dependency.
 
-Slice 1 ("the dual route", docs/backlog/precis-surface-kernel.md) pipeline:
+Slice 1 ("the dual route", ``me630854``) pipeline:
 level set -> periodic marching cubes -> [dual route mesh ops, later
 slices] -> dualise -> hexfold net -> stick relaxation. This package holds
 the geometric half of that pipeline; the discretiser and net live in

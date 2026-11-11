@@ -1,5 +1,5 @@
-"""precis_surface.dual — the dual route (docs/backlog/precis-surface-kernel.md
-"Slice 1 -- the dual route"): the dual of a degree-controlled triangulation
+"""precis_surface.dual — the dual route (spec ``me630854``): the dual of a
+degree-controlled triangulation
 *is* the hex tiling, so ``dualise`` turns a :class:`~precis_surface.periodic_mesh.PeriodicMesh`
 into a hexfold-shaped net without ever building a direction field or an MIQ
 solve. Triangle -> atom, degree-``n`` welded vertex -> ``n``-ring, and the

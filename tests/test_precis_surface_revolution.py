@@ -1,5 +1,5 @@
-"""Smooth drum targets (docs/backlog/precis-surface-kernel.md "Slice -- smooth
-drum"): catenoid bends, table-picked fillets, defect rows, revolve."""
+"""Smooth drum targets (smooth-drum spec ``me630861``): catenoid bends,
+table-picked fillets, defect rows, revolve."""
 
 from __future__ import annotations
 

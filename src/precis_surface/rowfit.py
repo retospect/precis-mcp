@@ -1,6 +1,6 @@
 """precis_surface.rowfit -- fit a triangulation of degree-6 rows to a
-surface of revolution (docs/backlog/precis-surface-kernel.md "Slice --
-smooth drum", step 3). The dual of the result is a hex-lattice net whose
+surface of revolution (smooth-drum spec ``me630862``, step 3). The dual of
+the result is a hex-lattice net whose
 5- and 7-rings sit where the smooth target turns.
 
 No marching cubes and no remeshing: the vertices lie on circles (rows)

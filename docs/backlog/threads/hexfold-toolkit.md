@@ -735,7 +735,7 @@ removed as met — the transport move it waited on happened 09-29)
    Variant B (tube wall plus sheet, unequal 180/90/90 seam) still needs the
    seam-row measurement before it is buildable.
 8. **`spec.md` §28.8 valve tool set** (checklist in
-   backlog/precis-surface-kernel.md) — clearance field → pocket extractor
+   `me630853`) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
    clearance stub is gated on Do-next 8. **Landed 2026-10-13** (Devin
@@ -772,7 +772,7 @@ removed as met — the transport move it waited on happened 09-29)
     lining the valve spec's Q2 (`me628980`, item 9) needs to decide
     scrubber cadence; sequenced right after the seam it instruments.
 12. **`spec.md` §28.5–28.6 smooth solve + direction field** — owned by
-    **backlog/precis-surface-kernel.md** (its checklist carries §28.5,
+    **`me630853`** (its checklist carries §28.5,
     §28.6 and §28.8); this thread ranks them, that item holds the
     spec. Discrete-mesh smooth solve, curvature bound, bent collar;
     delivers the tapered (collar-driven) shell the discrete washer step
@@ -783,8 +783,8 @@ removed as met — the transport move it waited on happened 09-29)
     its meridian (`precis_surface.revolution`, table radii from
     `hexfold.radii`), row fit (`precis_surface.rowfit`), viewer overlay
     and carbon wrapper (se generator `smooth_drum`) landed; prod has se
-    `hexa-smooth-drum-v2`. Next after it:
-    **backlog/smooth-drum-engineered-mode.md** (Reto 2026-10-02): an exact
+    `hexa-smooth-drum-v2`; spec `me630861`/`me630862`. Next after it:
+    **`me630863`** (Reto 2026-10-02): an exact
     nanotube stalk with rotationally symmetric collars, beside today's
     organic loft. Do-next 1 (ideal surface first) is the first concrete
     slice of this item, with authored radii in place of catenoids and

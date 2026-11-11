@@ -1,5 +1,5 @@
 """precis_surface.remesh — degree-controlled isotropic remeshing loop
-(docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual route").
+(remesh spec ``me630855``, dual-route pipeline ``me630854``).
 
 COLLAPSE + SPLIT + FLIP + SMOOTH + REPROJECT, in that order each
 iteration. A flip changes vertex degrees by ``-1,-1,+1,+1`` and leaves

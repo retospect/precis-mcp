@@ -1,5 +1,5 @@
 """precis_surface.periodic_mesh — marching cubes over one periodic TPMS
-cell (docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual route").
+cell (dual-route spec ``me630854``).
 
 Meshes the zero set of a level-set function (e.g.
 :mod:`precis_surface.level_set`) over one cubic cell ``[0, a]^3``,
@@ -42,7 +42,7 @@ faces are resolved instead by breadth-first combinatorial propagation
 over the face-adjacency graph (a TPMS is orientable, so flipping each
 such face to agree with an already-oriented neighbour is consistent).
 
-**The centring trap** (docs/backlog/precis-surface-kernel.md): body-
+**The centring trap** (``me571247``): body-
 centring the cell swaps the P/D surface's two labyrinths and reports the
 wrong Euler characteristic. This module never does that -- the cell is
 always the plain simple-cubic ``[0, a]^3`` box with axis-aligned wrap

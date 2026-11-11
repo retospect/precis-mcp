@@ -1,5 +1,5 @@
-"""The ``tpms``/``schwarzite`` generator (docs/backlog/precis-surface-kernel.md
-"Slice 1 -- the dual route"): triangulated-minimal-surface periodic carbon
+"""The ``tpms``/``schwarzite`` generator (dual-route spec ``me630854``):
+triangulated-minimal-surface periodic carbon
 scaffolds -- Schwarz P, Schwarz D, or the gyroid -- via
 :mod:`precis_surface`'s level-set/marching-cubes/dual pipeline, never a
 direction field or MIQ solve.
@@ -16,8 +16,8 @@ merely curved into a triply-periodic minimal surface instead of rolled
 into a cylinder. Provenance cites the dual-route construction itself: it
 is not this codebase's invention (Terrones & Terrones, *New J. Phys.* 5
 (2003) 126 (``pa449642``); the leapfrog/schwarzite literature surveyed in
-docs/backlog/precis-surface-kernel.md's "Prior art" section) -- see that
-section before assuming novelty anywhere near this module.
+``me630860``) -- see that
+note before assuming novelty anywhere near this module.
 
 **One length-unit crossing, at the ``a`` argument.**
 :mod:`precis_surface.level_set` and
@@ -37,7 +37,7 @@ are legitimate sp2 carbon (every fullerene is pentagons and hexagons), but
 dual does not respect this on its own (measured Schwarz P at ``n=17``:
 ``{4: 158, 5: 114, 6: 532, 7: 108, 8: 158, 9: 10}``, 49 % hexagons), so the
 registry-driven path here runs :func:`precis_surface.remesh.remesh`
-(docs/backlog/precis-surface-kernel.md's full slice 1 pipeline:
+(the full slice-1 pipeline of ``me630854``:
 collapse/split/flip-for-degree/tangential-smooth/reproject) **by default**,
 right before :func:`~precis_surface.dual.dualise`, and then REFUSES to
 emit (:class:`GeneratorError`) if any ring still falls outside ``{5, 6,
@@ -58,7 +58,7 @@ injected ``remesh=`` callable). This currently means Schwarz P generates
 cleanly (measured; Schwarz D not yet measured) while **gyroid refuses**:
 its frozen wrap seam leaves a genuine fixed point of 20 (of 1365) welded
 vertices no admissible collapse/split/flip can reach
-(docs/backlog/precis-surface-kernel.md; :mod:`precis_surface.remesh`'s
+(``me630859``; :mod:`precis_surface.remesh`'s
 module docstring) -- a clear refusal, not a silent 4-ring emission, until
 that seam-freeze residual is fixed.
 
@@ -143,7 +143,7 @@ def _resolve_family(family_raw: Any) -> str | None:
 
 
 #: Default marching-cubes grid (per axis) -- odd, per
-#: docs/backlog/precis-surface-kernel.md's measured sliver-fraction table
+#: the measured sliver-fraction table on ``me571247``
 #: (odd n: 0-5.6% near-degenerate triangles; even n: 18-49%).
 _DEFAULT_N = 17
 
@@ -238,7 +238,7 @@ def _validate_params(
             "tpms 'n' must be odd -- at even n the marching-cubes grid "
             "planes coincide with the surface's own symmetry planes, "
             "producing 18-49% near-degenerate slivers (measured, "
-            "docs/backlog/precis-surface-kernel.md); odd n measures "
+            "me571247); odd n measures "
             f"0.0-5.6%. got n={n}"
         )
     if n < 3:
@@ -473,9 +473,9 @@ def build_tpms(
         f"TPMS schwarzite scaffold, family={family}, cell_A={cell_A:g} Å, "
         f"n={n}, reps={list(reps)} -- triangulate-and-dualise construction "
         "(the dual of a degree-controlled triangulation IS the hex tiling; "
-        "docs/backlog/precis-surface-kernel.md 'Slice 1 -- the dual route'; "
-        "Terrones & Terrones, New J. Phys. 5 (2003) 126, pa449642; see that "
-        "backlog section's 'Prior art' for the leapfrog/schwarzite "
+        "spec me630854 'Slice 1 -- the dual route'; "
+        "Terrones & Terrones, New J. Phys. 5 (2003) 126, pa449642; see "
+        "me630860's prior-art survey for the leapfrog/schwarzite "
         "literature this route is not the first to use); "
         f"{n_atoms} atoms, {len(bonds)} bonds, {len(ports)} open-valence "
         f"rim port(s); chi_per_cell={chi}, {ring_desc} {topology['rings']}. "

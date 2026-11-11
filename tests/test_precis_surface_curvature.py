@@ -1,5 +1,5 @@
 """precis_surface.curvature — discrete differential-geometry operators
-(docs/backlog/precis-surface-kernel.md "Slice 1 — the dual route").
+(dual-route spec ``me630854``).
 
 Meshes are hand-built closed forms (icosahedron, a welded torus grid, a
 flat patch) — this module owns no geometry code beyond what's needed to
