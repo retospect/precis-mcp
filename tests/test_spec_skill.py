@@ -105,3 +105,19 @@ def test_spec_skill_examples_use_supported_memory_args() -> None:
                     "link() example passes rel_intent top-level; "
                     "it belongs in meta={'rel_intent': ...}"
                 )
+
+
+def test_spec_skill_tag_examples_pass_no_dropped_meta() -> None:
+    """Review gr631563: fenced ``tag(`` examples must not pass ``meta=``
+    on kinds whose tag() has no meta parameter — only kind='todo' tag
+    declares it; every other kind swallows it via ``**_kw`` and the
+    ruling meta silently never lands. Write ruling meta with
+    ``put``/``edit(meta=…)`` on the ruling-tagged node."""
+    for block in _FENCE_PY.findall(SKILL_PATH.read_text(encoding="utf-8")):
+        for frag in re.split(r"\n\s*\n", block):
+            if "tag(" not in frag or re.search(r"kind=[\"']todo[\"']", frag):
+                continue
+            assert not re.search(r"\bmeta\s*=", frag), (
+                "tag() example passes meta= on a non-todo kind; it is "
+                "silently dropped — use put/edit(meta=…)"
+            )

@@ -136,10 +136,14 @@ the task-aware routing spec `me568172`, 2026-11-05).
 **Ruling node** — tagged `ruling` with meta `ruled_by`, `ruled_on` and
 `review_by` ([[precis-memory-help]] §rulings), one decision per node,
 linked `related-to` what it decides with edge meta
-`rel_intent='decides'`. A ruling left in prose is what rots:
+`rel_intent='decides'`. The meta lands only through `put`/`edit(meta=…)`
+on a `ruling`-tagged node — `tag(meta=…)` is silently dropped. A ruling
+left in prose is what rots:
 
 ```python
-tag(kind="memory", id=<ruling id>, add=["ruling"],
+put(kind="memory", text="<the decision, one claim>",
+    link="memory:<spec root id>", rel="part-of",
+    tags=["ruling", "spec:routing", "SPACE:repo-dev"],
     meta={"ruled_by": "reto", "ruled_on": "2026-11-05",
           "review_by": "2026-12-05"})
 link(kind="memory", id=<ruling id>, rel="related-to",
