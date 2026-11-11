@@ -5,7 +5,7 @@ pillar: 3d-design
 
 # structure kind → internal import filter (staged demotion)
 
-**Blocked on:** the Apply design in `se-atomic-round2.md` —
+**Blocked on:** the Apply design in spec `me629932` —
 `se_propose_atomic` payloads must be se-mediated before stages 3–4 can
 hide the kind (see the blocker paragraph below).
 
@@ -36,7 +36,7 @@ unitless anyway (`Atom.frac` is fractional; the Å lives in the cell).
 Don't reopen without a new argument.
 
 Blocker before 3–4: `se_propose_atomic` returns *structure op scripts*
-as proposal payloads — Apply (`se-atomic-round2.md`) must make the
+as proposal payloads — Apply (spec `me629932`) must make the
 payload se-mediated first, or the hidden kind is still on the agent
 surface. The compute ladder (relax/ML/DFT, run-cube cache) stays in
 `precis/structure/` regardless — demotion is about the *agent surface*,

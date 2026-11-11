@@ -242,7 +242,7 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     element. ``expected_hybridization`` is NOT gated here — it is
     display-only today (echoed in views and propose output), carried
     over unchanged from the pre-merge behavior; gating it is an open
-    item in ``docs/backlog/se-atomic-round2.md``. Nothing is written
+    item in spec ``me629935``. Nothing is written
     until every mapped port passes.
 
     **The object form additionally measures a frame** (R1, docs/backlog/

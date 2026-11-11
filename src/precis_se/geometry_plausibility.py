@@ -37,7 +37,7 @@ The same reasoning applies here — a press fit authored before its
 interference allowance is dialed in, or a bearing pocket authored before
 its final pose, is scaffolding-in-progress, not a broken design. Promoting
 envelope interpenetration to a hard error once both blocks are BOUND is a
-separate, deliberately deferred ruling (``se-atomic-round2.md``) — out of
+separate, deliberately deferred ruling (spec ``me629934``) — out of
 scope here; nothing in this module changes tier based on binding state.
 
 **Scope decisions worth naming:**

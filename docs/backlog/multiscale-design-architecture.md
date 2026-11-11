@@ -523,7 +523,7 @@ CUDA path only if a real workload ever forces it.
 1b. **nm→se merge — exclusive window, RAN 2026-09-14** (`nm-se-merge.md`,
    added same day). Across precis_se + precis_nm; `nm` retired (its
    domain layer folded into `se`'s atomic mode, its unshipped round-2
-   content trails as `se-atomic-round2.md`), clearing step 2 to
+   content trails as spec `me629936`), clearing step 2 to
    dispatch against `se` alone.
 2. **Foundations, 4 parallel tracks**: shared design-state core
    (`design-state-core.md` — scenarios, provenance, revisions, branches
@@ -561,7 +561,7 @@ CUDA path only if a real workload ever forces it.
    ingestion layers + availability preference · radiometric transport +
    irradiance contract (microfluidics PARKED) · bookmarks + digest
    sensitivity + requirements-level scenario comparison ·
-   se-atomic-round2.md's apply+verdicts.
+   spec `me629936`'s apply+verdicts.
 
 ## Open questions
 

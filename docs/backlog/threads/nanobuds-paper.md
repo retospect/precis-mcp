@@ -374,7 +374,7 @@ td173019.
    (`/tmp/nanobud-apply/export-r5`, before the glossary pass): 118 bib
    entries, 0 with volume, 25 pin warnings, 2 originator notes, 4
    placeholders.
-3. **backlog/se-atomic-round2.md** §Later phases rigidity screen and
+3. **spec `me629936`** §rigidity screen (`me629928`) and
    hexfold-toolkit Horizon 17 (Cases A–D sublattice test) — the residue
    of se-nanobud-graph (folded 2026-10-21), both via the hexa session.
 4. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;

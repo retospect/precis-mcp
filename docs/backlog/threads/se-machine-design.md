@@ -262,11 +262,12 @@ off that gap until it closes.
 2a. [se-protein-interface-first](../se-protein-interface-first.md) — draft;
     shares the pocket-first seam, adding required non-repeating contacts
     and a rigid protein scaffold without folding predictors (Reto, 2026-10-31).
-3. **backlog/se-atomic-round2.md**
+3. **spec `me629936`** — se atomic-mode apply, verdicts and later
+   rungs (the retired backlog/se-atomic-round2.md).
 4. **design-workbench realize-in-the-loop spec** — transferred to graph
    memory 2026-11-11 (sibling of `me629033`, group `me628986`; the
-   retired backlog/design-workbench-realize.md). Blocked-by 3
-   (se-atomic-round2).
+   retired backlog/design-workbench-realize.md). Blocked-by 3's Apply
+   (spec `me629932`).
 5. **backlog/se-off-the-shelf-fabrication.md**
 6. **backlog/tslot-profile-library.md** — T-slot profiles as real parts
    (Reto 2026-10-01); makes the off-the-shelf captive-T-slot joint

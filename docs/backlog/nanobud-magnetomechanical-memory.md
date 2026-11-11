@@ -41,7 +41,7 @@ The nanobuds architecture presently lacks a high-density, purely mechanical stor
 
 ## Target + blast radius
 
-- **The nanobuds mechanical architecture** (`docs/backlog/se-atomic-round2.md`, structural state / envelope work).
+- **The nanobuds mechanical architecture** (spec `me629936`, structural state / envelope work).
 - **The knowledge base** (`dr173020` and the fi189548 claim corpus).
 - **Concurrent rare-earth-magnet evaluation** — this item feeds into and is fed by the magnetism-claim verification.
 - **Future storage-layer design** — if the premise holds, informs a later mechanical-actuator + magnetic-storage subsystem build.

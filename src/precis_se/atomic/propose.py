@@ -11,7 +11,7 @@ reserved for the whole-design se proposer se-kind.md still has unshipped
 fill, hence the mode in its name. This is the L3→L5 bridge of the six-level
 IR (:mod:`precis_se`'s ``__init__.py`` docstring): the fragment is chosen
 and realized here, but nothing is minted or bound — that is a separate
-Apply step (unshipped; docs/backlog/se-atomic-round2.md names it
+Apply step (unshipped; spec ``me629932`` names it
 "mint the structure design, ``derived-from`` lineage, then
 ``bind_structure``").
 
