@@ -264,9 +264,10 @@ off that gap until it closes.
     and a rigid protein scaffold without folding predictors (Reto, 2026-10-31).
 3. **spec `me629936`** — se atomic-mode apply, verdicts and later
    rungs (the retired backlog/se-atomic-round2.md).
-4. **design-workbench realize-in-the-loop spec** — transferred to graph
-   memory 2026-11-11 (sibling of `me629033`, group `me628986`; the
-   retired backlog/design-workbench-realize.md). Blocked-by 3's Apply
+4. **spec `me630033`** — design-workbench realize-in-the-loop (the
+   chat-turn surface that binds a picked candidate into a structure;
+   sibling of `me629033` under group `me628986`; the retired
+   backlog/design-workbench-realize.md). Blocked-by 3's Apply
    (spec `me629932`).
 5. **backlog/se-off-the-shelf-fabrication.md**
 6. **backlog/tslot-profile-library.md** — T-slot profiles as real parts
