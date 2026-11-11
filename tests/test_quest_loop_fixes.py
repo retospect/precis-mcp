@@ -9,7 +9,9 @@ kept re-picking until the 12-tick cool. These cover the coupled fix:
   dialectic advance), not just a compute frontier gain, so a reasoning-only
   spin is now legible to it — and (gr626871) a bare ``by=agent``
   ``dead-end`` is restatement, not a resolution: only a *supported* kill
-  closes a hypothesis;
+  closes a hypothesis — and (td629287) an ``experiment`` rewrite counts
+  only when its discriminating-parameter signature is one the quest has
+  not proposed before, so paraphrase sweeps earn nothing;
 * **allocator** — the score's activity term is replaced by a geometric
   ``progress_factor`` (a spinner decays) plus an anti-starvation ``aging`` bonus
   (a long-waiting quest rises), i.e. weighted round-robin;
@@ -190,6 +192,70 @@ class TestBroadenedProgress:
         )
         cascade.update_cascade_state(store, qid, reviewed=False)
         assert _ticks_since(store, qid) == 0
+
+    def test_repeated_experiment_paraphrases_are_not_progress(self, store: Any) -> None:
+        # td629287 (review of td628965): the fingerprint hashed raw text
+        # and the upsert accepted ANY nonidentical rewrite, so alternating
+        # paraphrases of the SAME proposed test reset the stall clock
+        # forever. Now a proposed test counts only via its
+        # discriminating-parameter signature — a rewording is refused at
+        # apply, and a flip back to an already-proposed signature is not a
+        # novel test.
+        from precis.quest.dossier import apply_dialectic_op
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A quest with a hypothesis")
+        fid = seed_ref(store, title="Fe adatom lowers the barrier", kind="finding")
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "experiment",
+                "hypothesis": f"fi{fid}",
+                "text": "anneal Fe–N₄ at 600 K and re-measure",
+            },
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+        # Same conditions, new words: refused at apply AND earns no credit.
+        assert not apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "experiment",
+                "hypothesis": f"fi{fid}",
+                "text": "heat the Fe–N4 surface to 600 K, then measure again",
+            },
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 1
+        # A substantive revision (a new condition) still lands and counts.
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "experiment",
+                "hypothesis": f"fi{fid}",
+                "text": "anneal Fe–N₄ at 700 K and re-measure",
+            },
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+        # Alternating back to an ALREADY-PROPOSED test is not an advance:
+        # the apply gate compares against the current text (700 K, so the
+        # edit lands), but the 600 K signature sits in the seen-set.
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "experiment",
+                "hypothesis": f"fi{fid}",
+                "text": "anneal Fe–N4 at 600 K, re-measuring afterwards",
+            },
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 1
 
 
 # ── allocator: progress decay + aging ─────────────────────────────────

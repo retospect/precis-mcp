@@ -26,7 +26,6 @@ lives in the quest's ``meta`` (``tick_count``, ``frontier_reviews``,
 
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -42,6 +41,10 @@ if TYPE_CHECKING:
 FRONTIER_REVIEW_EVERY = int(os.environ.get("PRECIS_QUEST_FRONTIER_REVIEW_EVERY", "5"))
 #: Ticks without a frontier improvement before we escalate on a stall.
 STALL_TICKS = int(os.environ.get("PRECIS_QUEST_STALL_TICKS", "4"))
+#: Cap on the remembered experiment-signature set in a quest's meta —
+#: bounds jsonb growth under a pathological sweep; an evicted fingerprint
+#: only means a very old proposed test reads novel again.
+_EXPERIMENT_SIGS_MAX = 64
 
 
 @dataclass(frozen=True)
@@ -88,25 +91,28 @@ def _n_paper_servers(store: Store, quest_id: int) -> int:
     return sum(1 for s in _live_servers(store, quest_id) if s.kind == "paper")
 
 
-def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, str]:
-    """``(anchored entry count, experiment fingerprint)`` over the quest's
+def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, list[str]]:
+    """``(anchored entry count, experiment fingerprints)`` over the quest's
     dialectic record.
 
     Dialectic *entries* are the anchored record — a support/counter clause
     only lands past the anchor gate at apply (``_has_anchor_handle``), an
     ``experiment`` entry is a proposed discriminating test — so a new entry
     is new evidence (a supported objection), never a restatement. The
-    fingerprint catches an ``experiment`` upsert revising an existing
-    entry in place (the entry count alone is blind to an in-place edit).
-    ``("", "")`` when the quest has no dossier.
+    per-entry fingerprint (:func:`dossier._experiment_key`) is the test's
+    discriminating-parameter signature, so an ``experiment`` upsert that
+    revises an entry in place (the count alone is blind to it) counts only
+    when it proposes a test signature the quest has not tried before —
+    a paraphrase, and a flip back to an already-proposed test, keep the
+    same key. ``(0, [])`` when the quest has no dossier.
     """
     from precis.quest import dossier as dossier_mod
 
     did = dossier_mod.dossier_ref_id(store, quest_id)
     if did is None:
-        return 0, ""
+        return 0, []
     n_entries = 0
-    exp_texts: list[str] = []
+    exp_keys: set[str] = set()
     for b in store.chunks.list_chunks_for_ref(did):
         meta = b.meta or {}
         if meta.get("pinned") != "dialectic-entry":
@@ -116,13 +122,8 @@ def _dialectic_counts(store: Store, quest_id: int) -> tuple[int, str]:
             continue
         n_entries += 1
         if role == "experiment":
-            exp_texts.append(b.text or "")
-    sig = ""
-    if exp_texts:
-        sig = hashlib.sha1("\x00".join(sorted(exp_texts)).encode("utf-8")).hexdigest()[
-            :16
-        ]
-    return n_entries, sig
+            exp_keys.add(dossier_mod._experiment_key(b.text or ""))
+    return n_entries, sorted(exp_keys)
 
 
 def escalation_signal(store: Store, quest_id: int) -> Escalation:
@@ -197,9 +198,12 @@ def update_cascade_state(store: Store, quest_id: int, *, reviewed: bool) -> floa
     #   `gaps._answers_hypothesis`: a bare `by=agent` dead-end is
     #   restatement, not resolution) · a paper server was acquired (a lit
     #   search paid off) · a new anchored dialectic entry (a supported
-    #   objection/support) · a discriminating experiment proposed or
-    #   revised (a proposed test — the fingerprint catches the in-place
-    #   upsert edit a bare count would miss). Activity alone — more
+    #   objection/support) · a discriminating experiment revised into a
+    #   test signature the quest has NOT proposed before (`experiment_sigs`
+    #   is the seen-set — a paraphrase keeps its signature, and flip-flopping
+    #   between two already-proposed tests mints no new one; apply-level,
+    #   `dossier._same_proposed_test` refuses the wording-only rewrite
+    #   outright). Activity alone — more
     #   hypotheses, a rewritten dossier, restated kills, links re-minted
     #   among already-linked nodes — is NOT progress: that is exactly the
     #   paraphrase sweep gr626871 closes off.
@@ -207,13 +211,17 @@ def update_cascade_state(store: Store, quest_id: int, *, reviewed: bool) -> floa
     n_results = _n_results(store, quest_id)
     n_open_hyp = _n_open_hypotheses(store, quest_id)
     n_papers = _n_paper_servers(store, quest_id)
-    n_dialectic, experiment_sig = _dialectic_counts(store, quest_id)
+    n_dialectic, experiment_keys = _dialectic_counts(store, quest_id)
     patch["milestones_seen"] = n_milestones
     patch["results_seen"] = n_results
     patch["open_hyp_seen"] = n_open_hyp
     patch["paper_servers_seen"] = n_papers
     patch["dialectic_seen"] = n_dialectic
-    patch["experiment_sig"] = experiment_sig
+    seen_experiments = {str(k) for k in (meta.get("experiment_sigs") or [])}
+    novel_experiments = [k for k in experiment_keys if k not in seen_experiments]
+    patch["experiment_sigs"] = sorted(seen_experiments | set(experiment_keys))[
+        -_EXPERIMENT_SIGS_MAX:
+    ]
 
     frontier_improved = False
     if curr_best is not None:
@@ -231,9 +239,7 @@ def update_cascade_state(store: Store, quest_id: int, *, reviewed: bool) -> floa
         or n_open_hyp < int(meta.get("open_hyp_seen", n_open_hyp) or n_open_hyp)
         or n_papers > int(meta.get("paper_servers_seen", 0) or 0)
         or n_dialectic > int(meta.get("dialectic_seen", 0) or 0)
-        or bool(
-            experiment_sig and experiment_sig != str(meta.get("experiment_sig") or "")
-        )
+        or bool(novel_experiments)
     )
     patch["ticks_since_frontier_improve"] = (
         0

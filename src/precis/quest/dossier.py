@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -105,7 +106,7 @@ from precis.quest.directions import (
     _UNPLACED_PARENT_SHOW_CHARS,  # noqa: F401  (re-export)
     AttemptNode,
     _do_not_repropose_lines,  # noqa: F401  (re-export)
-    _element_signature,  # noqa: F401  (re-export)
+    _element_signature,
     _elements_conflict,  # noqa: F401  (re-export)
     _find_near_dup_node,
     _flatten_with_parent,
@@ -117,7 +118,7 @@ from precis.quest.directions import (
     _prefix_query,  # noqa: F401  (re-export)
     _render_ledger,
     _resolve_text,  # noqa: F401  (re-export)
-    _sig_tokens,  # noqa: F401  (re-export)
+    _sig_tokens,
     _subtree_all_dead,  # noqa: F401  (re-export)
     _subtree_size,  # noqa: F401  (re-export)
     ledger_do_not_repropose,
@@ -1416,6 +1417,53 @@ def _ensure_dialectic_block(
     return block, True
 
 
+def _experiment_signature(text: str) -> frozenset[str]:
+    """The discriminating-parameter signature of a proposed test — the
+    tokens a paraphrase KEEPS and a substantive revision changes:
+    digit-bearing words (conditions: ``600``, ``0.5``, ``n4``, ``13co`` —
+    NFKC folds sub/superscripts so ``N₄`` and ``¹³CO`` count), two-letter
+    element symbols (:func:`_element_signature`), and ALL-CAPS acronyms
+    (techniques: XPS, STM, DFT). Rewording a proposal preserves all three;
+    changing a condition, the chemistry or the technique breaks at least
+    one. What the signature cannot separate lexically — a direction flip
+    ("rises" vs "drops") at identical parameters — it deliberately
+    ignores."""
+    norm = unicodedata.normalize("NFKC", text or "")
+    sig: set[str] = set()
+    for tok in re.findall(r"[A-Za-z0-9]+", norm):
+        if any(c.isdigit() for c in tok) or (len(tok) >= 2 and tok.isupper()):
+            sig.add(tok.lower())
+    sig.update(s.lower() for s in _element_signature(norm))
+    return frozenset(sig)
+
+
+def _experiment_key(text: str) -> str:
+    """The proposed test's fingerprint for the stall clock — built on the
+    discriminating signature so a reworded re-proposal hashes to the SAME
+    key and earns no progress. A parameter-free proposal (empty signature)
+    falls back to its significant-token set so a verbatim repeat still
+    dedups — a pure rewording there is a sweep no lexical measure can
+    separate from a new idea."""
+    sig = _experiment_signature(text)
+    if sig:
+        return "p:" + ",".join(sorted(sig))
+    return "t:" + ",".join(sorted(_sig_tokens(text)))
+
+
+def _same_proposed_test(old: str, new: str) -> bool:
+    """True when ``new`` restates the test ``old`` already proposes — a
+    paraphrase, not a substantive advance. Equal signatures say "same
+    conditions, same chemistry, same technique": the wording difference
+    carries no new pre-registration. When neither text carries a
+    discriminating token (both signatures empty — a parameter-free
+    proposal), the ledger's near-dup measure (:func:`_is_near_dup`) is the
+    fallback."""
+    old_sig, new_sig = _experiment_signature(old), _experiment_signature(new)
+    if old_sig or new_sig:
+        return old_sig == new_sig
+    return _is_near_dup(new, [old])
+
+
 def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
     """Apply one ``dialectic_ops`` payload entry; return ``True`` iff it
     changed something. Ops address blocks by the hypothesis's **fi handle**
@@ -1432,6 +1480,10 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
     * ``experiment`` — upsert IN PLACE (one discriminating experiment per
       block; ``predicts`` — the pre-registered branch predictions — is
       folded into the text). Editing keeps the entry chunk's ``dc`` id.
+      A rewrite whose discriminating-parameter signature is unchanged —
+      the same test reworded (:func:`_same_proposed_test`) — is a silent
+      no-op: the record already carries that proposal, and churning its
+      wording is not an advance.
     * ``settle`` — collapse the block's render to ``text`` (one linked
       sentence; entries kept as history). Optional ``ruling`` handle is
       recorded on the block.
@@ -1494,7 +1546,7 @@ def apply_dialectic_op(store: Store, owner_id: int, op: dict[str, Any]) -> bool:
             text = f"{text} (predicts: {predicts})"
         existing = next((e for e in block.entries if e.role == "experiment"), None)
         if existing is not None:
-            if existing.text == text:
+            if existing.text == text or _same_proposed_test(existing.text, text):
                 return False
             assert existing.handle is not None
             store.drafts.edit_text(
