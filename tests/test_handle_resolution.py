@@ -740,3 +740,33 @@ def test_surface_get_unknown_job_chunk_handle_is_not_found(
     )
     assert is_error
     assert "chunk" in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_surface_eye_get_of_quest_chunk_handle_keeps_the_entry(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td628398 regression: the owner redirect for a numeric-kind chunk
+    handle must not swallow an eye get — ``extent=`` on ``ql<N>`` focuses
+    the logbook entry's text, not the quest's gist."""
+    from precis.quest.logbook import append_entry
+
+    quest = store.insert_ref(kind="quest", slug=None, title="Entry focus")
+    append_entry(store, quest.id, text="first entry", entry_type="note", by="agent")
+    append_entry(
+        store, quest.id, text="entry body marker", entry_type="note", by="agent"
+    )
+    entry = store.chunks.list_chunks_for_ref(quest.id)[1]
+    h = handle_registry.format_handle("quest", entry.id, chunk=True)
+    assert h[:2] == "ql"
+
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "quest", "id": h, "extent": "fisheye"}
+    )
+    assert not is_error, out
+    assert "entry body marker" in out
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"id": h, "extent": "fisheye"}
+    )
+    assert not is_error, out
+    assert "entry body marker" in out

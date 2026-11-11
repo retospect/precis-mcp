@@ -191,6 +191,7 @@ HUMAN_ONLY_PATHS: tuple[str, ...] = (
     "deploy/roles/precis_watch/templates/precis-watch.plist.j2",
     "deploy/roles/precis_watch/templates/precis-watch.service.j2",
     "deploy/roles/precis_web/defaults/main.yml",
+    "deploy/roles/precis_web/tasks/main.yml",
     "deploy/roles/precis_web/tasks/migrate.yml",
     "deploy/roles/precis_web/tasks/public-mcp.yml",
     "deploy/roles/precis_web/templates/precis-web.plist.j2",

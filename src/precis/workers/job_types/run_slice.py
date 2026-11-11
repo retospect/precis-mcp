@@ -1323,7 +1323,13 @@ def render_brief(
         "work only (`git diff origin/main...`, `git merge-tree`): commit "
         "first (amend after any fix). A `merge-tree` exit 1 lists the paths "
         "that conflict with `origin/main` — merge or rebase `origin/main`, "
-        "resolve them, re-run the lint, before you hand off.",
+        "resolve them, re-run the lint, before you hand off. A migration "
+        "number a sibling slice took first is NOT a conflict to fix by hand "
+        "(gr627889): leave your file as minted. The land renumbers a "
+        "migration you added to `origin/main`'s next free number (file name "
+        "and its own `-- NNNN_name.sql` header) and refuses only an edited, "
+        "duplicated or already-landed one; a merge commit on the branch is "
+        "fine too, the land squashes it away.",
         "",
         "Fix every report and re-run until all are clean — do not commit "
         "while any step is red. End your final message with exactly one "

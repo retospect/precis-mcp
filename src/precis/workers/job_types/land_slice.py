@@ -702,7 +702,15 @@ def _node_subject(store: Any, todo_id: int) -> str | None:
 
 
 def _branch_subjects(tree: Path) -> list[str] | None:
-    proc = _git(["log", "--reverse", "--format=%s", "origin/main..HEAD"], tree)
+    """The branch's own commit subjects, oldest first. Merge commits are
+    skipped (gr627889): the land squashes the branch, so a builder's
+    ``Merge origin/main into slice/...`` resolving a collision is not a
+    candidate squash subject (it failed ship's ``type(scope):`` lint three
+    times a chain); ``scripts/ship`` resolves its own message the same way
+    (``--no-merges``)."""
+    proc = _git(
+        ["log", "--reverse", "--no-merges", "--format=%s", "origin/main..HEAD"], tree
+    )
     if proc.returncode != 0:
         return None
     return proc.stdout.splitlines()

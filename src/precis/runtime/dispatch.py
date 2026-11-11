@@ -532,6 +532,21 @@ def _eye_extent(args: dict[str, Any]) -> str | None:
     return str(view) if is_eye_view(view if view is None else str(view)) else None
 
 
+def _asks_for_eye(args: dict[str, Any]) -> bool:
+    """Whether ``args`` is a ``get`` for the eye ladder — the read-only
+    twin of :func:`_eye_extent`, for the id-inference pass that runs
+    before ``_invoke_handler`` pops ``extent=``."""
+    from precis.handlers._eye import is_eye_view
+
+    extras = args.get(_EXTRAS_KEY)
+    if args.get("extent") is not None or (
+        isinstance(extras, dict) and extras.get("extent") is not None
+    ):
+        return True
+    view = args.get("view")
+    return view is not None and is_eye_view(str(view))
+
+
 @functools.cache
 def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
     """Every kwarg ``cls().<verb>(...)`` can actually consume (gr334695).
@@ -4704,10 +4719,21 @@ class DispatchMixin(RuntimeShape):
                 # one readable thing — the owning ref — so route it there
                 # (gr593338) rather than falling through to a bare "id must
                 # be an integer" that can't say WHICH ref owns the chunk.
-                # Two carve-outs keep old behaviour: ``delete`` never
+                # Three carve-outs keep old behaviour: ``delete`` never
                 # redirects a handle silently (see
-                # ``_refuse_superseded_delete``), and a selector suffix
-                # (``jc<N>~2``) selects nothing on a chunk.
+                # ``_refuse_superseded_delete``), a selector suffix
+                # (``jc<N>~2``) selects nothing on a chunk, and an eye
+                # get (``extent=``) keeps the raw handle — the eye
+                # focuses the chunk itself (a quest ``ql<N>`` entry's
+                # text, not the quest's gist).
+                if (
+                    verb != "delete"
+                    and resolved.chunk_ord is not None
+                    and _asks_for_eye(args)
+                ):
+                    args["kind"] = resolved.kind
+                    args["id"] = ident
+                    return True
                 if not suffix and resolved.chunk_ord is not None and verb != "delete":
                     from precis.hints import chunk_owner_hint
 

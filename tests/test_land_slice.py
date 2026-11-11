@@ -7,6 +7,7 @@ the real detached launcher. No DB, no real git, no real scripts/ship.
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -377,6 +378,46 @@ def test_squash_subject_picks_the_slice_commit() -> None:
     assert land_slice.squash_subject(["  ", ""], 42) is None
 
 
+def test_merge_commit_never_labels_the_squash(tmp_path: Path) -> None:
+    """gr627889: a builder resolves a migration collision with `git merge
+    origin/main`; the merge's `Merge origin/main into slice/N` subject used to
+    be the newest subject, so the land passed it to ship's type(scope) lint
+    and failed. Real git: the branch lands under its own commit's subject."""
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, **env},
+        )
+
+    git("init", "-q", "-b", "main")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    git("switch", "-q", "-c", "slice/42")
+    git("commit", "-q", "--allow-empty", "-m", "feat(x): widget")
+    git("switch", "-q", "main")
+    git("commit", "-q", "--allow-empty", "-m", "feat(y): sibling lands first")
+    git("update-ref", "refs/remotes/origin/main", "main")
+    git("switch", "-q", "slice/42")
+    git("merge", "-q", "--no-ff", "-m", "Merge origin/main into slice/42", "main")
+
+    subjects = land_slice._branch_subjects(tmp_path)
+    assert subjects == ["feat(x): widget"]
+    assert land_slice.squash_subject(subjects or [], 42) == "feat(x): widget (td42)"
+
+
 def test_squash_subject_prefers_the_stated_subject() -> None:
     """gr574383: the brief's `subject:` line beats every commit subject."""
     assert (
@@ -513,9 +554,10 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
         f"(gate_n={land_slice.DEFAULT_TEST_NPROC}, "
         f"slots={land_slice.DEFAULT_LAND_GATE_SLOTS})"
     )
-    assert (["log", "--reverse", "--format=%s", "origin/main..HEAD"], tree) in seams[
-        "git"
-    ]
+    assert (
+        ["log", "--reverse", "--no-merges", "--format=%s", "origin/main..HEAD"],
+        tree,
+    ) in seams["git"]
 
 
 def test_submit_uses_the_stated_subject(seams: dict[str, Any]) -> None:

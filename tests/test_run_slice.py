@@ -7422,3 +7422,20 @@ def test_poll_claude_stamps_envelope_usage(
     assert usage["cost_usd"] == 0.42
     assert usage["input_tokens"] == 1234.0
     assert usage["num_turns"] == 7.0
+
+
+def test_render_brief_says_the_land_renumbers_a_migration_collision() -> None:
+    """gr627889: sibling slices mint the same next migration number; the
+    builder is told to leave it (the land renumbers) and that a merge commit is
+    fine, not to hand-renumber or resolve it into a non-conventional merge."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Build the widget",
+        body="Do X.",
+        latest=None,
+        lane="claude-sub",
+        model="m",
+        effort="high",
+    )
+    assert "The land renumbers a migration you added" in brief
+    assert "a merge commit on the branch is fine too" in brief

@@ -109,7 +109,9 @@ _EXEMPT: dict[str, str] = {
     "handlers/material.py::_search_entities": "catalog rows — sweep follow-up",
     "handlers/part.py::_categories_view": "catalog categories, not rows",
     "handlers/folder.py::_render_one": "folder rows — sweep follow-up",
-    "handlers/taxon.py::_render_meta_view": "vocab rows, not bodies",
+    "handlers/taxon.py::_render_meta_inventory": (
+        "vocab node card-fields (unit/conditions/axis), not bodies"
+    ),
     "handlers/_slug_ref_shared.py::render_slug_ref_list": (
         "generic /recent list — Ref carries no stored byte length and a "
         "bulk body-byte read per browse list is the never-query shape"

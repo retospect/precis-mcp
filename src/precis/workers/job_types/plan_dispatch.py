@@ -609,7 +609,10 @@ _MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
             r"|migration number collision",
             re.IGNORECASE,
         ),
-        "renumber the migration to the next free number on origin/main",
+        "merge origin/main into the branch so its scripts/ship carries the "
+        "land-time renumber (it moves a plain add to the next free number "
+        "itself; a merge commit is fine); if the land still refuses, the "
+        "migration is edited, duplicated or already on main: fix that",
     ),
     (
         "squawk",
