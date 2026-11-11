@@ -86,10 +86,23 @@ trap on_exit EXIT
 # was simply slow (an NFS hang mid-rsync easily clears 20 h). A lock with
 # no pid yet (crashed between mkdir and the pid write) gets a short grace
 # period before being treated as dead.
+#
+# A bare `kill -0` also reads a live pid owned by another user as dead:
+# it fails with EPERM (process exists, not ours to signal), same as ESRCH
+# (no such process) — the exact hole lock-holder.sh's own header calls
+# out and scripts/deploy already carries the fix for. This script runs as
+# a single fixed user today, but the EPERM branch costs nothing and keeps
+# the inline copy honest if that ever changes.
+lock_pid_alive() {
+    local err
+    if err="$(export LC_ALL=C; kill -0 "$1" 2>&1)"; then return 0; fi
+    [[ "$err" == *"not permitted"* ]]
+}
+
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
     LOCK_PID=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
     if [ -n "${LOCK_PID}" ]; then
-        if kill -0 "${LOCK_PID}" 2>/dev/null; then
+        if lock_pid_alive "${LOCK_PID}"; then
             echo "[$(date -u)] another pg_backup_dir run holds ${LOCK_DIR} (pid ${LOCK_PID}); exiting"
             exit 0
         fi

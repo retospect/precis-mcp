@@ -219,3 +219,20 @@ never printed.
   (or a pidless lock past a short grace period) and wait on a live pid
   however long it has been held. Covered by
   `test_pg_backup_dir_waits_on_an_old_but_alive_lock`.
+- Fix 2026-11-11 (same day, follow-up): the liveness check itself in both
+  templates was a bare `kill -0 "${LOCK_PID}" 2>/dev/null`, which reads a
+  live pid owned by another user the same as a dead one: EPERM
+  (`operation not permitted`) and ESRCH (no such process) both make
+  `kill -0` fail, and only the error text tells them apart.
+  `scripts/lib/lock-holder.sh` documents this exact hole and
+  `scripts/deploy` already carries the fix (the 2026-09-27 render-tree
+  signature); the backup templates reimplement the lock inline (they
+  ship to hosts outside this repo's checkout) and had not picked it up.
+  Both scripts now use a `lock_pid_alive` helper that checks the `kill
+  -0` error text for `not permitted` before treating a pid as dead,
+  ported from `lock_pid_alive()` in `scripts/lib/lock-holder.sh`. Covered
+  by `test_pg_backup_dir_does_not_steal_a_lock_held_by_pid_1` (executes
+  the rendered bash script against pid 1, always alive and unsignalable
+  by a non-root test run) and `test_restic_dbdump_lock_check_handles_eperm`
+  (static assertion — restic-dbdump.sh.j2's `STATE_DIR`/`LOCK_DIR` are
+  not parameterized for execution tests).

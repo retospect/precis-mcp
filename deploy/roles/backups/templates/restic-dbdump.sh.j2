@@ -56,11 +56,21 @@ mkdir -p "${STATE_DIR}"
 # Same mkdir-lock pattern as the DB-node script: no self-overlap, and only
 # a provably dead pid is reclaimed (age alone is not proof — see that
 # script's header; a `restic copy` into a wedged B2 connection can run far
-# past any age threshold without being dead).
+# past any age threshold without being dead). A bare `kill -0` also reads
+# a live pid owned by another user as dead (EPERM, not ESRCH) — same hole
+# lock-holder.sh documents; see that script's header for the fix.
+lock_pid_alive() {
+    err=$(LC_ALL=C kill -0 "$1" 2>&1) && return 0
+    case "${err}" in
+        *"not permitted"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
     LOCK_PID=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
     if [ -n "${LOCK_PID}" ]; then
-        if kill -0 "${LOCK_PID}" 2>/dev/null; then
+        if lock_pid_alive "${LOCK_PID}"; then
             exit 0
         fi
     elif [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -2 2>/dev/null)" ]; then

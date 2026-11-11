@@ -296,6 +296,21 @@ def test_pg_backup_dir_waits_on_an_old_but_alive_lock(tmp_path: Path) -> None:
     assert (lock / "pid").read_text(encoding="utf-8") == str(os.getpid())
 
 
+def test_pg_backup_dir_does_not_steal_a_lock_held_by_pid_1(tmp_path: Path) -> None:
+    # pid 1 is always alive and, outside a root container, never signalable
+    # by this process: a bare `kill -0` fails with EPERM, indistinguishable
+    # from ESRCH (no such process) unless the error text is checked — the
+    # same hole lock-holder.sh documents and scripts/deploy already fixed.
+    # Misreading EPERM as dead would steal a live holder's lock and destroy
+    # its in-flight staging dir.
+    result, staging, lock = _run_backup_dir(tmp_path, held_lock="1")
+    assert result.returncode == 0, result.stderr
+    assert "another pg_backup_dir run holds" in result.stdout
+    assert (staging / "original").read_text(encoding="utf-8") == "another run"
+    assert lock.is_dir()
+    assert (lock / "pid").read_text(encoding="utf-8") == "1"
+
+
 @pytest.mark.parametrize(("dump_exit", "rsync_exit"), [(17, 0), (0, 23)])
 def test_pg_backup_dir_failure_reclaims_owned_staging_and_keeps_status(
     tmp_path: Path, dump_exit: int, rsync_exit: int
@@ -324,6 +339,19 @@ def test_pg_backup_dir_releases_lock_after_staging_cleanup(tmp_path: Path) -> No
     assert result.returncode == 17, result.stderr
     assert (staging / "successor").read_text(encoding="utf-8") == "successor\n"
     assert (lock / "pid").read_text(encoding="utf-8") == "successor\n"
+
+
+def test_restic_dbdump_lock_check_handles_eperm() -> None:
+    # Same EPERM hole as the DB-node script: a bare `kill -0` fails
+    # identically for "no such process" and "process exists, not mine to
+    # signal" (owned by another user) — lock-holder.sh's own header names
+    # this as the fix already shipped in scripts/deploy. An unguarded
+    # `kill -0 "${LOCK_PID}" 2>/dev/null` would steal a live holder's lock.
+    out = _render("restic-dbdump.sh.j2")
+    assert "lock_pid_alive" in out
+    assert 'kill -0 "${LOCK_PID}" 2>/dev/null' not in out
+    assert "not permitted" in out
+    assert 'if lock_pid_alive "${LOCK_PID}"; then' in out
 
 
 def test_restic_dbdump_snapshot_copy_forget_and_stamps() -> None:
