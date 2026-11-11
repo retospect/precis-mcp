@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import jinja2
@@ -146,11 +147,15 @@ def test_pg_backup_dir_rsync_sends_only_diffs() -> None:
 
 def test_pg_backup_dir_cannot_overlap_itself() -> None:
     out = _render("pg_backup_dir.sh.j2")
-    # mkdir lock (macOS has no flock), pid liveness, stale-lock reclaim.
+    # mkdir lock (macOS has no flock), pid liveness, dead-pid reclaim. Age
+    # alone must never steal a lock whose pid is still alive (the defect
+    # scripts/lib/lock-holder.sh documents and fixed in four other
+    # scripts) — there is no "-mmin -1200"-style wait-vs-steal gate on a
+    # parseable pid.
     assert 'mkdir "${LOCK_DIR}"' in out
     assert "kill -0" in out
-    assert "-mmin -1200" in out
-    assert "breaking stale/dead lock" in out
+    assert "breaking dead-pid lock" in out
+    assert "-mmin -1200" not in out
 
 
 def test_pg_backup_dir_refuses_an_unmounted_dbbackup() -> None:
@@ -182,6 +187,7 @@ def _run_backup_dir(
     rsync_exit: int = 0,
     replace_lock: bool = False,
     successor_on_release: bool = False,
+    lock_age_minutes: float | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     if sys.platform == "win32":
         pytest.skip("POSIX-only: runs the rendered bash backup script")
@@ -195,6 +201,9 @@ def _run_backup_dir(
         lock.mkdir()
         if held_lock is not None:
             (lock / "pid").write_text(held_lock, encoding="utf-8")
+        if lock_age_minutes is not None:
+            old = time.time() - lock_age_minutes * 60
+            os.utime(lock, (old, old))
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -271,6 +280,20 @@ def test_pg_backup_dir_contender_preserves_holder_staging(
         assert (lock / "pid").read_text(encoding="utf-8") == pid
     else:
         assert not (lock / "pid").exists()
+
+
+def test_pg_backup_dir_waits_on_an_old_but_alive_lock(tmp_path: Path) -> None:
+    # The lock-holder.sh defect, ported here: a lock older than the old
+    # 20 h age threshold must still be waited on, not stolen, as long as
+    # its pid is alive. An NFS hang mid-rsync easily clears 20 h.
+    result, staging, lock = _run_backup_dir(
+        tmp_path, held_lock=str(os.getpid()), lock_age_minutes=2000
+    )
+    assert result.returncode == 0, result.stderr
+    assert "another pg_backup_dir run holds" in result.stdout
+    assert (staging / "original").read_text(encoding="utf-8") == "another run"
+    assert lock.is_dir()
+    assert (lock / "pid").read_text(encoding="utf-8") == str(os.getpid())
 
 
 @pytest.mark.parametrize(("dump_exit", "rsync_exit"), [(17, 0), (0, 23)])

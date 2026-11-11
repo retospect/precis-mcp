@@ -76,22 +76,31 @@ trap on_exit EXIT
 
 # ── No self-overlap ──
 # mkdir is the atomic primitive available everywhere (macOS ships no
-# flock(1)). A second tick while a run is in flight exits quietly; a lock
-# older than 20 h is a wedged or dead run — reclaim it so one bad night
-# can't stall the chain forever.
+# flock(1)). A second tick while a run is in flight exits quietly. Only a
+# provably dead pid gets reclaimed — age alone is never proof a holder is
+# gone: scripts/lib/lock-holder.sh documents the same defect, found and
+# fixed independently in four other scripts (ship, ship-lock, gate-slot,
+# deploy), where the "wait" branch required both a recent mtime AND a
+# live pid, so any hold older than the age threshold fell through to the
+# steal branch even with a live, parseable pid — stealing from a run that
+# was simply slow (an NFS hang mid-rsync easily clears 20 h). A lock with
+# no pid yet (crashed between mkdir and the pid write) gets a short grace
+# period before being treated as dead.
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
     LOCK_PID=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
-    if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -1200 2>/dev/null)" ] \
-        && [ -n "${LOCK_PID}" ] && kill -0 "${LOCK_PID}" 2>/dev/null; then
-        echo "[$(date -u)] another pg_backup_dir run holds ${LOCK_DIR} (pid ${LOCK_PID}); exiting"
-        exit 0
-    fi
-    if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -2 2>/dev/null)" ] && [ -z "${LOCK_PID}" ]; then
+    if [ -n "${LOCK_PID}" ]; then
+        if kill -0 "${LOCK_PID}" 2>/dev/null; then
+            echo "[$(date -u)] another pg_backup_dir run holds ${LOCK_DIR} (pid ${LOCK_PID}); exiting"
+            exit 0
+        fi
+        echo "[$(date -u)] breaking dead-pid lock ${LOCK_DIR} (pid ${LOCK_PID} no longer running)"
+    elif [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -2 2>/dev/null)" ]; then
         # Holder is between mkdir and writing its pid — leave it to them.
         echo "[$(date -u)] fresh lock without pid; leaving it to the holder"
         exit 0
+    else
+        echo "[$(date -u)] breaking stale pidless lock ${LOCK_DIR}"
     fi
-    echo "[$(date -u)] breaking stale/dead lock ${LOCK_DIR}"
     rm -rf "${LOCK_DIR}"
     mkdir "${LOCK_DIR}" 2>/dev/null || { echo "[$(date -u)] lost the lock race; exiting"; exit 0; }
 fi

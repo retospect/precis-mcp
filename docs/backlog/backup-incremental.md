@@ -204,3 +204,18 @@ never printed.
   the run, then releases the lock, preserving the failing exit status.
   Rendered-script execution tests cover held/pidless locks, failed dump
   and rsync, a replaced lock PID and a successor starting at lock release.
+- Fix 2026-11-11: `pg_backup_dir.sh.j2` and `restic-dbdump.sh.j2` both
+  reclaimed their mkdir lock once it was older than 20 h even when the
+  recorded pid was still alive — the "wait" branch required *both* a
+  recent mtime and a live pid, so any hold past the age threshold fell
+  through to the steal branch regardless of liveness. This is the exact
+  defect `scripts/lib/lock-holder.sh` documents and already fixed,
+  independently discovered, in four other scripts (ship, ship-lock,
+  gate-slot, deploy); the backup templates were a fifth, unfixed copy.
+  An NFS hang mid-rsync or a wedged B2 connection during `restic copy`
+  can both run well past 20 h without the holder being dead, which would
+  let a second run start concurrently against the same dump/rsync/restic
+  paths. Both scripts now reclaim the lock only on a provably dead pid
+  (or a pidless lock past a short grace period) and wait on a live pid
+  however long it has been held. Covered by
+  `test_pg_backup_dir_waits_on_an_old_but_alive_lock`.

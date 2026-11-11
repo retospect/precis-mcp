@@ -32,9 +32,8 @@ elsewhere. Four things, in order:
 4. **mesh extras**: facet tags, cited primaries, disputes, and one
    closing paper note that records the pass.
 
-Reading *for a question* across several papers is
-`get(kind='skill', id='precis-read-for-question')`; it shares this
-skill's hub door. Use this one when the paper itself is the job.
+Reading *for a question* across several papers is [[precis-read-for-question]];
+it shares this skill's hub door. Use this one when the paper itself is the job.
 
 ## Step 0 — was it already read?
 ## Make a re-run add nothing
@@ -61,7 +60,7 @@ get(kind="paper", id="pa<id>", view="measures")  # numbers extraction already ca
 Fewer than about twenty body chunks: read whole. Otherwise read methods,
 results, tables and conclusions; introduction and related work are
 orientation, never grounding
-(`get(kind='skill', id='precis-check-source-help')`). A review paper is
+([[precis-check-source-help]]). A review paper is
 read for the primaries it attributes results to, not for hubs — see
 step 5.
 

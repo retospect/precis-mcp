@@ -53,12 +53,17 @@ RETENTION="--keep-daily 14 --keep-weekly 8 --keep-monthly 12"
 
 mkdir -p "${STATE_DIR}"
 
-# Same mkdir-lock pattern as the DB-node script: no self-overlap, stale
-# locks (>20 h) reclaimed.
+# Same mkdir-lock pattern as the DB-node script: no self-overlap, and only
+# a provably dead pid is reclaimed (age alone is not proof — see that
+# script's header; a `restic copy` into a wedged B2 connection can run far
+# past any age threshold without being dead).
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
     LOCK_PID=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
-    if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -1200 2>/dev/null)" ] \
-        && [ -n "${LOCK_PID}" ] && kill -0 "${LOCK_PID}" 2>/dev/null; then
+    if [ -n "${LOCK_PID}" ]; then
+        if kill -0 "${LOCK_PID}" 2>/dev/null; then
+            exit 0
+        fi
+    elif [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin -2 2>/dev/null)" ]; then
         exit 0
     fi
     rm -rf "${LOCK_DIR}"
