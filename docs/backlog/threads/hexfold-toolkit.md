@@ -767,7 +767,7 @@ removed as met — the transport move it waited on happened 09-29)
    features; dimer chain is the PRL-erratum junction motif). Still open
    there: seam vertices (the box-corner counting argument) and the
    isolation band.
-11. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
+11. **spec `me628772` + `me629057`** (was backlog/hexfold-instrumentation-leg.md) — the instrumented first
     lining the valve spec's Q2 (`me628980`, item 9) needs to decide
     scrubber cadence; sequenced right after the seam it instruments.
 12. **`spec.md` §28.5–28.6 smooth solve + direction field** — owned by

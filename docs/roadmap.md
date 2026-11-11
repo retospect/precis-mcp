@@ -162,13 +162,13 @@ non-geometric region layer, decided 2026-09-30).
 ratchet valve** (`hexfold` spec §28); the **T-handle bearing**
 (`backlog/hexfold-t-handle-bearing.md`, third piece, Reto 2026-09-30); the
 **torus with an instrumentation leg**
-(`backlog/hexfold-instrumentation-leg.md`); **DNA scaffold around a carbon
+(graph memory under spec `me628772`); **DNA scaffold around a carbon
 part** (`backlog/se-chain-wrap-around-part.md`); the cross-scale flagship,
 a bistable azobenzene driving a folding-chair tensegrity switched by two
 wavelengths (spec `me628475` Addendum A1); the running mechanical example, the
 unicycle. Authored smooth surfaces and their carbon tiling are tracked by the
 carbon-topology spec `me628772` (group `me628775`); instrumentation integration
-remains `backlog/hexfold-instrumentation-leg.md`. A generated surface alone
+lives beside `me629057` in graph memory. A generated surface alone
 does not establish relaxed carbon stability.
 
 **Where it stands.** The geometry and assembly half is real (hierarchy
