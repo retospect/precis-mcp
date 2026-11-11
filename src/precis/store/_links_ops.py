@@ -590,6 +590,72 @@ def _edge_evidence_pins(meta: dict[str, Any] | None) -> list[str]:
     return pins
 
 
+#: The reviewed-obvious link reason (gr626896): ``meta.reason = '.'``
+#: declares "I looked; the relation itself is the whole story". The
+#: spelled-out ``'reviewed-obvious'`` form is canonicalised to it at write
+#: time so every read surface renders a period.
+LINK_REASON_OBVIOUS = "."
+
+
+def _ws_collapse(text: str) -> str:
+    """Whitespace-normalise for the reason-duplication check: collapse every
+    whitespace run to one space and strip. Conservative by contract — case,
+    punctuation, negation and numbers all still distinguish (gr626896)."""
+    return " ".join(text.split())
+
+
+def _endpoint_display_texts(title: Any, meta: Any) -> list[tuple[str, str]]:
+    """``(field name, text)`` pairs a link row / ring neighbour displays for
+    an endpoint: its ``title``, the ``meta.hook`` index line, and a part's
+    ``datasheet_facts.brief.one_line`` distillation (``_neighbor_label``)."""
+    out = [("title", str(title or ""))]
+    m = meta if isinstance(meta, dict) else {}
+    hook = m.get("hook")
+    if isinstance(hook, str):
+        out.append(("summary", hook))
+    brief = (m.get("datasheet_facts") or {}).get("brief") or {}
+    one = brief.get("one_line") if isinstance(brief, dict) else None
+    if isinstance(one, str):
+        out.append(("summary", one))
+    return out
+
+
+def _check_reason_contribution(
+    c: Connection, meta: dict[str, Any] | None, *, src_ref_id: int, dst_ref_id: int
+) -> None:
+    """gr626896: refuse a ``meta.reason`` that restates an endpoint's title
+    or displayed summary verbatim (whitespace aside). A link explanation is
+    for incremental information — what the edge adds beyond what the row
+    already shows — so a literal copy carries nothing. Deliberately
+    equality-only after whitespace collapse: no bag-of-words gate, so the
+    same vocabulary in a real bridge passes and changed negation/numbers
+    are never folded away."""
+    reason = (meta or {}).get("reason")
+    if not isinstance(reason, str):
+        return
+    r = _ws_collapse(reason)
+    if not r or r == LINK_REASON_OBVIOUS:
+        return
+    rows = c.execute(
+        "SELECT ref_id, title, meta FROM refs WHERE ref_id = ANY(%s)",
+        ([src_ref_id, dst_ref_id],),
+    ).fetchall()
+    for ref_id, title, rmeta in rows:
+        which = "source" if int(ref_id) == src_ref_id else "target"
+        for field, text in _endpoint_display_texts(title, rmeta):
+            if text and _ws_collapse(text) == r:
+                raise BadInput(
+                    f"meta.reason restates the {which} endpoint's {field} "
+                    f"verbatim ({r!r}) — it adds nothing the displayed "
+                    "context doesn't already say",
+                    next=(
+                        "write the incremental contribution (what this "
+                        "edge adds), or pass reason='.' when the relation "
+                        "itself is the whole story (reviewed-obvious)"
+                    ),
+                )
+
+
 def _card_cosine_distance(
     c: Connection, src_ref_id: int, dst_ref_id: int
 ) -> float | None:
@@ -1161,9 +1227,20 @@ class LinksMixin:
                 "its asserted_fingerprint and records the clear",
             )
 
+        # gr626896: the spelled-out marker canonicalises to '.' so every
+        # read surface renders a period.
+        if (meta or {}).get("reason") == "reviewed-obvious":
+            meta = {**(meta or {}), "reason": LINK_REASON_OBVIOUS}
+
         def _do(c: Connection) -> Link:
             src_chunk_id = _resolve_chunk_id_for_link(c, src_ref_id, src_pos)
             dst_chunk_id = _resolve_chunk_id_for_link(c, dst_ref_id, dst_pos)
+
+            # A reason that restates an endpoint's displayed text adds
+            # nothing — refuse before any write (gr626896).
+            _check_reason_contribution(
+                c, meta, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id
+            )
 
             # Self-loop check: same ref + same chunk endpoint (both
             # NULL ⇒ ref-level self-loop; both same chunk_id ⇒
