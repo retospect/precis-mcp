@@ -892,7 +892,7 @@ async def run_claude_async(
     ``asyncio.create_subprocess_exec`` instead of blocking
     ``subprocess.run``, reading stdout line-by-line as it arrives and
     forwarding each parsed ``stream-json`` event to ``on_event`` (if given)
-    in arrival order. Ported from ``asa_bot.claude_invoke``'s proven
+    in arrival order. Ported from ``asa_bot.claude_invoke``'s proven — third-party: n/a, same-repo port —
     ``_read_stream_json`` / ``_consume`` shape — the one real caller that
     already needed real-time streaming (Discord progress updates).
 

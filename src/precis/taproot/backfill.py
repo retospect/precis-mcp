@@ -137,7 +137,8 @@ _FRAGMENT_WORD_MIN = 6
 _WORD_RE = re.compile(r"\w+")
 
 #: A figure caption's trailing image-reuse pointer — "Reproduced from",
-#: "Adapted from", "Data from" — right before the cite marker it grounds
+#: "Adapted from", "Data from" (third-party: n/a — caption-pointer idiom,
+#: not vendored code) — right before the cite marker it grounds
 #: (gripe 450329). Provenance, not a claim about the world.
 _FIGURE_POINTER_RE = re.compile(
     r"\b(?:reproduced|adapted|data)\s+from\s*$", re.IGNORECASE
@@ -508,7 +509,8 @@ def _bound_to_trailing_sentences(span: str) -> str:
 
 def _is_figure_pointer_span(span_text: str) -> bool:
     """True iff ``span_text`` ends in a figure's provenance-pointer idiom
-    ("Reproduced from"/"Adapted from"/"Data from") right before the cite
+    ("Reproduced from"/"Adapted from"/"Data from" — third-party: n/a —
+    caption-pointer idiom, not vendored code) right before the cite
     marker — an image-reuse trail, not a claim (gripe 450329)."""
     return bool(_FIGURE_POINTER_RE.search(span_text.rstrip()))
 
@@ -1054,10 +1056,11 @@ def _plan_group(
         )
 
     if chunk_kind == "figure" and _is_figure_pointer_span(group.span_text):
-        # A caption's image-reuse trail ("Reproduced from"/"Adapted from"/
-        # "Data from" + [pc/pa<id>]) is provenance, not a claim about the
-        # world — forced no-claim, mechanically, before extract_fn (or a
-        # [pa] group's locate_fn) ever sees it.
+        # A caption's image-reuse trail — third-party: n/a —
+        # ("Reproduced from"/"Adapted from"/"Data from" + [pc/pa<id>])
+        # is provenance, not a claim about the world — forced no-claim,
+        # mechanically, before extract_fn (or a [pa] group's locate_fn)
+        # ever sees it.
         return GroupPlan(
             group=group,
             action="no-claim",

@@ -21,7 +21,8 @@ The score (higher = hotter) is:
   age and parked dups never go stale:
   ``meta.dispatch.severity × (1 + supersedes-linked dups) ×
   min(1 + age_weeks, AGE_FACTOR_CAP)``. The age factor saturates — the
-  dry-run ruling (2026-10-25) ported from band space: an old papercut
+  dry-run ruling (2026-10-25) ported from band space (third-party: n/a —
+  a ruling, not vendored code): an old papercut
   must not climb on age alone.
 * **``meta.dispatch_score``** — a machine-stamped value for refs the
   severity path can't cover: auto-filed gripes

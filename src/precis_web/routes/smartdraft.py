@@ -268,7 +268,8 @@ async def reader(
     )
 
     # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
-    # ported from the classic reader. All reuse the classic /drafts/{ident}/…
+    # ported from the classic reader (third-party: n/a — same-repo port).
+    # All reuse the classic /drafts/{ident}/…
     # endpoints, so this only needs the same context the classic route computes
     # (drafts.detail): reMarkable readiness, the byline editor's prefilled
     # lines, the genre picker's options + current genre/brief, and the
