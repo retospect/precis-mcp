@@ -65,6 +65,16 @@ Each fire:
   Every ``project:`` tag must name a project in :data:`_LANDABLE_PROJECTS`;
   no project tag means ``precis``. Unsupported projects receive one skip
   comment and consume no build slots: the factory cannot land their code.
+* **Release-waiver gripes** (tag :data:`WAIVER_TAG_PREFIX`
+  ``release-waiver:r<N>`` plus ``meta.release_waiver``, filed by
+  :mod:`precis.plans.red_waiver` when the release gate deployed past a
+  known-red test — Reto 2026-11-10: "treated as a broken build") are
+  picked ahead of the rest: no :data:`_MIN_AGE_MINUTES` settle delay, no
+  filer-trust check, minted before — and not counted against — the lane
+  slots, and the chain root carries ``meta.claim_band = release`` so its
+  build and land jobs claim at the release legs' class
+  (``executors/_common._CLASS_RANK_CASE``), ahead of ordinary builds.
+  The hold tags and a live linked todo still apply.
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
   (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
@@ -153,6 +163,22 @@ _AGENT_CLIENT_PREFIX = "claude-code/"
 #: ``meta.filed_by.actor`` prefix of a human account
 #: (:mod:`precis.acting_user`).
 _HUMAN_ACTOR_PREFIX = "user:"
+#: Tag prefix of a release-waiver gripe (``release-waiver:r<N>``,
+#: ``plans/red_waiver``) — a broken build: it skips the settle delay and
+#: the filer-trust check, mints ahead of the lane slots, and its chain
+#: claims in the release band. Honored only with ``meta.release_waiver``
+#: too (a JSON object, not null), which the waiver writer alone sets.
+WAIVER_TAG_PREFIX = "release-waiver:"
+_WAIVER_META_KEY = "release_waiver"
+#: The predicate over ``refs r`` — module constants only, never row data.
+_WAIVER_SQL = (
+    "(EXISTS (SELECT 1 FROM ref_tags wt JOIN tags w ON w.tag_id = wt.tag_id "
+    "WHERE wt.ref_id = r.ref_id AND w.namespace IN ('OPEN', 'FLAG') "
+    f"AND w.value LIKE '{WAIVER_TAG_PREFIX}%%') "
+    f"AND jsonb_typeof(r.meta->'{_WAIVER_META_KEY}') = 'object')"
+)
+#: Waiver gripes minted per fire, over and above the lane slots.
+_WAIVER_BATCH = 5
 #: Registry key of the filer-trust switch (:func:`gripe_trust`).
 TRUST_KEY = "factory.gripe_trust"
 #: ``factory.gripe_trust`` values: ``all`` skips the filer check,
@@ -204,6 +230,8 @@ class DispatchPick:
     gripe_id: int
     title: str
     score: float
+    #: A release-waiver gripe (:data:`WAIVER_TAG_PREFIX`).
+    waiver: bool = False
 
 
 def lane_capacity(
@@ -266,31 +294,43 @@ def open_chain_count(store: Store) -> int:
 
 
 def candidates(store: Store, limit: int) -> list[DispatchPick]:
-    """The next ``limit`` dispatchable gripes, hottest score then oldest."""
+    """The next ``limit`` dispatchable gripes, release-waiver gripes first,
+    then hottest score then oldest."""
     return _candidate_picks(store, limit, supported_projects=True)
 
 
 def _candidate_picks(
-    store: Store, limit: int, *, supported_projects: bool
+    store: Store,
+    limit: int,
+    *,
+    supported_projects: bool,
+    waiver: bool | None = None,
 ) -> list[DispatchPick]:
-    """Select supported gripes or unsupported ones still needing a note."""
+    """Select supported gripes or unsupported ones still needing a note.
+    ``waiver`` ``True`` keeps only release-waiver gripes, ``False`` drops
+    them, ``None`` keeps both (waivers sort first either way)."""
     if limit <= 0:
         return []
+    waiver_filter = {None: "TRUE", True: _WAIVER_SQL, False: f"NOT {_WAIVER_SQL}"}[
+        waiver
+    ]
     sql = f"""
-        SELECT r.ref_id, r.title, {_dscore.score_sql()} AS score
+        SELECT r.ref_id, r.title, {_dscore.score_sql()} AS score,
+               {_WAIVER_SQL} AS is_waiver
           FROM refs r
           JOIN ref_tags st ON st.ref_id = r.ref_id
           JOIN tags s ON s.tag_id = st.tag_id
                      AND s.namespace = 'STATUS' AND s.value = ANY(%s)
          WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-           AND COALESCE((SELECT max(tt.created_at)
+           AND {waiver_filter}
+           AND ({_WAIVER_SQL} OR COALESCE((SELECT max(tt.created_at)
                            FROM ref_tags tt JOIN tags t ON t.tag_id = tt.tag_id
                           WHERE tt.ref_id = r.ref_id
                             AND ((t.namespace = 'STATUS' AND t.value = 'triaged')
                                  OR (t.namespace IN ('OPEN', 'FLAG')
                                      AND t.value = ANY(%s)))),
-                        r.created_at) < now() - %s * interval '1 minute'
-           AND (%s OR r.meta->'filed_by'->>'client' LIKE %s
+                        r.created_at) < now() - %s * interval '1 minute')
+           AND (%s OR {_WAIVER_SQL} OR r.meta->'filed_by'->>'client' LIKE %s
                 OR r.meta->'filed_by'->>'actor' LIKE %s
                 OR (r.meta->'ci'->>'sig' IS NOT NULL
                     AND r.meta->'filed_by'->>'principal' = %s))
@@ -315,7 +355,8 @@ def _candidate_picks(
                                                WHERE lt.ref_id = t.ref_id
                                                  AND ls.namespace = 'STATUS'
                                                  AND ls.value = ANY(%s)))
-         ORDER BY {_dscore.score_sql()} DESC, r.created_at, r.ref_id
+         ORDER BY {_WAIVER_SQL} DESC, {_dscore.score_sql()} DESC,
+                  r.created_at, r.ref_id
          LIMIT %s
     """
     trust_all = gripe_trust(store) == TRUST_ALL
@@ -342,7 +383,9 @@ def _candidate_picks(
                 limit,
             ),
         ).fetchall()
-    return [DispatchPick(int(r[0]), str(r[1] or ""), float(r[2])) for r in rows]
+    return [
+        DispatchPick(int(r[0]), str(r[1] or ""), float(r[2]), bool(r[3])) for r in rows
+    ]
 
 
 def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchResult:
@@ -367,17 +410,32 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     open_chains = open_chain_count(store)
     slots = max(capacity - open_chains, 0)
     _note_unsupported_projects(store)
-    picks = candidates(store, slots)
+    # A broken build (release-waiver gripe) mints at once and ahead of the
+    # slot count: no settle delay, no slot needed — its chain claims in the
+    # release band, so the lanes take it before ordinary builds.
+    waivers = _candidate_picks(
+        store, _WAIVER_BATCH, supported_projects=True, waiver=True
+    )
+    slots = max(slots - len(waivers), 0)
+    picks = [
+        *waivers,
+        *_candidate_picks(store, slots, supported_projects=True, waiver=False),
+    ]
     extra: dict[str, Any] = {
         "lane_capacity": capacity,
         "open_chains": open_chains,
         "slots": slots,
+        "waivers": [w.gripe_id for w in waivers],
         "minted": [],
     }
     ok = failed = 0
     for c in picks:
         try:
-            mint = mint_gripe_fix_direct(store, gripe_id=c.gripe_id)
+            mint = mint_gripe_fix_direct(
+                store,
+                gripe_id=c.gripe_id,
+                claim_band=_dscore.RELEASE_CLAIM_BAND if c.waiver else None,
+            )
         except Exception as exc:
             failed += 1
             log.warning("gripe_dispatch: mint for gr%d failed: %s", c.gripe_id, exc)
@@ -534,6 +592,7 @@ __all__ = [
     "HOLD_TAGS",
     "SERVICE_NAME",
     "TRUST_KEY",
+    "WAIVER_TAG_PREFIX",
     "DispatchPick",
     "candidates",
     "gripe_dispatch_enabled",

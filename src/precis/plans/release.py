@@ -703,12 +703,17 @@ def ci_verdict_rows(
     run_id: str,
     previous: list[dict[str, Any]],
     now: datetime,
+    waived: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """``previous`` plus ``{sha, range, verdict, run_id, at}``, deduped by
     sha keeping the newest, capped (``scripts/release.ci_verdict_rows``).
-    A red never replaces a ``waived`` row on the same sha — the waiver is
-    a standing decision only a fresh green supersedes."""
-    row = {
+    ``waived`` (``{gripe, tests, run_id, attempt}``, ``plans/red_waiver``)
+    marks a ``green`` row that is a red CI run the release gate deployed
+    past. A red never replaces a ``waived`` row of the same run — the
+    waiver is a standing decision on ONE run; a red from a different run
+    on the head is that run's own verdict and replaces it, as does any
+    green."""
+    row: dict[str, Any] = {
         "sha": sha[:LANDED_SHA_LEN],
         "range": rng,
         "verdict": verdict,
@@ -717,13 +722,31 @@ def ci_verdict_rows(
     }
     if verdict == "red" and any(
         isinstance(r.get("waived"), dict)
+        and str(r["waived"].get("run_id") or "") == row["run_id"] != ""
         for r in previous
         if str(r.get("sha", ""))[:LANDED_SHA_LEN] == row["sha"]
     ):
         # The red-test waiver (precis.plans.red_waiver) is a standing
-        # decision on this sha: a red read after it (a poll that could
-        # not read the waiver, a retried poll) must not erase the row.
-        # Only a fresh green replaces it.
+        # decision on ONE run: a red read from that same run (a poll that
+        # could not read the waiver, a retried poll) must not erase the row.
+        return list(previous)
+    if waived:
+        row["waived"] = waived
+    same = [r for r in previous if str(r.get("sha", ""))[:LANDED_SHA_LEN] == row["sha"]]
+    if (
+        verdict == "red"
+        and not waived
+        and row["run_id"]
+        and any(
+            isinstance(r.get("waived"), dict)
+            and str(r["waived"].get("run_id") or "") == row["run_id"]
+            for r in same
+        )
+    ):
+        # A waived row survives a later red from the SAME run (a poll
+        # retry, a wait_ci read of the red run): the waiver is the standing
+        # decision on that run. A red from a different run on the head is
+        # that run's own verdict and replaces it, as does any green.
         return list(previous)
     kept = [r for r in previous if str(r.get("sha", ""))[:LANDED_SHA_LEN] != row["sha"]]
     return [*kept, row][-MAX_CI_VERDICTS:]
@@ -737,6 +760,7 @@ def record_ci_verdict(
     run_id: str = "",
     *,
     now: datetime | None = None,
+    waived: dict[str, Any] | None = None,
 ) -> str:
     """Append a verdict row to ``release.ci_verdicts``; one status line."""
     from precis import settings
@@ -747,7 +771,13 @@ def record_ci_verdict(
         return f"ci verdict not recorded: verdict {verdict!r} is not green|red"
     settings.invalidate(CI_VERDICTS_KEY)  # read-modify-write: skip the cache
     rows = ci_verdict_rows(
-        sha, rng, verdict, run_id, read_ci_verdicts(store), now or datetime.now(UTC)
+        sha,
+        rng,
+        verdict,
+        run_id,
+        read_ci_verdicts(store),
+        now or datetime.now(UTC),
+        waived,
     )
     settings.set_setting(
         CI_VERDICTS_KEY, json.dumps(rows, separators=(",", ":")), store=store

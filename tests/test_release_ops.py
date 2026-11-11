@@ -204,10 +204,10 @@ def test_store_verdict_rows_match_the_script_shape(store: Store) -> None:
 
 def test_a_red_never_overwrites_a_waived_row_but_a_green_does() -> None:
     """Store twin of the scripts/release waiver rule (td626990): the
-    waiver row is a standing decision — a red poll on the same sha (a
-    poll that could not read the waiver, a retried poll) leaves it; a
-    fresh green replaces it; other shas and plain rows behave as
-    before."""
+    waiver row is a standing decision on ONE run — a red poll from the
+    same run (a poll that could not read the waiver, a retried poll)
+    leaves it; a red from another run on the head, or a fresh green,
+    replaces it; other shas and plain rows behave as before."""
     now = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
     waived = {
         "sha": SHA[:12],
@@ -215,11 +215,19 @@ def test_a_red_never_overwrites_a_waived_row_but_a_green_does() -> None:
         "verdict": "green",
         "run_id": "31",
         "at": "2026-11-10T11:00:00Z",
-        "waived": {"gripe": 77, "tests": ["tests/t.py::a"]},
+        "waived": {
+            "gripe": 77,
+            "tests": ["tests/t.py::a"],
+            "run_id": "31",
+            "attempt": 1,
+        },
     }
     other = {"sha": "1" * 12, "verdict": "red", "run_id": "1", "at": "x"}
     prev: list[dict[str, Any]] = [other, waived]
-    assert R.ci_verdict_rows(SHA, RNG, "red", "99", prev, now) == prev
+    assert R.ci_verdict_rows(SHA, RNG, "red", "31", prev, now) == prev
+    # a red from a different run is that run's own verdict
+    rows = R.ci_verdict_rows(SHA, RNG, "red", "99", prev, now)
+    assert [(r["verdict"], r["run_id"]) for r in rows] == [("red", "1"), ("red", "99")]
     rows = R.ci_verdict_rows(SHA, RNG, "green", "99", prev, now)
     assert [r["verdict"] for r in rows] == ["red", "green"]
     assert "waived" not in rows[-1] and rows[-1]["run_id"] == "99"
@@ -235,8 +243,8 @@ def test_a_red_never_overwrites_a_waived_row_but_a_green_does() -> None:
 def test_record_ci_verdict_red_keeps_the_waived_row_and_the_gate_open(
     store: Store,
 ) -> None:
-    """Through the writer itself (the ci_verdict_poll path): a red on a
-    waived sha records nothing, so ``tests-green`` keeps reading the
+    """Through the writer itself (the ci_verdict_poll path): a red from a
+    waived run records nothing, so ``tests-green`` keeps reading the
     standing green-waived row."""
     psettings.set_setting(
         gates.CI_VERDICTS_KEY,
@@ -248,17 +256,27 @@ def test_record_ci_verdict_red_keeps_the_waived_row_and_the_gate_open(
                     "verdict": "green",
                     "run_id": "31",
                     "at": "2026-11-10T11:00:00Z",
-                    "waived": {"gripe": 77, "tests": ["tests/t.py::a"]},
+                    "waived": {
+                        "gripe": 77,
+                        "tests": ["tests/t.py::a"],
+                        "run_id": "31",
+                        "attempt": 1,
+                    },
                 }
             ]
         ),
         store=store,
     )
-    line = R.record_ci_verdict(store, SHA, RNG, "red", "99")
+    line = R.record_ci_verdict(store, SHA, RNG, "red", "31")
     assert line == f"ci verdict recorded: {SHA[:9]} red"
     rows = gates.read_ci_verdicts(store)
     assert len(rows) == 1 and rows[0]["verdict"] == "green"
-    assert rows[0]["waived"] == {"gripe": 77, "tests": ["tests/t.py::a"]}
+    assert rows[0]["waived"]["gripe"] == 77 and rows[0]["waived"]["run_id"] == "31"
+    # a red from a different run replaces the waiver: that run's own verdict
+    R.record_ci_verdict(store, SHA, RNG, "red", "99")
+    rows = gates.read_ci_verdicts(store)
+    assert len(rows) == 1 and rows[0]["verdict"] == "red"
+    assert "waived" not in rows[0]
 
 
 def test_store_prod_head_merges_landed(store: Store) -> None:

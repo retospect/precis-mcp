@@ -876,3 +876,160 @@ def test_worker_gripe_without_ci_sig_is_not_a_candidate(
     _trust(store, "filer")  # the filer-door rule these tests pin
     gid = _gripe(store, "worker-filed gripe", meta=_WORKER)
     assert gid not in [c.gripe_id for c in gd.candidates(store, 10)]
+
+
+# ── release-waiver gripes: a broken build (Reto 2026-11-10) ────────────
+
+
+def _waiver_gripe(
+    store: Store,
+    title: str = "release r41 shipped with known-red tests: tests/t.py::a",
+    *,
+    rn: str = "r41",
+    age_minutes: float = 0.1,
+    with_meta: bool = True,
+    tags: tuple[str, ...] = ("fix:code", "broken-build"),
+) -> int:
+    meta: dict[str, Any] = {"release_waiver": {"rN": rn, "tests": ["tests/t.py::a"]}}
+    return _gripe(
+        store,
+        title,
+        meta=meta if with_meta else {},
+        tags=(*tags, f"release-waiver:{rn}"),
+        age_minutes=age_minutes,
+        prio=1,
+    )
+
+
+def test_waiver_gripe_skips_the_settle_delay_and_the_trust_check(
+    store: Store, two_lanes: Any
+) -> None:
+    """Seconds old, no ``filed_by`` stamp, ``filer`` trust: still a
+    candidate, ahead of a hotter and older ordinary gripe."""
+    _trust(store, "filer")
+    ordinary = _gripe(store, "ordinary", prio=1, age_minutes=600)
+    young = _gripe(store, "young ordinary", age_minutes=0.1)
+    waiver = _waiver_gripe(store)
+    picks = gd.candidates(store, 10)
+    assert [c.gripe_id for c in picks] == [waiver, ordinary]
+    assert picks[0].waiver and not picks[1].waiver
+    assert young not in [c.gripe_id for c in picks]
+
+
+def test_waiver_tag_alone_or_meta_alone_is_not_the_door(
+    store: Store, two_lanes: Any
+) -> None:
+    """Both the tag and the writer's ``meta.release_waiver`` are needed —
+    a reader's tag does not skip the settle delay."""
+    _trust(store, "filer")
+    _waiver_gripe(store, "tag only", rn="r1", with_meta=False)
+    _gripe(
+        store,
+        "meta only",
+        meta={"release_waiver": {"rN": "r2"}},
+        age_minutes=0.1,
+    )
+    assert gd.candidates(store, 10) == []
+
+
+@pytest.mark.parametrize("junk", [None, "yes", 1, [], True])
+def test_waiver_meta_must_be_a_json_object(
+    store: Store, two_lanes: Any, junk: Any
+) -> None:
+    """``meta.release_waiver`` of JSON null (or any non-object) is not the
+    writer's record: the gripe keeps the settle delay and trust check."""
+    _trust(store, "filer")
+    _gripe(
+        store,
+        "null waiver meta",
+        meta={"release_waiver": junk},
+        tags=("fix:code", "release-waiver:r9"),
+        age_minutes=0.1,
+    )
+    assert gd.candidates(store, 10) == []
+
+
+def test_waiver_gripe_keeps_the_hold_tags(store: Store, two_lanes: Any) -> None:
+    _waiver_gripe(store, tags=("fix:code", "hold:no-dispatch"))
+    assert gd.candidates(store, 10) == []
+
+
+def test_pass_mints_a_waiver_chain_at_once_beyond_the_slots(
+    store: Store, two_lanes: Any
+) -> None:
+    """Capacity 3 is full of ordinary chains; the waiver gripe still
+    mints, its chain root carries the release claim band, and the
+    ordinary chains do not."""
+    _light(store)
+    ordinary = [_gripe(store, f"g{i}", prio=i + 1) for i in range(3)]
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.ok, res.extra["slots"]) == (3, 3)
+    waiver = _waiver_gripe(store)
+    more = _gripe(store, "one more ordinary", prio=1)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["waivers"] == [waiver]
+    assert res.extra["slots"] == 0  # the waiver chain took what was left
+    assert res.ok == 1 and res.failed == 0
+    [root] = _roots_for(store, waiver)
+    assert _roots_for(store, more) == []  # no slot for the ordinary one
+    assert _todo_meta(store, root)["claim_band"] == "release"
+    for gid in ordinary:
+        [r] = _roots_for(store, gid)
+        assert "claim_band" not in _todo_meta(store, r)
+    assert any(
+        c.startswith("dispatch: minted gripe-fix-direct")
+        for c in _comments(store, waiver)
+    )
+
+
+def _todo_meta(store: Store, ref_id: int) -> dict[str, Any]:
+    ref = store.get_ref(kind="todo", id=ref_id)
+    assert ref is not None
+    return dict(ref.meta or {})
+
+
+def test_waiver_chain_jobs_carry_the_band_ordinary_ones_do_not(
+    store: Store, two_lanes: Any
+) -> None:
+    """``plan_dispatch._mint_job`` copies the root's band onto the build's
+    run_slice job (and only for the build/land job types)."""
+    from datetime import UTC, datetime
+
+    from precis.workers.job_types import plan_dispatch as pd
+
+    waiver = _waiver_gripe(store)
+    plain = _gripe(store, "plain")
+    band_mint = gd.mint_gripe_fix_direct(store, gripe_id=waiver, claim_band="release")
+    plain_mint = gd.mint_gripe_fix_direct(store, gripe_id=plain)
+
+    def node(mint: Any) -> Any:
+        return pd._Node(
+            id=mint.ids["build"],
+            kind="todo",
+            parent_id=mint.root_id,
+            title="build",
+            meta={},
+            status="open",
+            created_at=datetime.now(UTC),
+            prio=None,
+            depth=1,
+            root=mint.root_id,
+        )
+
+    def job_meta(mint: Any, job_type: str) -> dict[str, Any]:
+        jid = pd._mint_job(
+            store,
+            node(mint),
+            job_type,
+            "ssh_node",
+            {"todo_id": mint.ids["build"]},
+            idem_key=f"test:{job_type}:{mint.root_id}",
+        )
+        ref = store.get_ref(kind="job", id=jid)
+        assert ref is not None
+        return dict(ref.meta or {})
+
+    assert job_meta(band_mint, "run_slice")["claim_band"] == "release"
+    assert job_meta(plain_mint, "run_slice").get("claim_band") is None
+    # a non-build job of the banded chain does not take the band
+    assert job_meta(band_mint, "ci_verdict_poll").get("claim_band") is None

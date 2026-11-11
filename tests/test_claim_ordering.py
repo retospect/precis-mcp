@@ -49,12 +49,14 @@ def _queue_job(
     job_type: str = "demo",
     origin: str | None = None,
     queued_s_ago: float = 0,
+    extra_meta: dict[str, Any] | None = None,
 ) -> int:
     """Insert a ``STATUS:queued`` job for ``executor`` with the given prio."""
     meta: dict[str, Any] = {
         "job_type": job_type,
         "executor": executor,
         "params": {},
+        **(extra_meta or {}),
     }
     if origin is not None:
         meta["origin"] = origin
@@ -263,6 +265,77 @@ def test_aged_background_cannot_leapfrog_release_leg(store: Store) -> None:
     )
     rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
     assert _claim_order(store, ex) == [rec, poll, old_bg]
+
+
+# ── The waiver gripe's build in the band (Reto 2026-11-10) ─────────────
+#
+# A release-waiver gripe is a broken build: its chain's run_slice /
+# land_slice jobs carry ``meta.claim_band = release`` and claim at the
+# release legs' class (2.5) — behind recurring, ahead of every ordinary
+# gripe build (origin ``background``, whatever its prio or age). The rank
+# keys on the meta stamp alone, so these rows use the default job type
+# (a real ``run_slice`` row would also face the placement gate).
+
+_BAND = {"claim_band": "release"}
+
+
+def test_waiver_build_claims_ahead_of_ordinary_gripe_builds(store: Store) -> None:
+    ex = "test_waiver_band_first"
+    builds = [
+        _queue_job(
+            store,
+            executor=ex,
+            prio=2,  # hotter than the waiver build's 5 (prio 1 is absolute)
+            origin="background",
+            queued_s_ago=3600,
+        )
+        for _ in range(3)
+    ]
+    waiver = _queue_job(
+        store, executor=ex, prio=5, origin="background", extra_meta=_BAND
+    )
+    order = _claim_order(store, ex)
+    assert order[0] == waiver and sorted(order[1:]) == sorted(builds)
+
+
+def test_waiver_land_shares_the_band_with_the_release_legs(store: Store) -> None:
+    ex = "test_waiver_band_land"
+    bg = _queue_job(store, executor=ex, prio=8, origin="background")
+    land = _queue_job(store, executor=ex, prio=5, origin="background", extra_meta=_BAND)
+    rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
+    assert _claim_order(store, ex) == [rec, land, bg]
+
+
+def test_waiver_band_pins_like_a_release_leg(store: Store) -> None:
+    """It never outranks recurring work, and an aged background row cannot
+    leapfrog it (the release freeze applies to the band as a whole)."""
+    ex = "test_waiver_band_pin"
+    old_bg = _queue_job(
+        store, executor=ex, prio=8, origin="background", queued_s_ago=7200
+    )
+    waiver = _queue_job(
+        store,
+        executor=ex,
+        prio=5,
+        origin="background",
+        queued_s_ago=3600,
+        extra_meta=_BAND,
+    )
+    rec = _queue_job(store, executor=ex, prio=2, origin="recurring")
+    assert _claim_order(store, ex) == [rec, waiver, old_bg]
+
+
+def test_an_unknown_band_value_changes_nothing(store: Store) -> None:
+    ex = "test_waiver_band_unknown"
+    a = _queue_job(store, executor=ex, prio=5, origin="background")
+    b = _queue_job(
+        store,
+        executor=ex,
+        prio=5,
+        origin="background",
+        extra_meta={"claim_band": "other"},
+    )
+    assert _claim_order(store, ex) == [a, b]
 
 
 # ── Heartbeat ticks in the band (gr592211, td593845 review) ───────────

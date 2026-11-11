@@ -39,6 +39,7 @@ from precis.store._todo_sql import (
 )
 from precis.store.types import ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
+from precis.utils import dispatch_score as _dscore
 from precis.utils import job_footprint
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
@@ -171,9 +172,14 @@ _RELEASE_LEG_TYPES_SQL = (
 #: 1, recurring 2, release 2.5, background 3). The release band is keyed
 #: on ``job_type`` (the legs' origin stays ``background``); a missing
 #: origin (pre-slice-1 rows) reads as ``recurring`` at prio <= 2 — the old
-#: cron band — else ``background``.
+#: cron band — else ``background``. A job whose ``meta.claim_band`` is
+#: ``release`` (:data:`precis.utils.dispatch_score.RELEASE_CLAIM_BAND`)
+#: claims in the release band too: the waiver gripe's build and land
+#: (``plans/red_waiver``, a broken build) rank next to the release legs,
+#: ahead of ordinary gripe builds.
 _CLASS_RANK_CASE = (
     f"CASE WHEN r.meta->>'job_type' IN {_RELEASE_LEG_TYPES_SQL} "
+    f"OR r.meta->>'{_dscore.CLAIM_BAND_META_KEY}' = '{_dscore.RELEASE_CLAIM_BAND}' "
     f"THEN {_RELEASE_LEG_RANK} ELSE CASE r.meta->>'origin' "
     "WHEN 'human' THEN 0 WHEN 'agent' THEN 1 WHEN 'recurring' THEN 2 "
     "WHEN 'background' THEN 3 "
@@ -2152,7 +2158,10 @@ def claim_executor_jobs(
 
     def _row_base(r: Any) -> float:
         meta = dict(r[2] or {})
-        if str(meta.get("job_type") or "") in RELEASE_LEG_JOB_TYPES:
+        if (
+            str(meta.get("job_type") or "") in RELEASE_LEG_JOB_TYPES
+            or meta.get(_dscore.CLAIM_BAND_META_KEY) == _dscore.RELEASE_CLAIM_BAND
+        ):
             return _RELEASE_LEG_RANK
         origin = meta.get("origin")
         if isinstance(origin, str) and origin in _BASE_CLASS_RANK:

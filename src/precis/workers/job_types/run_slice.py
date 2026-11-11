@@ -199,6 +199,12 @@ from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.utils.dispatch_score import (
+    CLAIM_BAND_META_KEY as _CLAIM_BAND_KEY,
+)
+from precis.utils.dispatch_score import (
+    RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
+)
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
@@ -771,6 +777,9 @@ def _mint_land(
     if node:
         params["target_node"] = str(node)
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
+    if meta.get(_CLAIM_BAND_KEY) == _RELEASE_CLAIM_BAND:
+        # The waiver gripe's land claims in the same band as its build.
+        extra = {**(extra or {}), _CLAIM_BAND_KEY: _RELEASE_CLAIM_BAND}
     store = ctx.store
     with store.tx() as conn:
         job_id, _reused = mint_job_once(

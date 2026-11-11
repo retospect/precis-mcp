@@ -268,6 +268,14 @@ def _tests_green(
         run = f"run {row['run_id']}" if row.get("run_id") else "no run id"
         short = row["sha"][:9]
         if row["verdict"] == "green":
+            waived = row.get("waived")
+            if isinstance(waived, dict):
+                # A red run the release gate deployed past (red_waiver).
+                return GateVerdict(
+                    True,
+                    f"CI red on {short} WAIVED by gr{waived.get('gripe')} "
+                    f"({run}, {at})",
+                )
             return GateVerdict(True, f"CI green on {short} ({run}, {at})")
         return _closed(f"CI red on {short} ({run}, {at})")
     res = sha_deployed(store, sha)

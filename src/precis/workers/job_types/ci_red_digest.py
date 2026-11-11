@@ -46,6 +46,19 @@ pinned to that host the same way.
   cannot push them off the brief; still blind, it posts a ``blocked:``
   note on the plan and each fix node and fails instead, so no session
   is claimed on an empty brief — the tick's retry cap files the ask.
+  **The red-test waiver** (:mod:`precis.plans.red_waiver`, setting
+  ``release.red_waiver``, Reto 2026-11-10) is tried on a real TEST red
+  before the brief is posted — never on an infra red, ruled above: a
+  complete run (completed — an in-progress one parks the digest via
+  :func:`_park_for_run` and re-reads; every job success/failure/skipped;
+  no failed-first or collection error, ids matching the pytest counts), 1-2 parsed failing ids, none
+  and no cut-range path on the hard-stop lists, an attributable culprit
+  commit, no id on a still-unfixed waiver gripe. Granted, the job files the
+  ``broken-build`` gripe, records the cut's verdict as waived
+  (green for the gate), closes the iteration's fix/re-cut/poll nodes
+  ``waived: gr<N>`` and succeeds — no brief, no fix session, no re-cut;
+  every step of the decision lands in the job summary. Refused (the
+  summary names the reason), the loop runs as before.
 * Probe mode (``params.probe`` + ``params.run_id``; ``todo_id``
   optional): ``scripts/ci-failed <run_id> --probe`` prints one
   ``probe: status=<code> accepted-permissions=<value|absent> run=<id>``
@@ -71,6 +84,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.plans import red_waiver as _waiver
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
@@ -349,7 +363,12 @@ def _jobs_logs_rescue(
             if _JOBLOG_SIGNAL.search(line) and line not in lines:
                 lines.append(line)
         if lines:
-            out.append((name, lines[:_RESCUE_CAP]))
+            kept = lines[:_RESCUE_CAP]
+            if len(lines) > _RESCUE_CAP:
+                # Mark the cut: the red-test waiver must not trust a
+                # partial id list (``red_waiver.parse_failures``).
+                kept.append(_waiver.RESCUE_TRUNCATED)
+            out.append((name, kept))
     if not out:
         return [], "the jobs-logs read found no FAILED lines either"
     return out, ""
@@ -719,6 +738,157 @@ def _compose_digest(log_text: str, rescue: str) -> str:
     return (head + tail)[:_DIGEST_CAP]
 
 
+class _WaiverPark(Exception):
+    """The run is still in progress: :func:`_digest_done` parks the digest
+    (``_park_for_run``) and re-reads later instead of ruling on a partial
+    picture."""
+
+
+def _try_waiver(
+    ctx: Any,
+    todo_id: int,
+    rel: dict[str, Any],
+    run_id: str,
+    log_text: str,
+    rescued: dict[str, list[str]],
+) -> tuple[bool, list[str]]:
+    """The red-test waiver (:mod:`precis.plans.red_waiver`) on a real test
+    red. ``(True, steps)`` when it was granted AND carried out — the
+    verdict recorded waived, the iteration's nodes closed, the job
+    succeeded (or failed after the gripe was filed, so the tick retries
+    and the retry converges on the same gripe); ``(False, steps)`` when it
+    was off or refused, ``steps`` naming every check and the reason. A
+    fault before the gripe is filed (git unreadable, filing raised)
+    refuses the waiver: the fix loop runs as before."""
+    steps: list[str] = []
+    store = ctx.store
+    if not _waiver.waiver_enabled(store):
+        steps.append(f"waiver: {_waiver.SETTING_KEY} is off; the fix loop runs")
+        return False, steps
+    steps.append(f"waiver: {_waiver.SETTING_KEY} is on")
+    rn = str(rel.get("rN") or "r?")
+    sha = str(rel.get("sha") or "")
+    rng = str(rel.get("range") or "")
+    failures, problems = _waiver.parse_failures(log_text, rescued)
+    shown = ", ".join(failures) or "none"
+    steps.append(f"waiver: {len(failures)} failing test id(s) parsed: {shown}")
+    if problems:
+        steps.append("waiver: digest problems: " + "; ".join(problems))
+        steps.append("waiver: REFUSED — the digest does not show every failing test")
+        return False, steps
+    # The run must be a complete picture: every job reported success or
+    # failure (a cancelled / skipped / timed-out shard may hold more reds).
+    state = _run_state(run_id)
+    if _waiver.run_in_progress(state):
+        # Not a verdict yet: the waiver must see the whole run, so the
+        # digest parks and re-reads instead of refusing for good.
+        raise _WaiverPark(str((state or {}).get("status") or "in progress"))
+    partial = _waiver.partial_run_problem(state)
+    if partial is not None:
+        steps.append(f"waiver: REFUSED — the run is not complete: {partial}")
+        return False, steps
+    attempt = _state_attempt(state or {})
+    if attempt < 1:
+        steps.append("waiver: REFUSED — the run's attempt is unreadable (unbindable)")
+        return False, steps
+    steps.append(
+        f"waiver: run {run_id}#{attempt} completed, every job success/failure/skipped"
+    )
+    try:
+        root = _rs.slice_root()
+    except RuntimeError:
+        steps.append("waiver: REFUSED — no repo checkout to read the cut range in")
+        return False, steps
+    paths = _waiver.range_paths(root, rng, env=_factory_git.git_auth_env())
+    if paths is None:
+        steps.append(f"waiver: cut range {rng!r} unreadable in the checkout")
+        steps.append("waiver: REFUSED — the cut range could not be read")
+        return False, steps
+    steps.append(f"waiver: cut range {rng} touches {len(paths)} path(s)")
+    try:
+        prior = _waiver.open_waived_tests(store, rn)
+    except Exception as exc:
+        steps.append(f"waiver: REFUSED — earlier waivers unreadable ({exc})")
+        return False, steps
+    steps.append(
+        f"waiver: ids on still-unfixed waiver gripes: {sorted(prior) or 'none'}"
+    )
+    ok, why = _waiver.waiver_decision(list(failures), paths, prior)
+    steps.append(f"waiver: {'rules passed' if ok else 'REFUSED'} — {why}")
+    if not ok:
+        return False, steps
+    try:
+        culprits = _waiver.culprit_commits(root, rng, failures)
+        if not culprits:
+            steps.append("waiver: REFUSED — no attributable culprit")
+            return False, steps
+        gid = _waiver.file_waiver_gripe(
+            store,
+            rn=rn,
+            sha=sha,
+            rng=rng,
+            run_id=run_id,
+            failures=failures,
+            culprits=culprits,
+            plan_root=_release.plan_root(store, todo_id),
+        )
+    except Exception as exc:
+        log.warning("%s: waiver gripe for %s failed", NAME, rn, exc_info=True)
+        steps.append(f"waiver: gripe not filed ({exc}); the fix loop runs")
+        return False, steps
+    steps.append(
+        f"waiver: GRANTED — filed gr{gid} (prio 1, broken-build, release-waiver:{rn}); "
+        f"{len(culprits)} culprit commit(s)"
+    )
+    ids = list(failures)
+    status = _waiver.record_waived_verdict(
+        store,
+        sha=sha,
+        rng=rng,
+        run_id=run_id,
+        attempt=attempt,
+        gripe_id=gid,
+        tests=ids,
+    )
+    steps.append(f"waiver: {status}")
+    if not status.startswith("ci verdict recorded"):
+        ctx.append_chunk("job_summary", mask_secrets("\n".join(steps)))
+        ctx.record_failure(
+            f"{NAME}: waiver gr{gid} filed but the verdict was not recorded "
+            f"({status}); the tick retries and reuses gr{gid}"
+        )
+        return True, steps
+    sha9 = sha[:9] or "unknown"
+    closed: list[int] = []
+    for tid in _waiver.iteration_nodes(store, todo_id):
+        _rs._append_comment(
+            store,
+            tid,
+            f"waived: gr{gid} — release {rn} at {sha9} (run {run_id}) "
+            f"deploys past known-red test(s) {', '.join(ids)}; no fix "
+            "session and no re-cut for this iteration.",
+        )
+        _rs.close_todo(store, tid, None)
+        closed.append(tid)
+    steps.append(
+        "waiver: closed iteration node(s) "
+        + (", ".join(f"td{t}" for t in closed) or "none")
+        + f" (waived: gr{gid})"
+    )
+    ctx.append_chunk(
+        "job_summary",
+        mask_secrets(
+            f"{NAME}: {rn} red at {sha9} (run {run_id}) WAIVED by gr{gid}\n"
+            + "\n".join(steps)
+        ),
+    )
+    ctx.set_meta(
+        red_waiver={"rN": rn, "gripe": gid, "tests": ids, "run_id": run_id},
+    )
+    ctx.set_status("succeeded")
+    return True, steps
+
+
 def _digest_done(
     ctx: Any, handle: dict[str, Any], params: dict[str, Any], log_text: str
 ) -> bool:
@@ -736,6 +906,7 @@ def _digest_done(
     sections = _sections(log_text)
     blind = [name for name, is_blind in sections if is_blind]
     rescue = ""
+    rescued: list[tuple[str, list[str]]] = []
     if blind:
         rescued, why = _jobs_logs_rescue(run_id, blind)
         if rescued:
@@ -769,6 +940,21 @@ def _digest_done(
                 "posted — blocked: notes on the plan and the fix nodes"
             )
             return True
+    try:
+        granted, waiver_lines = _try_waiver(
+            ctx, todo_id, rel, run_id, log_text or "", dict(rescued)
+        )
+    except _WaiverPark as park:
+        return _park_for_run(
+            ctx,
+            handle,
+            run_id,
+            log_text,
+            waiting=f"{park} — the red-test waiver needs the whole run",
+            stuck=f"{park} past the waiver's wait",
+        )
+    if granted:
+        return True
     digest = _compose_digest(log_text or "", rescue)
     text = "\n".join(
         [
@@ -789,7 +975,9 @@ def _digest_done(
     ctx.append_chunk(
         "job_summary",
         f"{NAME}: {rn} red at {sha9} (run {run_id}); brief posted on "
-        f"td{', td'.join(str(t) for t in targets)}\n{text}",
+        f"td{', td'.join(str(t) for t in targets)}\n"
+        + "\n".join(mask_secrets(line) for line in waiver_lines)
+        + f"\n{text}",
     )
     ctx.set_status("succeeded")
     return True

@@ -173,6 +173,78 @@ a human: rollback, superseding a partial rollout, and the exhausted
 release-fix loop — two red fix iterations run unattended, the second red
 files the ruling ask and no third starts by itself.
 
+### Red-test waiver (release.red_waiver)
+
+`release.red_waiver` (`on` | `off`, default `on`, DB-only; an unknown
+value or a failed read reads `off` — only a stored or default `on`
+grants) is Reto's "deploy anyway and gripe" ruling (2026-11-10):
+one low-risk red test no longer costs a fix, a re-cut and 35-50 min of
+CI. Only a TEST red qualifies — `ci_red_digest` rules an infra red first
+(rerun, never a waiver). The digest node waives the red iff all hold:
+
+- the red is a complete picture: the run has completed (one still in
+  progress parks the digest and is re-read, never ruled on) and every job
+  concluded `success`, `failure` or `skipped` (check.yml always skips its
+  conditional jobs; a cancelled, timed-out, startup-failed,
+  action-required, neutral or conclusion-less job refuses), it is not the `failed-first` job or the "skipped by design"
+  matrix, there is no collection error (`error during collection`,
+  `Interrupted:`, an `ERROR` on a file id), and each failed job's parsed
+  ids equal its own `N failed` (+ errors) count with no cut id list or
+  rescue (`_RESCUE_CAP`);
+- 1-2 failing test ids parse from the digest (`MAX_WAIVED_TESTS`);
+- no id (path or name) contains a test hard-stop word: migration/migrat,
+  auth, oauth, vault, credential, secret, safe_fetch, ssrf, release,
+  round, ship, deploy, gate, store, chunk, schema, invariant, backup,
+  bump, ci_, waiver;
+- the cut range (`meta.release.range` — prod..sha — read after a
+  `git fetch origin`, `diff --name-only -z`; a head still missing
+  refuses) has no path containing, anywhere, release, deploy, round,
+  ship, backup, gate, migrat, bump, ci-, ci_, waiver, trust, auth, oauth,
+  vault, credential, secret, safe_fetch or `store/`, nor matching the
+  exact-file / prefix / glob lists in `plans/red_waiver.py`;
+- a culprit commit is attributable (a range commit touching a failing
+  test file or a src module it imports) — none, no waiver;
+- none of the ids sits on a waiver gripe still unfixed (status outside
+  done / wontfix / verify / auto_verify / user_verify / in_review),
+  whatever its release number — a red is not carried forward.
+
+Granted, the job files the waiver gripe, titled "release r<N> shipped
+with known-red tests: <ids>" (body: run id, ids with assertion lines,
+the culprit commits): tags `fix:code`, `broken-build`,
+`release-waiver:r<N>`, `refs.prio` 1, `meta.release_waiver` carrying the
+ids. It records the cut's `release.ci_verdicts` row as `green` with a
+`waived` marker (the `tests-green` gate and the loop's `until` open; the
+gate reason reads "CI red on <sha> WAIVED by gr<N>"), closes the
+iteration's fix, recut and poll nodes `waived: gr<N>`, and writes every
+step of the decision to the job summary. Refused, the summary names the
+reason and the loop runs as before.
+
+`gripe_dispatch` mints the waiver gripe's chain at once (no 15-minute
+settle, no trust check, ahead of the lane slots) and the chain root's
+`meta.claim_band = release` rides onto its `run_slice`/`land_slice` jobs,
+which claim at the release legs' class (2.5), ahead of ordinary builds.
+
+Safety net: when a later release confirms (`release_confirm`) and an
+earlier waiver gripe is unfixed (status outside the fixed set above) with
+no fix chain node `open` or `doing`, a "Revert the culprits of gr<N>"
+`gripe-fix-direct` chain is minted — once per gripe
+(`meta.release_revert_of`) — whose brief reverts the culprit commits
+unless the fix has already landed (`moot: <sha>`).
+
+Deploy side: `scripts/round` treats a release head whose exact CI is red
+as the candidate (state `waived`, the waiver's age, a certificate naming
+the gripe) when the newest `release.ci_verdicts` row for that sha is
+green with a `waived` marker, read from prod like `release.soak_red`;
+`scripts/release` `wait_ci` then proceeds and records nothing. The marker
+is bound to ONE run (`run_id` + `attempt`): `round` honors it only if the
+head's newest check.yml run (the exact verdict reports it) has exactly
+that id and attempt — a newer run or a rerun voids it and its own verdict
+governs — and a red recorded from the same run id never overwrites the
+row (a red from another run does; so does a green). No row, no prod
+access, an unbound or malformed marker, or any other field problem leaves
+the gate as strict as before. The safety-net revert defers to a fix chain
+only while it moved within 24 h.
+
 ### Stuck watchdog
 
 The same `release_poll` pass also watches the live `release.round`

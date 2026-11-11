@@ -3894,6 +3894,23 @@ def _pick_executor(compatible: frozenset[str]) -> str:
     return sorted(compatible)[0]
 
 
+#: Job types a plan root's ``meta.claim_band`` stamp rides onto — the
+#: build and its land; the claim order reads it from the job row
+#: (``executors/_common._CLASS_RANK_CASE``).
+_BAND_JOB_TYPES = ("run_slice", "land_slice")
+
+
+def _root_claim_band(store: Any, root_id: int) -> str | None:
+    """The plan root's ``meta.claim_band`` (the waiver gripe's chain
+    stamps ``release``), else ``None``. Unreadable reads as no band."""
+    try:
+        ref = store.get_ref(kind="todo", id=root_id)
+    except Exception:
+        return None
+    band = (ref.meta or {}).get(_dscore.CLAIM_BAND_META_KEY) if ref else None
+    return band if band == _dscore.RELEASE_CLAIM_BAND else None
+
+
 def _mint_job(
     store: Any,
     n: _Node,
@@ -3907,6 +3924,10 @@ def _mint_job(
     from precis.workers._mint import mint_job_once
 
     stale = [v for v in n.open_tags if v.startswith("child-failed:")]
+    meta_extra = dict(meta_extra or {})
+    band = _root_claim_band(store, n.root) if job_type in _BAND_JOB_TYPES else None
+    if band is not None:
+        meta_extra[_dscore.CLAIM_BAND_META_KEY] = band
     with store.tx() as conn:
         job_id, _reused = mint_job_once(
             store,
@@ -3918,7 +3939,7 @@ def _mint_job(
             parent_id=n.id,
             idem_key=idem_key or f"{NAME}:td{n.id}",
             prio=n.prio,
-            meta_extra={"plan_root": n.root, **(meta_extra or {})},
+            meta_extra={"plan_root": n.root, **meta_extra},
         )
         for value in stale:
             store.remove_tag(n.id, Tag.open(value), conn=conn)

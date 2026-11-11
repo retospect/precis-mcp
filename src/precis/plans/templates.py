@@ -454,10 +454,24 @@ def mint_gripe_fix_direct(
     *,
     gripe_id: Any,
     lane: str | None = None,
+    claim_band: str | None = None,
+    brief: str | None = None,
+    chain_title: str | None = None,
+    root_meta: dict[str, Any] | None = None,
 ) -> PlanMint:
     """:func:`mint_gripe_fix` with ``direct=True``: the ``gripe-fix-direct``
     template."""
-    return mint_gripe_fix(store, parent_id, gripe_id=gripe_id, direct=True, lane=lane)
+    return mint_gripe_fix(
+        store,
+        parent_id,
+        gripe_id=gripe_id,
+        direct=True,
+        lane=lane,
+        claim_band=claim_band,
+        brief=brief,
+        chain_title=chain_title,
+        root_meta=root_meta,
+    )
 
 
 def mint_gripe_fix(
@@ -467,6 +481,10 @@ def mint_gripe_fix(
     gripe_id: Any,
     direct: bool = False,
     lane: str | None = None,
+    claim_band: str | None = None,
+    brief: str | None = None,
+    chain_title: str | None = None,
+    root_meta: dict[str, Any] | None = None,
 ) -> PlanMint:
     """triage -> brief -> build -> gate sha-in-prod -> validate, under a phase
     root that is ``related-to`` the gripe (the gripe keeps the ticket state).
@@ -481,7 +499,15 @@ def mint_gripe_fix(
     (the lane may have no MCP), and no Claude step stands between the mint
     and a vendor-lane build. Review and validate still follow the land.
     ``lane`` pins the build's lane (``meta.op.params.lane``); unset, the
-    class pick applies (``code`` -> the free vendor lanes first)."""
+    class pick applies (``code`` -> the free vendor lanes first).
+
+    ``claim_band`` (``release``) stamps the chain root so its build and
+    land jobs claim in the release band (``plan_dispatch._mint_job``);
+    ``brief`` replaces the direct build's default instruction (the
+    gripe's report still follows it verbatim), ``chain_title`` the root and
+    build titles, and ``root_meta`` is merged into the root's meta — the
+    waiver gripe's chain and its revert chain (``plans/red_waiver``)
+    use these."""
     gid = _gripe_id(gripe_id)
     gripe = store.get_ref(kind="gripe", id=gid)
     if gripe is None:
@@ -492,6 +518,8 @@ def mint_gripe_fix(
     handle = handle_registry.format_handle("gripe", gid)
     title = str(gripe.title).strip()
     label = f"{handle}: {title[:80]}"
+    root_title = chain_title or f"Fix {label}"
+    build_title = chain_title or f"Build the fix for {handle}"
     build_op: Any = "run_slice"
     if lane:
         build_op = {"type": "run_slice", "params": {"lane": str(lane)}}
@@ -516,14 +544,21 @@ def mint_gripe_fix(
                 {_dscore.SCORE_META_KEY: float(row[0])},
                 conn=m.conn,
             )
+        extra = dict(root_meta or {})
+        if claim_band:
+            extra[_dscore.CLAIM_BAND_META_KEY] = claim_band
+        if extra:
+            m.store.stamp_ref_meta(m.ids["root"], extra, conn=m.conn)
 
     def _build_direct(m: _Minter) -> None:
-        m.node("root", f"Fix {label}", _phase())
+        m.node("root", root_title, _phase())
         m.node(
             "build",
-            f"Build the fix for {handle}",
+            build_title,
             _task(build_op),
-            body=_direct_build_body(handle, report),
+            body=(
+                f"{brief}\n\n{report}" if brief else _direct_build_body(handle, report)
+            ),
         )
         _tail(m)
 
@@ -1475,7 +1510,12 @@ def mint_release_fix(
     ``ci_red_digest._infra_done``, gr611682) -- never closes the fix node
     ``no-op``: the digest fires ``gh run rerun`` once and parks on it,
     so the loop waits on a real verdict instead of re-cutting and
-    republishing the same sha iteration after iteration. The re-cut is
+    republishing the same sha iteration after iteration. A TEST red of
+    1-2 low-risk ids may instead be WAIVED by the digest
+    (``precis.plans.red_waiver``, setting ``release.red_waiver``): the
+    verdict is recorded green-waived, a ``broken-build`` gripe is filed,
+    and the fix, re-cut and poll nodes are closed ``waived: gr<N>`` --
+    no fix session, no new cut. The re-cut is
     the mechanical op the release-pass ``cut`` is: it records the new
     cut on the plan root (:func:`precis.plans.release.record_cut`
     overwrites ``meta.release``

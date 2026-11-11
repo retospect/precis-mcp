@@ -293,6 +293,7 @@ or `triaged`, tagged `fix:` code/skill/docs/web/mcp (a `code` build),
 15+ minutes past the latest `STATUS:triaged` or fix tag, with no live
 todo `related-to` them. Setting `factory.gripe_trust`: `all` (default)
 takes any filer; `filer` only Claude Code, human or ci_watch filers.
+A `release-waiver:r<N>` gripe is a broken build: minted at once, first.
 A `hold:no-autoclose` gripe never enters a lane. Keep a gripe out with any of `fix:reto`,
 `reto:ask`, `disagreement`, `flood`, or
 

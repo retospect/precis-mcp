@@ -561,6 +561,20 @@ REGISTRY: dict[str, SettingSpec] = {
             "and lane capacity apply either way. An unrecognised value "
             "reads as 'filer'.",
         ),
+        SettingSpec(
+            key="release.red_waiver",
+            type="str",
+            env_var=None,
+            default="on",
+            doc="DB-only. The release gate's 'deploy anyway and gripe' "
+            "waiver (precis.plans.red_waiver; Reto 2026-11-10). 'on' "
+            "(default): a TEST red on a release cut whose 1-2 failing "
+            "tests and cut range touch no hard-stop pattern is waived "
+            "once — a top-priority broken-build gripe is filed and the "
+            "pass proceeds to deploy without a re-cut. 'off': the "
+            "release-fix loop runs as before. An unrecognised value "
+            "reads as 'off'.",
+        ),
     )
 }
 

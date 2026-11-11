@@ -65,6 +65,13 @@ DEFAULT_SCORE = 5.0
 #: release-fixer class outranks routine builds the way a hand-set
 #: prio-1 release fixer used to.
 RELEASE_SCORE = 32.0
+#: ``meta`` key a plan root and its jobs carry to claim in a named band,
+#: and the one band it names: ``release`` ranks the job at the release
+#: legs' class (2.5, ``executors/_common.py``), ahead of ordinary gripe
+#: builds. ``plan_dispatch._mint_job`` copies the root's stamp onto the
+#: build/land jobs; the waiver gripe's chain (``red_waiver``) carries it.
+CLAIM_BAND_META_KEY = "claim_band"
+RELEASE_CLAIM_BAND = "release"
 #: Age's contribution to the severity path saturates here (the band-era
 #: "at most one band on age alone" ruling, made continuous).
 AGE_FACTOR_CAP = 4.0
@@ -216,9 +223,11 @@ def brief_files(text: str) -> frozenset[str]:
 
 __all__ = [
     "AGE_FACTOR_CAP",
+    "CLAIM_BAND_META_KEY",
     "DEFAULT_SCORE",
     "DISPATCH_META_KEY",
     "OVERLAP_DEMOTE",
+    "RELEASE_CLAIM_BAND",
     "RELEASE_SCORE",
     "SCORE_META_KEY",
     "SHOWSTOPPER_MULT",

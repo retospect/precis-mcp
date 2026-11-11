@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.plans import red_waiver as _red_waiver
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
 from precis.workers.job_types import release_cut as _rc
@@ -773,10 +774,28 @@ def _closed(
             f"confirmed and tagged deployed/{rn}; scripts/release retries "
             "the close on its next run"
         )
+    lines.extend(_waiver_reverts(ctx, rn))
     ctx.append_chunk("job_summary", "\n".join(lines))
     ctx.set_meta(release_confirm={"rN": rn, "sha": sha})
     ctx.set_status("succeeded")
     return True
+
+
+def _waiver_reverts(ctx: Any, rn: str) -> list[str]:
+    """The red-test waiver's safety net (:mod:`precis.plans.red_waiver`):
+    this release confirmed, so any earlier release's waiver gripe still
+    open gets its culprit-revert chain (once per gripe). Summary lines;
+    best-effort — a fault here never fails the confirm."""
+    try:
+        minted = _red_waiver.mint_reverts(ctx.store, rn)
+    except Exception:
+        log.warning("%s: waiver revert mint failed", NAME, exc_info=True)
+        return ["red-waiver: revert mint for unfixed waivers failed (see worker log)"]
+    return [
+        f"red-waiver: gr{gid} is still not done — minted td{root} "
+        f"'Revert the culprits of gr{gid}'"
+        for gid, root in minted
+    ]
 
 
 def poll(ctx: Any, handle: Any) -> bool:
