@@ -2844,6 +2844,12 @@ def link(
     # clients don't strip it.
     element: str | None = None,
     meta: dict[str, Any] | None = None,
+    # memory/finding/paper/taxon (gr626896): the edge's why — the kwarg
+    # spelling of meta={'reason': …}; reason='.' marks reviewed-obvious.
+    # Declared at the verb level so the refusal that suggests it
+    # (_check_reason_contribution's next=) names a call that works.
+    # Kinds whose link() doesn't declare it refuse it like meta=.
+    reason: str | None = None,
     # FastMCP-injected Context — binds the MCP session for the dispatch
     # (ledger attribution on the write path, gr504485).
     ctx: Context | None = None,
@@ -2877,6 +2883,7 @@ def link(
                 "rel": rel,
                 "element": element,
                 "meta": meta,
+                "reason": reason,
             },
             ctx=ctx,
         )
@@ -2986,6 +2993,8 @@ _LINK_HELP: dict[str, str] = {
     "target": "Canonical link target 'kind:id[~selector]'.",
     "mode": "'add' (default) | 'remove'.",
     "rel": "Relation slug. Defaults to 'related-to' on add.",
+    "reason": "Edge why (meta.reason). '.' = reviewed-obvious. "
+    "memory/finding/paper/taxon only.",
 }
 
 CLI_HELP: dict[str, dict[str, str]] = {

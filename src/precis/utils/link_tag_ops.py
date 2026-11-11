@@ -82,6 +82,67 @@ def validate_link_mode(mode: str) -> str:
     return mode
 
 
+def merge_link_reason(
+    meta: dict[str, Any] | None,
+    reason: Any,
+    *,
+    mode: str,
+) -> dict[str, Any] | None:
+    """Fold ``link()``'s ``reason=`` kwarg into ``meta['reason']``.
+
+    ``reason=`` is the kwarg spelling of ``meta={'reason': …}`` — the
+    form the ``_check_reason_contribution`` refusal's ``next=``
+    suggests (``reason='.'``, the reviewed-obvious marker, gr626896).
+    It rides the same door as ``meta=``: add-only, and the two
+    spellings must agree when both are given — an edge carries one
+    reason, so two different values can't collapse silently.
+    """
+    if reason is None:
+        return meta
+    if mode == "remove":
+        raise BadInput(
+            "reason= only applies when adding a link",
+            next="drop reason=, or use mode='add'",
+        )
+    if not isinstance(reason, str) or not reason.strip():
+        raise BadInput(
+            f"reason= must be a non-empty string, got {reason!r}",
+            next="reason='.' marks the edge reviewed-obvious; a sentence "
+            "records what the edge adds",
+        )
+    if meta is not None and "reason" in meta:
+        if meta["reason"] == reason:
+            return meta
+        raise BadInput(
+            "reason= and meta['reason'] disagree — the edge carries one reason",
+            next="pass one spelling: reason='…' or meta={'reason': '…'}",
+        )
+    return {**(meta or {}), "reason": reason}
+
+
+#: Display cap on a link row's ``meta.reason`` — one whitespace-collapsed
+#: line, cut like the teaser columns around it (gr626896: the reason,
+#: including the reviewed-obvious ``'.'``, must display where the edge does).
+LINK_REASON_DISPLAY_CAP = 80
+
+
+def link_reason_suffix(reason: Any) -> str:
+    """``" — <reason>"`` for a link row whose edge meta carries a
+    ``reason`` value; ``""`` when absent, non-str or blank. Shared by
+    every link-row surface (``_links_render``'s ``Links:`` table,
+    ``NumericRefHandler``'s ``view='links'``, the eye's ring rows) so
+    the reason renders identically everywhere — the reviewed-obvious
+    marker ``'.'`` prints as a bare period."""
+    if not isinstance(reason, str):
+        return ""
+    text = " ".join(reason.split())
+    if not text:
+        return ""
+    if len(text) > LINK_REASON_DISPLAY_CAP:
+        text = text[: LINK_REASON_DISPLAY_CAP - 1].rstrip() + "…"
+    return f" — {text}"
+
+
 def _endpoint_kinds(store: Store, a_ref_id: int, b_ref_id: int) -> dict[int, str]:
     """``refs.kind`` for two ref ids, in one round trip."""
     with store.pool.connection() as conn:

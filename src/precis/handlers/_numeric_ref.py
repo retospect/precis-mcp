@@ -83,6 +83,7 @@ from precis.utils.link_tag_ops import (
     check_relation_constraints,
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
+    link_reason_suffix,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -4550,7 +4551,12 @@ class NumericRefHandler(Handler):
                 target = f"{ref.kind}:{ident}~{other_pos}"
             if ref.retired_at is not None:
                 target += " (deleted)"
-        return f"{arrow} {target}  ({link.relation})"
+        # gr626896: the edge's own why renders after the relation —
+        # ``meta.reason='.'`` (reviewed-obvious) prints as a bare period.
+        return (
+            f"{arrow} {target}  ({link.relation})"
+            f"{link_reason_suffix((link.meta or {}).get('reason'))}"
+        )
 
     # F8 rel-name → inbound-passive-form mapping (``_INVERSE_REL``) moved
     # to ``precis.handlers._links_render`` alongside the rest of

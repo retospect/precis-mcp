@@ -191,6 +191,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.link_tag_ops import merge_link_reason
 from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.memory_fusion import GOTCHAS_TAG, FusionFlags
@@ -660,23 +661,35 @@ class MemoryHandler(NumericRefHandler):
         mode: str = "add",
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **kw: Any,
     ) -> Response:
-        """Selection records keep candidate rejection reasons on their edges."""
+        """Selection records keep candidate rejection reasons on their edges.
+
+        ``reason=`` is the kwarg spelling of ``meta={'reason': …}`` —
+        folded in by :func:`merge_link_reason` (gr626896: the refusal
+        that suggests ``reason='.'`` names a call that now works).
+        """
         if id is None:
             raise BadInput(
                 "memory link requires id=",
                 next="link(kind='memory', id=<record>, target='kind:id', rel='...')",
             )
         if isinstance(id, list):
-            if meta is not None:
+            if meta is not None or reason is not None:
                 raise BadInput(
                     "link meta requires a single memory id",
                     next="link each selection record separately with its own meta.reason",
                 )
             response = self._link_batch(id, target=target, mode=mode, rel=rel)
         else:
-            response = self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
+            response = self._link(
+                id=id,
+                target=target,
+                mode=mode,
+                rel=rel,
+                meta=merge_link_reason(meta, reason, mode=mode),
+            )
         try:
             # Inspect both ends after the write (and after a batch commits):
             # adding a part-of edge grows the target's child collection.

@@ -129,7 +129,7 @@ from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.glyph_health import glyph_caveat
-from precis.utils.link_tag_ops import apply_tag_ops
+from precis.utils.link_tag_ops import apply_tag_ops, merge_link_reason
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.ref_hybrid import fused_ref_hits
@@ -921,6 +921,7 @@ class FindingHandler(NumericRefHandler):
         mode: str = "add",
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Taproot-aware link door for findings.
@@ -948,7 +949,8 @@ class FindingHandler(NumericRefHandler):
         passed through to ``link_claims`` / :meth:`_link` — so a machine
         writer's admission annotation (``meta.evidence`` chunk pins,
         ``meta.{model,prompt_version,run_id,why}``) reaches the gate at
-        ``store.add_link`` (gr504789).
+        ``store.add_link`` (gr504789). ``reason=`` is the kwarg spelling
+        of ``meta={'reason': …}`` (:func:`merge_link_reason`, gr626896).
 
         Anything else — a non-hub finding, a non-Taproot relation, or
         ``mode='remove'`` — falls through to the generic numeric-ref link.
@@ -966,6 +968,7 @@ class FindingHandler(NumericRefHandler):
                     "target=..., rel=...); get and tag do take id=[...]"
                 ),
             )
+        meta = merge_link_reason(meta, reason, mode=mode)
         if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
             try:
                 hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)

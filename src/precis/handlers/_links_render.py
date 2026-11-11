@@ -32,6 +32,7 @@ from precis._result_budget import row_size_cell
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
+from precis.utils.link_tag_ops import link_reason_suffix
 from precis.utils.surface_scope import masked_ref_placeholder
 
 if TYPE_CHECKING:
@@ -262,7 +263,10 @@ def render_links_section(
             )
             rows.append(
                 {
-                    "related to": f"{rel_marker} {target}".strip(),
+                    "related to": (
+                        f"{rel_marker} {target}"
+                        f"{link_reason_suffix((link.meta or {}).get('reason'))}"
+                    ).strip(),
                     "keywords": teaser,
                     "how to get": get_call,
                     # Every row names a size — sub-kB bodies report raw

@@ -82,6 +82,7 @@ from precis.utils.entity_courtesy import (
     entity_handles,
     safe_entity_states,
 )
+from precis.utils.link_tag_ops import link_reason_suffix
 from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
@@ -1058,6 +1059,9 @@ class _RingNeighbour:
     passages: tuple[tuple[int, int | None], ...] = ()
     log_entry: tuple[int, str] | None = None
     suspect: bool = False
+    #: Distinct non-empty ``meta.reason`` values across the folded edges,
+    #: first-seen order (gr626896 — an edge's why displays where it lists).
+    reasons: tuple[str, ...] = ()
 
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
@@ -1356,16 +1360,16 @@ def _ring_kept(
     store: Store,
     ring: RingFilter,
     refs: dict[int, Any],
-    pairs: list[tuple[int, int | None]],
-) -> list[tuple[int, int | None]]:
-    """``pairs`` (``(neighbour ref, far chunk id)`` per edge) narrowed by
-    ``ring``: kind from the ref row, tags in one bulk read (only when
-    the filter uses a tag dimension)."""
+    pairs: list[tuple[int, int | None, Any]],
+) -> list[tuple[int, int | None, Any]]:
+    """``pairs`` (``(neighbour ref, far chunk id, meta.reason)`` per edge)
+    narrowed by ``ring``: kind from the ref row, tags in one bulk read
+    (only when the filter uses a tag dimension)."""
     out = pairs
     if ring.kinds is not None:
         out = [p for p in out if str(getattr(refs[p[0]], "kind", "")) in ring.kinds]
     if ring.spaces is not None or ring.tags is not None:
-        tag_of = _tag_sets(store, {o for o, _c in out})
+        tag_of = _tag_sets(store, {o for o, _c, _w in out})
         if ring.spaces is not None:
             want = {f"SPACE:{v}" for v in ring.spaces}
             out = [p for p in out if tag_of.get(p[0], frozenset()) & want]
@@ -1430,34 +1434,39 @@ def _suspect_edge_keys(store: Store, ref_id: int) -> set[tuple[int, int | None]]
 
 
 def _collapse_pairs(
-    pairs: list[tuple[int, int | None]],
+    pairs: list[tuple[int, int | None, Any]],
     ords: dict[int, int],
     suspect: set[tuple[int, int | None]]
     | frozenset[tuple[int, int | None]] = frozenset(),
 ) -> list[_RingNeighbour]:
-    """``(ref, far chunk)`` per edge → one :class:`_RingNeighbour` per ref —
-    first-seen order, every edge counted, far-end chunks deduped (gr524665:
-    a claim hub's ``paper --corroborates--> hub`` fan-in grounds at N chunks
+    """``(ref, far chunk, meta.reason)`` per edge → one
+    :class:`_RingNeighbour` per ref — first-seen order, every edge
+    counted, far-end chunks deduped (gr524665: a claim hub's
+    ``paper --corroborates--> hub`` fan-in grounds at N chunks
     of one source and must render as one row, not N identical rows). A row
     is ``suspect`` when any folded edge's ``(ref, chunk)`` is in
-    ``suspect``."""
-    acc: dict[int, tuple[int, list[int], bool]] = {}
+    ``suspect``; its ``reasons`` are the folded edges' distinct non-empty
+    ``meta.reason`` values, first-seen order (gr626896)."""
+    acc: dict[int, tuple[int, list[int], bool, list[str]]] = {}
     order: list[int] = []
-    for oid, ck in pairs:
+    for oid, ck, why in pairs:
         slot = acc.get(oid)
         if slot is None:
-            acc[oid] = slot = (0, [], False)
+            acc[oid] = slot = (0, [], False, [])
             order.append(oid)
-        edges, chunks, sus = slot
-        acc[oid] = (edges + 1, chunks, sus or (oid, ck) in suspect)
+        edges, chunks, sus, reasons = slot
+        acc[oid] = (edges + 1, chunks, sus or (oid, ck) in suspect, reasons)
         if ck is not None and ck not in chunks:
             chunks.append(ck)
+        if isinstance(why, str) and why.strip() and why not in reasons:
+            reasons.append(why)
     return [
         _RingNeighbour(
             oid,
             edges=acc[oid][0],
             passages=tuple((c, ords.get(c)) for c in acc[oid][1]),
             suspect=acc[oid][2],
+            reasons=tuple(acc[oid][3]),
         )
         for oid in order
     ]
@@ -1483,7 +1492,7 @@ def _first_hop(
     if not by_label:
         return {}, {}
     refs = store.fetch_refs_by_ids(
-        {o for pairs in by_label.values() for o, _c in pairs}
+        {o for pairs in by_label.values() for o, _c, _why in pairs}
     )
     live = {
         key: [p for p in pairs if _live(refs, p[0])] for key, pairs in by_label.items()
@@ -1496,7 +1505,8 @@ def _first_hop(
             if (kept := _ring_kept(store, ring, refs, pairs))
         }
     ords = _chunk_ords(
-        store, (c for pairs in live.values() for _o, c in pairs if c is not None)
+        store,
+        (c for pairs in live.values() for _o, c, _why in pairs if c is not None),
     )
     suspect = _suspect_edge_keys(store, ref_id) if live else set()
     entries = _quest_log_entries(store, ref_id, live, refs)
@@ -1504,12 +1514,12 @@ def _first_hop(
     for key, pairs in live.items():
         ordinary = []
         seen: set[int] = set()
-        for oid, cid in pairs:
+        for oid, cid, why in pairs:
             entry = (
                 entries.get(cid) if cid is not None and key[1] == "cited-by" else None
             )
             if entry is None:
-                ordinary.append((oid, cid))
+                ordinary.append((oid, cid, why))
                 continue
             if cid in seen:
                 continue
@@ -1518,7 +1528,12 @@ def _first_hop(
             ord_, section, preview = entry
             label = f"quest log — {section}" if section else "quest log"
             out.setdefault((key[0], label), []).append(
-                _RingNeighbour(oid, passages=((cid, ord_),), log_entry=(ord_, preview))
+                _RingNeighbour(
+                    oid,
+                    passages=((cid, ord_),),
+                    log_entry=(ord_, preview),
+                    reasons=(why,) if isinstance(why, str) and why.strip() else (),
+                )
             )
         if ordinary:
             out.setdefault(key, []).extend(_collapse_pairs(ordinary, ords, suspect))
@@ -1537,7 +1552,7 @@ def _first_hop(
 def _quest_log_entries(
     store: Store,
     ref_id: int,
-    pairs: dict[tuple[str, str], list[tuple[int, int | None]]],
+    pairs: dict[tuple[str, str], list[tuple[int, int | None, Any]]],
     refs: dict[int, Any],
 ) -> dict[int, tuple[int, str, str]]:
     """A structure's incoming log entries, keyed by the linked chunk.
@@ -1550,7 +1565,7 @@ def _quest_log_entries(
         cid
         for (_group, label), neighbours in pairs.items()
         if label == "cited-by"
-        for oid, cid in neighbours
+        for oid, cid, _why in neighbours
         if cid is not None
         and str(getattr(refs[oid], "kind", "")) == "quest"
         and not _scope_masks(refs[oid])
@@ -1596,11 +1611,12 @@ _NBH_UNCAPPED = 1_000_000
 
 def _neighbourhood_edges(
     store: Store, ref_id: int
-) -> list[tuple[int, int, Any, int | None, int | None]]:
+) -> list[tuple[int, int, Any, int | None, int | None, Any]]:
     """``ref_id``'s live first-hop edges as stored ``(src, dst, relation,
-    src_chunk_id, dst_chunk_id)``, oldest link first, read through
+    src_chunk_id, dst_chunk_id, reason)``, oldest link first, read through
     :meth:`Store.neighbourhood` with ``link_ids=True`` so a chunk-grounded
-    edge keeps the chunk it grounds at (gr524665).
+    edge keeps the chunk it grounds at (gr524665) and its ``link_id``
+    resolves the edge's ``meta.reason`` (gr626896) in one bulk read.
 
     ``neighbourhood`` presents an inbound edge under its inverse slug; the
     inverse map is an involution, so mapping it back gives the stored slug
@@ -1620,17 +1636,41 @@ def _neighbourhood_edges(
         ]
         for n in nbh["nodes"]
     }
+    reason_of = _edge_reasons_by_id(
+        store,
+        [int(e["link_id"]) for e in nbh["edges"] if e.get("link_id") is not None],
+    )
     inverses, _symmetric = _relation_reading(store)
-    edges: list[tuple[int, int, Any, int | None, int | None]] = []
+    edges: list[tuple[int, int, Any, int | None, int | None, Any]] = []
     for e in reversed(nbh["edges"]):
         sck = e.get("src_chunk_id")
         dck = e.get("dst_chunk_id")
+        reason = reason_of.get(int(e["link_id"])) if e.get("link_id") else None
         if e["dir"] == "out":
-            edges.append((ref_id, int(far_of[e["dst"]]), e["rel"], sck, dck))
+            edges.append((ref_id, int(far_of[e["dst"]]), e["rel"], sck, dck, reason))
         else:
             rel = inverses.get(e["rel"], e["rel"])
-            edges.append((int(far_of[e["src"]]), ref_id, rel, sck, dck))
+            edges.append((int(far_of[e["src"]]), ref_id, rel, sck, dck, reason))
     return edges
+
+
+def _edge_reasons_by_id(store: Store, link_ids: list[int]) -> dict[int, Any]:
+    """``{link_id: meta['reason']}`` for the listed edges in one query —
+    the value the ring appends to the neighbour row. A read failure
+    reads as no reasons, never a broken render."""
+    if not link_ids:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT link_id, meta->>'reason' FROM links "
+                "WHERE link_id = ANY(%s) AND meta ? 'reason'",
+                (link_ids,),
+            ).fetchall()
+    except Exception:
+        log.debug("link reason read failed", exc_info=True)
+        return {}
+    return {int(r[0]): r[1] for r in rows}
 
 
 def _live(refs: dict[int, Any], oid: int) -> bool:
@@ -1641,16 +1681,17 @@ def _live(refs: dict[int, Any], oid: int) -> bool:
 def _bucket_edges(
     store: Store,
     ref_id: int,
-    edges: list[tuple[int, int, Any, int | None, int | None]],
-) -> dict[tuple[str, str], list[tuple[int, int | None]]]:
-    """Group ``ref_id``'s ``(src, dst, relation, src_chunk, dst_chunk)``
-    edges by ``(ring group, label as seen from here)``, listing the other
-    endpoint of each as ``(ref, far chunk id)`` — the chunk the edge
-    grounds at on the neighbour's side. Dead ends included; the caller
-    filters by liveness and collapses."""
+    edges: list[tuple[int, int, Any, int | None, int | None, Any]],
+) -> dict[tuple[str, str], list[tuple[int, int | None, Any]]]:
+    """Group ``ref_id``'s ``(src, dst, relation, src_chunk, dst_chunk,
+    reason)`` edges by ``(ring group, label as seen from here)``, listing
+    the other endpoint of each as ``(ref, far chunk id, meta.reason)`` —
+    the chunk the edge grounds at on the neighbour's side, and the why the
+    row appends (``None`` when the edge carries none). Dead ends included;
+    the caller filters by liveness and collapses."""
     inverses, symmetric = _relation_reading(store)
-    by_label: dict[tuple[str, str], list[tuple[int, int | None]]] = {}
-    for src, dst, rel, sck, dck in edges:
+    by_label: dict[tuple[str, str], list[tuple[int, int | None, Any]]] = {}
+    for src, dst, rel, sck, dck, reason in edges:
         group = ring_group(str(rel)) if rel is not None else None
         if group is None:
             continue
@@ -1663,7 +1704,7 @@ def _bucket_edges(
             str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
         )
         by_label.setdefault((group, label), []).append(
-            (other, int(other_chunk) if other_chunk is not None else None)
+            (other, int(other_chunk) if other_chunk is not None else None, reason)
         )
     return by_label
 
@@ -1690,21 +1731,25 @@ def first_hop_shape(
             (ref_ids, ref_ids),
         ).fetchall()
     wanted = set(ref_ids)
-    edges: dict[int, list[tuple[int, int, Any, Any, Any]]] = {r: [] for r in ref_ids}
+    edges: dict[int, list[tuple[int, int, Any, Any, Any, Any]]] = {
+        r: [] for r in ref_ids
+    }
     for src, dst, rel, sck, dck in rows:
         for end in {int(src), int(dst)} & wanted:
-            edges[end].append((int(src), int(dst), rel, sck, dck))
+            edges[end].append((int(src), int(dst), rel, sck, dck, None))
     buckets = {r: _bucket_edges(store, r, e) for r, e in edges.items()}
-    others = {o for b in buckets.values() for pairs in b.values() for o, _c in pairs}
+    others = {
+        o for b in buckets.values() for pairs in b.values() for o, _c, _why in pairs
+    }
     refs = store.fetch_refs_by_ids(others | {int(src) for src, _d, _r, _s, _k in rows})
     shape: dict[int, tuple[int, int, int]] = {}
     for r, by_label in buckets.items():
         # inbound edges from a retired source are unremovable from this end
         # (the source is Gone), so they are not this ref's dead links
-        removable = {dst for src, dst, _rel, _s, _k in edges[r] if src == r}
+        removable = {dst for src, dst, _rel, _s, _k, _w in edges[r] if src == r}
         orphaned = {
             src
-            for src, dst, _rel, _s, _k in edges[r]
+            for src, dst, _rel, _s, _k, _w in edges[r]
             if dst == r and src not in removable and not _live(refs, src)
         }
         # an outbound ``supersedes`` edge to a retired ref is the merge record
@@ -1712,18 +1757,19 @@ def first_hop_shape(
         # node), not a dead end to repoint
         tombstones = {
             dst
-            for src, dst, rel, _s, _k in edges[r]
+            for src, dst, rel, _s, _k, _w in edges[r]
             if src == r and rel == "supersedes" and not _live(refs, dst)
         }
         live_groups = [
-            {o for o, _c in pairs if _live(refs, o)}
+            {o for o, _c, _why in pairs if _live(refs, o)}
             for (_g, label), pairs in by_label.items()
             if not (r in hubs and label == _HUB_MEMBER_LABEL)
         ]
         live_all = [
-            {o for o, _c in pairs if _live(refs, o)} for pairs in by_label.values()
+            {o for o, _c, _why in pairs if _live(refs, o)}
+            for pairs in by_label.values()
         ]
-        every = {o for pairs in by_label.values() for o, _c in pairs}
+        every = {o for pairs in by_label.values() for o, _c, _why in pairs}
         live = set().union(*live_all) if live_all else set()
         shape[r] = (
             len(live),
@@ -1816,7 +1862,11 @@ def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -
         n, str(getattr(ref, "kind", "") or "")
     )
     # gr568170: a folded edge whose target moved since it was asserted.
-    return f"{row}  · suspect" if n.suspect else row
+    if n.suspect:
+        row += "  · suspect"
+    # gr626896: the folded edges' why — ``meta.reason='.'``
+    # (reviewed-obvious) prints as a bare period.
+    return row + link_reason_suffix(" · ".join(n.reasons))
 
 
 def _render_first_hop(
@@ -1850,6 +1900,7 @@ def _render_first_hop(
                 )
                 if by_id[oid].suspect:
                     row += "  · suspect"
+                row += link_reason_suffix(" · ".join(by_id[oid].reasons))
                 lines.append(
                     f"  {label}: {row} — {hook}" if hook else f"  {label}: {row}"
                 )
@@ -1865,6 +1916,7 @@ def _render_first_hop(
                     )
                     if by_id[oid].suspect:
                         row += "  · suspect"
+                    row += link_reason_suffix(" · ".join(by_id[oid].reasons))
                     lines.append(f"    {row} — {hook}" if hook else f"    {row}")
                 if len(live_ids) > len(listed):
                     lines.append(

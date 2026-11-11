@@ -135,6 +135,7 @@ from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
     format_link_tag_ack,
+    merge_link_reason,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -8469,6 +8470,7 @@ class PaperHandler(Handler):
         mode: str = "add",
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from this paper to another ref.
@@ -8477,9 +8479,12 @@ class PaperHandler(Handler):
         a machine writer's admission annotation (``meta.evidence``
         chunk pins, ``meta.{model,prompt_version,run_id,why}``) reaches
         the gate at ``store.add_link`` through it (gr504789).
+        ``reason=`` is the kwarg spelling of ``meta={'reason': …}``
+        (:func:`merge_link_reason`, gr626896).
         """
         target = require_link_target("paper", target)
         validate_link_mode(mode)
+        meta = merge_link_reason(meta, reason, mode=mode)
         slug, ref_id = self._resolve_paper_slug(id)
         n_added, n_removed = apply_link_ops(
             self.store,

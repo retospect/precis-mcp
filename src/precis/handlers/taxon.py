@@ -70,6 +70,7 @@ from precis.taxonomy.nodes import (
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.lexical import lexical_overlap
+from precis.utils.link_tag_ops import merge_link_reason
 from precis.utils.match_all import fold_match_all_q
 
 log = logging.getLogger(__name__)
@@ -830,10 +831,13 @@ class TaxonHandler(NumericRefHandler):
         mode: str = "add",
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Add/remove a link; ``meta=`` (add only) lands on the edge, with
-        ``axis`` (when present) a non-empty string and other keys free."""
+        ``axis`` (when present) a non-empty string and other keys free.
+        ``reason=`` is the kwarg spelling of ``meta={'reason': …}``
+        (:func:`merge_link_reason`, gr626896)."""
         if meta is not None:
             if mode != "add":
                 raise BadInput(
@@ -850,6 +854,7 @@ class TaxonHandler(NumericRefHandler):
                     f"meta.axis must be a non-empty string, got {axis!r}",
                     next="meta={'axis': 'composition'}",
                 )
+        meta = merge_link_reason(meta, reason, mode=mode)
         if isinstance(target, str) and target.startswith("taxon:"):
             # path-form target ('taxon:measurand/temperature') -> numeric id
             target = f"taxon:{self._resolve_spec(target)}"
