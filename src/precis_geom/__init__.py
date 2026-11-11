@@ -67,6 +67,14 @@ package — the pieces that are *the script's own surface*:
 - :mod:`precis_geom.optimize` — stdlib Metropolis annealing over caller-owned
   moves, snapshots, energy, schedule and RNG; domain-specific proposals stay
   with the script (se-flow-kernel slice 4b).
+- :mod:`precis_geom.design` — the editable design *recipe*: a ``Recipe`` is a
+  feature graph (``Feature`` nodes with stable, never-reused ids over a DAG)
+  the optimiser edits, snapshots and restores. Nested parameter values are
+  copied at edit, read and transaction boundaries so aliases cannot bypass
+  pinning or corrupt rollback. Built geometry is a pure function of the recipe
+  (se-flow-kernel slice 4b §Design representation item 1). This
+  is the recipe layer only — ``build(recipe) -> Built`` and ``shape_sha`` land
+  on top of it, over :mod:`precis_geom.steps`.
 - :mod:`precis_geom.params` — named, bounded parameters (``Space`` of
   ``Continuous``/``Integer``/``Boolean`` dims) for continuous optimisers: a
   ``Space`` samples/clips/validates a frozen ``Params`` point and applies its

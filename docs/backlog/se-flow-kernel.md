@@ -244,7 +244,12 @@ commit carrying this line; `git log` has the sha.*
      naming `budget='job'`.
    - **Offline.** The end-to-end test's script step runs with no DB and
      no se import (the wheel alone; structure-workspaces §Core design 7).
-4b. **Design-optimisation kit + two examples (dogfood).** Reto,
+4b. **Design-optimisation kit + two examples (dogfood).**
+   The recipe layer is landed in `src/precis_geom/design.py::Recipe`: stable
+   feature ids, pinned edits, detached snapshots/restores and JSON round trips,
+   including nested mutable parameter values. The `build`/`Built` layer,
+   `shape_sha` and region-change reporting remain pending; this does not
+   complete the design representation or the examples below. Reto,
    2026-10-22: "the chamber with the holes is but a point solution. We
    want the general case implemented, the coder can do cool stuff with
    it then." And: "hole count will not be the answer to evaluate shape.
