@@ -1,6 +1,6 @@
 // blocktree-3d.js — the se/nm 3D reader's client glue (round 2a,
-// gr335242 comment 5 / docs/backlog/multiscale-design-system-spec.md
-// §5.8). Server side builds the whole bundle
+// gr335242 comment 5 / spec me628672, the §5.8 viewer requirements).
+// Server side builds the whole bundle
 // (precis_web.blocktree_3d.build_scene, served as scene3d.json); this
 // file only wires the vendored three-cad-viewer to it and links the
 // topology panel — no geometry/traversal logic lives here.

@@ -1,7 +1,7 @@
 """Per-number provenance — one sidecar convention for every stored number.
 
 Every number a design stores carries where it came from and how hard it was
-computed (multiscale-design-system-spec.md §1.4). The sidecar hangs beside
+computed (spec ``me628475`` §1.4). The sidecar hangs beside
 the params it describes, keyed by param name::
 
     {"wall_thickness": {"source": "solver",

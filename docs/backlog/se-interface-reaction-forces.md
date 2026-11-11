@@ -8,7 +8,7 @@ pillar: 3d-design
 
 ## Motivation / why
 
-`multiscale-design-system-spec.md` §1.2 specifies an `Interface` carrying a
+Spec `me628475` §1.2 specifies an `Interface` carrying a
 `Contract` whose first field is `loads{Fx,Fy,Fz,Mx,My,Mz}` with all six
 components — "absent = unknown, never zero" — and a `load_provenance` enum
 covering `user_stated`, `llm_assumed`, and `derived_by_statics`. §2.1's

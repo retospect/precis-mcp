@@ -1,6 +1,6 @@
 """Interface contracts and insertion cones — se's adoption of the design
 core's contract vocabulary (docs/backlog/design-state-core.md item 7a;
-multiscale-design-system-spec.md §1.2 ``Contract`` / ``Block.
+spec ``me628475`` §1.2 ``Contract`` / ``Block.
 insertion_direction``, §2 "single-direction assembly").
 
 **A contract is six load components, and absent means UNKNOWN.** A

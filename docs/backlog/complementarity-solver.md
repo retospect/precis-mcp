@@ -38,7 +38,7 @@ and the closed-form check agree by construction.
 
 - **Param name** — the axial-member param that selects the must-contact
   idiom, named per the sign-idiom vocabulary in
-  `multiscale-design-addendum-a.md` A6 (tension-only, compression-only,
+  spec `me628475` Addendum A6 (tension-only, compression-only,
   bidirectional, spring, hard stop).
 - **Decomposition rule** — how a `screw`/`press` connect (`joints.py`
   preload, N tension-positive) decomposes into the fastener-tie +

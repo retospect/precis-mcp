@@ -153,8 +153,8 @@ and join groups until the checks pass. Nanoscale (sp² carbon, DNA
 scaffolding, pockets with patterned regions) and macroscale (PCBs,
 microfluidic cartridges, motors, mechanics) are children of one design.
 
-**North-star specs.** `backlog/multiscale-design-system-spec.md` (Reto's
-system spec) with `backlog/multiscale-design-architecture.md` as the map;
+**North-star specs.** spec `me628475` (Reto's system spec, in graph
+memory) with `backlog/multiscale-design-architecture.md` as the map;
 `backlog/se-kind.md`; `backlog/pocket-from-molecule.md` (carries the
 non-geometric region layer, decided 2026-09-30).
 
@@ -165,7 +165,7 @@ ratchet valve** (`hexfold` spec §28); the **T-handle bearing**
 (`backlog/hexfold-instrumentation-leg.md`); **DNA scaffold around a carbon
 part** (`backlog/se-chain-wrap-around-part.md`); the cross-scale flagship,
 a bistable azobenzene driving a folding-chair tensegrity switched by two
-wavelengths (spec Addendum A1); the running mechanical example, the
+wavelengths (spec `me628475` Addendum A1); the running mechanical example, the
 unicycle. Authored smooth surfaces and their carbon tiling are tracked by
 `backlog/hexfold-ideal-surface-then-tile.md`; instrumentation integration
 remains `backlog/hexfold-instrumentation-leg.md`. A generated surface alone

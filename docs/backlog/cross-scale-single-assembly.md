@@ -31,7 +31,7 @@ gripe's own "why it matters" names exactly this drift risk (mechanical
 layers desyncing from the electrode layout they must register against).
 
 Microfluidic cards were PARKED by Reto 2026-09-12
-(`multiscale-design-architecture.md:83`, `multiscale-design-system-spec.md`
+(`multiscale-design-architecture.md:83`, spec `me628475`
 §4.8) and are **UNPARKED by this review, 2026-09-30, to the horizon only** —
 this item names the target, it does not authorize building past
 `pcb-se-binding.md`'s prerequisite.
@@ -83,7 +83,7 @@ sync by a human.
 - The cartridge's alignment features register consistently against the
   PCB's own coordinate frame (the drift `gr451662` warns about is checkable,
   not just hoped-away).
-- Cross-scale flagship (`multiscale-design-system-spec.md` Addendum A1): a
+- Cross-scale flagship (spec `me628475` Addendum A1): a
   bistable azobenzene structure switched between states by two
   wavelengths, driving a folding-chair-like tensegrity mechanism with
   springs, is designed and checked as one se assembly. Its parts:
@@ -113,6 +113,6 @@ machinery expected for the motor (reuses `cad-machine-spec.md`).
 
 Closest existing items: `pcb-se-binding.md` (hard blocker — this item is
 the widened N-object case), `cad-machine-spec.md` (motor joint vocabulary),
-`multiscale-design-system-spec.md` §4.8/§6.2 (the microfluidic-card design
+spec `me628475` §4.8/§6.2 (the microfluidic-card design
 this item unparks), `ewod-controller-and-hv-supply.md`, `gr451662`. Thread:
 `docs/backlog/threads/se-machine-design.md`.

@@ -22,7 +22,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
 **Status:** ends when the shared design substrate the se/hexfold/pcb/cad
 kinds stand on exists — design-state-core, pattern groups, complementarity,
-make tree, attached models — per `backlog/multiscale-design-system-spec.md`,
+make tree, attached models — per spec `me628475`,
 with `backlog/multiscale-design-architecture.md` as the map. design-state-core
 has shipped (r37), and the make tree (`make` kind, migration 0154) and
 attached models (`analyzed-by`, migration 0153) shipped v1; pattern-groups
@@ -42,7 +42,7 @@ implicitly waiting on.
 3. (structure-workspaces moved to its own thread,
    [structure-workspaces.md](structure-workspaces.md), 2026-10-22; no longer
    held behind pattern-groups.)
-4. **backlog/multiscale-design-system-spec.md** §5.4 — carve the inspection
+4. **spec `me628475`** §5.4 — carve the inspection
    toolkit v1 as its own item; Reto 2026-10-21 named it the first carved
    slice (step 2 of the decided build order).
 

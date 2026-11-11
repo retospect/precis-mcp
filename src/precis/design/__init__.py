@@ -3,7 +3,7 @@ discrete states.
 
 Four subsystems that recur **identically** at macro scale and at atomic
 scale and must not be built twice (docs/backlog/design-state-core.md;
-multiscale-design-system-spec.md §1.3–1.6, §5.6). One internal package,
+spec ``me628475`` §1.3–1.6, §5.6). One internal package,
 **rented by ``se`` (including its atomic mode)** exactly as se already
 rents the cad kernel and the :mod:`precis.blocktree` spine. One renter, not
 two: the `nm` kind merges into se's atomic mode ahead of this work, so

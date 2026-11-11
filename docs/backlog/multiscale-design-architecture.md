@@ -22,8 +22,10 @@ owning doc/module, and the new subsystems held here until each grows a build
 slice. Leg detail lives in the leg docs; nothing here re-opens their named
 deferrals.
 
-2026-09-11: Reto's detailed build spec landed as its own leg doc,
-`multiscale-design-system-spec.md` (was briefly at the repo root) — data
+2026-09-11: Reto's detailed build spec landed as its own leg doc (was
+briefly at the repo root; moved to graph memory 2026-11-10 as spec
+`me628475`, its Addendum A A1–A10 absorbed with it — `spec`/`addendum`
+below name it) — data
 model, constraint catalogue, optimiser, MCP inspection surface, molecular
 tier. Its intake preamble routes every section: existing owners win
 (se-kind ladder, feasibility-and-cost registry, blocktree plan, shipped se
@@ -79,7 +81,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | requirement→joint matching | **here, §Joint matching** | new |
 | view-dependent form | **here, §View-dependent form** | new |
 | pattern groups (one prototype × transform group; orbit-deduped checks, port arrays, n× BOM) | `pattern-groups.md` (Reto 2026-09-12; composes with blocktree slice-1 instancing) | spec'd 2026-09-12 |
-| scenario presets + service environment (lifetime master switch, standard load-case library) | `multiscale-design-system-spec.md` §1.3 | spec'd |
+| scenario presets + service environment (lifetime master switch, standard load-case library) | spec `me628475` §1.3 | spec'd |
 | per-number provenance; envelope revisions, CoW design state, pin→branch comparison | spec §1.4–1.5, §5.6 | spec'd |
 | phase loop (topology→sizing→realisation, envelope tightening) | spec §1.6 | spec'd |
 | cross-domain coupling screen | spec §2.4 | spec'd |
@@ -90,7 +92,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | radiometric transport + irradiance contract | spec §4.8 | spec'd — kept: smooth, cheap, propagating constraints (Reto 2026-09-12) |
 | molecular `density_at` fidelity levels, conformer enumeration, degradation/cleavage records | spec §4.9 | spec'd |
 | inspection toolkit (cast_ray, max_stress/under_utilised, digest, bookmarks); job searching→improving status | spec §5.4–5.7 | spec'd |
-| reference targets (struts-and-strings bracket; azobenzene/tensegrity flagship as architectural test) | `multiscale-design-addendum-a.md` A1 | spec'd 2026-09-12 |
+| reference targets (struts-and-strings bracket; azobenzene/tensegrity flagship as architectural test) | addendum A1 | spec'd 2026-09-12 |
 | limited component DOF + meshing-controlled generated geometry (principles) | addendum A2 | spec'd 2026-09-12 |
 | lifecycle situations: n-not-three, operational 4D motion, hard-stop contact row, compare-by-volume | addendum A3 (built out in `situation-rule-tables.md`; mechanics stay §Scenarios here) | spec'd 2026-09-12 |
 | tolerance budgeting: variance-up/budget-down one traversal + error-source correlation tags | addendum A4 (allocation rides `margin-budget-tree.md`; chains f&c rung 4) | spec'd 2026-09-12 |
@@ -260,7 +262,7 @@ bilateral, strongly asymmetric, with a failure point (Morse, not Hooke);
 the cross-scale mapping table lives in `structural-solution-space.md`.
 
 **Load-sign idioms + the sign-aware completeness check** are Addendum A6
-(`multiscale-design-addendum-a.md`): spring is a bidirectional member
+(spec `me628475`): spring is a bidirectional member
 with a declared rate, not a sixth idiom (already the shipped slice-1
 axial-rate member); a tension-only member driven into compression by any
 declared load case makes the topology **incomplete**, not merely
@@ -311,7 +313,7 @@ stressed. Build detail: `complementarity-solver.md`.
   next to each, and every run records the weights it ran with (Reto
   2026-10-24, "sure it does, the LLM's main job is to tweak these to best
   practices"; [pcb-intent-api](pcb-intent-api.md)).
-- **BO's three loci** (Addendum A7, `multiscale-design-addendum-a.md`):
+- **BO's three loci** (Addendum A7, spec `me628475`):
   the inner-solve stand-in above; contested decisions (runner-up within
   ~5%, spec §3.8) queued for a refinement evaluation; adaptive Pareto-
   front extension (spec §3.4) when a query lands outside a front's

@@ -341,7 +341,7 @@ Search space: large but not hopeless — the discrete choices collapse it
 (pocket count is an integer, arc count is four, attachment sites come
 from the ring taxonomy); the continuous parameters (radius, arc angles,
 fillet) are a handful, exactly what the existing annealer
-(`multiscale-design-system-spec.md`) handles. **The expensive part is
+(spec `me628475`) handles. **The expensive part is
 scoring, not searching**, hence the stubbed scorer: reject 99 % of
 candidates cheaply, run energetics only on survivors.
 

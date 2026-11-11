@@ -1,7 +1,7 @@
 """Scenario + service environment — the production context.
 
 A single named scenario sets objective weights and quantity instead of a
-caller hand-tuning weights per run (multiscale-design-system-spec.md §1.3),
+caller hand-tuning weights per run (spec ``me628475`` §1.3),
 and points at the service environment the design must survive. The
 environment's **lifetime master switch** is the highest-leverage field in
 the system: a week-long prototype drops corrosion, creep and fatigue

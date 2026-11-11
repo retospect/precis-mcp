@@ -9,7 +9,7 @@ prio: normal
 
 Build-order step 3's "three-verdict scenario rule table" (map
 `multiscale-design-architecture.md` §Scenarios;
-`multiscale-design-addendum-a.md` A3, the lifecycle-situations delta).
+spec `me628475` Addendum A3, the lifecycle-situations delta).
 Vocabulary per glossary ruling 2026-09-12: these are **situations** (named
 swept-volume bundles: assembly, operation, maintenance, shipping, …) —
 the §1.3 **Scenario** (production context: prototype / mass_production)

@@ -1,7 +1,7 @@
 """three-cad-viewer (bernhard-42/three-cad-viewer) scene projection over a
 :mod:`precis.blocktree` design — round 2a's 3D counterpart to
-:mod:`precis_web.blocktree_svg` (gr335242 comment 5 / docs/backlog/
-multiscale-design-system-spec.md §5.8). Kind-agnostic on purpose, same
+:mod:`precis_web.blocktree_svg` (gr335242 comment 5 / spec ``me628672``,
+the §5.8 viewer requirements). Kind-agnostic on purpose, same
 convention as the SVG projector: a caller supplies the domain's own
 ``effective_envelope``/``pose``/``rot`` triple, this module never reaches
 for the DB or re-derives it. It reuses :mod:`precis_web.blocktree_svg`'s

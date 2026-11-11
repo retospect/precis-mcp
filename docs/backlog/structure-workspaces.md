@@ -1099,7 +1099,7 @@ charge is now −a; 10 Å: entered the π orbital of a benzene ring; 11 Å:
 left that ring." Rays are scale-independent.
 
 **Already specced; this is the atomic leg.** Observation rays *are*
-[multiscale-design-system-spec](multiscale-design-system-spec.md) §5.4
+spec `me628475` §5.4
 `cast_ray(design, origin, direction, fields[]) -> Hit[]` (one textual
 ray, missing fields silently omitted, molecular-scale boundaries as
 Bader basin transitions) and §5.5 bookmarks (a stored query, not an
