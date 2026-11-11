@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** Pocket-from-molecule slice 4 (the realize loop, `pocket-from-molecule` — slices 1–3 built 2026-10; slice 3's spin default waits on Q12), then station-path-finder (spec `me629025`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
+- **Next:** Pocket-from-molecule slice 4 (the realize loop, spec `me629033` — slices 1–3 built 2026-10; slice 3's spin default waits on Q12), then station-path-finder (spec `me629025`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
 - **Blocked by:** Station-path-finder (spec `me629025`) is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14; H2 steps and H3 relax since); the H2 cone's relaxed washer-zone gate remains open.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
@@ -25,11 +25,11 @@ fits; the T1 entry slice (`/rxn` web ledger, kept rxn equation sets) is
 in prod. Order follows the data: each tool consumes the previous one's
 output.
 **Worktree:** `nanoreactor`
-**Allocation decision:** active — Reto 2026-10-17; owns `pocket-from-molecule`, the driver of Pillar 2's intent → realize loop.
+**Allocation decision:** active — Reto 2026-10-17; owns spec `me628986` (pocket-from-molecule), the driver of Pillar 2's intent → realize loop.
 
 ## Do next
 
-1. **backlog/pocket-from-molecule.md** — Reto 2026-10-17, top rank: the
+1. **spec `me628986` (pocket-from-molecule)** — Reto 2026-10-17, top rank: the
    per-station pocket spec (NO attractive pocket, held NH2) and the
    GFN2 → MLIP → DFT realize loop that turns it into a tube wall.
    Slices 1–3 built (surface painter; pocket spec + computers; the

@@ -1118,7 +1118,7 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   excludes `origin='ml_prediction'` by default
   (`include_ml_predictions=True` lifts it). The `tier`/`direction`/`role`
   axes are unchanged. Their `measurement_arg` (position, entity) is
-  the `subject_selector text` column that `pocket-from-molecule.md` (region property layer, folded)
+  the `subject_selector text` column that spec `me629029` (region property layer, folded)
   adds so a design's *region* can be a subject; decide the grammar when
   this item ships (open question there). Participant roles are a separate
   axis from `direction` and the condition `role`

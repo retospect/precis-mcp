@@ -84,10 +84,10 @@ card tells whether that size is still inside the model.
   (`precis_se/datums.py`), tagged inlet / outlet; the seed band is the
   inlet face's footprint.
 - Tracking planes: any `z*` offset, or a station z-window
-  (`pocket-from-molecule` stations) — the breakthrough plane generalises
+  (spec `me629029` stations) — the breakthrough plane generalises
   to "fraction of particles that reach region X by `t*`".
 - Outputs as **measures on regions** through the `COMPUTERS` path that
-  pocket-from-molecule slice 2a wires (`breakthrough_fraction`,
+  spec `me629031` wires (`breakthrough_fraction`,
   `residence_time_t0`, `resistance_ratio`, `evenness`), so a pocket spec
   or a chamber spec can *require* a flow property and DRC checks it.
 
@@ -782,7 +782,7 @@ commit carrying this line; `git log` has the sha.*
   solver) is named when a case needs it.
 
 Sequencing: slice 1 is self-contained and builds now. Slice 2 waits for
-pocket-from-molecule slice 2 to land, because that slice fixes the
+spec `me629031` to land, because that slice fixes the
 provisional `Computer` signature in `precis_se.properties.COMPUTERS`.
 Slice 2b follows slice 2. Slices 4a → 4b follow structure-workspaces
 slices 1–2 and precede se-native-fields slice 1 (ranked in

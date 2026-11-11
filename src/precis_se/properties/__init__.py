@@ -39,7 +39,7 @@ computes. Block names may not contain ``/ @ [ ] !``
 (:data:`precis_se.ops.BLOCK_NAME_RESERVED`).
 
 **The molecule painter** (:mod:`precis_se.properties.surface`,
-``view='surface'``; docs/backlog/pocket-from-molecule.md slice 1) samples
+``view='surface'``; spec me629031) samples
 a bound molecule's van der Waals surface and paints each point with a
 GFN2 point-charge ESP, an H-bond class and a polarity class. It computes
 on read and registers no computer yet: slice 2 turns its output into
@@ -96,7 +96,7 @@ class _LazyComputer:
 
 
 #: measurand slug → computer. The wall-side region computers
-#: (:mod:`precis_se.properties.computers`, pocket-from-molecule slice 2a),
+#: (:mod:`precis_se.properties.computers`, spec me629031),
 #: the flow-chamber computers (:mod:`precis_se.flow`,
 #: se-flow-kernel slice 2) and the flagellar-motor computer
 #: (:mod:`precis_se.motor`, se-flagellar-motor.md slice 1) — every other

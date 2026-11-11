@@ -8,7 +8,7 @@ effort: high
 ## Resume
 
 - **Next:** pcb-se-binding is draft — the rough box built 2026-10-21, the pass-A remainder and the outline-negotiation loop are unready, and v2 moved to pcb-workspace-code slice 0b (2026-10-23). O5 + declared flat faces shipped 2026-10-21 (`annotations={'boss': <t>}` on a `load_at`/`fixed_at` port pins a passive slab at its declared axis face; non-axis directions refuse). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
-- **Blocked by:** Nothing. Active again from 2026-10-17 (Reto: "we should bring that back"): `pocket-from-molecule` drives region-property layer B/C. Still owed from the 2026-10-12 deprioritisation: the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
+- **Blocked by:** Nothing. Active again from 2026-10-17 (Reto: "we should bring that back"): spec `me628986` (pocket-from-molecule) drives region-property layer B/C. Still owed from the 2026-10-12 deprioritisation: the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
 - **Worktree:** `se-machine-design`
@@ -24,7 +24,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 declarative intent can be realized by pick-and-join, so an LLM reasons over
 space, motion, assembly, charge, field and light — a PCB, a cartridge and a
 motor as children of one design. North-star: `backlog/se-kind.md` +
-`backlog/pocket-from-molecule.md` (region property layer and realize loop). As the se owner it ranks the design-model items the other se threads
+spec `me628986` (pocket-from-molecule's region property layer and realize loop). As the se owner it ranks the design-model items the other se threads
 (se-3d-viewer, se-nucleic-chain, hexfold-toolkit) consume. Today the region-property layer is
 unbuilt and blocks three of the six reasoning axes; everything below reads
 off that gap until it closes.
@@ -106,7 +106,7 @@ off that gap until it closes.
 
 ## Do next
 
-1. **backlog/pocket-from-molecule.md** — the region property layer
+1. **spec `me628986` (pocket-from-molecule)** — the region property layer
    (slice A, measurands/selectors/pockets, live on prod; B and C are its
    slices 1–2) and the intent-to-realize loop (its slice 4); both former
    specs folded in 2026-10-21. Blocks three of six reasoning axes (charge,
@@ -240,7 +240,7 @@ off that gap until it closes.
    masonry pattern sources; material-card shrink default; axial
    constant-in-z undercut check; milled-mold cutter radius; the
    `twist ↔ chiral-screw` (`twist_per_cell`) bridge; nano pattern
-   consumer in [pocket-from-molecule](../pocket-from-molecule.md).
+   consumer in spec `me628986` (pocket-from-molecule).
 0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
    backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1

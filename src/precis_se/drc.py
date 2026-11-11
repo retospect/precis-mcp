@@ -937,7 +937,7 @@ def drc(
                 )
             )
 
-    # 5a'''. cone counts (pocket-from-molecule slice 3): a ``count``
+    # 5a'''. cone counts (spec me629032): a ``count``
     # measure on an ``mcone:`` region is checked against the wall atoms
     # inside the cone. A keep-open cone (band max 0) with a wall atom in
     # it is an ERROR naming the region and its pocket — the vacancy the

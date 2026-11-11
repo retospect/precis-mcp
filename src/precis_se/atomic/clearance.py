@@ -265,7 +265,7 @@ def cluster_cut(
 ) -> NDArray[np.int64]:
     """Ordinals of ``atom_pts_A`` within ``radius_A`` of any
     ``pocket_pts_A`` point — the cluster-cut helper of
-    pocket-from-molecule slice 4 (docs/backlog/pocket-from-molecule.md):
+    spec me629033 (the pocket realize loop):
     which wall atoms sit close enough to the pocket to carry into the
     relax cluster. Pairwise over points (a pocket surface is ~10³
     points, a wall patch ~10² atoms — no tree needed at this size)."""
@@ -293,7 +293,7 @@ def cap_dangling(
 ) -> tuple[list[str], NDArray[np.float64], list[int]]:
     """``(elements, coords, cap_anchor_ordinals)`` — ``elements`` and
     ``coords_A`` grown by one H per bond that crosses the cut boundary
-    (pocket-from-molecule slice 4).
+    (spec me629033).
 
     A cluster cut through a bonded wall leaves dangling bonds that GFN2
     would read as radicals. For every kept atom bonded (``bond_cutoff``,

@@ -726,12 +726,12 @@ _SE_DRY_RUN_SKIPPED: frozenset[str] = frozenset(
         "relax_chain",
         "fold_layout",
         "make_steps",
-        # pocket-from-molecule slice 2b: its whole cost IS the work — a
+        # spec me629031 slice 2b: its whole cost IS the work — a
         # GFN2 single point plus the paint/cluster — and it writes through
         # the pure add_pocket/add_measure paths only, so the dry-run has
         # nothing pure to prepare.
         "pocket_from_molecule",
-        # pocket-from-molecule slice 4: a GFN2 relax per candidate wall —
+        # spec me629033: a GFN2 relax per candidate wall —
         # the whole cost IS the work, and it writes nothing (its answer
         # is the echoed ranking).
         "pocket_realize",

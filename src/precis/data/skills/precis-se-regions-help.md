@@ -248,7 +248,7 @@ own NH3 geometry the strain is 0.006 eV.
 `{'op': 'pocket_realize', 'wall': '<block>', 'pocket'?: '<name>',
 'candidates': ['<structure slug>', …], 'cap'?: <int>, 'dft'?: {…}}` — a
 handler-level op (needs the store and GFN2): the intent→realize pick →
-join → check loop (pocket-from-molecule slice 4). `pocket` is optional
+join → check loop (pocket spec me629033). `pocket` is optional
 when the wall has exactly one. Each candidate is a `structure` design
 posed by the wall block's transform. For each, the loop cuts the wall
 atoms within `clearance + 4 Å` of the pocket's molecule surface, H-caps

@@ -1,5 +1,5 @@
 """``se_pocket_realize`` job_type — the pocket realize loop as a
-compute-group job (pocket-from-molecule Q13, gr519389).
+compute-group job (pocket spec me629036 Q13, gr519389).
 
 Proved without a cluster the way ``test_hexfold_relax_job`` does: a
 fake ``DispatchContext`` drives the dispatch against the same posed

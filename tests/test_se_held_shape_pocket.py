@@ -1,4 +1,4 @@
-"""pocket-from-molecule slice 3 (docs/backlog/pocket-from-molecule.md):
+"""Pocket-from-molecule slice 3 (spec me629032):
 the held-shape pocket — ``pocket_from_molecule`` with ``remove=`` designs
 for NH3 minus one H, the NH2 frozen at the NH3 geometry.
 

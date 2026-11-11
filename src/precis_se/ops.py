@@ -444,7 +444,7 @@ if TYPE_CHECKING:
 #: Characters a block name may not contain: the region selectors
 #: (:mod:`precis_se.datums`) use ``/`` (``sites:``), ``@`` (``patch:``) and
 #: ``[``/``]`` (``atoms:``) and ``!`` (``<block>!<label>``, a molecule
-#: block minus one atom — pocket-from-molecule slice 3) as delimiters, and
+#: block minus one atom — spec me629032) as delimiters, and
 #: a block name carrying one would parse as a different selector. ``.`` is
 #: NOT here — selectors split a block from its face/measure on the LAST
 #: dot, so dotted names (the layout_chain segments ``helix.s0``) stay legal.

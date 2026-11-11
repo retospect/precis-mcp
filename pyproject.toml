@@ -597,7 +597,7 @@ se_manufacture = "precis_se.manufacture_job:SPEC"
 hexfold_relax = "precis_se.hexfold_relax_job:SPEC"
 # se_pocket_realize: the pocket realize loop's GFN2 candidate relaxes on
 # the compute group — the enqueued half of the pocket_realize op
-# (pocket-from-molecule Q13, gr519389). Same ssh_node/target_node seam.
+# (pocket spec me629036 ruling Q13, gr519389). Same ssh_node/target_node seam.
 se_pocket_realize = "precis_se.pocket_realize_job:SPEC"
 
 [project.entry-points."precis.migrations"]

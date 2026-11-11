@@ -51,7 +51,7 @@ selectors (the closed se-region-property-layer spec slice A):
   sites ``i`` to ``j`` inclusive.
 - ``atoms:<block>[<indices>]`` — atom ordinals in the block's bound
   structure, ``0,3,5-9`` (ranges inclusive).
-- Molecule-facing regions (docs/backlog/pocket-from-molecule.md), each
+- Molecule-facing regions (spec me629031), each
   naming the wall-block atoms opposite a posed molecule ``<mol>`` —
   ``<block>``, or ``<block>!<label>`` for its structure minus atom
   ``<label>`` (slice 3's held fragment): ``mpatch:<mol>:<id>`` (one
@@ -205,7 +205,7 @@ class Selector:
     clearance: float | None = None
     #: ``<block>!<label>`` in a ``mol:``/``mpatch:``/``mcone:`` selector —
     #: the molecule block's bound structure with atom ``<label>`` removed
-    #: (pocket-from-molecule slice 3's held fragment: NH3 minus one H).
+    #: (spec me629032's held fragment: NH3 minus one H).
     without: str | None = None
     #: ``mcone:`` — the apex atom's label, the axis in the molecule
     #: structure's own frame (as written, not normalised), the half-angle
@@ -1487,7 +1487,7 @@ def _resolve_atomic(
 ) -> ResolvedDatum:
     """``atoms:``/``sites:`` against the bound structure — real resolution
     now that a store-bound scene resolver exists (region property layer
-    slice B; pocket-from-molecule ruling 3). The pin-stale and
+    slice B; spec me629036 ruling 3). The pin-stale and
     cannot-load answers keep the lenient ``expected`` notes; a missing
     block stays a plain error, as do indices that overshoot the scene."""
     name = sel.instance or ""

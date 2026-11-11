@@ -1134,7 +1134,7 @@ def _xtb_calculator(
     ``charge`` (e) and ``multiplicity`` (2S+1) are handed to tblite as its
     own ``charge``/``multiplicity`` parameters (tblite runs
     ``multiplicity - 1`` unpaired electrons). The defaults are what every
-    run before docs/backlog/pocket-from-molecule.md slice 1 got: neutral,
+    run before the spec me629031 surface painter got: neutral,
     and ``multiplicity=None`` so tblite counts unpaired electrons from the
     atoms' initial magnetic moments, which the scene→ASE bridges never set
     — zero unpaired electrons: a closed shell for an even count, and for
@@ -1145,7 +1145,7 @@ def _xtb_calculator(
     multiplicity changes the occupations, not a spin density — unless
     ``spin_polarization=True``, which hands tblite ``spin_polarization=1.0``
     (spin-polarised GFN2: a spin density, and for NO a 0.196 eV lower
-    energy than the plain doublet). Off by default: pocket-from-molecule
+    energy than the plain doublet). Off by default: spec me629036
     open question 12 is unruled."""
     _vet_charge_multiplicity(charge, multiplicity)
     # gr495146: a larger OpenMP worker stack than macOS's ~512 KB default,
@@ -1249,7 +1249,7 @@ def _relax_xtb(
     against the atoms' electron count (:func:`check_charge_multiplicity`,
     ``ValueError`` on a parity mismatch). ``spin_polarization`` turns on
     spin-polarised GFN2 (:func:`_xtb_calculator`); only the
-    pocket-from-molecule held-shape strain passes it.
+    spec me629032 held-shape strain passes it.
     """
     if not export.ase_available():
         raise RelaxUnsupported(

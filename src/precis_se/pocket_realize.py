@@ -1,5 +1,4 @@
-"""The realize loop — pocket-from-molecule slice 4
-(docs/backlog/pocket-from-molecule.md), the first implementation of the
+"""The realize loop (spec me629033), the first implementation of the
 intent-to-realize pick → join → check loop.
 
 **Pick.** Each candidate is a wall atom cloud posed in the se world

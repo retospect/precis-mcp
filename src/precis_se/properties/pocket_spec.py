@@ -1,5 +1,5 @@
-"""Pocket spec inversion — pocket-from-molecule slice 2b
-(docs/backlog/pocket-from-molecule.md): a posed molecule's *painted*
+"""Pocket spec inversion — spec me629031 slice 2b:
+a posed molecule's *painted*
 surface becomes the property spec for the pocket the wall must offer.
 
 :func:`cluster_patches` groups the slice-1 painter's surface points into

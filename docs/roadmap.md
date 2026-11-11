@@ -55,7 +55,7 @@ integration remains held; plugin-split keeps its agreed dated sequence.
 
 Reto, 2026-10-17: Pillar 1 winds down to maintenance once memory P4 and
 conventions-as-findings land; Pillar 2's intent → realize loop is active,
-driven by `pocket-from-molecule`; Pillar 5 (Operations) takes the deploy,
+driven by spec `me628986` (pocket-from-molecule); Pillar 5 (Operations) takes the deploy,
 security, monitoring, gate and serving threads, all active. Gripe waves
 remain the execution model. The November catpath paper and castor
 medium-tier routing are open decisions; their threads keep their rank.
@@ -155,7 +155,7 @@ microfluidic cartridges, motors, mechanics) are children of one design.
 
 **North-star specs.** spec `me628475` (Reto's system spec, in graph
 memory) with `backlog/multiscale-design-architecture.md` as the map;
-`backlog/se-kind.md`; `backlog/pocket-from-molecule.md` (carries the
+`backlog/se-kind.md`; spec `me628986` (pocket-from-molecule, carries the
 non-geometric region layer, decided 2026-09-30).
 
 **Named test pieces**, in build order: the **box** and the **rotary
@@ -179,9 +179,9 @@ per-region property layer, the DNA wrap, and one assembly across scales
 parked 2026-09-12, unparked to the horizon only). Pockets as defined
 classes and pick-and-join as a membership query are
 `backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
-knowledge-mesh, consumed here) and `backlog/pocket-from-molecule.md` slice 4.
+knowledge-mesh, consumed here) and spec `me629033` (pocket-from-molecule slice 4).
 The intent → realize loop is active (Reto, 2026-10-17), driven by
-`backlog/pocket-from-molecule.md` through `nanoreactor.md` (owner) and
+spec `me628986` (pocket-from-molecule) through `nanoreactor.md` (owner) and
 `se-machine-design.md` (region-property layers B and C).
 
 **Chemistry is part of design** (Reto, 2026-10-01). Molecules and
@@ -205,7 +205,7 @@ north-star spec needs; reactivated 2026-10-17) · `chemistry.md`
 (created and activated 2026-10-01, catalysis first) · `pcb-platform.md`
 (active 2026-10-17) · `nanoreactor.md` (active 2026-10-17: the
 instrumented NO→NH₃ carbon nanoreactor, its T0–T6 design toolchain and
-`pocket-from-molecule`) · `structure-workspaces.md` (active 2026-10-22:
+spec `me628986`) · `structure-workspaces.md` (active 2026-10-22:
 code-first structure and pcb workspaces). Dormant: `multiscale-design-core.md`.
 
 **Direction** (Reto, 2026-10-22): designs are built by Python scripts run
@@ -425,10 +425,10 @@ Newest first; one line per pass (`/pillar-review` writes it).
   graph-memory-consumers (P1 winds down to maintenance after memory P4 and
   conventions-as-findings; skills and conventions into the mesh stays the
   plan of record). Active: pcb-platform and factory (already landing),
-  nanoreactor (owns pocket-from-molecule), se-machine-design ("we should
+  nanoreactor (owns spec `me628986`), se-machine-design ("we should
   bring that back"), nanobuds-paper, draft-authoring (October preprint
   target 2026-10-24, Reto's citation pass after r46 deploys the export
-  fix). P2 intent → realize is active, driven by pocket-from-molecule.
+  fix). P2 intent → realize is active, driven by spec `me628986`.
   Gripe waves stay the execution model; a wave close writes its gripe ids
   into the owning thread file. Open: the November catpath paper and castor
   medium-tier routing (ranks unchanged). reading-prep-loop back to idea

@@ -276,7 +276,7 @@ def test_xtb_charge_and_multiplicity_reach_tblite(
 ) -> None:
     """relax(fidelity='xtb') hands charge and multiplicity to tblite's own
     parameters; the defaults stay neutral with multiplicity undeclared,
-    which is what every run got before (pocket-from-molecule slice 1)."""
+    which is what every run got before (spec me629031)."""
     _stub_tblite(monkeypatch, _RecordingTBLite)
     monkeypatch.setattr(_RecordingTBLite, "seen", [])
     relax(_diatomic("N", "O", 1.15), fidelity="xtb", multiplicity=2, steps=2)

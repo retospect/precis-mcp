@@ -112,12 +112,12 @@ HANDLER_LEVEL_OPS = (
     # Two assembled CAD parts, deferred until the batch validates.
     "enclosure_box",
     # A molecule's painted surface inverted into a pocket spec
-    # (:mod:`precis_se.properties.pocket_spec`, pocket-from-molecule
+    # (:mod:`precis_se.properties.pocket_spec`, spec me629031
     # slice 2b): store-read for the bound structures, GFN2 for the ESP
     # — it emits add_pocket/add_measure through the pure paths.
     "pocket_from_molecule",
     # The realize loop's pick → join → check ranking
-    # (:mod:`precis_se.pocket_realize`, pocket-from-molecule slice 4):
+    # (:mod:`precis_se.pocket_realize`, spec me629033):
     # store-read for the candidate structures, GFN2 for the join — it
     # writes nothing, its answer is the echoed ranking.
     "pocket_realize",

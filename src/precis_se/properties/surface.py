@@ -1,5 +1,5 @@
 """A posed molecule's surface, painted with properties — slice 1 of
-docs/backlog/pocket-from-molecule.md, read as ``get(kind='se',
+spec me629031, read as ``get(kind='se',
 view='surface')``.
 
 **What a point carries.** Position and outward normal (se world frame, Å),
@@ -97,7 +97,7 @@ class SurfaceSettings:
 
 #: The surface settings, official since Reto's 2026-10-25 ruling (spec
 #: open question 4, decided; reasoning in
-#: docs/backlog/pocket-from-molecule.md): the contact surface itself
+#: spec me629036): the contact surface itself
 #: (scale 1.0, so slice 2's clearance is the only offset), no probe, and
 #: 3 points/Å² (about 0.6 Å spacing, finer than H-bond geometry; 123
 #: points on NO, 110 on water). Change these values here; nothing else

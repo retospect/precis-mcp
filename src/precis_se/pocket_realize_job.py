@@ -1,5 +1,5 @@
 """``se_pocket_realize`` job_type — the pocket realize loop's GFN2
-candidate relaxes off the MCP request path (pocket-from-molecule open
+candidate relaxes off the MCP request path (spec me629036 open
 question 13, gr519389; Reto ruling 2026-10-25: run the surface read and
 the realize relaxes as a JOB, and add the tblite wheel to the MCP image
 so small reads still run inline).

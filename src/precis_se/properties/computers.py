@@ -1,5 +1,5 @@
 """Wall-side region computers — slice 2a of
-docs/backlog/pocket-from-molecule.md; the first entries of
+spec me629031; the first entries of
 :data:`precis_se.properties.COMPUTERS` (region property layer slice B).
 
 A computer answers "what does the bound wall actually present opposite

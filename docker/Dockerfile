@@ -573,7 +573,7 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv sync --frozen --no-install-project
 
 # -----------------------------------------------------------------------------
-# Stage: deps-lite-xtb — deps-lite + tblite (pocket-from-molecule Q13,
+# Stage: deps-lite-xtb — deps-lite + tblite (pocket spec me629036 Q13,
 # gr519389): the serve/agent MCP image's `precis serve` must run the se
 # pocket surface read and small GFN2 joins inline — everything bigger
 # goes to the se_pocket_realize job lane. PyPI ships no linux-aarch64

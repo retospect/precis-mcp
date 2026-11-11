@@ -1,4 +1,4 @@
-"""pocket-from-molecule slice 2 (docs/backlog/pocket-from-molecule.md):
+"""Pocket-from-molecule slice 2 (spec me629031):
 the region computers DRC actually runs (2a: ``measure_unmet`` /
 ``measure_uncomputable``, realised values in ``view='pockets'``) and the
 ``pocket_from_molecule`` handler op with ``mol:``/``mpatch:`` tokens and

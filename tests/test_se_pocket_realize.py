@@ -1,4 +1,4 @@
-"""pocket-from-molecule slice 4 (docs/backlog/pocket-from-molecule.md):
+"""Pocket-from-molecule slice 4 (spec me629033):
 the realize loop — cluster cut + H-capping helpers, the pick → join →
 check scoring over three hand-built wall patches, ranking, cap,
 provenance, and the ``pocket_realize`` op's vetting.

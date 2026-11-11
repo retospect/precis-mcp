@@ -165,7 +165,7 @@ the software exit criteria.
   predictor-confidence gate or learned folding surrogate is required or
   used to accept a candidate.
 
-Related: [pocket-from-molecule](pocket-from-molecule.md), spec
+Related: pocket spec `me628986`, spec
 `me629051` (graph memory),
 [molecular-workspace-code](molecular-workspace-code.md). The protein
 constructor can later realize a catalytic pocket, but binding alone

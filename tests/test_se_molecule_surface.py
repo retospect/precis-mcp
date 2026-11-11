@@ -1,5 +1,5 @@
 """``view='surface'`` — a posed molecule's surface painted with ESP, H-bond
-and polarity classes (docs/backlog/pocket-from-molecule.md slice 1;
+and polarity classes (spec me629031 slice 1;
 :mod:`precis_se.properties.surface`).
 
 The painter is tested on fixed charges (no backend), the view through a
