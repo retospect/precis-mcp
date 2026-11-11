@@ -5,8 +5,9 @@ Groups carry one port ``a1`` (the open valence); the spacers ``CH2n`` /
 ``C2H4`` carry two (``a1``, ``a2``, one at each end); ``c60`` is the
 ``GENERATORS['fullerene']`` cage and has no port — it is a guest, placed
 with ``out.instance`` or wrapped by ``mol.frag(scene=..., ports=...)``.
-The spacers are se-seam-spacers' (CH2)n / C2H4. Names beyond this set: the chem-name-lookup verb through
-the read MCP.
+The spacers are spec me630134's (CH2)n / C2H4 (the retired
+backlog/se-seam-spacers.md). Names beyond this set: the chem-name-lookup
+verb through the read MCP.
 """
 
 from __future__ import annotations

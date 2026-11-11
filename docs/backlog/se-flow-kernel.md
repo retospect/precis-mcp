@@ -523,8 +523,8 @@ commit carrying this line; `git log` has the sha.*
        the force check fails, and even then warm-starts from the joined
        pre-relaxed geometry. (d) Per join the frame records the buffer
        radius used, the max residual force on frozen atoms and the
-       steps taken; [se-seam-spacers](se-seam-spacers.md) calibrates
-       the defaults. Why the check exists: relax and DFT are non-local
+       steps taken; `me630134` (the retired backlog/se-seam-spacers.md)
+       calibrates the defaults. Why the check exists: relax and DFT are non-local
        (Reto: "if we relax again with some more atoms the structure
        will be slightly or massively different. DFT is similar"), so a
        module's stored relax is exact for the module alone and is the
@@ -559,8 +559,8 @@ commit carrying this line; `git log` has the sha.*
        strain from lattice or geometry mismatch propagates past a
        spacer that decouples the electrons, so the force check is
        mandatory even with a good spacer. Which spacers insulate, and
-       the default buffer radius, come from
-       [se-seam-spacers](se-seam-spacers.md) (literature + demo).
+       the default buffer radius, come from `me630134` (the retired
+       backlog/se-seam-spacers.md; literature `me630136`/`me630137`).
      - **Params in the frame.** A step-built object's creator frame
        carries the step name, its params, the recipe key that set them
        (`h7.x`) and the step key; interrogating a contact point
@@ -817,8 +817,8 @@ slices 1–2 and precede se-native-fields slice 1 (ranked in
   check); a full relax runs only when the check fails and warm-starts
   from the joined geometry (`warm_from=<key>`; keys stay exact); each
   join records buffer radius, max residual force, steps (4b bullet
-  §Build-step stack cache; [se-seam-spacers](se-seam-spacers.md)
-  calibrates the defaults).
+  §Build-step stack cache; `me630134` (the retired
+  backlog/se-seam-spacers.md) calibrates the defaults).
 - Kit-facing names are general (`GapDomain`); the skill is
   `precis-workspace-optimize-help`, CFD its first physics section.
 - Scripts build, evaluate and optimise with no DB and no se — the wheel

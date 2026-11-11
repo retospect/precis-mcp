@@ -19,7 +19,8 @@ ruled on it the same day:
   - first material 3 mm corrugated cardboard;
   - finger joints stay the default, with a straight (plain butt) edge as a
     second option;
-  - living hinges are filed separately (`flatpack-living-hinges.md`).
+  - living hinges live in graph memory (`me630111`, `me630132`; the
+    retired `backlog/flatpack-living-hinges.md`).
 - **se-machine-design-5:** the first box is a 50 mm cube. There is no
   caliper reading; record the `fit` and `kerf` that seat on the first cut.
 - **se-machine-design-7, option 1:**
@@ -100,7 +101,7 @@ Later, each its own build or less:
 - Toolpaths or G-code. Export stops at the cut file; LightBurn, Cricut
   Design Space or the Maslow's own control takes it from there.
 - Non-rectangular parts, curved shelves, mitres. Living hinges are
-  `flatpack-living-hinges.md`.
+  `me630111`/`me630132` (the retired `backlog/flatpack-living-hinges.md`).
 - Multi-sheet layouts. The packer refuses, naming how much does not fit.
 - Grain or flute direction optimisation.
 - PCB reading from the sheet job, ruled out on se-machine-design-7.

@@ -300,9 +300,9 @@ off that gap until it closes.
     checks over swept volumes in se drc; arguably multiscale-design-core's
     (it is a constraint-catalogue piece), kept here because its only
     consumer today is se drc — seam, move it if that thread opens first.
-22. **backlog/flatpack-living-hinges.md** — kerf-cut bend zones (Reto
-    2026-10-03); blocked-by the flat-pack generator (Do next 3). Its
-    reference is stored as web ref
+22. **`me630111`/`me630132`** — kerf-cut bend zones (Reto 2026-10-03;
+    the retired backlog/flatpack-living-hinges.md); blocked-by the
+    flat-pack generator (Do next 3). Its reference is stored as web ref
     `rs-online-com-designspark-laser-cut-living-hinges-for-neater`.
 
 ## Parked

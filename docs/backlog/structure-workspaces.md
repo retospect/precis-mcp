@@ -571,7 +571,8 @@ level and method last moved them.
   - **Seams.** A `join`/`place` frame declares its seams — the insulating
     spacers between modules, at Å saturated C2H4/(CH2)n linkers that
     decouple the electrons (which spacer and how many CH2 come from
-    [se-seam-spacers](se-seam-spacers.md)). The free region is the
+    `me630134`, survey `me630136`/`me630137` — the retired
+    backlog/se-seam-spacers.md). The free region is the
     buffer around the seams; the rest of the rule above holds. Caveat
     stated once: electronic insulation ≠ mechanical insulation —
     lattice/geometry mismatch strain propagates past a spacer that
@@ -1568,7 +1569,7 @@ says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
   (electronic ≠ mechanical insulation), a full relax runs only when it
   fails and warm-starts from the joined geometry (`warm_from=<key>`,
   keys exact); each join records buffer radius, max residual force,
-  steps; [se-seam-spacers](se-seam-spacers.md) calibrates the defaults
+  steps; `me630134` (the retired backlog/se-seam-spacers.md) calibrates the defaults
   (§Relax hierarchy (c), §Frozen units/modules).
 - **Structure fisheye and rays (2026-10-22):** π perception from our own
   bond graph (a better structure-aware source is welcome later); rays are
