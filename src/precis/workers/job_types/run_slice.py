@@ -114,8 +114,11 @@ that holds the lane's credentials with ``params.target_node``):
   gripe's text names must exist on main. An ancestor sha whose message
   names another plan can still verify without the message (gr638658):
   under a ``release-pass`` root the loop's own re-cut re-proves the
-  claim, elsewhere the named failing tests must pass on a clean tree at
-  ``origin/main`` — neither holding fails closed.
+  claim — so the node closes untagged like ``_fix_moot``'s ruling
+  (``verdict:moot`` there would let ``_step_moot`` won't-do the re-cut
+  that IS the proof, td638767); elsewhere the named failing tests must
+  pass on a clean tree at ``origin/main`` — neither holding fails
+  closed.
   Verified, the todo closes done tagged ``verdict:moot`` and the job
   carries ``meta.moot_verified = {sha, line}`` so the tick resolves the
   plan's gripe on that sha exactly as a land does. Unverified, the
@@ -293,11 +296,13 @@ NO_COMMIT_KEY = "no_commit"
 #: as a land does. Restated in ``plan_dispatch`` (the same one-way rule).
 MOOT_VERIFIED_KEY = "moot_verified"
 
-#: Job-meta record ``poll`` stamps on the release-fix loop's fix node a
-#: ``moot:``/``verified:`` marker let close with no commit
-#: (:func:`_fix_moot`, gr597599): ``{"kind", "line"}`` plus ``"sha"``
-#: for a moot — WHY a code node closed done with no land and no
-#: ``verdict:moot`` tag (the release plan itself is not moot).
+#: Job-meta record ``poll`` stamps on a release-pass no-commit moot
+#: close — the fix node's ``moot:``/``verified:`` marker
+#: (:func:`_fix_moot`, gr597599) or a ``release-pass``-root moot the
+#: shortcut alone verified (:func:`_verified_moot`, td638767):
+#: ``{"kind", "line"}`` plus ``"sha"`` for a moot — WHY a code node
+#: closed done with no land and no ``verdict:moot`` tag (the release
+#: plan itself is not moot).
 FIX_VERIFIED_KEY = "fix_verified"
 
 #: Job-meta record ``poll`` stamps on a release-fix ``run_slice`` whose
@@ -3138,9 +3143,9 @@ def _tests_green_on_main(tree: Path, tests: list[str]) -> bool:
     detached worktree at ``origin/main`` — the moot fallback's
     independent proof (gr638658): the claim "the fix is already on
     main" holds when the slice's named failing tests re-run green
-    there. An empty list, a failed ``worktree add``, a missing ``uv``, a
-    red run or a timeout is ``False`` — fail closed. The probe tree is
-    always removed."""
+    there. An empty list, a ``worktree add`` that fails or raises
+    (td638767), a missing ``uv``, a red run or a timeout is ``False`` —
+    fail closed. The probe tree is always removed."""
     if not tests:
         return False
     base = Path(tempfile.mkdtemp(prefix="precis-moot-"))
@@ -3168,6 +3173,9 @@ def _tests_green_on_main(tree: Path, tests: list[str]) -> bool:
         except (OSError, subprocess.TimeoutExpired):
             return False
         return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        # A raised ``worktree add`` proves nothing — fail closed.
+        return False
     finally:
         try:
             _git(["worktree", "remove", "--force", str(probe)], tree)
@@ -3180,7 +3188,11 @@ def _verified_moot(
     store: Any, tree: Path, result: str | None, todo_id: int
 ) -> dict[str, str] | None:
     """``{"sha", "line"}`` when the result's ``moot:`` claim checks out on
-    the worker host (td584381 S1d), else ``None``.
+    the worker host (td584381 S1d), else ``None`` — plus
+    ``"release_pass"`` when the release-pass shortcut is what verified
+    (td638767): that ruling's only proof is the loop's own re-cut, so
+    ``poll`` closes the node untagged — a ``verdict:moot`` tag would
+    let ``_step_moot`` cancel the re-cut.
 
     Verified means: after a best-effort ``git fetch origin main`` (a
     failure, a timeout or an ``OSError`` only means the check runs on
@@ -3271,20 +3283,18 @@ def _verified_moot(
         if msg.returncode == 0 and any(h.search(msg.stdout) for h in handles):
             sha = cand
             break
-    if (
-        sha is None
-        and ancestors
-        and (
-            "release-pass" in _open_tag_values(store, root)
-            or _tests_green_on_main(tree, sorted(named_tests))
-        )
-    ):
+    release_proof = False
+    if sha is None and ancestors:
         # gr638658: a true moot under another plan's fix can never pass
         # the message gate — verify it without the message: under a
         # ``release-pass`` root the pass's own re-cut from main is the
         # proof; anywhere else the named failing tests must pass on a
         # clean ``origin/main`` tree. Neither holds → fail closed.
-        sha = ancestors[0]
+        if "release-pass" in _open_tag_values(store, root):
+            sha = ancestors[0]
+            release_proof = True
+        elif _tests_green_on_main(tree, sorted(named_tests)):
+            sha = ancestors[0]
     if sha is None:
         return None
     for p in sorted(paths):
@@ -3294,7 +3304,13 @@ def _verified_moot(
         except (OSError, subprocess.TimeoutExpired):
             # A cat-file that cannot answer fails closed like a miss.
             return None
-    return {"sha": sha, "line": line[:300]}
+    out = {"sha": sha, "line": line[:300]}
+    if release_proof:
+        # td638767: the loop's re-cut is this ruling's only proof, so
+        # the close must not carry ``verdict:moot`` — ``_step_moot``
+        # would read the tag as license to won't-do that re-cut.
+        out["release_pass"] = "1"
+    return out
 
 
 def _posted_verdict(store: Any, todo_id: int) -> tuple[str, str] | None:
@@ -4152,6 +4168,19 @@ def poll(ctx: Any, handle: Any) -> bool:
             if no_commit is None and not fix_node
             else None
         )
+        if verified is not None and verified.get("release_pass"):
+            # td638767: a moot verified only by the release-pass
+            # shortcut has no proof yet — the loop's own re-cut IS the
+            # re-check, and ``_step_moot`` would won't-do it on the
+            # ``verdict:moot`` tag. The node takes ``_fix_moot``'s
+            # ruling instead: closed done, untagged, the
+            # ``fix_verified`` record saying why.
+            fix_moot = {
+                "kind": "moot",
+                "sha": verified["sha"],
+                "line": verified["line"],
+            }
+            verified = None
         # gr588028: a ``validated:`` first line on the release-fix loop's
         # fix node reads "the red legs do not reproduce" — a CI flake,
         # not a diff. The tick reruns the failed legs once per run id

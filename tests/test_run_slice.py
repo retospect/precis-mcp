@@ -200,6 +200,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
                 tree = args[3]
             Path(tree).mkdir(parents=True, exist_ok=True)
             if "--detach" in args:
+                if calls.get("probe_add_exc") is not None:
+                    raise calls["probe_add_exc"]
                 return _proc(rc=calls.get("probe_add_rc", 0))
         if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
             return _proc(calls.get("git_common", ""))
@@ -4687,12 +4689,16 @@ def test_poll_moot_other_plan_message_no_named_tests_fails_closed(
     assert seams["run"] == []
 
 
-def test_poll_moot_release_pass_accepts_other_plan_sha(
+def test_poll_moot_release_pass_closes_untagged_for_the_recut(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr638658: under a ``release-pass`` root the loop's own re-cut
-    re-proves the claim — an ancestor sha whose message names another
-    plan verifies with no test probe at all."""
+    """gr638658 + td638767 review: under a ``release-pass`` root the
+    loop's own re-cut re-proves the claim — an ancestor sha whose
+    message names another plan verifies with no test probe. The node
+    closes done WITHOUT ``verdict:moot`` and no ``moot_verified``
+    stamp: ``_step_moot`` would read the tag as license to won't-do
+    the re-cut that IS the proof, so the job stamps
+    ``meta.fix_verified`` like ``_fix_moot``'s ruling instead."""
     _pin_plan_gripe(monkeypatch)
     store = _mooted_store()
     store.add_tag(50, Tag.open("release-pass"))
@@ -4702,7 +4708,42 @@ def test_poll_moot_release_pass_accepts_other_plan_sha(
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
-    assert pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]["sha"] == "f628e681f"
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert "verdict:moot" not in tags
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    fv = pctx.meta_set[run_slice.FIX_VERIFIED_KEY]
+    assert fv["kind"] == "moot" and fv["sha"] == "f628e681f"
+    assert seams["run"] == []
+    assert seams["lands"] == []
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OSError("git binary gone"),
+        subprocess.TimeoutExpired(["git", "worktree", "add"], 60),
+    ],
+    ids=["oserror", "timeout"],
+)
+def test_poll_moot_probe_add_raise_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    """td638767 review: an ``OSError``/``TimeoutExpired`` out of the
+    probe's ``worktree add`` fails closed like a nonzero rc — the
+    ``moot:`` verdict still closes unverified, never a crash out of
+    poll."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    seams["probe_add_exc"] = exc
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert "verdict:moot" in store.tag_strings(42)
     assert seams["run"] == []
 
 
