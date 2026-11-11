@@ -43,6 +43,10 @@ fold otherwise lacks:
 tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
 ```
 
+`meta=` is a todo-only door on `tag` — an allowlisted key promotion
+([[precis-todo-tree-help]]) — refused on every other kind. Other refs'
+meta moves through `put(meta=…)` / `edit(args={'meta': …})`.
+
 ## Bump a workflow STATUS atomically
 ## Move a todo from open to done in one call
 ## How do I transition state without a stale tag lingering?

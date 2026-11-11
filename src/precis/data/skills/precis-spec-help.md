@@ -141,9 +141,10 @@ the task-aware routing spec `me568172`, 2026-11-05).
 **Ruling node** — tagged `ruling` with meta `ruled_by`, `ruled_on` and
 `review_by` ([[precis-memory-help]] §rulings), one decision per node,
 linked `related-to` what it decides with edge meta
-`rel_intent='decides'`. The meta lands only through `put`/`edit(meta=…)`
-on a `ruling`-tagged node — `tag(meta=…)` is silently dropped. A ruling
-left in prose is what rots:
+`rel_intent='decides'`. The meta lands only through `put(meta=…)` /
+`edit(args={'meta': …})` on a `ruling`-tagged node — `meta=` on `tag`
+is refused (a todo-only door there). A ruling left in prose is what
+rots:
 
 ```python
 put(kind="memory", text="<the decision, one claim>",

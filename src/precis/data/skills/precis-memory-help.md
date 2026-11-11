@@ -313,9 +313,9 @@ per op. The ops apply in order, each against the previous op's result,
 and land in a single transaction — a bad op refuses the whole call
 naming `ops[i]`, and nothing is written. Top-level `find`/`text` and
 the anchor args are refused alongside `ops=` (they belong inside each
-dict); `title`/`rule`/`warrant`/`hook` (also in `args=`) apply to the
-whole call — a retitle pairs with the op batch in one transaction, same
-as any other mode. `meta=`, `reason=` and `dry_run=` ride along.
+dict); `title`/`rule`/`warrant`/`hook`/`meta` (also in `args=`) apply to
+the whole call — a retitle pairs with the op batch in one transaction,
+same as any other mode. `reason=` and `dry_run=` ride along.
 
 ## Record a decision I just made
 ## Log a design choice with rationale
@@ -968,7 +968,8 @@ ruling me564176.
 
 A ruling is a memory tagged `ruling`: a temporary patch on the
 documented system, integrated into skills/spec and then archived. Its
-meta (`put`/`edit(meta=...)`, only on a `ruling` node): `ruled_by`,
+meta (`put(meta=…)` / `edit(args={'meta': …})`, only on a `ruling`
+node — `tag`'s `meta=` is a todo-only door and refuses here): `ruled_by`,
 `ruled_on` (ISO date, default today), `status` (`in-force` default,
 `absorbed` = integrated, `archived` = moot, `retired` = won't-do),
 `review_by` (ISO date, default later of `ruled_on`/today + 14 days). The status lives
@@ -979,7 +980,7 @@ rel='related-to', meta={'rel_intent': 'decides'})`.
 ```python
 search(kind="memory", tags=["ruling"], view="rulings")                    # in force
 search(kind="memory", tags=["ruling"], view="rulings", args={"status": "*"})  # all
-edit(kind="memory", id=N, meta={"status": "absorbed"})                    # integrated
+edit(kind="memory", id=N, args={"meta": {"status": "absorbed"}})          # integrated
 ```
 
 The view groups by status, rulings due within 3 days (or overdue)
