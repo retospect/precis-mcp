@@ -451,10 +451,9 @@ def test_prod_ancestry_verdicts_and_fail_closed(
     assert ancestry.is_deployed(landed) is True
     # A short prefix is only commit-shaped when mixed letter-digit; a
     # letter-only window (chance ~2% per run) is conservatively unknown.
+    # Only a true prefix resolves, so grow the prefix rather than slide it.
     shaped_prefix = next(
-        landed[i : i + 8]
-        for i in range(33)
-        if _anchors.is_commit_token(landed[i : i + 8])
+        landed[:n] for n in range(7, 41) if _anchors.is_commit_token(landed[:n])
     )
     assert ancestry.is_deployed(shaped_prefix) is True
     letter_only = next(landed[i : i + 8] for i in range(33) if landed[i].isalpha())

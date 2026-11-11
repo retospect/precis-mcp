@@ -269,12 +269,10 @@ fix loop is in [[precis-gripe-loop-help]].
 
 The `gripe_dispatch` worker pass (every 10 minutes, dark until
 `service_config` lights it for a host) mints one `gripe-fix-direct`
-chain per free code-lane slot: the summed cap of the enabled lanes that
-fit the `code` class, minus the plan roots still `related-to` a gripe
-and not `done`/`won't-do`, at most two per fire. The build node carries
-the gripe text verbatim and picks its lane at dispatch (cheapest fit,
-free before paid; codex, which cannot reach the test gate's docker, is
-never offered `code`); the land writes `resolved: <sha>` on the gripe.
+chain per free code-lane slot (summed cap of the enabled `code` lanes,
+minus open chains whose build has not landed). The build carries the
+gripe text verbatim and picks its lane at dispatch (cheapest fit, free
+before paid); the land writes `resolved: <sha>` on the gripe.
 It picks the hottest `prio` then the oldest among gripes that are `open`
 or `triaged`, tagged `fix:` code/skill/docs/web/mcp (a `code` build),
 15+ minutes past the latest `STATUS:triaged` or fix tag, with no live
@@ -290,8 +288,8 @@ tag(kind="gripe", id=564261, add=["hold:no-dispatch"])
 
 A hand-minted chain also counts (the `related-to` link is the marker).
 Each mint leaves a `dispatch: minted gripe-fix-direct td<root>` comment.
-A `project:` tag must name a landable project (`precis`, the default);
-others get a `dispatch: skipped unsupported project:` comment, no slot.
+A `project:` tag must name a landable project (`precis`, the default;
+`precis-mcp`, `dark-factory`); others get a `dispatch: skipped unsupported project:` comment, no slot.
 
 ## What does a rescue:<class> tag mean?
 ## How do I read the rescue queue?
@@ -341,23 +339,16 @@ it meanwhile. The session replies with one first line:
   floor are stamped, and the corrected `brief:` comment goes on the
   node; the rebuilt run resumes on `slice/<id>`, reusing worktree and
   branch.
-- `rescue: NOFIX fixed <sha> — <why>` — the gripe's defect is already
-  fixed on main by `<sha>` (7-40 hex, any plan). If `<sha>` is an
-  ancestor of `origin/main` in the worker's fix repo, the pass closes
-  the node `won't-do` with the sha, writes `resolved: <sha> — <why>` and
-  `STATUS:verify` on the plan's gripe (left alone with
-  `hold:no-autoclose` or when already settled) and files no ask. A sha
-  it cannot verify (not an ancestor, no repo, git down, no plan gripe)
-  falls through to the ask below.
+- `rescue: NOFIX fixed <sha> — <why>` — fixed by `<sha>`; verified on
+  `origin/main`, the node closes and the gripe goes to verify.
 - `rescue: NOFIX — <why>` — the cause is outside the brief.
 
 ## When does a rescued node get a diagnose task, and when an ask?
 
 A task-class rescue with `meta.rescue.n < 1` gets the diagnose task.
-Anything else (a plain `rescue: NOFIX`, an unverified `NOFIX fixed`, a
-failed or unparsable diagnose, a second rescue, every engine class)
-files one `ask-user` + `showstopper` ruling todo blocking the node;
-closing it re-arms it.
+Anything else (a `rescue: NOFIX`, a failed or unparsable diagnose, a
+second rescue, every engine class) files one `ask-user` + `showstopper`
+ruling todo blocking the node; closing it re-arms it.
 
 ## What does the transcript_audit pass sample, and how is it lit?
 

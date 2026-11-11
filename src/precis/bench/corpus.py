@@ -1015,7 +1015,7 @@ def ensure_database(dsn: str) -> None:
     # template1 exists in every cluster and is connectable; ``postgres`` is
     # only a convention.
     admin = make_conninfo(dsn, dbname="template1")
-    with psycopg.connect(admin, autocommit=True) as conn:
+    with psycopg.connect(admin, autocommit=True, connect_timeout=15) as conn:
         hit = conn.execute(
             "SELECT 1 FROM pg_database WHERE datname = %s", (dbname,)
         ).fetchone()
@@ -1155,7 +1155,7 @@ def provision_variant(
         "distractor": variant.distractor,
         "already": False,
     }
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=15) as conn:
         row = conn.execute(
             "SELECT count(*) FROM refs WHERE kind = 'paper' "
             "AND retired_at IS NULL AND meta->'qasper'->>'id' = ANY(%s)",

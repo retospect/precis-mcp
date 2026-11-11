@@ -146,6 +146,7 @@ def test_migrations_pass_squawk() -> None:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=120,
         )
     except subprocess.TimeoutExpired:
@@ -157,6 +158,7 @@ def test_migrations_pass_squawk() -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=300,
     )
     violators = _violator_paths(proc.stdout)

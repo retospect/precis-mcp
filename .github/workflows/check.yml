@@ -375,14 +375,25 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install PostgreSQL 17 client to match the pg17 server
+        timeout-minutes: 8
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y postgresql-client-17
+          # Index only the pgdg list first: an Ubuntu-mirror DNS outage cost
+          # 9-18 min here and timed out r277's gate-fast (run 43047822504).
+          # Fall back to the full index only if the pgdg-only install fails.
+          APT_FAST="-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if sudo apt-get $APT_FAST -o Dir::Etc::sourcelist=sources.list.d/pgdg.list \
+               -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 update \
+             && sudo apt-get $APT_FAST install -y postgresql-client-17; then
+            :
+          else
+            sudo apt-get $APT_FAST update
+            sudo apt-get $APT_FAST install -y postgresql-client-17
+          fi
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
       # shellcheck gate tests (test-linux's comment) — install, don't
       # trust the runner image.
@@ -473,14 +484,25 @@ jobs:
       # Same pg17 client install as test-linux — the pg_dump 16 the runner
       # ships refuses the pg17 service (test_schema_convergence).
       - name: Install PostgreSQL 17 client to match the pg17 server
+        timeout-minutes: 8
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y postgresql-client-17
+          # Index only the pgdg list first: an Ubuntu-mirror DNS outage cost
+          # 9-18 min here and timed out r277's gate-fast (run 43047822504).
+          # Fall back to the full index only if the pgdg-only install fails.
+          APT_FAST="-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if sudo apt-get $APT_FAST -o Dir::Etc::sourcelist=sources.list.d/pgdg.list \
+               -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 update \
+             && sudo apt-get $APT_FAST install -y postgresql-client-17; then
+            :
+          else
+            sudo apt-get $APT_FAST update
+            sudo apt-get $APT_FAST install -y postgresql-client-17
+          fi
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
       # shellcheck gate tests (test-linux's comment) — install, don't
       # trust the runner image.
@@ -632,14 +654,25 @@ jobs:
       # locate postgresql-client-17), so add it explicitly via the
       # official signed-by keyring method.
       - name: Install PostgreSQL 17 client to match the pg17 server
+        timeout-minutes: 8
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y postgresql-client-17
+          # Index only the pgdg list first: an Ubuntu-mirror DNS outage cost
+          # 9-18 min here and timed out r277's gate-fast (run 43047822504).
+          # Fall back to the full index only if the pgdg-only install fails.
+          APT_FAST="-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if sudo apt-get $APT_FAST -o Dir::Etc::sourcelist=sources.list.d/pgdg.list \
+               -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 update \
+             && sudo apt-get $APT_FAST install -y postgresql-client-17; then
+            :
+          else
+            sudo apt-get $APT_FAST update
+            sudo apt-get $APT_FAST install -y postgresql-client-17
+          fi
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
       # Connect as the `postgres` superuser: the migration bootstrap
       # issues CREATE EXTENSION on the untrusted `vector` / `btree_gist`
@@ -777,14 +810,25 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install PostgreSQL 17 client to match the pg17 server
+        timeout-minutes: 8
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 15 --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y postgresql-client-17
+          # Index only the pgdg list first: an Ubuntu-mirror DNS outage cost
+          # 9-18 min here and timed out r277's gate-fast (run 43047822504).
+          # Fall back to the full index only if the pgdg-only install fails.
+          APT_FAST="-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if sudo apt-get $APT_FAST -o Dir::Etc::sourcelist=sources.list.d/pgdg.list \
+               -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 update \
+             && sudo apt-get $APT_FAST install -y postgresql-client-17; then
+            :
+          else
+            sudo apt-get $APT_FAST update
+            sudo apt-get $APT_FAST install -y postgresql-client-17
+          fi
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
       # shellcheck gate tests (test-linux's comment) — install, don't
       # trust the runner image.
