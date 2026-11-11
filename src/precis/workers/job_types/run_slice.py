@@ -61,15 +61,17 @@ that holds the lane's credentials with ``params.target_node``):
   devin's ATIF ``--export`` file, live per turn; claude's result
   envelope; codex's ``turn.completed``. A job minted with
   ``params.budget_usd`` (the rung's remaining allowance,
-  ``plan_dispatch._escalate``) is bound two ways (td601015, td601426):
-  a :attr:`Adapter.budget_capable` lane — claude's
-  ``--max-budget-usd`` — is enforced vendor-side at submit, a launch on
-  any other adapter is refused outright (devin's paid ATIF carries
-  tokens only, codex/kimi report no spend — the bound would read zero
-  while real spend accrued), and the poll's watch SIGTERMs the group
-  once live usage meets the bound, escalating to SIGKILL while the
-  group still answers past the grace. A budget stop is
-  always a failed attempt — even on a clean exit, it never mints a
+  ``plan_dispatch._escalate``) is bound three ways (td601015, td601426,
+  gr628944): a :attr:`Adapter.budget_capable` lane — claude's
+  ``--max-budget-usd`` — is enforced vendor-side at submit; a
+  :attr:`Adapter.budget_watch` lane — devin, whose paid ATIF carries
+  tokens only and which the poll prices at the account's ``devin
+  models list`` rates — is enforced by the poll's watch; a launch on
+  any other adapter is refused outright (codex/kimi report no spend —
+  the bound would read zero while real spend accrued). The watch
+  SIGTERMs the group once live usage meets the bound, escalating to
+  SIGKILL while the group still answers past the grace. A budget stop
+  is always a failed attempt — even on a clean exit, it never mints a
   land;
   posts the session's last message as a ``handoff:`` comment on the todo,
   records the branch state (dirty count, commits ahead of
@@ -179,6 +181,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -200,8 +203,10 @@ from precis.workers.job_types._slice_adapters import (
     adapter_bin,
     deny_settings,
     devin_bin,
+    devin_model_rate,
     get_adapter,
     kimi_bin,
+    parse_devin_model_prices,
 )
 from precis.workers.job_types._slice_adapters import (
     parse_claude_result as parse_result,
@@ -290,7 +295,9 @@ LANE_WAIT_PARK_CAP = 36
 #: can require of its lane (:func:`factory_rescue._resolve_lane_pin`
 #: stamps ``"mcp"`` when it cannot hold its pin, so a wait never relaxes
 #: the requirement onto a lane with no write MCP; td610544).
-_LANE_CAPABILITIES: frozenset[str] = frozenset({"mcp", "read_mcp", "budget_capable"})
+_LANE_CAPABILITIES: frozenset[str] = frozenset(
+    {"mcp", "read_mcp", "budget_capable", "budget_watch"}
+)
 
 #: ``raise_alert`` source of the lane host-refusal alert (gr571395),
 #: bound to the registry: ``run_slice/lane-host-refusal:{lane}``.
@@ -1686,6 +1693,53 @@ def _devin_auth_status(bin: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([bin], 127, stdout="", stderr=str(e))
 
 
+def _devin_model_prices() -> dict[str, tuple[float, float, float]] | None:
+    """``<devin> models list --format json`` → the account's per-token
+    USD rates — the price surface that makes the paid plan's token-only
+    ATIF boundable (gr628944). ``None`` when the CLI cannot report."""
+    try:
+        proc = subprocess.run(
+            [devin_bin(), "models", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_devin_model_prices(proc.stdout)
+
+
+#: Per-process cache for :func:`_devin_price_table` — the table is
+#: account-static within a run and the poll asks once per pass; a
+#: failure refetches sooner so a transient CLI error does not stall the
+#: bound for the full window.
+_PRICE_TABLE_TTL_S = 300.0
+_PRICE_FAIL_TTL_S = 30.0
+_price_table_cache: (
+    tuple[float, dict[str, tuple[float, float, float]] | None] | None
+) = None
+
+
+def _devin_price_table() -> dict[str, tuple[float, float, float]] | None:
+    """The devin account's ``{model: (input, cache_read, output)
+    USD/token}`` table, cached — ``None`` while the CLI cannot price
+    (a caller fails closed on it, never "free")."""
+    global _price_table_cache
+    now = time.monotonic()
+    if _price_table_cache is not None and now < _price_table_cache[0]:
+        return _price_table_cache[1]
+    table = _devin_model_prices()
+    _price_table_cache = (
+        now + (_PRICE_TABLE_TTL_S if table is not None else _PRICE_FAIL_TTL_S),
+        table,
+    )
+    return table
+
+
 def _devin_seed_trust(under: Path) -> str | None:
     """Seed ``under`` — the checkout's ``.claude/worktrees`` — into the
     Devin CLI's trusted workspaces; the refusal reason on failure,
@@ -2408,18 +2462,31 @@ def submit(ctx: Any, spec: Any) -> Any:
         else None
     )
     if budget_usd is not None and not adapter.budget_capable:
-        # A bound the lane cannot account is a refused launch, not a
-        # session that runs unbounded (td601426 review): devin's paid
-        # ATIF carries tokens only, codex/kimi report no spend. The
-        # failure counts as an attempt, so the climb never re-picks the
-        # same unenforceable rung; the todo was never claimed.
-        ctx.record_failure(
-            f"run_slice: params.budget_usd ${budget_usd:.2f} is not "
-            f"enforceable on lane {lane.name!r} — adapter {adapter.name} "
-            "reports no spend the bound can ride; cap only a lane whose "
-            "adapter enforces a budget"
-        )
-        return None
+        refuse: str | None = None
+        if adapter.budget_watch:
+            # The watch's bound rides live ATIF tokens priced at the
+            # account's ``devin models list`` rates (gr628944). Fail
+            # closed on a bound that cannot observe spend: no price
+            # table, or a launch model the table does not name.
+            prices = _devin_price_table()
+            if prices is None:
+                refuse = "`devin models list` reports no price table"
+            elif model is not None and devin_model_rate(prices, model) is None:
+                refuse = f"`devin models list` prices no model {model!r}"
+        else:
+            # codex/kimi report no spend at all (td601426 review).
+            refuse = f"adapter {adapter.name} reports no spend the bound can ride"
+        if refuse is not None:
+            # A bound the lane cannot account is a refused launch, not a
+            # session that runs unbounded. The failure counts as an
+            # attempt, so the climb never re-picks the same
+            # unenforceable rung; the todo was never claimed.
+            ctx.record_failure(
+                f"run_slice: params.budget_usd ${budget_usd:.2f} is not "
+                f"enforceable on lane {lane.name!r} — {refuse}; cap only "
+                "a lane whose spend a bound can ride"
+            )
+            return None
     _claim_todo(store, todo_id, lane.name)
 
     body, latest = _brief_parts(store, todo_id)
@@ -3396,7 +3463,11 @@ def _adapter_usage(
         return None
     atif = Path(handle["atif"]) if handle.get("atif") else None
     usage = adapter.usage(
-        log_text, Path(str(handle.get("worktree") or "")), export_path=atif
+        log_text,
+        Path(str(handle.get("worktree") or "")),
+        export_path=atif,
+        prices=(_devin_price_table() if adapter.name == "devin_tree" else None),
+        model=str((ctx.meta or {}).get("model") or "") or None,
     )
     if usage:
         stamped = {
@@ -3442,7 +3513,10 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     the wrapper's — a TERM can kill the ``sh`` while a vendor process
     ignores it (td602769), and an exit file while the group still
     answers does not end the watch — the poll keeps it live while a
-    bound applies (td603296). No live usage channel (a
+    bound applies (td603296). On devin the live figure is the ATIF's
+    tokens priced at the account's ``devin models list`` rates — the
+    only spend the paid plan lets a watcher see (gr628944). No live
+    usage channel (a
     vendor reporting no spend, or none yet) means the bound simply
     cannot trip."""
     budget = _budget_bound(ctx)

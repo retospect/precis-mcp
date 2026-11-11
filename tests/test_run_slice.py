@@ -280,6 +280,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "auth": _proc("Logged in (via Devin)\n"),
         "trust": None,
         "trusted": [],
+        # ``devin models list`` → {model: (input, cache_read, output)
+        # USD/token}; ``None`` = the CLI reports no table (gr628944).
+        "prices": None,
     }
 
     def fake_seed_trust(under: Path) -> str | None:
@@ -299,6 +302,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         raising=False,
     )
     monkeypatch.setattr(run_slice, "_devin_seed_trust", fake_seed_trust, raising=False)
+    monkeypatch.setattr(
+        run_slice,
+        "_devin_price_table",
+        lambda: calls["devin"]["prices"],
+        raising=False,
+    )
     # The seams exercise the claude_p launch path: pin the table to the
     # Claude lane so an unpinned pick lands there (the seed table's codex
     # lane is table-first since td562568). Vendor-lane tests stand their
@@ -6514,6 +6523,228 @@ def test_devin_atif_usage_shapes(tmp_path: Path) -> None:
     assert paid["input_tokens"] == 20000.0
 
 
+def test_parse_devin_model_prices() -> None:
+    """gr628944: ``devin models list --format json`` → per-token rates —
+    uids and lowercased labels key the table, ``Free`` variants price
+    at zero, an unparseable summary is left out, garbage is ``None``."""
+    from precis.workers.job_types._slice_adapters import (
+        devin_model_rate,
+        parse_devin_model_prices,
+    )
+
+    assert parse_devin_model_prices("not json") is None
+    assert parse_devin_model_prices("{}") is None
+    body = json.dumps(
+        {
+            "families": [
+                {
+                    "slug": "swe-2",
+                    "variants": [
+                        {
+                            "model_uid": "swe-2-high",
+                            "label": "SWE-2 High",
+                            "cost_tier": "Free",
+                        },
+                        {
+                            "model_uid": "swe-2-high-lightning",
+                            "label": "SWE-2 High Lightning",
+                            "cost_tier": "High cost",
+                            "cost_summary": "$1 / 1M Input · $0.1 / 1M Cached input · $5 / 1M Output",
+                        },
+                    ],
+                },
+                {
+                    "slug": "claude-fable-5.2",
+                    "variants": [
+                        {
+                            "model_uid": "claude-fable-5-2-medium",
+                            "label": "Claude Fable 5.2 Medium",
+                            "cost_tier": "High cost",
+                            "cost_summary": "$8 / 1M Input · $0.2 / 1M Cached input · $40 / 1M Output",
+                        },
+                        {
+                            "model_uid": "mystery-variant",
+                            "label": "Mystery",
+                            "cost_tier": "beta",
+                            "cost_summary": "ask your administrator",
+                        },
+                    ],
+                },
+            ]
+        }
+    )
+    prices = parse_devin_model_prices(body)
+    assert prices is not None
+    assert prices["swe-2-high"] == (0.0, 0.0, 0.0)
+    assert prices["swe-2-high-lightning"] == pytest.approx((1e-6, 0.1e-6, 5e-6))
+    assert prices["claude-fable-5-2-medium"] == pytest.approx((8e-6, 0.2e-6, 40e-6))
+    # The unparseable variant is out — unpriceable is not free.
+    assert "mystery-variant" not in prices
+    # Labels resolve too — the ATIF's ``agent.model_name`` is the label.
+    assert devin_model_rate(prices, "SWE-2 High Lightning") == pytest.approx(
+        (1e-6, 0.1e-6, 5e-6)
+    )
+    assert devin_model_rate(prices, "swe-2-high") == (0.0, 0.0, 0.0)
+    assert devin_model_rate(prices, None) is None
+    assert devin_model_rate(prices, "no-such") is None
+
+
+def test_devin_atif_usage_derives_list_price(tmp_path: Path) -> None:
+    """gr628944: the paid plan's token-only ATIF gets a ``cost_usd``
+    the bound can ride — each billed step priced at its own
+    ``model_name`` rate (prompt tokens include the cached share), the
+    file totals at the launch model when steps carry none; a vendor
+    spend figure always wins over the estimate."""
+    from precis.workers.job_types._slice_adapters import devin_atif_usage
+
+    fable = (8e-6, 0.2e-6, 40e-6)
+    swe = (1e-6, 0.1e-6, 5e-6)
+    prices = {"claude-fable-5-2-medium": fable, "swe-2-high": swe}
+    derived = devin_atif_usage(
+        _atif(
+            tmp_path / "derived.json",
+            final={"total_prompt_tokens": 1_200_000, "total_steps": 2},
+            steps=[
+                {
+                    "step_id": 9,
+                    "source": "user",
+                },
+                {
+                    "step_id": 10,
+                    "source": "agent",
+                    "model_name": "claude-fable-5-2-medium",
+                    "metrics": {
+                        "prompt_tokens": 1_000_000,
+                        "cached_tokens": 800_000,
+                        "completion_tokens": 100_000,
+                    },
+                },
+                {
+                    "step_id": 11,
+                    "source": "agent",
+                    "model_name": "swe-2-high",
+                    "metrics": {
+                        "prompt_tokens": 200_000,
+                        "cached_tokens": 0,
+                        "completion_tokens": 10_000,
+                    },
+                },
+            ],
+        ),
+        prices=prices,
+        model="claude-fable-5-2-medium",
+    )
+    assert derived is not None
+    # fable: 200k uncached×$8 + 800k cached×$0.2 + 100k out×$40 (per 1M)
+    #      = $1.60 + $0.16 + $4.00 = $5.76; swe: $0.20 + $0.05.
+    assert derived["cost_usd"] == pytest.approx(6.01)
+    assert derived["cost_basis"] == "devin models list"
+    # No step metrics yet — the file totals price at the launch model.
+    early = devin_atif_usage(
+        _atif(
+            tmp_path / "early.json",
+            final={
+                "total_prompt_tokens": 1_000_000,
+                "total_cached_tokens": 500_000,
+                "total_completion_tokens": 50_000,
+                "total_steps": 1,
+            },
+        ),
+        prices=prices,
+        model="claude-fable-5-2-medium",
+    )
+    assert early is not None
+    # 500k×$8 + 500k×$0.2 + 50k×$40 = $4.00 + $0.10 + $2.00.
+    assert early["cost_usd"] == pytest.approx(6.10)
+    # A vendor-reported figure wins; nothing derives on top of it.
+    vendor = devin_atif_usage(
+        _atif(
+            tmp_path / "vendor.json",
+            final={"total_cost_usd": 6.25, "total_prompt_tokens": 9_000_000},
+            steps=[
+                {
+                    "step_id": 10,
+                    "source": "agent",
+                    "model_name": "claude-fable-5-2-medium",
+                    "metrics": {"prompt_tokens": 9_000_000},
+                }
+            ],
+        ),
+        prices=prices,
+        model="claude-fable-5-2-medium",
+    )
+    assert vendor is not None
+    assert vendor["cost_usd"] == pytest.approx(6.25)
+    assert "cost_basis" not in vendor
+    # No table → the token-only file stays unpriced (today's shape).
+    unpriced = devin_atif_usage(
+        _atif(tmp_path / "unpriced.json", final={"total_prompt_tokens": 9000})
+    )
+    assert unpriced is not None and "cost_usd" not in unpriced
+
+
+def test_watch_budget_kills_on_priced_atif_tokens(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr628944: a devin session whose priced token usage crosses the
+    remaining allowance is actually stopped — not just refused upfront
+    — and a run under the bound is left alone."""
+    seams["devin"]["prices"] = {"swe-2-high": (8e-6, 0.2e-6, 40e-6)}
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    # ~$10.10 at the fable-parity rate: 1M uncached×$8 + 500k
+    # cached×$0.2 + 50k out×$40 — no vendor spend field, all derived.
+    _atif(
+        Path(handle["atif"]),
+        final={
+            "total_prompt_tokens": 1_500_000,
+            "total_cached_tokens": 500_000,
+            "total_completion_tokens": 50_000,
+            "total_steps": 3,
+        },
+        steps=[
+            {
+                "step_id": 10,
+                "source": "agent",
+                "model_name": "swe-2-high",
+                "metrics": {
+                    "prompt_tokens": 1_500_000,
+                    "cached_tokens": 500_000,
+                    "completion_tokens": 50_000,
+                },
+            }
+        ],
+    )
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    pctx.meta["model"] = "swe-2-high"
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    assert handle["budget_kill"]["usd"] == pytest.approx(10.1)
+    assert pctx.meta_set["usage"]["cost_usd"] == pytest.approx(10.1)
+    # Under the bound: nothing signals, nothing marked.
+    handle.pop("budget_kill")
+    seams["signals"].clear()
+    _atif(
+        Path(handle["atif"]),
+        final={"total_prompt_tokens": 100_000, "total_steps": 1},
+        steps=[
+            {
+                "step_id": 10,
+                "source": "agent",
+                "model_name": "swe-2-high",
+                "metrics": {"prompt_tokens": 100_000, "completion_tokens": 1000},
+            }
+        ],
+    )
+    pctx2 = _poll_ctx(store, pctx)
+    pctx2.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx2, handle) is False
+    assert seams["signals"] == [] and "budget_kill" not in handle
+
+
 def test_devin_submit_exports_atif(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6609,18 +6840,99 @@ def test_watch_budget_ignores_under_allowance_and_unreported(
 def test_capped_launch_refused_on_an_adapter_without_spend(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td601426: devin's paid ATIF carries tokens only, so a
-    ``budget_usd`` launch there could never see its bound — submit
-    refuses it (nothing launched, the todo never claimed, the failure
+    """td601426: codex's ``turn.completed`` carries token counts only —
+    no spend a bound could ride — so a ``budget_usd`` launch there is
+    refused (nothing launched, the todo never claimed, the failure
     counting as an attempt so the climb moves on)."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_CODEX_BIN", "/vendor/codex")
+    use_lanes(monkeypatch, _vendor_lane("codex", "codex_exec"))
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams, lane="codex", budget_usd=5.0)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "budget_usd" in ctx.failure and "codex_exec" in ctx.failure
+    assert seams["launch"] == []
+    assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_capped_devin_launch_refused_without_a_price_table(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr628944: devin's bound rides the ``devin models list`` price
+    table — when the CLI reports none the watch could never see spend,
+    so the capped launch still fails closed."""
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _devin_lane_submit(store, seams, monkeypatch, budget_usd=5.0)
     assert handle is None and ctx.status == "failed"
     assert ctx.failure is not None
-    assert "budget_usd" in ctx.failure and "devin_tree" in ctx.failure
+    assert "budget_usd" in ctx.failure and "price table" in ctx.failure
     assert seams["launch"] == []
     assert store.tag_strings(42) == {"STATUS:open"}
+
+
+def test_capped_devin_launch_refused_on_an_unpriced_model(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr628944: a launch model the account's table does not name is a
+    bound that cannot observe spend — refused, like no table at all."""
+    seams["devin"]["prices"] = {"swe-2-high": (8e-6, 0.2e-6, 40e-6)}
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(
+        store, seams, monkeypatch, model="fable-x", budget_usd=5.0
+    )
+    # ``fable-x`` is not in the lane's models, so the model guard refuses
+    # before pricing even runs — pin a lane that accepts it to reach the
+    # price gate.
+    assert handle is None and ctx.status == "failed"
+    seams["devin"]["prices"] = {"swe-2-high": (8e-6, 0.2e-6, 40e-6)}
+    store2 = _Store()
+    store2.add_todo(42, "Build")
+    lane = _vendor_lane("devin", "devin_tree", models=("fable-x",))
+    use_lanes(monkeypatch, lane)
+    ctx2, handle2 = _submit(
+        store2, seams, lane="devin", model="fable-x", budget_usd=5.0
+    )
+    assert handle2 is None and ctx2.status == "failed"
+    assert ctx2.failure is not None
+    assert "fable-x" in ctx2.failure and "budget_usd" in ctx2.failure
+    assert seams["launch"] == []
+    assert store2.tag_strings(42) == {"STATUS:open"}
+
+
+def test_capped_devin_launch_runs_when_priced(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr628944: a devin ``budget_usd`` launch on a priced model is
+    accepted — the bound rides the watch, not the vendor."""
+    seams["devin"]["prices"] = {
+        "swe-2-high": (8e-6, 0.2e-6, 40e-6),
+        "claude-fable-5-2-medium": (8e-6, 0.2e-6, 40e-6),
+    }
+    lane = _vendor_lane(
+        "devin",
+        "devin_tree",
+        models=("swe-2-high", "claude-fable-5-2-medium"),
+    )
+    use_lanes(monkeypatch, lane)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(
+        store,
+        seams,
+        lane="devin",
+        model="claude-fable-5-2-medium",
+        budget_usd=5.0,
+    )
+    assert handle is not None and ctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    # No vendor-side flag exists — the argv is unchanged; the poll's
+    # watch carries the bound.
+    assert "--max-budget-usd" not in argv
+    assert argv[argv.index("--model") + 1] == "claude-fable-5-2-medium"
 
 
 def test_capped_claude_launch_passes_max_budget_usd(

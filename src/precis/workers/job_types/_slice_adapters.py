@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -205,16 +206,144 @@ def _dim_value(dim: Any) -> tuple[str, float] | None:
     return str(dim.get("uid") or body.get("label") or "").lower(), v
 
 
-def devin_atif_usage(path: Path | None) -> dict[str, Any] | None:
+#: ``devin models list --format json``'s ``cost_summary`` — the only
+#: machine-readable price the local CLI publishes (3000.12.43):
+#: ``"$8 / 1M Input · $0.2 / 1M Cached input · $40 / 1M Output"``.
+_COST_SUMMARY_RE = re.compile(
+    r"\$\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*1M\s+Input"
+    r".*?\$\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*1M\s+Cached\s+input"
+    r".*?\$\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*1M\s+Output",
+    re.DOTALL,
+)
+
+
+def parse_devin_model_prices(
+    text: str,
+) -> dict[str, tuple[float, float, float]] | None:
+    """``{model: (input, cache_read, output) USD/token}`` out of ``devin
+    models list --format json``, keyed by ``model_uid`` and by the
+    lowercased ``label`` — a step's ATIF ``model_name`` is the uid, the
+    file-level ``agent.model_name`` is the label. A variant with no
+    ``cost_summary`` prices at zero (``cost_tier: "Free"``); one whose
+    summary escapes the known shape is left out — unpriceable is not
+    free. ``None`` when nothing parses."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    out: dict[str, tuple[float, float, float]] = {}
+    families = data.get("families") if isinstance(data, dict) else None
+    for fam in families if isinstance(families, list) else ():
+        variants = fam.get("variants") if isinstance(fam, dict) else None
+        for v in variants if isinstance(variants, list) else ():
+            if not isinstance(v, dict):
+                continue
+            uid = str(v.get("model_uid") or "").strip()
+            if not uid:
+                continue
+            m = _COST_SUMMARY_RE.search(str(v.get("cost_summary") or ""))
+            if m is not None:
+                rate = (
+                    float(m.group(1)) / 1e6,
+                    float(m.group(2)) / 1e6,
+                    float(m.group(3)) / 1e6,
+                )
+            elif str(v.get("cost_tier") or "").strip().lower() == "free":
+                rate = (0.0, 0.0, 0.0)
+            else:
+                continue
+            out[uid] = rate
+            label = str(v.get("label") or "").strip().lower()
+            if label:
+                out.setdefault(label, rate)
+    return out or None
+
+
+def devin_model_rate(
+    prices: dict[str, tuple[float, float, float]], name: Any
+) -> tuple[float, float, float] | None:
+    """The ``(input, cache_read, output)`` USD/token rate ``name``
+    resolves to in a :func:`parse_devin_model_prices` table — exact
+    ``model_uid`` first, then the lowercased label — else ``None``."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    n = name.strip()
+    return prices.get(n) or prices.get(n.lower())
+
+
+def _devin_est_cost_usd(
+    data: dict[str, Any],
+    prices: dict[str, tuple[float, float, float]],
+    *,
+    model: str | None,
+    label: Any,
+) -> float | None:
+    """USD the ATIF's tokens price at the account's list rates — each
+    billed step at ITS ``model_name`` (the uid it records; the router
+    can move a conversation), the file-level totals at the launch
+    model's rate when no step prices. ``prompt_tokens`` includes
+    ``cached_tokens`` (observed 3000.12.43: a step's 21829 prompt is
+    its 10309 input + 11520 cache_read), so the uncached share is the
+    difference. An unpriced step falls back to the launch rate, then
+    to the table's dearest — an over-estimate kills early, an
+    under-estimate overspends. ``None`` when there are no tokens to
+    price."""
+    fallback = (
+        devin_model_rate(prices, model)
+        or devin_model_rate(prices, label)
+        or max(prices.values(), key=sum)
+    )
+    est = 0.0
+    saw = False
+    steps = data.get("steps")
+    for step in steps if isinstance(steps, list) else ():
+        if not isinstance(step, dict):
+            continue
+        mm = step.get("metrics")
+        if not isinstance(mm, dict):
+            continue
+        prompt = _num(mm.get("prompt_tokens")) or 0.0
+        cached = _num(mm.get("cached_tokens")) or 0.0
+        out = _num(mm.get("completion_tokens")) or 0.0
+        if prompt <= 0 and out <= 0:
+            continue
+        saw = True
+        rate = devin_model_rate(prices, step.get("model_name")) or fallback
+        est += max(prompt - cached, 0.0) * rate[0] + cached * rate[1] + out * rate[2]
+    if saw:
+        return est
+    fm = data.get("final_metrics")
+    fm = fm if isinstance(fm, dict) else {}
+    prompt = _num(fm.get("total_prompt_tokens")) or 0.0
+    cached = _num(fm.get("total_cached_tokens")) or 0.0
+    out = _num(fm.get("total_completion_tokens")) or 0.0
+    if prompt <= 0 and out <= 0:
+        return None
+    return (
+        max(prompt - cached, 0.0) * fallback[0]
+        + cached * fallback[1]
+        + out * fallback[2]
+    )
+
+
+def devin_atif_usage(
+    path: Path | None,
+    *,
+    prices: dict[str, tuple[float, float, float]] | None = None,
+    model: str | None = None,
+) -> dict[str, Any] | None:
     """``meta.usage`` for a ``devin --export`` ATIF file (gr599486
     follow-up): the ``final_metrics`` token totals and — where the plan
     reports cost — ``total_cost_usd``, per-step ``metrics.cost_usd``,
     ``committed_acu_cost``/``committed_credit_cost``, and
     ``extra.response_dimensions`` acu/credit/usd entries. ``None`` when
     no ATIF document reads. The paid plan's export carries token totals
-    only, which is why a ``budget_usd`` launch is refused on this
-    adapter rather than watched — the bound would read zero while real
-    spend accrued (td601426)."""
+    only, so when ``prices`` (the ``devin models list`` table,
+    :func:`parse_devin_model_prices`) resolves a rate the tokens are
+    priced at the account's list price into ``cost_usd`` — the estimate
+    the spend bound rides (gr628944; a vendor-reported spend figure
+    always wins). ``model`` is the launch model the file-level fallback
+    prices at."""
     if path is None:
         return None
     try:
@@ -294,6 +423,16 @@ def devin_atif_usage(path: Path | None) -> dict[str, Any] | None:
     agent = data.get("agent")
     if isinstance(agent, dict) and agent.get("model_name"):
         usage["model"] = str(agent["model_name"])
+    if prices and not any(
+        usage.get(k) for k in ("cost_usd", "acus_consumed", "credit_cost")
+    ):
+        # The paid plan reports tokens only (td601426): price them at the
+        # account's list rates so the watch's bound has a number to ride
+        # (gr628944). Anything the vendor did report stands.
+        est = _devin_est_cost_usd(data, prices, model=model, label=usage.get("model"))
+        if est is not None:
+            usage["cost_usd"] = round(est, 6)
+            usage["cost_basis"] = "devin models list"
     return usage
 
 
@@ -368,15 +507,18 @@ class Adapter:
     grant (reader/triage, gr574082) — reads plus the triage write set —
     when ``PRECIS_SLICE_READ_MCP`` names a scope. ``budget_capable``
     means the vendor enforces ``params.budget_usd`` itself — claude's
-    ``--max-budget-usd``. Every other adapter is ``False`` (devin's paid
-    ATIF carries tokens only, codex/kimi report no spend) and run_slice
-    refuses a capped launch there rather than run one unbounded
-    (td601426)."""
+    ``--max-budget-usd``. ``budget_watch`` means run_slice's own watch
+    enforces the bound instead: the adapter's usage channel yields or
+    derives spend — devin's paid ATIF carries tokens only, priced at
+    the account's ``devin models list`` rates (gr628944). An adapter
+    with neither refuses a capped launch rather than run one unbounded
+    (codex/kimi report no spend at all — td601426)."""
 
     name: str
     mcp: bool
     read_mcp: bool = False
     budget_capable: bool = False
+    budget_watch: bool = False
 
     def argv(
         self,
@@ -403,8 +545,9 @@ class Adapter:
         argv. ``export_path`` is the ATIF file ``devin --export`` keeps
         refreshed each turn — the poll reads ``meta.usage`` from it.
         ``budget_usd`` is the node's remaining allowance; only
-        :attr:`budget_capable` adapters receive it (claude's
-        ``--max-budget-usd``), run_slice having refused the rest."""
+        :attr:`budget_capable` adapters put it in argv (claude's
+        ``--max-budget-usd``) — a :attr:`budget_watch` lane's bound rides
+        its usage channel, and run_slice refuses the rest."""
         if self.name == "claude_p":
             argv = [
                 claude_bin(),
@@ -525,17 +668,25 @@ class Adapter:
         raise KeyError(self.name)
 
     def usage(
-        self, log_text: str, tree: Path, *, export_path: Path | None = None
+        self,
+        log_text: str,
+        tree: Path,
+        *,
+        export_path: Path | None = None,
+        prices: dict[str, tuple[float, float, float]] | None = None,
+        model: str | None = None,
     ) -> dict[str, Any] | None:
         """The vendor's reported usage for ``meta.usage`` (gr599486
         follow-up): devin's ATIF ``--export`` file — live, refreshed
         after each turn — claude's result-envelope ``total_cost_usd`` +
         ``usage``, codex's ``turn.completed`` token counts. ``None``
         where the vendor reports nothing — the spend cap reads
-        ``cost_usd``/``acus_consumed``/``on_demand_usd`` only."""
+        ``cost_usd``/``acus_consumed``/``on_demand_usd`` only. ``prices``
+        is the devin account's per-token list-price table (gr628944);
+        ``model`` the launch model its file-level fallback prices at."""
         del tree
         if self.name == "devin_tree":
-            return devin_atif_usage(export_path)
+            return devin_atif_usage(export_path, prices=prices, model=model)
         if self.name == "claude_p":
             return _claude_usage(log_text)
         if self.name == "codex_exec":
@@ -546,7 +697,7 @@ class Adapter:
 ADAPTERS: dict[str, Adapter] = {
     "claude_p": Adapter("claude_p", mcp=True, budget_capable=True),
     "codex_exec": Adapter("codex_exec", mcp=False, read_mcp=True),
-    "devin_tree": Adapter("devin_tree", mcp=False, read_mcp=True),
+    "devin_tree": Adapter("devin_tree", mcp=False, read_mcp=True, budget_watch=True),
     "kimi_tree": Adapter("kimi_tree", mcp=False),
 }
 
