@@ -734,6 +734,43 @@ def test_brief_parts_keeps_dead_attempt_handoff_when_no_brief() -> None:
     assert latest == "handoff: got as far as the parser"
 
 
+def test_brief_parts_keeps_lander_handoff_over_brief() -> None:
+    """The review fix for td636404's demotion: while an ``attempt:`` tag
+    stands, a lander handoff (``handoff: lander:`` — land_slice's failure
+    instruction on the red path) is the newest comment and must NOT be
+    demoted to the older ``brief:``; the reopened todo exists to act on
+    it. An unmarked builder handoff between the brief and the lander's
+    note is shadowed all the same."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Build the widget",
+        body="Do X, then Y.",
+        comments=(
+            "brief: the real brief",
+            "handoff: built the widget, ready to land",
+            "handoff: lander: land FAILED on slice/42: ✖ ruff — fix it",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 42)
+    assert latest == "handoff: lander: land FAILED on slice/42: ✖ ruff — fix it"
+    # The lander marker is what saves it: the same text without the
+    # marker is a builder's handoff and loses to the brief again.
+    store.add_todo(
+        43,
+        "Build the widget",
+        body="Do X, then Y.",
+        comments=(
+            "brief: the real brief",
+            "handoff: land FAILED on slice/42: ✖ ruff — fix it",
+        ),
+        tags=("attempt:1",),
+    )
+    _body, latest = run_slice._brief_parts(store, 43)
+    assert latest == "brief: the real brief"
+
+
 def test_generator_brief_creates_children_and_never_lands(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:

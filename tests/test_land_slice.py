@@ -618,7 +618,7 @@ def test_submit_without_commits_fails_and_reopens(seams: dict[str, Any]) -> None
     tags = store.tag_strings(42)
     assert {"STATUS:open", "attempt:1"} <= tags
     assert "claimed-by:lane-claude-sub" not in tags
-    assert store.comments(42)[-1].startswith("handoff: land FAILED")
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED")
 
 
 def test_submit_missing_worktree_fails(seams: dict[str, Any], tmp_path: Path) -> None:
@@ -1079,7 +1079,7 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     assert {"STATUS:open", "attempt:1"} <= tags
     assert "claimed-by:lane-claude-sub" not in tags
     handoff = store.comments(42)[-1]
-    assert handoff.startswith("handoff: land FAILED on slice/42: ✖")
+    assert handoff.startswith("handoff: lander: land FAILED on slice/42: ✖")
     # td565331: the gate's own error lines ride the handoff, so the next
     # session's brief names what to fix, not only the verdict line.
     assert "The gate's error lines:" in handoff
@@ -1291,7 +1291,9 @@ def test_poll_full_selector_refusal_relaunches_quick(
     tags = store.tag_strings(42)
     assert not any(t.startswith("attempt:") for t in tags)
     assert "claimed-by:lane-claude-sub" in tags
-    assert not any(c.startswith("handoff: land FAILED") for c in store.comments(42))
+    assert not any(
+        c.startswith("handoff: lander: land FAILED") for c in store.comments(42)
+    )
     events = [t for k, t in pctx.chunks if k == "job_event"]
     assert any("selector answers FULL" in e and "--quick" in e for e in events)
 
@@ -1544,7 +1546,7 @@ def test_poll_bare_exit_137_defers_then_the_ask(
     assert "STATUS:open" in tags
     assert not any(t.startswith("attempt:") for t in tags)
     [handoff] = store.comments(42)
-    assert handoff.startswith("handoff: land BLOCKED on slice/42:")
+    assert handoff.startswith("handoff: lander: land BLOCKED on slice/42:")
     assert "the docker VM's memory or the branch's own memory use" in handoff
     assert "not at fault" not in handoff
 
@@ -2150,7 +2152,7 @@ def test_poll_main_refusal_cap_fails_with_the_blocked_handoff(
     assert "✖ main has no all-green shard matrix" in pctx.failure
     [handoff] = store.comments(42)
     assert handoff.startswith(
-        "handoff: land BLOCKED on slice/42: main refused the land "
+        "handoff: lander: land BLOCKED on slice/42: main refused the land "
     )
     assert f"the land {n} times (✖ main has no" in handoff
     assert handoff.endswith("or a fixed red on main. Do not rebuild.")
@@ -2295,7 +2297,7 @@ def test_poll_host_refusal_cap_names_the_node(seams: dict[str, Any]) -> None:
     )
     [handoff] = store.comments(42)
     assert handoff.startswith(
-        "handoff: land BLOCKED on slice/42: the lander's host refused the land "
+        "handoff: lander: land BLOCKED on slice/42: the lander's host refused the land "
     )
     assert "Nothing is wrong on the branch" in handoff
     assert "an operator, not a builder" in handoff
@@ -2319,7 +2321,9 @@ def test_poll_lint_red_is_unchanged_by_the_main_refusal_path(
         and "ship of td42 red: ✖ ruff: 2 errors" in pctx.failure
     )
     assert "attempt:1" in pctx.failure
-    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42: ✖ ruff")
+    assert store.comments(42)[-1].startswith(
+        "handoff: lander: land FAILED on slice/42: ✖ ruff"
+    )
     assert "attempt:1" in store.tag_strings(42)
 
 
@@ -2458,7 +2462,7 @@ def test_poll_exit_137_cap_names_vm_or_branch_memory(
     assert "claimed-by:lane-claude-sub" not in tags
     assert not any(t.startswith("attempt:") for t in tags)
     [handoff] = store.comments(42)
-    assert handoff.startswith("handoff: land BLOCKED on slice/42:")
+    assert handoff.startswith("handoff: lander: land BLOCKED on slice/42:")
     assert "gate killed (exit 137, VM memory)" in handoff
     assert "the docker VM's memory or the branch's own memory use" in handoff
     assert "Do not rebuild" not in handoff
@@ -2482,7 +2486,7 @@ def test_poll_node_down_without_a_kill_line_is_an_ordinary_red(
     assert "gate_kills" not in handle
     assert "attempt_free" not in pctx.meta_set
     assert "attempt:1" in store.tag_strings(42)
-    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42")
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED on slice/42")
 
 
 def test_poll_red_quoting_kill_marks_is_an_ordinary_red(
@@ -2500,7 +2504,7 @@ def test_poll_red_quoting_kill_marks_is_an_ordinary_red(
     assert "gate_kills" not in handle
     assert len(seams["launch"]) == 1
     assert "attempt:1" in store.tag_strings(42)
-    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42")
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED on slice/42")
 
 
 def test_poll_xdist_crash_retries_once_then_red(
@@ -2526,7 +2530,7 @@ def test_poll_xdist_crash_retries_once_then_red(
     assert land_slice.poll(pctx2, handle) is True
     assert pctx2.status == "failed"
     assert "attempt:1" in store.tag_strings(42)
-    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42")
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED on slice/42")
     assert "the checked gate is RED" in (pctx2.failure or "")
 
 
@@ -2960,7 +2964,7 @@ def test_poll_checked_red_outside_alone_green_is_attempt_free(
     assert "claimed-by:lane-claude-sub" not in tags
     assert not any(t.startswith("attempt:") for t in tags)
     [handoff] = store.comments(42)
-    assert handoff.startswith("handoff: land FAILED on slice/42:")
+    assert handoff.startswith("handoff: lander: land FAILED on slice/42:")
     assert "flaky or order-dependent" in handoff
     assert "the lander re-lands" in handoff
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
@@ -3176,7 +3180,7 @@ def test_poll_checked_red_main_red_full_selection_note_failure_is_ordinary(
     assert "attempt:1" in store.tag_strings(42)
     notes = store.comments(42)
     assert all("red on origin/main too" not in n for n in notes)
-    assert any(n.startswith("handoff: land FAILED on slice/42:") for n in notes)
+    assert any(n.startswith("handoff: lander: land FAILED on slice/42:") for n in notes)
 
 
 def test_poll_checked_red_main_red_deselect_note_failure_is_ordinary(

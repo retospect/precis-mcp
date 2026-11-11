@@ -13,7 +13,8 @@ that holds the lane's credentials with ``params.target_node``):
 * :func:`submit` renders the brief (todo title + body + the newest
   ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction —
   after a failed attempt the newest ``brief:`` wins over the dead
-  session's ``handoff:``, gr571311),
+  session's builder ``handoff:`` but never over a lander handoff,
+  gr571311),
   picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one
   (a pinned lane at its cap parks the job like a full pick does) —
@@ -234,6 +235,13 @@ _COMMENT_KIND = "todo_comment"
 
 #: Comment prefixes that carry a brief for the next session.
 _BRIEF_PREFIXES: tuple[str, ...] = ("brief:", "handoff:")
+
+#: Lander-authored handoffs (``land_slice._fail`` and its main-red note)
+#: carry this prefix after ``handoff:`` so :func:`_brief_parts` can tell
+#: an actionable land failure instruction — the retry session needs it —
+#: from a failed builder's final message, which the newest ``brief:``
+#: wins over while an ``attempt:`` tag stands (gr571311).
+_LANDER_HANDOFF_PREFIX = "handoff: lander:"
 
 #: Todo statuses that refuse a launch.
 _CLOSED_STATUSES = frozenset({"done", "won't-do"})
@@ -1406,8 +1414,11 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     gr571311: a failed attempt still posts its session's last message as
     a ``handoff:`` comment — a dead session's one-liner is not a brief,
     so while an ``attempt:<n>`` tag stands (the last run failed) the
-    newest ``brief:`` wins over a newer ``handoff:`` that would shadow
-    the real instructions for the retry."""
+    newest ``brief:`` wins over a newer builder ``handoff:`` that would
+    shadow the real instructions for the retry. A lander handoff
+    (:data:`_LANDER_HANDOFF_PREFIX`) is different: it is the failure
+    instruction the reopened todo exists to act on, so it keeps winning
+    by recency."""
     chunks = _todo_chunks(store, todo_id)
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
@@ -1428,8 +1439,10 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
         if lowered.startswith("brief:") and int(c.ord) > brief_ord:
             brief, brief_ord = text, int(c.ord)
     if (
-        latest_ord > brief_ord
+        latest is not None
+        and latest_ord > brief_ord
         and brief is not None
+        and not latest.lower().startswith(_LANDER_HANDOFF_PREFIX)
         and any(_ATTEMPT_RE.match(v) for v in _open_tag_values(store, todo_id))
     ):
         latest = brief

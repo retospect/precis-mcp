@@ -1436,7 +1436,10 @@ def _fail(
     attempt_free: str | None = None,
 ) -> None:
     """The red path: a ``handoff:`` for the next build session, the lease
-    released (``attempt:<n>``), the job failed with ``reason``.
+    released (``attempt:<n>``), the job failed with ``reason``. The comment
+    carries run_slice's ``_LANDER_HANDOFF_PREFIX`` marker so the retried
+    builder's brief keeps it over an older ``brief:`` — it is the
+    instruction the reopened todo exists to act on.
 
     ``attempt_free`` (gr570187) is the red's class when it was outside the
     diff (gate infrastructure killed the land): the job is marked
@@ -1447,7 +1450,9 @@ def _fail(
     at the ask instead: the tick does not re-land it on its own."""
     attempt = None
     try:
-        _rs._append_comment(ctx.store, todo_id, f"handoff: {handoff}")
+        _rs._append_comment(
+            ctx.store, todo_id, f"{_rs._LANDER_HANDOFF_PREFIX} {handoff}"
+        )
     except Exception:  # pragma: no cover — the job outcome still lands
         log.warning("land_slice: handoff comment on td%d failed", todo_id)
     if attempt_free is not None:
@@ -2365,8 +2370,9 @@ def _land_without_main_reds(
         _rs._append_comment(
             ctx.store,
             todo_id,
-            f"handoff: {', '.join(ids)} are red on origin/main too — "
-            f"not this branch's; {why}. The reds are main's to fix.",
+            f"{_rs._LANDER_HANDOFF_PREFIX} {', '.join(ids)} are red on "
+            f"origin/main too — not this branch's; {why}. "
+            "The reds are main's to fix.",
         )
     except Exception:
         log.warning(
