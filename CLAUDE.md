@@ -29,13 +29,9 @@ commit in the primary `main` checkout. Mechanics: `docs/conventions/shipping.md`
 
 All idempotent — fix and re-run; on red read the failure above the `✖`. Run
 ship in the background to a log; never pipe `ship|deploy|bump` into
-`tail`/`grep`/`tee`. Refs `main`, `origin/gated`, `origin/prod`,
-`release/r<N>` are script-moved. Before starting and before touching shared
-files: `scripts/inflight`; then one line to `.claude/purpose`. Open round →
-`scripts/round in <sha>|none|eta <text>`. Fleet session: deploys/`/go` are
-the coordinator's; questions for Reto → `ask-user` todo
-(`precis-work-help`). Thread work updates `docs/backlog/threads/<slug>.md`
-in the same commit.
+`tail`/`grep`/`tee`. Before starting: `scripts/inflight`, then one line to
+`.claude/purpose`. Script-moved refs, rounds, fleet deploys, thread files →
+`docs/conventions/shipping.md` §Long form.
 
 Commits: `type(scope): what changed` aim ≤72 chars, hard limit 120, optional why, then the
 Co-Authored-By/session footer; write it to a file and `git commit -F <file>`
