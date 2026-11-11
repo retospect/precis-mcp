@@ -77,7 +77,7 @@ panel for pull-style monitoring.
 | `embed-lane-stalled` | `embed_batch` jobs queued but none completed in the window — the in-proc embed lane is dark while looking clean | 60 min · **critical** |
 | `unattributed-claimant` | a `claimed-by:` identity (e.g. a container id) with no `host_heartbeat` row claimed work in the window — a non-fleet worker is running | 25 d lookback · warn |
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
-| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
+| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity, skipping a worker-less dev checkout (empty `worker_units`, no `activity`) — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
 | `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
 
 The three **worker-health** detectors watch daemon liveness / work

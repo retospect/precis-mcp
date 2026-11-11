@@ -2158,6 +2158,23 @@ def test_hosts_alive_still_fires_for_named_host_not_marked_ephemeral(store) -> N
     assert host in result.detail
 
 
+def test_hosts_alive_ignores_workerless_dev_checkout(store) -> None:
+    """gr625282: mirrors nursery's host-dark skip for a host that reported an
+    empty ``worker_units`` and never recorded worker activity."""
+    host = f"th-{uuid4().hex[:8]}"
+    _seed_hosts_alive_worker_log(store, host, hours_ago=1)
+    _seed_hosts_alive_heartbeat(
+        store,
+        host,
+        minutes_ago=health_digest._HOSTS_ALIVE_SILENCE_MIN + 5,
+        meta={"worker_units": {}, "activity": {}},
+    )
+
+    with store.pool.connection() as conn:
+        result = _check_hosts_alive(conn)
+    assert host not in result.detail
+
+
 # ── alert backlog rot ─────────────────────────────────────────────────────
 
 

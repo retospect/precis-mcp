@@ -1781,6 +1781,36 @@ def test_host_dark_still_fires_for_named_host_not_marked_ephemeral(
     assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
+def test_host_dark_skips_workerless_dev_checkout(store: Store) -> None:
+    """gr625282: a one-off checkout reports an empty ``worker_units`` and no
+    ``activity`` — not a fleet member, so going quiet must not page."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={"worker_units": {}, "activity": {}},
+    )
+
+    findings = _detect_host_dark(store)
+    assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_fires_for_host_with_recorded_activity(store: Store) -> None:
+    """Complement of the dev-checkout skip: empty ``worker_units`` but real
+    worker activity (e.g. a launchd host) is still a fleet member."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={"worker_units": {}, "activity": {"precis-worker": {"claimed": 1}}},
+    )
+
+    findings = _detect_host_dark(store)
+    assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
 def test_dead_worker_message_is_hedged_across_platforms() -> None:
     """gr180078: no hardcoded launchctl-only text."""
     for plat in ("Darwin", "Linux", "darwin", "linux", None):
