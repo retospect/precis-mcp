@@ -756,8 +756,9 @@ removed as met — the transport move it waited on happened 09-29)
    hexagons now match `ring:7-ring`). Remaining: the
    surface-mesh clearance field (item 1's post-§20.6 form), real
    energetics over the stub, audit, drag-vs-torque.
-9. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
-   decided by instrumenting the first lining, so it waits on 7.
+9. **valve spec `me628980` Q2** (scrubbers `me629055`) — scrubber cadence
+   per poison species, decided by instrumenting the first lining, so it
+   waits on 7.
 10. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
    (§28.7) — three- and four-sheet joins at an atom, and the valve's sp³
    isolation loops. Sequenced here by choice, not blocked: §28 lists it as
@@ -768,8 +769,8 @@ removed as met — the transport move it waited on happened 09-29)
    there: seam vertices (the box-corner counting argument) and the
    isolation band.
 11. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
-    lining rotary-ratchet-valve.md Q2 (item 9) needs to decide scrubber
-    cadence; sequenced right after the seam it instruments.
+    lining the valve spec's Q2 (`me628980`, item 9) needs to decide
+    scrubber cadence; sequenced right after the seam it instruments.
 12. **`spec.md` §28.5–28.6 smooth solve + direction field** — owned by
     **backlog/precis-surface-kernel.md** (its checklist carries §28.5,
     §28.6 and §28.8); this thread ranks them, that item holds the

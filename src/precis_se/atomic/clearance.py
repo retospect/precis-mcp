@@ -1,10 +1,10 @@
 """The **atomic** ``view='clearance'`` path — a van der Waals gap between two
 structure-bound blocks, swept over rotor angle, with pockets.
 
-The rotary ratchet valve's first design tool (``docs/backlog/
-rotary-ratchet-valve.md`` "Design tool set" 1–2, hexfold spec §28.8): an
+The rotary ratchet valve's first design tool (graph spec ``me628980``
+§design tools ``me629059``, items 1–2; hexfold spec §28.8): an
 outer shell and an inner rotor whose in-between space is what the chemistry
-happens in, measured before step 5's smooth mesh exists — the doc's own
+happens in, measured before step 5's smooth mesh exists — the spec's own
 stub: ``stick`` atoms plus van der Waals radii. The world-placement
 convention is ``view='clearance'``'s own v1 one: a block's ``pose``/``rot``
 ARE its world placement (:func:`precis_se.atomic.validate.
@@ -24,7 +24,7 @@ nearest cross-block gap is under a threshold (default
 :data:`POCKET_LINK_A` of each other in the same block, unioned across the
 pair through the near-contact partners that flagged them. One connected
 component = one enclosed void = one metering pocket; the count at the
-loading angle is the count the valve doc asks for. Each pocket reports
+loading angle is the count the valve spec asks for. Each pocket reports
 per-block atom counts, its centroid as ``(z, θ)`` about the sweep axis,
 its angular extent, and an approximate volume (convex hull of the pocket
 atoms' van der Waals centres — labelled approximate because the void, not
@@ -77,7 +77,7 @@ from precis_se.ops import SeBlock, SeTree, effective_envelope
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
 
-#: Bondi van der Waals radii (Å) — the valve doc's gap definition. One
+#: Bondi van der Waals radii (Å) — the valve spec's gap definition. One
 #: table for the gap, the pocket radius and the inspect probes' vdW
 #: field; it lives in :mod:`precis.structure.probe` (the geom wheel ships
 #: that, not this module) and is re-exported here. Elements absent from
@@ -86,7 +86,7 @@ VDW_RADII_A: dict[str, float] = st_probe.VDW_RADII_A
 VDW_DEFAULT_A = st_probe.VDW_DEFAULT_A
 
 #: ``verdict``: minimum gap at or above this is ``free`` — a rotor that
-#: turns without its van der Waals spheres grazing (valve doc's
+#: turns without its van der Waals spheres grazing (valve spec's
 #: 3–4 Å gaps are engineered, but sub-Å is already clear of contact).
 FREE_GAP_A = 0.5
 

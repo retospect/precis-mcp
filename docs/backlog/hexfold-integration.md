@@ -88,7 +88,8 @@ development, with the boundary kept clean for a later pip re-export.
    flake, pentagons as seam rings; `sheet_pill_bump.hx` is now the
    capped pill, `lid_pillbox.hx` the rotor; armchair lids open. It
    unblocked both the pill (this item's acceptance) and the rotary
-   ratchet valve's rotor, which is a lid pair (`rotary-ratchet-valve.md`).
+   ratchet valve's rotor, which is a lid pair (valve spec `me628980`,
+   built pieces `me629053`).
    **Radius-changing shell** done 2026-09-18, no solver change: the step
    between a neck and a wider bulge is a flat washer, `cap(6k,0) -
    hex(r)@…`, rule k ≥ r+3 (else `cut.overlap`); fusing the neck into the
@@ -115,8 +116,9 @@ at the pill's foot ring, each tube top closed by a `cap(6,0)` flat lid
 (`sheet_pill_bump.hx`, residual 0, no ERROR); flanged doughnut — two
 `cap(24,0)` washers joined through a `(12,0)` tube wall and closed at the
 outer equator by a `cap(36,0)` annulus in a k=3 seam, whose 24 seam atoms
-are the trivalent Y-carbon functionalisation sites of
-`rotary-ratchet-valve.md` (`flanged_doughnut.hx`, residual 0, no ERROR);
+are the trivalent Y-carbon functionalisation sites of the valve spec
+(`me628980` §attachment, `me629057`) (`flanged_doughnut.hx`, residual 0,
+no ERROR);
 pendants on the Y carbons via `<seam>/s<i>` (`flanged_doughnut_oh.hx`,
 six hydroxyls, residual 0, no ERROR).
 

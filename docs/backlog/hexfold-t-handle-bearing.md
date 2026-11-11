@@ -8,10 +8,10 @@ blocked-by: hexfold-integration
 
 # T-handle bearing — third hexfold test piece
 
-Reto, product-plan review 2026-09-30: the third hexfold test piece after the
-box (`src/hexfold/spec.md` §28 roadmap step 3) and the rotary ratchet valve
-(`rotary-ratchet-valve.md`). A nanotube with buds on opposite sides serving
-as races, with an inner T-handle that rotates.
+Reto, product-plan review 2026-09-30: the third hexfold test piece after
+the box (`src/hexfold/spec.md` §28 roadmap step 3) and the rotary ratchet
+valve (spec `me628980`, group `me628987`). A nanotube with buds on
+opposite sides serving as races, with an inner T-handle that rotates.
 
 Peer session hexa, 2026-09-30: buds-on-opposite-sides is producible today
 under the existing hexfold notation; the revolute joint needed is the same
@@ -71,7 +71,8 @@ machinery expected — reuses the box/valve revolute-joint pattern.
 - None yet — this item is new from the 2026-09-30 review; open questions
   will surface once building starts.
 
-Closest existing items: `rotary-ratchet-valve.md` (the same revolute-joint
-pattern, prior instance), `diamondoid-pattern-language.md` (shaft-in-sleeve
-bearing, sp³ variant, the incommensurate-lattice question), `hexfold-integration.md`.
+Closest existing items: the rotary ratchet valve spec `me628980` (the
+same revolute-joint pattern, prior instance),
+`diamondoid-pattern-language.md` (shaft-in-sleeve bearing, sp³ variant,
+the incommensurate-lattice question), `hexfold-integration.md`.
 Thread: `docs/backlog/threads/hexfold-toolkit.md`.

@@ -1382,7 +1382,7 @@ one roadmap**: `docs/backlog/hexfold-integration.md` (steps 1–3, 7) and
 `docs/backlog/precis-surface-kernel.md` (steps 4–6, 8) carry only tick
 state against these numbers, never a second ordering. Test pieces that
 drive the order: the box (step 3) and the rotary ratchet valve
-(`docs/backlog/rotary-ratchet-valve.md`, steps 3 and 8).
+(spec `me628980`, group `me628987`; steps 3 and 8).
 
 1. **Fold-in** (this repo): `src/hexfold/` + `tests/test_hexfold/` + root
    `hexfold/` export seed; cherry-pick the `feat/hexfold-integration`
@@ -1452,7 +1452,7 @@ drive the order: the box (step 3) and the rotary ratchet valve
 7. **sp³ seam line and seam vertices** — backlog item `hexfold-sp3-seam`,
    blocked by 2; can join three or four sheets at an atom. Also the home
    of the valve's sp³ isolation loops and three-port Y-node.
-8. **Valve tool set** (`rotary-ratchet-valve.md` §Design tool set), in
+8. **Valve tool set** (spec `me628980` §design tools, `me629059`), in
    dependency order: **clearance field** (gap between two surfaces as a
    function of rotor angle; a stub on `stick` atoms plus van der Waals
    radii before step 5's mesh exists, the §27 broad phase *measuring*
@@ -1522,7 +1522,7 @@ chain solver never changes.
 | 5 | **`strain_max` default.** Mechanism decided (§15.2); the number is a literature lookup, per-design override. | — | medium — lookup |
 | 6 | **Seam census vs literature.** The sp² octagon census (§6.2) is derived here; check against the carbon honeycomb sp² junction [S2]. | — | medium — build |
 | 7 | CoNTub licensing, if source were reused. Moot under §27's papers-only rule. | — | low |
-| 8 | **Valve questions** (throughput kHz vs MHz, scrubber cadence, first-instance scale, clearance on mesh vs atoms) live in `docs/backlog/rotary-ratchet-valve.md` Q1–Q4, not here. | — | see item |
+| 8 | **Valve questions** (throughput kHz vs MHz, scrubber cadence, first-instance scale, clearance on mesh vs atoms) live in valve spec `me628980` (decisions `me629062`), not here. | — | see item |
 
 Closed: addressing across edits (handles in smooth space, §23); scale
 selection (a constraint, §20.4); embedding detection method (§27);
@@ -1572,8 +1572,9 @@ scope, seam vertices out (§6.4); registry closure as integer arithmetic
 - Monorepo for now: `src/hexfold/` MIT-marked, imports no `precis*`;
   `precis_surface` is a precis package; re-export later is packaging, not
   refactoring.
-- Valve decisions (2026-09-17, `rotary-ratchet-valve.md`): an sp³ patch
-  (a four-point-anchored sugar) is a **fitted component with an interface
+- Valve decisions (2026-09-17, spec `me628980`, ruling `me629062`): an
+  sp³ patch (a four-point-anchored sugar) is a **fitted component with an
+  interface
   contract, not a tile** — the ring taxonomy never describes it; Y-junction
   seam atoms are the attachment sites (two inner for binding, two outer
   for charge patterning); a closed sp³ loop is both the electronic

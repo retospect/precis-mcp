@@ -1,7 +1,6 @@
 """``view='sites'`` — the valve's attachment-site enumerator, and the
 shape-and-polarity complementarity stub that scores it (tools 3–4 of
-``docs/backlog/rotary-ratchet-valve.md`` "Design tool set", hexfold spec
-§28.8).
+spec ``me628980`` §design tools, ``me629059``; hexfold spec §28.8).
 
 **Sites.** (The pure enumeration and taxonomy below live in
 :mod:`precis.structure.sites`, which ships in the wheel; this module
@@ -32,7 +31,7 @@ in :mod:`precis_se.atomic.clearance`'s conventions (z from the anchor on
 the axis line, θ off a fixed world basis); a block with no axis-bearing
 envelope still lists ring/face=``n/a``/exposure with the cylindrical
 columns blank. The pair form ``args={'a','b'}`` keeps only sites that
-face the *other* block within ``pocket_gap_A`` — the valve doc's "the
+face the *other* block within ``pocket_gap_A`` — the valve spec's "the
 rim's sites travel, the shell's sites are fixed".
 
 **Stored record.** The single-block form also renders the bound
@@ -122,7 +121,7 @@ def _facing_sites(
     pocket_gap_A: float,
 ) -> list[Site]:
     """The pair-view subset: sites whose free direction points at a
-    partner-block atom within ``pocket_gap_A`` — the valve doc's
+    partner-block atom within ``pocket_gap_A`` — the valve spec's
     travelling-rim half of the surface list."""
     field = se_atomic_clearance.gap_field(cloud_a, cloud_b)
     out: list[Site] = []

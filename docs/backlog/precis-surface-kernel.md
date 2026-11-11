@@ -54,11 +54,12 @@ build plan and the precis-side decisions only.
   family interface.
 - [ ] §27 self-intersection tiers (BVH in the loop, CCD in relaxation,
   repulsive energy on finalists; from the papers). Rides with §28.5.
-- [ ] §28.8 valve tool set (`rotary-ratchet-valve.md`): clearance field
-  → pocket extractor → attachment-site enumerator → complementarity
-  scorer stub → bond-energy audit → drag-vs-torque. The clearance stub on
-  `stick` atoms + vdW radii can start before §28.5's mesh exists (valve
-  Q4); the enumerator is discrete and can ride with hexgen (§28.3).
+- [ ] §28.8 valve tool set (spec `me628980` §design tools, `me629059`):
+  clearance field → pocket extractor → attachment-site enumerator →
+  complementarity scorer stub → bond-energy audit → drag-vs-torque. The
+  clearance stub on `stick` atoms + vdW radii can start before §28.5's
+  mesh exists (valve Q4, `me629062`); the enumerator is discrete and can
+  ride with hexgen (§28.3).
 - [ ] `strain_max` default from a literature lookup (spec §29 Q5).
 
 ## Open (spec §29, verify early)

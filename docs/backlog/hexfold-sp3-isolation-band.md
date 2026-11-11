@@ -20,10 +20,11 @@ a single sheet. It can land first and does not wait on it.
 
 ## Motivation / why
 
-`docs/backlog/rotary-ratchet-valve.md` §"Electronic isolation" already
-rules the physics: "A closed loop of sp³ carbons (hydrogenated or
-fluorinated) stops conjugation, making the enclosed patch its own
-electronic island; that loop is also the right quantum-region cut line,
+The rotary ratchet valve spec `me628980` §"Electronic isolation"
+(`me629057`) already rules the physics: "A closed loop of sp³ carbons
+(hydrogenated or fluorinated) stops conjugation, making the enclosed
+patch its own electronic island; that loop is also the right
+quantum-region cut line,
 since terminating at saturated bonds does not sever a conjugated
 system." Recorded as a decision in `src/hexfold/spec.md` §30. Nothing
 implements it.

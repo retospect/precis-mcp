@@ -374,7 +374,7 @@ def _spheres_inside(carts: np.ndarray, radii: np.ndarray) -> Any:
     return inside
 
 
-#: Bondi van der Waals radii (Å) — the valve doc's gap definition, one
+#: Bondi van der Waals radii (Å) — the valve spec's gap definition, one
 #: table for the clearance gap, the pocket radius and :func:`vdw_field`
 #: (``precis_se.atomic.clearance`` re-exports it). Elements absent from it
 #: use :data:`VDW_DEFAULT_A`.

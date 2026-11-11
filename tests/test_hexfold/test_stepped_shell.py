@@ -3,7 +3,7 @@ between a neck and a wider bulge.  Fusing a neck into the washer's hole
 mints six heptagons (collar shrinks); fusing the bulge onto the washer's
 rim mints six pentagons (collar grows) -- both as seam rings, net charge
 0.  ``valve_shell.hx`` / ``valve_shell_lidded.hx`` are the first built
-instance (rotary-ratchet-valve, SPEC docs/backlog)."""
+instance (rotary ratchet valve, graph spec ``me628980``/``me629053``)."""
 
 from __future__ import annotations
 

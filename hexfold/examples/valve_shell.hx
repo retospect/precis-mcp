@@ -1,7 +1,8 @@
 hexfold 0.2
 prov: lib=hexfold@0.2.0
 
-# rotary-ratchet-valve shell (SPEC 28.3): (12,0) neck -> flat washer ->
+# rotary ratchet valve shell (SPEC 28.3; spec me628980, built pieces
+# me629053): (12,0) neck -> flat washer ->
 # (24,0) bulge with two C2 wall holes -> washer -> (12,0) neck.  Each
 # washer is a cap(24,0) lid with a hex(1) hole: fusing the neck into the
 # hole mints six heptagons, fusing the bulge onto the lid rim mints six

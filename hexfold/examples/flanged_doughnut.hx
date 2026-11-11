@@ -4,8 +4,9 @@ prov: lib=hexfold@0.2.0
 # flanged flat doughnut: two cap(24,0) washers joined through a (12,0)
 # tube wall, closed at the outer equator by a cap(36,0) annulus meeting
 # both washers in a k=3 seam.  The 24 seam atoms (`outer/s<i>`, SPEC 9)
-# are the Y carbons of rotary-ratchet-valve.md: trivalent, one bond into
-# each of three sheets, the natural functionalisation sites.
+# are the Y carbons of the rotary ratchet valve spec (me628980,
+# attachment me629057): trivalent, one bond into each of three sheets,
+# the natural functionalisation sites.
 
 origin top
 top: cap(24, 0) - hex(1)@(0,0,A):0

@@ -1,5 +1,5 @@
-"""``view='clearance'``'s **atomic** path — the valve doc's design tools
-1–2 (``docs/backlog/rotary-ratchet-valve.md`` "Design tool set",
+"""``view='clearance'``'s **atomic** path — the valve spec's design tools
+1–2 (spec ``me628980`` §design tools, ``me629059``;
 :mod:`precis_se.atomic.clearance`): the rotor-vs-shell van der Waals gap
 as a function of rotor angle, and the pocket census whose count is the
 metering number.

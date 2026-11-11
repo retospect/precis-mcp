@@ -8792,7 +8792,7 @@ def _pair_clearance(
     """Signed minimum gap between two named blocks. Two paths, chosen by
     what the blocks are bound to: **both structure-bound** (atomic mode)
     measures atom-to-atom with van der Waals radii in Å
-    (:mod:`precis_se.atomic.clearance` — the valve doc's clearance stub);
+    (:mod:`precis_se.atomic.clearance` — the valve spec's clearance stub);
     anything else measures the envelope SDF
     (:func:`precis.cad.relate.clearance`, the exact-sign CSG SDF at
     metres — nm's ``_render_clearance`` transferred; its shaft-in-bored-hub

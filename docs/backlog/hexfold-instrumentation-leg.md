@@ -33,5 +33,6 @@ building and `check`-passing under a narrowed catalogue rule, while a
 three-*structural*-unequal-sheet seam still refuses.
 
 Closest existing items: `hexfold-sp3-seam.md`, `hexfold-seam-type-catalogue.md`
-(the ruling this item proposes a narrow exception to), `rotary-ratchet-valve.md`.
+(the ruling this item proposes a narrow exception to), the rotary ratchet
+valve spec `me628980` (group `me628987`).
 Blocked-by: `hexfold-integration.md`.
