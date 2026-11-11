@@ -10,7 +10,7 @@ and reports exceptions. It never invents neighbours — an entry in the
 report is a fact about the corpus for a human to act on (or accept).
 
 :func:`skill_neighbour_audit` returns a :class:`SkillNeighbourReport`
-with four sections:
+with five sections:
 
 - ``dangling`` — ``(slug, target)`` wikilink edges whose target resolves
   to no served slug (corpus ∪ the synthesised meta-skills
@@ -18,13 +18,21 @@ with four sections:
   gate (``ingest/skill_ingest.py``) hard-fails these at scan time; this
   re-verifies at the served-corpus layer — same resolution set the
   graph footer and ``_expand_wikilinks`` rely on.
+- ``dangling_siblings`` — ``(slug, target)`` curated-sibling edges from
+  ``_SKILL_CATEGORIES`` (the footer's ``see also:`` row) whose target
+  resolves to no served slug. No ingest gate covers the hand-curated
+  buckets, so this is their only check: a renamed or dropped member
+  prints a dead ``see also:`` name on every bucket-mate's footer.
 - ``isolated`` — skills no lateral neighbour surface touches: no
   wikilink edge in either direction AND no curated
-  ``_SKILL_CATEGORIES`` siblings. Family grouping still reaches them
-  (``family=`` and the header's ``siblings:`` line), so "isolated" here
-  means "reachable only by facet or direct search", not unreachable.
-  Personas count too — an edge-less persona is as mesh-orphaned as any
-  other file (``invokes_personas`` lives outside the wikilink graph).
+  ``_SKILL_CATEGORIES`` siblings. A *dangling* edge still counts as a
+  declared neighbour — the footer renders the name — so the dead edge
+  is reported in ``dangling``/``dangling_siblings`` instead. Family
+  grouping still reaches them (``family=`` and the header's
+  ``siblings:`` line), so "isolated" here means "reachable only by
+  facet or direct search", not unreachable. Personas count too — an
+  edge-less persona is as mesh-orphaned as any other file
+  (``invokes_personas`` lives outside the wikilink graph).
 - ``overflow`` — skills whose ``linked()`` neighbourhood exceeds the
   footer's ``_FOOTER_LINK_CAP``. The footer prints ``+N more`` and
   redirects the agent to ``search(kind='skill', q='<slug>')``; each
@@ -63,6 +71,12 @@ from precis.utils.skill_common import SYNTH_SKILL_SLUGS, parse_frontmatter
 #: half its wikilinks would still print a page, not a wall).
 _RENDER_CAP = 20
 
+#: Cap on neighbour names inside one rendered row — a hub with dozens of
+#: beyond-cap neighbours still gets one bounded line. Same "name a few,
+#: count the rest" convention the footer itself uses
+#: (``_FOOTER_LINK_CAP``).
+_DETAIL_CAP = _FOOTER_LINK_CAP
+
 
 @dataclass(frozen=True)
 class SkillNeighbourReport:
@@ -72,6 +86,10 @@ class SkillNeighbourReport:
     skills: int = 0
     #: ``(slug, unresolvable wikilink target)`` edges, sorted by slug.
     dangling: tuple[tuple[str, str], ...] = ()
+    #: ``(slug, unresolvable curated-sibling target)`` edges from
+    #: ``_SKILL_CATEGORIES``, sorted by slug; siblings keep their curated
+    #: order within a slug.
+    dangling_siblings: tuple[tuple[str, str], ...] = ()
     #: Slugs with no wikilink edges and no curated siblings, sorted.
     isolated: tuple[str, ...] = ()
     #: ``(slug, beyond-cap neighbours)`` for footers that print ``+N
@@ -81,9 +99,16 @@ class SkillNeighbourReport:
     scope_hidden: tuple[str, ...] = ()
 
     def render(self) -> str:
-        """One line per finding, each section capped at ``_RENDER_CAP``
-        rows — the shape a test failure or an operator wants to see."""
+        """One line per finding — each section capped at ``_RENDER_CAP``
+        rows, each row's name list at ``_DETAIL_CAP`` names — the shape
+        a test failure or an operator wants to see."""
         lines = [f"skill neighbour audit — {self.skills} skills"]
+
+        def _names(names: tuple[str, ...]) -> str:
+            shown = ", ".join(names[:_DETAIL_CAP])
+            if len(names) > _DETAIL_CAP:
+                shown += f" … +{len(names) - _DETAIL_CAP} more"
+            return shown
 
         def _section(
             title: str, rows: tuple[Any, ...], fmt: Callable[[Any], str]
@@ -99,11 +124,16 @@ class SkillNeighbourReport:
             self.dangling,
             lambda r: f"{r[0]} -> [[{r[1]}]]",
         )
+        _section(
+            "dangling curated siblings (see also:)",
+            self.dangling_siblings,
+            lambda r: f"{r[0]} -> {r[1]}",
+        )
         _section("isolated skills (no links, no curated siblings)", self.isolated, str)
         _section(
             "linked: overflow (+N more — search must carry these)",
             self.overflow,
-            lambda r: f"{r[0]}: {', '.join(r[1])}",
+            lambda r: f"{r[0]}: {_names(r[1])}",
         )
         _section(
             "read-scope-hidden neighbourhoods (all neighbours scope: write)",
@@ -130,6 +160,7 @@ def skill_neighbour_audit(
     servable = set(files) | SYNTH_SKILL_SLUGS
 
     dangling: list[tuple[str, str]] = []
+    dangling_siblings: list[tuple[str, str]] = []
     isolated: list[str] = []
     overflow: list[tuple[str, tuple[str, ...]]] = []
     scope_hidden: list[str] = []
@@ -138,8 +169,10 @@ def skill_neighbour_audit(
         for target in graph.outbound.get(slug, ()):
             if target not in servable:
                 dangling.append((slug, target))
+        siblings = _tree_siblings(slug)
+        dangling_siblings.extend((slug, s) for s in siblings if s not in servable)
         linked = graph.linked(slug)
-        if not linked and not _tree_siblings(slug):
+        if not linked and not siblings:
             isolated.append(slug)
         if persona or not linked:
             continue
@@ -150,6 +183,7 @@ def skill_neighbour_audit(
     return SkillNeighbourReport(
         skills=len(files),
         dangling=tuple(dangling),
+        dangling_siblings=tuple(dangling_siblings),
         isolated=tuple(isolated),
         overflow=tuple(overflow),
         scope_hidden=tuple(scope_hidden),

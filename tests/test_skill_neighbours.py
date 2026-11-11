@@ -22,7 +22,12 @@ from precis.handlers.skill import (
     _list_skills,
     skill_corpus_texts,
 )
-from precis.skill_neighbours import skill_neighbour_audit
+from precis.skill_neighbours import (
+    _DETAIL_CAP,
+    _RENDER_CAP,
+    SkillNeighbourReport,
+    skill_neighbour_audit,
+)
 from precis.utils.skill_common import parse_frontmatter
 from tests._skill_corpus import _install_corpus, _md
 
@@ -89,6 +94,13 @@ def skill() -> SkillHandler:
     return SkillHandler(hub=Hub())
 
 
+@pytest.fixture(scope="module")
+def shipped_report() -> SkillNeighbourReport:
+    """One audit of the shipped corpus for all the shipped-corpus gates —
+    the audit is a pure function of the corpus and ~40 s a run."""
+    return skill_neighbour_audit()
+
+
 # ── the audit itself (synthetic corpus) ──────────────────────────────
 
 
@@ -121,6 +133,33 @@ def test_audit_report_shape_on_synthetic_corpus() -> None:
     assert report.scope_hidden == ("w",)
 
 
+def test_curated_sibling_edges_are_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_SKILL_CATEGORIES`` members are navigation edges too: a member
+    resolving to no served slug is a dangling ``see also:`` name on
+    every bucket-mate's footer — reported per edge, like a wikilink."""
+    monkeypatch.setattr(
+        "precis.handlers.skill._SKILL_CATEGORIES",
+        (
+            ("Bucket", ("a", "b", "ghost-cat")),
+            ("Thin", ("solo", "ghost-only")),
+        ),
+    )
+    corpus = {
+        "a": _md(body="body"),
+        "b": _md(body="body"),
+        "solo": _md(body="body"),
+    }
+    report = skill_neighbour_audit(corpus=corpus)
+    assert report.dangling_siblings == (
+        ("a", "ghost-cat"),
+        ("b", "ghost-cat"),
+        ("solo", "ghost-only"),
+    )
+    # A dangling edge is still a declared neighbour — 'solo' isn't
+    # isolated, exactly as a lone 'a -> [[ghost]]' wikilink wouldn't be.
+    assert report.isolated == ()
+
+
 def test_report_render_is_bounded() -> None:
     report = skill_neighbour_audit(
         corpus={
@@ -132,29 +171,60 @@ def test_report_render_is_bounded() -> None:
     assert out.count("\n") < 40
 
 
+def test_render_caps_neighbour_names_within_a_row() -> None:
+    """Row details are bounded too: a beyond-cap neighbour list names
+    ``_DETAIL_CAP`` slugs then counts the rest — the finding itself
+    still carries them all."""
+    n = _FOOTER_LINK_CAP + _DETAIL_CAP + 3
+    corpus = {"hub": _md(body=" ".join(f"[[n{i:02}]]" for i in range(n)))}
+    corpus.update({f"n{i:02}": _md(body="body") for i in range(n)})
+
+    report = skill_neighbour_audit(corpus=corpus)
+    (hub_row,) = report.overflow
+    assert len(hub_row[1]) == _DETAIL_CAP + 3
+
+    row = next(
+        line for line in report.render().splitlines() if line.startswith("  hub:")
+    )
+    hidden = n - _FOOTER_LINK_CAP - _DETAIL_CAP
+    assert row.endswith(f"+{hidden} more")
+
+
 # ── shipped-corpus gates (fast) ──────────────────────────────────────
 
 
-def test_shipped_corpus_has_no_dangling_neighbour_links() -> None:
+def test_shipped_corpus_has_no_dangling_neighbour_links(
+    shipped_report: SkillNeighbourReport,
+) -> None:
     """The ingest gate already hard-fails dangling ``[[slug]]`` targets;
     this re-verifies at the served-corpus layer the graph footer and
     ``_expand_wikilinks`` resolve against."""
-    report = skill_neighbour_audit()
-    assert report.dangling == (), report.render()
+    assert shipped_report.dangling == (), shipped_report.render()
 
 
-def test_isolated_skills_match_the_known_exceptions() -> None:
+def test_shipped_corpus_has_no_dangling_curated_siblings(
+    shipped_report: SkillNeighbourReport,
+) -> None:
+    """``_SKILL_CATEGORIES`` is hand-curated with no ingest gate — a
+    renamed or dropped member prints a dead ``see also:`` name on every
+    bucket-mate's footer."""
+    assert shipped_report.dangling_siblings == (), shipped_report.render()
+
+
+def test_isolated_skills_match_the_known_exceptions(
+    shipped_report: SkillNeighbourReport,
+) -> None:
     """The bounded exceptions list: report, never invent neighbours."""
-    report = skill_neighbour_audit()
-    assert report.isolated == _KNOWN_ISOLATED, report.render()
+    assert shipped_report.isolated == _KNOWN_ISOLATED, shipped_report.render()
 
 
-def test_every_linked_skill_keeps_a_read_scope_neighbour_door() -> None:
+def test_every_linked_skill_keeps_a_read_scope_neighbour_door(
+    shipped_report: SkillNeighbourReport,
+) -> None:
     """A skill whose every neighbour is ``scope: write`` shows none on a
     read-only connection — no ``linked:`` row, no ``related:``. Reported
     as an exception; today there are none."""
-    report = skill_neighbour_audit()
-    assert report.scope_hidden == (), report.render()
+    assert shipped_report.scope_hidden == (), shipped_report.render()
 
 
 # ── search exposure ──────────────────────────────────────────────────
@@ -209,11 +279,20 @@ def test_search_exposes_each_linked_skills_neighbours() -> None:
     assert not misses, (
         f"{len(misses)} linked skill(s) expose no neighbour on their own "
         f"slug-search page — the serve's navigation pointers dead-end "
-        f"for them: {misses}"
+        f"for them: {_cap(misses)}"
     )
     if thin:
         warnings.warn(
             f"{len(thin)} skill(s) hide some neighbours from the "
-            f"search(q=slug) page: {', '.join(thin)}",
+            f"search(q=slug) page: {_cap(thin)}",
             stacklevel=1,
         )
+
+
+def _cap(items: list[str]) -> str:
+    """Bounded join for failure/warning lists — the first ``_RENDER_CAP``
+    names then an omitted count, same convention as the report."""
+    shown = ", ".join(items[:_RENDER_CAP])
+    if len(items) > _RENDER_CAP:
+        shown += f" … +{len(items) - _RENDER_CAP} more"
+    return shown
