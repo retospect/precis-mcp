@@ -4,8 +4,9 @@
    class_hints, next_path (where an answer returns the operator). An
    ask-user todo renders the full _row partial with its answer form; any
    other row (a needs:ruling gripe; with ?all=1 also waiting-for and
-   discussion rows) is one compact line whose handle opens the row — the
-   argument happens as comments there. #}
+   discussion rows) ships folded — its ▸ caret shows the question inline
+   and the row link leads to the full page, where the argument happens
+   as comments (gr598249: every row carries the open/close toggle). #}
 {% for g in groups %}
 <section class="mb-8" data-ask-class="{{ g.klass }}">
   <h2 class="text-xs font-semibold uppercase tracking-wide {{ 'text-danger' if g.klass == 'showstopper' else 'text-fg-faint' }} mb-3">
@@ -30,15 +31,22 @@
       {% if a %}
       {% with next_path = next_path | default('/asks') %}{% include "asks/_row.html.j2" %}{% endwith %}
       {% else %}
-      <li class="rounded-lg border border-line bg-surface px-4 py-2" data-ask-row="{{ r.handle }}">
-        <div class="flex items-baseline gap-2">
-          <a href="/r/{{ r.kind }}/{{ r.ref_id }}" class="text-xs text-fg-faint hover:text-success-strong shrink-0 font-mono">{{ r.handle }}</a>
-          <div class="min-w-0 flex-1 text-sm text-fg break-words">{{ r.title | linkify_refs }}</div>
-          <span class="shrink-0 text-[11px] font-mono text-fg-faint">{{ r.reasons | join(' ') }}</span>
-        </div>
-        {% if r.question %}
-        <div class="mt-1 ml-14 text-xs text-fg-secondary break-words">{{ r.question | linkify_refs }}</div>
-        {% endif %}
+      <li class="rounded-lg border border-line bg-surface" data-ask-row="{{ r.handle }}">
+        <details class="group">
+          <summary class="flex items-baseline gap-2 px-4 py-2 cursor-pointer list-none">
+            <span class="w-3 shrink-0 text-xs text-fg-faint group-open:rotate-90 transition-transform">▸</span>
+            <a href="/r/{{ r.kind }}/{{ r.ref_id }}" class="text-xs text-fg-faint hover:text-success-strong shrink-0 font-mono">{{ r.handle }}</a>
+            <div class="min-w-0 flex-1 text-sm text-fg break-words">{{ r.title | linkify_refs }}</div>
+            <span class="shrink-0 text-[11px] font-mono text-fg-faint">{{ r.reasons | join(' ') }}</span>
+          </summary>
+          {# px-4 + ml-5 lands the body under the handle (caret w-3 + gap). #}
+          <div class="px-4 pb-2 ml-5">
+            {% if r.question %}
+            <div class="text-xs text-fg-secondary break-words">{{ r.question | linkify_refs }}</div>
+            {% endif %}
+            <a href="/r/{{ r.kind }}/{{ r.ref_id }}" class="inline-block mt-1 text-xs text-success-strong hover:underline">open {{ r.handle }} &rarr;</a>
+          </div>
+        </details>
       </li>
       {% endif %}
       {% endfor %}

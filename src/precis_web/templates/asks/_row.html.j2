@@ -1,46 +1,57 @@
 {# One ask row — shared by the Asks queue and the Needs-you landing.
    Expects: a (ask dict from _load_asks), next_path (where the answer
-   form returns the operator, e.g. "/asks" or "/needs-you"). #}
+   form returns the operator, e.g. "/asks" or "/needs-you"). The row
+   ships expanded; its ▸ caret folds it back to the title line —
+   gr598249: the queue mixed always-open rows with always-closed ones
+   and offered no way to flip either. #}
 {% set first_line = (a.title or '').split('\n', 1)[0] %}
-<li class="rounded-lg border border-line bg-surface px-4 py-3">
-  <div class="flex items-baseline gap-2">
-    <a href="/r/todo/{{ a.id }}" class="text-xs text-fg-faint hover:text-success-strong w-12 shrink-0 font-mono">#{{ a.id }}</a>
-    {# A div, not an <a>: linkify_refs emits anchors for handles and URLs in
-       the title, and a nested <a> makes the parser close the outer one, so
-       the rest of the title spills out as extra flex items and squeezes
-       this column to one character wide. #}
-    <div class="min-w-0 flex-1 text-sm font-medium text-fg break-words">
-      {{ first_line | linkify_refs }}
-    </div>
-    {% if a.history %}
-    <span class="shrink-0 rounded-full bg-warning-muted text-warning-deep text-[10px] font-semibold px-2 py-0.5"
-          title="the planner processed your previous answer and came back with a follow-up">
-      follow-up #{{ a.history|length + 1 }}
-    </span>
-    {% endif %}
-    {# The source object this ask is about — the todo itself, hover-previewable. #}
-    {{ a.source_link }}
-    {# X — dismiss the ask: close the todo (won't-do) and drop it
-       from the queue without answering. #}
-    <form method="post" action="/asks/{{ a.id }}/terminate" class="shrink-0"
-          onsubmit="return confirm('Dismiss this ask and close the todo (won’t-do)?')">
-      {% for tag in a.tags %}
-      <input type="hidden" name="remove" value="{{ tag }}"/>
-      {% endfor %}
-      <button class="text-fg-ghost hover:text-danger leading-none text-lg"
-              title="dismiss — close this todo without answering">&times;</button>
-    </form>
-  </div>
+<li class="rounded-lg border border-line bg-surface">
+  <details open class="group">
+    <summary class="flex items-baseline gap-2 px-4 py-3 cursor-pointer list-none">
+      <span class="w-3 shrink-0 text-xs text-fg-faint group-open:rotate-90 transition-transform">▸</span>
+      <a href="/r/todo/{{ a.id }}" class="text-xs text-fg-faint hover:text-success-strong w-12 shrink-0 font-mono">#{{ a.id }}</a>
+      {# A div, not an <a>: linkify_refs emits anchors for handles and URLs in
+         the title, and a nested <a> makes the parser close the outer one, so
+         the rest of the title spills out as extra flex items and squeezes
+         this column to one character wide. #}
+      <div class="min-w-0 flex-1 text-sm font-medium text-fg break-words">
+        {{ first_line | linkify_refs }}
+      </div>
+      {% if a.history %}
+      <span class="shrink-0 rounded-full bg-warning-muted text-warning-deep text-[10px] font-semibold px-2 py-0.5"
+            title="the planner processed your previous answer and came back with a follow-up">
+        follow-up #{{ a.history|length + 1 }}
+      </span>
+      {% endif %}
+      {# The source object this ask is about — the todo itself, hover-previewable. #}
+      {{ a.source_link }}
+      {# X — dismiss the ask: close the todo (won't-do) and drop it
+         from the queue without answering. stopPropagation keeps the
+         click from also folding the row (the work page's summary-bound
+         forms do the same). #}
+      <form method="post" action="/asks/{{ a.id }}/terminate" class="shrink-0"
+            onsubmit="return confirm('Dismiss this ask and close the todo (won’t-do)?')">
+        {% for tag in a.tags %}
+        <input type="hidden" name="remove" value="{{ tag }}"/>
+        {% endfor %}
+        <button onclick="event.stopPropagation()"
+                class="text-fg-ghost hover:text-danger leading-none text-lg"
+                title="dismiss — close this todo without answering">&times;</button>
+      </form>
+    </summary>
+    {# pl lands the body under the title: px-4, then caret (w-3) + id
+       (w-12) + the two gaps = 5.75rem of header before the title. #}
+    <div class="pl-[5.75rem] pr-4 pb-3">
 
   {# Where this ask lives — project › … › parent chain. #}
   {% if a.crumb %}
-  <div class="mt-1 ml-14 text-xs text-fg-faint truncate">
+  <div class="mt-1 text-xs text-fg-faint truncate">
     {% for c in a.crumb %}<a href="/r/{{ c.kind }}/{{ c.id }}" class="hover:text-success-strong hover:underline">{{ c.title }}</a>{% if not loop.last %} <span class="text-fg-ghost">›</span> {% endif %}{% endfor %}
   </div>
   {% endif %}
 
   {% if a.questions %}
-  <div class="mt-2 ml-14 space-y-2">
+  <div class="mt-2 space-y-2">
     {% for q in a.questions %}
     <div class="text-sm text-fg-secondary bg-warning-subtle border-l-4 border-warning-strong px-3 py-2 rounded whitespace-pre-line break-words">
       {{ q | linkify_refs }}
@@ -48,7 +59,7 @@
     {% endfor %}
   </div>
   {% elif not a.ask %}
-  <div class="mt-2 ml-14 text-xs text-fg-faint">
+  <div class="mt-2 text-xs text-fg-faint">
     tagged <span class="font-mono">ask-user</span> (no question text)
   </div>
   {% endif %}
@@ -56,7 +67,7 @@
   {# meta.ask (td541979): the structured question — kind, the slice that
      waits on it, the options (recommended first) and a short context. #}
   {% if a.ask %}
-  <div class="mt-2 ml-14 text-xs text-fg-secondary space-y-1" data-ask-meta>
+  <div class="mt-2 text-xs text-fg-secondary space-y-1" data-ask-meta>
     <div>
       <span class="rounded-full bg-surface-muted px-2 py-0.5 font-mono text-[10px]">{{ a.ask.kind }}</span>
       {% if a.ask.blocks and a.ask.blocks != 'nothing' %}
@@ -76,7 +87,7 @@
   {# Reading context — the draft passage the question is about, with its
      surrounding paragraphs, deep-linked into the smartdraft reader. #}
   {% if a.context %}
-  <div class="mt-2 ml-14 rounded-md border border-line bg-surface-subtle px-3 py-2">
+  <div class="mt-2 rounded-md border border-line bg-surface-subtle px-3 py-2">
     <div class="text-xs mb-1">
       <span class="text-fg-faint">in</span>
       <a href="{{ a.context.draft.url }}" class="font-medium text-success-strong hover:underline">{{ a.context.draft.title }}</a>
@@ -98,7 +109,7 @@
   {# Discussion so far — earlier Q/A rounds on this todo, so a follow-up
      question reads as a thread, not a context-free repeat. #}
   {% if a.history %}
-  <details class="mt-2 ml-14 text-xs text-fg-subtle">
+  <details class="mt-2 text-xs text-fg-subtle">
     <summary class="cursor-pointer hover:text-fg-secondary">
       discussion so far ({{ a.history|length }} earlier answer{{ '' if a.history|length == 1 else 's' }})
     </summary>
@@ -113,7 +124,7 @@
   </details>
   {% endif %}
 
-  <form method="post" action="/asks/{{ a.id }}/answer" class="mt-3 ml-14">
+  <form method="post" action="/asks/{{ a.id }}/answer" class="mt-3">
     {% for tag in a.tags %}
     <input type="hidden" name="remove" value="{{ tag }}"/>
     {% endfor %}
@@ -136,4 +147,6 @@
       </button>
     </div>
   </form>
+    </div>
+  </details>
 </li>

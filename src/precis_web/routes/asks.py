@@ -38,8 +38,10 @@ view='asks')`` (:mod:`precis.todo.asks_view`). The page shows showstoppers
 and ask-user / ``needs:ruling`` decisions by default; waiting-for and
 discussion rows sit behind ``?all=1``. Ask-user todos keep the answer
 form; the other rows (a gripe tagged ``needs:ruling``, with ``?all=1`` a
-``waiting-for:reto`` slice or a ``discussion`` row) are compact lines
-whose handle opens the row, where the argument happens as comments.
+``waiting-for:reto`` slice or a ``discussion`` row) are folded lines —
+the caret unfolds the question and the row link, where the argument
+happens as comments. Every row carries the ▸ open/close toggle
+(gr598249).
 :func:`class_groups` is shared with the Needs-you landing.
 """
 

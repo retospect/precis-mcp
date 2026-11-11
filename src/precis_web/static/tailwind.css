@@ -803,10 +803,6 @@ video {
   margin-left: 0.25rem;
 }
 
-.ml-14 {
-  margin-left: 3.5rem;
-}
-
 .ml-2 {
   margin-left: 0.5rem;
 }
@@ -2413,6 +2409,10 @@ video {
 
 .pl-8 {
   padding-left: 2rem;
+}
+
+.pl-\[5\.75rem\] {
+  padding-left: 5.75rem;
 }
 
 .pr-1 {

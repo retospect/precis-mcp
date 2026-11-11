@@ -6844,6 +6844,54 @@ def test_asks_page_renders_meta_ask(client, monkeypatch) -> None:
     assert "no question text" not in text
 
 
+@pytest.mark.parametrize("path", ["/asks", "/needs-you"])
+def test_asks_rows_carry_a_collapse_toggle(client, monkeypatch, path) -> None:
+    """gr598249: the queue mixed always-open ask rows with always-closed
+    compact rows and no way to flip either. The ask row now ships
+    expanded inside a ``<details open>`` — the ▸ caret folds it — and
+    every compact row is a closed ``<details>`` whose caret unfolds the
+    question and the row's own link."""
+    import dataclasses
+
+    from precis.todo.asks_view import AsksModel
+    from precis_web.routes import asks as asks_mod
+    from precis_web.routes import needs_you as needs_you_mod
+
+    model = _asks_model_with_classes()
+    model = AsksModel(
+        rows=tuple(
+            dataclasses.replace(r, question="which lane rule applies?")
+            if r.handle == "gr88"
+            else r
+            for r in model.rows
+        )
+    )
+    monkeypatch.setattr(asks_mod, "asks_model", lambda store: model)
+    monkeypatch.setattr(asks_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+    monkeypatch.setattr(needs_you_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+    resp = client.get(path)
+    assert resp.status_code == 200
+    text = resp.text
+
+    # The answerable ask ships expanded — a <details open> wraps the row
+    # and its caret folds it back to the title line.
+    i = text.index('action="/asks/14634/answer"')
+    details = text.rindex("<details", 0, i)
+    assert "<details open" in text[details : details + 40]
+    header = text[details:i]
+    assert "<summary" in header and "▸" in header
+    assert 'href="/r/todo/14634"' in header
+
+    # The compact row ships folded — the caret unfolds the question and
+    # the deep link to the row.
+    j = text.index('data-ask-row="gr88"')
+    li = text[j : text.index("</li>", j)]
+    assert "<details" in li and "<details open" not in li
+    assert "<summary" in li and "▸" in li
+    assert "which lane rule applies?" in li
+    assert li.count('href="/r/gripe/88"') == 2
+
+
 # ── needs-you (unified asks + needs-triage queue) ──────────────────
 
 
