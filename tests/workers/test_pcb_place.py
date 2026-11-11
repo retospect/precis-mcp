@@ -687,10 +687,10 @@ def test_pcb_place_topo_writes_poses_and_stores_the_run(store: Store) -> None:
     assert all(x is not None for x in placed.values())
     files = ctx.meta["topo_run"]["files"]
     m = files["manifest.json"]
-    assert m["schema"] == "precis.topo-run/8"
+    assert m["schema"] == "precis.topo-run/9"
     # gr599356: the job's run records its own jo<N> handle and the board
-    # slug at top level — the manifest fields a later ref=<this run>
-    # resolves ``result.ref.job``/``label`` from.
+    # slug at top level — the fields a later ref=<this run>'s
+    # ``run:<sha16>`` ``result.ref`` resolves the producing run by.
     assert m["job"] == f"jo{ctx.ref_id}"
     assert m["label"] == "place-topo"
     assert m["result"]["crossings"] >= 0

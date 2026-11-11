@@ -44,9 +44,12 @@ from precis.pcb.topoplace.writeback import lock_payload
 #: ``out`` directory, pcb-intent-api §Recording — at /6; ``run_hash``
 #: and ``result.ref``'s ``{"run","job","label"}`` identity dict,
 #: pcb-intent-api round 2 — at /7; top-level ``job``/``label`` — the
-#: producing ``pcb_place`` job's ``jo<N>`` handle and slug, what a later
-#: run's ``result.ref`` resolves (gr599356) — at /8).
-RUN_SCHEMA = "precis.topo-run/8"
+#: producing ``pcb_place`` job's ``jo<N>`` handle and slug (gr599356)
+#: — at /8; ``result.ref`` narrowed to ``run:<sha16>``, the referenced
+#: run's ``run_hash`` — the dict dropped, ``job``/``label`` resolving
+#: off the referenced manifest itself (gr598759, td598858 ruling) —
+#: at /9).
+RUN_SCHEMA = "precis.topo-run/9"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -104,10 +107,10 @@ def manifest_run_hash(m: Mapping[str, Any]) -> str:
     skip themselves; a manifest carries no timestamp, out path or
     hostname for the hash to skip. Equal
     inputs and results are therefore the same run on any machine —
-    which is exactly what ``result.ref.run`` needs when a later run
-    references this one. A ``/6`` manifest carries no ``run_hash`` key
-    but hashes by the same rule, so an old run identifies without a
-    rewrite."""
+    which is exactly what a later run's ``run:<sha16>`` ``result.ref``
+    records when it references this one. A ``/6`` manifest carries no
+    ``run_hash`` key but hashes by the same rule, so an old run
+    identifies without a rewrite."""
     doc = {
         k: m.get(k)
         for k in ("seed", "effort", "objective", "board_hash", "parts", "footprints")
@@ -123,7 +126,7 @@ def manifest(
     result: TopoPlaceResult,
     *,
     objective: ObjectiveShares,
-    objective_ref: str | Mapping[str, Any] = "seed",
+    objective_ref: str = "seed",
     effort: int,
     board_hash: str,
     parts: list[dict[str, Any]],
@@ -137,18 +140,22 @@ def manifest(
     ``footprints`` the footprint rows read, ``{refdes: content sha}``.
     ``objective_ref`` is what ``pcb.objective(ref=...)`` named for this
     run's R_i (pcb-intent-api §Recording): ``"seed"`` (the default,
-    self-measured) or the referenced run's identity dict
-    ``{"run": <manifest_run_hash>, "job": "jo<N>" | None,
-    "label": <optional>}`` — machine-portable where /6's
-    ``"run:<out dir>"`` was not. ``run_hash`` is this manifest's own
-    identity, :func:`manifest_run_hash` over the payload below.
+    self-measured) or ``run:<sha16>``, the referenced run's
+    ``run_hash`` content hash — the footprint-shas convention,
+    machine-portable where /6's ``"run:<out dir>"`` was not (gr598759,
+    td598858 ruling: /7–/8's ``{"run","job","label"}`` dict collapsed
+    to the bare id — the referenced run's ``job``/``label`` resolve
+    off its own manifest, never inside the ref). ``run_hash`` is this
+    manifest's own identity, :func:`manifest_run_hash` over the payload
+    below.
     ``job`` is this run's OWN producing handle — the ``pcb_place``
     worker passes its ref id, recorded top-level as ``jo<N>``
-    (gr599356: the field a later ``ref=<this run>`` resolves
-    ``result.ref.job`` through ``pcb.local._objective_ref``); a laptop
-    run passes ``None`` and the key stays absent. ``label`` likewise
-    records the run's slug. Both are provenance like ``schema`` — who
-    ran it is not what it is, so ``run_hash`` never reads them."""
+    (gr599356: the field a later ``ref=<this run>`` resolves the
+    producing job through once the ``run:<sha16>`` names the manifest);
+    a laptop run passes ``None`` and the key stays absent. ``label``
+    likewise records the run's slug. Both are provenance like
+    ``schema`` — who ran it is not what it is, so ``run_hash`` never
+    reads them."""
     payload = {
         "schema": RUN_SCHEMA,
         "code_version": CODE_VERSION,
@@ -179,14 +186,12 @@ def manifest(
             "ref_values": {k: float(v) for k, v in result.ref_values.items()},
             # pcb-intent-api §Recording: what ``objective=pcb.objective(
             # ref=...)`` named for ``ref_values`` above — "seed" (the
-            # default) or the referenced run's {"run","job","label"}
-            # identity dict (round 2's machine-portable run id; /6's
-            # "run:<out dir>" string still reads).
-            "ref": (
-                dict(objective_ref)
-                if isinstance(objective_ref, Mapping)
-                else str(objective_ref)
-            ),
+            # default) or "run:<sha16>", the referenced run's content
+            # hash (gr598759/td598858 ruling: the machine-portable id;
+            # /6's "run:<out dir>" path and /7–/8's
+            # {"run","job","label"} dict are history — ``ref`` never
+            # enters ``run_hash`` either way).
+            "ref": str(objective_ref),
             # post-pass reports (additive — readers ignore absent keys)
             "legalize": (
                 {

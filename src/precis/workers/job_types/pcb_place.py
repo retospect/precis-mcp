@@ -525,8 +525,8 @@ def _topo_run(
             parts=_runstore.manifest_parts(td, graph),
             footprints=_runstore.footprint_shas(footprints or {}),
             # gr599356: a job run records its own jo<N> handle and slug —
-            # the manifest fields a later ref=<this run> resolves
-            # ``result.ref.job``/``label`` from.
+            # the fields a later ref=<this run>'s ``run:<sha16>``
+            # resolves the producing job/slug through.
             job=ctx.ref_id,
             label=slug,
         ),

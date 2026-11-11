@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -285,14 +286,14 @@ def test_objective_ref_values_resolves_the_named_run() -> None:
 
 
 def test_objective_ref_records_seed_or_the_referenced_run() -> None:
-    """``_objective_ref`` (pcb-intent-api §Recording, td598638 round 2):
-    what the manifest's ``result.ref`` records for ``objective=``'s
-    ``ref=`` argument — ``"seed"`` for a plain mapping or an explicit
-    ``ref="seed"``; for a referenced run the identity dict
-    ``{"run", "job", "label"?}`` where ``run`` is the referenced
-    manifest's content hash (16 hex), ``job`` the ``jo<N>`` handle the
-    run records (``None`` for a laptop run) and ``label`` present only
-    when the run carries one."""
+    """``_objective_ref`` (pcb-intent-api §Recording; gr598759,
+    td598858 ruling): what the manifest's ``result.ref`` records for
+    ``objective=``'s ``ref=`` argument — ``"seed"`` for a plain mapping
+    or an explicit ``ref="seed"``; for a referenced run
+    ``run:<sha16>``, the referenced manifest's content hash (16 hex,
+    the footprint-shas convention). A run stamped ``jo<N>``/``label``
+    (gr599356) still records only the id — that provenance resolves off
+    the referenced manifest itself, never inside the ref."""
     from precis.pcb.local import _objective_ref
 
     assert _objective_ref({"ratsnest": 1.0}) == "seed"
@@ -302,31 +303,21 @@ def test_objective_ref_records_seed_or_the_referenced_run() -> None:
         ref_values = {"ratsnest": 1.0}
         files = {"manifest.json": {"run_hash": "a" * 16}}
 
-    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_Run())) == {
-        "run": "a" * 16,
-        "job": None,
-    }
+    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_Run())) == f"run:{'a' * 16}"
 
     class _JobRun(_Run):
         job = "jo42"
         label = "nightly"
 
-    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_JobRun())) == {
-        "run": "a" * 16,
-        "job": "jo42",
-        "label": "nightly",
-    }
-
-    class _JobIdRun(_Run):
-        job = 7  # an id records as its jo<N> handle
-
-    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_JobIdRun()))["job"] == "jo7"
+    assert (
+        _objective_ref(pcb.objective(ratsnest=1.0, ref=_JobRun())) == f"run:{'a' * 16}"
+    )
 
     class _ManifestJobRun:
         """A ``pcb_place``-produced run reached only by its stored
-        manifest (gr599356): the ``jo<N>``/``label`` the /8 manifest
-        itself stamps resolve where no ``.job``/``.slug`` attribute
-        exists."""
+        manifest (gr599356): the ``jo<N>``/``label`` the /9 manifest
+        itself stamps stay out of the ref — the ``run:<sha16>`` names
+        the manifest they resolve from."""
 
         ref_values = {"ratsnest": 1.0}
         files = {
@@ -337,11 +328,10 @@ def test_objective_ref_records_seed_or_the_referenced_run() -> None:
             }
         }
 
-    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_ManifestJobRun())) == {
-        "run": "b" * 16,
-        "job": "jo9",
-        "label": "night",
-    }
+    assert (
+        _objective_ref(pcb.objective(ratsnest=1.0, ref=_ManifestJobRun()))
+        == f"run:{'b' * 16}"
+    )
 
     class _BareRun:
         """A manifest-less stand-in (the /6 ``run:<TypeName>`` fallback):
@@ -350,24 +340,20 @@ def test_objective_ref_records_seed_or_the_referenced_run() -> None:
         ref_values = {"ratsnest": 1.0}
 
     bare = _objective_ref(pcb.objective(ratsnest=1.0, ref=_BareRun()))
-    assert set(bare) == {"run", "job"}
-    assert bare["job"] is None and len(bare["run"]) == 16
+    assert re.fullmatch(r"run:[0-9a-f]{16}", bare)
 
     class _BareRun2:
         ref_values = {"ratsnest": 2.0}
 
-    assert (
-        _objective_ref(pcb.objective(ratsnest=1.0, ref=_BareRun2()))["run"]
-        != bare["run"]
-    )
+    assert _objective_ref(pcb.objective(ratsnest=1.0, ref=_BareRun2())) != bare
 
 
 def test_objective_ref_reads_a_6_manifest_run() -> None:
     """The /6 reader (td598638 round 2): a referenced run whose manifest
-    is still schema ``/6`` — ``result.ref`` a bare string, no
-    ``run_hash`` key — loads untouched and identifies by the content
-    hash :func:`runstore.manifest_run_hash` computes from it (the /6
-    manifest supplies no ``run_hash`` to reuse)."""
+    is still schema ``/6`` — ``result.ref`` the old ``run:<out dir>``
+    path, no ``run_hash`` key — loads untouched and identifies by the
+    content hash :func:`runstore.manifest_run_hash` computes from it
+    (the /6 manifest supplies no ``run_hash`` to reuse)."""
     from precis.pcb.local import _objective_ref
     from precis.pcb.topoplace import runstore
 
@@ -387,10 +373,7 @@ def test_objective_ref_reads_a_6_manifest_run() -> None:
         files = {"manifest.json": manifest_v6}
 
     ref = _objective_ref(pcb.objective(ratsnest=1.0, ref=_OldRun()))
-    assert ref == {
-        "run": runstore.manifest_run_hash(manifest_v6),
-        "job": None,
-    }
+    assert ref == f"run:{runstore.manifest_run_hash(manifest_v6)}"
 
 
 def test_topo_place_ref_run_reuses_its_reference_values(tmp_path: Path) -> None:
@@ -414,22 +397,20 @@ def test_topo_place_ref_run_reuses_its_reference_values(tmp_path: Path) -> None:
     assert run.ref_values == _FakeRun.ref_values
     manifest = json.loads((Path(run.out) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["result"]["ref_values"] == _FakeRun.ref_values
-    # pcb-intent-api §Recording round 2: a manifest-less stand-in still
-    # records a content identity — 16 hex over its ref_values — not a
-    # machine-local path.
+    # pcb-intent-api §Recording (gr598759, td598858 ruling): a
+    # manifest-less stand-in still records a content identity —
+    # ``run:<16 hex>`` over its ref_values — not a machine-local path.
     ref = manifest["result"]["ref"]
-    assert ref["job"] is None and "label" not in ref
-    assert len(ref["run"]) == 16 and ref["run"] != "seed"
+    assert re.fullmatch(r"run:[0-9a-f]{16}", ref)
 
 
 def test_topo_place_ref_run_records_the_referenced_manifest(
     tmp_path: Path,
 ) -> None:
-    """End to end (td598638 round 2): ``ref=<a real earlier run>``
-    records ``result.ref.run`` as the referenced manifest's
-    ``run_hash`` — the identity that survives a rerun on another
-    machine, where the /6 ``run:<out dir>`` path did not — with
-    ``job`` null (a laptop run) and the referenced run's label."""
+    """End to end (gr598759, td598858 ruling): ``ref=<a real earlier
+    run>`` records ``result.ref`` as ``run:<the referenced manifest's
+    run_hash>`` — the identity that survives a rerun on another
+    machine, where the /6 ``run:<out dir>`` path did not."""
     from precis.pcb.topoplace import runstore
 
     earlier = pcb.local.topo_place(
@@ -444,11 +425,7 @@ def test_topo_place_ref_run_records_the_referenced_manifest(
     )
     manifest = json.loads((Path(run.out) / "manifest.json").read_text(encoding="utf-8"))
     earlier_manifest = earlier.files["manifest.json"]
-    assert manifest["result"]["ref"] == {
-        "run": earlier_manifest["run_hash"],
-        "job": None,
-        "label": earlier.slug,
-    }
+    assert manifest["result"]["ref"] == f"run:{earlier_manifest['run_hash']}"
     # the recorded identity IS the referenced manifest's content hash
     assert runstore.manifest_run_hash(earlier_manifest) == earlier_manifest["run_hash"]
 

@@ -1336,9 +1336,9 @@ def _run_manifest(run: Any) -> dict[str, Any] | None:
     """The run object's own manifest when it carries one — a
     :class:`TopoRun` keeps the parsed ``files["manifest.json"]`` dict; a
     rehydrated document (JSON text, or a ``.manifest`` attribute)
-    parses the same way. ``/6`` through ``/8`` manifests all return
-    here — the reference path reads only keys it needs (``run_hash``,
-    ``job``, ``label``), and :func:`manifest_run_hash` hashes old and
+    parses the same way. ``/6`` through ``/9`` manifests all return
+    here — the reference path reads only the key it needs
+    (``run_hash``), and :func:`manifest_run_hash` hashes old and
     new by the same rule. ``None`` for a manifest-less stand-in (a bare
     ``ref_values`` result)."""
     manifest = getattr(run, "manifest", None)
@@ -1355,18 +1355,19 @@ def _run_manifest(run: Any) -> dict[str, Any] | None:
     return dict(manifest) if isinstance(manifest, Mapping) else None
 
 
-def _objective_ref(objective: Any) -> Any:
-    """The manifest's ``result.ref`` (pcb-intent-api §Recording, round
-    2): ``"seed"`` for the default self-measured R_i, else the
-    referenced run's identity dict — ``run`` the referenced manifest's
-    content hash (its ``run_hash`` key, or
+def _objective_ref(objective: Any) -> str:
+    """The manifest's ``result.ref`` (pcb-intent-api §Recording;
+    gr598759, td598858 ruling): ``"seed"`` for the default
+    self-measured R_i, else ``run:<sha16>`` — the referenced run's
+    content hash, the manifest's footprint-shas convention (its
+    ``run_hash`` key, or
     :func:`precis.pcb.topoplace.runstore.manifest_run_hash` computed
     from a ``/6`` manifest that carries none; a manifest-less run
     object identifies by a hash of its ``ref_values``, the only run
-    content it can name), ``job`` the ``jo<N>`` handle the run records
-    (``None`` for a DB-free laptop run — a ``pcb_place`` run's own
-    manifest stamps it top-level, gr599356), ``label`` its label when
-    it has one — cosmetic, never compared."""
+    content it can name). The id is machine-portable where /6's
+    ``run:<out dir>`` path was not; the referenced run's
+    ``job``/``label`` live on its own manifest (gr599356) and resolve
+    through the hash, never inside the ref."""
     from precis.pcb.topoplace import runstore as _runstore
 
     ref = getattr(objective, "ref", "seed")
@@ -1383,19 +1384,7 @@ def _objective_ref(objective: Any) -> Any:
                 default=str,
             ).encode("utf-8")
         ).hexdigest()[:16]
-    job = getattr(ref, "job", None) or (manifest or {}).get("job")
-    label = (
-        getattr(ref, "label", None)
-        or getattr(ref, "slug", None)
-        or (manifest or {}).get("label")
-    )
-    out: dict[str, Any] = {
-        "run": str(run_hash),
-        "job": f"jo{job}" if isinstance(job, int) else (str(job) if job else None),
-    }
-    if label:
-        out["label"] = str(label)
-    return out
+    return f"run:{run_hash}"
 
 
 @pcb_diag.op("topo_place")

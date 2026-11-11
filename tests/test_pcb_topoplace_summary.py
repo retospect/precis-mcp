@@ -198,7 +198,7 @@ def test_manifest_run_hash_is_content_identity() -> None:
         "schema": "precis.topo-run/999",
         "code_version": m["code_version"] + 100,
         "wheel_version": "0.0.0",
-        "result": {**m["result"], "ref": {"run": "0" * 16, "job": None}},
+        "result": {**m["result"], "ref": f"run:{'0' * 16}"},
     }
     assert runstore.manifest_run_hash(provenance_only) == m["run_hash"]
 
@@ -235,11 +235,11 @@ def test_manifest_run_hash_reads_a_6_manifest() -> None:
 
 def test_manifest_stamps_the_producing_job() -> None:
     """gr599356: a ``pcb_place`` run's manifest carries the job's
-    ``jo<N>`` handle and slug at top level (/8) — the fields
-    ``pcb.local._objective_ref`` reads so a later ``ref=<run>`` resolves
-    ``result.ref.job`` to the handle instead of null. A laptop run
-    passes neither and the keys stay absent. ``run_hash`` ignores both:
-    who ran it is not what it is."""
+    ``jo<N>`` handle and slug at top level (/8) — the provenance a
+    later ``ref=<run>``'s ``run:<sha16>`` ``result.ref`` resolves the
+    producing job through once the hash names the manifest. A laptop
+    run passes neither and the keys stay absent. ``run_hash`` ignores
+    both: who ran it is not what it is."""
     d, _inst, _nets = synth_design(seed=0, n_parts=4, n_nets=4, n_multinet=0)
     result = TopoPlaceResult(
         best_pose=np.zeros((len(d.parts), 4)),
