@@ -387,6 +387,8 @@ class TestCallsRead:
                 input_keys=["id", "kind", "view"],
                 agentlog_id=alog,
                 latency_ms=137,
+                result_bytes=548,
+                result_tokens_est=137,
                 arg_sample='{"kind":"paper","id":"pa1","view":"toc"}',
             ),
         )
@@ -410,7 +412,10 @@ class TestCallsRead:
         assert f"agentlog {alog}" in line
         assert "kind='paper'" in line
         assert "id='pa1'" in line and "view='toc'" in line
-        assert line.endswith("→ ok 137ms")
+        assert "→ ok 137ms" in line
+        # gr618518: the raw per-call line names the stored response-size
+        # fields — populated values confirm the logger is live.
+        assert "result_bytes=548" in line and "result_tokens_est=137" in line
         err_line = tool_ledger.call_line(rows[1])
         assert "→ ERROR BadInput" in err_line and "q empty" in err_line
 
@@ -472,9 +477,39 @@ class TestCallsRead:
         )
 
     def test_call_line_minimal_row(self) -> None:
-        """A row with no agentlog / sample / latency still renders."""
+        """A row with no agentlog / sample / latency still renders; the
+        unmeasured response-size fields show as ``-`` rather than hiding."""
         line = tool_ledger.call_line({"verb": "put", "kind": "memory", "outcome": "ok"})
-        assert line == "? put kind='memory' → ok"
+        assert line == (
+            "? put kind='memory' → ok · result_bytes=- · result_tokens_est=-"
+        )
+
+    def test_call_line_names_the_response_size_fields(self) -> None:
+        """gr618518 — the agent-facing raw per-call log (``view='calls'``,
+        ``/calls``) names ``result_bytes``/``result_tokens_est`` on every
+        line, so opening it directly confirms the fields are populated
+        (``result_tokens_est`` is the ``mcp_call`` line's
+        ``response_tokens_est`` — the confirmation qu604835 asked for)."""
+        line = tool_ledger.call_line(
+            {
+                "verb": "get",
+                "outcome": "ok",
+                "result_bytes": 402,
+                "result_tokens_est": 100,
+            }
+        )
+        assert "result_bytes=402" in line and "result_tokens_est=100" in line
+        err = tool_ledger.call_line(
+            {
+                "verb": "search",
+                "outcome": "error",
+                "error_type": "BadInput",
+                "result_bytes": 120,
+                "result_tokens_est": 30,
+            }
+        )
+        # Error bodies are measured too — the fields render on the ERROR tail.
+        assert "→ ERROR BadInput" in err and "result_tokens_est=30" in err
 
     def test_call_line_kind_column_fills_missing_sample(self) -> None:
         line = tool_ledger.call_line(

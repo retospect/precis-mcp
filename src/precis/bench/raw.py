@@ -266,7 +266,9 @@ def call_line(rec: Mapping[str, Any]) -> str:
     results-file ``call_log`` entry: the same call shape (verb, kind, the
     bounded arg sample), but the token figure is the ledger's own
     ``result_tokens_est`` — the ``mcp_call`` line's ``response_tokens_est``
-    — not the caller-side estimate the results file records."""
+    — not the caller-side estimate the results file records. Both
+    response-size fields render by name (``-`` when the row carries
+    none), so the read itself confirms they are populated (gr618518)."""
     head = f"{rec['call_id']} {rec['verb']}"
     if rec.get("kind"):
         head += f" {rec['kind']}"
@@ -274,9 +276,11 @@ def call_line(rec: Mapping[str, Any]) -> str:
     if rec.get("error_type"):
         head += f" ({rec['error_type']})"
     est = rec.get("result_tokens_est")
-    bits = [f"{est} tok" if est is not None else "- tok"]
-    if rec.get("result_bytes") is not None:
-        bits.append(f"{rec['result_bytes']}B")
+    r_bytes = rec.get("result_bytes")
+    bits = [
+        f"result_bytes={r_bytes if r_bytes is not None else '-'}",
+        f"result_tokens_est={est if est is not None else '-'}",
+    ]
     if rec.get("latency_ms") is not None:
         bits.append(f"{rec['latency_ms']}ms")
     ts = rec.get("ts")

@@ -830,11 +830,15 @@ def sessions_rollup(
 def call_line(row: dict[str, Any]) -> str:
     """One ledger row as the agentlog surface renders it::
 
-        2026-10-27T08:52:56Z agentlog 512345 get kind='paper' id='pa1' view='toc' → ok 137ms
-        … search kind='job' → ERROR BadInput ([error:BadInput] kind …)
+        2026-10-27T08:52:56Z agentlog 512345 get kind='paper' id='pa1' view='toc' → ok 137ms · result_bytes=2048 · result_tokens_est=512
+        … search kind='job' → ERROR BadInput ([error:BadInput] kind …) · result_bytes=120 · result_tokens_est=30
 
     ``arg_sample`` was masked + bounded at write time, so it renders
-    verbatim; ``kind=``/``id=``/``view=`` lead, the rest sort after."""
+    verbatim; ``kind=``/``id=``/``view=`` lead, the rest sort after.
+    Every line names 0297's response-size fields (``result_tokens_est``
+    is the ``mcp_call`` line's ``response_tokens_est``, gr604903), so
+    opening this raw log itself confirms they are populated — ``-``
+    marks a pre-0209/0297 row that carries none (gr618518)."""
     from precis.utils.timeutil import as_utc
 
     ts = as_utc(row.get("ts"))
@@ -863,6 +867,12 @@ def call_line(row: dict[str, Any]) -> str:
     else:
         lat = row.get("latency_ms")
         tail = "→ ok" + (f" {int(lat)}ms" if isinstance(lat, int | float) else "")
+    r_bytes = row.get("result_bytes")
+    r_toks = row.get("result_tokens_est")
+    tail += (
+        f" · result_bytes={r_bytes if r_bytes is not None else '-'}"
+        f" · result_tokens_est={r_toks if r_toks is not None else '-'}"
+    )
     args_part = f" {args}" if args else ""
     return f"{' '.join(head)}{args_part} {tail}"
 

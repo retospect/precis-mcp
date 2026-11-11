@@ -1051,6 +1051,10 @@ def _bench_ledger_text(store: Store, results: Mapping[str, Any], *, page: int) -
             f"\ncorrelated by run window {started}–{ended}, untagged rows "
             "only — a shared DB may interleave unrelated calls"
         )
+    out += (
+        "\nresult_tokens_est is the mcp_call log line's response_tokens_est"
+        " — a populated field confirms the per-call logger wrote it"
+    )
     out += "\n\n" + "\n".join(bench_raw.call_line(r) for r in recs)
     hint = f"page {page}/{pages}; {end}/{total} calls"
     hint += ' — "page": <n> reads further; drop "section" for the results rows'

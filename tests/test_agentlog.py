@@ -369,6 +369,8 @@ def test_get_calls_view_renders_the_runs_ledger_rows(hub: Hub) -> None:
         agentlog_id=log_id,
         input_keys=["id", "kind", "view"],
         latency_ms=137,
+        result_bytes=548,
+        result_tokens_est=137,
         arg_sample='{"kind":"paper","id":"pa1","view":"toc"}',
     )
     _ledger_row(
@@ -383,6 +385,8 @@ def test_get_calls_view_renders_the_runs_ledger_rows(hub: Hub) -> None:
     body = AgentLogHandler(hub=hub).get(id=log_id, view="calls").body
     assert f"# agentlog {log_id}" in body
     assert "get kind='paper' id='pa1' view='toc' → ok 137ms" in body
+    # gr618518: the raw per-call log names the response-size fields.
+    assert "result_bytes=548" in body and "result_tokens_est=137" in body
     assert "→ ERROR BadInput" in body
     assert "2 call(s)" in body
 

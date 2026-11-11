@@ -548,8 +548,10 @@ def test_call_line_is_the_ledger_shape_of_a_call_log_entry():
         }
     )
     assert line.startswith("  1042 get paper ok — ")
-    assert "512 tok" in line  # the ledger's own estimate, not the file's
-    assert "2048B" in line
+    # gr618518: fields render by name — the ledger's own estimate, not
+    # the results file's caller-side ``tokens``.
+    assert "result_tokens_est=512" in line
+    assert "result_bytes=2048" in line
     assert "96ms" in line
     assert '"extent": "verbatim"' in line and '"id": "pc88"' in line
 
@@ -570,7 +572,7 @@ def test_call_line_marks_errors_and_unmeasured_calls():
         }
     )
     assert "7 get error (BadInput)" in err
-    assert "- tok" in err
+    assert "result_tokens_est=-" in err and "result_bytes=-" in err
 
 
 # ---------------------------------------------------------------------------
@@ -625,7 +627,7 @@ def test_fetch_ledger_correlates_by_source_tag(store):
     assert total == 2
     assert [r["verb"] for r in recs] == ["search", "get"]
     assert recs[0]["result_tokens_est"] == 100
-    assert raw.call_line(recs[0]).count("100 tok") == 1
+    assert raw.call_line(recs[0]).count("result_tokens_est=100") == 1
     page, total = raw.fetch_ledger(store, source=tag, offset=1, limit=1)
     assert total == 2 and len(page) == 1 and page[0]["verb"] == "get"
     assert raw.fetch_ledger(store, source="bench:no-such-run") == ([], 0)

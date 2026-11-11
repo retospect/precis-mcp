@@ -4940,8 +4940,12 @@ class TestBenchCallsRead:
         prompt = build_tick_prompt(store, _qref(store, qid))
         assert "# mcp log quick (caller triage)" in prompt
         assert f"correlated by tool_calls.source 'bench:{stem}'" in prompt
-        assert "search paper ok — 100 tok" in prompt
-        assert "get ok — 25 tok" in prompt
+        # gr618518 — the raw log names the response-size fields so the
+        # read itself confirms they are populated (result_tokens_est is
+        # the mcp_call line's response_tokens_est).
+        assert "response_tokens_est" in prompt
+        assert "search paper ok — result_bytes=400 · result_tokens_est=100" in prompt
+        assert "get ok — result_bytes=100 · result_tokens_est=25" in prompt
         assert "page 1/1; 2/2 calls" in prompt
 
     def test_calls_section_pages_and_bounds(
@@ -4969,7 +4973,7 @@ class TestBenchCallsRead:
         blocks = prompt.split("### ")
         p2 = next(b for b in blocks if "page 2" in b.splitlines()[0])
         assert "tool_calls rows 2-2 of 2" in p2
-        assert "get ok — 25 tok" in p2
+        assert "get ok — result_bytes=100 · result_tokens_est=25" in p2
         assert "search paper ok" not in p2
         assert "page 99 out of 2 — 2 calls logged" in prompt
 
@@ -4999,7 +5003,7 @@ class TestBenchCallsRead:
         prompt = build_tick_prompt(store, _qref(store, qid))
         assert "correlated by run window" in prompt
         assert "may interleave unrelated calls" in prompt
-        assert "search paper ok — 100 tok" in prompt
+        assert "search paper ok — result_bytes=400 · result_tokens_est=100" in prompt
 
     def test_calls_section_without_correlation_says_so(
         self, store: Any, tmp_path: Any, monkeypatch: Any
