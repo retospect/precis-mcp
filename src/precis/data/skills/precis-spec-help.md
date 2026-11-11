@@ -323,7 +323,12 @@ built. Run it after a transfer and repeat it as code lands.
   todos under the plan root: one slice per section or feature, each
   serving its feature node and pointing at the section's normative
   acceptance contract, sequenced with `blocked-by` edges
-  (`precis-spec-help~6`).
+  (`precis-spec-help~6`). A slice whose diff adds a migration
+  (`src/<pkg>/migrations/NNNN_*.sql`) also gets the squawk rules verbatim
+  in its body — `IF NOT EXISTS` on CREATE/ADD, `bigint` never
+  `smallint`, seeds `ON CONFLICT DO NOTHING`, the `uvx squawk` and
+  `scripts/test` schema-design/docstring-lint acceptance lines — full
+  text at `precis-gripe-loop-help` "Migration DDL in a brief" (gr570072).
 - **Ready agent** — judges build-readiness against the section contract:
   a concrete trigger, expected result and acceptance evidence. Missing
   fixtures or thresholds must already be named decisions on the plan; if

@@ -407,6 +407,30 @@ def mint_sha_reviewer(store: Store, sha12: str) -> int:
 # -- gripe-fix ---------------------------------------------------------------
 
 
+#: The migration-DDL paragraph a migration-bearing slice's brief carries
+#: verbatim (gr570072): a builder lane cannot read the skills or
+#: ``scripts/ship`` to learn the squawk rules, and the first todo-driven
+#: factory land went red on exactly these (``CREATE TABLE`` without
+#: ``IF NOT EXISTS``, a ``smallint`` column). ``run_slice.render_brief``
+#: appends it whenever the slice body names a ``src/<pkg>/migrations/``
+#: path; the brief-writer and slicer prompts below name it for the
+#: briefs they author.
+MIGRATION_DDL_BRIEF = (
+    "If your diff adds a file under `src/<pkg>/migrations/`, its DDL "
+    "follows the squawk rules the land's gate runs on every new migration "
+    "(`uvx -q --from 'squawk-cli>=2' squawk`; `.squawk.toml` at the repo "
+    "root holds the rule set): `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE "
+    "... ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`; "
+    "`bigint`/`integer`, never `smallint`; seed `INSERT ... ON CONFLICT "
+    "DO NOTHING`. `src/precis/migrations/0276_learning_events.sql` is the "
+    "house exemplar — copy its shape. Before hand-off run "
+    "`uvx -q --from 'squawk-cli>=2' squawk <new file>` and `scripts/test "
+    "tests/test_schema_design.py tests/test_docs_docstring_lint.py` (a "
+    "new jsonb column joins `JSONB_COLUMNS` with its rationale; a package "
+    "`__init__.py` docstring stays under the 1500-word ceiling)."
+)
+
+
 def _gripe_id(raw: Any) -> int:
     m = _GRIPE_ID_RE.fullmatch(str(raw).strip())
     if m is None:
@@ -621,7 +645,9 @@ def mint_gripe_fix(
                 "telegraphic). Post it as a `brief:` comment on the build "
                 "node; a spec test may ride the branch. Nothing committed? "
                 "End with `no-op: brief posted on td<build>` as the first "
-                "line of your final message (gr561132)."
+                "line of your final message (gr561132).\n\nWhen the fix adds "
+                "a migration the brief chunk also carries this paragraph "
+                "verbatim (gr570072):\n\n" + MIGRATION_DDL_BRIEF
             ),
             blocked_by=("triage",),
         )
@@ -680,7 +706,9 @@ def mint_slice_tree(
                 "titled in the summary-title house style (`<object> · "
                 "<behaviour> · <role>`, middot-separated, telegraphic); "
                 "sequence overlapping file sets with blocked-by links — "
-                "order lives in the links, never in a title or body line."
+                "order lives in the links, never in a title or body line. "
+                "A slice that adds a migration gets this paragraph verbatim "
+                "in its body (gr570072):\n\n" + MIGRATION_DDL_BRIEF
             ),
             blocked_by=("spec",),
         )

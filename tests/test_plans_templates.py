@@ -317,6 +317,28 @@ def test_brief_and_slicer_prompts_carry_links_and_title_style(
     assert "telegraphic" in slicer
 
 
+def test_brief_and_slicer_prompts_carry_the_migration_ddl_rules(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr570072: the brief-writer and slicer prompts carry the squawk
+    rules verbatim for a migration-bearing slice — a builder lane cannot
+    read skills or ``scripts/ship``, and the first factory land went red
+    on ``CREATE TABLE`` without ``IF NOT EXISTS`` and a ``smallint``
+    column the brief never named."""
+    gripe = _gripe(handler)
+    mint = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe)
+    brief = _body(store, mint.ids["brief"])
+    assert "CREATE TABLE IF NOT EXISTS" in brief
+    assert "never `smallint`" in brief
+    assert "0276_learning_events.sql" in brief
+    assert "tests/test_schema_design.py" in brief
+
+    mint = TEMPLATES["slice-tree"].mint(store, None, section="main/docs/x.md~Y")
+    slicer = _body(store, mint.ids["slicer"])
+    assert "CREATE TABLE IF NOT EXISTS" in slicer
+    assert "ON CONFLICT DO NOTHING" in slicer
+
+
 def test_slice_tree_shape(store: Store) -> None:
     mint = TEMPLATES["slice-tree"].mint(
         store, None, section="main/docs/backlog/x.md~Heading"

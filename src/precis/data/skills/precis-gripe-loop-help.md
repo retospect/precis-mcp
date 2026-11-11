@@ -157,6 +157,34 @@ Every brief to an agent session also carries the standing context rule
 (gr515153): bulky reads — queue files, triage outputs, review texts —
 go to a subagent that returns a digest, not into the main loop.
 
+## Migration DDL in a brief
+
+A slice whose diff adds a file under `src/<pkg>/migrations/` gets the
+squawk rules in its brief verbatim — a builder lane cannot read
+`scripts/ship` to learn them (gr570072: a factory land went red
+on `CREATE TABLE` without `IF NOT EXISTS` and a `smallint` column):
+
+- `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN IF NOT
+  EXISTS`, `CREATE INDEX IF NOT EXISTS`; `bigint`/`integer`, never
+  `smallint`; seeds `INSERT … ON CONFLICT DO NOTHING`.
+- `src/precis/migrations/0276_learning_events.sql` is the exemplar —
+  copy its shape.
+
+The same brief carries the builder-run acceptance lines — the land's
+checked selection runs them, so skipping lands red on tests the diff
+never touched:
+
+```
+uvx -q --from 'squawk-cli>=2' squawk <new migration file>
+scripts/test tests/test_schema_design.py tests/test_docs_docstring_lint.py
+```
+
+A new jsonb column joins `JSONB_COLUMNS` in test_schema_design.py with
+its rationale; a package `__init__.py` docstring stays under the
+1500-word ceiling. `run_slice.render_brief` appends the paragraph to a
+session brief whose body names `src/<pkg>/migrations/`; the `gripe-fix`
+brief-writer and `slice-tree` slicer prompts carry it too.
+
 ## Step 3 — assign the builder
 
 When the builder session starts, record who and where on both refs:

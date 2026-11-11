@@ -1202,6 +1202,13 @@ _PRELAND_STEPS: tuple[str, ...] = (
 
 _LAND_LINT_STEPS: tuple[str, ...] = _SHIP_LINT_STEPS + _PRELAND_STEPS
 
+#: A brief whose body names a package's ``migrations/`` dir gets the
+#: squawk-rule paragraph appended (gr570072): the builder lane cannot
+#: read the skills or ``scripts/ship`` to learn the rules, so they ride
+#: the brief. The paragraph itself is ``plans/templates.MIGRATION_DDL_BRIEF``
+#: (shared with the brief-writer and slicer prompts).
+_MIGRATION_PATH_RE = re.compile(r"src/[\w-]+/migrations/")
+
 
 def render_brief(
     *,
@@ -1316,6 +1323,12 @@ def render_brief(
         lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
     if target:
         lines += ["", "## Review target", "", target.strip()]
+    if _MIGRATION_PATH_RE.search(
+        "\n".join(t for t in (body, latest or "", target or "") if t)
+    ):
+        from precis.plans.templates import MIGRATION_DDL_BRIEF
+
+        lines += ["", MIGRATION_DDL_BRIEF]
     if generator:
         close = _ROLE_CLOSE.get(role or "")
         if close is not None:

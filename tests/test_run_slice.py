@@ -7540,3 +7540,39 @@ def test_render_brief_says_the_land_renumbers_a_migration_collision() -> None:
     )
     assert "The land renumbers a migration you added" in brief
     assert "a merge commit on the branch is fine too" in brief
+
+
+def test_render_brief_appends_the_migration_ddl_rules() -> None:
+    """gr570072: a slice body naming ``src/<pkg>/migrations/`` gets the
+    squawk rules appended verbatim — the builder lane cannot read skills
+    or ``scripts/ship`` to learn them, and the first factory land went
+    red at the squawk gate on ``CREATE TABLE`` without ``IF NOT EXISTS``
+    and a ``smallint`` column."""
+    kw: dict[str, Any] = dict(
+        todo_id=42,
+        title="Build the widget",
+        lane="claude-sub",
+        model="m",
+        effort="high",
+    )
+    brief = run_slice.render_brief(
+        body="Add src/precis/migrations/0308_widgets.sql with the new table.",
+        latest=None,
+        **kw,
+    )
+    assert "CREATE TABLE IF NOT EXISTS" in brief
+    assert "never `smallint`" in brief
+    assert "0276_learning_events.sql" in brief
+    assert "tests/test_schema_design.py" in brief
+    # The same rules ride a `brief:` comment's text (the staged chain's
+    # brief-writer posts the migration brief as a comment, not the body).
+    brief = run_slice.render_brief(
+        body="Do X.",
+        latest="brief: cut src/precis_se/migrations/0027_jig.sql",
+        **kw,
+    )
+    assert "CREATE TABLE IF NOT EXISTS" in brief
+    # A non-migration body stays free of the paragraph.
+    assert "CREATE TABLE IF NOT EXISTS" not in run_slice.render_brief(
+        body="Do X.", latest=None, **kw
+    )
