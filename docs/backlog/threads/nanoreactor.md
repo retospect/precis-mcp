@@ -61,8 +61,8 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
    once T3 exists.
 4. **spec `me629027` §T5** — assembled QM/MM check; needs
    T2 + T4.
-5. **backlog/nanoreactor-movie.md** — T6; renders T1 records first,
-   T5 records later.
+5. **spec `me629859` (reaction movie)** — T6; renders T1 records
+   first, T5 records later.
 
 ## Parked
 
