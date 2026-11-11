@@ -247,7 +247,7 @@ def test_folder_scoped_search_next_is_a_working_call(
     assert "[error:BadInput]" in out, out
     assert "'status'" in out, out
     assert "narrow to one kind" not in out, out
-    assert "search(kind='todo', q='x', folder=12)" in out, out
+    assert "search(kind='todo', q='x', args={'folder': 12})" in out, out
     assert "search(kind='todo', q='x', status='open')" in out, out
 
 
@@ -262,7 +262,28 @@ def test_source_search_next_is_a_working_call(
     assert "[error:BadInput]" in out, out
     assert "'link'" in out, out
     assert "search(kind='todo', sort='recency')" in out, out
-    assert "search(kind='todo', link='gr1')" in out, out
+    assert "search(kind='todo', args={'link': 'gr1'})" in out, out
+
+
+def test_source_search_hints_spell_since_inside_args(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr608575: ``since=``/``until=`` have one documented location —
+    inside ``args={…}`` (``sort=`` stays top-level, the one core
+    trigger). The BadInput's shape and ``next=`` hints must say so:
+    re-suggesting the top-level spelling aimed the caller back at the
+    deprecation note the slim wrapper appends to it."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "todo", "q": "x", "since": "2024-01-01", "bogus": 1},
+    )
+    assert "[error:BadInput]" in out, out
+    # the shape names the locations: sort= top-level, since/until in args
+    assert "args={'since'/'until'}" in out, out
+    # the corrected call nests the date bound — never re-suggests it
+    # top-level
+    assert "args={'since': '2024-01-01'}" in out, out
+    assert "since='2024-01-01'" not in out.replace("'since': '2024-01-01'", ""), out
 
 
 def test_tags_only_sweep_refuses_ranking_knobs(
@@ -348,7 +369,7 @@ def test_next_hints_render_caller_keys_not_resolved_ids(
     assert "[error:BadInput]" in out, out
     assert "'bogus'" in out, out
     assert "include_ref_ids" not in out, out
-    assert f"under='{handle}'" in out, out
+    assert f"'under': '{handle}'" in out, out
     assert "page=" not in out, out
 
 
@@ -369,8 +390,8 @@ def test_queryless_folder_call_raises_needs_q_not_strays(
     assert "[error:BadInput]" in out, out
     assert "folder-scoped search requires q= or tags=" in out, out
     assert "not applied by" not in out, out
-    assert "search(kind='todo', folder=12, q='your query')" in out, out
-    assert "search(kind='todo', folder=12, tags=['<tag>'])" in out, out
+    assert "search(kind='todo', q='your query', args={'folder': 12})" in out, out
+    assert "search(kind='todo', tags=['<tag>'], args={'folder': 12})" in out, out
     assert "search(kind='todo', status='open')" in out, out
 
 

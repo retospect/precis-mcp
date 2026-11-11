@@ -665,27 +665,26 @@ def _job_search_call(
     provably applies — ``sort=``/``mode=`` are deliberately absent (the
     listing refuses them) and callers pass ``view=``/``group_by=`` only
     when ``view == 'count'`` — so the rendered call is one that works
-    (mcp-authoring rule 2). ``job_type``/``id_min``/``id_max``/
-    ``group_by`` ride ``args=`` on the wire; the rest are top-level
-    verb params.
+    (mcp-authoring rule 2). ``since``/``until``/``link``/``job_type``/
+    ``group_by``/``id_min``/``id_max`` ride ``args=`` on the wire — the
+    one location for every non-core key (gr608575); the core params
+    stay top-level.
     """
     parts = ["kind='job'"]
     for k, v in (
-        ("since", since),
-        ("until", until),
         ("status", status),
         ("q", q),
         ("tags", tags),
-        ("link", link),
         ("view", view),
     ):
         if v is not None:
-            if isinstance(v, datetime):
-                v = v.isoformat()
             parts.append(f"{k}={v!r}")
     extras = {
-        k: v
+        k: (v.isoformat() if isinstance(v, datetime) else v)
         for k, v in (
+            ("since", since),
+            ("until", until),
+            ("link", link),
             ("job_type", job_type),
             ("group_by", group_by),
             ("id_min", id_min),
@@ -6041,8 +6040,8 @@ class JobHandler(NumericRefHandler):
                     "search(kind='job', view='count', "
                     "args={'job_type': '<type>', 'group_by': 'state'})"
                     if job_type is not None
-                    else "search(kind='job', view='count', since='<ISO>', "
-                    "args={'group_by': 'state'})"
+                    else "search(kind='job', view='count', "
+                    "args={'since': '<ISO>', 'group_by': 'state'})"
                 ),
             )
         if sort is not None:
@@ -6052,7 +6051,8 @@ class JobHandler(NumericRefHandler):
                     "search(kind='job', args={'job_type': '<type>'})"
                     if job_type is not None
                     else "drop sort=, or add q= for a ranked dated search: "
-                    "search(kind='job', q='…', sort='recency', since='…')"
+                    "search(kind='job', q='…', sort='recency', "
+                    "args={'since': '…'})"
                 ),
             )
         if mode is not None and str(mode).strip().lower() != "lexical":
@@ -6063,7 +6063,8 @@ class JobHandler(NumericRefHandler):
                     "drop mode=, or drop job_type= for the hybrid ranked path"
                     if job_type is not None
                     else "drop mode=, or add q= for the hybrid ranked path: "
-                    "search(kind='job', q='…', mode='semantic', since='…')"
+                    "search(kind='job', q='…', mode='semantic', "
+                    "args={'since': '…'})"
                 ),
             )
         effective_tags, status_note, excluded = self._apply_status_default(

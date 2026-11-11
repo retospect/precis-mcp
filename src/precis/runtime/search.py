@@ -56,6 +56,7 @@ from precis.runtime._shared import CROSS_KIND_SOURCE_KINDS as _CROSS_KIND_SOURCE
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
 from precis.runtime._shared import (
     RESOLVED_FACETS_KEY,
+    SOURCE_SEARCH_TRIGGER_LABEL,
     RuntimeShape,
     refuse_unapplied_args,
 )
@@ -314,8 +315,16 @@ def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) ->
     Builds the literal ``next=`` hint — a copy-pasteable call that works
     (mcp-authoring rule 2), not prose. ``kind`` is the kind the
     interception ran under (popped off ``args`` before dispatch — ``None``
-    when the call omitted it); leftover ``__extras__`` keys re-render as
-    ``args={…}``.
+    when the call omitted it).
+
+    Only the slim-advertised core params
+    (:data:`~precis.runtime.dispatch.CORE_PARAMS` for ``search``) render
+    top-level; every other key — a dispatch-payload key, a nested
+    ``args=`` key or a resolved-facet origin alike — renders inside one
+    ``args={…}`` dict (gr608575). The slim wrapper deprecates the
+    top-level spelling of every non-core param, so a hint that
+    re-rendered them top-level aimed the caller back at the deprecated
+    form its own note named.
 
     Two things never render: ``__``-prefixed dispatch-internal keys and
     the ``exclude_ref_ids``/``include_ref_ids`` channel when a facet
@@ -325,9 +334,20 @@ def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) ->
     wrapper defaults (``page=1``) are dropped too — they are not caller
     intent.
     """
+    from precis.runtime.dispatch import CORE_PARAMS
+
+    top_level = frozenset(CORE_PARAMS["search"]) - {"kind", "args"}
     resolved = args.get(RESOLVED_FACETS_KEY)
     resolved_map = resolved if isinstance(resolved, dict) else {}
     parts = [f"kind={kind!r}"] if kind is not None else []
+    nested: dict[str, Any] = {}
+
+    def _emit(k: str, v: Any) -> None:
+        if k in top_level:
+            parts.append(f"{k}={v!r}")
+        else:
+            nested[k] = v
+
     for k, v in args.items():
         if (
             k in drop
@@ -337,19 +357,21 @@ def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) ->
             or v in _PAGE_TOLERATED.get(k, ())
         ):
             continue
-        parts.append(f"{k}={v!r}")
+        _emit(k, v)
     for channel, origins in resolved_map.items():
         if channel in drop:
             continue
         for ok, ov in origins:
             if ok in drop or ov is None:
                 continue
-            parts.append(f"{ok}={ov!r}")
+            _emit(ok, ov)
     extras = args.get("__extras__")
     if isinstance(extras, dict):
-        kept = {k: v for k, v in extras.items() if k not in drop and v is not None}
-        if kept:
-            parts.append(f"args={kept!r}")
+        for k, v in extras.items():
+            if k not in drop and v is not None:
+                _emit(k, v)
+    if nested:
+        parts.append(f"args={nested!r}")
     return f"search({', '.join(parts)})"
 
 
@@ -469,7 +491,7 @@ class SearchMixin(RuntimeShape):
 
         n = int(args.get("n") or args.get("page_size") or self._STUBS_DEFAULT_N)
         if n < 1:
-            raise BadInput("n must be >= 1", next="search(view='stubs', n=25)")
+            raise BadInput("n must be >= 1", next="search(view='stubs', page_size=25)")
 
         rows = store.stub_backlog(limit=n, **stub_filters)
         filtered = (
@@ -573,7 +595,8 @@ class SearchMixin(RuntimeShape):
         n = int(args.get("n") or args.get("page_size") or self._STUBS_DEFAULT_N)
         if n < 1:
             raise BadInput(
-                "n must be >= 1", next="search(kind='datasheet', view='stubs', n=25)"
+                "n must be >= 1",
+                next="search(kind='datasheet', view='stubs', page_size=25)",
             )
 
         rows = store.stub_backlog(kind="datasheet", limit=n, **stub_filters)
@@ -870,7 +893,7 @@ class SearchMixin(RuntimeShape):
         if args.get("folder") is not None:
             return "cross-kind fan-out (folder= subtree post-filter)"
         if self._routes_to_source_search("search", kind, args):
-            return "cross-kind source search (sort=/since=/until= primitive)"
+            return f"cross-kind source search ({SOURCE_SEARCH_TRIGGER_LABEL} primitive)"
         if kind is None or self._is_cross_kind_request(str(kind)):
             return "cross-kind fan-out (RRF merge)"
         return f"single-kind search on kind={self._expand_kind_code(str(kind))!r}"
@@ -1437,14 +1460,14 @@ class SearchMixin(RuntimeShape):
         refuse_unapplied_args(
             args,
             consumed=_SOURCE_SEARCH_CONSUMED,
-            shape="a source search (sort=/since=/until=)",
+            shape=f"a source search ({SOURCE_SEARCH_TRIGGER_LABEL})",
             next=lambda strays: self._source_search_next(kind, args, strays),
             tolerated=_SOURCE_SEARCH_TOLERATED,
         )
         q = args.get("q")
         if not (isinstance(q, str) and q.strip()):
             raise BadInput(
-                "source search (sort=/since=/until=) requires q=",
+                f"source search ({SOURCE_SEARCH_TRIGGER_LABEL}) requires q=",
                 next="search(kind='paper,patent', q='mof co2', sort='recency')",
             )
         expanded = (
@@ -2154,13 +2177,13 @@ class SearchMixin(RuntimeShape):
                 raise BadInput(
                     "uncited= requires q= (it filters a ranked search, not "
                     "the tags-only sweep)",
-                    next=f"search(kind={kind!r}, q='your query', uncited=…)",
+                    next=f"search(kind={kind!r}, q='your query', args={{'uncited': '…'}})",
                 )
             if args.get("include_ref_ids") is not None:
                 raise BadInput(
                     "cited= requires q= (it filters a ranked search, not "
                     "the tags-only sweep)",
-                    next=f"search(kind={kind!r}, q='your query', cited=…)",
+                    next=f"search(kind={kind!r}, q='your query', args={{'cited': '…'}})",
                 )
             if not tags_in:
                 # The missing filter is the first problem, not any stray
@@ -2324,9 +2347,9 @@ class SearchMixin(RuntimeShape):
                             f"eligible kind {unsupported_present!r} lacks "
                             "exclude/include-by-ref_id wiring",
                             next=(
-                                "use sort=/since=/until= (the cross-kind "
-                                "source-search primitive), which excludes "
-                                "uniformly across every kind"
+                                f"use {SOURCE_SEARCH_TRIGGER_LABEL} (the "
+                                "cross-kind source-search primitive), which "
+                                "excludes uniformly across every kind"
                             ),
                         )
                 else:
@@ -2336,7 +2359,7 @@ class SearchMixin(RuntimeShape):
                         "wiring yet",
                         next=(
                             "drop these kinds from the comma-list, or use "
-                            "sort=/since=/until= (the cross-kind "
+                            f"{SOURCE_SEARCH_TRIGGER_LABEL} (the cross-kind "
                             "source-search primitive) which excludes "
                             "uniformly across every kind"
                         ),

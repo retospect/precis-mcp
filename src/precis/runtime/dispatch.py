@@ -69,6 +69,9 @@ from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
 from precis.runtime._shared import RESOLVED_FACETS_KEY as _RESOLVED_FACETS_KEY
 from precis.runtime._shared import (
+    SOURCE_SEARCH_TRIGGER_LABEL as _SOURCE_SEARCH_TRIGGER_LABEL,
+)
+from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime._shared import RuntimeShape
@@ -2346,7 +2349,7 @@ class DispatchMixin(RuntimeShape):
             raise Unsupported(
                 "under= is not supported with view=/angle=/like= — that search "
                 "shape picks its own seed and target set",
-                next="search(kind='finding', under='technique/afm', q='...')",
+                next="search(kind='finding', q='...', args={'under': 'technique/afm'})",
             )
         kinds = (
             None
@@ -2691,7 +2694,7 @@ class DispatchMixin(RuntimeShape):
         if not isinstance(hubbed, bool):
             raise BadInput(
                 f"hubbed= must be a boolean, got {hubbed!r}",
-                next="search(kind='paper', q='...', hubbed=True) or hubbed=False",
+                next="search(kind='paper', q='...', args={'hubbed': True}) or args={'hubbed': False}",
             )
         kind = args.get("kind")
         resolved_kind = self._expand_kind_code(str(kind)) if kind is not None else None
@@ -2707,7 +2710,7 @@ class DispatchMixin(RuntimeShape):
         if resolved_kind != "paper":
             raise BadInput(
                 f"hubbed= is only supported on kind='paper', got kind={kind!r}",
-                next="search(kind='paper', q='...', hubbed=True)",
+                next="search(kind='paper', q='...', args={'hubbed': True})",
             )
         store = self.store
         if store is None:
@@ -2873,8 +2876,8 @@ class DispatchMixin(RuntimeShape):
                 raise BadInput(
                     f"{bad_combo}= is not supported with view='count'",
                     next=(
-                        "view='count' filters with q=/tags=/status=/link=/"
-                        "folder=/since=/until= and facets with "
+                        "view='count' filters with q=/tags=/status= and "
+                        "args={'link'/'folder'/'since'/'until'}; facets with "
                         "args={'group_by': 'state' | 'meta.<key>' | 'tag:<axis>'}"
                     ),
                 )
@@ -3024,8 +3027,9 @@ class DispatchMixin(RuntimeShape):
                 "search has no exclude/include-by-ref_id wiring yet",
                 next=(
                     f"drop {facet} for this kind, or use "
-                    "sort=/since=/until= (the cross-kind source-search "
-                    "primitive) which excludes uniformly across every kind"
+                    f"{_SOURCE_SEARCH_TRIGGER_LABEL} (the cross-kind "
+                    "source-search primitive) which excludes uniformly "
+                    "across every kind"
                 ),
             )
 

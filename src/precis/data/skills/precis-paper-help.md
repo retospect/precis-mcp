@@ -124,9 +124,9 @@ When one phrasing isn't finding it, escalate (details in
 
 ```python
 # Broad: fuse rephrasings + hypothetical-answer passages in one call
-search(kind="paper", q="…", queries=["…", "…"], answers=["…"])
+search(kind="paper", q="…", args={"queries": ["…", "…"], "answers": ["…"]})
 # Deep: async triage campaign — returns a job handle, poll for the curated result
-search(kind="paper", q="…", good=True)  # → poll get(kind='job', id=…)
+search(kind="paper", q="…", args={"good": True})  # → poll get(kind='job', id=…)
 ```
 
 The default free-text `q=` search matches paper **bodies** and folds
@@ -139,8 +139,8 @@ author, use the targeted byline lookup below — it's more reliable.
 ## I know the title (or an author) — get the record, not body hits
 
 ```python
-search(kind="paper", title="attention is all you need")  # → the paper record
-search(kind="paper", author="Vaswani")  # → papers with that author
+search(kind="paper", args={"title": "attention is all you need"})  # → the paper record
+search(kind="paper", args={"author": "Vaswani"})  # → papers with that author
 ```
 
 `title=` / `author=` return paper **records** — one row per paper, each
@@ -327,7 +327,7 @@ terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
 ```python
 search(kind="paper", view="count")                                  # total
 search(kind="paper", view="count", tags=["studytype:review"],
-       args={"group_by": "tag:studytype"}, since="2026-10-01")      # filtered + facets
+       args={"group_by": "tag:studytype", "since": "2026-10-01"})   # filtered + facets
 search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs thin-text vs card-only vs stub + passages
 search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
 ```

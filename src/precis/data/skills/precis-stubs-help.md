@@ -29,7 +29,7 @@ add new ones.
 
 ```python
 search(kind="paper", view="stubs")
-search(kind="paper", view="stubs", n=50)  # default 25
+search(kind="paper", view="stubs", page_size=50)  # default 25
 ```
 
 Each row shows the ref id, the best external identifier, the cite key,
@@ -41,12 +41,14 @@ relevant-first, the same ladder spelling the todo/quest reads render:
 suffix and sort last).
 Ties fall back to oldest-request-first. `q=` narrows by metadata match
 (stub title / cite_key / identifier — stubs have no body to search);
-`since=`/`until=` bound when the stub was requested; `uncited=<draft>` /
-`cited=<draft>` / `hubbed=` filter by cite facets as on a plain search.
+`args={'since'}`/`args={'until'}` bound when the stub was requested;
+`args={'uncited': <draft>}` / `args={'cited': <draft>}` /
+`args={'hubbed': …}` filter by cite facets as on a plain search.
 
 ```python
-search(kind="paper", view="stubs", q="nitrate reduction", since="2026-01-01")
-search(kind="paper", view="stubs", uncited="dr348633")
+search(kind="paper", view="stubs", q="nitrate reduction",
+       args={"since": "2026-01-01"})
+search(kind="paper", view="stubs", args={"uncited": "dr348633"})
 ```
 
 Stubs scoring in the uncertain middle of the ranking additionally carry
@@ -62,7 +64,7 @@ it. Query labeled stubs directly: `refs.meta->>'llm_label'` (reason in
 
 ```python
 search(kind="paper", view="chase-queue")
-search(kind="paper", view="chase-queue", n=50)  # default 25
+search(kind="paper", view="chase-queue", page_size=50)  # default 25
 ```
 
 A tighter slice of the same backlog: DOI-only (the identifier kind the

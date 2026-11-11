@@ -65,7 +65,7 @@ search(kind="paper", q="X", args={"exclude": ["pa1", "pa2"]})  # skip refs by ha
 search(kind="paper", q="X", args={"uncited": "dr173020"})  # skip what that draft already cites
 search(kind="patent", q="X", args={"reach": "remote"})  # patent/edgar-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
-search(kind="paper", q="X", unique_per="chunk")  # one row per chunk hit
+search(kind="paper", q="X", args={"unique_per": "chunk"})  # one row per chunk hit
 search(
     kind="paper",
     q="X",
@@ -88,17 +88,18 @@ list) selects its `instance-of` members (next section); any other handle
 without `q=` memory hits list newest-first. Todo and taxon keep their
 own `under=` meanings (todo subtree, concept descendants).
 `angle=`/`like=`/`n=` run the diverse-cone salience spray seeded from a ref
-handle or `q=` — `search(angle=0.5, like='quest:164903', n=8)`. They are
-**verb-level params**, not a kind's `args=` keys — pass them top-level
-like `page_size=` (nested in `args={…}` they hoist back out; a bare
-`args={'n': 5}` with no spray trigger is still refused). Omit `kind=` for
+handle or `q=` — `search(args={'angle': 0.5, 'like': 'quest:164903',
+'n': 8})`. They are **verb-level params**, not a kind's `args=` keys —
+nested in `args={…}` they hoist back out (a bare `args={'n': 5}` with no
+spray trigger is still refused). Omit `kind=` for
 the default target set (paper+memory+draft); a comma-list
 (`'memory,draft'`) or single kind aims the spray. `view='dreamable'` /
 `'chase-queue'` swap in a shape that ignores `q=` — a salience pick, or
 the DOI-only fetch queue. `view='stubs'` lists the acquisition backlog:
 `q=` narrows it by stub metadata (title/cite_key/identifier — stubs
-have no body to rank), `since=`/`until=` bound the request date, and
-`uncited=`/`cited=`/`hubbed=` apply (`precis-stubs-help`). `view='count'` on a
+have no body to rank), `args={'since'}`/`args={'until'}` bound the
+request date, and `args={'uncited'/'cited'/'hubbed'}` apply
+(`precis-stubs-help`). `view='count'` on a
 numeric-ref kind returns the filtered total plus `group_by` facet counts
 instead of hits (below). `status=` is shorthand for
 `tags=['STATUS:<value>']` on kinds with that axis (per-kind defaults
@@ -228,7 +229,8 @@ Rules of thumb:
 - Honors `mode=`, `tags=`, `scope=`, `args={'exclude': …}`, and year filters like
   any search (a `'lexical'` broad search fuses only the text legs).
 - `queries=`/`answers=`/`exclude=`/`page=` also compose with the
-  `sort=`/`since=`/`until=` source-search primitive (gr608576): a dated
+  source-search primitive — `sort=` top-level, `since=`/`until=` inside
+  `args=` (gr608576): a dated
   search keeps the broad legs and exclusion filter, and
   `args={'page': 2}` walks the fused per-ref list — repeat the same
   knobs on every page.
@@ -309,10 +311,10 @@ paper-ref-only restriction, so it still needs `kind='paper'` on its own.
 into that node or any node beneath it (the node itself counts).
 
 ```python
-search(kind="finding", under="technique/afm", q="tip radius")       # ranked
-search(kind="paper", under="tn12")                                   # newest first
-search(kind="finding", under=["technique/afm", "method/dft"], q="tip")  # intersection
-search(kind="finding", under="tn12", axis="object", depth=2)         # shape the walk
+search(kind="finding", q="tip radius", args={"under": "technique/afm"})       # ranked
+search(kind="paper", args={"under": "tn12"})                                   # newest first
+search(kind="finding", q="tip", args={"under": ["technique/afm", "method/dft"]})  # intersection
+search(kind="finding", args={"under": "tn12", "axis": "object", "depth": 2})   # shape the walk
 ```
 
 With `q=` the kind's normal ranking runs inside that set; without it the set is
@@ -362,7 +364,8 @@ still read as `page_size=` on an `interpreted:` line; `offset=0` is a
 no-op, `offset>0` and `page=` refuse with a canonical next call —
 there is no page 2.
 
-The one exception is the `sort=`/`since=`/`until=` source search:
+The one exception is the source search (`sort=` top-level,
+`since=`/`until=` inside `args=`):
 its pages continue via `args={'page': N}` — a page that fits but has
 more hits names `args={'page': 2}` in its Next: block, and a truncated
 page's own `next:` call spells the exact resume
@@ -493,7 +496,7 @@ search(kind="gripe", view="count")                    # how many open gripes
 search(kind="gripe", view="count", status="*")        # every gripe
 search(kind="job", view="count", args={"group_by": "meta.job_type,state"})
 search(kind="gripe", view="count", args={"group_by": "tag:area"})
-search(kind="job", view="count", link="gripe:472990")
+search(kind="job", view="count", args={"link": "gripe:472990"})
 ```
 
 `group_by` terms: `state` (the `STATUS:` axis), `meta.<key>` (a
@@ -507,8 +510,9 @@ paper's count also trails a `passages:` line of live body chunks),
 Comma-separate up to 3 for a cross facet (`a | b` rows). Refs missing
 a tag facet land in `(untagged)`; other missing facet values land in
 `(none)`. The totals are exact `COUNT`s over the same
-WHERE as the listing, so they match the "N of K" page headers; `folder=`
-and `under=` fold in as ref-set filters, and `since=`/`until=` bound on
+WHERE as the listing, so they match the "N of K" page headers;
+`args={'folder'}` and `args={'under'}` fold in as ref-set filters, and
+`args={'since'}`/`args={'until'}` bound on
 `refs.created_at` (`until=` exclusive). `kind='job'` counts also tail a
 bounded "error heads" section — the top normalized first-line errors per
 failing job_type — so "what's failing, and how" is one call. One kind

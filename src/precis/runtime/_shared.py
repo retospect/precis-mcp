@@ -74,6 +74,15 @@ RESOLVED_FACETS_KEY = "__resolved_facets__"
 #: longer exists).
 _PAGING_SPELLINGS: frozenset[str] = frozenset({"k", "limit", "offset"})
 
+#: The source-search primitive's caller-facing trigger spelling
+#: (gr608575). ``sort=`` is the one slim-advertised top-level trigger
+#: (:data:`~precis.runtime.dispatch.CORE_PARAMS`); ``since=``/``until=``
+#: ride ``args={...}`` like every non-core key. Error shapes and
+#: ``next=`` hints spell it this way so the named locations agree with
+#: the deprecation note instead of reading as if all three were
+#: top-level.
+SOURCE_SEARCH_TRIGGER_LABEL = "sort= / args={'since'/'until'}"
+
 
 def _paging_spelling_hint(key: str) -> str:
     """The corrected call for a legacy paging spelling (gr530420)."""

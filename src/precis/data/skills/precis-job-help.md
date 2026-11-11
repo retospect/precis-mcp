@@ -561,10 +561,11 @@ title-lexical on this path; `sort=`/`mode=` are rejected — they belong
 to the unfiltered ranked path. This is the MCP answer for what used
 to need `refs.meta->>'job_type'` SQL.
 
-Top-level `since=`/`until=` also work on the queryless plain listing —
-`search(kind='job', since='2026-10-20', status='*')` is the same
-recency-ordered listing without a `job_type=` filter (adding `q=` makes
-it a ranked search and `sort=`/`mode=` legal again).
+`since=`/`until=` ride `args=` like `job_type=` on the queryless plain
+listing too — `search(kind='job', args={'since': '2026-10-20'},
+status='*')` is the same recency-ordered listing without a `job_type=`
+filter (adding `q=` makes it a ranked search and `sort=`/`mode=` legal
+again).
 
 `view='count'` facet rows also name each group's newest/oldest member
 (`jo<N>` + created bounds) — "when did the last <type> run, how far

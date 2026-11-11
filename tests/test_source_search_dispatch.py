@@ -189,7 +189,7 @@ def test_source_search_pages(runtime_with_store: PrecisRuntime) -> None:
         },
     )
     assert "Page study" in out
-    assert "args={'page': 2}" in out
+    assert "args={'since': '2020-01-01', 'page': 2}" in out
 
     page2 = rt.dispatch(
         "search",
@@ -232,7 +232,7 @@ def test_source_search_pages_past_pool_dominating_ref(
         "page_size": 2,
     }
     out = rt.dispatch("search", dict(args))
-    assert "args={'page': 2}" in out
+    assert "args={'since': '2020-01-01', 'page': 2}" in out
     page2 = rt.dispatch("search", {**args, "page": 2})
     seen = out + page2
     for title in ("Dominant study", "Tail alpha", "Tail beta"):
@@ -265,7 +265,7 @@ def test_source_search_pin_counts_against_page(
     out = rt.dispatch("search", dict(args))
     # Page 1 leads with the pinned card plus one fetched row (top_k=2).
     assert "Pinned study" in out
-    assert "args={'page': 2}" in out
+    assert "args={'since': '2020-01-01', 'page': 2}" in out
     page2 = rt.dispatch("search", {**args, "page": 2})
     seen = out + page2
     # All three fetched refs surface across the two pages — the row the

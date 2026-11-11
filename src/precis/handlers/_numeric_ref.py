@@ -1293,9 +1293,9 @@ class NumericRefHandler(Handler):
                 f"since=/until= apply only to search(kind={self.kind!r}, "
                 "view='count') on this kind",
                 next=(
-                    f"search(kind={self.kind!r}, view='count', since='<ISO>', "
-                    "until='<ISO>') — or a dated cross-kind search: "
-                    "search(q='…', since='…')"
+                    f"search(kind={self.kind!r}, view='count', "
+                    "args={'since': '<ISO>', 'until': '<ISO>'}) — or a dated "
+                    "cross-kind search: search(q='…', args={'since': '…'})"
                 ),
             )
 
@@ -2046,9 +2046,11 @@ class NumericRefHandler(Handler):
         facet bare, silently counting a different set).
 
         Every active filter replays in the spelling that survives the
-        verb boundary — ``q``/``status``/``tags``/``link``/``since``/
-        ``until``/``page_size`` top-level; ``page``, ``group_by`` and
-        the ref-id channels inside ``args={}``. Two re-spellings:
+        verb boundary — the core params ``q``/``status``/``tags``/
+        ``page_size`` top-level; ``link``/``since``/``until``, ``page``,
+        ``group_by`` and the ref-id channels inside ``args={}`` (the
+        one location for every non-core key, gr608575). Two
+        re-spellings:
 
         * the resolved ``exclude_tags`` fold into ``tags=[…, '!STATUS:x']``
           — a replayed ``status=`` re-derives the exclusions it owns (the
@@ -2069,16 +2071,16 @@ class NumericRefHandler(Handler):
         replay_tags += [f"!{t}" for t in exclude_tags or []]
         if replay_tags:
             top["tags"] = replay_tags
-        if link is not None and str(link).strip():
-            top["link"] = link
-        if since is not None:
-            top["since"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-        if until is not None:
-            top["until"] = until.strftime("%Y-%m-%dT%H:%M:%SZ")
         for key in drop:
             top.pop(key, None)
         top.update(extra_top or {})
         args: dict[str, Any] = {}
+        if link is not None and str(link).strip():
+            args["link"] = link
+        if since is not None:
+            args["since"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if until is not None:
+            args["until"] = until.strftime("%Y-%m-%dT%H:%M:%SZ")
         if group_by is not None:
             # Kinds that normalise the facet list before _count_view
             # (job's ``job_type`` → ``meta.job_type`` rewrite hands a

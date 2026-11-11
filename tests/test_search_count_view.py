@@ -474,7 +474,7 @@ class TestCountGroupPaging:
         tail = resp.body.split("other:", 1)[1]
         assert "q='needle'" in tail
         assert "status='succeeded'" in tail
-        assert re.search(r"since='\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z'", tail)
+        assert re.search(r"'since': '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z'", tail)
         assert "'group_by': 'meta.job_type'" in tail
         assert "'page': 2" in tail
         # Following the call keeps the filtered set — the failed and
