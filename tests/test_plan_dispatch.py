@@ -5558,28 +5558,20 @@ def test_parse_verdict_marker_in_grammar_echo_is_not_a_verdict() -> None:
     assert pd.parse_verdict(echo) is None
 
 
-def test_parse_verdict_disagreeing_verdict_lines_strictest_wins() -> None:
-    """gr574380: verdict lines that disagree resolve strictest-first
-    (REVERT > FIX > LAND), the winner's own line as the rest plus a note
-    naming the other verdict; the DOTALL tail never swallows a later
-    ``review:`` line. A winner with an empty rest is still a miss; lines
-    that all agree keep the verdict."""
+def test_parse_verdict_disagreeing_verdict_lines_are_malformed() -> None:
+    """td636385: verdict lines that disagree are malformed — ``None``, a
+    retried review, never resolved to the strictest pick (the td636384
+    review finding); a ``<…>`` placeholder line among them is a grammar
+    echo and just as malformed. Lines that all agree keep the verdict."""
     for text in (
         "review: LAND\nreview: FIX — real bug in a.py",
         "review: FIX — real bug in a.py\nreview: LAND",
+        "review: LAND\nreview: REVERT — breaks the API",
+        "review: FIX — a.py\nreview: REVERT — b.py\nreview: LAND",
+        "review: FIX\nreview: LAND",
     ):
-        got = pd.parse_verdict(text)
-        assert got is not None and got[0] == "FIX"
-        assert got[1] == "real bug in a.py (also a LAND line in the same message)"
-    got = pd.parse_verdict("review: LAND\nreview: REVERT — breaks the API")
-    assert got == (
-        "REVERT",
-        "breaks the API (also a LAND line in the same message)",
-    )
-    got = pd.parse_verdict("review: FIX — a.py\nreview: REVERT — b.py\nreview: LAND")
-    assert got == ("REVERT", "b.py (also a FIX/LAND line in the same message)")
-    assert pd.parse_verdict("review: FIX\nreview: LAND") is None
-    # A placeholder line is a grammar echo, never a winner.
+        assert pd.parse_verdict(text) is None, text
+    # A placeholder line is a grammar echo — also malformed.
     assert pd.parse_verdict("review: LAND\nreview: FIX — <list>") is None
     assert pd.parse_verdict("review: LAND\nreview: REVERT") is None
     got = pd.parse_verdict("review: LAND\nreview: LAND")
@@ -5588,10 +5580,10 @@ def test_parse_verdict_disagreeing_verdict_lines_strictest_wins() -> None:
 
 def test_parse_verdict_enclosed_lines_are_not_verdicts() -> None:
     """td591267: a ``review:`` token inside backticks or parens quotes the
-    grammar even at a line start — it is filtered before the strictest
-    pick, so a LAND followed by an enclosed multiline
+    grammar even at a line start — it is filtered before the verdict is
+    judged, so a LAND followed by an enclosed multiline
     ``review: REVERT — example`` stays a LAND, never an actionable
-    REVERT."""
+    REVERT (and never a malformed disagreement)."""
     for text in (
         "review: LAND\n```\nreview: REVERT — example\n```",
         "review: LAND\n`the grammar says:\nreview: REVERT — example`",
@@ -5600,10 +5592,10 @@ def test_parse_verdict_enclosed_lines_are_not_verdicts() -> None:
     ):
         got = pd.parse_verdict(text)
         assert got is not None and got[0] == "LAND", text
-    # An enclosed placeholder cannot hijack a real disagreement either.
-    assert pd.parse_verdict(
-        "review: LAND\nreview: FIX — real bug\n`review: REVERT — <why>`"
-    ) == ("FIX", "real bug (also a LAND line in the same message)")
+    # An enclosed line cannot turn a real one into a disagreement either:
+    # were the quoted REVERT read, LAND + REVERT would be malformed.
+    got = pd.parse_verdict("review: LAND\n`review: REVERT — <why>`")
+    assert got is not None and got[0] == "LAND"
     # A quoted verdict line alone is no verdict at all.
     assert pd.parse_verdict("```\nreview: REVERT — example\n```") is None
 
@@ -6638,6 +6630,13 @@ def test_parse_verdict_mid_message_verdict_line() -> None:
     ) == ("REVERT", "drops the gate")
     assert pd.parse_verdict("handoff: ok\n*review: LAND*") == ("LAND", "")
     assert pd.parse_verdict("handoff: ok\n~~review: LAND~~") == ("LAND", "")
+    # Underscore emphasis is emphasis too: ``__`` hugging the word —
+    # a bare ``\b`` never matched before ``_`` (td636385).
+    assert pd.parse_verdict("handoff: ok\n__review: LAND__") == ("LAND", "")
+    assert pd.parse_verdict("__review: FIX — the gate is wrong__") == (
+        "FIX",
+        "the gate is wrong",
+    )
     # A ``review:``-starting comment bold-wrapped reads the same way.
     assert pd.parse_verdict("**review: FIX — a.py misses the empty case**") == (
         "FIX",
@@ -6688,6 +6687,34 @@ def test_review_revert_line_inside_the_handoff(store: Store) -> None:
     ref = store.get_ref(kind="todo", id=revert)
     assert ref is not None and ref.title == "Revert abc1234 on main"
     assert _meta(store, review)["review"]["verdict"] == "REVERT"
+
+
+def test_review_underscored_verdict_line(store: Store) -> None:
+    """td636385: ``__review: LAND__`` — underscore emphasis hugging the
+    word — is a verdict line like the bold one: a bare ``\\b`` never
+    matched before ``_``, so the whole comment read as no verdict."""
+    mint = _reviewed(store, "handoff: checked the diff.\n\n__review: LAND__")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert _meta(store, review)["review"]["verdict"] == "LAND"
+    assert sorted(_children(store, mint.root_id)) == sorted([build, review])
+
+
+def test_review_disagreeing_lines_are_malformed(store: Store) -> None:
+    """td636385: two verdict lines that disagree are a malformed verdict —
+    the reviewer retries on the picked lane; nothing is acted on (no fix
+    or revert minted, the node stays open)."""
+    mint = _reviewed(store, "review: LAND\nreview: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert _status(store, review) == "open"
+    assert _meta(store, review)["review"]["verdict"] is None
+    assert "malformed verdict" in _todo_comments(store, review)[-1]
+    assert res.dispatched == 1  # a format miss retries on the picked lane
+    assert sorted(_children(store, mint.root_id)) == sorted([build, review])
 
 
 def test_review_skips_a_voided_job(store: Store) -> None:

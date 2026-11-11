@@ -41,12 +41,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    — a ``review:``-starting comment always wins — else its newest
    ``handoff:`` carrying a ``review: LAND|FIX|REVERT`` line anywhere in
    the message, markdown emphasis stripped (``**review: FIX — …**``
-   mid-prose, gr568824: one verdict line is that verdict; REVERT never
+   mid-prose, gr568824: one verdict line is that verdict; verdict lines
+   that disagree are malformed — retried, never resolved (td636385);
+   REVERT never
    comes from a glued token — or a ``review: LAND|FIX`` token at a line
    start (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit
    between the line start and the token) or right after sentence-final
    punctuation, outside backticks/parens — the verdict lines too, so a
-   quoted grammar echo never wins the strictest pick (td591267) — no
+   quoted grammar echo never turns a real line into a disagreement
+   (td591267) — no
    ``<…>`` rest (a lane gluing
    the verdict to its narration, gr573564; on disagreement a reasoned
    FIX beats a LAND; REVERT never comes from a token). A LAND rest
@@ -697,8 +700,11 @@ _READONLY_MARKER_RE = re.compile(
 )
 #: A ``review:`` verdict token anywhere; :func:`_verdict_lines` keeps the
 #: line-start ones — including REVERT, which is only ever a verdict line
-#: (never a fallback token).
-_VERDICT_LINE_RE = re.compile(r"review:\s*(LAND|FIX|REVERT)\b", re.IGNORECASE)
+#: (never a fallback token). ``_*\b`` lets the closing ``__`` of an
+#: underscore emphasis hug the word (``__review: LAND__`` — a bare ``\b``
+#: never matches before ``_``, td636385); a glued ``LANDED``/``LAND_x``
+#: still misses.
+_VERDICT_LINE_RE = re.compile(r"review:\s*(LAND|FIX|REVERT)_*\b", re.IGNORECASE)
 #: Sentence-final punctuation a glued token may directly follow.
 _SENTENCE_END = frozenset(".!?")
 #: Markdown line-start markers a fallback token may directly follow
@@ -1539,8 +1545,8 @@ def _verdict_lines(body: str) -> list[tuple[str, str]]:
     ``> `` markers allowed before it (the line-start half of
     :func:`_token_boundary`), outside backticks/parens like a fallback
     token (:func:`_token_enclosed`): inside a multiline span the token
-    quotes the grammar, and an enclosed REVERT must never reach the
-    strictest pick (td591267). ``rest`` is that line's own text after the
+    quotes the grammar, and an enclosed REVERT must never turn a real
+    line into a disagreement (td591267). ``rest`` is that line's own text after the
     word and its lead, to end of line. A token glued mid-line after
     sentence-final punctuation is narration here, not a verdict line
     (gr574380)."""
@@ -1564,20 +1570,14 @@ def _verdict_lines(body: str) -> list[tuple[str, str]]:
     return out
 
 
-#: Verdict strictness, strictest first: disagreeing verdict lines in one
-#: message resolve to the earliest of these present (coordinator ruling
-#: 2026-11-08, gr574380).
-_VERDICT_STRICTNESS = ("REVERT", "FIX", "LAND")
-
-
 def parse_verdict(text: str) -> tuple[str, str] | None:
     """``(LAND|FIX|REVERT, rest)`` of one ``review:`` line, or ``None``
     when it is not a verdict. ``FIX`` and ``REVERT`` need a non-empty rest
     (the list / the why); a ``handoff:`` prefix is stripped first. Verdict
-    lines that disagree resolve strictest-first (REVERT, then FIX, then
-    LAND): the winner's own line is the rest, with a note naming the other
-    verdict(s) present; a placeholder ``<…>`` line among them marks a
-    grammar echo and is no verdict — a later ``review:`` line is never swallowed into
+    lines that disagree are malformed — ``None``, a retried review, never
+    a strictest pick (td636385); a placeholder ``<…>`` line among them is
+    a grammar echo and just as malformed — a later ``review:`` line is
+    never swallowed into
     the rest (gr574380); lines that agree keep it. A single verdict
     line ANYWHERE in the message — markdown emphasis stripped — is that
     verdict (gr568824: the bold mid-brief ``**review: FIX — …**``).
@@ -1593,14 +1593,10 @@ def parse_verdict(text: str) -> tuple[str, str] | None:
     lines = _verdict_lines(body)
     words = {word for word, _ in lines}
     if len(words) > 1:
-        if any(r.startswith("<") for _, r in lines):
-            return None  # a grammar echo (``FIX — <list>``), not a verdict
-        winner = next(w for w in _VERDICT_STRICTNESS if w in words)
-        rest = next((r for w, r in lines if w == winner and r), "")
-        if not rest:
-            return None
-        others = "/".join(w for w in _VERDICT_STRICTNESS if w in words and w != winner)
-        return winner, f"{rest} (also a {others} line in the same message)"
+        # Disagreeing verdict lines are malformed — the review retries,
+        # never resolved to a pick (td636385); a ``<…>`` placeholder
+        # among them is a grammar echo and just as malformed.
+        return None
     m = _VERDICT_RE.fullmatch(body)
     if m is not None:
         verdict, rest = m.group(1).upper(), m.group(2).strip()

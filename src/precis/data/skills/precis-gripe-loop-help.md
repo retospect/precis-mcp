@@ -257,7 +257,7 @@ allowed before it) or after sentence-final punctuation counts too
 verdict). A `(read-only, tests not run)` marker ending a line is
 accepted — `parse_verdict` strips it before matching; it is never
 required. When one comment carries verdict lines that disagree, the
-strictest wins (REVERT > FIX > LAND). A fix round is the next
+verdict is malformed — post one line. A fix round is the next
 `brief:` comment on the same todo — no new todo, just the attempt bump
 above.
 
