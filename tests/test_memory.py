@@ -1722,6 +1722,54 @@ def test_edit_body_write_lock_exhaustion_refuses_with_next(
     assert _body(handler, store, mid) == _BODY
 
 
+def test_edit_lock_exhaustion_names_the_holder(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr631568: an exhausted budget names the actual lock holder, not a
+    phantom "rival writer" — a real FOR UPDATE row lock on the ref shows
+    up in the refusal with its backend's application_name."""
+    mid = _make(handler)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with store.pool.connection() as locker:
+        locker.execute("SET LOCAL application_name = 'precis test-locker'")
+        locker.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (mid,))
+
+        def always_locked() -> Any:
+            raise LockNotAvailable("still locked")
+
+        monkeypatch.setattr(store, "tx", always_locked)
+        try:
+            with pytest.raises(Upstream) as excinfo:
+                handler.edit(id=mid, mode="replace", text="never written")
+        finally:
+            locker.rollback()
+    assert "precis test-locker" in str(excinfo.value)
+    assert "refs" in excinfo.value.cause
+    assert excinfo.value.next is not None
+    assert "view='processing'" in excinfo.value.next
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_edit_lock_exhaustion_without_holder_names_processing(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No live holder resolves to the truth the gripe hit: the block is
+    the fresh node's own processing stages cycling short writes, so the
+    refusal says that instead of inventing a rival writer."""
+    mid = _make(handler)
+
+    def always_locked() -> Any:
+        raise LockNotAvailable("still locked")
+
+    monkeypatch.setattr(store, "tx", always_locked)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with pytest.raises(Upstream) as excinfo:
+        handler.edit(id=mid, mode="replace", text="never written")
+    assert "no live row-lock holder" in excinfo.value.cause
+    assert "processing" in excinfo.value.cause
+    assert _body(handler, store, mid) == _BODY
+
+
 def test_anchored_edit_resyncs_mentions_and_preserves_manual_links(
     handler: MemoryHandler, store: Store
 ) -> None:

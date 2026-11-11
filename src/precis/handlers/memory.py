@@ -102,7 +102,8 @@ metadata, even on failed requests. Edit writes additionally run inside
 :func:`precis.utils.db_retry.retry_locked` (bounded, full jitter): a
 ``lock_timeout`` collision during an edit burst retries in-process
 instead of costing the agent a turn (gr504486); an exhausted budget
-refuses with ``Upstream`` + a ``next=`` naming the re-read.
+refuses with ``Upstream`` naming the live row-lock holder(s) resolved
+from ``pg_locks`` (gr631568) + a ``next=`` naming the re-read.
 
 Retirement scans live memory prose inside its transaction, independently
 of mention edges. Current mentions require a successor or explicit force;
@@ -135,6 +136,7 @@ from typing import Any, ClassVar, cast
 from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.pq import TransactionStatus
+from psycopg.rows import dict_row
 
 from precis._result_budget import result_context_cap, row_size_cell, size_cell
 from precis.errors import (
@@ -247,6 +249,100 @@ _AUDIT_UNGROUNDED = Tag.closed("AUDIT", AUDIT_VALUE)
 #: reserve for the header + ``next:``/note lines the dispatcher may
 #: prepend, so the emitted page itself always fits the binding cap.
 _PAGED_FOOTER_BYTES = 400
+
+#: Write-retry budget for a memory write (gr631568): a fresh or
+#: just-edited memory is processed in the background — embed / keywords /
+#: summary, each claiming at the head of the interactive lanes the write
+#: itself nudged — and those stages cycle short write locks on the same
+#: rows for tens of seconds. ``retry_locked``'s default 4 attempts
+#: (~15-20 s under prod's ``lock_timeout=5s``) lost that race outright on
+#: a node only minutes old; 8 attempts roughly doubles the window an
+#: interactive edit rides out before the refusal is earned.
+_WRITE_LOCK_ATTEMPTS = 8
+
+#: The rows a memory body/meta write can wait on, with the xid of the
+#: transaction currently locking or last writing each (gr631568). Row
+#: locks are NOT visible in ``pg_locks`` once granted — they live in the
+#: tuple header: ``xmax`` carries the locker's xid (or a multixact for a
+#: shared lock), and ``backend_xid`` in ``pg_stat_activity`` maps it to a
+#: live backend for exactly as long as its transaction stays open — the
+#: lock-holding window, which is also why a stale ``xmax`` from a
+#: committed writer resolves to nobody and drops out of the report.
+#: Relations: the ref (``FOR NO KEY UPDATE``), its chunks
+#: (delete+reinsert) and the child rows those writes cascade through.
+_LOCKED_ROWS_SQL = """
+    SELECT 'refs' AS rel, r.ref_id::text AS id, r.xmax::text AS xid
+      FROM refs r WHERE r.ref_id = %(ref)s AND r.xmax <> 0
+    UNION ALL
+    SELECT 'chunk', c.chunk_id::text, c.xmax::text
+      FROM chunks c WHERE c.ref_id = %(ref)s AND c.xmax <> 0
+    UNION ALL
+    SELECT 'claim:' || cc.artifact, cc.chunk_id::text, cc.xmax::text
+      FROM chunk_claims cc JOIN chunks c ON c.chunk_id = cc.chunk_id
+     WHERE c.ref_id = %(ref)s AND cc.xmax <> 0
+    UNION ALL
+    SELECT 'embedding', ce.chunk_id::text, ce.xmax::text
+      FROM chunk_embeddings ce JOIN chunks c ON c.chunk_id = ce.chunk_id
+     WHERE c.ref_id = %(ref)s AND ce.xmax <> 0
+    UNION ALL
+    SELECT 'summary', cs.chunk_id::text, cs.xmax::text
+      FROM chunk_summaries cs JOIN chunks c ON c.chunk_id = cs.chunk_id
+     WHERE c.ref_id = %(ref)s AND cs.xmax <> 0
+    UNION ALL
+    SELECT 'ref_tag', rt.tag_id::text, rt.xmax::text
+      FROM ref_tags rt WHERE rt.ref_id = %(ref)s AND rt.xmax <> 0
+    UNION ALL
+    SELECT 'link', li.link_id::text, li.xmax::text
+      FROM links li
+     WHERE (li.src_ref_id = %(ref)s OR li.dst_ref_id = %(ref)s) AND li.xmax <> 0
+"""
+
+#: xid → the live backend holding it. ``query`` resolves for same-role
+#: backends, so a worker stage's claim/write SQL shows verbatim.
+_LOCKER_BACKEND_SQL = """
+    SELECT a.backend_xid::text AS xid, a.pid, a.usename,
+           a.application_name AS app, a.backend_type AS btype,
+           a.state::text AS state,
+           COALESCE(a.wait_event_type || ':' || a.wait_event, '-') AS wait,
+           EXTRACT(epoch FROM now() - a.xact_start)::int AS age_s,
+           left(a.query, 120) AS query
+      FROM pg_stat_activity a
+     WHERE a.backend_xid::text = ANY(%(xids)s)
+"""
+
+#: Same, expanding one multixact (a shared row lock — ``FOR KEY SHARE``
+#: from a worker's FK write, ``FOR SHARE``) into each member's backend.
+#: Run per-xid: ``pg_get_multixact_members`` rejects values past the
+#: multixact horizon, and one bad xid must not sink the rest.
+_MULTIXACT_BACKEND_SQL = """
+    SELECT %(x)s AS locked_xid, a.pid, a.usename,
+           a.application_name AS app, a.backend_type AS btype,
+           a.state::text AS state,
+           COALESCE(a.wait_event_type || ':' || a.wait_event, '-') AS wait,
+           EXTRACT(epoch FROM now() - a.xact_start)::int AS age_s,
+           left(a.query, 120) AS query
+      FROM pg_get_multixact_members(%(x)s::xid) m
+      JOIN pg_stat_activity a ON a.backend_xid = m.xid
+"""
+
+#: Granted table-level locks on the relations a write touches, minus the
+#: modes every plain read/write takes — what remains is the DDL/LOCK
+#: TABLE/``ShareUpdateExclusive`` class a row-lock probe cannot see.
+_TABLE_LOCK_SQL = """
+    SELECT 'table:' || l.relation::regclass::text AS rel, l.mode AS id,
+           a.pid, a.usename, a.application_name AS app,
+           a.backend_type AS btype, a.state::text AS state,
+           COALESCE(a.wait_event_type || ':' || a.wait_event, '-') AS wait,
+           EXTRACT(epoch FROM now() - a.xact_start)::int AS age_s,
+           left(a.query, 120) AS query
+      FROM pg_locks l
+      JOIN pg_stat_activity a ON a.pid = l.pid
+     WHERE l.locktype = 'relation' AND l.granted
+       AND l.pid <> pg_backend_pid()
+       AND l.relation = ANY(%(rels)s::regclass[])
+       AND l.mode NOT IN ('AccessShareLock', 'RowShareLock', 'RowExclusiveLock')
+     LIMIT 8
+"""
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
 #: A guardrail, not a quota — the agent can do several small merges.
@@ -2621,6 +2717,104 @@ class MemoryHandler(NumericRefHandler):
             f"delete(kind='memory', id={ref_id})"
         )
 
+    @staticmethod
+    def _describe_locker(row: dict[str, Any]) -> str:
+        who = row["app"] or row["usename"] or "?"
+        age = f"{row['age_s']}s" if row["age_s"] is not None else "unknown-age"
+        detail = f"pid {row['pid']} {who!r} ({row['btype']}, xact {age}, {row['state']}"
+        if row["wait"] and row["wait"] != "-":
+            detail += f", waiting on {row['wait']}"
+        if row["query"]:
+            detail += f", running {row['query']!r}"
+        return detail + ")"
+
+    def _lock_holder_report(self, ref_id: int) -> str:
+        """Name the backend(s) currently locking rows of this memory.
+
+        Best-effort and read-only, run on a fresh pool connection AFTER
+        the failed attempt's transaction is dead (the aborted tx could
+        not query anyway). Granted row locks never reach ``pg_locks`` —
+        they live in the tuple header, so the probe reads ``xmax`` on
+        the rows the write touches (:data:`_LOCKED_ROWS_SQL`) and maps
+        each xid/multixact to the live backend holding it — the "who
+        actually holds it" gr631568's "locked by another writer"
+        refused to say. A miss means the holders cycle too fast to
+        catch (the processing stages a fresh or just-edited memory
+        churns through), not a long write nobody can find. Never
+        raises: a broken probe degrades the report, never the refusal.
+        """
+        relations = [
+            "refs",
+            "chunks",
+            "ref_tags",
+            "links",
+            "ref_events",
+            "chunk_claims",
+            "chunk_embeddings",
+            "chunk_summaries",
+            "tags",
+        ]
+        parts: list[str] = []
+        try:
+            with (
+                self.store.pool.connection() as conn,
+                conn.cursor(row_factory=dict_row) as cur,
+            ):
+                locked = cur.execute(_LOCKED_ROWS_SQL, {"ref": ref_id}).fetchall()
+                lockers: dict[str, list[dict[str, Any]]] = {}
+                xids = sorted({row["xid"] for row in locked})
+                if xids:
+                    for row in cur.execute(
+                        _LOCKER_BACKEND_SQL, {"xids": xids}
+                    ).fetchall():
+                        lockers[row["xid"]] = [row]
+                    missing = [x for x in xids if x not in lockers]
+                    if missing:
+                        # A shared row lock (an FK write's FOR KEY
+                        # SHARE, FOR SHARE) lands in xmax as a multixact
+                        # whose members resolve to their own backends.
+                        # Expanding a plain xid can itself fail — one
+                        # bad value degrades alone.
+                        for xid in missing:
+                            try:
+                                members = cur.execute(
+                                    _MULTIXACT_BACKEND_SQL, {"x": xid}
+                                ).fetchall()
+                            except Exception:
+                                log.warning(
+                                    "memory %s: multixact expansion of xmax=%s failed",
+                                    ref_id,
+                                    xid,
+                                    exc_info=True,
+                                )
+                                # The probe tx aborts on error; roll it
+                                # back so the arms below still run.
+                                conn.rollback()
+                            else:
+                                if members:
+                                    lockers[xid] = members
+                for row in locked:
+                    parts.extend(
+                        f"{row['rel']} {row['id']} by " + self._describe_locker(holder)
+                        for holder in lockers.get(row["xid"], [])
+                    )
+                parts.extend(
+                    f"{row['rel']} {row['id']} by " + self._describe_locker(row)
+                    for row in cur.execute(
+                        _TABLE_LOCK_SQL, {"rels": relations}
+                    ).fetchall()
+                )
+        except Exception:
+            log.warning("memory %s: lock-holder probe failed", ref_id, exc_info=True)
+            return "; lock holder unresolved (probe failed)"
+        if not parts:
+            return (
+                "; no live row-lock holder resolved on this memory — the "
+                "block was most likely repeated short writes from the "
+                "worker stages still processing it"
+            )
+        return "; lock held by " + "; ".join(parts[:8])
+
     def _write_retried[T](self, ref_id: int, what: str, fn: Callable[[], T]) -> T:
         """Run one memory write under bounded lock-contention retry.
 
@@ -2632,22 +2826,29 @@ class MemoryHandler(NumericRefHandler):
         :func:`retry_locked` requires (an aborted transaction can never be
         continued). A retry that reaches the lock but finds the body
         changed by the holder still refuses through ``expected_body`` as
-        before — only the lock-wait itself is replayed. When the budget
-        runs out the call refuses with a ``next=`` instead of leaking the
-        bare psycopg error.
+        before — only the lock-wait itself is replayed. The budget is
+        :data:`_WRITE_LOCK_ATTEMPTS`, not the helper default: a fresh or
+        just-edited node's own processing stages churn its rows' locks for
+        tens of seconds (gr631568). When the budget runs out the call
+        refuses with the resolved lock holder(s) and a ``next=`` instead
+        of leaking the bare psycopg error.
         """
         try:
-            return retry_locked(fn, label=f"memory {what} ref_id={ref_id}")
+            return retry_locked(
+                fn,
+                attempts=_WRITE_LOCK_ATTEMPTS,
+                label=f"memory {what} ref_id={ref_id}",
+            )
         except (LockNotAvailable, DeadlockDetected) as exc:
             raise Upstream(
-                f"memory {ref_id} is still locked by another writer "
-                "(lock-retry budget exhausted)",
+                f"memory {ref_id} {what} exhausted its lock-retry budget"
+                + self._lock_holder_report(ref_id),
                 next=(
-                    f"get(kind='memory', id={ref_id}) to re-read the "
-                    "current body, then retry the edit — contention that "
-                    "outlasts the retry budget usually means another "
-                    "session holds a long write; if it repeats, file a "
-                    "gripe naming the id"
+                    f"get(kind='memory', id={ref_id}, view='processing') "
+                    "to see the worker stages still writing this node, "
+                    "then retry the edit — a fresh or just-edited memory "
+                    "is processed in the background; if it repeats, file "
+                    "a gripe naming the id"
                 ),
             ) from exc
 
