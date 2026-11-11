@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import jinja2
@@ -182,6 +183,8 @@ def _run_backup_dir(
     replace_lock: bool = False,
     successor_on_release: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    if sys.platform == "win32":
+        pytest.skip("POSIX-only: runs the rendered bash backup script")
     local_root = tmp_path / "local"
     mount = tmp_path / "nas"
     staging = local_root / "backups" / "postgres" / "precis_prod_current"
