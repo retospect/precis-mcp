@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -350,3 +351,21 @@ def test_asa_bot_templates_stay_on_agent_rw_before_the_cutover(template: str) ->
     if template != "com.asa.bot.plist.j2":
         assert "precis_system" in post
     assert "SYS-PASS" in post or template == "claude_mcp.json.j2"
+
+
+def test_asa_bot_plist_notify_dsn_user_matches_its_password() -> None:
+    src = (_ASA_BOT / "com.asa.bot.plist.j2").read_text(encoding="utf-8")
+    ctx = {
+        **_HOSTVARS,
+        "postgres_port": 5432,
+        "asa_common_env": {},
+        "vault_pg_agent_rw_pass": "RW-PASS",
+        "vault_pg_precis_system_pass": "SYS-PASS",
+    }
+    pat = re.compile(r"postgresql://([^:@]+):([^@]+)@127\.0\.0\.1:5433/")
+    pre = pat.search(_env().from_string(src).render(**ctx))
+    post = pat.search(
+        _env().from_string(src).render(**ctx, precis_db_own_cutover_done=True)
+    )
+    assert pre is not None and pre.groups() == ("agent_rw", "RW-PASS")
+    assert post is not None and post.groups() == ("precis_system", "SYS-PASS")
