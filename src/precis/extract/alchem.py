@@ -439,6 +439,23 @@ ALCHEM_MEASURAND_MAP: Final[dict[str, str]] = {
     # ALCHEM 'plating_lifespan' is the same quantity precis calls
     # stability_duration (its own property label says so).
     "plating-lifespan": "stability-duration",
+    # td632753 — verified by the 2026-11-11 diff on the 12 held papers
+    # (xps_binding_energy and absorption_wavelength each yielded real
+    # matches; electrode_potential pairs surface the reference-electrode
+    # gap as unit≠, which is correct flagging):
+    "xps-binding-energy": "binding-energy",
+    "absorption-wavelength": "absorption-maximum-wavelength",
+    "electrode-potential": "applied-electrode-potential",
+    # A photoelectrode's photocurrent density is its measured total
+    # current density under illumination.
+    "photocurrent-density": "total-current-density",
+    # Deliberately NOT mapped (rejected candidates from the same review):
+    # - adsorption-free-energy / reaction-energy -> adsorption-energy /
+    #   reaction-step-free-energy: ΔG-vs-ΔE convention hazard (me628309);
+    # - areal-loading / pgm-loading -> catalyst-loading: areal mass
+    #   loading is mass/area, the taxon is a molar fraction (canonical 1);
+    # - mass-activity -> product-yield-rate-per-catalyst-mass: current
+    #   per mass is not product rate per mass.
 }
 
 

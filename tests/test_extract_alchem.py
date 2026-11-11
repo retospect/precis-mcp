@@ -367,6 +367,19 @@ class TestDiff:
         assert d.pairs[0].theirs is not None
         assert their_key(d.pairs[0].theirs) == "stability-duration"
 
+    @pytest.mark.parametrize(
+        ("alchem_term", "precis_key"),
+        [
+            ("xps_binding_energy", "binding-energy"),
+            ("absorption_wavelength", "absorption-maximum-wavelength"),
+            ("electrode_potential", "applied-electrode-potential"),
+            ("photocurrent_density", "total-current-density"),
+        ],
+    )
+    def test_measurand_map_td632753_terms(self, alchem_term, precis_key):
+        """Map entries added from the 2026-11-11 held-paper diff review."""
+        assert their_key(alv("V1", alchem_term)) == precis_key
+
     def test_greedy_picks_closest(self):
         o = ours(1, "overpotential", interval=(0.0408, 0.0408))
         d = diff_paper(
