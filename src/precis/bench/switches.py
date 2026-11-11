@@ -1,7 +1,7 @@
 """Server-side memory-ablation switches: remove one memory layer at a time.
 
-The memory-ablation benchmark (``docs/backlog/memory-ablation-bench.md``
-§Ablation matrix) runs one ingested corpus under many arms. Each arm turns
+The memory-ablation benchmark (memory graph, hub ``me621608``, layer arms
+``me636378``) runs one ingested corpus under many arms. Each arm turns
 one layer *off* in the server, in ranking and in the rendered output, so the
 harness can measure what the layer buys in tokens and correctness without
 re-ingesting. Nothing persisted changes: the switches gate reads only, and
@@ -48,6 +48,49 @@ nothing applied it is :data:`ALL_ON`.
 This module is stdlib-only and lives in ``precis.bench`` (whose package
 ``__init__`` imports nothing) so the memory kernel can import it without
 pulling in bench code or creating a cycle.
+
+Where each layer is cut (recorded 2026-11-09 in the retired backlog doc and
+moved here 2026-11-11; verify with grep, the sites drift):
+
+- ``no-kwd``: ``store/_mappers.py::_row_to_chunk`` (chunk rows carry no
+  keywords, so every row, cluster label and TOC is built without them),
+  ``store/_chunks_ops.py::_verbatim_pred`` (keyword-containment leg of
+  ``mode='verbatim'``), ``ChunkStore.chunk_llm_summaries_for_ref`` (column
+  not selected), ``utils/eye_render.py::_apply_bench_switches`` (the ``kwd``
+  rung is refused), ``utils/toc_db.py::_pending_keyword_chunks`` and
+  ``handlers/paper.py::_toc_readiness_line`` (no "pending" or "keyworded"
+  text for a layer that is off, not draining).
+- ``no-summary``: ``eye_render._apply_bench_switches`` (``summary`` rung
+  refused), ``ChunkStore.chunk_llm_summaries_for_ref`` (the ``llm-v1``
+  subquery is not run), ``_toc_readiness_line``.
+- ``no-categorizer``: ``utils/tag_chips.py::chips_for`` (axis, ``topic:`` and
+  ``*CASCADE`` chips), ``categorizers.py::ref_hint_line`` (hint line), and in
+  ``DispatchMixin._apply_bench_switches`` / ``_resolve_under`` a ``tags=`` /
+  ``exclude_tags=`` entry on a categorizer axis
+  (``categorizers.is_categorizer_tag``) or a taxon ``under=`` is refused with
+  a ``next=``, never silently broadened.
+- ``no-fisheye``: ``eye_render._apply_bench_switches`` (via ``parse_extent``,
+  the one funnel every eye render passes): any ``fisheye*`` rung becomes
+  ``verbatim``, so ``_rings``, ``_first_hop`` and ``_second_hop`` never run.
+- ``no-recall``: the same funnel drops ``+recall``, so ``eye_render._recall``
+  (an embedding search) never runs; the empty-ring "wider" hint stops naming
+  it.
+- ``lexical-only`` / ``semantic-only``: ``DispatchMixin._apply_bench_switches``
+  rewrites a hybrid (default) ``mode=`` on ``search`` to the existing
+  ``mode='lexical'`` / ``'semantic'`` path, so lexical-only never embeds the
+  query and semantic-only never runs the FTS leg;
+  ``mesh_eval/retrieval.py::_search_arm`` applies the same rewrite for the
+  eval's direct store call. An explicit ``mode=`` is left alone.
+
+Measurement caveats, stated rather than hidden: ``no-fisheye`` collapses to
+``verbatim``, and the document-kind ``verbatim`` chunk eye still renders its
+within-cluster neighbour window, because that window is not a rung of its
+own; a bare ``extent='+recall'`` still returns its implied ``fisheye+1hop``
+ring under ``no-recall``; ``view='keywords'`` on ``search`` still returns its
+(now empty) keyword column; the write-time ``put`` acks that name ``+recall``
+and the nearest-hub hints (``memory_hubs._hubless_hints``) are not gated,
+because the benchmark is read-only. A refused rung or filter is an error the
+harness counts, not a degraded answer.
 """
 
 from __future__ import annotations

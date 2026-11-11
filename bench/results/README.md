@@ -7,8 +7,9 @@ committed description of their schema. `scripts/bench report <file> [<file>…]`
 prints the markdown tables, and with several files (one per caller) a side by
 side comparison.
 
-Design and slices: `docs/backlog/memory-ablation-bench.md` (§Ablation matrix,
-§Metrics per task, §Reproducibility). Code: `src/precis/bench/runner.py`
+Design: the memory graph, hub `me621608` (layer arms `me636378`; gold, agent
+tiers and metrics `me636377`; reproducibility `me621611`). Slices are the todo
+tree under `td604839`. Code: `src/precis/bench/runner.py`
 (runner, report), `raw.py` (the raw-log reader behind `bench raw`),
 `layers.py` (coverage guard, local fill), `planted_ingest.py`
 (planted facts into the dev DB).

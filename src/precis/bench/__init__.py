@@ -8,5 +8,5 @@ committed-manifest selection, the cached fetch and the loader that mints one
 ``kind='paper'`` ref per QASPER paper into a fresh dev database. The loader
 writes text, cards and chunk offsets only; embeddings and derived passes are
 the worker's job (``fill_embeddings``). Entry point: ``scripts/bench``; design
-and slices: ``docs/backlog/memory-ablation-bench.md``.
+in the memory graph, hub ``me621608``; slices under todo ``td604839``.
 """

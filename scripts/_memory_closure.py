@@ -1,6 +1,6 @@
 """memory-closure — static import closure of the precis memory subsystem.
 
-Read-only analysis for td605609 (slice 0 of docs/backlog/memory-ablation-bench.md):
+Read-only analysis for td605609 (slice 0 of the memory-ablation benchmark, me621608):
 can the memory stack be extracted into a small demo repo?  Parses every .py
 under src/precis with ``ast`` (nothing is imported), builds the intra-package
 import graph, and reports the transitive closure from the memory entry modules.

@@ -28,7 +28,7 @@
 # checkout). Embeddings are the worker's job:
 #   scripts/dev uv run --no-sync precis worker --only embed --embedder mock
 #
-# Design and slices: docs/backlog/memory-ablation-bench.md
+# Design: memory graph hub me621608; slices: todo tree under td604839
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

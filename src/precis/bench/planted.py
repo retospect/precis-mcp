@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Planted-fact task generator (slice 4b of docs/backlog/memory-ablation-bench.md).
+# Planted-fact task generator (slice 4b of the memory-ablation bench, me621608).
 # Pure and seeded: no DB, no model calls. A fact is minted from a template with
 # made-up entity names, planted as one sentence in a host paragraph (exact
 # character span recorded) and as a memory node, and asked back at a
