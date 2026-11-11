@@ -1109,6 +1109,19 @@ class SearchMixin(RuntimeShape):
                 # Any since=/until=/sort= the call also carries reaches
                 # the handler, which refuses what it cannot apply.
                 return False
+            if resolved == "job" and (
+                args.get("job_type") is not None
+                or (
+                    isinstance(args.get("__extras__"), dict)
+                    and args["__extras__"].get("job_type") is not None
+                )
+            ):
+                # gr608734: job_type is the kind's own meta filter —
+                # the cross-kind primitive has no way to apply it and
+                # refused the call outright. The handler's job_type path
+                # applies q=/since=/until= itself and refuses what it
+                # cannot (sort=/mode=).
+                return False
             q = args.get("q")
             if (
                 resolved == "job"

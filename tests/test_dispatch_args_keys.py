@@ -484,6 +484,79 @@ def test_job_search_nested_sort_routes_to_source_search(
     assert "not accepted by job.search" not in out, out
 
 
+def test_job_type_search_with_q_and_since_stays_on_job(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr608734: ``search(kind='job', q='…', since=…, args={'job_type':
+    '…'})`` is the kind's own filtered search — the source-search
+    primitive has no ``job_type`` concept and refused the call outright
+    (``args['job_type'] is not applied by a source search``). The dated
+    job listing applies all three filters itself."""
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title="land_slice td591266",
+        meta={"job_type": "land_slice"},
+    )
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title="land_slice td999999",
+        meta={"job_type": "release_poll"},
+    )
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "q": "land_slice td591266",
+            "since": "2024-01-01",
+            "status": "*",
+            "__extras__": {"job_type": "land_slice"},
+        },
+    )
+    assert "[error" not in out, out
+    assert "job entr" in out, out
+    assert "with job_type 'land_slice'" in out, out
+    assert "td999999" not in out, out
+
+
+def test_job_type_top_level_also_stays_on_job(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The top-level ``job_type=`` spelling takes the same carve-out."""
+    store.insert_ref(kind="job", slug=None, title="t", meta={"job_type": "sweep"})
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "job_type": "sweep",
+            "since": "2024-01-01",
+            "status": "*",
+        },
+    )
+    assert "[error" not in out, out
+    assert "with job_type 'sweep'" in out, out
+
+
+def test_job_type_search_refuses_sort_on_the_job_path(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A ``sort=`` the job_type path can't apply still refuses — now
+    with the job listing's own message (its ordering is already
+    recency), not the source-search field gate."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "sort": "recency",
+            "__extras__": {"job_type": "land_slice"},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "job_type-filtered" in out, out
+    assert "not applied by a source search" not in out, out
+
+
 def test_nested_sort_reaches_the_kind_browse_path(
     runtime_with_store: PrecisRuntime,
 ) -> None:
