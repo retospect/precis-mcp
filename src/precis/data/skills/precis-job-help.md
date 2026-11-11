@@ -598,9 +598,13 @@ A detached `ssh_node` job whose process handle cannot be verified on its
 node (missing launch identity — e.g. a handle minted before identity
 stamping, gr572654) cannot be signalled: the row holds
 `cancel_requested` while the plugin's poll follows the child to its real
-outcome — a running `land_slice` ship still lands and notifies — until
-`meta.deadline`, when the row cancels anyway. The remote process is never
-stopped by tagging alone.
+outcome — a running `land_slice` ship still lands and notifies. Past
+`meta.deadline` the row keeps following: the bound applies to the
+compute, never to the record — a `cancelled` stamp while the ship ran on
+is what dropped the land's post-steps (gr572654). Only a child proven
+gone — its process slot recycled or the host rebooted — cancels after
+the poll finds no outcome to record. The remote process is never stopped
+by tagging alone.
 
 Agents drive only these `tag` edges: queued|yielded ->
 cancel_requested|cancelled;

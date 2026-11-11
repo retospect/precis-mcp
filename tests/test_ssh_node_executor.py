@@ -3218,16 +3218,29 @@ def test_cancel_requested_unverifiable_handle_follows_poll(
     assert not _meta(store, rid).get("detached_orphan_skipped")
 
 
-def test_cancel_requested_unverifiable_past_deadline_cancels_blind(
+def test_cancel_requested_unverifiable_past_deadline_still_follows(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The follow is bounded exactly like the running poll: past
-    ``meta.deadline`` the blind cancel is the backstop, the skip reason
-    still recorded."""
+    """gr572654 review: ``meta.deadline`` bounds the compute, never the
+    record. A blind cancel past it lied exactly as before — a ship that
+    finished on its own then read ``cancelled`` and its land-notify never
+    ran. The crossing is stamped once (``cancel_follow_overdue``) and the
+    row keeps following ``spec.poll`` to the child's real terminal
+    outcome."""
+    polled: list[Any] = []
+    terminal: dict[str, bool] = {"done": False}
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        if not terminal["done"]:
+            return False
+        ctx.set_status("succeeded")
+        return True
+
     monkeypatch.setattr(
         ssh_node,
         "get_job_type",
-        lambda name: _spec(submit=lambda c, s: None, poll=lambda c, h: False),
+        lambda name: replace(_kill_reap_spec([], []), poll=_poll),
     )
     monkeypatch.setenv("PRECIS_NODE", "spark")
     handle = _identity_handle()
@@ -3237,8 +3250,68 @@ def test_cancel_requested_unverifiable_past_deadline_cancels_blind(
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
+    assert _status(store, rid) == "cancel_requested"
+    assert polled == [handle]
+    meta = _meta(store, rid)
+    assert meta["cancel_follow"] == "missing-identity"
+    assert meta["cancel_follow_overdue"]["deadline"] == meta["deadline"]
+    assert not meta.get("detached_orphan_skipped")
+    assert any("deadline passed" in t for t in _job_events(store, rid))
+
+    # The crossing is stamped once — the next pass adds no second note.
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert len([t for t in _job_events(store, rid) if "deadline passed" in t]) == 1
+
+    # The child's real terminal outcome still lands — never a fake
+    # "cancelled" over a finished ship.
+    terminal["done"] = True
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert _status(store, rid) == "succeeded"
+
+
+def test_cancel_requested_unverifiable_dead_child_cancels(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start-time-mismatch``/``boot-id-mismatch`` prove the recorded
+    child is gone — its slot recycled or the host rebooted. The poll gets
+    its word first (a ship that finished before dying left its outcome in
+    the exit file); a non-terminal read is watching a foreign slot, so the
+    row cancels rather than following a stranger forever."""
+    polled: list[Any] = []
+    terminal: dict[str, bool] = {"done": False}
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        if not terminal["done"]:
+            return False
+        ctx.set_status("succeeded")
+        return True
+
+    monkeypatch.setattr(
+        ssh_node, "_detached_identity_reason", lambda handle: "start-time-mismatch"
+    )
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: replace(_kill_reap_spec([], []), poll=_poll),
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert polled == [handle]
     assert _status(store, rid) == "cancelled"
-    assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "missing-identity"
+    meta = _meta(store, rid)
+    assert meta["detached_orphan_skipped"]["reason"] == "start-time-mismatch"
+
+    # When the poll CAN settle it — the ship finished before its slot
+    # recycled — the real outcome stands even for the dead-child class.
+    terminal["done"] = True
+    rid2 = _mk_cancel_job(store, compute_handle=_identity_handle(), target_node="spark")
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert _status(store, rid2) == "succeeded"
 
 
 def test_cancel_requested_unverifiable_without_poll_cancels_blind(

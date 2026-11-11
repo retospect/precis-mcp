@@ -54,9 +54,10 @@ Each pass:
    or the detached compute would run unwatched (gr567620). A handle whose
    process identity cannot be verified is never signalled; while the
    plugin can still observe the child (``spec.poll``) the row then holds
-   ``cancel_requested`` and follows its real outcome until
-   ``meta.deadline`` — a blind cancel dropped a land's post-steps while
-   its ship ran on (gr572654).
+   ``cancel_requested`` and follows its real outcome for as long as the
+   child runs — ``meta.deadline`` bounds the compute, not the record, and
+   a blind cancel dropped a land's post-steps while its ship ran on
+   (gr572654).
 0.5. **Reap** detached orphans (gr520866): a terminal job still carrying
    ``meta.compute_handle`` — terminalized by a path that skipped
    ``spec.kill`` (the crash-loop guard, a sweeper transition, a direct
@@ -266,6 +267,17 @@ SELECT r.ref_id, r.title, r.meta
 #: the in-proc child supervisor gives a group to exit
 #: (``child_compute.DEFAULT_GRACE_S``).
 _CANCEL_KILL_GRACE_S = 30.0
+
+#: Identity failures that prove the recorded child is GONE — the host
+#: rebooted (``boot-id-mismatch``) or the group leader's process slot was
+#: recycled (``start-time-mismatch``). The poll still gets its word first
+#: in :func:`_cancel_unverifiable` — a ship that finished before dying
+#: left its real outcome in the exit file — but a live process at the
+#: slot is foreign, so a poll that cannot settle the record is watching
+#: nothing, forever. The other reasons (``missing-identity``,
+#: ``identity-unreadable``, ``invalid-handle``) leave the child plausibly
+#: alive: the row keeps following.
+_CANCEL_DEAD_CHILD_REASONS = frozenset({"boot-id-mismatch", "start-time-mismatch"})
 
 
 def _detached_pgid(handle: Any) -> int | None:
@@ -963,10 +975,14 @@ def _cancel_unverifiable(
     When the plugin can still observe the child (``spec.poll``), hold
     ``cancel_requested`` and let the poll drive the real terminal outcome
     each pass — the status it writes is the truth (a finished ship is a
-    land, not a cancel). ``meta.deadline`` bounds the follow exactly as it
-    bounds the running poll — minted once at the wall bound when absent —
-    and past it the blind cancel is the backstop, the skip reason still
-    recorded. With no ``poll`` hook the blind cancel is all there is."""
+    land, not a cancel). ``meta.deadline`` — minted once at the wall bound
+    when absent — stays the COMPUTE's bound, not the record's: crossing it
+    is stamped once (``meta.cancel_follow_overdue``) but never fakes a
+    terminal status, since a ship past its bound still lands and still
+    needs its post-steps. The follow ends early only when the identity
+    failure itself proves the child is gone
+    (:data:`_CANCEL_DEAD_CHILD_REASONS`) and the poll has no outcome to
+    record. With no ``poll`` hook the blind cancel is all there is."""
     store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     if spec is None or spec.poll is None:
         return _cancel_terminalize(
@@ -975,25 +991,14 @@ def _cancel_unverifiable(
             f"({reason}); no poll to follow — cancelled without signalling",
             skip_reason=reason,
         )
-    deadline = meta.get("deadline")
     now = time.time()
-    try:
-        past = deadline is not None and now > float(deadline)
-    except (TypeError, ValueError):
-        past = True  # an unreadable bound never justifies an unbounded follow
-    if past:
-        return _cancel_terminalize(
-            ctx,
-            summary=f"runner: cancel requested — handle unverifiable "
-            f"({reason}) and meta.deadline past; cancelled without "
-            "signalling",
-            skip_reason=reason,
-        )
+    deadline = meta.get("deadline")
     writes: dict[str, Any] = {}
     if deadline is None:
-        # A detached row never gets an unbounded poll (the module's own
-        # §H-piece-2 invariant) — mint the bound the submit stamp leaves.
-        writes["deadline"] = now + _wall_bound_seconds(meta, spec)
+        # Keep the bound the submit stamp leaves — the compute's nominal
+        # wall, and the baseline the overdue note below reads.
+        deadline = now + _wall_bound_seconds(meta, spec)
+        writes["deadline"] = deadline
     if not meta.get("cancel_follow"):
         writes["cancel_follow"] = reason
     if writes:
@@ -1005,12 +1010,45 @@ def _cancel_unverifiable(
                 _JOB_EVENT_KIND,
                 f"runner: cancel requested — handle unverifiable ({reason}); "
                 "the child cannot be signalled — holding cancel_requested "
-                "and following its real outcome via the plugin's poll until "
-                "meta.deadline",
+                "and following its real outcome via the plugin's poll",
                 conn=conn,
             )
             conn.commit()
-    return bool(spec.poll(ctx, handle))
+    if spec.poll(ctx, handle):
+        return True
+    if reason in _CANCEL_DEAD_CHILD_REASONS:
+        return _cancel_terminalize(
+            ctx,
+            summary=f"runner: cancel requested — handle unverifiable "
+            f"({reason}): the recorded child is gone and the poll found "
+            "no outcome to follow — cancelled",
+            skip_reason=reason,
+        )
+    try:
+        past = deadline is not None and now > float(deadline)
+    except (TypeError, ValueError):
+        past = True  # an unreadable bound reads as crossed
+    if past and not meta.get("cancel_follow_overdue"):
+        with store.pool.connection() as conn:
+            _set_meta(
+                conn,
+                ref_id,
+                cancel_follow_overdue={
+                    "at": datetime.now(UTC).isoformat(),
+                    "deadline": deadline,
+                },
+            )
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                "runner: meta.deadline passed while the child cannot be "
+                "signalled — still following its real outcome; the row "
+                "stays cancel_requested rather than writing a fake cancel",
+                conn=conn,
+            )
+            conn.commit()
+    return False
 
 
 def _cancel_one(ctx: DispatchContext) -> bool:
@@ -1028,7 +1066,8 @@ def _cancel_one(ctx: DispatchContext) -> bool:
     forever. An unverifiable handle fails closed — never signalled — but
     the record does not fake a cancel: when the plugin can still observe
     the child (``spec.poll``) the row holds ``cancel_requested`` and the
-    poll drives the real terminal outcome until ``meta.deadline``
+    poll drives the real terminal outcome for as long as the child runs —
+    ``meta.deadline`` bounds the compute, never the record
     (:func:`_cancel_unverifiable`, gr572654). On the signalled path
     ``spec.poll`` never runs, so a ``land_slice`` cancel never reaches its
     green-path cleanup: the worktree and branch stay for forensics
