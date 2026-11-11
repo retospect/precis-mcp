@@ -7,6 +7,9 @@ subset of QASPER (AI2, CC BY 4.0). :mod:`precis.bench.corpus` holds the
 committed-manifest selection, the cached fetch and the loader that mints one
 ``kind='paper'`` ref per QASPER paper into a fresh dev database. The loader
 writes text, cards and chunk offsets only; embeddings and derived passes are
-the worker's job (``fill_embeddings``). Entry point: ``scripts/bench``; design
+the worker's job (``fill_embeddings``). Arms that change the corpus itself
+(chunker, edges, size) re-ingest into their own throwaway databases —
+``corpus.Variant`` / ``corpus.provision_variant``, one ``runner.World``
+each. Entry point: ``scripts/bench``; design
 in the memory graph, hub ``me621608``; slices under todo ``td604839``.
 """

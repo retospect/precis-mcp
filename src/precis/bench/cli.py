@@ -22,6 +22,30 @@ def _parser() -> argparse.ArgumentParser:
     )
     ing.add_argument("--manifest", type=Path, default=None)
     ing.add_argument("--cache", type=Path, default=None)
+    ing.add_argument(
+        "--chunker",
+        default=corpus.DEFAULT_CHUNKER,
+        help="sentence-pysbd (default), section, or fixed-<tokens>",
+    )
+
+    var = sub.add_parser(
+        "variant",
+        help="provision a re-ingest arm's own throwaway database (``run`` "
+        "does this itself; this command is for a separate pg_dump/warmup "
+        "step before a long run)",
+    )
+    var.add_argument(
+        "arm",
+        metavar="ARM",
+        help="re-ingest arm: "
+        + ", ".join(v.arm for v in corpus.VARIANTS)
+        + ", or distractor-<N>",
+    )
+    var.add_argument(
+        "--set", dest="set_name", choices=sorted(corpus.SET_SIZES), default="quick"
+    )
+    var.add_argument("--manifest", type=Path, default=None)
+    var.add_argument("--cache", type=Path, default=None)
 
     man = sub.add_parser(
         "manifest", help="rebuild bench/corpus/manifest.json (maintainers)"
@@ -67,7 +91,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--arms",
         default=None,
-        help="comma list of arms (default: all); see precis.bench.runner.ALL_ARMS",
+        help="comma list of arms (default: precis.bench.runner.ALL_ARMS); "
+        "re-ingest arms chunk-sentence-pysbd, chunk-fixed-512, chunk-section, "
+        "no-links and distractor-<N> each provision and run in their own "
+        "throwaway database",
     )
     run.add_argument("--seed", type=int, default=runner.PLANTED_SEED)
     run.add_argument("--out", type=Path, default=None)
@@ -147,9 +174,9 @@ def _parser() -> argparse.ArgumentParser:
     raw_p.add_argument(
         "--arm",
         action="append",
-        choices=list(runner.ALL_ARMS),
         metavar="ARM",
-        help="only this arm (repeatable); default: every arm",
+        help="only this arm (repeatable); default: every arm — re-ingest "
+        "arms (chunk-*, no-links, distractor-<N>) name themselves",
     )
     raw_p.add_argument("--task", default=None, help="only this task id")
     raw_p.add_argument("--source", choices=("qasper", "planted"), default=None)
@@ -170,11 +197,37 @@ def _ingest(args: argparse.Namespace) -> int:
     manifest = corpus.load_manifest(args.manifest)
     with psycopg.connect(dsn, autocommit=True, connect_timeout=15) as conn:
         report = corpus.ingest_set(
-            conn, args.set_name, manifest=manifest, cache=args.cache
+            conn,
+            args.set_name,
+            manifest=manifest,
+            cache=args.cache,
+            chunker=args.chunker,
         )
     print(report.line())
     print(
         "embeddings and derived passes are the worker's job (precis worker --only embed)"
+    )
+    return 0
+
+
+def _variant(args: argparse.Namespace) -> int:
+    variant = corpus.variant_for_arm(args.arm)
+    if variant is None:
+        raise corpus.BenchCorpusError(
+            f"unknown re-ingest arm {args.arm!r}; known: "
+            f"{', '.join(v.arm for v in corpus.VARIANTS)} and distractor-<N>"
+        )
+    dsn = corpus.variant_dsn(_dsn(), variant.arm)
+    report = corpus.provision_variant(
+        dsn,
+        variant,
+        set_name=args.set_name,
+        manifest=corpus.load_manifest(args.manifest),
+        cache=args.cache,
+    )
+    print(
+        f"{args.arm}: {corpus.variant_dbname(dsn)} — "
+        + ("already provisioned" if report["already"] else json.dumps(report))
     )
     return 0
 
@@ -353,6 +406,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "tasks":
             return _tasks(args)
+        if args.cmd == "variant":
+            return _variant(args)
         if args.cmd == "fill":
             return _fill(args)
         if args.cmd == "run":

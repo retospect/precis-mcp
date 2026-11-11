@@ -505,3 +505,240 @@ def test_build_manifest_heldout_ranks_test_split_and_refuses_overlap(
 def test_tasks_and_ingest_accept_heldout_but_run_does_not() -> None:
     assert corpus.HELDOUT_SET in corpus.ALL_SETS
     assert corpus.HELDOUT_SET not in corpus.SET_SIZES
+
+
+# ---------------------------------------------------------------------------
+# chunker variants and re-ingest worlds (gr636325 / td606579)
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_windows_slice_contiguously_without_overlap():
+    assert corpus.fixed_windows("abcdefghij", 4) == ["abcd", "efgh", "ij"]
+    assert corpus.fixed_windows("", 4) == []
+    assert corpus.fixed_windows("abc", 4) == ["abc"]
+
+
+def test_fixed_chunker_width_is_four_chars_per_token(fake_papers):
+    paper = fake_papers["9901.00001"][1]
+    chunks = corpus.chunk_units(corpus.canonical_units(paper), chunker="fixed-2")
+    assert len(chunks) > 10  # fixed-2 is 8-char windows
+    assert all(len(c.text) <= 8 for c in chunks)
+    canon = corpus.canonical_text(paper)
+    for c in chunks:
+        q = _meta(c)["qasper"]
+        assert canon[q["doc_char_start"] : q["doc_char_end"]] == c.text
+    assert all(_meta(c)["bench_chunker"] == "fixed-2" for c in chunks)
+
+
+def test_section_chunker_emits_one_chunk_per_unit(fake_papers):
+    paper = fake_papers["9901.00001"][1]
+    chunks = corpus.chunk_units(corpus.canonical_units(paper), chunker="section")
+    # every emitted chunk is one whole source unit (the duplicate paragraph
+    # text is dropped by the seen_texts dedupe, as under the default chunker)
+    assert {c.text for c in chunks} == {u.text for u in corpus.canonical_units(paper)}
+    assert all(_meta(c)["bench_chunker"] == "section" for c in chunks)
+    canon = corpus.canonical_text(paper)
+    for c in chunks:
+        q = _meta(c)["qasper"]
+        assert q["para_char_start"] == 0
+        assert canon[q["doc_char_start"] : q["doc_char_end"]] == c.text
+
+
+def test_default_chunker_is_unchanged_and_tagged_sentence_pysbd(fake_papers):
+    paper = fake_papers["9901.00001"][1]
+    units = corpus.canonical_units(paper)
+    default = corpus.chunk_units(units)
+    named = corpus.chunk_units(units, chunker=corpus.DEFAULT_CHUNKER)
+    assert [c.text for c in default] == [c.text for c in named]
+    assert all(_meta(c)["bench_chunker"] == corpus.DEFAULT_CHUNKER for c in default)
+    # the sentence chunker still splits the 40-sentence paragraph finer
+    # than ``section`` does
+    assert len(default) > len(corpus.chunk_units(units, chunker=corpus.SECTION_CHUNKER))
+
+
+def test_unknown_chunker_is_refused(fake_papers):
+    units = corpus.canonical_units(fake_papers["9901.00001"][1])
+    for bad in ("paragraphs", "fixed", "fixed-x", "fixed--4"):
+        with pytest.raises(corpus.BenchCorpusError, match="unknown chunker"):
+            corpus.chunk_units(units, chunker=bad)
+    with pytest.raises(corpus.BenchCorpusError, match="unknown chunker"):
+        corpus.paper_to_write(
+            "9901.00001", "train", fake_papers["9901.00001"][1], chunker="bogus"
+        )
+
+
+def test_variant_registry_names_the_reingest_arms():
+    v = corpus.variant_for_arm("chunk-sentence-pysbd")
+    assert v is not None and v.chunker == "sentence-pysbd" and v.links
+    assert corpus.variant_for_arm("chunk-fixed-512") == corpus.Variant(
+        "chunk-fixed-512", chunker="fixed-512"
+    )
+    assert corpus.variant_for_arm("chunk-section") == corpus.Variant(
+        "chunk-section", chunker="section"
+    )
+    no_links = corpus.variant_for_arm("no-links")
+    assert no_links is not None and no_links.links is False
+    assert corpus.variant_for_arm("distractor-3") == corpus.Variant(
+        "distractor-3", distractor=3
+    )
+    for bogus in ("distractor-0", "distractor-x", "chunk-fixed-64", "all-on", ""):
+        assert corpus.variant_for_arm(bogus) is None, bogus
+
+
+def test_variant_dsn_derives_a_throwaway_dbname():
+    from psycopg.conninfo import conninfo_to_dict
+
+    dsn = "postgresql://u@localhost:5432/precis_dev"
+    out = corpus.variant_dsn(dsn, "chunk-fixed-512")
+    assert conninfo_to_dict(out)["dbname"] == "precis_dev__chunk_fixed_512"
+    assert conninfo_to_dict(out)["host"] == "localhost"
+    assert corpus.variant_dbname(out) == "precis_dev__chunk_fixed_512"
+    for name in ("precis_test_abc123", "precis_bench_x"):
+        assert (
+            conninfo_to_dict(
+                corpus.variant_dsn(f"postgresql://localhost/{name}", "no-links")
+            )["dbname"]
+            == f"{name}__no_links"
+        )
+    with pytest.raises(corpus.BenchCorpusError, match="not a re-ingest arm"):
+        corpus.variant_dsn(dsn, "all-on")
+    with pytest.raises(corpus.BenchCorpusError):
+        corpus.variant_dsn("postgresql://localhost/prod_main", "no-links")
+
+
+def test_select_distractors_is_deterministic_and_excludes_gold_sets():
+    papers = {
+        "9901.00001": ("train", _fake_paper(1)),
+        "9901.00002": ("dev", _fake_paper(2)),
+        "9901.00003": ("train", _fake_paper(3)),
+        "9901.00004": ("train", _fake_paper(4)),
+        "9901.00005": ("dev", _fake_paper(5)),
+    }
+    exclude = {"9901.00001", "9901.00003"}
+    got = corpus.select_distractors(papers, exclude=exclude, times=1, base_paragraphs=2)
+    assert got == corpus.select_distractors(
+        papers, exclude=exclude, times=1, base_paragraphs=2
+    )
+    # dev-split papers and every excluded (manifest) id stay out
+    assert got == ["9901.00004"]
+
+
+def test_select_distractors_refuses_when_the_pool_is_too_small():
+    papers = {"9901.00001": ("train", _fake_paper(1))}
+    with pytest.raises(corpus.BenchCorpusError, match="distractor"):
+        corpus.select_distractors(papers, exclude=set(), times=10, base_paragraphs=100)
+
+
+# ---------------------------------------------------------------------------
+# provision_variant (DB; needs a real create-database)
+# ---------------------------------------------------------------------------
+
+
+def _clone_template(store: Any, dsn: str) -> None:
+    """Stand-in for :func:`corpus.ensure_database` in tests: clone the
+    maintained test template (schema, extensions and vocabulary in one copy)
+    instead of CREATE + apply_all, which needs ``CREATE EXTENSION``
+    privileges the test role does not hold."""
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict
+
+    from tests import conftest
+
+    name = str(conninfo_to_dict(dsn)["dbname"])
+    with psycopg.connect(store.dsn, autocommit=True) as conn:
+        hit = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
+        ).fetchone()
+        if hit is None:
+            conn.execute(
+                sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                    sql.Identifier(name), sql.Identifier(conftest._TEMPLATE_DB)
+                )
+            )
+
+
+def _drop_db(store: Any, dsn: str) -> None:
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict
+
+    name = str(conninfo_to_dict(dsn)["dbname"])
+    with psycopg.connect(store.dsn, autocommit=True) as conn:
+        conn.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                sql.Identifier(name)
+            )
+        )
+
+
+def test_provision_variant_creates_ingests_then_reports_already(
+    store, fake_papers, monkeypatch
+):
+    import psycopg
+
+    monkeypatch.setattr(
+        corpus, "ensure_database", lambda dsn: _clone_template(store, dsn)
+    )
+    vdsn = corpus.variant_dsn(store.dsn, "chunk-fixed-512")
+    man = corpus.build_manifest(fake_papers, quick_n=1, full_n=2)
+    variant = corpus.variant_for_arm("chunk-fixed-512")
+    assert variant is not None
+    try:
+        rep = corpus.provision_variant(
+            vdsn, variant, set_name="full", manifest=man, papers=fake_papers
+        )
+        assert rep["already"] is False and rep["chunker"] == "fixed-512"
+        with psycopg.connect(vdsn, autocommit=True) as conn:
+            rows = conn.execute("SELECT meta FROM chunks WHERE ord >= 0").fetchall()
+            assert rows
+            assert all(r[0]["bench_chunker"] == "fixed-512" for r in rows)
+            assert all(r[0]["qasper"]["doc_char_start"] is not None for r in rows)
+        again = corpus.provision_variant(
+            vdsn, variant, set_name="full", manifest=man, papers=fake_papers
+        )
+        assert again["already"] is True and "ingest" not in again
+    finally:
+        _drop_db(store, vdsn)
+
+
+def test_provision_variant_distractor_pads_with_flagged_non_gold_papers(
+    store, fake_papers, monkeypatch
+):
+    import psycopg
+
+    monkeypatch.setattr(
+        corpus, "ensure_database", lambda dsn: _clone_template(store, dsn)
+    )
+    papers = {**fake_papers, "9901.00004": ("train", _fake_paper(4))}
+    vdsn = corpus.variant_dsn(store.dsn, "distractor-1")
+    man = corpus.build_manifest(fake_papers, quick_n=1, full_n=2)
+    variant = corpus.variant_for_arm("distractor-1")
+    assert variant is not None
+    try:
+        rep = corpus.provision_variant(
+            vdsn, variant, set_name="full", manifest=man, papers=papers
+        )
+        pad = rep["distractors"]
+        # the manifest holds 9901.00001+02; 03 (unusable tier) and 04 are the
+        # train-split distractor pool, and 1x the set's paragraph count takes
+        # both
+        assert pad["inserted"] == 2 and pad["wanted_paragraphs"] > 0
+        with psycopg.connect(vdsn, autocommit=True) as conn:
+            flags = conn.execute(
+                "SELECT meta->'qasper'->>'id', "
+                "meta->'qasper'->>'bench_distractor' FROM refs "
+                "WHERE kind = 'paper' ORDER BY 1"
+            ).fetchall()
+        assert dict(flags) == {
+            "9901.00001": None,
+            "9901.00002": None,
+            "9901.00003": "true",
+            "9901.00004": "true",
+        }
+        again = corpus.provision_variant(
+            vdsn, variant, set_name="full", manifest=man, papers=papers
+        )
+        assert again["already"] is True
+    finally:
+        _drop_db(store, vdsn)

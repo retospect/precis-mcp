@@ -1512,3 +1512,194 @@ def test_lexical_only_is_the_lexical_leg_of_hybrid_and_nothing_else(world):
         "search", {"kind": "paper", "q": q, "unique_per": "chunk", "page_size": 10}
     )
     assert extract_chunk_handles(body.split("\nNext:", 1)[0]) == hybrid_leg[:10]
+
+
+# ---------------------------------------------------------------------------
+# re-ingest arms (worlds) — gr636325 / td606579
+# ---------------------------------------------------------------------------
+
+
+def test_arm_flags_accepts_reingest_arms_and_refuses_the_rest():
+    for arm in (
+        "chunk-sentence-pysbd",
+        "chunk-fixed-512",
+        "chunk-section",
+        "no-links",
+        "distractor-4",
+    ):
+        assert runner.arm_flags(arm) == {}
+    for bad in ("distractor-0", "distractor-x", "chunk-fixed-64", "links-off"):
+        with pytest.raises(runner.BenchRunError, match="unknown arm"):
+            runner.arm_flags(bad)
+
+
+def test_arm_order_lists_known_arms_first_then_first_seen_variants():
+    rows = [
+        {"arm": "distractor-2"},
+        {"arm": "chunk-section"},
+        {"arm": "no-kwd"},
+        {"arm": "all-on"},
+        {"arm": "distractor-2"},
+    ]
+    assert runner.arm_order(rows) == [
+        "all-on",
+        "no-kwd",
+        "distractor-2",
+        "chunk-section",
+    ]
+
+
+def test_no_links_vacuity_reads_the_edges_layer():
+    v = layers.arm_vacuity("no-links", ZERO, embedder_id="bge-m3")
+    assert v["vacuous"] is True and "edges" in v["reason"]
+    full = {k: (0.9 if k.endswith("_frac") else x) for k, x in ZERO.items()}
+    assert (
+        layers.arm_vacuity("no-links", full, embedder_id="bge-m3")["vacuous"] is False
+    )
+
+
+def test_arm_table_uses_the_world_arms_own_coverage():
+    rows = [_row("t1", "all-on", "a"), _row("t1", "no-links", "b")]
+    edged = {**ZERO, "refs_with_edge_frac": 0.9}
+    # judged on the base DB's coverage no-links looks live; judged on its own
+    # (edgeless) world's coverage it is vacuous
+    block = runner.arm_table(["all-on", "no-links"], edged, rows, embedder_id="bge-m3")
+    assert block["no-links"]["vacuous"] is False
+    block = runner.arm_table(
+        ["all-on", "no-links"],
+        edged,
+        rows,
+        embedder_id="bge-m3",
+        arm_coverage={"no-links": ZERO},
+    )
+    assert block["no-links"]["vacuous"] is True
+
+
+def test_world_arm_identical_to_all_on_is_a_finding_not_vacuity():
+    # chunk-sentence-pysbd is the reference column: its transcripts should
+    # equal all-on's. identical_to_all_on_frac is still reported.
+    rows = [
+        _row("t1", "all-on", "a"),
+        _row("t1", "chunk-sentence-pysbd", "a"),
+        _row("t1", "no-kwd", "a"),
+    ]
+    block = runner.arm_table(
+        ["all-on", "chunk-sentence-pysbd", "no-kwd"],
+        ZERO,
+        rows,
+        embedder_id="bge-m3",
+    )
+    assert block["chunk-sentence-pysbd"]["identical_to_all_on_frac"] == 1.0
+    assert block["chunk-sentence-pysbd"]["vacuous"] is False
+    assert block["no-kwd"]["vacuous"] is True  # coverage says so anyway (ZERO)
+
+
+def test_report_markdown_names_the_worlds(tmp_path: Path):
+    res = _raw_results()
+    res["header"]["worlds"] = {
+        "no-links": {"database": "precis_dev__no_links"},
+    }
+    md = runner.report_markdown(res)
+    assert "- worlds: no-links → `precis_dev__no_links`" in md
+
+
+def test_run_matrix_routes_world_arms_and_skips_non_qasper_tasks(world):
+    tasks, _ = runner.select_tasks(world["rows"])
+    qtask = next(t for t in tasks if t.source == "qasper" and not t.abstain)
+    mtask = runner.BenchTask(
+        {
+            "id": "m1",
+            "type": "memory",
+            "question": "Which fact was planted?",
+            "docs": [],
+            "answer": ["x"],
+            "answer_kind": "free_form",
+            "evidence": [],
+            "labelled_by": "planted",
+            "source": {},
+        },
+        ("The planted fact.",),
+    )
+    other = runner.World(
+        store=world["store"],
+        runtime=world["runtime"],
+        catalog=world["catalog"],
+    )
+    rows = runner.run_matrix(
+        world["store"],
+        world["runtime"],
+        world["embedder"],
+        [qtask, mtask],
+        ["all-on", "chunk-fixed-512"],
+        worlds={"chunk-fixed-512": other},
+        budget=800,
+    )
+    pairs = {(r["task"], r["arm"]) for r in rows}
+    assert pairs == {
+        (qtask.id, "all-on"),
+        (mtask.id, "all-on"),
+        (qtask.id, "chunk-fixed-512"),
+    }
+    # a world arm runs the scripted caller, not a baseline
+    w = next(r for r in rows if r["arm"] == "chunk-fixed-512")
+    assert w["caller"] == runner.DEFAULT_CALLER and w["call_log"]
+
+
+def test_run_cli_provisions_worlds_and_records_them(
+    world, manifest, task_rows, tmp_path: Path, monkeypatch
+):
+    man_path = tmp_path / "manifest.json"
+    man_path.write_text(corpus.manifest_text(manifest), encoding="utf-8")
+    tasks_path = tmp_path / "tasks.jsonl"
+    tasks_path.write_text(gold.dump_tasks(task_rows), encoding="utf-8")
+    monkeypatch.setenv(
+        "PRECIS_BENCH_GIT_SHA", "0123456789abcdef0123456789abcdef01234567"
+    )
+    monkeypatch.setenv("PRECIS_BENCH_GIT_DIRTY", "0")
+    # world provisioning points at the test DB itself — the create/migrate/
+    # ingest half is covered in test_bench_corpus's provision tests; here the
+    # run wiring is what matters
+    calls: list[str] = []
+
+    def _fake_provision(dsn: str, variant: corpus.Variant, **kw: Any):
+        calls.append(variant.arm)
+        return {"arm": variant.arm, "set": kw.get("set_name"), "already": True}
+
+    monkeypatch.setattr(corpus, "variant_dsn", lambda dsn, arm: dsn)
+    monkeypatch.setattr(corpus, "provision_variant", _fake_provision)
+    out = tmp_path / "res" / "w.json"
+    path = runner.run_cli(
+        set_name="quick",
+        arms=["no-links", "chunk-fixed-512"],
+        seed=3,
+        out=out,
+        embedder_name="mock",
+        manifest_path=man_path,
+        tasks_path=tasks_path,
+        planted_n=4,
+        budget=800,
+        limit=None,
+        dsn=world["store"].dsn,
+        fill=False,
+        host_docs=2,
+        host_paras=3,
+    )
+    res = runner.load_results(path)
+    h = res["header"]
+    assert calls == ["no-links", "chunk-fixed-512"]
+    assert h["schema"] == runner.RESULTS_SCHEMA == 4
+    assert set(h["worlds"]) == {"no-links", "chunk-fixed-512"}
+    assert h["worlds"]["chunk-fixed-512"]["variant"]["chunker"] == "fixed-512"
+    assert h["worlds"]["no-links"]["variant"]["links"] is False
+    assert h["worlds"]["no-links"]["provision"]["already"] is True
+    assert "coverage" in h["worlds"]["no-links"]
+    # the no-links world's coverage has no edges: vacuous on its own numbers
+    assert h["arms"]["no-links"]["vacuous"] is True
+    # planted/memory rows stay out of the world arms' runs
+    pairs = {(r["arm"], r["source"]) for r in res["rows"]}
+    assert ("all-on", "planted") in pairs
+    assert ("no-links", "qasper") in pairs
+    assert ("no-links", "planted") not in pairs
+    assert ("chunk-fixed-512", "planted") not in pairs
+    md = runner.report_markdown(res)
+    assert "precis_test" in md and "worlds:" in md

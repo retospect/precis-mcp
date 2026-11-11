@@ -2,7 +2,12 @@
 # scripts/bench — memory-ablation benchmark entry point (thin wrapper).
 #
 # Usage:
-#   scripts/bench ingest --set quick|full   # fetch (pinned) + ingest the QASPER fixture into the DEV db
+#   scripts/bench ingest --set quick|full [--chunker sentence-pysbd|section|fixed-<N>]
+#                                           # fetch (pinned) + ingest the QASPER fixture into the DEV db
+#   scripts/bench variant <arm> [--set S]   # provision a re-ingest arm's own throwaway DB
+#                                           # (chunk-sentence-pysbd|chunk-fixed-512|chunk-section|no-links|distractor-<N>);
+#                                           # `run` provisions on its own — this is for a separate
+#                                           # pg_dump/warmup step before a long run
 #   scripts/bench manifest [--check]        # maintainers: rebuild/verify bench/corpus/manifest.json
 #   scripts/bench tasks --set quick|full    # extract the QASPER span-gold tasks -> bench/tasks/qasper-<set>.jsonl
 #                                           # (+ yield table; --check verifies the file on disk; full is gitignored)
@@ -11,7 +16,8 @@
 #                                           # + per-chunk keywords (no LLM: summaries, categorizer tags
 #                                           # and edges stay empty; `run` reports their coverage)
 #   scripts/bench run --set quick [--caller triage|rowkw|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
-#                                           # scripted-caller ablation matrix -> bench/results/<date>Z-<sha>-quick-<caller>.json
+#                                           # scripted-caller ablation matrix -> bench/results/<date>Z-<sha>-quick-<caller>.json;
+#                                           # re-ingest arms in --arms provision + run their own DB (header.worlds)
 #   scripts/bench sweep [--caller triage|rowkw] [--seeds 1,2,3]   # pick the triage threshold on planted dev seeds (throwaway DB of its own:
 #                                           # PRECIS_DATABASE_URL=...precis_dev_sweep; never the reported seed, never QASPER)
 #   scripts/bench report <results.json>... [--figure out.svg|png]
@@ -35,7 +41,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [[ "${1:-}" == "ingest" ]]; then
+if [[ "${1:-}" == "ingest" || "${1:-}" == "variant" ]]; then
     scripts/dev db-up
 fi
 

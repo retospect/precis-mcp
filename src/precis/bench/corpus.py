@@ -70,6 +70,39 @@ abstract short enough to be one chunk are not repeated as body chunks: their
 text is the ``card_title`` / ``card_abstract`` card (``write_paper`` drops a
 duplicate text, so the loader skips it first and keeps body ``ord`` gapless).
 A longer abstract is split into ``abstract`` body chunks.
+
+Re-ingest variants (the ``chunk-*`` / ``no-links`` / ``distractor-N`` arms)
+--------------------------------------------------------------------------
+Chunking is index-time, so a chunking arm is a re-ingest of the set into its
+own throwaway database — the same ``qasper:<id>`` ref cannot exist twice in
+one DB (``existing_ref`` is the idempotency key). :class:`Variant` names each
+arm's world: which ``chunker`` cut it, whether it writes links, and how much
+non-gold padding it carries. :func:`variant_dsn` derives the world's DSN
+(``<base dbname>__<arm with dashes as _>``, still ``precis_dev*``-shaped),
+:func:`ensure_database` creates and migrates it, and
+:func:`provision_variant` runs the ingest. Each chunk meta still carries
+``doc_char_start`` / ``doc_char_end``, so
+:func:`precis.bench.gold.spans_overlap_chunk` scores every variant unchanged.
+
+The chunkers (:func:`_pieces`):
+
+``sentence-pysbd``   today's default: ``split_text`` at
+                     ``DEFAULT_CHUNK_SIZE`` — pysbd sentence boundaries and
+                     the 150-char overlap (spec arm ``chunk-sentence-pysbd``).
+``fixed-<N>``        fixed ``N``-token windows — ``4N`` chars at the runner's
+                     chars/4 estimator — cut per unit, no sentence awareness
+                     and no overlap (``chunk-fixed-512``).
+``section``          structure-aware: one chunk per source unit (a QASPER
+                     paragraph is the unit; ``enforce_hard_max`` still caps a
+                     pathological unit), ``chunk-section``.
+
+``no-links`` ingests without mesh/citation edges — today that is the only
+ingest anyway (edges are a paid LLM pass), so provisioning deletes whatever
+``links`` rows landed and the run's coverage marks the arm vacuous until an
+edges pass exists. ``distractor-<N>`` pads the set with N× extra non-gold
+body paragraphs taken from train-split papers outside every manifest set
+(:func:`select_distractors`), so recall and tokens are measured under corpus
+growth.
 """
 
 from __future__ import annotations
@@ -81,7 +114,7 @@ import logging
 import os
 import re
 import tarfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -586,17 +619,57 @@ _KIND_BY_SRC = {
     "float": "caption",
 }
 
+#: The default chunker — the one a plain ``scripts/bench ingest`` writes.
+DEFAULT_CHUNKER = "sentence-pysbd"
+SECTION_CHUNKER = "section"
+#: ``fixed-<N>`` names a fixed ``N``-token window; the runner's token
+#: estimator counts 4 characters per token, so a window is ``4N`` chars.
+CHARS_PER_TOKEN = 4
+_FIXED_RE = re.compile(r"^fixed-(\d+)$")
 
-def _pieces(unit: Unit) -> list[str]:
-    """Same split policy as markup ingest: prose via ``split_text``, structural
-    units (title, captions) whole and only hard-capped."""
-    if unit.src in ("title", "float"):
+
+def _check_chunker(chunker: str) -> None:
+    if chunker in (DEFAULT_CHUNKER, SECTION_CHUNKER) or _FIXED_RE.match(chunker):
+        return
+    raise BenchCorpusError(
+        f"unknown chunker {chunker!r}; use {DEFAULT_CHUNKER!r}, "
+        f"{SECTION_CHUNKER!r} or 'fixed-<tokens>'"
+    )
+
+
+def fixed_windows(text: str, width: int) -> list[str]:
+    """Contiguous ``width``-char slices of ``text`` — the ``fixed-<N>``
+    chunker, with no boundary awareness and no overlap."""
+    return [text[i : i + width] for i in range(0, len(text), width)]
+
+
+def _pieces(unit: Unit, chunker: str = DEFAULT_CHUNKER) -> list[str]:
+    """The chunks one unit is cut into under ``chunker``.
+
+    ``sentence-pysbd`` is the same split policy as markup ingest: prose via
+    ``split_text``, structural units (title, captions) whole and only
+    hard-capped. ``fixed-<N>`` slices every unit into fixed windows — windows
+    never cross a unit, so ``para_id`` / ``para_char_*`` / ``doc_char_*``
+    stay exact. ``section`` emits each unit whole (hard-capped).
+    """
+    fixed = _FIXED_RE.match(chunker)
+    if fixed is not None:
+        return fixed_windows(unit.text, int(fixed.group(1)) * CHARS_PER_TOKEN)
+    if unit.src in ("title", "float") or chunker == SECTION_CHUNKER:
         return enforce_hard_max([unit.text])
-    return enforce_hard_max(split_text(unit.text, DEFAULT_CHUNK_SIZE))
+    if chunker == DEFAULT_CHUNKER:
+        return enforce_hard_max(split_text(unit.text, DEFAULT_CHUNK_SIZE))
+    raise BenchCorpusError(
+        f"unknown chunker {chunker!r}; use {DEFAULT_CHUNKER!r}, "
+        f"{SECTION_CHUNKER!r} or 'fixed-<tokens>'"
+    )
 
 
 def chunk_units(
-    units: Iterable[Unit], *, seen_texts: Iterable[str] = ()
+    units: Iterable[Unit],
+    *,
+    seen_texts: Iterable[str] = (),
+    chunker: str = DEFAULT_CHUNKER,
 ) -> list[ChunkToWrite]:
     """Body chunks (``ord`` from 0) with source ids and offsets in meta.
 
@@ -607,11 +680,12 @@ def chunk_units(
     as ``card_title`` / ``card_abstract`` rather than as duplicate body
     chunks, and the body ``ord`` run stays contiguous.
     """
+    _check_chunker(chunker)
     seen = set(seen_texts)
     chunks: list[ChunkToWrite] = []
     for unit in units:
         cursor = 0
-        for piece in _pieces(unit):
+        for piece in _pieces(unit, chunker):
             start = unit.text.find(piece, cursor)
             if start < 0:
                 start = unit.text.find(piece)
@@ -646,6 +720,7 @@ def chunk_units(
                             "doc_char_end": d_end,
                         },
                         "chunker_version": CHUNKER_VERSION,
+                        "bench_chunker": chunker,
                     },
                 )
             )
@@ -658,13 +733,20 @@ def paper_to_write(
     paper: Mapping[str, Any],
     *,
     sha256: str | None = None,
+    chunker: str = DEFAULT_CHUNKER,
+    distractor: bool = False,
 ) -> PaperToWrite:
-    """Assemble the :class:`PaperToWrite` for one QASPER paper."""
+    """Assemble the :class:`PaperToWrite` for one QASPER paper.
+
+    ``distractor`` marks a non-gold padding paper (``distractor-<N>`` arms):
+    it keeps its ``qasper:<id>`` identity (it *is* a QASPER paper) and is
+    flagged ``meta.qasper.bench_distractor`` so a run can name it.
+    """
     title = " ".join(str(paper["title"]).split())
     abstract = str(paper.get("abstract") or "")
     units = canonical_units(paper)
     cards = _build_cards(title=title, authors=[], abstract=abstract, keywords=[])
-    body = chunk_units(units, seen_texts=(c.text for c in cards))
+    body = chunk_units(units, seen_texts=(c.text for c in cards), chunker=chunker)
     meta: dict[str, Any] = {
         "source_format": "qasper",
         "abstract": abstract,
@@ -678,6 +760,8 @@ def paper_to_write(
             "n_questions": len(paper.get("qas") or []),
         },
     }
+    if distractor:
+        meta["qasper"]["bench_distractor"] = True
     return PaperToWrite(
         title=title,
         authors=[],
@@ -747,12 +831,14 @@ def ingest_papers(
     *,
     set_name: str = "custom",
     corpus_hash: str | None = None,
+    chunker: str = DEFAULT_CHUNKER,
 ) -> IngestReport:
     """Mint the refs for ``records`` (manifest rows) from ``papers``.
 
     One transaction per paper, so an interrupted run resumes where it stopped.
     Every paper is hash-checked against its manifest row before any write.
     """
+    _check_chunker(chunker)
     report = IngestReport(set_name, corpus_hash or corpus_sha256(records))
     for rec in records:
         qid = rec["qasper_id"]
@@ -775,7 +861,8 @@ def ingest_papers(
             continue
         with conn.transaction():
             result = write_paper(
-                paper_to_write(qid, split, paper, sha256=got), conn=conn
+                paper_to_write(qid, split, paper, sha256=got, chunker=chunker),
+                conn=conn,
             )
         report.inserted += 1
         report.chunks += result.chunks_written
@@ -788,6 +875,7 @@ def ingest_set(
     *,
     manifest: Mapping[str, Any] | None = None,
     cache: Path | None = None,
+    chunker: str = DEFAULT_CHUNKER,
 ) -> IngestReport:
     """Fetch (cached, pinned) and ingest the ``quick``, ``full`` or ``heldout`` set."""
     if set_name not in ALL_SETS:
@@ -802,4 +890,275 @@ def ingest_set(
         raise BenchCorpusError(
             f"manifest {set_name!r} does not match its corpus_sha256"
         )
-    return ingest_papers(conn, records, papers, set_name=set_name, corpus_hash=expected)
+    return ingest_papers(
+        conn,
+        records,
+        papers,
+        set_name=set_name,
+        corpus_hash=expected,
+        chunker=chunker,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Re-ingest variants: the chunk-*/no-links/distractor-N arms (td606579)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One re-ingest arm's world — how its database differs from the base
+    ingest. ``arm`` is the runner-side arm name.
+
+    ``chunker``     the chunker ``ingest_papers`` uses (``sentence-pysbd``,
+                    ``section``, ``fixed-<tokens>``).
+    ``links``       ``False`` for ``no-links``: provisioning deletes every
+                    ``links`` row (a no-op today — edges are a paid pass the
+                    free fill never runs — and real the day one exists).
+    ``distractor``  the corpus-growth multiple: ``N`` pads the set with N×
+                    extra non-gold body paragraphs from train-split papers
+                    outside every manifest set.
+    """
+
+    arm: str
+    chunker: str = DEFAULT_CHUNKER
+    links: bool = True
+    distractor: int = 0
+
+
+#: The named re-ingest arms. ``chunk-sentence-pysbd`` re-ingests with the
+#: default chunker: identical chunks, an independent world — the reference
+#: column of the chunking comparison.
+VARIANTS: tuple[Variant, ...] = (
+    Variant("chunk-sentence-pysbd"),
+    Variant("chunk-fixed-512", chunker="fixed-512"),
+    Variant("chunk-section", chunker=SECTION_CHUNKER),
+    Variant("no-links", links=False),
+)
+_VARIANT_BY_ARM: dict[str, Variant] = {v.arm: v for v in VARIANTS}
+_DISTRACTOR_RE = re.compile(r"^distractor-(\d+)$")
+
+
+def variant_for_arm(arm: str) -> Variant | None:
+    """The :class:`Variant` an arm names, else ``None``.
+
+    Besides :data:`VARIANTS`, ``distractor-<N>`` for any ``N >= 1`` is a
+    valid (open-ended) arm: the fixture padded with N× extra non-gold
+    paragraphs.
+    """
+    found = _VARIANT_BY_ARM.get(arm)
+    if found is not None:
+        return found
+    m = _DISTRACTOR_RE.match(arm)
+    if m is not None and int(m.group(1)) >= 1:
+        return Variant(arm, distractor=int(m.group(1)))
+    return None
+
+
+def variant_dbname(dsn: str) -> str:
+    """The ``dbname`` a (variant) DSN points at — what the results header
+    records instead of the full DSN."""
+    from psycopg.conninfo import conninfo_to_dict
+
+    return str(conninfo_to_dict(dsn).get("dbname") or "")
+
+
+def variant_dsn(dsn: str, arm: str) -> str:
+    """The DSN of ``arm``'s own throwaway database, derived from the base
+    ``dsn``: same server, database ``<base dbname>__<arm with dashes as _>``
+    (``precis_dev`` -> ``precis_dev__chunk_fixed_512``)."""
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    assert_throwaway_dsn(dsn)
+    if variant_for_arm(arm) is None:
+        raise BenchCorpusError(
+            f"{arm!r} is not a re-ingest arm; known: "
+            f"{', '.join(sorted(_VARIANT_BY_ARM))} and distractor-<N>"
+        )
+    name = str(conninfo_to_dict(dsn).get("dbname") or "")
+    vname = f"{name}__{arm.replace('-', '_')}"
+    if not _SAFE_DBNAME_RE.match(vname):
+        raise BenchCorpusError(
+            f"variant database name {vname!r} is not throwaway-shaped"
+        )
+    return make_conninfo(dsn, dbname=vname)
+
+
+def ensure_database(dsn: str) -> None:
+    """Create the DSN's database when it does not exist and apply the
+    packaged migrations (the ``scripts/dev db-up`` path for a variant DB)."""
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    assert_throwaway_dsn(dsn)
+    dbname = str(conninfo_to_dict(dsn).get("dbname") or "")
+    # template1 exists in every cluster and is connectable; ``postgres`` is
+    # only a convention.
+    admin = make_conninfo(dsn, dbname="template1")
+    with psycopg.connect(admin, autocommit=True) as conn:
+        hit = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (dbname,)
+        ).fetchone()
+        if hit is None:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
+    from precis.store.migrate import packaged_migrator
+
+    packaged_migrator(dsn).apply_all()
+
+
+# ---------------------------------------------------------------------------
+# distractor-N padding
+# ---------------------------------------------------------------------------
+
+
+def _body_paragraphs(paper: Mapping[str, Any]) -> int:
+    return sum(1 for u in canonical_units(paper) if u.src == "paragraph")
+
+
+def select_distractors(
+    papers: Mapping[str, tuple[str, Mapping[str, Any]]],
+    *,
+    exclude: set[str],
+    times: int,
+    base_paragraphs: int,
+) -> list[str]:
+    """Deterministic pick of ``times`` × ``base_paragraphs`` non-gold body
+    paragraphs: whole train-split papers not in ``exclude`` (every manifest
+    set's ids), in the manifest's own rank order. Whole papers, not sampled
+    paragraphs, so the padding reads as documents rather than confetti."""
+    target = times * base_paragraphs
+    candidates = sorted(
+        (
+            qid
+            for qid, (split, p) in papers.items()
+            if split == "train" and qid not in exclude and _body_paragraphs(p) > 0
+        ),
+        key=rank_key,
+    )
+    picked: list[str] = []
+    got = 0
+    for qid in candidates:
+        if got >= target:
+            break
+        picked.append(qid)
+        got += _body_paragraphs(papers[qid][1])
+    if target > 0 and got < target:
+        raise BenchCorpusError(
+            f"only {got} distractor paragraphs outside the manifest sets, "
+            f"need {target} (distractor-{times})"
+        )
+    return picked
+
+
+def ingest_distractors(
+    conn: Any,
+    records: Sequence[Mapping[str, Any]],
+    papers: Mapping[str, tuple[str, Mapping[str, Any]]],
+    manifest: Mapping[str, Any],
+    *,
+    times: int,
+    chunker: str = DEFAULT_CHUNKER,
+) -> dict[str, int]:
+    """Pad the DB with ``times`` × the set's body-paragraph count of non-gold
+    papers (:func:`select_distractors`), idempotent per paper. ``records`` is
+    the ingested set's manifest rows; ``manifest`` supplies the excluded id
+    pool (every set)."""
+    excluded = {str(r["qasper_id"]) for name in SET_SIZES for r in manifest[name]}
+    base = sum(_body_paragraphs(papers[str(r["qasper_id"])][1]) for r in records)
+    ids = select_distractors(
+        papers, exclude=excluded, times=times, base_paragraphs=base
+    )
+    inserted = 0
+    paragraphs = 0
+    for qid in ids:
+        split, paper = papers[qid]
+        paragraphs += _body_paragraphs(paper)
+        if existing_ref(conn, qid) is not None:
+            continue
+        with conn.transaction():
+            write_paper(
+                paper_to_write(qid, split, paper, chunker=chunker, distractor=True),
+                conn=conn,
+            )
+        inserted += 1
+    return {
+        "base_paragraphs": base,
+        "wanted_paragraphs": times * base,
+        "papers": len(ids),
+        "inserted": inserted,
+        "paragraphs": paragraphs,
+    }
+
+
+def provision_variant(
+    dsn: str,
+    variant: Variant,
+    *,
+    set_name: str,
+    manifest: Mapping[str, Any] | None = None,
+    cache: Path | None = None,
+    papers: Mapping[str, tuple[str, Mapping[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Bring ``arm``'s database up: create + migrate when missing, ingest the
+    set under the variant's chunker, pad its distractors, drop its edges for
+    ``no-links``. Idempotent — a provisioned DB is left alone (the archive is
+    not even read), a partial one resumes."""
+    import psycopg
+
+    ensure_database(dsn)
+    man = manifest if manifest is not None else load_manifest()
+    records = man[set_name]
+    qids = [str(r["qasper_id"]) for r in records]
+    report: dict[str, Any] = {
+        "arm": variant.arm,
+        "set": set_name,
+        "chunker": variant.chunker,
+        "links": variant.links,
+        "distractor": variant.distractor,
+        "already": False,
+    }
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'paper' "
+            "AND retired_at IS NULL AND meta->'qasper'->>'id' = ANY(%s)",
+            (qids,),
+        ).fetchone()
+        have = 0 if row is None else int(row[0])
+        ready = have == len(qids)
+        if ready and variant.distractor:
+            ready = (
+                conn.execute(
+                    "SELECT 1 FROM refs WHERE kind = 'paper' AND retired_at IS NULL "
+                    "AND meta->'qasper'->>'bench_distractor' = 'true' LIMIT 1"
+                ).fetchone()
+                is not None
+            )
+        if ready:
+            report["already"] = True
+        else:
+            if papers is None:
+                archive = fetch_archive(
+                    cache, sha256=man["dataset"]["archive"]["sha256"]
+                )
+                papers = load_archive(archive)
+            report["ingest"] = ingest_papers(
+                conn,
+                records,
+                papers,
+                set_name=set_name,
+                corpus_hash=man["corpus_sha256"][set_name],
+                chunker=variant.chunker,
+            ).line()
+            if variant.distractor:
+                report["distractors"] = ingest_distractors(
+                    conn,
+                    records,
+                    papers,
+                    man,
+                    times=variant.distractor,
+                    chunker=variant.chunker,
+                )
+        if not variant.links:
+            conn.execute("DELETE FROM links")
+    return report

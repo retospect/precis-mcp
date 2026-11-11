@@ -100,8 +100,11 @@ from precis.bench.switches import ARMS
 #: runs #1–#3, carry no call lines — the raw reader tolerates both). 3 adds
 #: ``header.tool_calls.source`` — the ``PRECIS_CURRENT_SOURCE`` tag the
 #: measured matrix's dispatches carry on their ``tool_calls`` ledger rows,
-#: so the run's raw MCP-log records are addressable (gr618517).
-RESULTS_SCHEMA = 3
+#: so the run's raw MCP-log records are addressable (gr618517). 4 adds
+#: ``header.worlds`` — the re-ingest arms' databases (dbname, variant spec,
+#: provision, coverage) and the ``chunk-*`` / ``no-links`` / ``distractor-<N>``
+#: arm names.
+RESULTS_SCHEMA = 4
 
 PLANTED_SEED = 7
 PLANTED_N = 40
@@ -146,6 +149,18 @@ COMBINED_ARMS: Mapping[str, tuple[str, ...]] = {
 
 BASELINES = ("chunk-rag", "whole-paper")
 ALL_ARMS = ("all-on", *ARMS, *COMBINED_ARMS, *BASELINES)
+
+
+def arm_order(rows: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Arm display order: the canonical :data:`ALL_ARMS` order first, then
+    any re-ingest or other arms in first-seen row order (``distractor-<N>``
+    names are open-ended, so the row set is the truth)."""
+    present: dict[str, None] = {}
+    for r in rows:
+        present.setdefault(str(r["arm"]))
+    known = [a for a in ALL_ARMS if a in present]
+    return known + [a for a in present if a not in set(known)]
+
 
 TOKEN_ESTIMATOR = (
     "chars/4 of the rendered dispatch body (relative ages and read counters "
@@ -203,12 +218,18 @@ def overlap_score(question: str, text: str) -> float:
 
 def arm_flags(arm: str) -> dict[str, bool]:
     """The :class:`~precis.bench.switches.Switches` flags an arm turns off
-    (empty for ``all-on`` and the baselines)."""
+    (empty for ``all-on``, the baselines and the re-ingest arms — a
+    ``chunk-*`` / ``no-links`` / ``distractor-<N>`` arm differs in its
+    *world*, not its switches)."""
     if arm in ARMS:
         return {ARMS[arm]: False}
     if arm in COMBINED_ARMS:
         return {flag: False for flag in COMBINED_ARMS[arm]}
     if arm == "all-on" or arm in BASELINES:
+        return {}
+    from precis.bench import corpus
+
+    if corpus.variant_for_arm(arm) is not None:
         return {}
     raise BenchRunError(f"unknown arm {arm!r}; known arms: {', '.join(ALL_ARMS)}")
 
@@ -931,6 +952,18 @@ def run_whole_paper(
     )
 
 
+@dataclass
+class World:
+    """The side of the matrix a re-ingest arm (``chunk-*`` / ``no-links`` /
+    ``distractor-<N>``) runs against: its own throwaway database's ``Store``,
+    a dispatch ``runtime`` booted on it, and the arm's ``Catalog``. Which arm
+    a world serves is the mapping key in :func:`run_matrix`."""
+
+    store: Any
+    runtime: Any
+    catalog: Catalog
+
+
 def run_matrix(
     store: Any,
     runtime: Any,
@@ -941,22 +974,36 @@ def run_matrix(
     budget: int = TOKEN_BUDGET,
     progress: Any = None,
     caller: str = DEFAULT_CALLER,
+    worlds: Mapping[str, World] | None = None,
 ) -> list[dict[str, Any]]:
-    """The long table: one row per task x arm."""
+    """The long table: one row per task x arm.
+
+    ``worlds`` maps a re-ingest arm to the :class:`World` of its own
+    database; that arm dispatches against its world's runtime/catalog/store
+    instead of the base ones. Non-qasper tasks (planted host docs, memory
+    facts) exist only in the base DB, so a world arm runs the qasper rows.
+    """
     catalog = Catalog(store)
+    worlds = worlds or {}
     rows: list[dict[str, Any]] = []
     for n, task in enumerate(tasks, 1):
         for arm in arms:
+            world = worlds.get(arm)
+            if world is not None and task.source != "qasper":
+                continue
+            w_store = world.store if world is not None else store
+            w_runtime = world.runtime if world is not None else runtime
+            w_catalog = world.catalog if world is not None else catalog
             if arm == "chunk-rag":
                 rows.append(
-                    run_chunk_rag(store, embedder, catalog, task, budget=budget)
+                    run_chunk_rag(w_store, embedder, w_catalog, task, budget=budget)
                 )
             elif arm == "whole-paper":
-                rows.append(run_whole_paper(catalog, task, budget=budget))
+                rows.append(run_whole_paper(w_catalog, task, budget=budget))
             else:
                 rows.append(
                     run_scripted(
-                        runtime, catalog, task, arm, budget=budget, caller=caller
+                        w_runtime, w_catalog, task, arm, budget=budget, caller=caller
                     )
                 )
         if progress is not None and (n % 10 == 0 or n == len(tasks)):
@@ -976,7 +1023,9 @@ def identical_to_all_on(rows: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     base = {r["task"]: r["transcript_sha256"] for r in rows if r["arm"] == "all-on"}
     seen: dict[str, list[bool]] = {}
     for r in rows:
-        if (r["arm"] in ARMS or r["arm"] in COMBINED_ARMS) and r["task"] in base:
+        if r["arm"] in BASELINES or r["arm"] == "all-on":
+            continue
+        if r["task"] in base:
             seen.setdefault(r["arm"], []).append(
                 r["transcript_sha256"] == base[r["task"]]
             )
@@ -989,15 +1038,21 @@ def arm_table(
     rows: Sequence[Mapping[str, Any]],
     *,
     embedder_id: str | None,
+    arm_coverage: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per-arm header block: switches, vacuity (predicted from coverage and
-    observed as transcript identity), degeneracy, embedder caveat."""
+    observed as transcript identity), degeneracy, embedder caveat.
+
+    ``arm_coverage`` overrides ``cov`` per arm — a re-ingest arm's world has
+    its own coverage (``no-links`` in a base DB that has edges is only
+    vacuous in *its* world)."""
     from precis.bench import layers
 
     same = identical_to_all_on(rows)
     out: dict[str, dict[str, Any]] = {}
     for arm in arms:
-        vac = layers.arm_vacuity(arm, cov, embedder_id=embedder_id)
+        acov = (arm_coverage or {}).get(arm, cov)
+        vac = layers.arm_vacuity(arm, acov, embedder_id=embedder_id)
         if arm in COMBINED_ARMS:
             # vacuous only if every layer it removes is empty
             parts = [
@@ -1012,7 +1067,15 @@ def arm_table(
             info["known_defect"] = KNOWN_DEFECTS[arm]
         if arm in same:
             info["identical_to_all_on_frac"] = same[arm]
-            if same[arm] >= 1.0 and not info["vacuous"]:
+            # observed-vacuity marks only switch arms: for a world arm an
+            # identical transcript is a finding (the re-ingest changed
+            # nothing the caller could see — chunk-sentence-pysbd is even
+            # *supposed* to score 1.0), not a defect of the arm.
+            if (
+                same[arm] >= 1.0
+                and not info["vacuous"]
+                and (arm in ARMS or arm in COMBINED_ARMS)
+            ):
                 info["vacuous"] = True
                 info["reason"] = (
                     "observed: every task's rendered transcript equals all-on's"
@@ -1150,7 +1213,7 @@ def _fmt(x: float | None, nd: int = 3, signed: bool = False) -> str:
 def _table(results: Mapping[str, Any], *, source: str | None, title: str) -> list[str]:
     rows = results["rows"]
     arms_hdr = results["header"].get("arms", {})
-    present = [a for a in ALL_ARMS if any(r["arm"] == a for r in rows)]
+    present = arm_order(rows)
     base = aggregate(rows, "all-on", source=source) if "all-on" in present else None
     lines = [
         f"### {title}",
@@ -1190,7 +1253,7 @@ def _table(results: Mapping[str, Any], *, source: str | None, title: str) -> lis
 
 def _abstention_table(results: Mapping[str, Any]) -> list[str]:
     rows = results["rows"]
-    present = [a for a in ALL_ARMS if any(r["arm"] == a for r in rows)]
+    present = arm_order(rows)
     lines = [
         "### Unanswerable tasks (abstention): tokens spent, no gold to find",
         "",
@@ -1233,6 +1296,15 @@ def report_markdown(results: Mapping[str, Any]) -> str:
         f"{_fmt(cov.get('chunks_with_embedding_frac'))} · categorizer tags "
         f"{_fmt(cov.get('refs_with_categorizer_tag_frac'))} · refs with edges "
         f"{_fmt(cov.get('refs_with_edge_frac'))}",
+    ]
+    if h.get("worlds"):
+        out += [
+            "- worlds: "
+            + ", ".join(
+                f"{arm} → `{w.get('database')}`" for arm, w in h["worlds"].items()
+            )
+        ]
+    out += [
         "",
     ]
     out += _table(results, source=None, title="All answerable tasks")
@@ -1265,11 +1337,7 @@ def compare_markdown(runs: Sequence[Mapping[str, Any]]) -> str:
         ("qasper", "QASPER only"),
         ("planted", "Planted only"),
     ):
-        present = [
-            a
-            for a in ALL_ARMS
-            if any(a == row["arm"] for r in runs for row in r["rows"])
-        ]
+        present = arm_order(row for r in runs for row in r["rows"])
         head = "| arm |" + "".join(
             f" {n}: recall@5 | median tok | cens. | calls | opens | refus. |"
             for n in names
@@ -1414,6 +1482,7 @@ def run_cli(
     qasper_rows = all_qasper_rows if limit is None else all_qasper_rows[:limit]
 
     store = Store.connect(dsn)
+    world_stores: list[Any] = []
     try:
         embedder = make_embedder(embedder_name, dim=store.embedding_dim())
         embedder.warmup()
@@ -1446,6 +1515,51 @@ def run_cli(
             cov = layers.coverage(conn, qasper_refs + planted_refs)
             cov["memory_nodes"] = len(planted_ingest.existing_memory_refs(conn))
 
+        # Re-ingest arms each run in their own throwaway database: the same
+        # qasper:<id> ref cannot exist twice in one DB under two chunkings.
+        worlds: dict[str, World] = {}
+        worlds_meta: dict[str, Any] = {}
+        arm_coverage: dict[str, Any] = {}
+        for arm in arm_list:
+            variant = corpus.variant_for_arm(arm)
+            if variant is None:
+                continue
+            vdsn = corpus.variant_dsn(dsn, arm)
+            print(f"{arm}: provisioning world …", file=sys.stderr)
+            prov = corpus.provision_variant(
+                vdsn, variant, set_name=set_name, manifest=manifest
+            )
+            vstore = Store.connect(vdsn)
+            world_stores.append(vstore)
+            if fill:
+                print(
+                    f"{arm}: fill: embeddings + keywords for anything missing …",
+                    file=sys.stderr,
+                )
+                layers.fill(vstore, embedder)
+            with vstore.pool.connection() as conn:
+                vrefs = _quick_ref_ids(conn, [r["qasper_id"] for r in records])
+                vcov = layers.coverage(conn, vrefs)
+            worlds[arm] = World(
+                store=vstore,
+                runtime=PrecisRuntime(
+                    config=PrecisConfig(),
+                    hub=boot(store=vstore, embedder=embedder, boot_writes=False),
+                ),
+                catalog=Catalog(vstore),
+            )
+            arm_coverage[arm] = vcov
+            worlds_meta[arm] = {
+                "database": corpus.variant_dbname(vdsn),
+                "variant": {
+                    "chunker": variant.chunker,
+                    "links": variant.links,
+                    "distractor": variant.distractor,
+                },
+                "provision": prov,
+                "coverage": vcov,
+            }
+
         tasks, skipped = select_tasks(qasper_rows + planted_rows, gold_text)
         if not tasks:
             raise BenchRunError("no runnable tasks")
@@ -1466,6 +1580,7 @@ def run_cli(
                 budget=budget,
                 progress=lambda m: print(m, file=sys.stderr),
                 caller=caller,
+                worlds=worlds,
             )
         finally:
             if prev_source is None:
@@ -1474,11 +1589,15 @@ def run_cli(
                 os.environ[agentlog.SOURCE_ENV_VAR] = prev_source
     finally:
         store.close()
+        for ws in world_stores:
+            ws.close()
 
     ended = utc_stamp()
     emb_id = getattr(embedder, "model", embedder_name)
     meaningful = not layers.hash_embedder(emb_id)
-    arms_block = arm_table(arm_list, cov, rows, embedder_id=emb_id)
+    arms_block = arm_table(
+        arm_list, cov, rows, embedder_id=emb_id, arm_coverage=arm_coverage
+    )
     header = {
         "schema": RESULTS_SCHEMA,
         "tier": "scripted",
@@ -1538,6 +1657,7 @@ def run_cli(
         "tool_calls": {"source": call_tag},
         "arms": arms_block,
         "layer_coverage": cov,
+        "worlds": worlds_meta,
         "fill": fill_totals,
         "machine": {
             "python": platform.python_version(),

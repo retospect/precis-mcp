@@ -59,7 +59,7 @@ only for headline numbers.
 
 | key | meaning |
 |---|---|
-| `schema` | results schema version (3; 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
+| `schema` | results schema version (4; 3 = no `header.worlds`/re-ingest arms, 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
 | `tier` | `scripted` (the model-free caller; LLM tier is a later cut) |
 | `set`, `corpus_sha256` | fixture set and its hash from `bench/corpus/manifest.json` |
 | `tasks_file`, `tasks_sha256`, `tasks` | QASPER task file, its sha256, and counts (`qasper`, `planted`, `abstention`, `skipped`) |
@@ -71,6 +71,7 @@ only for headline numbers.
 | `caller` | `name` (`triage`, `rowkw` or `ladder`), search shape, `read_k`, the extent `ladder`, for `triage` and `rowkw` the `threshold` and `score`, `recall_ks`, stop rule |
 | `arms` | per arm: `switches_off`, `vacuous` + `reason`, `degenerate`, `embedder_note`, `identical_to_all_on_frac`, `known_defect` (a defect of the code under test that bends this arm, with its gripe) |
 | `layer_coverage` | what the DB holds of each layer (see below) |
+| `worlds` | per re-ingest arm (schema 4): `database` (the arm's own throwaway DB), `variant` (`chunker`, `links`, `distractor`), `provision` (what provisioning did, or `already`), `coverage` (that world's own layer coverage — the denominators `arms.<arm>.vacuous` is judged on for world arms) |
 | `fill` | claimed/ok/failed counts of the embed and keyword passes run by this invocation |
 | `machine`, `started_at`, `ended_at` | host python/platform; UTC `Z` timestamps |
 | `tool_calls` | `source` — the `tool_calls.source` tag (`bench:<stem>`) every dispatch of the measured matrix carried, so the run's raw MCP-log records are addressable (schema 3, gr618517) |
@@ -93,12 +94,28 @@ semantic leg carries `embedder: hash (not meaningful)` when the embedder is the
 hash/mock one. A vacuous arm's delta is not a finding; do not report it as a null
 effect.
 
+### re-ingest arms (worlds)
+
+The chunking and corpus-shape arms cannot share the base database — the same
+`qasper:<id>` ref cannot exist under two chunkings in one DB — so each
+re-ingest arm provisions its own throwaway database (`<base>__<arm>` with
+dashes as underscores), ingests the same set under its variant
+(`corpus.Variant`: chunker `sentence-pysbd`/`fixed-<N>`/`section`, `links`
+off for `no-links`, N× non-gold train-split paragraphs for `distractor-<N>`),
+and runs the same scripted callers against it. `header.worlds` records each
+world's database name, variant, provisioning report and own layer coverage;
+`arms.<arm>.vacuous` for a world arm is judged on that world's coverage.
+`chunk-sentence-pysbd` is the reference column: identical chunks in an
+independent world, so its rows should match `all-on` up to chunk-id ordering.
+Gold is span-based (`doc_char_start`/`doc_char_end`), so it survives
+re-chunking unchanged.
+
 ### rows (the long table: one per task x arm)
 
 | key | meaning |
 |---|---|
 | `task`, `type`, `source` | task id, gold type (`lookup`, `grounding`, `k-hop`, `stance`, `memory`), `qasper` or `planted` |
-| `arm` | `all-on`, `no-kwd`, `no-summary`, `no-categorizer`, `no-fisheye`, `no-recall`, `lexical-only`, `semantic-only`, `no-cheap-rungs` (`kwd` and `summary` both off; the full factorial is td606577), `chunk-rag`, `whole-paper` |
+| `arm` | `all-on`, `no-kwd`, `no-summary`, `no-categorizer`, `no-fisheye`, `no-recall`, `lexical-only`, `semantic-only`, `no-cheap-rungs` (`kwd` and `summary` both off; the full factorial is td606577), `chunk-rag`, `whole-paper`, and the re-ingest arms `chunk-sentence-pysbd`, `chunk-fixed-512`, `chunk-section`, `no-links`, `distractor-<N>` (each runs the same callers against its own database; planted rows exist only in the base DB, so a re-ingest arm rows qasper tasks only) |
 | `caller` | `triage`, `rowkw` or `ladder` for the scripted arms; `null` for the two baselines (they have no caller) |
 | `abstention` | unanswerable task: no gold, `found` and `tokens_to_first_gold` are `null`, only `tokens_total`/`calls` are meaningful |
 | `applicable` | `false` where the arm cannot run the task (`whole-paper` on a `memory` task, which has no document) |

@@ -37,6 +37,9 @@ ARM_LAYER: Mapping[str, str] = {
     "no-fisheye": "edges",
     "no-recall": "embeddings",
     "lexical-only": "embeddings",
+    # ``no-links`` is a world (re-ingest) arm, not a switch: its coverage
+    # check runs against its own database's links table.
+    "no-links": "edges",
 }
 
 #: Layer -> the coverage key holding its share (0..1).
