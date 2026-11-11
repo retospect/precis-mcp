@@ -248,10 +248,12 @@ the dated detail is in `git log` and the owning items):**
    - The proof-of-concept paper (Fe-doped Pd) belongs to
      qu459585 (Open science that ships: papers written from the
      graph), not this thread.
-4. **backlog/encapsulated-metal-candidate-space.md** (Reto, 2026-10-02:
-   **file only**) supplies the optimizer's candidate space: carbon-encapsulated
-   metal families F1–F4, a carbon/cap Pourbaix layer, and
-   host/containment constraints in the Shapley mask.
+4. **Encapsulated-metal candidate space** — transferred to graph memory
+   on 2026-11-11 (Reto's ruling me568168): carbon-topology spec
+   me628772, group me628777 with sections me628809–me628817; the file is
+   deleted. It supplies the optimizer's candidate space:
+   carbon-encapsulated metal families F1–F4, a carbon/cap Pourbaix
+   layer, and host/containment constraints in the Shapley mask.
    - It is blocked by Horizon 3's first slices.
    - Its NO→NH₃ demo feeds qu164903 directly: F3/F4 sites become
      candidates on the same reaction and references.

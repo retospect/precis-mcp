@@ -143,10 +143,11 @@ needs a quest-side representation that does not exist yet.
 
 ## Cross-links
 
-- `encapsulated-metal-candidate-space.md`: the sibling that supplies the
-  outer-loop candidates (carbon-encapsulated F1–F4). It adds a carbon/cap
-  Pourbaix layer and host/containment constraints to this item's mask. It
-  is blocked by this item's first slices.
+- the encapsulated-metal candidate space (graph memory: carbon-topology
+  spec me628772, group me628777): the sibling that supplies the
+  outer-loop candidates (carbon-encapsulated F1–F4). It adds a
+  carbon/cap Pourbaix layer and host/containment constraints to this
+  item's mask. It is blocked by this item's first slices.
 - `pd-hydride-substrate.md`: subsurface-H states as new slabs (open
   question 6).
 - catalysis-selectivity-19 gas and H* corrections
