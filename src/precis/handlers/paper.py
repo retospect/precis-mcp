@@ -88,6 +88,7 @@ from precis.handlers._paper_text import (
     _page_spans,
     _render_block_body,
 )
+from precis.handlers._serves_scope import serves_quest_id, serving_ref_ids
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     resolve_live_slug_ref,
@@ -3375,35 +3376,13 @@ class PaperHandler(Handler):
         renders. Raises ``NotFound`` when the quest doesn't resolve
         (a named target must never degrade to an unfiltered search).
         """
-        links = self.store.links_for(
-            self._serves_quest_id(serves), direction="in", relation="serves"
-        )
-        return {int(ln.src_ref_id) for ln in links}
+        return serving_ref_ids(self.store, serves)
 
     def _serves_quest_id(self, serves: Any) -> int:
         """The ref_id of the quest ``serves=`` names — the parse +
         existence check :meth:`_resolve_serves_scope` shares with the
         SQL-side ``serves`` filters."""
-        token = str(serves).strip()
-        if token.startswith("quest:"):
-            token = token[len("quest:") :].strip()
-        parsed = handle_registry.parse(token)
-        if parsed is not None and parsed[0] == "quest" and not parsed[1]:
-            qid = parsed[2]
-        elif token.isdigit():
-            qid = int(token)
-        else:
-            raise BadInput(
-                f"serves= takes a quest reference, got {serves!r}",
-                next="args={'serves': 'quest:164903'}",
-            )
-        qref = self.store.get_ref(kind="quest", id=qid)
-        if qref is None:
-            raise NotFound(
-                f"quest id={qid} not found",
-                next="search(kind='quest', q='...') to find the quest",
-            )
-        return qref.id
+        return serves_quest_id(self.store, serves)
 
     def _resolve_stamp_scope(self, stamp: str) -> set[int]:
         """``args={'stamp': '<meta key>'}`` → the live refs of this kind

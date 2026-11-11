@@ -129,6 +129,7 @@ _SOURCE_SEARCH_CONSUMED: frozenset[str] = frozenset(
         "exclude",
         "queries",
         "answers",
+        "serves",
         "exclude_ref_ids",
         "include_ref_ids",
         "domain",
@@ -1388,7 +1389,11 @@ class SearchMixin(RuntimeShape):
         kinds include patent/edgar.
 
         ``exclude=`` resolves slug/handle/container entries per kind into
-        the same channel (gr608576); ``queries=``/``answers=`` add
+        the same channel (gr608576); ``args={'serves': 'quest:<id>'}``
+        resolves the quest's serving-refs cohort into the include channel
+        (gr608733 — the paper path's ``serves=`` filter, honoured here so
+        the dated call is not refused at the unapplied-args gate);
+        ``queries=``/``answers=`` add
         broad-retrieval legs fused with ``q`` (same shape as the paper
         handler's broad path); ``page=``/``args={'offset': N}`` page the
         fused per-ref list with a one-row probe for the continuation
@@ -1565,6 +1570,30 @@ class SearchMixin(RuntimeShape):
         exclude_ref_ids = args.get("exclude_ref_ids")
         include_ref_ids = args.get("include_ref_ids")
         exclude_notice = ""
+        serves_note = ""
+        if args.get("serves") is not None:
+            # ``args={'serves': 'quest:<id>'}`` (gr608733): the paper
+            # path's serving-quest cohort — resolved into the same
+            # include channel the cite facets write, so the ONE
+            # underlying query applies it across the kind set. An empty
+            # cohort means zero hits, never an unfiltered search.
+            from precis.handlers._serves_scope import serves_quest_id
+
+            token = args.pop("serves")
+            qid = serves_quest_id(store, token)
+            serving = {
+                int(ln.src_ref_id)
+                for ln in store.links_for(qid, direction="in", relation="serves")
+            }
+            self._note_channel_value(args, "include_ref_ids")
+            self._note_facet_origin(args, "include_ref_ids", "serves", token)
+            self._intersect_include_ref_ids(args, serving)
+            include_ref_ids = args["include_ref_ids"]
+            qhandle = handle_registry.try_format("quest", qid) or f"quest:{qid}"
+            serves_note = (
+                f"_(serves={qhandle}: restricted to {len(serving)} "
+                f"serving ref{'s' if len(serving) != 1 else ''})_"
+            )
         if args.get("exclude"):
             # ``exclude=`` (gr608576): slug/handle/container entries resolve
             # per requested kind into the same exclude_ref_ids channel
@@ -1729,6 +1758,10 @@ class SearchMixin(RuntimeShape):
                     result_ids=response.result_ids,
                 )
         response = _stamp_non_production_embedder(response, embedder)
+        if serves_note:
+            # Leads the body like the dispatch-level facet notes — and
+            # lands inside ``head`` so a budget-fitted page keeps it.
+            response = replace(response, body=f"{serves_note}\n\n{response.body}")
         # gr608577: a page that fits still names its continuation, and a
         # page larger than the result budget gets a ``budget_fit`` whose
         # trailer names the exact resume call — every row stays reachable.

@@ -297,6 +297,17 @@ class RuntimeShape:
     def _expand_kind_code(self, kind: str) -> str:
         raise NotImplementedError
 
+    def _note_channel_value(self, args: dict[str, Any], channel: str) -> None:
+        raise NotImplementedError
+
+    def _note_facet_origin(
+        self, args: dict[str, Any], channel: str, key: str, value: Any
+    ) -> None:
+        raise NotImplementedError
+
+    def _intersect_include_ref_ids(self, args: dict[str, Any], ids: set[int]) -> None:
+        raise NotImplementedError
+
     # ── introspect.py (IntrospectionMixin) ───────────────────────────────
     def _dispatch_introspect_view(
         self, view: str, kind: str | None, args: dict[str, Any]

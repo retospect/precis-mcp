@@ -724,3 +724,120 @@ def test_source_search_fit_pinned_card_not_a_result(
             break
         call = {**call, "__extras__": {window[0]: window[1]}}
     assert seen == set(range(30))
+
+
+# ── gr608733: source search applies args={'serves': 'quest:<id>'} ────
+
+
+def test_source_search_serves_filters_to_serving_refs(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``args={'serves': 'quest:<id>'}`` on a since=/sort= source search
+    restricts hits to the quest's inbound ``serves`` edges — the same
+    cohort the paper path's ``serves=`` resolves (gr608733: the nested
+    spelling used to die at the unapplied-args gate)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    serving = _seed(store, "paper", "sv-inside", ["xenon serves cohort"], emb)
+    _seed(store, "paper", "sv-outside", ["xenon serves cohort"], emb)
+    quest = store.insert_ref(kind="quest", slug=None, title="q")
+    store.add_link(src_ref_id=serving, dst_ref_id=quest.id, relation="serves")
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "xenon serves cohort",
+            "since": "2000-01-01",
+            "__extras__": {"serves": f"quest:{quest.id}"},
+        },
+    )
+    assert not is_error, body
+    assert "sv-inside" in body
+    assert "sv-outside" not in body
+    assert f"serves=qu{quest.id}" in body
+
+
+def test_source_search_serves_empty_cohort_is_zero_hits(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A quest nothing serves yields zero hits — the include channel
+    holds an empty set, it never falls through unfiltered."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    _seed(store, "paper", "sv-unserved", ["xenon serves cohort"], emb)
+    quest = store.insert_ref(kind="quest", slug=None, title="q")
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "xenon serves cohort",
+            "since": "2000-01-01",
+            "__extras__": {"serves": f"quest:{quest.id}"},
+        },
+    )
+    assert not is_error, body
+    assert "sv-unserved" not in body
+    assert "restricted to 0 serving refs" in body
+
+
+def test_source_search_serves_replays_caller_spelling(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The resolved ref-id list never leaks into a continuation hint —
+    ``next:`` re-renders the caller's ``serves=`` spelling like the
+    cite-facet replays do."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    quest = store.insert_ref(kind="quest", slug=None, title="q")
+    for i in range(3):
+        rid = _seed(store, "paper", f"sv-page-{i}", ["xenon serves cohort"], emb)
+        store.add_link(src_ref_id=rid, dst_ref_id=quest.id, relation="serves")
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "xenon serves cohort",
+            "since": "2000-01-01",
+            "page_size": 2,
+            "__extras__": {"serves": f"quest:{quest.id}"},
+        },
+    )
+    assert not is_error, body
+    assert "serves='quest:" in body
+    assert "include_ref_ids" not in body
+
+
+def test_source_search_serves_bad_target_refuses(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A ``serves=`` token that is no quest reference fails the same way
+    the paper path fails it — never degrades to an unfiltered search."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    _seed(store, "paper", "sv-bad", ["xenon serves cohort"], emb)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "xenon serves cohort",
+            "since": "2000-01-01",
+            "__extras__": {"serves": "bogus"},
+        },
+    )
+    assert is_error
+    assert "serves= takes a quest reference" in body
+
+
+def test_source_search_serves_missing_quest_refuses(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "q": "xenon serves cohort",
+            "since": "2000-01-01",
+            "__extras__": {"serves": "quest:99999999"},
+        },
+    )
+    assert is_error
+    assert "quest id=99999999 not found" in body
