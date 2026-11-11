@@ -1,5 +1,5 @@
 """The ``hexfold`` generator — a ``.hx`` *spec text* as the params payload
-(docs/backlog/hexfold-integration.md). ``hexfold`` is the standalone,
+(spec `me630415`, the retired docs/backlog/hexfold-integration.md). ``hexfold`` is the standalone,
 numpy-only package that owns the topology side of the seam: a `.hx` file
 carries *topology only* — lattice, instances (``sheet``/``tube``/``cone``/
 ``fullerene``), defects, holes, ``bond``/``fuse`` attachments, nanobud

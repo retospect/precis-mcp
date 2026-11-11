@@ -113,7 +113,7 @@ class GeneratedPort:
     #: stays atom 0 of that ring for back-compat binding. ``None`` for a
     #: single-atom port. Carried through the block's ``topology`` (the
     #: handler's ``add_port`` op has no column for it — the ring-port hook
-    #: named in docs/backlog/hexfold-integration.md).
+    #: named in `me630415`, the retired docs/backlog/hexfold-integration.md).
     atoms: list[int] | None = None
     #: The port's **type**, the one thing that makes se generic across
     #: shape languages (docs/backlog/diamondoid-pattern-language.md):
@@ -141,7 +141,7 @@ class GeneratedMeasure:
     ``<block>.<name>`` are evaluated by the existing ``stackup`` with no
     generator-specific code.  ``min_A``/``max_A`` is the band of requests
     that realise the same discrete value -- for a hexfold sheet extent the
-    snap cell (``docs/backlog/hexfold-integration.md`` step 3): the
+    snap cell (``me630417``, the retired ``docs/backlog/hexfold-integration.md`` step 3): the
     tolerance the lattice grants for free, declared as a band so
     ``view='freedom'`` and stack-up see it as slack, not as a mismatch.
     ``None``/``None`` for a point (a tube radius)."""

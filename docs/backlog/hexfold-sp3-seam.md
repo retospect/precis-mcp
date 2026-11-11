@@ -4,7 +4,7 @@ pillar: 3d-design
 title: hexfold seam vertices — joining three or four seam lines at an atom
 prio: medium
 model: opus
-blocked-by: hexfold-integration
+blocked-by: me628772
 ---
 
 shipped: sp3 seam lines k4-sp3-90-a + k3-sp3-z (692d8830a), k3-sp3-a (260218345); open: seam-vertex example + vertex χ/consistency rules + path-ID class decision

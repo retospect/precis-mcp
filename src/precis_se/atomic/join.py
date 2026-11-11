@@ -1,5 +1,5 @@
-"""``join`` — the block-joiner op (SPEC §22.2, docs/backlog/
-hexfold-integration.md step 5 slice 1): compose two already-resolved
+"""``join`` — the block-joiner op (SPEC §22.2, `me630418`, the retired
+docs/backlog/hexfold-integration.md step 5 slice 1): compose two already-resolved
 blocks over a matched port pair into a new composite se block. A thin
 store-aware wrapper around ``hexfold.join``'s pure numpy half
 (``src/hexfold/join.py``'s module docstring names this module as its

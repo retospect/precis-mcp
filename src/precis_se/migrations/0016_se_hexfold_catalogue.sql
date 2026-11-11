@@ -2,7 +2,7 @@
 --
 -- `se_hexfold_catalogue` — the DB-backed store behind
 -- :class:`hexfold.catalogue.CatalogueStore`
--- (docs/backlog/hexfold-integration.md step 6 slice 2; the in-process
+-- (`me630421`, the retired docs/backlog/hexfold-integration.md step 6 slice 2; the in-process
 -- twin is `hexfold.catalogue.MemoryStore`, which names this table's
 -- module as its persistent counterpart).
 --
@@ -27,7 +27,7 @@
 -- the authored sections plus generator version) and does not exist yet;
 -- this one is the environment-keyed catalogue of §25.3 `view='catalogue'`
 -- and the step 6 ruling. The spec runs the two together under one
--- heading; erratum filed in docs/backlog/hexfold-integration.md. Do not
+-- heading; erratum filed in spec.md §26 and `me630421` (the retired docs/backlog/hexfold-integration.md). Do not
 -- widen either into the other.
 --
 -- Zero live rows in prod as of this migration (the table is new).

@@ -208,7 +208,7 @@ def test_prepare_generate_multi_instance_ports_are_undotted(store: Store) -> Non
     (``h.in``); se's ``add_port`` reserves the dot for ``block.port``
     endpoints, so the adapter maps them to ``h_in`` and keeps the hexfold
     path under ``topology.ports[<name>].hx`` (found by the dev-DB dogfood,
-    docs/backlog/hexfold-integration.md step 4)."""
+    `me630415`, the retired docs/backlog/hexfold-integration.md step 4)."""
     tree = SeTree()
     echo, pending = prepare_generate(
         store,
@@ -272,7 +272,7 @@ def test_prepare_generate_dry_run_alias_returns_none_pending(store: Store) -> No
     assert "probe" not in tree.blocks
 
 
-# ── generated measures (hexfold-integration.md step 3) ────────────────
+# ── generated measures (`me630417`, the retired hexfold-integration.md step 3) ────────────────
 
 SHEET_A_SPEC = """\
 hexfold 0.2

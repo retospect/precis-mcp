@@ -43,8 +43,8 @@ blocked.
 **Resume (2026-10-03):** staple-sequence fill and the orderable strand
 list are deployed (rounds 1–2) and dogfooded on prod; the order refusal's
 repair hint is deployed (round 3, 929107f3) and dogfooded on prod 2026-10-03
-20:38Z: its `next:` ran verbatim restored all 6 rows. Do-next 1 is blocked on
-hexfold-integration; no review item is open. Traps: a chain design laid out before the
+20:38Z: its `next:` ran verbatim restored all 6 rows. Do-next 1 is blocked on spec `me628772`
+(the retired hexfold-integration); no review item is open. Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
 O3'–P step is stretched (~7 Å) by design until the oxDNA tier (Horizon 3)
@@ -54,8 +54,8 @@ worktree's code against the prod DB (not the deployed code).
 
 ## Do next
 
-1. **backlog/se-chain-wrap-around-part.md** — blocked-by
-   hexfold-integration; DNA-SE session evidence for the want.
+1. **backlog/se-chain-wrap-around-part.md** — blocked-by spec
+   `me628772` (the retired hexfold-integration); DNA-SE session evidence for the want.
 
 ## Horizon
 

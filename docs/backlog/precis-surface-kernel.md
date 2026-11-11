@@ -3,7 +3,7 @@ status: draft
 title: precis_surface — lattice-agnostic smooth-surface kernel alongside se, with hexfold as its carbon binding
 prio: high
 model: opus
-blocked-by: hexfold-integration
+blocked-by: me628772
 pillar: 3d-design
 ---
 
@@ -45,7 +45,7 @@ build plan and the precis-side decisions only.
 
 - [x] §28.4 stage 1 — symbolic chain solver with a stub geometry
   backend (`hexfold.chain`, 2026-09-28; state in
-  `hexfold-integration.md` "Step 4 built"). The smooth layer plugs in as
+  `me630417` (the retired hexfold-integration.md, ruling step 4)). The smooth layer plugs in as
   a `GeometryBackend`.
 - [ ] §28.5 — straight tubes, symmetric collars, caps from the cache;
   then the discrete-mesh smooth solve, the two-part curvature bound,

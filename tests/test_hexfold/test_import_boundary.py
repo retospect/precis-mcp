@@ -1,7 +1,7 @@
 """hexfold imports no server code — the monorepo fold-in boundary.
 
 `src/hexfold/` is MIT-marked and lives in this monorepo only to simplify
-deployment during rapid development (`docs/backlog/hexfold-integration.md`,
+deployment during rapid development (`me630415`, the retired `docs/backlog/hexfold-integration.md`,
 spec §30 last bullet: "Monorepo for now ... imports no `precis*`"). A
 server `precis`/`asa_bot`/`asa_slack` import under `src/hexfold/` would
 wire the package to this repo and break the later pip re-export. The

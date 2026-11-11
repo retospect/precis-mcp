@@ -1,6 +1,6 @@
 """``hexfold.place.place_graph``: joint rigid placement across a part-graph
-cycle (slice 3, 2026-09-28 -- docs/backlog/hexfold-integration.md "Seed
-placement residuals ... fixed 2026-09-28").
+cycle (slice 3, 2026-09-28 -- `me630418`, the retired docs/backlog/hexfold-integration.md
+seed-placement residuals).
 
 Synthetic instances only, no ``build()`` involved: every instance shares
 the same small asymmetric 4-point local cloud ``_P`` (non-coplanar, so a

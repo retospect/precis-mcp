@@ -1,5 +1,5 @@
 """``catalogue`` — the DB-backed :class:`~hexfold.catalogue.CatalogueStore`
-(``docs/backlog/hexfold-integration.md`` step 6 slice 2; table
+(``me630421``, the retired ``docs/backlog/hexfold-integration.md`` step 6 slice 2; table
 ``se_hexfold_catalogue``, migration ``precis_se/0016``).
 
 :mod:`hexfold.catalogue`'s own store is :class:`~hexfold.catalogue.
@@ -27,7 +27,7 @@ trustworthy, and today they are not.
 the *length of the measurement tube*, which :class:`~hexfold.catalogue.
 EnvKey` does not record, rather than the environment it claims to
 describe (gripe 456641; the evidence is in
-``docs/backlog/hexfold-integration.md`` §"Step 6 slice 1"). Two rows
+``me630420``, the retired ``docs/backlog/hexfold-integration.md`` §"Step 6 slice 1"). Two rows
 measured at different lengths therefore collide on one key, and in a
 *shared* table whichever tube warmed the cache first would set
 ``compose``'s guard band for every later join.

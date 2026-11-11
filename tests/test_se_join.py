@@ -1,5 +1,5 @@
-"""``join`` — the se-side block joiner op (docs/backlog/
-hexfold-integration.md step 5 slice 1): :mod:`precis_se.atomic.join`'s
+"""``join`` — the se-side block joiner op (`me630418`, the retired
+docs/backlog/hexfold-integration.md step 5 slice 1): :mod:`precis_se.atomic.join`'s
 store-aware wrapper around :mod:`hexfold.join`'s pure ``compose``.
 
 Conventions follow :mod:`tests.test_se_hexfold_generator`'s adapter
@@ -674,8 +674,8 @@ def test_join_block_parented_under_an_ordinary_block_stays_joinable(
 def test_join_reports_reparented_info_for_an_ordinary_parent_on_b(
     store: Store,
 ) -> None:
-    """User ruling 2026-09-29 (`docs/backlog/hexfold-integration.md`, step
-    5 open item 1): joining a block authored under an ordinary layout
+    """User ruling 2026-09-29 (`me630419`, the retired
+    `docs/backlog/hexfold-integration.md` step 5 open item 1): joining a block authored under an ordinary layout
     parent moves it into the composite. For `a` that is lossless (the
     composite inherits the parent, asserted above); for `b` the authored
     parent is discarded outright, so it is reported as a

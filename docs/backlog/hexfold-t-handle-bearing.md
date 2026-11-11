@@ -3,7 +3,7 @@ status: draft
 pillar: 3d-design
 title: T-handle bearing — the third hexfold test piece (nanotube race, rotating inner handle)
 prio: high
-blocked-by: hexfold-integration
+blocked-by: me628772
 ---
 
 # T-handle bearing — third hexfold test piece
@@ -59,7 +59,7 @@ the first real consumer of the se joint sweep
 - The T-handle rotates within its race with the same revolute-joint
   mechanics the box/valve pieces already validate (no new joint code
   needed — if new code turns out to be needed, that is itself a finding
-  worth reporting back to `hexfold-integration.md`).
+  worth reporting back on spec `me628772`).
 
 ## Target + blast radius
 
@@ -74,5 +74,5 @@ machinery expected — reuses the box/valve revolute-joint pattern.
 Closest existing items: the rotary ratchet valve spec `me628980` (the
 same revolute-joint pattern, prior instance),
 `diamondoid-pattern-language.md` (shaft-in-sleeve bearing, sp³ variant,
-the incommensurate-lattice question), `hexfold-integration.md`.
+the incommensurate-lattice question), spec `me628772` (the retired hexfold-integration.md).
 Thread: `docs/backlog/threads/hexfold-toolkit.md`.

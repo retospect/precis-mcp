@@ -4,7 +4,7 @@ title: se viewer — cross-scale pick → hierarchical reference → prompt toke
 pillar: 3d-design
 prio: medium
 model: opus
-blocked-by: hexfold-integration
+blocked-by: me628772
 ---
 
 # Pick anything, get every level it belongs to, cite one in the prompt

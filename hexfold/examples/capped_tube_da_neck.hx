@@ -3,7 +3,7 @@ hexfold 0.2
 # flank: cap(5,5) closes one end over a ten-hexagon seam; the C60 pentagon
 # hole meets a (5,0) neck that seats on a path3 host opening.  The open
 # end stays a port.  Dogfood input for the se `hexfold` generator
-# (docs/backlog/hexfold-integration.md step 4).
+# (spec `me630415`, the retired docs/backlog/hexfold-integration.md).
 origin h
 h: tube(5,5, len=14)
 c: cap(5,5)

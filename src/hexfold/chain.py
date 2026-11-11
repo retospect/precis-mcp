@@ -1,5 +1,5 @@
 """The symbolic chain solver with a stub geometry backend (SPEC 22.3,
-SPEC 28 step 4; ``docs/backlog/hexfold-integration.md`` ruling step 4).
+SPEC 28 step 4; ``me630417`` (the retired ``docs/backlog/hexfold-integration.md`` ruling step 4)).
 
 The LLM composes constraints, never geometry: *a capped tube on a sheet,
 a spacer, a wider tube* is an ordered **chain** of parts sharing one

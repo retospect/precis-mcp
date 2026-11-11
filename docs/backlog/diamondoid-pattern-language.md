@@ -207,7 +207,7 @@ the **seam radius** is the depth the edge perturbation penetrates.
 Measure it, do not guess it: relax a hexfold piece free and fused, diff
 per atom against graph distance from the rim, read off the decay length.
 Expected 2-3 rings sp2, ~2 layers sp3. This measurement is step 0 of the
-build order (`hexfold-integration.md`): it validates the frozen-interior
+build order (`me630417`, the retired hexfold-integration.md): it validates the frozen-interior
 scheme before anything is built on it. Free edges that stay free in the
 final machine resolve as terminated (their real state); ports that will
 be joined never need a free-relaxed geometry.
@@ -339,7 +339,7 @@ Readings:
   a ~0.2 % effect; the reconstruction chemistry that makes real edges
   differ is exactly what this rung lacks.
 - **Found on the way:** every multi-instance hexfold seed was mis-placed
-  (`_place_seeds` keying bug, fixed in this slice; see `hexfold-integration.md`
-  residuals). The measurement was impossible before the fix — the fused
+  (`_place_seeds` keying bug, fixed in this slice; see `me630418`, the retired hexfold-integration.md's
+  seed-placement residuals). The measurement was impossible before the fix — the fused
   seed telescoped and the "seam" displacement read 4–11 Å everywhere.
 

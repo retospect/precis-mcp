@@ -1,7 +1,7 @@
 """``place_graph``: joint rigid placement of instances across a part-graph
 *cycle* -- the seed-placement residual left open by ``build._place_seeds``
-(docs/backlog/hexfold-integration.md "Root-caused 2026-09-28" item 2 and
-"Seed placement residuals ... fixed 2026-09-28"'s "Still open" note).
+(`me630418`, the retired docs/backlog/hexfold-integration.md,
+seed-placement residuals).
 
 ``_place_seeds``' two-phase BFS assigns each non-root instance exactly one
 rigid transform, from the first fuse/seam edge that reaches it; any other

@@ -3,7 +3,7 @@ status: draft
 title: wrap_chain — derive a helix path from a carbon part's envelope instead of an arbitrary waypoint path
 pillar: 3d-design
 prio: high
-blocked-by: hexfold-integration
+blocked-by: me628772
 ---
 
 # wrap_chain — a helix path derived from a part, not authored freehand
@@ -52,7 +52,7 @@ clears the part it's meant to wrap, and no update if the part moves.
   (excluded-volume clearance, offset-curve fidelity to the part surface),
   not energetic.
 - Wrapping a part whose atom hull is not se-visible — blocked entirely on
-  `hexfold-integration.md` making a carbon part's atom hull an se-readable
+  spec `me628772`'s open items (the retired hexfold-integration.md) making a carbon part's atom hull an se-readable
   surface; this item cannot start before that lands.
 
 ## Acceptance criteria
@@ -72,7 +72,7 @@ clears the part it's meant to wrap, and no update if the part moves.
 
 `src/precis_se/chain/relax.py` (excluded-volume widening), a new op
 (`wrap_chain`, likely `src/precis_se/chain/` alongside `layout_chain`);
-depends on `hexfold-integration.md`'s atom-hull-as-surface work and
+depends on spec `me628772`'s atom-hull-as-surface work (the retired hexfold-integration.md) and
 spec `me629029`'s selector grammar.
 
 ## Open questions / decisions log
@@ -83,6 +83,6 @@ spec `me629029`'s selector grammar.
   between cheap layout and expensive settle.
 
 Closest existing items: spec `me629029` (region property layer, folded) (the selector
-grammar this item consumes), `hexfold-integration.md` (hard blocker),
+grammar this item consumes), spec `me628772` (hard blocker; the retired hexfold-integration.md),
 `nanostructure-check-tiers.md` (owns the missing physics rung this item
 explicitly does not attempt). Thread: `docs/backlog/threads/se-nucleic-chain.md`.

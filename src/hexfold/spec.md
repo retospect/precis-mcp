@@ -1335,8 +1335,8 @@ retained affordance: a force-populate flag for benchmark runs.
   build-cache entry is only ever as wrong as the generator that made it,
   whereas an environment row is shared across every design in the
   database — which is why a *measured* environment row does not yet
-  outrank the pinned wildcard (`docs/backlog/hexfold-integration.md`
-  step 6 slice 1, gripe 456641).
+  outrank the pinned wildcard (`me630420`, the retired `docs/backlog/hexfold-integration.md`
+  step 6 slice 1; gripe 456641).
 - **Adapters** between two rims are largely deterministic (a discrete
   curvature problem, so the generator enumerates candidates); the
   non-deterministic part is *which* candidate, which is ranking, not
@@ -1378,7 +1378,7 @@ algebra cannot see.
 
 Each step is a spec that must `check` clean and round-trip through the
 precis generator on the dev DB. Small scale first. **This section is the
-one roadmap**: `docs/backlog/hexfold-integration.md` (steps 1–3, 7) and
+one roadmap**: `me630417` (steps 1–3, 7 — the retired `docs/backlog/hexfold-integration.md`) and
 `docs/backlog/precis-surface-kernel.md` (steps 4–6, 8) carry only tick
 state against these numbers, never a second ordering. Test pieces that
 drive the order: the box (step 3) and the rotary ratchet valve
@@ -1468,7 +1468,7 @@ drive the order: the box (step 3) and the rotary ratchet valve
    wish)` (§25.3) takes the valve's whitelist / blacklist / throughput
    wish; the clearance field and pocket extractor are read-only queries.
 
-**Block joiner (`docs/backlog/hexfold-integration.md` ruling step 5),
+**Block joiner (`me630418`, the retired `docs/backlog/hexfold-integration.md` ruling step 5),
 built 2026-09-28 (slices 1-2: stick + geo rungs)**: `hexfold.join` (`Block`,
 `block_from_net`, `rank_k`, `place`, `compose`, `SEAM_RADIUS`, the
 `Relaxer` protocol) composes two already-resolved blocks over a matched
@@ -1504,7 +1504,7 @@ when that forces `geo` over a stick-rung part (§13). `compose` gained a
 numbers (0.002 Å / 0.15°, uniform across rim type) rather than the stick
 thresholds above, measured on different physics (pinned guard band vs. a
 fully free relax). Joint placement across part-graph cycles follows in a
-later slice (`docs/backlog/hexfold-integration.md` step 5).
+later slice (`me630418`, the retired `docs/backlog/hexfold-integration.md` step 5).
 
 Out of scope until the above holds: general Goldberg fullerenes, surface
 tiling from a target SDF (the 30 nm oval box), rdkit realisation of
@@ -1616,7 +1616,7 @@ scope, seam vertices out (§6.4); registry closure as integer arithmetic
   Fixed, with the rim-frame normal signed against the owning instance's
   centroid rather than the whole net's. Residual: bud (`@`) links, k ≥ 3
   seams and fuses into `cap` hole rims still seed long crossing bonds
-  (`docs/backlog/hexfold-integration.md`).
+  (`me630418`, the retired `docs/backlog/hexfold-integration.md`).
 
 ### 31. Sources
 

@@ -1,5 +1,5 @@
 """``hexfold.join`` -- the block joiner over resolved blocks (SPEC §22.2,
-`docs/backlog/hexfold-integration.md` ruling step 5, slice 1: sp2
+`me630418` (the retired `docs/backlog/hexfold-integration.md` ruling step 5, slice 1): sp2
 two-block join reproducing a whole-spec fuse on the stick rung).
 
 Every "compose two separately-resolved blocks" case is checked against

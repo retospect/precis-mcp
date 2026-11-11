@@ -1,4 +1,4 @@
-"""``join`` on the geo rung (slice 2, `docs/backlog/hexfold-integration.md`
+"""``join`` on the geo rung (slice 2, `me630418`, the retired `docs/backlog/hexfold-integration.md`
 step 5, `precis_se.atomic.join`'s `geo_relax_pinned`/`_select_relaxer`):
 the same "reproduce a whole-spec fuse" contract `tests/test_se_join.py`
 pins for the stick rung, now with both parts relaxed on ``geo``

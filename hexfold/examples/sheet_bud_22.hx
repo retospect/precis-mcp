@@ -2,7 +2,7 @@ hexfold 0.2
 # [2+2] cycloaddition bud on a flat sheet (Nasibulin 2007): two authored
 # bonds from the C60 6-6 bond onto the graphene host at one lattice site;
 # the sheet rim stays a port.  Dogfood input for the se `hexfold`
-# generator (docs/backlog/hexfold-integration.md step 4).
+# generator (spec `me630415`, the retired docs/backlog/hexfold-integration.md).
 origin h
 h: sheet(12,12)
 b: fullerene(C60)

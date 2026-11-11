@@ -315,8 +315,8 @@ def prepare_generate(
                 "direction": port.direction,
                 "expected_element": port.expected_element,
             }
-            # The port *type* seam (docs/backlog/hexfold-integration.md
-            # step 5's prerequisite): only when the generator actually
+            # The port *type* seam (`me630418`, the retired
+            # docs/backlog/hexfold-integration.md step 5's prerequisite): only when the generator actually
             # typed the port (``lattice`` set — today only hexfold rims) —
             # the pre-existing single-atom generators' ports stay
             # annotation-free, unchanged, since they carry no lattice/
@@ -490,7 +490,7 @@ def _topo_brief(value: object, limit: int = 80) -> str:
     shows its keys and a list its length -- the hexfold generator's
     ``regions``/``ports`` carry every atom ordinal, which turned a
     one-line echo into kilobytes (dev-DB dogfood,
-    docs/backlog/hexfold-integration.md step 4).
+    `me630415`, the retired docs/backlog/hexfold-integration.md step 4).
     """
     if isinstance(value, dict):
         keys = ",".join(str(k) for k in value)

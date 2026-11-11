@@ -160,8 +160,8 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     table can't see them — the union is what ``put``/``edit`` accept.
     ``realize`` (se-print-implementer.md) joined the atomic mode's
     original 3 as the first non-atomic store-write-deferred op, reusing
-    the same interception seam; ``join`` (docs/backlog/
-    hexfold-integration.md step 5) is the second. ``relax_chain``
+    the same interception seam; ``join`` (`me630418`, the retired
+    docs/backlog/hexfold-integration.md step 5) is the second. ``relax_chain``
     (:mod:`precis_se.chain`) is the third, and the first that is
     store-**read** rather than store-write-deferred: it needs the
     interception only because a helix's persistence length may come from a

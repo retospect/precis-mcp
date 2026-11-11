@@ -3961,8 +3961,8 @@ def _place_seeds(
     bonds have no shared rim normal to twist-fit about.
 
     Single-rooted at ``spec.origin``: a fused component the BFS can't
-    reach from there is left at its own local seed (docs/backlog/
-    hexfold-integration.md "Root-caused 2026-09-28" item 2 notes a
+    reach from there is left at its own local seed (`me630418`,
+    the retired docs/backlog/hexfold-integration.md "Root-caused 2026-09-28" item 2 notes a
     multi-root BFS as a possible follow-up -- not needed by any current
     example, since a seam's own placement-only edges are what span every
     seam-linked instance into the one tree rooted at origin).
@@ -4897,6 +4897,7 @@ def _apply_connects(
                 continue
             vbonds, sfaces, _reg = got
             # _place_seeds placement (gr454650-adjacent root cause,
+            # `me630418`, the retired
             # docs/backlog/hexfold-integration.md "Root-caused 2026-09-28"
             # item 1): the menu verb never fed `bond_links`/`fuse_frames`,
             # so _place_seeds' `len(placed) <= 1` early return skipped the

@@ -58,7 +58,7 @@ nm's domain modules land here as submodules rather than inline:
   vendored at ``src/hexfold`` (its own spec ``src/hexfold/spec.md``;
   never imports precis) and imported directly; ``params.fidelity``
   ``check|stick`` picks report-only vs stick-preview coordinates — see
-  ``docs/backlog/hexfold-integration.md``.
+  spec ``me630415`` (the retired ``docs/backlog/hexfold-integration.md``).
 - :mod:`precis_se.atomic.mechanics` — the L4 closed-form mechanics
   ceilings (Euler buckling, rupture force, bend stiffness). Signatures
   keep Å/nN/eV deliberately: these are cost terms *over* the geometry,

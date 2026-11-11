@@ -1,5 +1,5 @@
 """The step-4 interface claim across the se boundary (SPEC 28.4,
-``docs/backlog/hexfold-integration.md`` ruling step 4): a block the
+``me630417`` (the retired ``docs/backlog/hexfold-integration.md`` ruling step 4)): a block the
 hexfold generator resolved becomes a pinned chain part from nothing but
 its typed port payloads and its length anchor, and the chain solver
 composes it with stub parts through the ports alone -- no geometry, no

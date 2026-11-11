@@ -1,5 +1,5 @@
 """``hexfold.catalogue`` -- environment-keyed rows for seam/bulk geometry
-(SPEC §26, `docs/backlog/hexfold-integration.md` ruling step 6, slice 1).
+(SPEC §26, `me630421` (the retired `docs/backlog/hexfold-integration.md` ruling step 6, slice 1)).
 
 Behaviour-preserving: seed rows restate `hexfold.join`'s own module
 constants (a test pins the two equal), and `compose` with no ``catalogue``

@@ -10,8 +10,8 @@ in every multi-instance example, which ``stick``'s spring stage then
 normal was also signed against the whole-net centroid instead of the
 owning instance's (a coin toss for a hole rim near a sheet's centre).
 
-Root-caused 2026-09-28 (docs/backlog/hexfold-integration.md "Root-caused
-2026-09-28"): three further placement gaps, each masked by ``stick()``
+Root-caused 2026-09-28 (`me630418`, the retired docs/backlog/hexfold-integration.md,
+"Root-caused 2026-09-28")): three further placement gaps, each masked by ``stick()``
 until a pre-relax ``net.seed3`` assertion is added here.  Item 1 (nanobud
 ``@`` menus): the menu verb never fed ``fuse_frames``, so ``_place_seeds``
 skipped the whole spec.  Item 2 (k>=3 seams): the seam pass minted seam

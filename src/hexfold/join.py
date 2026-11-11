@@ -1,5 +1,5 @@
 """join: compose two resolved blocks over a matched port pair (SPEC §22.2
-"Block joiner", `docs/backlog/hexfold-integration.md` ruling step 5).
+"Block joiner", `me630418` (the retired `docs/backlog/hexfold-integration.md` ruling step 5)).
 
 Until this module, whole-spec composition (one ``.hx`` text, every
 instance fused in one ``build``) was the only joiner.  This is the

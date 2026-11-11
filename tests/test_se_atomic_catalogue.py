@@ -3,7 +3,7 @@
 The round-trip tests are ordinary; the ones that matter are
 `test_resolve_edge_ignores_a_measured_row_by_default` and its
 `trust_measured` twin, which pin the step 6 slice 1 ruling
-(`docs/backlog/hexfold-integration.md`, gripe 456641): a measured row is
+(`me630420`, the retired `docs/backlog/hexfold-integration.md`; gripe 456641): a measured row is
 stored and readable but must not outrank the pinned wildcard, because
 `measure_environment`'s seam radius tracks the measurement tube's length
 rather than its `EnvKey`, and this table is shared by every design.

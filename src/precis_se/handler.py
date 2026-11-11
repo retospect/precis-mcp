@@ -5328,8 +5328,8 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
         from precis_se.atomic.generators.hexfold_scene import stored_top_diagnostics
 
         lines.extend(stored_top_diagnostics(rec))
-    # ``join``'s own facts (docs/backlog/hexfold-integration.md step 5
-    # slice 1): the two parts it was composed from and the seam itself —
+    # ``join``'s own facts (`me630418`, the retired
+    # docs/backlog/hexfold-integration.md step 5 slice 1): the two parts it was composed from and the seam itself —
     # a join record carries no ``spec``/``rings`` of its own (module
     # docstring: composed at read time, never persisted whole), so these
     # are its only shape-specific lines.
