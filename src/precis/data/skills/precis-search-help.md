@@ -469,6 +469,13 @@ header). Add a `q=` and it becomes a **ranked filter**: a ref must *also*
 lexically match `q` to appear, so the result is often far fewer. The mode
 switch is real and easy to miss.
 
+A gripe listing that overflows its page also prints a `clusters:` line —
+the `cluster:` groups of the *whole* filtered set with counts (biggest
+first, until ~90% is covered or 20 groups; the rest fold into
+`… +N groups (M)`), plus a pasteable `narrow: tags=[…, 'cluster:<name>']`
+call. Other tag axes:
+`view='count'` with `args={'group_by': 'tag:<axis>'}`.
+
 Use the **no-`q`** form for counting / inventory / "is the backlog clear?"
 questions. Reach for `q=` only when you mean "the tagged refs that mention
 X". Numeric-ref kinds flag a `q=`-induced drop in the header (`⚠ N of M …

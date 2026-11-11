@@ -61,7 +61,8 @@ Surface (see ``precis-gripe-help``):
   first — a set PRIO multiplies it — then size s<m<l<unsized, then
   oldest first — :mod:`precis.utils.gripe_order`), under an
   ``N open · M older than 3d · oldest grX (D days)`` line
-  (:func:`age_summary`, also the session-start digest line). ``/open``
+  (:func:`age_summary`, also the session-start digest line), plus a
+  ``clusters:`` facet line when the list overflows its page. ``/open``
   and the ``status='open'`` shorthand both mean the live cohort —
   every non-terminal ``STATUS:`` (gr530682); a literal status cohort
   is ``search(kind='gripe', tags=['STATUS:open'])``. The ``/open`` and
@@ -298,7 +299,6 @@ _MIN_COMMENT_PAGE = 400
 #: Open-view age cut: a gripe filed before this is "older than 3d" in the
 #: list summary (2026-10-18 audit: the newest-20 page hid the 44 oldest).
 _STALE_AFTER = timedelta(days=3)
-
 
 #: A create-time ``prio=`` plumbed from ``put`` into ``_create`` (which the
 #: base class calls with a fixed arg set). Request-scoped, not an instance
@@ -602,6 +602,8 @@ class GripeHandler(NumericRefHandler):
     # ``flood`` and the ``+N more`` tail were most of a 100-row page's
     # bytes and none of its grouping signal.
     list_row_tag_prefixes: ClassVar[tuple[str, ...]] = ("cluster:",)
+    # An overflowing list also names its ``cluster:`` groups (base class).
+    facet_axis: ClassVar[str | None] = "cluster"
 
     # gr572710: the bare get is the card + body, not the comments —
     # the batch footer's read-one hint names ``view='full'`` instead.

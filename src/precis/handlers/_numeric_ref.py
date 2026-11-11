@@ -189,6 +189,14 @@ _COUNT_GROUP_LIMIT = 200
 #: the enumeration — capped so a 200-group tail can't crowd out the
 #: facet rows themselves.
 _COUNT_OTHER_NAMES_BUDGET = 1200
+#: The overflow facet line (:meth:`NumericRefHandler._facet_line`) lists
+#: groups biggest-first until they cover this share of the filtered set…
+FACET_LINE_COVERAGE = 0.9
+#: …or this many groups, whichever comes first. A group cell is ~8 tokens
+#: against ~500-1000 of per-call overhead, so a wide line beats a second
+#: call (branching-factor optimum ≈ 30-45); 20 stays well under it. Not
+#: measured — tune against real agent narrowing behaviour.
+FACET_LINE_MAX_GROUPS = 20
 
 #: A universal handle token (``me474312``, ``td12``) inside free text —
 #: the delete ``reason='merged into me474312'`` breadcrumb the Gone
@@ -721,6 +729,12 @@ class NumericRefHandler(Handler):
     #: already has (gr572710). The eye header is not a row surface: it
     #: renders the full set.
     list_row_tag_prefixes: ClassVar[tuple[str, ...] | None] = None
+
+    #: Open-tag axis (``'cluster'`` → ``cluster:*``) a queryless list that
+    #: overflows its page summarises under the header — group counts over
+    #: the whole filtered set plus a pasteable narrowing call
+    #: (:meth:`_facet_line`). ``None`` = no line.
+    facet_axis: ClassVar[str | None] = None
 
     #: The single-id view that reads one ref completely — named on the
     #: batch footer's read-one hint (gr572710: gripe's bare get is the
@@ -2410,6 +2424,17 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
         ):
             parts.append(summary)
+        if total > offset + shown and (
+            facets := self._facet_line(
+                tags,
+                exclude_tags=exclude_tags,
+                id_min=id_min,
+                id_max=id_max,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
+        ):
+            parts.append(facets)
         if note:
             parts.append(note)
         parts.append(
@@ -2456,6 +2481,58 @@ class NumericRefHandler(Handler):
         for no line (the default).
         """
         return ""
+
+    def _facet_line(
+        self,
+        tags: list[str],
+        *,
+        exclude_tags: list[str] | None,
+        id_min: int | None,
+        id_max: int | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+    ) -> str:
+        """``clusters: a 12 · b 7 · … +3 groups (5) · (none) 40 — narrow: tags=[…, 'a']``.
+
+        Names the :attr:`facet_axis` groups of the *whole* filtered set,
+        biggest first, until they cover :data:`FACET_LINE_COVERAGE` of it
+        or :data:`FACET_LINE_MAX_GROUPS` groups — the next narrowing call
+        is one paste instead of a ``view='count'`` round trip. Empty when
+        the kind sets no axis or no member carries a tag on it. Open-axis
+        groups can overlap (a ref with two tags counts in both), so the
+        coverage is an upper bound."""
+        axis = self.facet_axis
+        if axis is None:
+            return ""
+        total, groups = self.store.count_refs_facets(
+            kind=self.kind,
+            tags=tags,
+            exclude_tags=exclude_tags,
+            facets=[("open_axis", axis)],
+            group_limit=_COUNT_GROUP_LIMIT,
+            id_min=id_min,
+            id_max=id_max,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+        )
+        named = [(v[0], n) for v, n, _span in groups if v[0] is not None]
+        if not named or total <= 0:
+            return ""
+        cells: list[str] = []
+        covered = 0
+        for name, n in named:
+            if len(cells) >= FACET_LINE_MAX_GROUPS or covered >= (
+                FACET_LINE_COVERAGE * total
+            ):
+                break
+            cells.append(f"{name} {n}")
+            covered += n
+        hidden = named[len(cells) :]
+        if hidden:
+            cells.append(f"… +{len(hidden)} groups ({sum(n for _name, n in hidden)})")
+        if loose := sum(n for v, n, _span in groups if v[0] is None):
+            cells.append(f"(no {axis}) {loose}")
+        return f"{axis}s: {' · '.join(cells)} — narrow: tags={[*tags, named[0][0]]!r}"
 
     def _list_row_marks(self, refs: list[Ref]) -> dict[int, str]:
         """Optional per-kind warning mark for a list/search row.
