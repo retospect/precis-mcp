@@ -2016,6 +2016,9 @@ class DraftHandler(Handler):
                     self.store, ref.id, str(text), chunk_kind=kind
                 )
                 body += _draft_lint.bare_xref_hint(str(text))
+                body += _draft_lint.concept_label_hint(
+                    self.store, slug, ref.id, str(text), "", kind
+                )
                 body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
                 for _c in chunks:
                     body += _draft_lint.title_heading_dup_hint(
@@ -3518,6 +3521,9 @@ class DraftHandler(Handler):
                         self.store, c.ref_id, new_text, old_text, c.chunk_kind
                     )
                     body += _draft_lint.bare_xref_hint(new_text, old_text)
+                    body += _draft_lint.concept_label_hint(
+                        self.store, slug, c.ref_id, new_text, old_text, c.chunk_kind
+                    )
                     body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
                     body += _draft_lint.title_heading_dup_hint(
                         self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
@@ -3569,6 +3575,9 @@ class DraftHandler(Handler):
                         self.store, c.ref_id, str(text), old_text, c.chunk_kind
                     )
                     body += _draft_lint.bare_xref_hint(str(text), old_text)
+                    body += _draft_lint.concept_label_hint(
+                        self.store, slug, c.ref_id, str(text), old_text, c.chunk_kind
+                    )
                     body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
                     body += _draft_lint.title_heading_dup_hint(
                         self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text

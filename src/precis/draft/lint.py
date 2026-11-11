@@ -24,7 +24,11 @@ a cite of a paper whose ingest flagged glyph damage
 starts with its own float label, which the exporters' auto-numbering
 would print doubled (:func:`caption_number_hint`, gr592852), and a
 sentence that opens with a known lowercase identifier, which reads as a
-typo at line start (:func:`sentence_start_hint`, gr592934).
+typo at line start (:func:`sentence_start_hint`, gr592934), and an
+unexplained in-house concept label — a coined term the draft uses that
+resolves to a ``concept`` node with no literature provenance and no
+definition, or that collides with a literature canonical term
+(:func:`concept_label_hint`, gr626720).
 Pure functions over an explicit :class:`~precis.store.store.Store` (no
 handler `self`) — ``handlers/draft.py::DraftHandler`` is the sole caller,
 wiring these into its ``put``/``edit``/``get`` bodies.
@@ -435,6 +439,290 @@ def glyph_cite_hint(store: Store, text: str) -> str:
                 "numbers/units against the PDF"
             )
     return "".join(lines)
+
+
+# ── In-house concept-label lint (gr626720) ─────────────────────────────
+#
+# A paper draft should not lean on a house-coined label the literature
+# already names — or one nobody defined. ``concept_label_hint`` scans the
+# touched prose for surfaces claimed by a live ``concept``/``taxon`` node
+# and flags the in-house ones per the rules in its docstring.
+
+#: Longest term-graph surface the label scan can match — concept and
+#: taxon names are short term labels, never phrases.
+_LABEL_MAX_WORDS = 4
+
+#: Word shape for n-gram extraction (same shape as
+#: ``utils/wordcount._WORD``: an alnum run optionally joined by an
+#: internal apostrophe or hyphen, so ``g-C3N4``/``state-of-the-art``
+#: stay one token).
+_LABEL_WORD_RE = re.compile(r"[0-9A-Za-z]+(?:['’-][0-9A-Za-z]+)*")
+
+#: The vocabulary-alignment convention (docs/backlog/
+#: vocab-align-to-literature.md): a house term's node may name its
+#: literature equivalent inside its own definition as ``(lit: …)``.
+_LIT_MARKER_RE = re.compile(r"\(\s*lit\s*:\s*([^()]+)\)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _TermNode:
+    """A live ``concept``/``taxon`` node whose name or an alias surfaced
+    in scanned text. ``surfaces`` is every normalized label the node
+    answers to (name + aliases); ``hit_surfaces`` the subset the scanned
+    text actually used."""
+
+    ref_id: int
+    kind: str
+    name: str
+    definition: str
+    surfaces: frozenset[str]
+    hit_surfaces: frozenset[str]
+
+
+def _label_candidates(text: str) -> set[str]:
+    """Every normalized word n-gram (1..``_LABEL_MAX_WORDS``) in ``text``
+    — the candidate term surfaces probed against the term graph. Words
+    are lowercased verbatim, so the joined n-grams are already in
+    :func:`~precis.reading.concepts.normalize_name` form."""
+    words = [w.lower() for w in _LABEL_WORD_RE.findall(text or "")]
+    out: set[str] = set()
+    for width in range(1, min(_LABEL_MAX_WORDS, len(words)) + 1):
+        for i in range(len(words) - width + 1):
+            out.add(" ".join(words[i : i + width]))
+    return out
+
+
+def _term_nodes(store: Store, candidates: set[str]) -> list[_TermNode]:
+    """Live concept/taxon nodes claiming any ``candidates`` surface. The
+    SQL is a coarse filter (``norm_name``, or a *lowered* stored alias,
+    in the candidate set); the exact normalized match is re-checked in
+    Python — ``lower()`` doesn't collapse internal whitespace, so the raw
+    clause alone could credit a surface the stored form doesn't quite
+    have."""
+    if not candidates:
+        return []
+    from precis.reading.concepts import normalize_name
+
+    cands = sorted(candidates)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, kind, title, meta FROM refs "
+            "WHERE kind IN ('concept','taxon') AND retired_at IS NULL "
+            "AND (meta->>'norm_name' = ANY(%s) OR EXISTS ("
+            "SELECT 1 FROM jsonb_array_elements_text("
+            "COALESCE(meta->'aliases', '[]'::jsonb)) a "
+            "WHERE lower(a) = ANY(%s)))",
+            (cands, cands),
+        ).fetchall()
+    out: list[_TermNode] = []
+    for ref_id, kind, title, meta in rows:
+        m = meta or {}
+        aliases = m.get("aliases") or []
+        if not isinstance(aliases, list):
+            aliases = []
+        surfaces = {normalize_name(str(a)) for a in aliases}
+        surfaces.add(
+            str(m.get("norm_name"))
+            if m.get("norm_name")
+            else normalize_name(str(m.get("name") or title or ""))
+        )
+        surfaces.discard("")
+        hit = frozenset(surfaces & candidates)
+        if not hit:
+            continue
+        out.append(
+            _TermNode(
+                ref_id=int(ref_id),
+                kind=str(kind),
+                name=str(m.get("name") or title or ""),
+                definition=str(m.get("definition") or ""),
+                surfaces=frozenset(surfaces),
+                hit_surfaces=hit,
+            )
+        )
+    return out
+
+
+def _lit_sourced(store: Store, ref_ids: list[int]) -> set[int]:
+    """The subset of ``ref_ids`` carrying an outbound ``derived-from``
+    edge to a live paper/patent — the shipped literature-provenance
+    signal (the glossary promotion pass stamps exactly this edge;
+    :mod:`precis.reading.promote`)."""
+    if not ref_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT l.src_ref_id FROM links l "
+            "JOIN refs d ON d.ref_id = l.dst_ref_id AND d.retired_at IS NULL "
+            "WHERE l.relation = 'derived-from' AND l.src_ref_id = ANY(%s) "
+            "AND d.kind IN ('paper', 'patent')",
+            (sorted(ref_ids),),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def concept_label_hint(
+    store: Store,
+    slug: str,
+    ref_id: int,
+    new_text: str,
+    old_text: str = "",
+    chunk_kind: str | None = None,
+) -> str:
+    """Advisory ⚠ for unexplained in-house concept labels in draft prose
+    (gr626720 — the small consumer of the concept-identity contract).
+
+    A "label" is a surface a live ``concept``/``taxon`` node claims —
+    its name or an alias — appearing in the touched text. A claimant is
+    **in-house** when it is a ``concept`` with no ``derived-from`` edge
+    to a paper/patent (the shipped literature-provenance signal), or any
+    node whose definition carries the ``(lit: …)`` marker the
+    vocabulary-alignment convention uses for "the literature's word is
+    X"; a ``taxon`` or literature-sourced concept without the marker is
+    canonical. For each newly introduced in-house label:
+
+    * a literature claimant on the *same* surface, or any second
+      claimant at all — an ambiguous equivalent: flag for review, never
+      pick a side;
+    * the literature canonical named by a ``(lit: …)`` marker, or a
+      literature claimant on one of the node's *other* surfaces — flag
+      and prefer the canonical (the shared surface may be coincidental,
+      so this reads as a review suggestion);
+    * no definition anywhere (node ``meta.definition`` empty, no draft
+      glossary ``term`` leaf for the used surface) — flag as
+      unexplained, with the copy-ready glossary call;
+    * defined — a deliberately introduced term, allowed.
+
+    Aliases are never rewritten — the hint only names. Scoped to the
+    surfaces this write introduced (mirroring the abbrev hint) and to
+    prose chunk kinds (a ``term`` leaf IS a definition; ``code`` is
+    verbatim payload). Advisory only, same as every hint in this module.
+
+    What waits on the concept-identity contract (me626712): true
+    sense-level equivalence — an in-house label for a thing the
+    literature names *differently* with no shared surface can't be seen
+    yet, and per-alias provenance will sharpen "in-house" from node-level
+    to per-label."""
+    from precis.reading.concepts import normalize_name
+    from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+    if (
+        chunk_kind is not None
+        and chunk_kind not in PROSE_CHUNK_KINDS
+        and chunk_kind != "figure"
+    ):
+        return ""
+    candidates = _label_candidates(new_text)
+    if not candidates:
+        return ""
+    nodes = _term_nodes(store, candidates)
+    if not nodes:
+        return ""
+    old_surfaces: set[str] = set()
+    if old_text:
+        for n in _term_nodes(store, _label_candidates(old_text)):
+            old_surfaces |= n.hit_surfaces
+    claims: dict[str, list[_TermNode]] = {}
+    used_by: dict[int, set[str]] = {}
+    for n in nodes:
+        for s in n.hit_surfaces:
+            claims.setdefault(s, []).append(n)
+        fresh = set(n.hit_surfaces) - old_surfaces
+        if fresh:
+            used_by[n.ref_id] = fresh
+    if not used_by:
+        return ""
+    lit_ids = _lit_sourced(store, [n.ref_id for n in nodes if n.kind == "concept"])
+
+    def _lit_marker(n: _TermNode) -> str | None:
+        m = _LIT_MARKER_RE.search(n.definition)
+        return m.group(1).strip() if m else None
+
+    def _is_lit(n: _TermNode) -> bool:
+        return (n.kind == "taxon" or n.ref_id in lit_ids) and _lit_marker(n) is None
+
+    inhouse = [n for n in nodes if n.ref_id in used_by and not _is_lit(n)]
+    if not inhouse:
+        return ""
+
+    # Claimants of an in-house node's *other* surfaces — "X, aka Y" where
+    # the canonical registry knows Y. One batched probe for all in-house
+    # nodes, then intersected per node below.
+    other_surfaces = {s for n in inhouse for s in n.surfaces if s not in candidates}
+    by_id = {n.ref_id: n for n in nodes + _term_nodes(store, other_surfaces)}
+
+    draft_terms: set[str] | None = None
+
+    def _draft_defines(surface: str) -> bool:
+        nonlocal draft_terms
+        if draft_terms is None:
+            draft_terms = {
+                normalize_name(k) for k in store.drafts.defined_terms(ref_id)
+            }
+        return surface in draft_terms
+
+    # One ambiguous-equivalent line per collided surface, naming every
+    # claimant — review picks a side, never the lint.
+    lines: list[str] = []
+    ambiguous: set[str] = set()
+    for n in inhouse:
+        ambiguous |= {
+            s
+            for s in used_by[n.ref_id]
+            if len({r.ref_id for r in claims.get(s, ())}) > 1
+        }
+    for s in sorted(ambiguous):
+        shown = ", ".join(
+            f"'{r.name}' [{handle_registry.format_handle(r.kind, r.ref_id)}]"
+            for r in sorted(claims[s], key=lambda r: r.ref_id)[:4]
+        )
+        lines.append(
+            f"\n\n⚠ ambiguous label '{s}': claimed by {shown} — review "
+            "which the draft means; on a true collision the literature "
+            "term wins."
+        )
+
+    for n in inhouse:
+        used = sorted(s for s in used_by[n.ref_id] if s not in ambiguous)
+        if not used:
+            continue
+        surface = used[0]
+        handle = handle_registry.format_handle(n.kind, n.ref_id)
+        label = f"'{surface}' [{handle}]"
+        canon = [
+            d
+            for d in by_id.values()
+            if d.ref_id != n.ref_id and _is_lit(d) and d.surfaces & n.surfaces
+        ]
+        marker = _lit_marker(n)
+        if marker or canon:
+            if canon:
+                d = sorted(canon, key=lambda d: d.ref_id)[0]
+                dh = handle_registry.format_handle(d.kind, d.ref_id)
+                what = f"'{d.name}' [{dh}]"
+                what += f" (+{len(canon) - 1} more)" if len(canon) > 1 else ""
+            else:
+                what = f"'{marker}'"
+            lines.append(
+                f"\n\n⚠ in-house label {label}: a literature canonical "
+                f"exists — {what}. Prefer it, or confirm the equivalence "
+                "is real (a shared name can be a coincidence)."
+            )
+            continue
+        if n.definition.strip() or any(_draft_defines(s) for s in used):
+            continue
+        lines.append(
+            f"\n\n⚠ unexplained in-house label {label}: define it — "
+            f"put(kind='draft', id={slug!r}, chunk_kind='term', "
+            f"text='<definition>', meta={{'short': {surface!r}}}) — or use "
+            "the literature term if one exists."
+        )
+    if not lines:
+        return ""
+    out = "".join(lines[:5])
+    if len(lines) > 5:
+        out += f"\n  (+{len(lines) - 5} more in-house label(s))"
+    return out
 
 
 def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
