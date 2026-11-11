@@ -3882,7 +3882,7 @@ class RefsMixin:
     def list_refs(
         self,
         *,
-        kind: str | None = None,
+        kind: str | list[str] | None = None,
         provider: str | None = None,
         updated_after: datetime | None = None,
         tags: list[str] | None = None,
@@ -3906,6 +3906,10 @@ class RefsMixin:
         offset: int = 0,
     ) -> list[Ref]:
         """Paginated list of live refs, filter by kind/provider/tags.
+
+        ``kind`` is one kind or a list of them (``r.kind = ANY(…)``) —
+        the source-search primitive's filtered listing passes its whole
+        resolved kind set.
 
         ``meta_has=`` keeps refs whose ``meta`` carries that top-level key
         (``meta ? key`` — the generalised ``has_schedule``); the gripe-fix
@@ -3936,8 +3940,12 @@ class RefsMixin:
         ]
         params: list[Any] = []
         if kind is not None:
-            params.append(kind)
-            clauses.append("r.kind = %s")
+            if isinstance(kind, str):
+                params.append(kind)
+                clauses.append("r.kind = %s")
+            else:
+                params.append([str(k) for k in kind])
+                clauses.append("r.kind = ANY(%s)")
         if provider is not None:
             params.append(provider)
             clauses.append("r.provider = %s")

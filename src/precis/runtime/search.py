@@ -73,6 +73,7 @@ from precis.utils.search_merge import (
     block_hits_to_search_hits,
     flag_title_matches,
     merge_and_render,
+    ref_hits_to_search_hits,
 )
 
 log = logging.getLogger(__name__)
@@ -1424,6 +1425,16 @@ class SearchMixin(RuntimeShape):
         ``next:`` call names (td610130). A pinned identity card counts
         as a page row — it fills row 1 of the head window and shifts
         every later window's fused offset back one.
+
+        Queryless calls (``q=`` absent/blank/``'*'`` — folded upstream)
+        do not rank: when the call narrows to a named cohort — ``serves=``
+        resolved, or a ``cited=``/``under=`` facet wrote the include
+        channel — :meth:`_source_filtered_listing` enumerates the
+        cohort's live refs (td628495 review — a ``paper + since +
+        serves`` call used to die here with "requires q=" before
+        ``serves`` ever resolved). With no cohort the refusal stands:
+        a bare date window over the whole corpus is a browse, not a
+        listing.
         """
         store = self.hub.store
         if store is None:
@@ -1465,11 +1476,7 @@ class SearchMixin(RuntimeShape):
             tolerated=_SOURCE_SEARCH_TOLERATED,
         )
         q = args.get("q")
-        if not (isinstance(q, str) and q.strip()):
-            raise BadInput(
-                f"source search ({SOURCE_SEARCH_TRIGGER_LABEL}) requires q=",
-                next="search(kind='paper,patent', q='mof co2', sort='recency')",
-            )
+        has_q = isinstance(q, str) and bool(q.strip())
         expanded = (
             self._expand_kind_code(str(kind))
             if kind is not None
@@ -1578,7 +1585,7 @@ class SearchMixin(RuntimeShape):
         query_vecs: list[list[float]] = []
         semantic_degraded = False
         embedder = None if mode_lexical else getattr(self.hub, "embedder", None)
-        if embedder is not None:
+        if embedder is not None and has_q:
             try:
                 query_vecs = [
                     v
@@ -1594,6 +1601,7 @@ class SearchMixin(RuntimeShape):
         include_ref_ids = args.get("include_ref_ids")
         exclude_notice = ""
         serves_note = ""
+        serves_qhandle: str | None = None
         if args.get("serves") is not None:
             # ``args={'serves': 'quest:<id>'}`` (gr608733): the paper
             # path's serving-quest cohort — resolved into the same
@@ -1613,6 +1621,7 @@ class SearchMixin(RuntimeShape):
             self._intersect_include_ref_ids(args, serving)
             include_ref_ids = args["include_ref_ids"]
             qhandle = handle_registry.try_format("quest", qid) or f"quest:{qid}"
+            serves_qhandle = qhandle
             serves_note = (
                 f"_(serves={qhandle}: restricted to {len(serving)} "
                 f"serving ref{'s' if len(serving) != 1 else ''})_"
@@ -1634,6 +1643,57 @@ class SearchMixin(RuntimeShape):
                     f"{'s' if n_dead != 1 else ''} "
                     f"not found, so not excluded: {listed}"
                 )
+        if not has_q:
+            # The queryless filtered listing (td628495 review — a
+            # ``paper + since + serves`` call used to die here with
+            # "requires q=" before ``serves`` ever resolved): a named
+            # cohort — ``serves=``, or the include channel a
+            # ``cited=``/``under=`` facet resolved — replaces the ranking
+            # query. With no cohort the call is unfilterable and keeps
+            # the old refusal.
+            if include_ref_ids is None:
+                raise BadInput(
+                    f"source search ({SOURCE_SEARCH_TRIGGER_LABEL}) requires "
+                    "q= — or a named cohort (args={'serves': 'quest:<id>'}) "
+                    "for a filtered listing",
+                    next=[
+                        "search(kind='paper,patent', q='mof co2', sort='recency')",
+                        "search(kind='paper', since='2026-01-01', "
+                        "args={'serves': 'quest:<id>'})",
+                    ],
+                )
+            ranking_only = [
+                f"{name}=" for name in ("queries", "answers", "mode") if args.get(name)
+            ]
+            if ranking_only:
+                raise BadInput(
+                    f"{', '.join(ranking_only)} rank against q= — the "
+                    "filtered listing has no query to rank with",
+                    next="add q= to rank the cohort, or drop them for the listing",
+                )
+            return self._source_filtered_listing(
+                kind,
+                args,
+                store=store,
+                kinds=kinds,
+                domain_footer=domain_footer,
+                since=since,
+                until=until,
+                sort=sort,
+                page=page,
+                resume_offset=resume_offset,
+                top_k=top_k,
+                tags=tags,
+                status_excluded=status_excluded,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                serves_note=serves_note,
+                serves_qhandle=serves_qhandle,
+                exclude_notice=exclude_notice,
+            )
+        # ``has_q`` is not a TypeGuard — the door above returned or
+        # refused every queryless shape, so q is a non-blank str here.
+        assert isinstance(q, str) and q.strip()
         # The pinned identity card (a handle/identifier ``q``) is part of
         # the paginated stream, not decoration on top of it: it occupies
         # row 1 of the head window, so every deeper window's fused offset
@@ -1847,6 +1907,173 @@ class SearchMixin(RuntimeShape):
                     has_more=has_more,
                     pinned=at_head and handle_hit is not None,
                     dropped=dropped,
+                    trailer=trailer,
+                )
+                if split is not None
+                else None
+            ),
+        )
+
+    def _source_filtered_listing(
+        self,
+        kind: str | None,
+        args: dict[str, Any],
+        *,
+        store: Any,
+        kinds: list[str],
+        domain_footer: str | None,
+        since: datetime | None,
+        until: datetime | None,
+        sort: str,
+        page: int,
+        resume_offset: int | None,
+        top_k: int,
+        tags: list[str] | None,
+        status_excluded: list[str],
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        serves_note: str,
+        serves_qhandle: str | None,
+        exclude_notice: str,
+    ) -> Response:
+        """The queryless filtered listing — a named cohort stands in for q=.
+
+        Reached from :meth:`_dispatch_source_search` when the caller gave
+        no ``q`` but the call narrows to an explicit set: ``serves=``
+        resolved the quest's serving refs, or a ``cited=``/``under=``
+        facet (or a literal ``include_ref_ids``) wrote the include
+        channel upstream. There is no match-all chunk leg —
+        :meth:`~precis.store._chunks_ops.BlocksMixin.search_chunks_lexical`
+        requires ``c.tsv @@ qq.qq`` — so a queryless call can only ever
+        enumerate *refs*. This lists the cohort through
+        :meth:`~precis.store._refs_ops.RefsMixin.list_refs` (live refs
+        only), bounded by the same ``since=``/``until=``/``tags=``/
+        ``status=``/``exclude=`` filters, ordered by ``sort`` (a date
+        order is the only honest one with no query to rank against —
+        ``relevance`` reads as ``created_desc`` here), and paged by the
+        same ``page=``/``offset=`` primitive as the ranked path. Rows are
+        ref-level hits in the same ``## N.`` shape, so
+        :func:`_hit_row_bounds`, ``budget_fit`` and the continuation
+        replay all work unchanged. An empty cohort (the include channel
+        is ``[]``) lists zero refs — it never falls through unfiltered,
+        the same contract the ranked path gives ``serves=``.
+        """
+        order_by = {
+            "modified": "updated_desc",
+            "oldest": "created_asc",
+        }.get(sort, "created_desc")
+        offset = resume_offset if resume_offset is not None else (page - 1) * top_k
+        refs = store.list_refs(
+            kind=kinds,
+            tags=tags,
+            exclude_tags=status_excluded or None,
+            created_after=since,
+            created_before=until,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            order_by=order_by,
+            limit=top_k + 1,
+            offset=offset,
+        )
+        has_more = len(refs) > top_k
+        hits: list[SearchHit] = []
+        for ref in refs[:top_k]:
+            hits.extend(ref_hits_to_search_hits([(ref, 1.0)], kind=ref.kind))
+        date_suffix = " in the given date window" if (since or until) else ""
+        response = merge_and_render(
+            [hits],
+            page_size=top_k,
+            query=(
+                f"refs serving {serves_qhandle}"
+                if serves_qhandle is not None
+                else "the filtered cohort"
+            ),
+            header_noun="match",
+            mode="rrf",
+            empty_body=(
+                f"no matches across {', '.join(kinds)} for the filtered "
+                f"cohort{date_suffix}"
+            ),
+        )
+        # The "N of K" line is exact here — ``count_refs`` shares every
+        # filter, not the ranked path's lexical-lower-bound estimate.
+        per_kind: list[tuple[str, int]] = []
+        total = 0
+        for k in kinds:
+            n = store.count_refs(
+                kind=k,
+                tags=tags,
+                exclude_tags=status_excluded or None,
+                created_after=since,
+                created_before=until,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
+            per_kind.append((k, n))
+            total += n
+        if total and hits:
+            shown = response.result_count or 0
+            head = f"{shown} of {total}" if total > shown else f"{total} total"
+            breakdown = ", ".join(f"{k}: {n}" for k, n in per_kind)
+            lines = response.body.splitlines()
+            lines.insert(1, f"_({head} · {breakdown})_")
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+                result_ids=response.result_ids,
+            )
+        if serves_note:
+            response = replace(response, body=f"{serves_note}\n\n{response.body}")
+        split = _hit_row_bounds(response.body)
+        body = response.body
+        if has_more:
+            # Same continuation contract as the ranked path — the
+            # replay keeps the caller's own window spelling and every
+            # resolved filter re-renders in its own spelling (serves=,
+            # uncited=, …) via _search_call_text.
+            from precis.utils.next_block import render_next_section
+
+            cont_label = (
+                f"see the next {top_k} matches (offset {offset + top_k})"
+                if resume_offset is not None
+                else f"see the next {top_k} matches (page {page + 1})"
+            )
+            body += render_next_section(
+                [
+                    (
+                        self._source_search_page_call(
+                            kind,
+                            args,
+                            page_size=top_k,
+                            page=None if resume_offset is not None else page + 1,
+                            offset=(
+                                offset + top_k if resume_offset is not None else None
+                            ),
+                        ),
+                        cont_label,
+                    )
+                ]
+            )
+        trailer = exclude_notice
+        if domain_footer is not None:
+            trailer += f"\n_({domain_footer})_"
+        body += trailer
+        return replace(
+            response,
+            body=body,
+            budget_fit=(
+                self._source_search_fit(
+                    kind,
+                    args,
+                    body=body,
+                    head=split[0],
+                    rows=split[1],
+                    offset=offset,
+                    page_size=top_k,
+                    has_more=has_more,
+                    pinned=False,
+                    dropped=[],
                     trailer=trailer,
                 )
                 if split is not None

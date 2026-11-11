@@ -803,7 +803,7 @@ def test_source_search_serves_replays_caller_spelling(
         },
     )
     assert not is_error, body
-    assert "serves='quest:" in body
+    assert "'serves': 'quest:" in body
     assert "include_ref_ids" not in body
 
 
@@ -841,3 +841,86 @@ def test_source_search_serves_missing_quest_refuses(
     )
     assert is_error
     assert "quest id=99999999 not found" in body
+
+
+# ── td628495 review: queryless serves= is a filtered listing ─────────
+
+
+def test_source_search_serves_without_q_lists_the_cohort(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A queryless ``paper + since + serves`` call used to die with
+    "requires q=" before ``serves`` ever resolved (every test above
+    still passes ``q``). With a named cohort the queryless call is a
+    filtered listing of the serving *refs* — so a serving paper with no
+    body chunks (invisible to any chunk search) lists too."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    serving = _seed(store, "paper", "svq-inside", ["xenon serves cohort"], emb)
+    _seed(store, "paper", "svq-outside", ["xenon serves cohort"], emb)
+    chunkless = store.insert_ref(
+        kind="paper", slug="svq-chunkless", title="svq-chunkless"
+    )
+    quest = store.insert_ref(kind="quest", slug=None, title="q")
+    store.add_link(src_ref_id=serving, dst_ref_id=quest.id, relation="serves")
+    store.add_link(src_ref_id=chunkless.id, dst_ref_id=quest.id, relation="serves")
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {
+            "kind": "paper",
+            "since": "2000-01-01",
+            "__extras__": {"serves": f"quest:{quest.id}"},
+        },
+    )
+    assert not is_error, body
+    assert "svq-inside" in body
+    assert "svq-chunkless" in body
+    assert "svq-outside" not in body
+    assert f"serves=qu{quest.id}" in body
+
+
+def test_source_search_queryless_without_cohort_still_refuses(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A bare date window over the whole corpus is a browse, not a
+    listing — with no ``serves=``/facet cohort the refusal stands."""
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "paper", "since": "2000-01-01"}
+    )
+    assert is_error
+    assert "requires q=" in body
+
+
+def test_source_search_serves_listing_pages_and_replays(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The listing keeps the source-search continuation contract: the
+    next-page call replays ``serves=`` in the caller's spelling (no
+    resolved ref-id list leaks) and resumes the same ordering."""
+    quest = store.insert_ref(kind="quest", slug=None, title="q")
+    for i in range(3):
+        rid = store.insert_ref(
+            kind="paper", slug=f"svq-page-{i}", title=f"svq-page-{i}"
+        ).id
+        store.add_link(src_ref_id=rid, dst_ref_id=quest.id, relation="serves")
+    base = {
+        "kind": "paper",
+        "since": "2000-01-01",
+        "page_size": 2,
+        "__extras__": {"serves": f"quest:{quest.id}"},
+    }
+
+    p1, is_error = runtime_with_store.dispatch_with_status("search", base)
+    assert not is_error, p1
+    assert "'serves': 'quest:" in p1
+    assert "include_ref_ids" not in p1
+
+    p2, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {**base, "__extras__": {"serves": f"quest:{quest.id}", "page": 2}},
+    )
+    assert not is_error, p2
+    ids1 = {int(i) for i in re.findall(r"svq-page-(\d)", p1)}
+    ids2 = {int(i) for i in re.findall(r"svq-page-(\d)", p2)}
+    assert ids1.isdisjoint(ids2)
+    assert ids1 | ids2 == {0, 1, 2}
