@@ -10,6 +10,7 @@ what conventions have crept into the corpus (which ``DREAM:*`` and
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -87,6 +88,59 @@ def _list_tags(
     ]
 
 
+def resolve_tag_chip(store: Any, text: str) -> tuple[str, str] | None:
+    """Map a rendered ``[ns:value]`` chip back to its stored
+    ``(namespace, value)`` row — ``None`` when no row matches either
+    shape (gr575024).
+
+    The chip text is ambiguous by design: a closed tag renders
+    ``ns:value``, but an ``OPEN``/``FLAG`` chip renders just its value —
+    which may itself carry a colon (``project:precis`` renders
+    ``[project:precis]`` exactly like a closed ``programme``-axis tag
+    would). Probe order mirrors :meth:`Tag.parse`: an all-uppercase
+    prefix tries the closed ``(ns, v)`` split first, anything else tries
+    the ``OPEN``/``FLAG`` sentinels with the whole text first; the
+    stored row decides.
+    """
+    ns, sep, v = text.partition(":")
+    closed_split = (ns, v) if sep and ns and v else None
+    probes: list[tuple[str, str]] = []
+    if closed_split is not None and ns.isupper():
+        probes.append(closed_split)
+    probes += [("OPEN", text), ("FLAG", text)]
+    if closed_split is not None and not ns.isupper():
+        probes.append(closed_split)
+    marks = ", ".join("(%s, %s)" for _ in probes)
+    params = tuple(p for pair in probes for p in pair)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            f"SELECT namespace, value FROM tags WHERE (namespace, value) IN ({marks})",
+            params,
+        ).fetchall()
+    found = {(str(r[0]), str(r[1])) for r in rows}
+    for pair in probes:
+        if pair in found:
+            return pair
+    return None
+
+
+def count_tag_refs(store: Any, namespace: str, value: str, login: str | None) -> int:
+    """Live, viewer-visible refs carrying ``(namespace, value)`` — the
+    same WHERE the ``/tags/refs`` listing counts on (gr575024's
+    chip-hover number)."""
+    acl_sql, acl_params = profiles.visible_sql("r", login)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs r "
+            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t USING(tag_id) "
+            "WHERE t.namespace = %s AND t.value = %s "
+            f"AND r.retired_at IS NULL AND {acl_sql}",
+            (namespace, value, *acl_params),
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
 #: Tags per page on the leaderboard.
 _INDEX_PAGE_SIZE = 200
 
@@ -122,12 +176,13 @@ async def refs_by_tag(
     namespace: str | None = None,
     value: str | None = None,
     kind: str | None = None,
+    tag: str | None = None,
     page: int = 1,
     page_size: int = _DEFAULT_PAGE_SIZE,
 ) -> HTMLResponse:
     """List refs matching a tag, a kind, or both, grouped by kind.
 
-    Three call shapes — all hit the same template:
+    Four call shapes — all hit the same template:
 
     * ``?namespace=NS&value=V`` — every ref carrying the tag (the
       original "Tags table → view N refs" pivot)
@@ -138,6 +193,12 @@ async def refs_by_tag(
       listing — but kept as a URL shape and as the tag+kind base)
     * ``?namespace=NS&value=V&kind=K`` — intersection: refs of one
       kind that also carry the tag
+    * ``?tag=NS:V`` — the chip-text form (gr575024): an eye viewer
+      ``[ns:value]`` chip links here with its text verbatim and
+      :func:`resolve_tag_chip` decides the closed-vs-OPEN split, since
+      the renderer can't (``project:precis`` is ``OPEN``, not a
+      ``programme`` axis). Combines with ``kind=`` like the explicit
+      pair does.
 
     Paginated: ``?page=N`` (1-based) over a fixed ``page_size`` window
     ordered ``(kind, ref_id DESC)``. A single kind can therefore span
@@ -149,13 +210,20 @@ async def refs_by_tag(
     (``/refs/{kind}/{ref_id}`` for browsable kinds, ``/papers/{ref_id}``
     for papers, ``/todo?focus=N`` for todos).
     """
-    if namespace is None and value is None and kind is None:
+    if namespace is None and value is None and kind is None and tag is None:
         raise HTTPException(
             status_code=400,
-            detail="needs ?namespace=NS&value=V, ?kind=K, or both",
+            detail="needs ?namespace=NS&value=V, ?tag=T, ?kind=K, or a mix",
         )
-    has_tag = namespace is not None and value is not None
     store = get_store(request)
+    if tag is not None and namespace is None and value is None:
+        resolved = resolve_tag_chip(store, tag)
+        if resolved is not None:
+            namespace, value = resolved
+        else:
+            ns, sep, v = tag.partition(":")
+            namespace, value = (ns, v) if sep and ns else ("OPEN", tag)
+    has_tag = namespace is not None and value is not None
     page = max(1, page)
     page_size = max(1, min(page_size, _MAX_PAGE_SIZE))
 

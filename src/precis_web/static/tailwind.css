@@ -3007,8 +3007,20 @@ video {
   error: Unsupported;
 }
 
+.\[error\:\2026\] {
+  error: …;
+}
+
 .\[magic_offset\:want\] {
   magic_offset: want;
+}
+
+.\[ns\:value\] {
+  ns: value;
+}
+
+.\[project\:precis\] {
+  project: precis;
 }
 
 .\[start\:end\] {

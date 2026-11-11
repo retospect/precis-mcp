@@ -314,6 +314,53 @@ async def preview(
     )
 
 
+@router.get("/preview/tag", response_class=HTMLResponse)
+async def preview_tag(request: Request, text: str = "") -> HTMLResponse:
+    """Hover-popover fragment for an eye ``[ns:value]`` tag chip
+    (gr575024): the count the mouseover asks for — live, viewer-visible
+    refs carrying the tag — fetched on demand. ``text`` is the chip's
+    inner spelling; the same closed-vs-OPEN ambiguity
+    ``/tags/refs?tag=`` resolves through
+    :func:`precis_web.routes.tags.resolve_tag_chip` applies here, so a
+    hover and the click it rides always agree."""
+    from precis_web.auth import current_user
+    from precis_web.routes.tags import count_tag_refs, resolve_tag_chip
+
+    store = get_store(request)
+    user = current_user(request)
+
+    def _load() -> tuple[tuple[str, str] | None, int]:
+        resolved = resolve_tag_chip(store, text)
+        if resolved is None:
+            return None, 0
+        return resolved, count_tag_refs(
+            store, resolved[0], resolved[1], user.login if user else None
+        )
+
+    resolved, n = await asyncio.to_thread(_load)
+    if resolved is None:
+        return templates.TemplateResponse(
+            request,
+            "preview/popover.html.j2",
+            {"kind": "tag", "label": text, "missing": True},
+        )
+    ns, value = resolved
+    return templates.TemplateResponse(
+        request,
+        "preview/popover.html.j2",
+        {
+            "kind": "tag",
+            "label": f"{ns}:{value}",
+            "title": f"{ns}:{value}",
+            "body_preview": (
+                f"{n} live ref{'s' if n != 1 else ''} tagged — click to list"
+            ),
+            "missing": False,
+            "deleted": False,
+        },
+    )
+
+
 @router.get("/r/{kind}/{ref_id}")
 async def resolve(
     request: Request,

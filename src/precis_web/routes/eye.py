@@ -35,6 +35,7 @@ from __future__ import annotations
 import html
 import re
 import time
+from collections.abc import Collection
 from typing import Any
 from urllib.parse import quote
 
@@ -49,6 +50,7 @@ from precis.utils.refeye import resolve_up
 from precis_web.auth import current_user
 from precis_web.deps import await_dispatch, get_store, templates, timed_response
 from precis_web.graph_filters import parse_kind_filter, parse_space_filter
+from precis_web.linkify import _anchor_html
 from precis_web.ref_urls import ref_url
 
 router = APIRouter(prefix="/eye", tags=["eye"])
@@ -91,13 +93,29 @@ _SECOND_HOP_LINE = re.compile(r"(?m)^  (≥?\d+) ([a-z][a-z0-9-]*) via (\S+)[ \t
 #: linkified) by ``eye_render._render_first_hop`` —
 #: ``_more_hint_factory``'s scoped re-read for a capped 1-hop group, and
 #: the hub-member listing's ``q='contains'`` line (gr520244: the hint
-#: text was there but dead — no link). Matches the anchor
-#: ``linkify_handles`` already wrapped around the handle inside
-#: ``id='…'``.
+#: text was there but dead — no link). Matches whatever anchor
+#: ``linkify_handles`` wrapped around the handle inside ``id='…'`` —
+#: today the Alpine/htmx popover span, so the pattern walks the markup
+#: lazily to the first ``>handle</a>`` rather than naming the anchor's
+#: attributes (they grow: gr575024 added the hover-preview fetch).
 _MORE_HINT = re.compile(
     r"(?P<more>… \+\d+ more) · get\(kind='[^']*', "
-    r"id='<a class=\"eye-handle[^\"]*\" href=\"[^\"]*\">(?P<handle>[^<]+)</a>', "
+    r"id='.*?>(?P<handle>[^<]+)</a>.*?', "
     r"extent='(?P<extent>[^']*)', q='(?P<label>[^']*)'\)"
+)
+
+#: A rendered ``[ns:value]`` tag chip (gr575024). ``tag_chips`` renders a
+#: closed tag as ``ns:value`` and an ``OPEN``/``FLAG`` chip as its bare
+#: value — a bare chip has no colon and is left alone, since ``[todo]``
+#: kind chips read identically. The value half keeps ``:``/``/`` so an
+#: ``OPEN`` value that itself carries a colon (``project:precis``) is
+#: taken whole; a ``:``-less or ``/``-leading tail (``[https://x]``)
+#: can't start it. ``[error:…]`` is the dispatcher's error marker, not a
+#: tag — filtered in ``_chip_link`` so error bodies stay honest. A
+#: trailing ``(`` means a markdown-style ``[x](y)``, not a chip.
+_TAG_CHIP = re.compile(
+    r"\[(?P<tag>[A-Za-z_*][A-Za-z0-9_.*+~-]*:[A-Za-z0-9][A-Za-z0-9_.*+~:/-]*)\]"
+    r"(?!\()"
 )
 
 
@@ -116,19 +134,67 @@ def _eye_href(
     return href
 
 
+def _preview_url(seg: str) -> str | None:
+    """The hover-popover fragment a handle anchor fetches on first hover
+    (gr575024): ``/preview/<kind>/<pk>`` for a record handle,
+    ``/preview/chunk/<handle>`` for a chunk handle (the route resolves
+    every universal chunk code). ``~``/``#`` focus tokens preview their
+    base (``st7~aC12`` → ``st7``'s card — the selector is a position, not
+    a thing). ``None`` for ``sk:<slug>`` (the skill eye's own handle
+    form — not ref-addressable) and anything the registry can't parse."""
+    if seg.startswith(_SKILL_PREFIX):
+        return None
+    base = re.split(r"[~#]", seg, maxsplit=1)[0]
+    parsed = handle_registry.parse(base)
+    if parsed is None:
+        return None
+    kind, is_chunk, pk = parsed
+    if is_chunk:
+        return f"/preview/chunk/{quote(base, safe='')}"
+    return f"/preview/{kind}/{pk}"
+
+
+def _chip_link(m: re.Match[str]) -> str:
+    """One ``[ns:value]`` chip → an anchor to the tag view, with the same
+    hover-popover slot a handle carries: the card fetched on demand
+    (``/preview/tag``) is the count the mouseover asks for (gr575024).
+    ``/tags/refs?tag=`` takes the chip text verbatim and resolves the
+    closed-vs-OPEN ambiguity server-side — the renderer can't (an
+    ``OPEN`` chip's bare value may itself carry a colon)."""
+    inner = m.group("tag")
+    if inner.startswith("error:"):
+        return m.group(0)  # the dispatcher's ``[error:…]`` marker, not a tag
+    q = quote(inner, safe="")
+    return _anchor_html(
+        href=f"/tags/refs?tag={q}",
+        preview_url=f"/preview/tag?text={q}",
+        label=m.group(0),
+        anchor_cls="eye-handle text-info underline",
+        target="_self",
+    )
+
+
 def linkify_handles(
     text: str,
     *,
     extent: str = DEFAULT_EXTENT,
     kinds: frozenset[str] | None = None,
     spaces: frozenset[str] | None = None,
+    exclude: Collection[str] | None = None,
 ) -> str:
     """HTML-escape ``text`` and turn every handle it names into a link to
     that handle's focus page at ``extent`` — the active ring filter
     (``kinds``/``spaces``) rides the URL so a click keeps the narrowed
-    view. Pure text transform (no store): a handle that does not parse —
+    view. Linked handles (and ``[ns:value]`` tag chips) carry the shared
+    Alpine/htmx hover-popover slot — a mouseover with a delay fetches the
+    card on demand (gr575024): ``/preview/<kind>/<pk>`` or
+    ``/preview/chunk/<h>`` for a handle, ``/preview/tag`` for a chip.
+    Pure text transform (no store): a handle that does not parse —
     ``ab12`` with no such code — is left as text, so a false positive
-    costs a plain word, never a dead link."""
+    costs a plain word, never a dead link. ``exclude`` names handles
+    that must stay text (the quest page's self-handle — the page already
+    links it once); an excluded handle still counts as live inside a
+    ``/``-chain."""
 
     def _link(m: re.Match[str]) -> str:
         # A match is a head token plus its chained ``/<handle>`` tails
@@ -150,6 +216,9 @@ def linkify_handles(
         out: list[str] = []
         live = True
         for seg in segs:
+            if live and exclude and seg in exclude:
+                out.append(seg)  # a real handle — stays text, chain stays live
+                continue
             if live and (
                 seg.startswith(_SKILL_PREFIX)
                 or "~" in seg
@@ -157,16 +226,29 @@ def linkify_handles(
                 or handle_registry.parse(seg) is not None
             ):
                 href = _eye_href(seg, extent, kinds=kinds, spaces=spaces)
-                out.append(
-                    f'<a class="eye-handle text-info underline" href="{href}">{seg}</a>'
-                )
+                preview = _preview_url(seg)
+                if preview is None:
+                    out.append(
+                        f'<a class="eye-handle text-info underline" '
+                        f'href="{href}">{seg}</a>'
+                    )
+                else:
+                    out.append(
+                        _anchor_html(
+                            href=href,
+                            preview_url=preview,
+                            label=seg,
+                            anchor_cls="eye-handle text-info underline",
+                            target="_self",
+                        )
+                    )
             else:
                 live = False  # ``sp2``/``zz9``-shaped non-handles stay text
                 out.append(seg)
         return "/".join(out) + tail
 
     escaped = html.escape(text, quote=False)
-    return _TOKEN_IN_TEXT.sub(_link, escaped)
+    return _TAG_CHIP.sub(_chip_link, _TOKEN_IN_TEXT.sub(_link, escaped))
 
 
 def _tree_root_handle(request: Request, target: dict[str, Any]) -> str | None:

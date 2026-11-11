@@ -55,7 +55,7 @@ def test_focus_page_renders_the_mcp_eye_with_linked_handles(
         "get", {"kind": "todo", "id": todo.id, "extent": "fisheye+1hop"}
     )
     assert not err
-    assert "Roadmap:" in page.text and "serves: <a" in page.text
+    assert "Roadmap:" in page.text and "serves: <span" in page.text
     assert f'href="/eye/qu{quest.id}?extent=fisheye%2B1hop"' in page.text
     # the MCP head line, with its own handle turned into a self-link
     # (gr524009: the head now carries the age/read chip)
@@ -64,7 +64,7 @@ def test_focus_page_renders_the_mcp_eye_with_linked_handles(
         rf"\[created -\d+s · read 1× · last -\d+s\]",
         mcp_body.splitlines()[0],
     )
-    assert f">td{todo.id}</a> [todo] Ship the ring" in page.text
+    assert f">td{todo.id}</a>" in page.text and "[todo] Ship the ring" in page.text
     # the ladder row names every rung, the current one marked
     for rung in ("kwd", "summary", "verbatim", "fisheye", "fisheye+2hop", "+recall"):
         assert f">{rung}</a>" in page.text
@@ -135,7 +135,7 @@ def test_structure_log_entry_link_opens_the_quest_entry(
     page = client.get(f"/eye/st{candidate.id}")
 
     assert page.status_code == 200
-    target = re.search(rf'href="([^"]+)">ql{entry.id}</a>', page.text)
+    target = re.search(rf'href="([^"]+)"[^>]*>ql{entry.id}</a>', page.text)
     assert target is not None, page.text
     entry_page = client.get(target.group(1))
     assert entry_page.status_code == 200, entry_page.text
@@ -169,7 +169,8 @@ def test_plain_numeric_eye_keeps_record_focus(
     assert not error, body
     assert f"{code}{ref.id} [{kind}] Plain numeric focus" in body
     assert page.status_code == 200, page.text
-    assert f">{code}{ref.id}</a> [{kind}] Plain numeric focus" in page.text
+    assert f">{code}{ref.id}</a>" in page.text
+    assert f"[{kind}] Plain numeric focus" in page.text
     assert "[error:" not in page.text
 
 
@@ -338,14 +339,52 @@ def test_index_redirects_a_handle_and_searches_a_query(
     assert hits.status_code == 200 and 'name="q"' in hits.text
 
 
+def test_focus_page_tag_chips_link_to_the_tag_view(
+    client: TestClient, store: Any
+) -> None:
+    """gr575024: a ``[ns:value]`` chip on the rendered eye links the tag
+    view and carries the fetch-on-demand count popover."""
+    from precis.store import Tag
+
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus")
+    store.add_tag(focus.id, Tag.open("programme:factory-and-routing"), set_by="system")
+    page = client.get(f"/eye/me{focus.id}")
+    assert page.status_code == 200
+    assert 'href="/tags/refs?tag=programme%3Afactory-and-routing"' in page.text
+    assert 'hx-get="/preview/tag?text=programme%3Afactory-and-routing"' in page.text
+
+
+def test_tag_chip_view_and_preview_resolve_the_chip(
+    client: TestClient, store: Any
+) -> None:
+    """``/tags/refs?tag=`` + ``/preview/tag`` share
+    :func:`resolve_tag_chip`: an OPEN-rendered chip (``section:index``)
+    resolves its sentinel row, a closed chip (``SPACE:repo-dev``) its
+    split, so click and hover land on the same refs."""
+    from precis.store import Tag
+
+    a = store.insert_ref(kind="memory", slug=None, title="ChipTarget")
+    store.add_tag(a.id, Tag.open("section:index"))
+    b = store.insert_ref(kind="todo", slug=None, title="ClosedTarget")
+    store.add_tag(b.id, Tag.closed("SPACE", "repo-dev"))
+
+    page = client.get("/tags/refs", params={"tag": "section:index"})
+    assert page.status_code == 200 and "ChipTarget" in page.text
+    page = client.get("/tags/refs", params={"tag": "SPACE:repo-dev"})
+    assert "ClosedTarget" in page.text
+
+    pop = client.get("/preview/tag", params={"text": "section:index"})
+    assert pop.status_code == 200 and "1 live ref tagged" in pop.text
+    missing = client.get("/preview/tag", params={"text": "nope:nothing"})
+    assert "no such" in missing.text
+
+
 def test_linkify_handles_links_only_real_handles() -> None:
     out = linkify_handles(
         "see me4641 and pc13 — not ab12, mao18 or 5mx20; sk:precis-get-help"
     )
-    assert (
-        '<a class="eye-handle text-info underline" '
-        'href="/eye/me4641?extent=fisheye%2B1hop">me4641</a>' in out
-    )
+    assert 'href="/eye/me4641?extent=fisheye%2B1hop"' in out
+    assert ">me4641</a>" in out
     assert 'href="/eye/pc13?' in out
     assert "ab12" in out and 'href="/eye/ab12' not in out
     assert 'href="/eye/mao18' not in out and 'href="/eye/mx20' not in out
@@ -358,8 +397,10 @@ def test_linkify_handles_links_slash_chained_handles() -> None:
     roots at a handle admitted on its own boundary; a ``/`` after a
     letter stays the path guard."""
     out = linkify_handles("starts on sub-pieces like gr592999/gr592563.")
-    assert 'href="/eye/gr592999?extent=fisheye%2B1hop">gr592999</a>' in out
-    assert 'href="/eye/gr592563?extent=fisheye%2B1hop">gr592563</a>' in out
+    assert 'href="/eye/gr592999?extent=fisheye%2B1hop"' in out
+    assert ">gr592999</a>" in out
+    assert 'href="/eye/gr592563?extent=fisheye%2B1hop"' in out
+    assert ">gr592563</a>" in out
     out = linkify_handles("see https://x.ts.net/eye/td573348 and x/gr12")
     assert 'href="/eye/td573348' not in out and 'href="/eye/gr12' not in out
 
@@ -382,7 +423,61 @@ def test_linkify_handles_chains_only_off_recognized_handles() -> None:
     # a transitive chain of recognized handles links every segment
     out = linkify_handles("gr1/td2/qu3 all link")
     for h in ("gr1", "td2", "qu3"):
-        assert f'href="/eye/{h}?extent=fisheye%2B1hop">{h}</a>' in out
+        assert f'href="/eye/{h}?extent=fisheye%2B1hop"' in out
+        assert f">{h}</a>" in out
+
+
+def test_linkify_handles_hover_preview_fetches_on_demand() -> None:
+    """gr575024: a linked handle carries the shared Alpine/htmx popover
+    slot — the card is a ``/preview/<kind>/<pk>`` (record) or
+    ``/preview/chunk/<h>`` (chunk) fragment htmx fetches on first
+    mouseenter; the Alpine hover-intent timer supplies the delay."""
+    out = linkify_handles("see me4641 and pc13 and st7~aC12 and sk:precis-get-help")
+    assert 'hx-get="/preview/memory/4641"' in out
+    assert 'hx-get="/preview/chunk/pc13"' in out
+    assert 'hx-get="/preview/structure/7"' in out  # ~-token previews its base
+    assert 'hx-trigger="mouseenter once"' in out
+    # a ``sk:<slug>`` eye handle has no ref-addressable preview — plain link
+    assert 'href="/eye/sk:precis-get-help?' in out
+    assert 'hx-get="/preview/skill' not in out
+
+
+def test_linkify_handles_tag_chips_link_to_the_tag_view() -> None:
+    """gr575024: a ``[ns:value]`` chip links to ``/tags/refs?tag=`` —
+    the stored tag view — and hovers its carry-count from
+    ``/preview/tag``; the closed-vs-OPEN split is the route's to make,
+    so the chip text rides verbatim."""
+    out = linkify_handles(
+        "head [programme:factory-and-routing] [section:index] [SPACE:repo-dev] "
+        "[created -1d · read 3× · last -2m] [todo] [error:Gone] tail"
+    )
+    for chip in (
+        "programme:factory-and-routing",
+        "section:index",
+        "SPACE:repo-dev",
+    ):
+        q = chip.replace(":", "%3A")
+        assert f'href="/tags/refs?tag={q}"' in out
+        assert f'hx-get="/preview/tag?text={q}"' in out
+        assert f">[{chip}]</a>" in out
+    # a ``[kind]`` chip, the ``[created …]`` stamp and ``[error:…]`` are
+    # not tags — they stay text
+    tail = out.split("[created", 1)[1]
+    assert "[todo]" in tail and "[error:Gone]" in tail
+    assert 'href="/tags/refs' not in tail
+    assert 'hx-get="/preview/tag' not in tail
+
+
+def test_linkify_handles_exclude_keeps_a_handle_as_text() -> None:
+    """The quest page's self-handle: ``exclude`` leaves it unlinked (the
+    page already links it once via ``_eye_link.html.j2``) while a
+    ``/``-chain through it stays live."""
+    out = linkify_handles("see qu97 and td1", exclude={"qu97"})
+    assert 'href="/eye/qu97' not in out and ">qu97</a>" not in out
+    assert 'href="/eye/td1?extent=fisheye%2B1hop"' in out
+    out = linkify_handles("chain qu97/td2", exclude={"qu97"})
+    assert 'href="/eye/qu97' not in out
+    assert 'href="/eye/td2?extent=fisheye%2B1hop"' in out
 
 
 # ── gr490266: /eye must not leak another owner's profile ─────────────

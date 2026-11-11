@@ -665,17 +665,13 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     eye_text, eye_error = await await_dispatch(
         request, "get", {"kind": "quest", "id": qid, "extent": "fisheye+1hop"}
     )
-    eye_body = linkify_handles(eye_text) if not eye_error else ""
     # The page already carries the one "Eye navigation" link to this
-    # quest's own focus page (``_eye_link.html.j2``); leave the panel's
-    # self-handle as plain text so there is exactly one.
+    # quest's own focus page (``_eye_link.html.j2``); ``exclude`` leaves
+    # the panel's self-handle as plain text so there is exactly one —
+    # the anchor markup itself is no longer flat enough to strip after
+    # the fact (gr575024's hover-popover wrapper).
     self_handle = handle_registry.format_handle("quest", qid)
-    eye_body = re.sub(
-        r'<a class="eye-handle[^"]*" href="/eye/' + re.escape(self_handle) + r'[^"]*">'
-        r"(" + re.escape(self_handle) + r")</a>",
-        r"\1",
-        eye_body,
-    )
+    eye_body = linkify_handles(eye_text, exclude={self_handle}) if not eye_error else ""
 
     # Paper — the SEPARATE reader-facing draft (``paper-of``), when one
     # exists. Nothing mints it yet (docs/backlog/paper-writing-pipeline.md);
