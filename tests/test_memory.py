@@ -1770,6 +1770,88 @@ def test_edit_lock_exhaustion_without_holder_names_processing(
     assert _body(handler, store, mid) == _BODY
 
 
+def test_edit_lock_exhaustion_names_shared_lock_member(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td632689: a shared row lock lands in ``xmax`` as a multixact — a
+    separate ID space than ``backend_xid``, where lookup-by-success can
+    name an unrelated backend. The holder is resolved through the lock
+    wait itself, so the live member backend is named."""
+    mid = _make(handler)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with store.pool.connection() as locker:
+        locker.execute("SET LOCAL application_name = 'precis test-share'")
+        locker.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = %s FOR KEY SHARE", (mid,)
+        )
+
+        def always_locked() -> Any:
+            raise LockNotAvailable("still locked")
+
+        monkeypatch.setattr(store, "tx", always_locked)
+        try:
+            with pytest.raises(Upstream) as excinfo:
+                handler.edit(id=mid, mode="replace", text="never written")
+        finally:
+            locker.rollback()
+    assert "precis test-share" in str(excinfo.value)
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_edit_lock_exhaustion_skips_compatible_table_lock(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td632689: ShareUpdateExclusive (VACUUM's mode) never conflicts
+    with the write's ROW EXCLUSIVE — its holder must not be reported as
+    the blocker alongside the real row-lock holder."""
+    mid = _make(handler)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with (
+        store.pool.connection() as vacuumish,
+        store.pool.connection() as locker,
+    ):
+        vacuumish.execute("SET LOCAL application_name = 'precis test-vacuum'")
+        vacuumish.execute("LOCK TABLE refs IN SHARE UPDATE EXCLUSIVE MODE")
+        locker.execute("SET LOCAL application_name = 'precis test-locker'")
+        locker.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (mid,))
+
+        def always_locked() -> Any:
+            raise LockNotAvailable("still locked")
+
+        monkeypatch.setattr(store, "tx", always_locked)
+        try:
+            with pytest.raises(Upstream) as excinfo:
+                handler.edit(id=mid, mode="replace", text="never written")
+        finally:
+            locker.rollback()
+            vacuumish.rollback()
+    assert "precis test-locker" in str(excinfo.value)
+    assert "precis test-vacuum" not in str(excinfo.value)
+    assert _body(handler, store, mid) == _BODY
+
+
+def test_edit_lock_exhaustion_ignores_stale_xmax(
+    handler: MemoryHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td632689: a committed lock leaves its xid in ``xmax`` — it blocks
+    nobody, so the report falls back to the processing-stages line
+    instead of resolving the dead xid as a multixact."""
+    mid = _make(handler)
+    with store.pool.connection() as conn:
+        conn.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (mid,))
+        conn.commit()
+
+    def always_locked() -> Any:
+        raise LockNotAvailable("still locked")
+
+    monkeypatch.setattr(store, "tx", always_locked)
+    monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+    with pytest.raises(Upstream) as excinfo:
+        handler.edit(id=mid, mode="replace", text="never written")
+    assert "no live row-lock holder" in excinfo.value.cause
+    assert _body(handler, store, mid) == _BODY
+
+
 def test_anchored_edit_resyncs_mentions_and_preserves_manual_links(
     handler: MemoryHandler, store: Store
 ) -> None:

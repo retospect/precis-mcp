@@ -102,8 +102,9 @@ metadata, even on failed requests. Edit writes additionally run inside
 :func:`precis.utils.db_retry.retry_locked` (bounded, full jitter): a
 ``lock_timeout`` collision during an edit burst retries in-process
 instead of costing the agent a turn (gr504486); an exhausted budget
-refuses with ``Upstream`` naming the live row-lock holder(s) resolved
-from ``pg_locks`` (gr631568) + a ``next=`` naming the re-read.
+refuses with ``Upstream`` naming the live lock holder(s) resolved by
+the lock manager's own wait queue (gr631568, td632689) + a ``next=``
+naming the re-read.
 
 Retirement scans live memory prose inside its transaction, independently
 of mention edges. Current mentions require a successor or explicit force;
@@ -127,6 +128,8 @@ import hashlib
 import logging
 import os
 import re
+import threading
+import time
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import replace
@@ -137,6 +140,7 @@ from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from precis._result_budget import result_context_cap, row_size_cell, size_cell
 from precis.errors import (
@@ -260,88 +264,95 @@ _PAGED_FOOTER_BYTES = 400
 #: interactive edit rides out before the refusal is earned.
 _WRITE_LOCK_ATTEMPTS = 8
 
-#: The rows a memory body/meta write can wait on, with the xid of the
-#: transaction currently locking or last writing each (gr631568). Row
-#: locks are NOT visible in ``pg_locks`` once granted — they live in the
-#: tuple header: ``xmax`` carries the locker's xid (or a multixact for a
-#: shared lock), and ``backend_xid`` in ``pg_stat_activity`` maps it to a
-#: live backend for exactly as long as its transaction stays open — the
-#: lock-holding window, which is also why a stale ``xmax`` from a
-#: committed writer resolves to nobody and drops out of the report.
-#: Relations: the ref (``FOR NO KEY UPDATE``), its chunks
-#: (delete+reinsert) and the child rows those writes cascade through.
-_LOCKED_ROWS_SQL = """
-    SELECT 'refs' AS rel, r.ref_id::text AS id, r.xmax::text AS xid
-      FROM refs r WHERE r.ref_id = %(ref)s AND r.xmax <> 0
-    UNION ALL
-    SELECT 'chunk', c.chunk_id::text, c.xmax::text
-      FROM chunks c WHERE c.ref_id = %(ref)s AND c.xmax <> 0
-    UNION ALL
-    SELECT 'claim:' || cc.artifact, cc.chunk_id::text, cc.xmax::text
-      FROM chunk_claims cc JOIN chunks c ON c.chunk_id = cc.chunk_id
-     WHERE c.ref_id = %(ref)s AND cc.xmax <> 0
-    UNION ALL
-    SELECT 'embedding', ce.chunk_id::text, ce.xmax::text
-      FROM chunk_embeddings ce JOIN chunks c ON c.chunk_id = ce.chunk_id
-     WHERE c.ref_id = %(ref)s AND ce.xmax <> 0
-    UNION ALL
-    SELECT 'summary', cs.chunk_id::text, cs.xmax::text
-      FROM chunk_summaries cs JOIN chunks c ON c.chunk_id = cs.chunk_id
-     WHERE c.ref_id = %(ref)s AND cs.xmax <> 0
-    UNION ALL
-    SELECT 'ref_tag', rt.tag_id::text, rt.xmax::text
-      FROM ref_tags rt WHERE rt.ref_id = %(ref)s AND rt.xmax <> 0
-    UNION ALL
-    SELECT 'link', li.link_id::text, li.xmax::text
-      FROM links li
-     WHERE (li.src_ref_id = %(ref)s OR li.dst_ref_id = %(ref)s) AND li.xmax <> 0
+#: Row-lock probes replaying the row locks a memory body/meta write
+#: takes on this node's rows, in the order the write reaches them
+#: (gr631568, reworked for td632689). Granted row locks never reach
+#: ``pg_locks`` — they live in the tuple header, and a raw ``xmax``
+#: cannot say whether the number it holds is an xid or a multixact:
+#: that flag lives in ``t_infomask``, which no SQL-visible column
+#: exposes, and the two ID spaces overlap, so guessing by lookup
+#: success can name a backend that has nothing to do with the row.
+#: Instead a dedicated connection asks for each lock itself: ``FOR
+#: UPDATE`` conflicts with every row-lock mode including the ``FOR KEY
+#: SHARE`` a worker's foreign-key write takes, and when it waits, the
+#: lock manager itself resolves the holder — a shared lock's multixact
+#: expands to its live member xids, a stale ``xmax`` from a finished
+#: transaction blocks nobody — so every backend the wait names really
+#: holds the lock.
+_ROW_LOCK_PROBES: tuple[tuple[str, str], ...] = (
+    ("refs", "SELECT 1 FROM refs WHERE ref_id = %(ref)s FOR UPDATE"),
+    ("chunks", "SELECT 1 FROM chunks WHERE ref_id = %(ref)s FOR UPDATE"),
+    ("ref_tags", "SELECT 1 FROM ref_tags WHERE ref_id = %(ref)s FOR UPDATE"),
+    (
+        "links",
+        "SELECT 1 FROM links WHERE src_ref_id = %(ref)s OR dst_ref_id = %(ref)s "
+        "FOR UPDATE",
+    ),
+    (
+        "chunk_claims",
+        "SELECT 1 FROM chunk_claims cc "
+        "JOIN chunks c ON c.chunk_id = cc.chunk_id "
+        "WHERE c.ref_id = %(ref)s FOR UPDATE OF cc",
+    ),
+    (
+        "chunk_embeddings",
+        "SELECT 1 FROM chunk_embeddings ce "
+        "JOIN chunks c ON c.chunk_id = ce.chunk_id "
+        "WHERE c.ref_id = %(ref)s FOR UPDATE OF ce",
+    ),
+    (
+        "chunk_summaries",
+        "SELECT 1 FROM chunk_summaries cs "
+        "JOIN chunks c ON c.chunk_id = cs.chunk_id "
+        "WHERE c.ref_id = %(ref)s FOR UPDATE OF cs",
+    ),
+)
+
+#: The table-level half of the same probe: ROW EXCLUSIVE is the mode
+#: the write's INSERT/DELETE takes, so only the modes that genuinely
+#: conflict with it (SHARE and above) can hold it up — a
+#: ``ShareUpdateExclusive`` holder such as a vacuum never makes the
+#: probe wait and can no longer be reported as the blocker (td632689).
+_TABLE_LOCK_PROBE_SQL = (
+    "LOCK TABLE refs, chunks, ref_tags, links, ref_events, "
+    "chunk_claims, chunk_embeddings, chunk_summaries, tags "
+    "IN ROW EXCLUSIVE MODE"
+)
+
+#: Per-statement wait bound on the lock-taker: long enough for the
+#: observer's poll to see the queued request, short enough that
+#: replaying every lock the write needed stays a bounded diagnostic
+#: on a path that has already burned its retry budget.
+_LOCK_PROBE_TIMEOUT_MS = 400
+
+#: Observer cadence and total budget for the probe pair.
+_LOCK_PROBE_POLL_S = 0.025
+_LOCK_PROBE_BUDGET_S = 8.0
+
+#: What the lock-taker backend is currently waiting on, joined to the
+#: backends blocking it. ``pg_blocking_pids`` walks the wait queue with
+#: the lock manager's own conflict matrix — for a shared row lock it
+#: reports the live members of the multixact, which is the resolution
+#: reading ``xmax`` could only guess at.
+_LOCK_WAIT_SQL = """
+    SELECT l.locktype, l.mode, l.relation::regclass::text AS rel,
+           l.transactionid::text AS xid,
+           unnest(pg_blocking_pids(l.pid)) AS blocker
+      FROM pg_locks l
+     WHERE l.pid = %(pid)s AND NOT l.granted
 """
 
-#: xid → the live backend holding it. ``query`` resolves for same-role
+#: backend pid → its live session row. ``query`` resolves for same-role
 #: backends, so a worker stage's claim/write SQL shows verbatim.
-_LOCKER_BACKEND_SQL = """
-    SELECT a.backend_xid::text AS xid, a.pid, a.usename,
+_BLOCKER_BACKEND_SQL = """
+    SELECT a.pid, a.usename,
            a.application_name AS app, a.backend_type AS btype,
            a.state::text AS state,
            COALESCE(a.wait_event_type || ':' || a.wait_event, '-') AS wait,
            EXTRACT(epoch FROM now() - a.xact_start)::int AS age_s,
            left(a.query, 120) AS query
       FROM pg_stat_activity a
-     WHERE a.backend_xid::text = ANY(%(xids)s)
-"""
-
-#: Same, expanding one multixact (a shared row lock — ``FOR KEY SHARE``
-#: from a worker's FK write, ``FOR SHARE``) into each member's backend.
-#: Run per-xid: ``pg_get_multixact_members`` rejects values past the
-#: multixact horizon, and one bad xid must not sink the rest.
-_MULTIXACT_BACKEND_SQL = """
-    SELECT %(x)s AS locked_xid, a.pid, a.usename,
-           a.application_name AS app, a.backend_type AS btype,
-           a.state::text AS state,
-           COALESCE(a.wait_event_type || ':' || a.wait_event, '-') AS wait,
-           EXTRACT(epoch FROM now() - a.xact_start)::int AS age_s,
-           left(a.query, 120) AS query
-      FROM pg_get_multixact_members(%(x)s::xid) m
-      JOIN pg_stat_activity a ON a.backend_xid = m.xid
-"""
-
-#: Granted table-level locks on the relations a write touches, minus the
-#: modes every plain read/write takes — what remains is the DDL/LOCK
-#: TABLE/``ShareUpdateExclusive`` class a row-lock probe cannot see.
-_TABLE_LOCK_SQL = """
-    SELECT 'table:' || l.relation::regclass::text AS rel, l.mode AS id,
-           a.pid, a.usename, a.application_name AS app,
-           a.backend_type AS btype, a.state::text AS state,
-           COALESCE(a.wait_event_type || ':' || a.wait_event, '-') AS wait,
-           EXTRACT(epoch FROM now() - a.xact_start)::int AS age_s,
-           left(a.query, 120) AS query
-      FROM pg_locks l
-      JOIN pg_stat_activity a ON a.pid = l.pid
-     WHERE l.locktype = 'relation' AND l.granted
-       AND l.pid <> pg_backend_pid()
-       AND l.relation = ANY(%(rels)s::regclass[])
-       AND l.mode NOT IN ('AccessShareLock', 'RowShareLock', 'RowExclusiveLock')
-     LIMIT 8
+     WHERE a.pid = ANY(%(pids)s)
 """
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
@@ -2728,82 +2739,123 @@ class MemoryHandler(NumericRefHandler):
             detail += f", running {row['query']!r}"
         return detail + ")"
 
-    def _lock_holder_report(self, ref_id: int) -> str:
-        """Name the backend(s) currently locking rows of this memory.
+    @staticmethod
+    def _wait_context(row: dict[str, Any], label: str) -> str:
+        if row["locktype"] == "relation":
+            return f"{row['mode']} table lock on {row['rel']}"
+        if row["locktype"] == "transactionid":
+            return f"row lock on {label} (xact {row['xid']})"
+        if row["locktype"] == "tuple":
+            return f"tuple lock on {row['rel']}"
+        return f"{row['locktype']} lock on {row['rel'] or label}"
 
-        Best-effort and read-only, run on a fresh pool connection AFTER
-        the failed attempt's transaction is dead (the aborted tx could
-        not query anyway). Granted row locks never reach ``pg_locks`` —
-        they live in the tuple header, so the probe reads ``xmax`` on
-        the rows the write touches (:data:`_LOCKED_ROWS_SQL`) and maps
-        each xid/multixact to the live backend holding it — the "who
-        actually holds it" gr631568's "locked by another writer"
-        refused to say. A miss means the holders cycle too fast to
-        catch (the processing stages a fresh or just-edited memory
-        churns through), not a long write nobody can find. Never
-        raises: a broken probe degrades the report, never the refusal.
+    def _lock_holder_report(self, ref_id: int) -> str:
+        """Name the backend(s) currently blocking this memory's write.
+
+        Best-effort, run on a fresh pair of pool connections AFTER the
+        failed attempt's transaction is dead (the aborted tx could not
+        query anyway). Granted row locks never reach ``pg_locks`` —
+        they live in the tuple header, and a raw ``xmax`` cannot tell
+        an xid from a multixact without ``t_infomask`` — so a
+        lock-taker connection replays the locks the write needed
+        (:data:`_ROW_LOCK_PROBES` and :data:`_TABLE_LOCK_PROBE_SQL`,
+        each bounded by :data:`_LOCK_PROBE_TIMEOUT_MS`) while a second
+        connection reads the wait queue (:data:`_LOCK_WAIT_SQL`): the
+        lock manager itself names the holder — the "who actually holds
+        it" gr631568's "locked by another writer" refused to say — so a
+        stale ``xmax``, an xid/multixact overlap or a compatible table
+        lock can never be reported (td632689). A miss means the
+        holders cycle too fast to catch (the processing stages a fresh
+        or just-edited memory churns through), not a long write
+        nobody can find. Never raises: a broken probe degrades the
+        report, never the refusal.
         """
-        relations = [
-            "refs",
-            "chunks",
-            "ref_tags",
-            "links",
-            "ref_events",
-            "chunk_claims",
-            "chunk_embeddings",
-            "chunk_summaries",
-            "tags",
-        ]
         parts: list[str] = []
+        blockers: dict[int, set[str]] = {}
+        # ``state`` crosses the lock-taker thread boundary by assignment
+        # only — single-writer values stay GIL-atomic.
+        state: dict[str, Any] = {}
+        done = threading.Event()
+
+        def _take(taker: Connection) -> None:
+            try:
+                taker.execute(f"SET LOCAL lock_timeout = '{_LOCK_PROBE_TIMEOUT_MS}ms'")
+                own = taker.execute("SELECT pg_backend_pid()").fetchone()
+                if own is not None:
+                    state["pid"] = own[0]
+                for label, sql in _ROW_LOCK_PROBES:
+                    state["label"] = label
+                    taker.execute("SAVEPOINT lock_probe")
+                    try:
+                        taker.execute(sql, {"ref": ref_id})
+                    except (LockNotAvailable, DeadlockDetected):
+                        pass
+                    # After a timeout the tx needs the savepoint rollback
+                    # to go on; after a success it frees the row locks
+                    # the probe just took, so the diagnostic cannot
+                    # itself stall the writer it is blaming.
+                    taker.execute("ROLLBACK TO SAVEPOINT lock_probe")
+                state["label"] = "tables"
+                try:
+                    taker.execute(_TABLE_LOCK_PROBE_SQL)
+                except (LockNotAvailable, DeadlockDetected):
+                    pass
+            except Exception:
+                log.warning("memory %s: lock-taker probe failed", ref_id, exc_info=True)
+            finally:
+                done.set()
+
         try:
+            # Checkout on the BASE pool, not ``pool.connection``: the
+            # probe needs two genuinely separate connections — under
+            # ``pin_connection`` (``store.atomic()``) ``connection()``
+            # would hand both the caller's pinned conn, putting the
+            # lock-taker thread and the observer on one connection and
+            # the probe locks inside the caller's transaction. The
+            # bypass also skips ``SET LOCAL ROLE``: taking row locks
+            # wants the login role's write privileges, not a read-only
+            # envelope.
             with (
-                self.store.pool.connection() as conn,
-                conn.cursor(row_factory=dict_row) as cur,
+                ConnectionPool.connection(self.store.pool) as taker,
+                ConnectionPool.connection(self.store.pool) as probe,
+                probe.cursor(row_factory=dict_row) as cur,
             ):
-                locked = cur.execute(_LOCKED_ROWS_SQL, {"ref": ref_id}).fetchall()
-                lockers: dict[str, list[dict[str, Any]]] = {}
-                xids = sorted({row["xid"] for row in locked})
-                if xids:
-                    for row in cur.execute(
-                        _LOCKER_BACKEND_SQL, {"xids": xids}
-                    ).fetchall():
-                        lockers[row["xid"]] = [row]
-                    missing = [x for x in xids if x not in lockers]
-                    if missing:
-                        # A shared row lock (an FK write's FOR KEY
-                        # SHARE, FOR SHARE) lands in xmax as a multixact
-                        # whose members resolve to their own backends.
-                        # Expanding a plain xid can itself fail — one
-                        # bad value degrades alone.
-                        for xid in missing:
-                            try:
-                                members = cur.execute(
-                                    _MULTIXACT_BACKEND_SQL, {"x": xid}
-                                ).fetchall()
-                            except Exception:
-                                log.warning(
-                                    "memory %s: multixact expansion of xmax=%s failed",
-                                    ref_id,
-                                    xid,
-                                    exc_info=True,
-                                )
-                                # The probe tx aborts on error; roll it
-                                # back so the arms below still run.
-                                conn.rollback()
-                            else:
-                                if members:
-                                    lockers[xid] = members
-                for row in locked:
-                    parts.extend(
-                        f"{row['rel']} {row['id']} by " + self._describe_locker(holder)
-                        for holder in lockers.get(row["xid"], [])
-                    )
-                parts.extend(
-                    f"{row['rel']} {row['id']} by " + self._describe_locker(row)
-                    for row in cur.execute(
-                        _TABLE_LOCK_SQL, {"rels": relations}
-                    ).fetchall()
+                worker = threading.Thread(
+                    target=_take,
+                    args=(taker,),
+                    daemon=True,
+                    name="precis-lock-probe",
                 )
+                worker.start()
+                deadline = time.monotonic() + _LOCK_PROBE_BUDGET_S
+                while not done.wait(_LOCK_PROBE_POLL_S):
+                    if time.monotonic() > deadline:
+                        break
+                    pid = state.get("pid")
+                    if pid is None:
+                        continue
+                    for row in cur.execute(_LOCK_WAIT_SQL, {"pid": pid}).fetchall():
+                        blocker = row["blocker"]
+                        if blocker != pid:
+                            blockers.setdefault(blocker, set()).add(
+                                self._wait_context(row, state.get("label", ""))
+                            )
+                worker.join(timeout=_LOCK_PROBE_BUDGET_S)
+                if worker.is_alive():
+                    # Statements are bounded by lock_timeout; one that
+                    # outlived the budget anyway is cancelled so the
+                    # pooled conn is never checked in under a live
+                    # statement.
+                    taker.cancel()
+                    worker.join(timeout=2.0)
+                if blockers:
+                    for row in cur.execute(
+                        _BLOCKER_BACKEND_SQL, {"pids": sorted(blockers)}
+                    ).fetchall():
+                        ctx = "; ".join(sorted(blockers.get(row["pid"], ())))
+                        parts.append(
+                            f"{self._describe_locker(row)} blocking {ctx or 'a lock'}"
+                        )
         except Exception:
             log.warning("memory %s: lock-holder probe failed", ref_id, exc_info=True)
             return "; lock holder unresolved (probe failed)"
