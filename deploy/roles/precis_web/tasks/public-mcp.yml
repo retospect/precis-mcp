@@ -101,6 +101,8 @@
       PRECIS_SCHEMA_GATE: refuse
       PRECIS_AUTO_MIGRATE: "0"
       PRECIS_SKIP_SCHEMA_CHECK: ""
+      PRECIS_EMBEDDER: "{{ precis_mcp_public_embedder }}"
+      PRECIS_EMBEDDER_URL: "{{ precis_mcp_public_embedder_url }}"
   notify: restart precis-mcp-public
 
 - name: Load the public MCP LaunchDaemon if absent

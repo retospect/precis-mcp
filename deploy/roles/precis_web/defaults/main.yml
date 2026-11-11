@@ -76,3 +76,7 @@ precis_mcp_public_https_port: 8443
 precis_mcp_public_oauth_env: {}
 precis_mcp_public_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 precis_mcp_public_secrets_dir: /opt/mcps/mcp-public-secrets
+# The same-node embedder service (precis_embedder role). Unset, the process
+# falls back to the mock embedder and semantic search returns noise.
+precis_mcp_public_embedder: remote
+precis_mcp_public_embedder_url: http://127.0.0.1:8181
