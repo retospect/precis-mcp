@@ -1096,16 +1096,19 @@ def _figure_text_remainder(text: str) -> str:
 def _match_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Match figure blocks with captions from adjacent text blocks.
 
-    A caption in the NEXT block wins (the usual legend-below-panel
-    order); when none is there the immediately PRECEDING text block is
-    tried — journals that set legends above the panel emit
-    caption-then-image. A matched caption is consumed — it never lands
-    as a standalone paragraph — and folded into the figure chunk's
-    text, with whatever readable text the figure block already carried
-    (a surya alt description, a page anchor) kept beneath it so panel
-    content isn't thrown away (gr632958). Only ``text`` blocks bind —
-    a figure can never absorb a heading, a table, or another figure's
-    already-bound caption.
+    An unclaimed caption in the PRECEDING text block wins over one in
+    the next — journals that set legends above the panel emit
+    caption-then-image runs [caption, figure, caption, figure], where
+    the trailing caption belongs to the FOLLOWING figure; taking it
+    would orphan the caption already adjacent and leave that figure
+    bare (td635042). When nothing precedes, the NEXT block is tried —
+    the usual legend-below-panel order. A matched caption is consumed
+    — it never lands as a standalone paragraph — and folded into the
+    figure chunk's text, with whatever readable text the figure block
+    already carried (a surya alt description, a page anchor) kept
+    beneath it so panel content isn't thrown away (gr632958). Only
+    ``text`` blocks bind — a figure can never absorb a heading, a
+    table, or another figure's already-bound caption.
     """
     result: list[dict[str, Any]] = []
     skip_next = False
@@ -1126,13 +1129,13 @@ def _match_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
 
         if block.get("type") == "figure":
-            caption = _caption_of(blocks[i + 1] if i + 1 < len(blocks) else None)
+            caption = _caption_of(result[-1] if result else None)
             if caption is not None:
-                skip_next = True
-            elif result:
-                caption = _caption_of(result[-1])
+                result.pop()
+            else:
+                caption = _caption_of(blocks[i + 1] if i + 1 < len(blocks) else None)
                 if caption is not None:
-                    result.pop()
+                    skip_next = True
             if caption:
                 existing = _figure_text_remainder(str(block.get("text") or ""))
                 block["text"] = f"{caption}\n\n{existing}".strip()

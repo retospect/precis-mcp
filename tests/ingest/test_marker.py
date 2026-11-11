@@ -251,6 +251,24 @@ class TestMatchCaptions:
         assert result[0]["type"] == "figure"
         assert result[0]["text"] == "Figure 2: band diagram."
 
+    def test_consecutive_caption_above_pairs_bind_in_order(self):
+        """td635042: in [caption, figure, caption, figure] the first
+        figure's next neighbour is the SECOND figure's legend — the
+        already-sitting preceding caption wins so each figure keeps
+        its own. Next-wins stole it: caption1 orphaned, figure2 bare."""
+        blocks = [
+            self._text("Figure 1: overview."),
+            self._figure(),
+            self._text("Figure 2: band diagram."),
+            self._figure(),
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 2
+        assert result[0]["type"] == "figure"
+        assert result[0]["text"] == "Figure 1: overview."
+        assert result[1]["type"] == "figure"
+        assert result[1]["text"] == "Figure 2: band diagram."
+
     def test_surya_alt_text_kept_under_caption(self):
         """An image-only figure carries the surya VLM panel description
         as its text; binding the caption must not throw it away."""
