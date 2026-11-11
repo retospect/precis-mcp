@@ -13,8 +13,10 @@ rescues the recurring ``plan_dispatch`` todo once when the tick ran no
 succeeded pass in 30 min. A hold is not a stall: ``waiting-for:``,
 ``halt``, paused, an open ask, ``rescue:`` or a live ``blocked-by``
 target exempt a node; release plans belong to
-``release_poll::watch_stuck`` and are skipped. DB-only — no checkout,
-no host capabilities.
+``release_poll::watch_stuck`` and are skipped. DB-only but for one
+host read — the mtime of a live job's session log, the liveness a
+``run_slice`` writes progress to (gr626270) — no checkout, no host
+capabilities.
 
 Read-only while the kill switch holds (``PRECIS_FACTORY=off`` or a
 ``service_config`` ``plan_dispatch`` row with ``prio = 0``) or under

@@ -710,7 +710,50 @@ def parse_shard(spec: str) -> tuple[int, int]:
     return k, n
 
 
+# --- slice-lane bare-suite refusal (gr626270) --------------------------------
+# A builder session (``run_slice.slice_env`` stamps ``PRECIS_SLICE_ID``)
+# runs its pytest on the slice host: the host venv is not the gate's
+# container, and one ``uv run pytest -n6 tests/`` held the lane's box at
+# load ~30 for an hour while ``scripts/test``'s containerised path went
+# unused. A lane's pytest is only the land lint's named-file steps; a
+# bare selection — the no-arg default, or any directory arg — is
+# refused here, before collection. Inside ``scripts/test``'s container
+# the var is absent by construction (only ``PRECIS_TEST_ENV`` /
+# ``PRECIS_TEST_PASSENV`` forwards env in), and the in-container
+# ``PRECIS_TEST_PG_URL`` vetoes the check even if it is forwarded, so
+# the gate's own full-suite runs never trip it.
+_SLICE_SUITE_REFUSAL = (
+    "refused: a bare full-suite pytest on a builder lane (gr626270). "
+    "Run `scripts/test <paths>` for the tests your diff touches, "
+    "`scripts/test` for the whole suite; host-side `uv run pytest` is "
+    "only for the land lint's named-file steps "
+    "(`uv run pytest -n0 tests/<file>.py`)."
+)
+
+
+def _arg_is_named_test(arg: Any) -> bool:
+    """``arg`` (a ``config.args`` entry) selects a test FILE — the land
+    lint's ``uv run pytest <file>`` shape: an existing file or a path
+    that names one (``tests/x.py``, ``tests/x.py::Test::test``)."""
+    path = Path(str(arg).split("::", 1)[0])
+    return path.suffix == ".py" or path.is_file()
+
+
+def _refuse_bare_suite_on_a_slice(config: pytest.Config) -> None:
+    """Exit a pytest run under a slice session unless every collection
+    arg names a test file (see the section comment above)."""
+    if not os.environ.get("PRECIS_SLICE_ID"):
+        return
+    if os.environ.get("PRECIS_TEST_PG_URL"):
+        return  # inside scripts/test's container; the lane env never sets this
+    args = [str(a) for a in getattr(config, "args", [])]
+    if args and all(_arg_is_named_test(a) for a in args):
+        return
+    pytest.exit(_SLICE_SUITE_REFUSAL, returncode=int(pytest.ExitCode.USAGE_ERROR))
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    _refuse_bare_suite_on_a_slice(config)
     # gr558530: testmon crashes on extensionless files; no-op without testmon.
     _testmon_shim.install()
     config.addinivalue_line(

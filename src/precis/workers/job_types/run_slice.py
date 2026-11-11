@@ -55,6 +55,12 @@ that holds the lane's credentials with ``params.target_node``):
   On Darwin it carries ``ps_identity`` (start time + user); polling
   requires a recorded identity to match, since a reused pid can pass
   signal 0. Legacy Darwin handles cannot use EPERM as evidence of liveness.
+  The ``log`` is the session's liveness signal off the job timeline:
+  progress lands in run_slice.log, not in job events, so the stall
+  watchdog reads the log's mtime (``factory_rescue._job_log_at``,
+  gr626270), and ``tests/conftest.py`` refuses a bare full-suite
+  pytest under ``PRECIS_SLICE_ID`` — ``scripts/test`` is the only
+  door to the suite on a builder lane.
 * :func:`poll` waits for the exit file (or a dead pid AND an emptied
   group — a TERM can kill the wrapping ``sh`` while a vendor process
   keeps the group open, td602769 — and an exit file past which the
@@ -1408,7 +1414,10 @@ def render_brief(
         "",
         *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
         f"{n + 1}. Run the tests you added or changed with `scripts/test "
-        "<paths>` — a diff under `src/precis/data/skills/` adds "
+        "<paths>` — a bare `pytest`/`uv run pytest` with no file, or on "
+        "`tests/`, is refused on this lane (gr626270); host-side pytest "
+        "is only the named-file lint steps above — a diff under "
+        "`src/precis/data/skills/` adds "
         "`tests/test_skill_ingest.py`: the land's lint fails a skill whose "
         "H2 section runs past 4000 chars (gr610185: three builds cycled "
         "land → red on that cap alone). The last two steps read committed "

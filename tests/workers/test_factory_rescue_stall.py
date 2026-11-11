@@ -11,8 +11,10 @@ target exempt a node."""
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -310,6 +312,77 @@ def test_running_build_is_judged_at_5_hours(store: Store) -> None:
     res = fr.run_stall_pass(store, NOW + timedelta(hours=4))
     assert res.rescued == []
     res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+    assert res.rescued == [(task, "stalled", "build")]
+
+
+def test_running_build_with_a_fresh_log_is_not_rescued(
+    store: Store, tmp_path: Path
+) -> None:
+    """gr626270: run_slice writes progress to run_slice.log, not to job
+    events — no event for an hour is not a stall signal. The log's
+    mtime is the session's liveness: a 5 h build whose log moved
+    minutes ago is alive, not silent."""
+    root = _root(store)
+    task = _node(store, root)
+    log = tmp_path / "run_slice.log"
+    log.write_text("progress\n", encoding="utf-8")
+    fresh = NOW + timedelta(hours=4, minutes=55)
+    os.utime(log, (fresh.timestamp(), fresh.timestamp()))
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={"compute_handle": {"pid": 1, "log": str(log)}},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_running_build_with_a_stale_log_is_rescued(
+    store: Store, tmp_path: Path
+) -> None:
+    """The same build rescues once its log stops inside the deadline —
+    the pid's liveness is never consulted."""
+    root = _root(store)
+    task = _node(store, root)
+    log = tmp_path / "run_slice.log"
+    log.write_text("last write\n", encoding="utf-8")
+    stale = NOW - timedelta(hours=1)
+    os.utime(log, (stale.timestamp(), stale.timestamp()))
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={"compute_handle": {"pid": 1, "log": str(log)}},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == [(task, "stalled", "build")]
+    (comment,) = _comments(store, task)
+    assert "log mtime" in comment
+
+
+def test_running_build_with_an_unreadable_log_keeps_db_judgment(
+    store: Store, tmp_path: Path
+) -> None:
+    """A handle whose log path does not exist on this host (a run
+    pinned to another node) adds no signal — the DB stamps judge as
+    before."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={"compute_handle": {"pid": 1, "log": str(tmp_path / "gone.log")}},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
     assert res.rescued == [(task, "stalled", "build")]
 
 

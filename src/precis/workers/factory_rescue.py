@@ -443,7 +443,9 @@ def enter_rescue(
 # ── Stall watchdog (td574946 S2) ────────────────────────────────────
 #
 # ``run_stall_pass`` is the first caller of ``enter_rescue``: the
-# ``factory_rescue_tick`` job's DB-only pass. It finds the plan nodes
+# ``factory_rescue_tick`` job's stall pass — DB-only but for one host
+# read, a live job's session-log mtime (:func:`_job_log_at`, gr626270).
+# It finds the plan nodes
 # that went silent past their stage deadline and sends each to RESCUE —
 # never dispatched, a cancelled newest job, queued/build/land/review
 # overrunning, a sha-in-prod gate that never opens, a root closed under
@@ -698,6 +700,26 @@ def _unblocked_at(store: Store, plan: Any, n: Any) -> datetime | None:
     return row[0] if row is not None else None
 
 
+def _job_log_at(j: Any) -> datetime | None:
+    """mtime of a detached job's session log (``meta.compute_handle.log``)
+    on this host, or ``None`` — no handle, no log path, or the file
+    unreadable here (a run pinned to another node). The one non-DB
+    signal the pass reads (gr626270): a run_slice session writes its
+    progress to the log, not to job events, so a build whose log still
+    moves is alive past its last DB stamp, and one whose log stopped is
+    dead at the deadline whether or not its pid still lives."""
+    handle = j.meta.get("compute_handle")
+    if not isinstance(handle, dict):
+        return None
+    raw = handle.get("log")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(Path(raw).stat().st_mtime, UTC)
+    except OSError:
+        return None
+
+
 def _node_signals(
     n: Any,
     jobs: list[Any],
@@ -707,7 +729,8 @@ def _node_signals(
     """``(newest ts, its label, the log lines)`` — the newest signal of a
     node is the latest of its created_at, its tag set times, its newest
     comment chunk, its newest event, per child job its created_at,
-    STATUS stamp and newest chunk, and ``unblocked_at`` — when its
+    STATUS stamp, newest chunk and session-log mtime
+    (:func:`_job_log_at`), and ``unblocked_at`` — when its
     newest ``blocked-by`` predecessor finished (the idle clock starts
     when the node became dispatchable, not when it was created)."""
     signals: list[tuple[str, datetime]] = []
@@ -729,6 +752,9 @@ def _node_signals(
             signals.append((f"job jo{j.id} status set", jrow[1]))
         if jrow is not None and jrow[2] is not None:
             signals.append((f"job jo{j.id} newest comment", jrow[2]))
+        log_at = _job_log_at(j)
+        if log_at is not None:
+            signals.append((f"job jo{j.id} log mtime", log_at))
     label, ts = max(signals, key=lambda s: s[1])
     lines = [f"signals for td{n.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
     return ts, label, lines
@@ -1435,7 +1461,9 @@ def _judge_terminal_roots(
 def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallResult:
     """One watchdog pass over every plan subtree (see the section header).
 
-    ``now`` is passed in (timezone-aware UTC). The pass is DB-only and
+    ``now`` is passed in (timezone-aware UTC). The pass is DB-only but
+    for one host read — the mtime of a live job's session log, the
+    liveness signal a run_slice writes progress to (gr626270) — and
     writes nothing while the factory is switched off: ``read_only_reason``
     forces a dry run that still lists every ``would_rescue`` node.
     """
