@@ -100,6 +100,64 @@ def test_under_scopes_the_queryless_tag_listing(tree: _Tree) -> None:
     assert "Stray gotcha" not in out
 
 
+def test_under_scopes_the_queryless_tag_listing_with_empty_q_via_args(
+    tree: _Tree,
+) -> None:
+    """gr621795's verbatim repro: q='' + tags= + args={'under': …} through
+    the slim door. The empty-string q is the queryless listing shape; the
+    banner, the header count and the membership must all agree on the
+    subtree ∩ tags set — never '5 of 1377' under a scoped banner."""
+    out = tree.rt.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "q": "",
+            "tags": ["section:gotchas"],
+            "page_size": 5,
+            "__extras__": {"under": _h(tree.hub)},
+        },
+    )
+    assert f"_(under={_h(tree.hub)}: restricted to 3 descendants on part-of)_" in out
+    # header count is the filtered total, not the tagged corpus size
+    assert "# 2 memory entries tagged ['section:gotchas']" in out
+    assert "Pump detail" in out
+    assert "Direct gotcha" in out
+    # the stray matches the tag but sits outside the subtree
+    assert "Stray gotcha" not in out
+
+
+def test_under_scopes_the_ranked_tagged_search(tree: _Tree) -> None:
+    """gr621795: q= + tags= + under= on the ranked route — the resolved
+    under set must intersect the tagged results, not only render in the
+    banner. The stray matches both the tag and q from outside the subtree."""
+    out = tree.rt.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "q": "zebra",
+            "tags": ["section:gotchas"],
+            "under": _h(tree.hub),
+        },
+    )
+    assert f"_(under={_h(tree.hub)}: restricted to 3 descendants on part-of)_" in out
+    assert "Pump detail" in out
+    assert "Direct gotcha" in out
+    assert "Stray gotcha" not in out
+
+
+def test_under_queryless_tags_empty_intersection_lists_nothing(tree: _Tree) -> None:
+    """gr621795: tags= + under= whose intersection is empty must render
+    zero hits — never fall back to the unscoped tagged listing."""
+    out = tree.rt.dispatch(
+        "search",
+        {"kind": "memory", "tags": ["section:gotchas"], "under": _h(tree.detail)},
+    )
+    assert "no memory entries tagged ['section:gotchas']" in out
+    assert "Pump detail" not in out
+    assert "Direct gotcha" not in out
+    assert "Stray gotcha" not in out
+
+
 def _tool_text(out: Any) -> str:
     """A verb/slim result: str, or a CallToolResult whose text we want."""
     content = getattr(out, "content", None)
