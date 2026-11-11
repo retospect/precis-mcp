@@ -15,6 +15,7 @@ largest-connected-metal-cluster slab rule.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import re
@@ -610,3 +611,37 @@ def test_derive_from_requires_id_and_parent(structure) -> None:
         structure.put(id="ch_fs", args={"derive_from": "  "})
     with pytest.raises(NotFound):
         structure.put(id="ch_fs", args={"derive_from": "no_such_parent"})
+
+
+def test_derive_from_door_is_advertised_in_structure_skill() -> None:
+    """gr625205: the clone door landed in code but the base
+    ``precis-structure-help`` skill — the doc ``applies-to: put
+    (kind='structure')`` routes an authoring agent to — never named it,
+    so the tool was discoverable only through error ``next=`` hints and
+    the slab skill. The skill's Clone section must carry an
+    ``args={'derive_from': …}`` example whose args parse and whose ops
+    are real op names (and never ``relax``, which derive rejects)."""
+    from tests._skill_roots import skill_path
+
+    text = skill_path("precis-structure-help").read_text(encoding="utf-8")
+    section = text.split("## Clone a design", 1)[1].split("\n## ", 1)[0]
+    assert "NEB-pairable" in section
+    fence = re.search(r"```python\n(.*?)```", section, re.DOTALL)
+    assert fence, "the Clone section must show a fenced derive_from call"
+    start = fence.group(1).find("args={")
+    assert start >= 0, "the Clone example must call args={'derive_from': …}"
+    body = fence.group(1)[start + len("args=") :]
+    depth = 0
+    for i, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if depth == 0:
+            break
+    spec = ast.literal_eval(body[: i + 1])
+    assert "derive_from" in spec
+    assert isinstance(spec["ops"], list) and spec["ops"]
+    for op in spec["ops"]:
+        assert op["op"] in structure_ops._OPS
+        assert op["op"] != "relax"

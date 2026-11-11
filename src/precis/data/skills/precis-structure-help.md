@@ -127,6 +127,30 @@ builds a design from a CIF; `get(kind='structure', args={'source':
 record as a read-only design. Caps, refusals and provenance:
 `precis-structure-import-help`.
 
+## Clone a design — `put(id=<new-slug>, args={'derive_from': '<parent>'})`
+
+Branch a NEW design off an existing one instead of retyping the whole
+`text=` payload — the dopant-variant / endpoint-pair door. `derive_from`
+names the parent (slug or `st<id>`); `id=` is the new slug (an existing
+one refuses); `ops` ride `args=` (never `text=`) and are the same table
+as `put`/`edit`, minus `relax` — relax is a compute step on the result,
+not part of a clone. The parent's atoms, labels, cell, constraints and
+site markers carry over untouched, and the child is auto-linked
+`derived-from` its parent. The ack ends with a pairability line —
+"labels preserved … NEB-pairable with <parent>" when the atom label set
+survived (an NEB endpoint pair needs it — precis-structure-slab-help),
+"atom set changed" when an op added or removed atoms.
+
+```python
+# A Mn-doped twin of an existing Ni/Co slab — one set_element on a host
+# site, no from-scratch rebuild:
+put(kind="structure", id="ni_co_mn",
+    args={"derive_from": "ni_co", "ops": [
+      {"op": "set_element", "atom": "aNi14", "element": "Mn"}]})
+```
+
+The parent is untouched, so a before/after `view='diff'` reads cleanly.
+
 ## Author a design — the ops table
 
 ### The ops (also used by `edit`)
