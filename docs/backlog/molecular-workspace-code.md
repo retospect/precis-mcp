@@ -1,5 +1,5 @@
 ---
-status: ready
+status: parked
 title: Molecular workspaces — fragments, decorators, a shared step cache, a cached collapse check, and one inspect family across scales
 pillar: 3d-design
 prio: high
