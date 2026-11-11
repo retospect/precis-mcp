@@ -213,11 +213,29 @@ _TABLE_RE = re.compile(r"^\|")
 #: ``FIGURE 3 | caption`` separator, plural ``Figures``/``Figs``, a panel
 #: letter on the number, and multi-figure legends (``Figures 6 and
 #: 7.``). A separator is still required — bare ``Figure 3 shows …`` is
-#: prose, not a legend.
+#: prose, not a legend. The panel letter refuses a following dash: in
+#: ``Figure 4h–j present …`` the ``h–j`` is a panel range, not a
+#: label-plus-separator (td634883).
 _FIGURE_CAPTION_RE = re.compile(
-    r"^[*_]*\s*Fig(?:ure)?s?\.?\s*\d+[a-zA-Z]?"
-    r"(?:\s*(?:,|and)\s*\d+[a-zA-Z]?)*"
+    r"^[*_]*\s*Fig(?:ure)?s?\.?\s*\d+(?:[a-zA-Z](?![\-—–]))?"
+    r"(?:\s*(?:,|and)\s*\d+(?:[a-zA-Z](?![\-—–]))?)*"
     r"[*_]*\s*[:.\-—–|][*_]*\s*(.+)",
+    re.IGNORECASE,
+)
+#: A figure legend whose LABEL sits inside a markdown emphasis run:
+#: ``**FIGURE 1** (a) …``, ``**Fig. 1 a** …``, ``**FIGURE <sup>6</sup>**
+#: …``. The bold run is itself the legend signal — body prose never
+#: wraps an inline figure reference in ``**`` — so no separator is
+#: required (td634883: the shape half the held-corpus captions wear).
+#: Two or more ``*_`` are demanded on both sides so single-emphasis
+#: prose (``*Figure 1* shows …``) still refuses. The number tolerates a
+#: ``<sup>``/``<sub>`` wrapper and a space before a panel letter.
+_FIGURE_BOLD_CAPTION_RE = re.compile(
+    r"^[*_]{2,}\s*Fig(?:ure)?s?\.?\s*"
+    r"(?:<su[bp]>\s*)?\d+(?:\s*</su[bp]>)?"
+    r"(?:\s*[a-zA-Z])?"
+    r"(?:\s*(?:,|and)\s*\d+(?:\s*[a-zA-Z])?)*"
+    r"\.?[*_]{2,}\s*(.+)",
     re.IGNORECASE,
 )
 #: Leading Marker page-anchor spans (``<span id="page-N-M"></span>``),
@@ -1121,7 +1139,9 @@ def _match_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # they precede the legend itself, so probe past them while the
         # stored caption keeps them (true-page signal downstream).
         probe = _LEADING_PAGE_SPAN_RE.sub("", text)
-        return text if _FIGURE_CAPTION_RE.match(probe) else None
+        if _FIGURE_CAPTION_RE.match(probe) or _FIGURE_BOLD_CAPTION_RE.match(probe):
+            return text
+        return None
 
     for i, block in enumerate(blocks):
         if skip_next:

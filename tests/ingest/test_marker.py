@@ -242,6 +242,46 @@ class TestMatchCaptions:
         assert len(result) == 1
         assert result[0]["text"] == caption
 
+    @pytest.mark.parametrize(
+        "caption",
+        [
+            "**FIGURE 1** (a) Schematic illustration of the cell.",
+            "**FIGURE 3** The scheme illustrates the plating behaviour.",
+            "**Fig. 1 a** Schematic illustration of the LFP NP.",
+            "**Fig. 4 \u2009a** Comparison of the cycling performance.",
+            "**FIGURE <sup>6</sup>** (a) Possible CO2 reduction paths.",
+            "**Figures 6 and 7.** Combined view of the spectra.",
+        ],
+    )
+    def test_bold_label_captions_bind(self, caption):
+        """td634883: the emphasis-closed label (``**FIGURE 1** (a)…``)
+        wears no separator — the bold run itself is the legend signal.
+        Half the held-corpus captions take this shape; the separator
+        rule alone left every one of them orphaned."""
+        blocks = [self._figure(), self._text(caption)]
+        result = _match_captions(blocks)
+        assert len(result) == 1
+        assert result[0]["text"] == caption
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "Figure 4h–j present the dQ/dV plots during cycling.",
+            "Figure 5f–h present the ex situ XPS spectra.",
+            "Figure [6d] shows the Nyquist plots of pristine GaAs.",
+            "Figure 3a illustrates the GCD profiles of the electrode.",
+            "*Figure 1* shows the XPS spectra of the samples.",
+        ],
+    )
+    def test_prose_mentions_still_refuse(self, prose):
+        """td634883: a panel range (``4h–j``) is a lettered panel span,
+        not label-plus-dash — the dash after a panel letter must not
+        count as the caption separator, or prose gets stolen."""
+        blocks = [self._figure(), self._text(prose)]
+        result = _match_captions(blocks)
+        assert len(result) == 2
+        assert result[0]["text"] == ""
+
     def test_caption_before_figure_binds(self):
         """Journals that set the legend above the panel emit
         caption-then-image; the caption is consumed the same way."""
