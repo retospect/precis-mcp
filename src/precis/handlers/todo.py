@@ -2657,6 +2657,7 @@ class TodoHandler(NumericRefHandler):
         *,
         of_kind: str | None = None,
         rel: str | None = None,
+        direction: str | None = None,
     ) -> Response:
         """Prepend the virtual ``parent`` edge to the stored-link view.
 
@@ -2669,9 +2670,13 @@ class TodoHandler(NumericRefHandler):
         full subtree downward. A ``rel=`` filter (gr514335) hides the
         synthesized edge: it is no stored-links row, and ``rel='parent'``
         is a reserved pseudo-rel ``validate_relation`` refuses anyway.
+        ``direction='in'`` (gr631571) hides it too — the parent edge is
+        outbound.
         """
-        base = super()._render_links_view(ref, of_kind=of_kind, rel=rel)
-        if ref.parent_id is None or rel is not None:
+        base = super()._render_links_view(
+            ref, of_kind=of_kind, rel=rel, direction=direction
+        )
+        if ref.parent_id is None or rel is not None or direction == "in":
             return base
         header, _, rest = base.body.partition("\n")
         rest = rest.lstrip("\n")

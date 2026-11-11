@@ -57,7 +57,11 @@ q='<topic>')` first, then use the integer id from the hit.
 
 A node over 24 kB returns a head plus a section outline —
 `get(kind='memory', id='me<N>~<section>')` reads one `##`-headed part,
-`id='me<N>~body'` the whole body.
+`id='me<N>~body'` the whole body (`view='body'` is the same read;
+`view='meta'` prints the meta JSON). Batch reads take `id=[...]`,
+`~<section>` ids included. `view='links'` narrows with
+`args={'rel': 'part-of'}`, `args={'of_kind': 'todo'}` or
+`args={'direction': 'out'}`.
 
 ## Write a memory that will be found later
 ## Capture a durable fact so recall brings it back

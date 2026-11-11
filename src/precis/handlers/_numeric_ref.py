@@ -126,7 +126,7 @@ _FILLER_FIRST_LINE = re.compile(
 #: across todo, paper, job, quest, gripe — a local PreToolUse hint
 #: advertised exactly ``get(kind, id, view='meta'|'tags')``); kinds that
 #: already gave the spelling an own reading keep it — todo/quest/pres/
-#: taxon 'meta', memory's card fold, job's ``'meta'→'raw'``, todo's and
+#: taxon 'meta', job's ``'meta'→'raw'``, todo's and
 #: gripe's ``'tags'→None`` — those branches run ahead of the base
 #: dispatch.
 _BASE_VIEWS: tuple[str, ...] = (
@@ -984,6 +984,10 @@ class NumericRefHandler(Handler):
         # ``of_kind`` gives on the endpoint kind (gr514335: a hot ref's
         # unfiltered links view runs to hundreds of KB).
         rel: str | None = None,
+        # ``view='links'``'s direction filter (``args={'direction':
+        # 'out'}``) — 'out' keeps only this ref's outbound edges, 'in'
+        # only inbound; 'both'/omitted keeps both sections (gr631571).
+        direction: str | None = None,
         # ``view='diff'``'s sha, arriving through ``get``'s ``args=``
         # extras channel (``args={'since': <sha>}`` — the sha a review's
         # ``content_sha`` carries, or any ``prev_sha``/``new_sha`` in the
@@ -1077,7 +1081,18 @@ class NumericRefHandler(Handler):
             if view == "links":
                 if rel is not None:
                     rel = validate_relation(str(rel), store=self.store)
-                return self._render_links_view(ref, of_kind=of_kind, rel=rel)
+                if direction is not None and direction not in ("out", "in", "both"):
+                    raise BadInput(
+                        f"direction= must be 'out', 'in' or 'both', got {direction!r}",
+                        options=["out", "in", "both"],
+                        next=(
+                            f"get(kind={self.kind!r}, id={ref.id}, "
+                            "view='links', args={'direction': 'out'})"
+                        ),
+                    )
+                return self._render_links_view(
+                    ref, of_kind=of_kind, rel=rel, direction=direction
+                )
             if view == "log":
                 from precis.handlers._event_log_render import render_event_log
 
@@ -4392,14 +4407,18 @@ class NumericRefHandler(Handler):
         *,
         of_kind: str | None = None,
         rel: str | None = None,
+        direction: str | None = None,
     ) -> Response:
         """Render `view='links'`: outbound + inbound link graph for a ref.
 
         ``of_kind`` (``args={'of_kind': 'pathway'}``) keeps only links whose
         other endpoint is a ref of that kind (gr472990 case b); ``rel``
         (``args={'rel': 'touched'}``) keeps only links of one relation —
-        the same narrowing draft's links view offers (gr514335). Every
-        neighbour is still resolved, so the filter costs no extra query.
+        the same narrowing draft's links view offers (gr514335); and
+        ``direction`` (``args={'direction': 'out'}``) renders only one
+        side — 'out' keeps this ref's outbound edges, 'in' the inbound
+        ones (gr631571). Every neighbour is still resolved, so the
+        filter costs no extra query.
 
         Outbound rows ("→") are stored on this ref as ``src_ref_id``.
         Inbound rows ("←") have this ref as ``dst_ref_id`` — they
@@ -4411,10 +4430,16 @@ class NumericRefHandler(Handler):
         back into a future ``link(target=…)`` call without any further
         translation.
         """
-        out_links = self.store.links_for(ref.id, direction="out")
-        in_links = self.store.links_for(ref.id, direction="in")
+        out_links = (
+            [] if direction == "in" else self.store.links_for(ref.id, direction="out")
+        )
+        in_links = (
+            [] if direction == "out" else self.store.links_for(ref.id, direction="in")
+        )
 
         lines = [f"# {self._sense()} {ref.id} - links"]
+        if direction in ("out", "in"):
+            lines[0] += f" (direction={direction})"
         if not out_links and not in_links:
             lines.append("")
             lines.append("(no links)")

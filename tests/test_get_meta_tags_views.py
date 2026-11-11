@@ -5,9 +5,9 @@ quest, gripe; a PreToolUse hint advertised the spelling verbatim).
 ``meta``/``tags`` are base views on every numeric-ref kind now —
 ``meta`` renders the ref's meta dict as JSON, ``tags`` its tag set —
 and paper's ``tags`` lists its ref_tags. Kinds that already gave the
-spelling an own reading keep it (todo/quest/taxon 'meta', memory's
-card fold, job's 'meta'→'raw', todo/gripe 'tags'→card, paper's
-'meta'→overview). The kind-level inventories stay on
+spelling an own reading keep it (todo/quest/taxon 'meta', job's
+'meta'→'raw', todo/gripe 'tags'→card, paper's 'meta'→overview).
+The kind-level inventories stay on
 ``search(kind=K, view='meta'|'tags')``.
 """
 

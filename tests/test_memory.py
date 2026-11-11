@@ -202,14 +202,140 @@ def test_get_view_full_reads_as_default(handler: MemoryHandler) -> None:
     assert "a complete node" in full.body
 
 
-def test_get_view_meta_and_body_alias_default(handler: MemoryHandler) -> None:
-    new_id = id_of(handler.put(text="meta means the node").body)
-    for alias in ("meta", "body"):
-        r = handler.get(id=new_id, view=alias)
-        assert r.body.startswith(
-            f"interpreted: view={alias!r} read as the default view"
-        )
-        assert "meta means the node" in r.body
+def test_get_view_body_reads_the_body_section(handler: MemoryHandler) -> None:
+    """gr631571: ``view='body'`` is the ``~body`` section read — body
+    prose alone, not the card + link rows it used to fold to."""
+    new_id = id_of(handler.put(text="body is the node", title="t").body)
+    tilde = handler.get(id=f"{new_id}~body")
+    r = handler.get(id=new_id, view="body")
+    assert r.body == (
+        f"interpreted: view='body' read as id='me{new_id}~body'\n{tilde.body}"
+    )
+    assert "body is the node" in r.body
+    assert "## outbound" not in r.body
+
+
+def test_get_view_body_batch_maps_per_id(handler: MemoryHandler) -> None:
+    """``view='body'`` on ``id=[...]`` maps the ``~body`` read per id."""
+    a = id_of(handler.put(text="batch body a", title="ta").body)
+    b = id_of(handler.put(text="batch body b", title="tb").body)
+    r = handler.get(id=[a, b], view="body")
+    assert f"# memory {a}~body" in r.body and f"# memory {b}~body" in r.body
+    assert "batch body a" in r.body and "batch body b" in r.body
+
+
+def test_get_view_meta_renders_the_meta_view(handler: MemoryHandler) -> None:
+    """gr631571: ``view='meta'`` is the shared meta view (gr613470) —
+    the ref's meta dict as JSON, not the card fold."""
+    new_id = id_of(
+        handler.put(text="meta fixture", meta={"hook": "meta hook line"}).body
+    )
+    r = handler.get(id=new_id, view="meta")
+    assert f"# memory {new_id} — meta" in r.body
+    assert '"hook": "meta hook line"' in r.body
+
+
+def test_get_batch_tilde_selector_ids(handler: MemoryHandler) -> None:
+    """gr631571: ``id=[...]`` takes ``me<N>~<sel>`` elements — each
+    renders its section read, plain elements the whole node."""
+    a = id_of(handler.put(text="tilde batch a", title="ta").body)
+    b = id_of(handler.put(text="tilde batch b", title="tb").body)
+    r = handler.get(id=[f"me{a}~body", f"me{b}~body"])
+    assert "# 2 memory (batch)" in r.body
+    assert f"# memory {a}~body" in r.body and f"# memory {b}~body" in r.body
+    assert "tilde batch a" in r.body and "tilde batch b" in r.body
+
+    r = handler.get(id=[f"me{a}~body", b])
+    assert f"# memory {a}~body" in r.body
+    assert f"# memory {b}" in r.body and "tilde batch b" in r.body
+
+
+def test_get_batch_tilde_selector_stringified_list(
+    handler: MemoryHandler,
+) -> None:
+    """The bracketed-string form a stringified ``id=[...]`` arrives as
+    (gr631571's actual call): parse it back to a batch."""
+    a = id_of(handler.put(text="stringified a", title="ta").body)
+    b = id_of(handler.put(text="stringified b", title="tb").body)
+    r = handler.get(id=f"[me{a}~body, me{b}~body]")
+    assert f"# memory {a}~body" in r.body and f"# memory {b}~body" in r.body
+    r = handler.get(id=f"['me{a}~body', 'me{b}~body']")
+    assert f"# memory {a}~body" in r.body and f"# memory {b}~body" in r.body
+
+
+def test_get_batch_tilde_selector_misses_are_line_blocks(
+    handler: MemoryHandler,
+) -> None:
+    """A missing ref or section is a one-line block, not a call error."""
+    a = id_of(handler.put(text="selector miss anchor", title="t").body)
+    r = handler.get(id=[f"me{a}~body", "me99999~body", f"me{a}~nope"])
+    assert f"# memory {a}~body" in r.body
+    assert "me99999~body  " in r.body
+    assert f"me{a}~nope  no section ~'nope'" in r.body
+
+
+def test_get_links_rel_filter(handler: MemoryHandler, store: Store) -> None:
+    """gr631571: ``args={'rel': 'part-of'}`` narrows view='links' to one
+    relation — the spec-roots-to-programme query the gripe needed."""
+    root = id_of(handler.put(text="spec root").body)
+    programme = id_of(handler.put(text="the programme").body)
+    neighbour = id_of(handler.put(text="loose neighbour").body)
+    store.add_link(src_ref_id=root, dst_ref_id=programme, relation="part-of")
+    store.add_link(src_ref_id=root, dst_ref_id=neighbour, relation="related-to")
+
+    r = handler.get(id=root, view="links", rel="part-of")
+    assert "(rel=part-of)" in r.body
+    assert f"me{programme}" in r.body
+    assert f"me{neighbour}" not in r.body
+
+
+def test_get_links_direction_filter(handler: MemoryHandler, store: Store) -> None:
+    """``args={'direction': 'out'|'in'}`` renders only one side."""
+    node = id_of(handler.put(text="linked node").body)
+    parent = id_of(handler.put(text="its hub").body)
+    child = id_of(handler.put(text="inbound fan").body)
+    store.add_link(src_ref_id=node, dst_ref_id=parent, relation="part-of")
+    store.add_link(src_ref_id=child, dst_ref_id=node, relation="related-to")
+
+    out = handler.get(id=node, view="links", direction="out")
+    assert "(direction=out)" in out.body
+    assert "## outbound" in out.body and "## inbound" not in out.body
+    assert f"me{parent}" in out.body and f"me{child}" not in out.body
+
+    inb = handler.get(id=node, view="links", direction="in")
+    assert "(direction=in)" in inb.body
+    assert "## inbound" in inb.body and "## outbound" not in inb.body
+    assert f"me{child}" in inb.body and f"me{parent}" not in inb.body
+
+
+def test_get_links_direction_refused(handler: MemoryHandler) -> None:
+    new_id = id_of(handler.put(text="x").body)
+    with pytest.raises(BadInput, match="direction= must be"):
+        handler.get(id=new_id, view="links", direction="up")
+
+
+def test_get_links_filters_refused_on_other_views(handler: MemoryHandler) -> None:
+    """rel=/of_kind=/direction= name view='links' options — on any other
+    view they refuse rather than silently doing nothing."""
+    new_id = id_of(handler.put(text="x").body)
+    for kw in ({"rel": "part-of"}, {"of_kind": "todo"}, {"direction": "out"}):
+        with pytest.raises(BadInput, match="only apply to memory view='links'"):
+            handler.get(id=new_id, **kw)
+
+
+def test_get_links_batch_rel_filter(handler: MemoryHandler, store: Store) -> None:
+    """``id=[...], view='links', args={'rel': ...}`` filters every block."""
+    a = id_of(handler.put(text="root a").body)
+    b = id_of(handler.put(text="root b").body)
+    hub = id_of(handler.put(text="one hub").body)
+    other = id_of(handler.put(text="misc node").body)
+    store.add_link(src_ref_id=a, dst_ref_id=hub, relation="part-of")
+    store.add_link(src_ref_id=b, dst_ref_id=hub, relation="part-of")
+    store.add_link(src_ref_id=a, dst_ref_id=other, relation="related-to")
+
+    r = handler.get(id=[a, b], view="links", rel="part-of")
+    assert r.body.count("(rel=part-of)") == 2
+    assert f"me{hub}" in r.body and f"me{other}" not in r.body
 
 
 def test_get_view_index_reads_as_links(handler: MemoryHandler) -> None:

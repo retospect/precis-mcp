@@ -34,6 +34,16 @@ Semantics (`precis-memory-help`):
     - link(id=N, target='kind:id') — cross-link memory N to another ref
     - delete(id=N)                 — soft-delete memory N
     - get(id=N)                    — read title + body + tags
+    - get(id=N, view='body')       — the ``~body`` read: body prose, no
+                                     header/links; id='me<N>~<section>'
+                                     reads one ``#``-headed part
+    - get(id=N, view='meta')       — the ref's meta dict as JSON
+    - get(id=[...])                — batch; ``me<N>~<sel>`` elements read
+                                     their sections, plain ids whole nodes
+    - get(id=N, view='links', args={'rel': 'part-of', 'of_kind': 'todo',
+                                    'direction': 'out'})
+                                   — the link graph, narrowed by relation,
+                                     endpoint kind and/or direction
     - get(id=N, view='processing') — current-revision processing evidence;
                                      check before testing recall
     - get(id='/recent')            — list recent memories
@@ -395,15 +405,16 @@ _BODY_KIND = "memory_body"
 #: ``view=`` spellings agents reach for on a concrete ``get`` that mean
 #: "just read the node" or the link neighbourhood (gr503547 — 7 refusals
 #: across 3 gardening sessions). The plain read already is the complete
-#: node (body + meta + hook), so ``'full'``/``'meta'``/``'body'`` fold to
-#: the default view; ``'index'`` reads as the links view (the hub index).
+#: node (body + meta + hook), so ``'full'`` folds to the default view;
+#: ``'index'`` reads as the links view (the hub index). ``'body'`` is
+#: the ``~body`` section read and ``'meta'`` the shared meta view —
+#: each handled on its own branch, not folded (gr631571: the fold
+#: answered "show me the body/meta" with the card plus its link rows).
 #: Each alias runs the canonical call and returns with the
 #: ``interpreted:`` reading line (gr494831's shape, via
 #: :mod:`precis.handlers._interpret`).
 _VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
-    "meta": None,
-    "body": None,
     "index": "links",
 }
 
@@ -670,6 +681,22 @@ def _validate_meta(
     return out
 
 
+def _bracketed_id_list(raw: str) -> list[str] | None:
+    """``'[me1~body, me2~body]'`` → ``['me1~body', 'me2~body']``.
+
+    An ``id=[...]`` batch stringified to one string on the way in
+    (gr631571). ``None`` when the value isn't bracketed or any element
+    parses empty — it keeps its ordinary single-id error path.
+    """
+    s = raw.strip()
+    if len(s) < 3 or not (s.startswith("[") and s.endswith("]")):
+        return None
+    items = [t.strip().strip("'\"").strip() for t in s[1:-1].split(",")]
+    if not items or any(not t for t in items):
+        return None
+    return items
+
+
 def _ruling_ack(meta: dict[str, Any]) -> str:
     """The create ack's line naming the ruling keys the write stamped."""
     stamped = ", ".join(f"{k}={meta[k]}" for k in _RULING_META_KEYS if k in meta)
@@ -892,6 +919,13 @@ class MemoryHandler(NumericRefHandler):
         # extras gate accepts them (gr570722).
         hops: int | str | None = None,
         mermaid: bool | str | None = None,
+        # ``view='links'``'s filters (``args={'rel': 'part-of',
+        # 'of_kind': 'todo', 'direction': 'out'}``) — forwarded to the
+        # shared links render; declared so the extras gate accepts them
+        # (gr631571).
+        rel: str | None = None,
+        of_kind: str | None = None,
+        direction: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Log offsets count events, or payload characters when event_id
@@ -919,6 +953,16 @@ class MemoryHandler(NumericRefHandler):
             raise BadInput(
                 "limit=/event_id= only apply to memory view='log'",
                 next="get(kind='memory', id=N, view='log')",
+            )
+        if any(v is not None for v in (rel, of_kind, direction)) and (
+            view != "links" or q is not None
+        ):
+            raise BadInput(
+                "rel=/of_kind=/direction= only apply to memory view='links'",
+                next=(
+                    "get(kind='memory', id=N, view='links', "
+                    "args={'rel': 'part-of', 'direction': 'out'})"
+                ),
             )
         if view == "log" and any(v is not None for v in (limit, offset, event_id)):
             if (
@@ -955,8 +999,29 @@ class MemoryHandler(NumericRefHandler):
                 offset=off,
                 event_id=selected,
             )
+        if isinstance(id, str):
+            # An ``id=[...]`` list stringified on the way in —
+            # ``'[me1~body, me2~body]'`` (gr631571): parse it back so
+            # the batch forms below still apply.
+            listed = _bracketed_id_list(id)
+            if listed is not None:
+                id = cast("list[str | int]", listed)
         if isinstance(id, str) and "~" in id:
             return self._get_section(id=id, view=view, q=q)
+        if isinstance(id, list) and any(isinstance(i, str) and "~" in i for i in id):
+            return self._get_selector_batch(id, view=view, q=q)
+        if (
+            isinstance(id, list)
+            and view == "links"
+            and any(v is not None for v in (rel, of_kind, direction))
+        ):
+            return self._get_batch_view(
+                self._coerce_ids(id),
+                view=view,
+                rel=rel,
+                of_kind=of_kind,
+                direction=direction,
+            )
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         # view='argument' on a concrete id renders the kind-scoped argument
@@ -1015,6 +1080,18 @@ class MemoryHandler(NumericRefHandler):
             return render_argument_view(self.store, ref)
         if concrete and is_eye_view(view):
             return self.eye(id=id, extent=view, q=q)
+        if concrete and q is None and view == "body":
+            # ``~body`` under the view= spelling (gr631571): the body
+            # prose alone, not the card + link rows the fold used to
+            # answer. A batch maps it per id via ``_get_batch_view``.
+            if isinstance(id, list):
+                return self._get_batch_view(self._coerce_ids(id), view="body")
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
+            return interpreted(
+                self._render_section(ref, "body"),
+                [f"view='body' read as id='{handle}~body'"],
+            )
         if concrete and q is None and view in _VIEW_ALIASES:
             canon = _VIEW_ALIASES[view]
             shown = f"view={canon!r}" if canon is not None else "the default view"
@@ -1023,6 +1100,7 @@ class MemoryHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             legal = [
                 "argument",
+                "body",
                 "environment",
                 "members",
                 "processing",
@@ -1037,12 +1115,22 @@ class MemoryHandler(NumericRefHandler):
                     (f"did you mean {close[0]!r}? " if close else "")
                     + "view='argument' (kind:lemma/kind:inference proof tree) "
                     f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
-                    "· members (paged part-of listing) · processing (before recall) "
+                    "· body (the ~body read) · members (paged part-of listing) "
+                    "· processing (before recall) "
                     "· environment (graph neighbourhood + shape smells) "
                     "· links, log, raw (generic)"
                 ),
             )
-        resp = super().get(id=id, view=view, q=q, since=since, **_kw)
+        resp = super().get(
+            id=id,
+            view=view,
+            q=q,
+            since=since,
+            rel=rel,
+            of_kind=of_kind,
+            direction=direction,
+            **_kw,
+        )
         if view is None and q is None and id is not None and not isinstance(id, list):
             resp = self._with_budget_outline(resp, id)
         return resp
@@ -1374,6 +1462,46 @@ class MemoryHandler(NumericRefHandler):
             ]
         )
         return Response(body=body)
+
+    def _get_selector_batch(
+        self, ids: list[Any], *, view: str | None, q: str | None
+    ) -> Response:
+        """``get(id=[...])`` where elements carry ``~<section>`` ids
+        (gr631571): each ``me<N>~<sel>`` renders its section read, a
+        plain element the whole node — one block per element, caller
+        order. A missing, deleted or malformed element is a one-line
+        block, never an error for the whole call — the same contract
+        as :meth:`_get_batch`.
+        """
+        if view is not None or q is not None:
+            raise BadInput(
+                "a ~<section> batch takes no view= or q=",
+                next="get(kind='memory', id=['me<N>~body', ...])",
+            )
+        blocks: list[str] = []
+        for raw in ids:
+            handle = str(raw)
+            try:
+                if isinstance(raw, str) and "~" in raw:
+                    # Dispatch rewrites a scalar ``me<N>~<sel>`` to the
+                    # public id upstream; inside a list the element
+                    # arrives verbatim, so fold the own-kind handle here.
+                    base, _, sel = raw.partition("~")
+                    parsed = handle_registry.parse(base)
+                    if parsed is not None and parsed[0] == self.kind and not parsed[1]:
+                        raw = f"{parsed[2]}~{sel}"
+                    blocks.append(self._get_section(id=raw, view=None, q=None).body)
+                else:
+                    ref_id = self._coerce_ids([raw])[0]
+                    blocks.append(NumericRefHandler.get(self, id=ref_id).body)
+            except NotFound as exc:
+                blocks.append(f"{handle}  {exc.cause or 'not found'}")
+            except Gone:
+                blocks.append(f"{handle}  deleted")
+            except BadInput as exc:
+                blocks.append(f"{handle}  {exc.cause}")
+        body = f"# {len(ids)} memory (batch)\n\n" + "\n\n---\n\n".join(blocks)
+        return Response(body=body, result_count=len(ids))
 
     # ── put / create: ref (title) + memory_body chunk ───────────────
 
