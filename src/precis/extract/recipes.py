@@ -1369,6 +1369,7 @@ def expand_recipe(
     chunk_text: str | None = None,
     extraction_run: str | None = None,
     model: str | None = None,
+    anchor_ref_id: int | None = None,
 ) -> tuple[list[RunProposal], list[dict[str, Any]]]:
     """Expand one recipe over the parsed grid.
 
@@ -1379,8 +1380,11 @@ def expand_recipe(
     the logical table's 1-based ``T<n>`` number for ``meta.table``.
     ``chunk_text`` is the chunk's raw text for the anchor re-check; when
     omitted the cell's own text stands in (the ``Cell`` invariant makes
-    them equal).
+    them equal). ``paper`` is the run's subject ref; ``anchor_ref_id``
+    is the ref the chunk belongs to — it differs when the grid comes
+    from the paper's supplement (gr632957).
     """
+    anchor_ref = paper if anchor_ref_id is None else anchor_ref_id
     if parsed.ragged_rows:
         return [], [
             _drop(
@@ -1612,14 +1616,17 @@ def expand_recipe(
             pos = cap_text.find(cond.literal)
             if pos >= 0:
                 anchor = MeasureAnchor(
-                    paper, cap_id, "offsets", [cap_id, pos, pos + len(cond.literal)]
+                    anchor_ref,
+                    cap_id,
+                    "offsets",
+                    [cap_id, pos, pos + len(cond.literal)],
                 )
             else:
                 # Still anchored on the caption chunk — insert_measure's
                 # own span check then flags anchor_mismatch; the
                 # condition writes, never refuses.
                 anchor = MeasureAnchor(
-                    paper, cap_id, "offsets", [cap_id, 0, len(cap_text)]
+                    anchor_ref, cap_id, "offsets", [cap_id, 0, len(cap_text)]
                 )
         else:
             assert cond.cell is not None
@@ -1629,7 +1636,7 @@ def expand_recipe(
                 drops.append(_drop(loc, "bad_shape", f"cell {cond.cell} vanished"))
                 continue
             anchor = MeasureAnchor(
-                paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
+                anchor_ref, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
             )
             if chunk_text is not None:
                 # The literal+``r:c`` pair is model-claimed — the one
@@ -1760,7 +1767,7 @@ def expand_recipe(
                     "cited_work" if cited_at(r, c, spec.index) else "own_work"
                 ),
                 anchor=MeasureAnchor(
-                    paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
+                    anchor_ref, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
                 ),
                 meta=in_meta,
             )
@@ -2377,7 +2384,10 @@ def expand_recipe(
                         {cond_name: " ".join(label.split()) or label} if multi else None
                     ),
                     anchor=MeasureAnchor(
-                        paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
+                        anchor_ref,
+                        chunk_id,
+                        "offsets",
+                        [chunk_id, cell.start, cell.end],
                     ),
                     meta=meta,
                 )

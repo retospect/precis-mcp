@@ -118,6 +118,77 @@ class TestSurveyExtractDispatch:
         assert len(run_inputs) == 2
         assert {r["literal"] for r in run_inputs} == {"NH3", "-0.5"}
 
+    def test_supplement_chunks_are_extracted(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr632957: the paper's ``pdf_role='supplement'`` part-of child
+        carries its own chunks — the pass reads them, and a row written
+        from one anchors on the SI ref while reporting the paper as its
+        subject."""
+        store = world["store"]
+        si = seed_ref(store, title="Supporting information", kind="paper")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET pdf_role = 'supplement' WHERE ref_id = %s",
+                (si,),
+            )
+        store.add_link(
+            src_ref_id=si,
+            dst_ref_id=world["paper"],
+            relation="part-of",
+            meta={"role": "supplement"},
+        )
+        si_chunk = seed_chunk(
+            store,
+            ref_id=si,
+            ord=0,
+            text=(
+                "Table S1 reports an adsorption energy of -2.10 eV for "
+                "*NO on the Pd membrane under the same conditions."
+            ),
+        )
+        replies = iter(
+            [
+                '{"results": []}',
+                '{"results": []}',
+                '{"results": []}',
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "subject": "Pd membrane",
+                                "measurand": "adsorption-energy",
+                                "literal": "-2.10",
+                                "unit": "eV",
+                                "anchor": "0",
+                                "attribution": "own_work",
+                                "inputs": [],
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            job, "route", lambda req: llm_result(next(replies, '{"results": []}'))
+        )
+        done, _events = drive(_extract_meta(world, skip_accept=True), store, job.SPEC)
+        assert done.success
+        rows = store.measures_for(world["paper"], include_superseded=True)
+        si_row = next(r for r in rows if r["literal"] == "-2.10")
+        assert si_row["subject_ref_id"] == world["paper"]
+        assert si_row["source_ref_id"] == si
+        with store.pool.connection() as conn:
+            link = conn.execute(
+                "SELECT src_ref_id, src_chunk_id FROM links WHERE link_id = %s",
+                (si_row["primary_link_id"],),
+            ).fetchone()
+        assert link is not None
+        assert (int(link[0]), int(link[1])) == (si, si_chunk)
+        assert si_row["id"] in {
+            r["id"] for r in store.measures_for_paper(world["paper"])
+        }
+
     def test_rerun_is_idempotent(
         self, world: dict, monkeypatch: pytest.MonkeyPatch
     ) -> None:

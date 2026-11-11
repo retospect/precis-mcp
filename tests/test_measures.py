@@ -2077,6 +2077,63 @@ def test_measures_for_orders_outputs_before_inputs(
     assert {r["role"] for r in rows if r["direction"] == "input"} == {"context"}
 
 
+def test_measures_for_paper_includes_supplement_anchors(
+    store: Store, world: dict[str, Any]
+) -> None:
+    """gr632957: a row anchored on a live ``pdf_role='supplement'``
+    part-of child's chunk is attributable to the parent paper — the
+    paper scope's anchor leg reaches SI chunks, not only the main
+    ref's. A plain ``part-of`` child without the supplement stamp
+    stays out of scope."""
+    si = seed_ref(store, title="supporting information", kind="paper")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET pdf_role = 'supplement' WHERE ref_id = %s", (si,))
+    store.add_link(
+        src_ref_id=si,
+        dst_ref_id=world["paper"],
+        relation="part-of",
+        meta={"role": "supplement"},
+    )
+    text = "The supplement reports an adsorption energy of -2.10 eV."
+    si_chunk = seed_chunk(store, ref_id=si, text=text)
+    start = text.index("-2.10")
+    subject = seed_ref(store, kind="material")
+    run = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "-2.10",
+            subject,
+            reported_unit="eV",
+            value_num=-2.10,
+            anchor=MeasureAnchor(si, si_chunk, "offsets", [si_chunk, start, start + 5]),
+        ),
+        actor="reader",
+    )
+    assert run.output_id in {r["id"] for r in store.measures_for_paper(world["paper"])}
+
+    plain_child = seed_ref(store, title="unrelated child", kind="paper")
+    store.add_link(
+        src_ref_id=plain_child, dst_ref_id=world["paper"], relation="part-of"
+    )
+    plain_chunk = seed_chunk(store, ref_id=plain_child, text=text)
+    run2 = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "-2.10",
+            subject,
+            reported_unit="eV",
+            value_num=-2.10,
+            anchor=MeasureAnchor(
+                plain_child, plain_chunk, "offsets", [plain_chunk, start, start + 5]
+            ),
+        ),
+        actor="reader",
+    )
+    assert run2.output_id not in {
+        r["id"] for r in store.measures_for_paper(world["paper"])
+    }
+
+
 # ── Build B: SI stored, display unit shown, and the reads ──────────────────
 
 

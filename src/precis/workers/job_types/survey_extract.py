@@ -1,7 +1,8 @@
 """``survey_extract`` + ``measure_accept`` — the survey/review numeric
 extraction pass (docs/backlog/measures-substrate.md, "Next slice").
 
-``survey_extract`` walks one paper's chunks in slices. Each live chunk
+``survey_extract`` walks one paper's chunks — the main ref's plus its
+live ``part-of`` supplements' (gr632957) — in slices. Each live chunk
 is rendered with ``[n]`` anchors (:mod:`precis.extract.anchors`),
 prompted to the local model on the served-OSS lane (``placement=
 "local"``, ``Tier.BIG`` — the local reader on castor; the chain is the
@@ -108,6 +109,7 @@ from precis.extract.tables import (
     table_runs,
     table_sig,
 )
+from precis.store.si_links import supplement_children
 from precis.utils import handle_registry
 from precis.utils.env import env_int
 from precis.utils.glyph_health import glyph_suspected
@@ -193,24 +195,48 @@ def _paper_glyph_flag(store: Store, ref_id: int) -> bool:
     return glyph_suspected(row[0] if row else None)
 
 
+#: The ``ord`` window one ref's chunks occupy inside a paper's scoped
+#: chunk list — no real ref approaches it (the pilot's extreme was a
+#: 634-chunk paper, jo504632).
+_REF_ORD_STRIDE = 1_000_000
+
+
 def _chunks(store: Store, paper: int) -> list[dict[str, Any]]:
-    """The paper's live body chunks, ord order."""
+    """The paper's live body chunks plus its supplements', ord order per
+    ref, the main ref first.
+
+    An SI is a separate ``pdf_role='supplement'`` ref hung ``part-of``
+    the paper (:mod:`precis.store.si_links`) — its chunks carry the
+    ``Table S*`` / ``Fig. S*`` values the comparison sets cite, so the
+    pass reads them too (gr632957). Each chunk carries its owning
+    ``ref_id`` — the anchor and its ``quantifies`` edge land on it —
+    and a per-ref scoped ``ord`` (``rank * _REF_ORD_STRIDE + ord``) so
+    the table-run grouping and caption pairing the recipe bookkeeping
+    derives from ``ord`` adjacency never fuses or pairs chunks across
+    the ref boundary.
+    """
     with store.pool.connection() as conn:
+        refs = [paper] + [r[0] for r in supplement_children(conn, paper)]
         rows = conn.execute(
-            "SELECT chunk_id, ord, chunk_kind, text, section_path "
-            "  FROM chunks WHERE ref_id = %s AND ord >= 0 "
-            "  AND retired_at IS NULL ORDER BY ord",
-            (paper,),
+            "SELECT chunk_id, ord, chunk_kind, text, section_path, ref_id "
+            "  FROM chunks WHERE ref_id = ANY(%s) AND ord >= 0 "
+            "  AND retired_at IS NULL "
+            "  ORDER BY CASE WHEN ref_id = %s THEN 0 ELSE 1 END, ref_id, ord",
+            (refs, paper),
         ).fetchall()
+    rank: dict[int, int] = {}
     out = []
-    for cid, ord_, kind, text, section in rows:
+    for cid, ord_, kind, text, section, ref in rows:
         sec = None
         if isinstance(section, list) and section:
             sec = str(section[-1])
+        owner = int(ref)
+        scoped_ord = rank.setdefault(owner, len(rank)) * _REF_ORD_STRIDE + int(ord_)
         out.append(
             {
                 "chunk_id": int(cid),
-                "ord": int(ord_),
+                "ref_id": owner,
+                "ord": scoped_ord,
                 "chunk_kind": str(kind),
                 "text": str(text or ""),
                 "section": sec,
@@ -895,6 +921,7 @@ def _process_chunk(
                     caption=caption,
                     vocab=vocab,
                     paper=paper,
+                    anchor_ref_id=chunk["ref_id"],
                     table=table_no,
                     chunk_text=chunk["text"],
                     extraction_run=run_token,
@@ -961,6 +988,7 @@ def _process_chunk(
         chunk_id=chunk["chunk_id"],
         chunk_text=chunk["text"],
         paper_ref_id=paper,
+        anchor_ref_id=chunk["ref_id"],
         vocab=vocab,
         extraction_run=run_token,
         model=model_used,

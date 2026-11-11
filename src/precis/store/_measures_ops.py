@@ -121,6 +121,7 @@ from psycopg.types.json import Jsonb
 from precis.errors import BadInput, NotFound
 from precis.extract.accept import DEFAULT_BAR, DEFAULT_Z
 from precis.store._taxon_ops import _EDGES
+from precis.store.si_links import SI_PDF_ROLE, SI_RELATION
 from precis.taxonomy.measure_units import (
     MINUS_FOLD,
     Conversion,
@@ -385,10 +386,20 @@ _MEASURE_FROM = (
     "LEFT JOIN refs p ON p.ref_id = m.source_ref_id "
     f"{_REBASE_JOIN}"
 )
+#: The paper scope: a row is the paper's when its subject is the paper
+#: or its anchoring chunk lives on the paper — or on a live
+#: ``pdf_role='supplement'`` ref hung ``part-of`` it (the SI chunks
+#: survey_extract reads since gr632957 keep their parent paper's scope).
 _PAPER_SCOPE_SQL = (
     "(m.subject_ref_id = %(paper)s OR EXISTS ("
     "SELECT 1 FROM links al JOIN chunks ac ON ac.chunk_id = al.src_chunk_id "
-    "WHERE al.link_id = m.primary_link_id AND ac.ref_id = %(paper)s))"
+    "WHERE al.link_id = m.primary_link_id AND (ac.ref_id = %(paper)s "
+    "OR ac.ref_id IN ("
+    "SELECT sl.src_ref_id FROM links sl "
+    "JOIN refs sr ON sr.ref_id = sl.src_ref_id AND sr.retired_at IS NULL "
+    f"WHERE sl.dst_ref_id = %(paper)s AND sl.relation = '{SI_RELATION}' "
+    f"AND sl.meta->>'role' = '{SI_PDF_ROLE}' AND sr.pdf_role = '{SI_PDF_ROLE}'"
+    "))))"
 )
 _LIVE_MEASURE_SQL = (
     "m.superseded_by IS NULL AND "

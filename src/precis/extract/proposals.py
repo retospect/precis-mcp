@@ -323,13 +323,19 @@ def build_runs(
     vocab: dict[int, VocabEntry],
     extraction_run: str,
     model: str | None,
+    anchor_ref_id: int | None = None,
 ) -> Outcome:
     """Validate one parsed reply and build its runs.
 
     ``reply`` is the model's ``{"results": [...]}`` object. Each result
     yields a :class:`RunProposal`, a drop record, or a flag; the shape
     errors of the reply itself come back as a single drop.
+    ``paper_ref_id`` is the run's subject ref; ``anchor_ref_id`` is the
+    ref the chunk belongs to — it differs when the chunk comes from the
+    paper's supplement, whose rows still report the paper as their
+    subject (gr632957).
     """
+    anchor_ref = paper_ref_id if anchor_ref_id is None else anchor_ref_id
     out = Outcome()
     index = _anchors.anchor_index([(chunk_id, chunk_text)])
     # Pipe-table bookkeeping for gr512370: a data row with fewer cells
@@ -701,7 +707,7 @@ def build_runs(
                 try:
                     _c, s2, e2 = _resolve(index, chunk_id, in_anchor)
                     in_span = MeasureAnchor(
-                        paper_ref_id, chunk_id, "offsets", [chunk_id, s2, e2]
+                        anchor_ref, chunk_id, "offsets", [chunk_id, s2, e2]
                     )
                 except ValueError:
                     out.flags.append(
@@ -779,7 +785,7 @@ def build_runs(
                 "explicit" if isinstance(raw.get("normalization"), str) else None
             ),
             anchor=MeasureAnchor(
-                paper_ref_id, chunk_id, "offsets", [chunk_id, start, end]
+                anchor_ref, chunk_id, "offsets", [chunk_id, start, end]
             ),
             conditions=conditions or None,
             meta=meta,
