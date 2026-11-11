@@ -945,6 +945,56 @@ def test_a_supersession_is_not_a_duplicate(store: Store, world: dict[str, Any]) 
     assert _row(store, first.output_id)["superseded_by"] == again.output_id
 
 
+def test_a_rejected_rows_duplicate_lands_and_supersedes_it(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # gr639356: a rejected reading must not hold its span — a fixed
+    # extractor's identical proposal lands and supersedes the rejected row;
+    # approved (and unreviewed, pinned above) rows still block.
+    spec = MeasureSpec(
+        world["energy"],
+        "1",
+        world["paper"],
+        reported_unit="eV",
+        anchor=_anchor(world, "s1"),
+    )
+    old = store.insert_measure(spec, actor="reader")
+    store.record_target_review(
+        "measure", old.output_id, actor="checker", verdict="rejected"
+    )
+    new = store.insert_measure(spec, actor="reader")
+    assert new.output_id != old.output_id
+    assert _row(store, old.output_id)["superseded_by"] == new.output_id
+    new_row = _row(store, new.output_id)
+    assert new_row["superseded_by"] is None
+    assert new_row["supersedes"] == old.output_id
+
+    approved = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "2",
+            world["paper"],
+            reported_unit="eV",
+            anchor=_anchor(world, "s2"),
+        ),
+        actor="reader",
+    )
+    store.record_target_review(
+        "measure", approved.output_id, actor="checker", verdict="approved"
+    )
+    with pytest.raises(BadInput, match="duplicate of measure"):
+        store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "2",
+                world["paper"],
+                reported_unit="eV",
+                anchor=_anchor(world, "s2"),
+            ),
+            actor="reader",
+        )
+
+
 # ── slice 8: implausible-value and glyph-damage sanity flags ───────────────
 
 

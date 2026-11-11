@@ -53,7 +53,10 @@ is NOT NULL): the caller mints a ``reaction product`` taxon and labels the row
 **Refusals.** ``tier='measured'`` without an anchor whose chunk is set;
 ``tier='measured'`` with ``source_attribution='cited_work'``; a live output
 row that repeats another's measurand, anchor scheme, span and value (one
-chunk value extracted under two findings is one measure, not two); a unit
+chunk value extracted under two findings is one measure, not two) — unless
+the matched row's newest current review is ``rejected``: a judged-wrong
+reading must not hold its span against a fixed extractor, so the new row
+lands and supersedes it (gr639356); a unit
 with no
 dimension match to the measurand's ``canonical_unit`` (naming both); a
 number with a ``reported_unit`` on a taxon that has no ``canonical_unit``
@@ -895,21 +898,30 @@ class MeasuresMixin:
         spec: MeasureSpec,
         anchor: MeasureAnchor,
         values: tuple[Any, ...],
-    ) -> None:
+    ) -> list[int]:
         """One chunk value extracted under two findings is one measure, not
         two (the pilot's mx212/mx218 pair): a live output row with the same
         measurand, subject, anchor scheme and span, and the same literal or
         parsed value is refused, naming the row. The same span's number about
         a *different* subject ref is a different claim and lands; a
-        supersession of that row is not a duplicate."""
+        supersession of that row is not a duplicate. A match whose newest
+        current review is ``rejected`` does not block either (gr639356): the
+        reading was already judged wrong, so it yields the span — the write
+        supersedes it (the returned ids) and provenance keeps both rows.
+        Unreviewed and approved matches still refuse."""
         rows = c.execute(
             "SELECT m.id, m.literal, m.value_num, m.value_low, m.value_high, "
-            "       m.value_text, m.value_bool "
+            "       m.value_text, m.value_bool, "
+            "       (SELECT r.verdict FROM reviews r "
+            "        WHERE r.target_kind = 'measure' AND r.target_id = m.id "
+            "          AND r.content_sha = precis_target_sha('measure', m.id) "
+            "        ORDER BY r.at DESC, r.review_id DESC LIMIT 1) "
             "FROM measures m JOIN links l ON l.link_id = m.primary_link_id "
             "WHERE m.direction = 'output' AND m.superseded_by IS NULL "
             "  AND m.measurand_ref_id = %s AND m.subject_ref_id = %s "
             "  AND l.src_chunk_id = %s "
-            "  AND m.anchor_scheme = %s AND m.span = %s::jsonb",
+            "  AND m.anchor_scheme = %s AND m.span = %s::jsonb "
+            "ORDER BY m.id FOR UPDATE OF m",
             (
                 spec.measurand_ref_id,
                 spec.subject_ref_id,
@@ -920,12 +932,16 @@ class MeasuresMixin:
         ).fetchall()
         lit = _squash(spec.literal)
         has_value = any(v is not None for v in values)
+        supersede: list[int] = []
         for row in rows:
             if spec.supersedes is not None and int(row[0]) == spec.supersedes:
                 continue
             if _squash(row[1] or "") == lit or (
                 has_value and (row[2], row[3], row[4], row[5], row[6]) == values
             ):
+                if row[7] == "rejected":
+                    supersede.append(int(row[0]))
+                    continue
                 raise BadInput(
                     f"duplicate of measure {int(row[0])}: a live output row "
                     "already carries this measurand's value on the same "
@@ -934,6 +950,7 @@ class MeasuresMixin:
                     "get(kind='measure', id=…) reads it; to replace it, put "
                     "the corrected run with meta={'supersedes': …}",
                 )
+        return supersede
 
     def _sanity_escalations(
         self,
@@ -1298,8 +1315,11 @@ class MeasuresMixin:
         if escalation:
             meta["escalation"] = escalation
 
+        superseded_rejected: list[int] = []
         if direction == "output" and anchor is not None:
-            self._refuse_duplicate_output(c, spec, anchor, (num, low, high, text, flag))
+            superseded_rejected = self._refuse_duplicate_output(
+                c, spec, anchor, (num, low, high, text, flag)
+            )
 
         # evidence edge + computed extraction status
         link_id: int | None = None
@@ -1398,7 +1418,9 @@ class MeasuresMixin:
                     link_id,
                     anchor.scheme if anchor is not None else None,
                     Jsonb(anchor.span) if anchor is not None else None,
-                    spec.supersedes,
+                    spec.supersedes
+                    if spec.supersedes is not None
+                    else (superseded_rejected[-1] if superseded_rejected else None),
                     spec.source_ref_id
                     if spec.source_ref_id is not None
                     else (anchor.paper_ref_id if anchor is not None else None),
@@ -1422,11 +1444,14 @@ class MeasuresMixin:
             ) from exc
         assert row is not None
         new_id = int(row[0])
+        supersede_ids = {*superseded_rejected}
         if spec.supersedes is not None:
+            supersede_ids.add(spec.supersedes)
+        if supersede_ids:
             c.execute(
                 "UPDATE measures SET superseded_by = %s, superseded_at = now() "
-                "WHERE id = %s AND superseded_by IS NULL",
-                (new_id, spec.supersedes),
+                "WHERE id = ANY(%s) AND superseded_by IS NULL",
+                (new_id, list(supersede_ids)),
             )
         return new_id
 
