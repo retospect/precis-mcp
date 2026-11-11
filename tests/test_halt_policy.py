@@ -202,6 +202,36 @@ def test_blocked_halt_names_external_dependency_without_automatic_retry(
     assert "retry_at" not in halt
 
 
+@pytest.mark.parametrize(
+    "blocked_on,expected_tag",
+    [
+        ("infra", "waiting-for:dep-infra"),
+        ("plan-repair", "waiting-for:dep-plan-repair"),
+        ("outage-7", "waiting-for:dep-outage-7"),
+        ("Outage 12", "waiting-for:dep-outage-12"),
+    ],
+)
+def test_blocked_halt_cannot_claim_recovery_managed_waits(
+    store: Store, blocked_on: str, expected_tag: str
+) -> None:
+    """A ``blocked-on:`` name colliding with a recovery-managed park must
+    not mint it: every release path's class check would skip the
+    blocked-class row and no detector scans managed tags, so the todo
+    would park invisibly forever."""
+    parent_id = _mk_parent(store)
+    _run_halt(store, parent_id, "blocked", blocked_on=blocked_on)
+
+    tags = {str(tag) for tag in store.tags_for(parent_id)}
+    assert expected_tag in tags
+    assert "waiting-for:infra" not in tags
+    assert "waiting-for:plan-repair" not in tags
+    assert not any(tag.startswith("waiting-for:outage-") for tag in tags)
+    assert _halt_meta(store, parent_id)["class"] == "blocked"
+
+    advance_halt_recovery(store)
+    assert expected_tag in {str(tag) for tag in store.tags_for(parent_id)}
+
+
 def test_cost_cap_remains_terminal_without_automatic_retry(store: Store) -> None:
     parent_id = _mk_parent(store)
     _run_halt(store, parent_id, "cost-cap")

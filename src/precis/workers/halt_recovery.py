@@ -29,6 +29,10 @@ COOLDOWN_S = 15 * 60
 MAX_COOLDOWN_S = 24 * 60 * 60
 _LOCK_NAME = "precis:halt-recovery"
 _UNCERTAIN = "ask-user:uncertain-halt-outcome"
+#: Probe tick exhaustions that still prove the lane healthy: the tick ran a
+#: full audited budget (max-turns, budget cap, wall-clock timeout) instead
+#: of stopping on a still-broken environment or a quota window.
+_CLEAN_EXHAUSTION = frozenset({"max_turns", "budget", "timeout"})
 
 
 def _lock(conn: Connection) -> bool:
@@ -228,12 +232,18 @@ def _probe_result(
         meta, status = row
         if status not in TERMINAL:
             return None
-        return (
-            status == "succeeded"
-            and not meta.get("halt")
-            and not meta.get("resumed_reason")
-            and not meta.get("recovery_retry_blocked")
-        )
+        if (
+            status != "succeeded"
+            or meta.get("halt")
+            or meta.get("recovery_retry_blocked")
+        ):
+            return False
+        # A routine resumable exhaustion is a healthy tick cut off mid-work
+        # — common on this path, not a probe failure. An environment or
+        # window stop (``no-precis-tools``, ``paused``, an unknown reason)
+        # proves nothing either way and stays inconclusive.
+        reason = meta.get("resumed_reason")
+        return reason is None or reason in _CLEAN_EXHAUSTION
     started = _time(state.get("probe_started_at"))
     return False if started and now >= started + timedelta(minutes=15) else None
 
@@ -336,23 +346,36 @@ def advance_halt_recovery(store: Store) -> None:
                 if row and isinstance(row[0], dict) and row[0].get("class") == "infra":
                     halt = dict(row[0])
                     after = state.get("probe_after_job", 0)
-                    ran = conn.execute(
-                        "SELECT 1 FROM refs WHERE kind = 'job' AND parent_id = %s "
-                        "AND ref_id > %s AND meta->>'job_type' = 'plan_tick' LIMIT 1",
+                    probe_job = conn.execute(
+                        "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s "
+                        "AND ref_id > %s AND meta->>'job_type' = 'plan_tick' "
+                        "ORDER BY ref_id LIMIT 1",
                         (probe, after),
                     ).fetchone()
                     fresh_receipt = (
                         isinstance(halt.get("job_ref"), int) and halt["job_ref"] > after
                     )
-                    if ran and (
-                        not fresh_receipt or not _receipt_safe(conn, probe, halt)
-                    ):
-                        # A failed/exhausted probe without a new safe halt
-                        # receipt must not recycle its pre-probe receipt.
+                    probe_meta = probe_job[0] if probe_job else None
+                    receipt_ok = _receipt_safe(conn, probe, halt)
+                    uncertain = probe_job is not None and (
+                        not receipt_ok
+                        or (
+                            not fresh_receipt
+                            and isinstance(probe_meta, dict)
+                            and bool(probe_meta.get("recovery_retry_blocked"))
+                        )
+                    )
+                    if uncertain:
+                        # A probe whose own stream audit failed, or a receipt
+                        # that can no longer be verified, still needs review.
                         store.add_tag(
                             probe, Tag.open(_UNCERTAIN), set_by="system", conn=conn
                         )
-                    elif _receipt_safe(conn, probe, halt):
+                    elif receipt_ok:
+                        # An inconclusive probe (env-broken resume, window
+                        # pause, or a job that never minted) rejoins the
+                        # cohort on its still-valid receipt instead of
+                        # parking clean work for review.
                         store.remove_tag(
                             probe, Tag.open("waiting-for:infra"), conn=conn
                         )

@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 
 INFRA_RETRY_DELAY = timedelta(minutes=15)
 UNCERTAIN_HALT_TAG = "ask-user:uncertain-halt-outcome"
+#: ``waiting-for:`` targets the recovery pass owns (``infra``,
+#: ``plan-repair``, and the ``outage-<alert>`` cohort prefix). Every
+#: release path matches them with a halt-class check a ``blocked`` park
+#: never satisfies, and no detector scans them — an agent-named dependency
+#: colliding with one would park invisibly forever, so ``handle_halt``
+#: mints it outside the managed space instead.
+_MANAGED_WAIT_TARGETS = frozenset({"infra", "plan-repair"})
 
 
 def block_reclaimed_recovery(store: Store, parent_id: int, job_ref_id: int) -> bool:
@@ -167,8 +174,10 @@ def handle_halt(
     elif halt_class == "blocked":
         target = re.sub(
             r"[^a-z0-9_.-]+", "-", (conclusion.blocked_on or "external").lower()
-        )
-        tag = f"waiting-for:{target.strip('-')[:100] or 'external'}"
+        ).strip("-")[:100]
+        if target in _MANAGED_WAIT_TARGETS or target.startswith("outage-"):
+            target = f"dep-{target}"
+        tag = f"waiting-for:{target or 'external'}"
     elif halt_class == "misconceived":
         if repair_attempts < 1:
             halt["repair_attempts"] = 1

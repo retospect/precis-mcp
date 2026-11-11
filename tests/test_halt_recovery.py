@@ -266,7 +266,8 @@ def test_failed_infra_probe_rejoins_cohort_and_doubles_cooldown(store: Store) ->
 
 
 @pytest.mark.parametrize(
-    "result_meta", [{"resumed_reason": "timeout"}, {"halt": {"class": "blocked"}}]
+    "result_meta",
+    [{"resumed_reason": "no-precis-tools"}, {"halt": {"class": "blocked"}}],
 )
 def test_success_status_without_clean_probe_result_does_not_close(
     store: Store, result_meta: dict[str, Any]
@@ -333,20 +334,87 @@ def test_completed_probe_cannot_be_minted_again_before_maintenance(
         assert recovery.infra_dispatch_allowed(conn, probe) is False
 
 
-def test_probe_exhaustion_cannot_reuse_its_preprobe_safety_receipt(
-    store: Store,
+@pytest.mark.parametrize("reason", ["max_turns", "budget", "timeout"])
+def test_clean_exhausted_probe_closes_breaker_and_releases_cohort(
+    store: Store, reason: str
 ) -> None:
+    """A routine resumable exhaustion ran a full audited tick: the lane is
+    healthy and resumes are common on this path, so the probe closes the
+    breaker and the parent rejoins normal work — no review hold."""
+    parents, alert_id = _trip(store)
+    probe = _probe(store, alert_id)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Probe resumed after a clean exhaustion",
+        parent_id=probe,
+        meta={"job_type": "plan_tick", "resumed_reason": reason},
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+
+    recovery.advance_halt_recovery(store)
+    recovery.advance_halt_recovery(store)
+
+    alerts = _alerts(store)
+    assert alerts[0][2] is not None
+    assert alerts[0][1]["breaker_state"] == "closed"
+    assert "ask-user:uncertain-halt-outcome" not in _tags(store, probe)
+    for parent in parents:
+        assert not any(
+            tag.startswith("waiting-for:outage-") for tag in _tags(store, parent)
+        )
+
+
+@pytest.mark.parametrize("reason", ["paused", "no-precis-tools"])
+def test_inconclusive_probe_rejoins_cohort_without_review_hold(
+    store: Store, reason: str
+) -> None:
+    """An env-broken or window-paused probe proves nothing either way: the
+    breaker stays open, but the parent rejoins the cohort on its still-valid
+    receipt instead of parking clean work for human review."""
     _, alert_id = _trip(store)
     probe = _probe(store, alert_id)
     job = store.insert_ref(
         kind="job",
         slug=None,
-        title="Probe exhausted after uncertain write",
+        title="Inconclusive probe",
         parent_id=probe,
-        meta={"job_type": "plan_tick", "resumed_reason": "timeout"},
+        meta={"job_type": "plan_tick", "resumed_reason": reason},
     )
     store.add_tag(job.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+
     recovery.advance_halt_recovery(store)
+
+    state = _meta(store, alert_id)
+    assert state["breaker_state"] == "open"
+    assert state["cooldown_s"] == 2 * recovery.COOLDOWN_S
+    assert f"waiting-for:outage-{alert_id}" in _tags(store, probe)
+    assert "ask-user:uncertain-halt-outcome" not in _tags(store, probe)
+
+
+def test_failed_probe_with_flagged_audit_keeps_uncertain_hold(
+    store: Store,
+) -> None:
+    """A probe whose own stream audit failed keeps the review hold the
+    runner already applied — a clean pre-probe receipt cannot cover an
+    uncertain write the probe itself made."""
+    _, alert_id = _trip(store)
+    probe = _probe(store, alert_id)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Probe interrupted after an uncertain write",
+        parent_id=probe,
+        meta={
+            "job_type": "plan_tick",
+            "recovery_retry_blocked": "complete stream audit unavailable",
+        },
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+
+    recovery.advance_halt_recovery(store)
+
+    assert _meta(store, alert_id)["breaker_state"] == "open"
     assert "ask-user:uncertain-halt-outcome" in _tags(store, probe)
     assert f"waiting-for:outage-{alert_id}" not in _tags(store, probe)
 
