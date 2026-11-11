@@ -280,7 +280,9 @@ off that gap until it closes.
 12. **backlog/cad-assembly-checklist-seed-items.md**
 13. **backlog/cad-diagnose-apply-loop.md**
 14. **backlog/printable-atomic-models.md**
-15. **backlog/se-fret-round-2.md**
+15. **spec `me628837`** — se optical domain round 2: placement solver,
+    DRC fold-in, relay chains and the regimes round 1 declines to model
+    (the retired backlog/se-fret-round-2.md).
 16. **spec `me628512` §photoswitch (`me630037`, `me630042`,
     `me630039`, `me630035`, `me630036`, `me630041`)** — bistable
     block states, the spectral channel budget and photo-charge
