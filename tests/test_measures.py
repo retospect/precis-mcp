@@ -995,6 +995,65 @@ def test_a_rejected_rows_duplicate_lands_and_supersedes_it(
         )
 
 
+def test_a_rejected_row_with_a_corrected_label_yields_but_keeps_its_row(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # td639554 review: re-extraction may fix the subject label along with
+    # the reading. The rejected row then is not the same claim under the
+    # frozen trigger's same-subject rule — the write lands beside it;
+    # superseding it would trip precis_measures_frozen and roll back.
+    old = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            reported_unit="eV",
+            subject="Cu NWA",
+            anchor=_anchor(world, "s1"),
+        ),
+        actor="reader",
+    )
+    store.record_target_review(
+        "measure", old.output_id, actor="checker", verdict="rejected"
+    )
+    new = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            reported_unit="eV",
+            subject="Cu nanowire array",
+            anchor=_anchor(world, "s1"),
+        ),
+        actor="reader",
+    )
+    assert new.output_id != old.output_id
+    assert _row(store, old.output_id)["superseded_by"] is None
+    new_row = _row(store, new.output_id)
+    assert new_row["superseded_by"] is None
+    assert new_row["supersedes"] is None
+
+    # a later same-label re-extraction supersedes only the same-label
+    # rejected row — the re-labelled one keeps its row either way.
+    store.record_target_review(
+        "measure", new.output_id, actor="checker", verdict="rejected"
+    )
+    third = store.insert_measure(
+        MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            reported_unit="eV",
+            subject="Cu NWA",
+            anchor=_anchor(world, "s1"),
+        ),
+        actor="reader",
+    )
+    assert _row(store, old.output_id)["superseded_by"] == third.output_id
+    assert _row(store, new.output_id)["superseded_by"] is None
+    assert _row(store, third.output_id)["supersedes"] == old.output_id
+
+
 # ── slice 8: implausible-value and glyph-damage sanity flags ───────────────
 
 

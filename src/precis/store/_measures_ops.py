@@ -56,7 +56,8 @@ row that repeats another's measurand, anchor scheme, span and value (one
 chunk value extracted under two findings is one measure, not two) — unless
 the matched row's newest current review is ``rejected``: a judged-wrong
 reading must not hold its span against a fixed extractor, so the new row
-lands and supersedes it (gr639356); a unit
+lands and supersedes it when it states the same subject label (gr639356);
+a unit
 with no
 dimension match to the measurand's ``canonical_unit`` (naming both); a
 number with a ``reported_unit`` on a taxon that has no ``canonical_unit``
@@ -907,11 +908,13 @@ class MeasuresMixin:
         supersession of that row is not a duplicate. A match whose newest
         current review is ``rejected`` does not block either (gr639356): the
         reading was already judged wrong, so it yields the span — the write
-        supersedes it (the returned ids) and provenance keeps both rows.
-        Unreviewed and approved matches still refuse."""
+        supersedes it (the returned ids) when it states the same subject
+        label (``precis_measures_frozen`` counts the label as part of the
+        claim, so a re-labelled rejected row keeps its row) and provenance
+        keeps both rows. Unreviewed and approved matches still refuse."""
         rows = c.execute(
             "SELECT m.id, m.literal, m.value_num, m.value_low, m.value_high, "
-            "       m.value_text, m.value_bool, "
+            "       m.value_text, m.value_bool, m.subject, "
             "       (SELECT r.verdict FROM reviews r "
             "        WHERE r.target_kind = 'measure' AND r.target_id = m.id "
             "          AND r.content_sha = precis_target_sha('measure', m.id) "
@@ -939,8 +942,13 @@ class MeasuresMixin:
             if _squash(row[1] or "") == lit or (
                 has_value and (row[2], row[3], row[4], row[5], row[6]) == values
             ):
-                if row[7] == "rejected":
-                    supersede.append(int(row[0]))
+                if row[8] == "rejected":
+                    # a rejected row yields the span, but the frozen
+                    # trigger lets a supersession land only on a row
+                    # stating the same number — a corrected subject label
+                    # makes this a new claim, not a replacement
+                    if row[7] == spec.subject:
+                        supersede.append(int(row[0]))
                     continue
                 raise BadInput(
                     f"duplicate of measure {int(row[0])}: a live output row "
