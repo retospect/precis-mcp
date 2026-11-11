@@ -47,7 +47,8 @@ SLICE_VERSION = 1
 
 #: Named anchors from the work that showed prod-only bugs on 2026-10-15:
 #: quest qu164903 and two of its pathways (pourbaix map blend), pcb
-#: taz15-blank (net classes), memory root me474312 and its seven hubs.
+#: taz15-blank (net classes), memory root me474312 and its hubs — the
+#: seven subject hubs plus prior-art hub me608724 (gr610794).
 ANCHORS: tuple[int, ...] = (
     164903,
     483780,
@@ -61,6 +62,7 @@ ANCHORS: tuple[int, ...] = (
     477658,
     477659,
     477660,
+    608724,
 )
 #: Link neighbours pulled in per anchor (newest links first).
 ANCHOR_HOP = 40
