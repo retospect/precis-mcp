@@ -12,6 +12,15 @@ from pathlib import Path
 # made-up entity names, planted as one sentence in a host paragraph (exact
 # character span recorded) and as a memory node, and asked back at a
 # controlled paraphrase level with the query/plant lexical overlap recorded.
+#
+# Seed ranges (the planted analogue of the QASPER train+dev / test split):
+# seeds 0-99 are the dev range, free to tune on; seeds >= 1000 are the frozen
+# held-out range (HELDOUT_SEED_MIN), used only for headline tables and never
+# while tuning. 100-999 is unassigned. `build` refuses nothing; `--seed` is
+# the caller's choice, so the range is a convention enforced by review and by
+# bench/results/README.md.
+HELDOUT_SEED_MIN = 1000
+DEV_SEED_MAX = 99
 
 STOPWORDS = frozenset(
     [

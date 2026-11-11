@@ -18,6 +18,15 @@
         "qasper-train-v0.3.json"
       ],
       "bytes": 10835856
+    },
+    "heldout_archive": {
+      "url": "https://qasper-dataset.s3.us-west-2.amazonaws.com/qasper-test-and-evaluator-v0.3.tgz",
+      "name": "qasper-test-and-evaluator-v0.3.tgz",
+      "sha256": "72a52a41193e2838b8074f80ac074b94f956b84886c36a61c58a7df4171bdd72",
+      "members": [
+        "qasper-test-v0.3.json"
+      ],
+      "bytes": 3865061
     }
   },
   "selection": {
@@ -28,11 +37,24 @@
     "pool_size": 1169,
     "tier0_size": 142,
     "tier1_size": 60,
-    "sha256_of": "paper JSON, sorted keys, compact separators, ensure_ascii=False, UTF-8"
+    "sha256_of": "paper JSON, sorted keys, compact separators, ensure_ascii=False, UTF-8",
+    "heldout": {
+      "pool": "test",
+      "pool_size": 416,
+      "tier_sizes": {
+        "0": 83,
+        "1": 6,
+        "2": 11,
+        "3": 0
+      },
+      "tiers": "tiers 0/1 as above (>= 5 questions); the test split has only 89 such papers, so tiers 2/3 are the same split over papers with >= 4 questions, ranked after them",
+      "note": "same rank as quick/full, over the test split; frozen, never tuned on"
+    }
   },
   "corpus_sha256": {
     "quick": "be8e8d4d688b0a55790ec42eb564d07b4cc88920dcd52e422e40fef8f68dbdff",
-    "full": "a58b9b8bb792a0f759d1c1176dcb2400bc8ee7d4a4a1ba193a7a58d9005b7fea"
+    "full": "a58b9b8bb792a0f759d1c1176dcb2400bc8ee7d4a4a1ba193a7a58d9005b7fea",
+    "heldout": "8e9a2cda6ac80232968dd28b8a0118ce980dec2bbaa97934c18b47f63a81c1c6"
   },
   "quick": [
     {
@@ -2334,6 +2356,1008 @@
       "n_questions": 7,
       "tier": 1,
       "sha256": "8fe2b9fe418a8d323b1537cd3fd731dffac443744cb9b527bbc31f892c1b4254",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    }
+  ],
+  "heldout": [
+    {
+      "qasper_id": "1806.07042",
+      "split": "test",
+      "title": "Response Generation by Context-aware Prototype Editing",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "7b4b1b3ad93316487f3a4c2a0667fba188b121a4d1743fd21f3ad46d83fec837",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2002.00175",
+      "split": "test",
+      "title": "UIT-ViIC: A Dataset for the First Evaluation on Vietnamese Image Captioning",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "7c8e82104863f09d2533638ee85d3beebba975a6aa1ee5f7bd24d3d20b7979de",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1803.08419",
+      "split": "test",
+      "title": "The Rapidly Changing Landscape of Conversational Agents",
+      "n_questions": 8,
+      "tier": 0,
+      "sha256": "438c519c826507d46a9d5743e7b96f17ea5fad1f5e22dc5216ba6037caff866b",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1708.01065",
+      "split": "test",
+      "title": "Reader-Aware Multi-Document Summarization: An Enhanced Model and The First Dataset",
+      "n_questions": 8,
+      "tier": 0,
+      "sha256": "e3f9e0ebcc99fdd0a600b094bf5e18423b438e46631353426f1bae33fdf173bb",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1702.02584",
+      "split": "test",
+      "title": "Predicting Audience's Laughter Using Convolutional Neural Network",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "79c3740b82682d55338d30a6bac0814535ca76762713334716c897ada20d6349",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1903.10318",
+      "split": "test",
+      "title": "Fine-tune BERT for Extractive Summarization",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "57b21054e705f057e6076aad3ec2d40356d5571611fd9e030ce3d406cde4090e",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1703.10152",
+      "split": "test",
+      "title": "Automatic Argumentative-Zoning Using Word2vec",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "8f6695c5cc1cf848b950cdaab16ba17a7a58ed0071a22d8a4c8819b908906b85",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1706.02427",
+      "split": "test",
+      "title": "Content-Based Table Retrieval for Web Queries",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "5e27239274d13b668a3b194db94645707e740f8ec12f9bffd680502ea40b6bbc",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.03355",
+      "split": "test",
+      "title": "An Interactive Machine Translation Framework for Modernizing Historical Documents",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "c518e1eee733eb12a6d2b089bf013bcbfd5adcfeba5866e8de368ab4639eef6d",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1908.11053",
+      "split": "test",
+      "title": "Leveraging Frequent Query Substructures to Generate Formal Queries for Complex Question Answering",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "40e88852305cd7d89063b59ee23edf1e5326e5dad1ac056f2009e2063086fe21",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1701.03578",
+      "split": "test",
+      "title": "Efficient Transfer Learning Schemes for Personalized Language Modeling using Recurrent Neural Network",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "4ccba009acf536ac2d3c49aa2e3ec0ae027e111f1b239af886db23f6f6484714",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.01340",
+      "split": "test",
+      "title": "TexTrolls: Identifying Russian Trolls on Twitter from a Textual Perspective",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "034ee2bf54da8623ad92567a2619812fe3c1818ed33b4d5e9ad39edad60b8d1f",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.07873",
+      "split": "test",
+      "title": "Generating Black-Box Adversarial Examples for Text Classifiers Using a Deep Reinforced Model",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "cb175d82cdc52295378ec26d383ff3d4032f58a84eae3c833df29bb1e0ca33d3",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1709.05295",
+      "split": "test",
+      "title": "And That's A Fact: Distinguishing Factual and Emotional Argumentation in Online Dialogue",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "68e32f95ad85e1ac98606f3aeac6f44ff42334a97bb48e1ca3dd2f9b2fb89a80",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.01214",
+      "split": "test",
+      "title": "A Richly Annotated Corpus for Different Tasks in Automated Fact-Checking",
+      "n_questions": 8,
+      "tier": 0,
+      "sha256": "59339b537b28b488eadf027854e958e827c344f7d510f233069e7be424f9376c",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.05652",
+      "split": "test",
+      "title": "Relative contributions of Shakespeare and Fletcher in Henry VIII: An Analysis Based on Most Frequent Words and Most Frequent Rhythmic Patterns",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "54e450bf20c13cdbf64985d1df74300e76a504e7b73e094b2051bff24a84ff1b",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2004.03090",
+      "split": "test",
+      "title": "Interview: A Large-Scale Open-Source Corpus of Media Dialog",
+      "n_questions": 10,
+      "tier": 0,
+      "sha256": "e373046c14dd4875d8e6af9102dc1867096f43aca6610a34df5adf6d41a8dab3",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1906.01502",
+      "split": "test",
+      "title": "How multilingual is Multilingual BERT?",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "6f5f5f65afbade6526d49ed9a7be103c10b15f84908f605a1d027565f70d1ae6",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.12893",
+      "split": "test",
+      "title": "GitHub Typo Corpus: A Large-Scale Multilingual Dataset of Misspellings and Grammatical Errors",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "d893b70f989c9f15e399bbb24de888d9557c85e83d8278f9964a53c4c396c97e",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1605.05195",
+      "split": "test",
+      "title": "Enhanced Twitter Sentiment Classification Using Contextual Information",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "e869f367f0881ddbc5aeed6c5f762fdf07a14ae6d38807ec442ab520a030040a",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2003.11687",
+      "split": "test",
+      "title": "Common-Knowledge Concept Recognition for SEVA",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "d5953acb29cba8e219df313ba6548a9025ae1992734b71e006b81bc3c5fcb436",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1905.07562",
+      "split": "test",
+      "title": "Human-like machine thinking: Language guided imagination",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "6fefcbd320baa5b4541f7c6d473abb6f1d943324b1b4c55369c9aa5fe2a632bb",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1901.05389",
+      "split": "test",
+      "title": "Location, Occupation, and Semantics based Socioeconomic Status Inference on Twitter",
+      "n_questions": 8,
+      "tier": 0,
+      "sha256": "d7143f17d0b7e515ae6a192b36d3c1c4b91eb9f9df08a3aef81c3fd3499abc02",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.09247",
+      "split": "test",
+      "title": "How to Ask Better Questions? A Large-Scale Multi-Domain Dataset for Rewriting Ill-Formed Questions",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "96e563b4aa07ff4cdc5b00480a0da6f9c82419bd2ef86388a16b75f513c0c681",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.10401",
+      "split": "test",
+      "title": "A Transformer-based approach to Irony and Sarcasm detection",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "a89b90e2205e192bb5c475cba1bfaee650fe10f816d55dabf02a4e59a3a82fa4",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.12559",
+      "split": "test",
+      "title": "KPTimes: A Large-Scale Dataset for Keyphrase Generation on News Documents",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "7b7b01bab4e1d8ae5959ad64afa637cd2a4f387a96f6fae791c0c60b7cbf78dc",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.12203",
+      "split": "test",
+      "title": "Do Sentence Interactions Matter? Leveraging Sentence Level Representations for Fake News Classification",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "51feea95b98b0614d872eba2d9132918d8394394fe64c5444b48dc18fbe47b47",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1809.08899",
+      "split": "test",
+      "title": "Neural network approach to classifying alarming student responses to online assessment",
+      "n_questions": 8,
+      "tier": 0,
+      "sha256": "cf419627f330c83f09af895947173b827a6e0f911b9d00e7d9c7fe3dcc264a92",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2003.07459",
+      "split": "test",
+      "title": "Offensive Language Identification in Greek",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "6cb8cc6c49c7f5de3a34cf0527cd19bd5549bd2f2291313b47c8de76ac1e0ae0",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1805.04833",
+      "split": "test",
+      "title": "Hierarchical Neural Story Generation",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "f8e12bb8020996bae02984c1b115933f932560240a94646167225fa26e98a333",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1710.11027",
+      "split": "test",
+      "title": "Named Entity Recognition in Twitter using Images and Text",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "96f56caaa5474b457bd2c1d54f7523d0563e7075f1c6614154e3739085e0933b",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1806.03369",
+      "split": "test",
+      "title": "#SarcasmDetection is soooo general! Towards a Domain-Independent Approach for Detecting Sarcasm",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "a43864511009d949f139ea70b42c3bf21df501130d80346582eac02e4decbf5e",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1708.05482",
+      "split": "test",
+      "title": "A Question Answering Approach to Emotion Cause Extraction",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "be32d906f393ae88d097ed5aa67c25c06b5066a8b245497645ffb9253a79dc4d",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1707.07568",
+      "split": "test",
+      "title": "CAp 2017 challenge: Twitter Named Entity Recognition",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "69d91f6c1f3c16378d33ee7b01a5b1054eb4d8e438b4a3a2ff35e0b563149b49",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1805.09960",
+      "split": "test",
+      "title": "Phrase Table as Recommendation Memory for Neural Machine Translation",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "6f63fbe9a813a1b5c6369e7a7fc6e026fabd73a7435652b5233796b7fab26652",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1611.06322",
+      "split": "test",
+      "title": "Spotting Rumors via Novelty Detection",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "d0776126ebc2b1c7449c39c3f1efe333916ef4d03306a94c3d503ad3dac72e4d",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.09070",
+      "split": "test",
+      "title": "Look, Read and Enrich - Learning from Scientific Figures and their Captions",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "1e9911a07dcc34aa26dc442dc7487ca393d2e7f3c19819a4b13cfef20df3be1e",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.11025",
+      "split": "test",
+      "title": "Women, politics and Twitter: Using machine learning to change the discourse",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "427930cc4fb0205f99225b5f742347ff2c6b689daac71b07acea25455b5c536a",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1801.05617",
+      "split": "test",
+      "title": "Automatic Detection of Cyberbullying in Social Media Text",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "8b74579ccc8a2b92cdb75db7d1d835120a3777311611e41769e5d05bad06537a",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1704.08390",
+      "split": "test",
+      "title": "Duluth at SemEval-2017 Task 6: Language Models in Humor Detection",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "f21395ef7e17b8fccf8f40aabc7fc53a5bf6ed43c7bb5093bce4b95d3dd8d2f5",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.07973",
+      "split": "test",
+      "title": "Universal Text Representation from BERT: An Empirical Study",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "826ab0b2ad6c67fe73e9e240cf9046830dbde2aa17e65f85b5bec164fb3727e1",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1906.04236",
+      "split": "test",
+      "title": "Identifying Visible Actions in Lifestyle Vlogs",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "624bab68e6d85f55abfc9cc36ae5f5261c8a14e32d97b586f10ff671c4e274e5",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1603.09381",
+      "split": "test",
+      "title": "Clinical Information Extraction via Convolutional Neural Network",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "275c15c67be7f48a5ac6d0e461955ec2402a7c70646cc462d820264a04121f6b",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2003.13028",
+      "split": "test",
+      "title": "Abstractive Summarization with Combination of Pre-trained Sequence-to-Sequence and Saliency Models",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "904498b7156a746dd556e9d7d86ad8ecb815d20acc5a65d2fef469e2236592ee",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1811.01183",
+      "split": "test",
+      "title": "Unsupervised Identification of Study Descriptors in Toxicology Research: An Experimental Study",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "b5797f1a127abe55cd0dba326d0ae7db8672f914497d3755c3cd2058692a9f12",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1708.05521",
+      "split": "test",
+      "title": "EmoAtt at EmoInt-2017: Inner attention sentence embedding for Emotion Intensity",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "a65e3b494eee9d9119344dee4da7dc6c287ea537e9831968dbc6d8bcf8f62097",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1804.07445",
+      "split": "test",
+      "title": "Sentence Simplification with Memory-Augmented Neural Networks",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "ae1f69e98f17ec87ed481560c8aba195aaa0da77c78d1bfa845ef805de4343e4",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2003.12660",
+      "split": "test",
+      "title": "Towards Supervised and Unsupervised Neural Machine Translation Baselines for Nigerian Pidgin",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "cb8b1cad04d964945fcceb07181a9443f06073b979d5b6f43c362d613e9a51b5",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1908.10001",
+      "split": "test",
+      "title": "Real-World Conversational AI for Hotel Bookings",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "86f708e96f9681188c6961fac3d8f3cbe04bca5c04ca743e4b9109702762d115",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1709.09749",
+      "split": "test",
+      "title": "KeyVec: Key-semantics Preserving Document Representations",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "2c7bc6cfc1625f333f2d2264a0789b6d26eb1bc0f4facdfd95d76257c49779cf",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.14589",
+      "split": "test",
+      "title": "Machine Translation of Restaurant Reviews: New Corpus for Domain Adaptation and Robustness",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "296f6a6e3a73530c2886560e201667a7982a981a6e8e0e11d9d22cfcab891e13",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2003.09244",
+      "split": "test",
+      "title": "Language Technology Programme for Icelandic 2019-2023",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "c71c4f8ac30273d66ae777fa78644cd021656a87c3adb5e5f51273385761f17f",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1906.01010",
+      "split": "test",
+      "title": "A computational linguistic study of personal recovery in bipolar disorder",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "ac6b4f4f891c76143081a23569ae3806d0123277002659555ed0e98e5c74031e",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1912.02866",
+      "split": "test",
+      "title": "Classifying Diagrams and Their Parts using Graph Neural Networks: A Comparison of Crowd-Sourced and Expert Annotations",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "767550904e8ec3bc435b3e7b5583427b748832cd67b1bad448e7d0e20b749429",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1906.05506",
+      "split": "test",
+      "title": "Character n-gram Embeddings to Improve RNN Language Models",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "16a5440dc02125ccaea0b80b8930e54eeb11aa80185af6212c7e54b117d4d505",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.06815",
+      "split": "test",
+      "title": "Experiments in Detecting Persuasion Techniques in the News",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "d179d3e2daf0967445391f897019ed067fa6bfc04e75bf0247038c53eb84c86d",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2004.02334",
+      "split": "test",
+      "title": "Neural Machine Translation with Imbalanced Classes",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "cde6af12b8cfba0b9321285b6c01b9d9172529115248131abd90e905a89d3ce3",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1808.07231",
+      "split": "test",
+      "title": "Reducing Gender Bias in Abusive Language Detection",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "d6a9c772ca1860d644f53f9a6cd4873c7d956431cf0f6cb757f93a2f0643c63a",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1803.05160",
+      "split": "test",
+      "title": "How to evaluate sentiment classifiers for Twitter time-ordered data?",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "639f91e0a33e921502cd1c46c733f7672c202dabd12d96c869d6feae956af2dc",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.06708",
+      "split": "test",
+      "title": "Hint-Based Training for Non-Autoregressive Machine Translation",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "766d77491a8e33dd50ec2eddd21e9d2f1a0130db505c695d62d658c978f6d965",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1603.08868",
+      "split": "test",
+      "title": "A Readable Read: Automatic Assessment of Language Learning Materials based on Linguistic Complexity",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "9512b665d69eec4ef04e1a1df9bc43eabfd04cff0e982d3de2b6016fd6ad3ce2",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1908.07491",
+      "split": "test",
+      "title": "Controversy in Context",
+      "n_questions": 8,
+      "tier": 0,
+      "sha256": "1db47f00443186d2e8d911e83460e1fa5d26eb15a8d17d5286fef7a744d35422",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1905.08067",
+      "split": "test",
+      "title": "Understanding the Radical Mind: Identifying Signals to Detect Extremist Content on Twitter",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "bc75736500371f9d6016d0ad78e385d8f35e22df46d2b5177ddc0650360dfa16",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.02747",
+      "split": "test",
+      "title": "Query-bag Matching with Mutual Coverage for Information-seeking Conversations in E-commerce",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "fd3b6fcb5845f24e9881df171eb11ffec29a5dd8e857b394842c3cf255ccf699",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1806.09652",
+      "split": "test",
+      "title": "Neural Machine Translation for Low Resource Languages using Bilingual Lexicon Induced from Comparable Corpora",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "bd7736535d76d130088abfd62dd0748c66ec8695c26ab0b5e62fc4e324007a2a",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1803.06745",
+      "split": "test",
+      "title": "Sentiment Analysis of Code-Mixed Indian Languages: An Overview of SAIL_Code-Mixed Shared Task @ICON-2017",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "199f73a02c0c097d8ddad6f1aeee8c216465dfbe8b75a77340923bbde1dc71d1",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1605.05156",
+      "split": "test",
+      "title": "Tweet Acts: A Speech Act Classifier for Twitter",
+      "n_questions": 9,
+      "tier": 0,
+      "sha256": "f45cd451944dc1ad7cff008f8dee8a91b4bad85032d5fb655a11519a37685b45",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1906.11085",
+      "split": "test",
+      "title": "Enhancing PIO Element Detection in Medical Text Using Contextualized Embedding",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "842cd42c3030ba6c85cadf1a3f245e1fdbc601e42c8d886c5ddbd9687c554ebb",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.12237",
+      "split": "test",
+      "title": "SAMSum Corpus: A Human-annotated Dialogue Dataset for Abstractive Summarization",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "7c3dc8fbcc022835a49e24a479b1aeecc639d8374c98d4367d7b5ed7c2eb47b7",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1603.00957",
+      "split": "test",
+      "title": "Question Answering on Freebase via Relation Extraction and Textual Evidence",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "1fe3edbb6c2aeba1d1a4e0162a1a5dfd3009143d4cbac259971a0b25aa709986",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.01860",
+      "split": "test",
+      "title": "Visual Question Answering using Deep Learning: A Survey and Performance Analysis",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "a1b71bc15d2e91d89f587b850af03ac4bb2523d9c0032d31e93598c6f6866374",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2001.11316",
+      "split": "test",
+      "title": "Adversarial Training for Aspect-Based Sentiment Analysis with BERT",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "ec5aa15b3b369202e1e5b037705202a98ce6183b05802693952298e747bb23d2",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1809.03695",
+      "split": "test",
+      "title": "Evaluating Multimodal Representations on Sentence Similarity: vSTS, Visual Semantic Textual Similarity Dataset",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "e6c658886fbf8b5262c3687c8a3170a9c23864ec1d090f7dad8163100e8ab894",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1907.08540",
+      "split": "test",
+      "title": "Predicting Human Activities from User-Generated Content",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "0cb7791d92110e8c4830043bbd57f23224d28b69d8363ac855a9e8a4f78711cc",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1805.04558",
+      "split": "test",
+      "title": "NRC-Canada at SMM4H Shared Task: Classifying Tweets Mentioning Adverse Drug Reactions and Medication Intake",
+      "n_questions": 7,
+      "tier": 0,
+      "sha256": "d4a0a128214ff9b7ae779c925a4a9c2bd1bedfe649da4921976f0cd8e1b08db6",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.00871",
+      "split": "test",
+      "title": "It's All in the Name: Mitigating Gender Bias with Name-Based Counterfactual Data Substitution",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "15dbd54fa4500287e03eff5a4bc8ef1c51fa843010caf671b402d253b2dc7143",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.04128",
+      "split": "test",
+      "title": "A hybrid text normalization system using multi-head self-attention for mandarin",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "3678b2647ed1181c29a887cc108fc9df49999f5a1efb9b113999226c40c8eb57",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2004.01820",
+      "split": "test",
+      "title": "Aggressive, Repetitive, Intentional, Visible, and Imbalanced: Refining Representations for Cyberbullying Classification",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "6e447027d1ce5f02e4ffcea56acc5b0f169c9a4d3fdd2f80d62509ea74c5c9fa",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1908.10461",
+      "split": "test",
+      "title": "A survey of cross-lingual features for zero-shot cross-lingual semantic parsing",
+      "n_questions": 6,
+      "tier": 0,
+      "sha256": "ee983ea04c7dec56ef4d5a4ddc96f22757b84b6947a484d1d54e02e2a1df1355",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.01160",
+      "split": "test",
+      "title": "Identifying Nuances in Fake News vs. Satire: Using Semantic and Linguistic Cues",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "c904ed7c827ff72e7f4d5f899c0b95699b8dc071be08ce987dd44aa8b544ac6e",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1809.08935",
+      "split": "test",
+      "title": "Lexical Bias In Essay Level Prediction",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "86fe7928ed35420c2e30c187d136156fc330833a7d3fd051e3855b325a8f5ab8",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1908.08917",
+      "split": "test",
+      "title": "A Lost Croatian Cybernetic Machine Translation Program",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "8166ee5bd1bf9989ce0d365a25e1d167aae468cd2457d35379f6ac4fe7ff4671",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1707.05589",
+      "split": "test",
+      "title": "On the State of the Art of Evaluation in Neural Language Models",
+      "n_questions": 5,
+      "tier": 0,
+      "sha256": "814c20619a9f58bb6a5419b199ab22b32a2277edbdb4cd518f3df4c46d74a52b",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1905.08392",
+      "split": "test",
+      "title": "A Causality-Guided Prediction of the TED Talk Ratings from the Speech-Transcripts using Neural Networks",
+      "n_questions": 7,
+      "tier": 1,
+      "sha256": "168db190daef28f1ab7480c89af10b8df4aa74b78c012e4210da851ff421215a",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1911.03642",
+      "split": "test",
+      "title": "Towards Understanding Gender Bias in Relation Extraction",
+      "n_questions": 5,
+      "tier": 1,
+      "sha256": "5a49f3c950f90900cdba0978ad7af49549d4a41f0d831bebd2ff35c23ccec269",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1812.00382",
+      "split": "test",
+      "title": "Improved and Robust Controversy Detection in General Web Pages Using Semantic Approaches under Large Scale Conditions",
+      "n_questions": 5,
+      "tier": 1,
+      "sha256": "dc1c160c8ace0bb9ccceda1467eaa8a4c56d225d37026920ce5e763d588c0f12",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1710.11334",
+      "split": "test",
+      "title": "Shallow Discourse Parsing with Maximum Entropy Model",
+      "n_questions": 5,
+      "tier": 1,
+      "sha256": "deb666e72f0be78dccac38f10859f6a757e055d2b34af2d27d6a362b1d300d34",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1912.08084",
+      "split": "test",
+      "title": "A Context-Aware Approach for Detecting Check-Worthy Claims in Political Debates",
+      "n_questions": 5,
+      "tier": 1,
+      "sha256": "9202f9c1bf7b724b1ed15dcba6e18037c7467d8b099436d404f123edbbab6967",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1711.11118",
+      "split": "test",
+      "title": "Multimodal Attribute Extraction",
+      "n_questions": 8,
+      "tier": 1,
+      "sha256": "10f53605dadffb7e51437aef080f9a9267c4972ec2478e030bfba182081c682f",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.12208",
+      "split": "test",
+      "title": "An Investigation into the Effectiveness of Enhancement in ASR Training and Test for Chime-5 Dinner Party Transcription",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "702a117a2ba0ba1422f6887eacca563d3f8cb6301a0ed5860d8a71447ddb5b87",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1901.09501",
+      "split": "test",
+      "title": "Toward Unsupervised Text Content Manipulation",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "384a0d983b4bfd0b97afa7ae409d858fa06cb956bd9f1bbedeb2b587c9263cfa",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1708.07690",
+      "split": "test",
+      "title": "Revisiting the Centroid-based Method: A Strong Baseline for Multi-Document Summarization",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "bc3996bbfe162e045c5e2211614705bde1a353840308019221957a4a8218573c",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2004.04498",
+      "split": "test",
+      "title": "Reducing Gender Bias in Neural Machine Translation as a Domain Adaptation Problem",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "39060edbdb0a0036577f6810a87e7ef48e0c9a1e179a5bbcbd5bee5fcfb8a684",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1609.02075",
+      "split": "test",
+      "title": "The Social Dynamics of Language Change in Online Networks",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "dfc09fc528aecb7ab3ae7af0c1c465fddf4d3a37246297a595abc43df8c345c5",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1902.10246",
+      "split": "test",
+      "title": "Fixed-Size Ordinally Forgetting Encoding Based Word Sense Disambiguation",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "ecda7fb91ad57c7c168af935a3f5a26f492c3aa9d801f2cffa17ee3524eff8bd",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1607.00167",
+      "split": "test",
+      "title": "SentiBubbles: Topic Modeling and Sentiment Visualization of Entity-centric Tweets",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "9438607e1cd2b494ac1d8632611416275316d3306ff936fb7573b2add5456660",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1910.10762",
+      "split": "test",
+      "title": "Analyzing ASR pretraining for low-resource speech-to-text translation",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "562948fd54f242d934351cf4ec837d921fa7f7139df247592b2ea679974668ca",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2002.08902",
+      "split": "test",
+      "title": "Application of Pre-training Models in Named Entity Recognition",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "d04d8c2d722eca7976a1b382172443891ced6d2a6a97194fa12f4b44267f3262",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "1909.04242",
+      "split": "test",
+      "title": "Mitigating Annotation Artifacts in Natural Language Inference Datasets to Improve Cross-dataset Generalization Ability",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "a27b28b5736285f8fae1d98022cd57ef23fa2bc9ddc19764079af540e6f996dc",
+      "licence": "CC-BY-4.0",
+      "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
+    },
+    {
+      "qasper_id": "2004.00809",
+      "split": "test",
+      "title": "Mapping Languages and Demographics with Georeferenced Corpora",
+      "n_questions": 4,
+      "tier": 2,
+      "sha256": "1ae4910b4b9dbf7251b5ac2ef8105c0c918b1895643b0b8a05973e8511c7b0e2",
       "licence": "CC-BY-4.0",
       "hf_revision": "fdc9d8214fbab5dd782958601db4d678e6934a54"
     }

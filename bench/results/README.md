@@ -34,6 +34,21 @@ fills their embeddings/keywords, so `fill` beforehand only saves wall time.
 Nothing here calls a paid API. Summaries, categorizer tags and machine edges
 need an LLM; the dev DB does not have them, and the header says so.
 
+## Held-out set
+
+Headline tables are scored on a set nobody tuned on. QASPER: `heldout` is
+100 papers of the v0.3 *test* split (a second pinned archive; tiers 0/1 give
+only 89 papers with >= 5 questions, so the last 11 have 4 questions), listed
+in `bench/corpus/manifest.json` with per-paper sha256 like `quick`/`full`.
+`scripts/bench ingest --set heldout` and `scripts/bench tasks --set heldout`
+work; `scripts/bench run` does not take it. Do not run the bench on `heldout`
+until the configuration is frozen; a test checks that no `heldout` id is in
+`quick` or `full`.
+
+Planted facts: seeds 0-99 are the dev range (tune freely); seeds >= 1000 are
+the held-out range (`HELDOUT_SEED_MIN` in `src/precis/bench/planted.py`), used
+only for headline numbers.
+
 ## File shape
 
 ```

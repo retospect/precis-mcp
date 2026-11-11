@@ -10,8 +10,15 @@ therefore comes from that URL, fetched through
 :func:`precis.utils.safe_fetch.safe_stream`, and is pinned by the archive's
 sha256 (:data:`ARCHIVE_SHA256`) plus a per-paper sha256 in the manifest — a
 changed byte anywhere fails the ingest loudly instead of drifting the
-corpus. Only train + dev are used (1,169 papers); the held-out test split
-stays unseen.
+corpus. The ``quick`` / ``full`` sets use train + dev only (1,169 papers).
+
+The frozen held-out set (``heldout``, :data:`HELDOUT_N` papers) comes from the
+v0.3 *test* split, a second archive (:data:`TEST_ARCHIVE_URL`, pinned by
+:data:`TEST_ARCHIVE_SHA256`). It is ranked by the same tier rule and
+deterministic key as ``quick`` / ``full`` but over the test split alone, so no
+heldout id can appear in ``quick`` / ``full`` (different splits). Tuning and
+headline tables must not share a set: tune on ``quick`` / ``full``, score the
+headline on ``heldout``. Nobody runs the bench on ``heldout`` while tuning.
 
 Manifest (``bench/corpus/manifest.json``)
 -----------------------------------------
@@ -109,11 +116,28 @@ MEMBERS: dict[str, str] = {
     "qasper-dev-v0.3.json": "dev",
 }
 
+#: v0.3 test split (+ evaluator) archive, the source of the ``heldout`` set.
+TEST_ARCHIVE_URL = (
+    "https://qasper-dataset.s3.us-west-2.amazonaws.com/"
+    "qasper-test-and-evaluator-v0.3.tgz"
+)
+TEST_ARCHIVE_NAME = "qasper-test-and-evaluator-v0.3.tgz"
+TEST_ARCHIVE_SHA256 = "72a52a41193e2838b8074f80ac074b94f956b84886c36a61c58a7df4171bdd72"
+TEST_MEMBERS: dict[str, str] = {"qasper-test-v0.3.json": "test"}
+
 SELECTION_SEED = "precis-bench-qasper-v1"
 MIN_QUESTIONS = 5
 QUICK_N = 30
 FULL_N = 200
+HELDOUT_N = 100
+#: The test split has only 89 papers with MIN_QUESTIONS questions; the last 11
+#: of heldout come from papers with at least this many (tiers 2 / 3).
+HELDOUT_MIN_QUESTIONS = 4
+HELDOUT_SET = "heldout"
 SET_SIZES: dict[str, int] = {"quick": QUICK_N, "full": FULL_N}
+#: Every set the manifest carries; ``heldout`` is for ingest/tasks only (the
+#: ablation runner keeps :data:`SET_SIZES`).
+ALL_SETS: dict[str, int] = {**SET_SIZES, HELDOUT_SET: HELDOUT_N}
 
 MANIFEST_SCHEMA = 1
 #: Refuse any database whose name is not a throwaway one (prod is never one).
@@ -187,6 +211,7 @@ def fetch_archive(
     *,
     url: str = ARCHIVE_URL,
     sha256: str | None = ARCHIVE_SHA256,
+    name: str = ARCHIVE_NAME,
 ) -> Path:
     """Return the cached archive, downloading it (SSRF-guarded) when absent.
 
@@ -198,7 +223,7 @@ def fetch_archive(
 
     root = cache if cache is not None else cache_dir()
     root.mkdir(parents=True, exist_ok=True)
-    dest = root / ARCHIVE_NAME
+    dest = root / name
     if dest.is_file():
         if sha256 is None or _file_sha256(dest) == sha256:
             return dest
@@ -219,15 +244,18 @@ def fetch_archive(
     return dest
 
 
-def load_archive(path: Path) -> dict[str, tuple[str, dict[str, Any]]]:
+def load_archive(
+    path: Path, members: Mapping[str, str] = MEMBERS
+) -> dict[str, tuple[str, dict[str, Any]]]:
     """``{qasper_id: (split, paper_dict)}`` read from the tgz in memory.
 
-    Only the two names in :data:`MEMBERS` are read (never extracted to disk).
+    Only the names in ``members`` (default :data:`MEMBERS`) are read, never
+    extracted to disk.
     """
     papers: dict[str, tuple[str, dict[str, Any]]] = {}
     with tarfile.open(path, "r:gz") as tar:
         for member in tar.getmembers():
-            split = MEMBERS.get(member.name)
+            split = members.get(member.name)
             if split is None or not member.isfile():
                 continue
             fh = tar.extractfile(member)
@@ -236,7 +264,7 @@ def load_archive(path: Path) -> dict[str, tuple[str, dict[str, Any]]]:
             for qid, paper in data.items():
                 papers[qid] = (split, paper)
     if not papers:
-        raise BenchCorpusError(f"{path}: none of {sorted(MEMBERS)} found")
+        raise BenchCorpusError(f"{path}: none of {sorted(members)} found")
     return papers
 
 
@@ -254,7 +282,9 @@ def paper_sha256(paper: Mapping[str, Any]) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-def paper_tier(paper: Mapping[str, Any]) -> int | None:
+def paper_tier(
+    paper: Mapping[str, Any], *, min_questions: int = MIN_QUESTIONS
+) -> int | None:
     """Selection preference, lower is better; ``None`` = unusable.
 
     Unusable: fewer than :data:`MIN_QUESTIONS` questions, no title or
@@ -264,7 +294,7 @@ def paper_tier(paper: Mapping[str, Any]) -> int | None:
     the 200-paper ``full`` set takes 58 tier-1 papers after them.
     """
     qas = paper.get("qas") or []
-    if len(qas) < MIN_QUESTIONS or not paper.get("abstract") or not paper.get("title"):
+    if len(qas) < min_questions or not paper.get("abstract") or not paper.get("title"):
         return None
     if not any(s.get("paragraphs") for s in paper.get("full_text") or []):
         return None
@@ -282,14 +312,25 @@ def rank_key(qasper_id: str) -> str:
 
 
 def select_papers(
-    papers: Mapping[str, tuple[str, Mapping[str, Any]]], n: int
+    papers: Mapping[str, tuple[str, Mapping[str, Any]]],
+    n: int,
+    *,
+    relax_to: int | None = None,
 ) -> list[str]:
     """The first ``n`` usable ids by (:func:`paper_tier`, :func:`rank_key`,
     id). A pure function of the ids and paper contents, independent of dict
-    order; the ``n``-prefix of a longer selection is the shorter selection."""
+    order; the ``n``-prefix of a longer selection is the shorter selection.
+
+    ``relax_to`` (the test split only: it holds 89 papers with
+    :data:`MIN_QUESTIONS` questions, fewer than :data:`HELDOUT_N`) admits
+    papers with at least ``relax_to`` questions as tiers 2 / 3 (the same
+    abstractive + extractive split), ranked after every tier 0 / 1 paper."""
     ranked: list[tuple[int, str, str]] = []
     for qid, (_, p) in papers.items():
         tier = paper_tier(p)
+        if tier is None and relax_to is not None:
+            low = paper_tier(p, min_questions=relax_to)
+            tier = None if low is None else low + 2
         if tier is not None:
             ranked.append((tier, rank_key(qid), qid))
     ranked.sort()
@@ -311,11 +352,16 @@ def build_manifest(
     archive_bytes: int | None = None,
     quick_n: int = QUICK_N,
     full_n: int = FULL_N,
+    heldout_papers: Mapping[str, tuple[str, Mapping[str, Any]]] | None = None,
+    heldout_archive_sha256: str = TEST_ARCHIVE_SHA256,
+    heldout_archive_bytes: int | None = None,
+    heldout_n: int = HELDOUT_N,
 ) -> dict[str, Any]:
-    """The committed manifest, a deterministic function of ``papers``.
+    """The committed manifest, a deterministic function of ``papers`` (and,
+    for the ``heldout`` set, of ``heldout_papers``, the test split).
 
-    ``quick_n`` / ``full_n`` exist for tests; the committed file uses the
-    module defaults."""
+    ``quick_n`` / ``full_n`` / ``heldout_n`` exist for tests; the committed
+    file uses the module defaults."""
     ids = select_papers(papers, full_n)
 
     def record(qid: str) -> dict[str, Any]:
@@ -341,7 +387,7 @@ def build_manifest(
     }
     if archive_bytes is not None:
         archive["bytes"] = archive_bytes
-    return {
+    manifest: dict[str, Any] = {
         "schema": MANIFEST_SCHEMA,
         "dataset": {
             "name": "QASPER",
@@ -374,6 +420,72 @@ def build_manifest(
         "quick": quick,
         "full": full,
     }
+    if heldout_papers is not None:
+        clash = sorted(set(heldout_papers) & set(papers))
+        if clash:
+            raise BenchCorpusError(
+                f"heldout ids also in train/dev: {', '.join(clash[:5])}"
+            )
+        held_ids = select_papers(
+            heldout_papers, heldout_n, relax_to=HELDOUT_MIN_QUESTIONS
+        )
+
+        def held_record(qid: str) -> dict[str, Any]:
+            split, paper = heldout_papers[qid]
+            tier = paper_tier(paper)
+            if tier is None:
+                tier = 2 + (paper_tier(paper, min_questions=HELDOUT_MIN_QUESTIONS) or 0)
+            return {
+                "qasper_id": qid,
+                "split": split,
+                "title": " ".join(str(paper["title"]).split()),
+                "n_questions": len(paper["qas"]),
+                "tier": tier,
+                "sha256": paper_sha256(paper),
+                "licence": DATASET_LICENCE,
+                "hf_revision": HF_REVISION,
+            }
+
+        held = [held_record(q) for q in held_ids]
+        test_archive: dict[str, Any] = {
+            "url": TEST_ARCHIVE_URL,
+            "name": TEST_ARCHIVE_NAME,
+            "sha256": heldout_archive_sha256,
+            "members": sorted(TEST_MEMBERS),
+        }
+        if heldout_archive_bytes is not None:
+            test_archive["bytes"] = heldout_archive_bytes
+        manifest["dataset"]["heldout_archive"] = test_archive
+        manifest["selection"]["heldout"] = {
+            "pool": "test",
+            "pool_size": len(heldout_papers),
+            "tier_sizes": {
+                str(t): sum(1 for r in held if r["tier"] == t) for t in (0, 1, 2, 3)
+            },
+            "tiers": "tiers 0/1 as above (>= 5 questions); the test split has "
+            f"only 89 such papers, so tiers 2/3 are the same split over papers "
+            f"with >= {HELDOUT_MIN_QUESTIONS} questions, ranked after them",
+            "note": "same rank as quick/full, over the test split; "
+            "frozen, never tuned on",
+        }
+        manifest["corpus_sha256"][HELDOUT_SET] = corpus_sha256(held)
+        manifest[HELDOUT_SET] = held
+    return manifest
+
+
+def load_set_papers(
+    man: Mapping[str, Any], set_name: str, cache: Path | None = None
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Fetch (cached, pinned) and read the archive ``set_name`` is drawn from."""
+    if set_name == HELDOUT_SET:
+        pin = man["dataset"]["heldout_archive"]
+        path = fetch_archive(
+            cache, url=pin["url"], sha256=pin["sha256"], name=pin["name"]
+        )
+        return load_archive(path, TEST_MEMBERS)
+    return load_archive(
+        fetch_archive(cache, sha256=man["dataset"]["archive"]["sha256"])
+    )
 
 
 def load_manifest(path: Path | None = None) -> dict[str, Any]:
@@ -677,15 +789,14 @@ def ingest_set(
     manifest: Mapping[str, Any] | None = None,
     cache: Path | None = None,
 ) -> IngestReport:
-    """Fetch (cached, pinned) and ingest the ``quick`` or ``full`` set."""
-    if set_name not in SET_SIZES:
+    """Fetch (cached, pinned) and ingest the ``quick``, ``full`` or ``heldout`` set."""
+    if set_name not in ALL_SETS:
         raise BenchCorpusError(
-            f"unknown set {set_name!r}; use one of {sorted(SET_SIZES)}"
+            f"unknown set {set_name!r}; use one of {sorted(ALL_SETS)}"
         )
     man = manifest if manifest is not None else load_manifest()
     records = man[set_name]
-    archive = fetch_archive(cache, sha256=man["dataset"]["archive"]["sha256"])
-    papers = load_archive(archive)
+    papers = load_set_papers(man, set_name, cache)
     expected = man["corpus_sha256"][set_name]
     if corpus_sha256(records) != expected:
         raise BenchCorpusError(

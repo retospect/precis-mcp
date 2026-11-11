@@ -447,3 +447,61 @@ def test_ingest_set_end_to_end_from_cached_archive(store, fake_papers, tmp_path)
         )
         with pytest.raises(corpus.BenchCorpusError, match="unknown set"):
             corpus.ingest_set(conn, "huge", manifest=man, cache=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# heldout (QASPER test split)
+# ---------------------------------------------------------------------------
+
+
+def test_committed_heldout_is_pinned_and_disjoint_from_quick_full() -> None:
+    man = corpus.load_manifest()
+    held = man["heldout"]
+    assert len(held) == corpus.HELDOUT_N
+    ids = [r["qasper_id"] for r in held]
+    assert len(set(ids)) == len(ids)
+    assert corpus.corpus_sha256(held) == man["corpus_sha256"]["heldout"]
+    assert {r["split"] for r in held} == {"test"}
+    assert all(len(r["sha256"]) == 64 for r in held)
+    assert all(r["n_questions"] >= corpus.HELDOUT_MIN_QUESTIONS for r in held)
+    tiers = [r["tier"] for r in held]
+    assert tiers == sorted(tiers)
+    pin = man["dataset"]["heldout_archive"]
+    assert pin["sha256"] == corpus.TEST_ARCHIVE_SHA256
+    assert pin["name"] == corpus.TEST_ARCHIVE_NAME
+    # the point of the set: nothing tuned on appears in it
+    tuned = {r["qasper_id"] for name in ("quick", "full") for r in man[name]}
+    assert not tuned & set(ids)
+    assert {r["split"] for name in ("quick", "full") for r in man[name]} <= {
+        "train",
+        "dev",
+    }
+
+
+def test_build_manifest_heldout_ranks_test_split_and_refuses_overlap(
+    fake_papers: dict[str, tuple[str, dict[str, Any]]],
+) -> None:
+    test = {
+        "9902.00001": ("test", _fake_paper(11)),
+        "9902.00002": ("test", _fake_paper(12, n_qas=4)),
+        "9902.00003": ("test", _fake_paper(13, n_qas=2)),
+    }
+    man = corpus.build_manifest(
+        fake_papers, heldout_papers=test, heldout_n=2, quick_n=1, full_n=2
+    )
+    assert [r["qasper_id"] for r in man["heldout"]] == ["9902.00001", "9902.00002"]
+    assert [r["tier"] for r in man["heldout"]] == [0, 2]
+    assert man["corpus_sha256"]["heldout"] == corpus.corpus_sha256(man["heldout"])
+    assert (
+        man["quick"] == corpus.build_manifest(fake_papers, quick_n=1, full_n=2)["quick"]
+    )
+    clash = {"9901.00001": ("test", _fake_paper(1))}
+    with pytest.raises(corpus.BenchCorpusError, match="also in train/dev"):
+        corpus.build_manifest(
+            fake_papers, heldout_papers=clash, heldout_n=1, quick_n=1, full_n=2
+        )
+
+
+def test_tasks_and_ingest_accept_heldout_but_run_does_not() -> None:
+    assert corpus.HELDOUT_SET in corpus.ALL_SETS
+    assert corpus.HELDOUT_SET not in corpus.SET_SIZES

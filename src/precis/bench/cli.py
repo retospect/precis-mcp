@@ -18,7 +18,7 @@ def _parser() -> argparse.ArgumentParser:
 
     ing = sub.add_parser("ingest", help="ingest the fixture corpus into the dev DB")
     ing.add_argument(
-        "--set", dest="set_name", choices=sorted(corpus.SET_SIZES), required=True
+        "--set", dest="set_name", choices=sorted(corpus.ALL_SETS), required=True
     )
     ing.add_argument("--manifest", type=Path, default=None)
     ing.add_argument("--cache", type=Path, default=None)
@@ -34,7 +34,7 @@ def _parser() -> argparse.ArgumentParser:
         "tasks", help="extract the QASPER span-gold task set (bench/tasks/)"
     )
     tsk.add_argument(
-        "--set", dest="set_name", choices=sorted(corpus.SET_SIZES), required=True
+        "--set", dest="set_name", choices=sorted(corpus.ALL_SETS), required=True
     )
     tsk.add_argument("--manifest", type=Path, default=None)
     tsk.add_argument("--cache", type=Path, default=None)
@@ -174,9 +174,17 @@ def _ingest(args: argparse.Namespace) -> int:
 def _manifest(args: argparse.Namespace) -> int:
     path = args.manifest or corpus.default_manifest_path()
     archive = corpus.fetch_archive(args.cache, sha256=corpus.ARCHIVE_SHA256)
+    test_archive = corpus.fetch_archive(
+        args.cache,
+        url=corpus.TEST_ARCHIVE_URL,
+        sha256=corpus.TEST_ARCHIVE_SHA256,
+        name=corpus.TEST_ARCHIVE_NAME,
+    )
     built = corpus.build_manifest(
         corpus.load_archive(archive),
         archive_bytes=archive.stat().st_size,
+        heldout_papers=corpus.load_archive(test_archive, corpus.TEST_MEMBERS),
+        heldout_archive_bytes=test_archive.stat().st_size,
     )
     text = corpus.manifest_text(built)
     if args.check:
@@ -187,11 +195,17 @@ def _manifest(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"{path} matches (quick={len(built['quick'])} full={len(built['full'])})")
+        print(
+            f"{path} matches (quick={len(built['quick'])} full={len(built['full'])} "
+            f"heldout={len(built['heldout'])})"
+        )
         return 0
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    print(f"wrote {path} (quick={len(built['quick'])} full={len(built['full'])})")
+    print(
+        f"wrote {path} (quick={len(built['quick'])} full={len(built['full'])} "
+        f"heldout={len(built['heldout'])})"
+    )
     return 0
 
 
@@ -204,10 +218,8 @@ def _tasks(args: argparse.Namespace) -> int:
         raise corpus.BenchCorpusError(
             f"manifest {args.set_name!r} does not match its corpus_sha256"
         )
-    archive = corpus.fetch_archive(
-        args.cache, sha256=man["dataset"]["archive"]["sha256"]
-    )
-    rows, report = qasper_tasks.build_tasks(records, corpus.load_archive(archive))
+    papers = corpus.load_set_papers(man, args.set_name, args.cache)
+    rows, report = qasper_tasks.build_tasks(records, papers)
     text = qasper_tasks.tasks_text(rows)
     path = args.out or qasper_tasks.default_tasks_path(args.set_name)
     print(report.table())
