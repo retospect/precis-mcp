@@ -590,6 +590,8 @@ def _offload_sync(
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
     "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc'). "
+    "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
+    "the moment a call or a skill misbehaves, no asking first. "
     "Build/sha/DB: get(kind='skill', id='precis-status')."
 )
 

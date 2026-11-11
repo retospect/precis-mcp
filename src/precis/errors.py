@@ -17,7 +17,10 @@ at the raise site. A couple of narrow dispatcher-boundary hooks
 `_maybe_add_schema_drift_hint`) append a specific extra `next:` line for
 their one recognized signal (missing skill / schema drift) — they are
 not a general backstop, so a raise site with no `next=` still ships a
-hint-less error in the common case.
+hint-less error in the common case. One exception
+(`runtime.error._ARG_SHAPE_GRIPE_HINT`, gr631696): argument-shaped
+refusals (`BadInput`/`Unsupported`) get the gripe standing-order line
+appended at render time.
 
 Non-Precis exceptions caught at the dispatcher boundary are wrapped
 into `Internal(...)` or `Upstream(...)` with `__cause__` chained.

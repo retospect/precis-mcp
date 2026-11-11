@@ -26,6 +26,13 @@ prepare a candidate fix, close as `STATUS:done` when resolved
 The canonical address is the **handle** `gr<id>` (e.g. `gr42`) — copy
 it from search/get output.
 
+**Standing order — file at the point of friction.** When a call
+errors or misbehaves, or a skill does not match the tool it
+describes, file the gripe right then, without asking and without a
+dedup search — `put(kind='gripe', text='<command + expected + actual>')`.
+Triage merges repeats; the miss you do not file is the one nobody
+fixes.
+
 ## File a bug I just noticed
 ## File friction without breaking flow
 ## Log something annoying I noticed in passing
