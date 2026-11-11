@@ -189,10 +189,14 @@ the dated detail is in `git log` and the owning items):**
    thermo-only margins do not.
 6. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
    spent; needs 5's `U_sel` to pick the decisive edges.
-7. **backlog/crowded-surface-experiment.md** — Reto's
-   crowded-surface ask; ranked last, after the catpath 0.30.0 re-run
-   (spectator mode, NH2/NOH template fix), because the dilute-vs-1 ML table
-   it starts from is uncertain until then.
+7. **backlog/crowded-surface-experiment.md** — transferred to graph
+   memory on 2026-11-11 (Reto's ruling me568168): the spec is the root
+   me630964 under the kinetics programme me568262, with its section and
+   ruling nodes; open work is the plan todo td630986 under the kinetics
+   programme root td568263; the file is deleted. Reto's crowded-surface
+   ask; ranked last, after the catpath 0.30.0 re-run (spectator mode,
+   NH2/NOH template fix), because the dilute-vs-1 ML table it starts
+   from is uncertain until then.
 8. **gr543776 items 3–13 — keep-everything retention, remaining slices.**
    Items 1–2 landed (745e225c5, bddd19fd2): NEB band geometries,
    `images_energy` profiles and TS geometries ride the job artifact store
