@@ -12,7 +12,7 @@ option is unassigned
 
 # hexfold: instrumentable nanoreactor tube (T2 of the nanoreactor chain)
 
-Reto, 2026-10-04. Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
+Reto, 2026-10-04. Umbrella: spec `me628980` (graph memory).
 Same blocker as [cnt-channel-staged-catalysis](cnt-channel-staged-catalysis.md):
 k = 3 Y-junction seams ([hexfold-seam-type-catalogue](hexfold-seam-type-catalogue.md)).
 

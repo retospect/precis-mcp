@@ -8,7 +8,7 @@ blocked-by: nanoreactor-station-path-finder
 
 # Reaction movie (T6 of the nanoreactor chain)
 
-Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md). Reto,
+Umbrella: spec `me628980` (graph memory). Reto,
 2026-10-04: the outcome of the chain is a video of the reaction as it
 happens in the nanoreactor, once the fields and poses are done.
 

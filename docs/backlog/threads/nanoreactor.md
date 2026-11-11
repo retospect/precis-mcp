@@ -19,7 +19,7 @@ effort: medium
 
 **Status:** ends when a designed NO → NH3 nanoreactor plays as a
 four-pane movie built from computed station records, every barrier on
-the path checked at DFT ([nanoreactor-no-nh3](../nanoreactor-no-nh3.md)).
+the path checked at DFT (spec `me628980`).
 T0 tabulated thermochemistry shipped in R13/R14, including the radical
 fits; the T1 entry slice (`/rxn` web ledger, kept rxn equation sets) is
 in prod. Order follows the data: each tool consumes the previous one's
@@ -55,11 +55,11 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
    uncapped per-zone counts, judged after a real-rung `hexfold_relax`
    job; prod relax jobs allowed any time, Reto 2026-10-21); H3 relax
    landed 2026-10-19.
-2. **backlog/nanoreactor-no-nh3.md §T3** — track designer; spec once
+2. **spec `me629027` §T3** — track designer; spec once
    T1's station record exists.
-3. **backlog/nanoreactor-no-nh3.md §T4** — ring/pendant designer; spec
+3. **spec `me629027` §T4** — ring/pendant designer; spec
    once T3 exists.
-4. **backlog/nanoreactor-no-nh3.md §T5** — assembled QM/MM check; needs
+4. **spec `me629027` §T5** — assembled QM/MM check; needs
    T2 + T4.
 5. **backlog/nanoreactor-movie.md** — T6; renders T1 records first,
    T5 records later.

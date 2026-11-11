@@ -11,7 +11,7 @@ model: opus
 
 Reto, 2026-10-17. First concrete driver of the intent-to-realize loop
 (slice 4) and the delivery of the region property layer's slices B and C
-(slices 1–2 below); both former specs are folded in here. Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
+(slices 1–2 below); both former specs are folded in here. Umbrella: spec `me628980` (graph memory).
 
 **Status (2026-10-26):** slices 1–4 are built (slice 2 under What
 exists); slice 4's rulings are recorded in Open questions.
@@ -358,7 +358,7 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    carry geometry, not chemistry; hexfold has no per-atom chemistry
    channel. The wall's charge and H-bond partners must come from
    somewhere: N/B substitution, pore-rim termination (OH, NH2,
-   carbonyl), or pendants (nanoreactor-no-nh3 §T4). Which ones are in
+   carbonyl), or pendants (spec `me629027` §T4). Which ones are in
    v1, and who generates them?
    **Answered (wall chemistry).** Reto 2026-10-17: attach functional
    groups to the inside of the tube: hydrophilic "sugar" bits (hydroxyl,
@@ -369,13 +369,13 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    others. Design-and-simulate only; no synthesis route yet. N/B
    substitution and pore-rim termination stay as alternatives, not
    v1-required. Consequence: slice 4 (see there).
-3. **Overlap with T3/T4.** nanoreactor-no-nh3 plans T3 (a field stack
+3. **Overlap with T3/T4.** spec `me629027` plans T3 (a field stack
    in z, θ from station records) and T4 (pendant designer). Does this
    item replace T3 for the first stations, feed it, or sit beside it?
    Station records already promise ESP cubes and H-bond topology.
    **Partly answered.** Reto 2026-10-17: a stack of tethered rings
    along z is the long-run form of the T3 field stack
-   (nanoreactor-no-nh3), each ring defining what the molecule sees at
+   (spec `me629027`), each ring defining what the molecule sees at
    its station. This item feeds T3/T4 rather than replacing them.
 4. **Surface parameters.** vdW versus SES, the radius scale, probe
    radius, point density, and the default clearance.

@@ -8,7 +8,7 @@ model: opus
 
 # Station path finder (T1 of the nanoreactor chain)
 
-Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md). Engine:
+Umbrella: spec `me628980` (graph memory). Engine:
 autocatpath (`../catpath`, reference engine), glue in `src/precis_pathway`.
 
 ## Motivation / why
