@@ -29,6 +29,9 @@
 #   5. Delete the local staging dir (cluster-fileserver-move 4a: no
 #      retained backups on the DB node). A run that dies before the stamp
 #      leaves the NAS dir mixed old/new — unsnapshotable by construction.
+#      The EXIT trap enforces step 5 while this run owns the lock: a dump
+#      whose rsync failed must not linger on the DB node any more than a
+#      partial pg_dump does.
 #
 # The legacy 03:30 tar+zstd chain (pg_backup.sh) still runs in parallel
 # until the first restic restore drill passes — nothing here retires it.
@@ -52,21 +55,22 @@ MIN_FREE_GB=70
 
 mkdir -p "${LOCAL_BACKUP_DIR}"
 
-DUMP_OK=0
 LOCKED=0
 on_exit() {
+    local status=$?
     # Only the lock WE took — an early exit on a held lock must not break
     # the holder's mutual exclusion, and a wedged run that outlived its
     # reclaimed lock must not steal the next run's.
     if [ "${LOCKED}" -eq 1 ] && [ "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" = "$$" ]; then
+        # Reclaim complete or partial staging before releasing the lock:
+        # after release the next run may already be writing the same path.
+        if [ -d "${LOCAL_DUMP_DIR}" ]; then
+            echo "[$(date -u)] Reclaiming unsynced dump dir ${LOCAL_DUMP_DIR}"
+            rm -rf "${LOCAL_DUMP_DIR}" 2>/dev/null || true
+        fi
         rm -rf "${LOCK_DIR}" 2>/dev/null || true
     fi
-    # A failed/killed pg_dump leaves a partial dir that can't be resumed;
-    # reclaim it now rather than let it eat the MIN_FREE_GB guard all day.
-    if [ "${DUMP_OK}" -eq 0 ] && [ -d "${LOCAL_DUMP_DIR}" ]; then
-        echo "[$(date -u)] Reclaiming partial/aborted dump dir ${LOCAL_DUMP_DIR}"
-        rm -rf "${LOCAL_DUMP_DIR}" 2>/dev/null || true
-    fi
+    return "${status}"
 }
 trap on_exit EXIT
 
@@ -131,7 +135,6 @@ pg_dump -U {{ pg_user }} -d precis_prod \
   --compress=0 \
   --exclude-table-data=vault._key \
   --file="${LOCAL_DUMP_DIR}"
-DUMP_OK=1  # complete — the EXIT trap must NOT reclaim this dir
 
 LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
 echo "[$(date -u)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"

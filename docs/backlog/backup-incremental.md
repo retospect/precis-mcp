@@ -195,3 +195,12 @@ never printed.
   reached the offsite repo — the exact loss this leg exists to prevent.
   Reordered to backup → copy → forget(local) → forget(B2); order is now
   pinned by `test_restic_dbdump_snapshot_copy_forget_and_stamps`.
+- Fix 2026-11-10: `pg_backup_dir.sh.j2`'s `DUMP_OK` flag made the EXIT trap
+  skip cleanup once `pg_dump` itself succeeded, so a dump that then failed
+  to `rsync` onto `dbbackup` left the full ~47 GB local copy on the DB node
+  until the next nightly run — the exact retained-local-backup state
+  section B and cluster-fileserver-move 4a forbid. The trap reclaims
+  complete or partial `LOCAL_DUMP_DIR` only while its lock PID still owns
+  the run, then releases the lock, preserving the failing exit status.
+  Rendered-script execution tests cover held/pidless locks, failed dump
+  and rsync, a replaced lock PID and a successor starting at lock release.

@@ -7,10 +7,15 @@ stale-fstab cleanup task and that logrotate stays on shared_mount.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import jinja2
+import pytest
 
 _ROLES = Path(__file__).resolve().parent.parent / "deploy" / "roles"
 _VARS: dict[str, object] = {
@@ -154,6 +159,145 @@ def test_pg_backup_dir_refuses_an_unmounted_dbbackup() -> None:
     assert 'mount | grep -q " on ${DBBACKUP_MOUNT} "' in out
     assert 'DBBACKUP_MOUNT="/mnt/dbbackup"' in out
     assert "nas_dbbackup_export" in out
+
+
+def test_pg_backup_dir_reclaims_local_dump_on_sync_failure() -> None:
+    # A dump that completed but whose rsync then failed must not survive
+    # on the DB node (cluster-fileserver-move 4a) — the EXIT trap must
+    # reclaim it while owning the lock, including a partial/aborted pg_dump.
+    out = _render("pg_backup_dir.sh.j2")
+    assert "DUMP_OK" not in out
+    on_exit = out.split("on_exit() {", 1)[1].split("trap on_exit EXIT", 1)[0]
+    assert 'if [ -d "${LOCAL_DUMP_DIR}" ]; then' in on_exit
+    assert "Reclaiming unsynced dump dir" in on_exit
+
+
+def _run_backup_dir(
+    tmp_path: Path,
+    *,
+    held_lock: str | None = None,
+    pidless_lock: bool = False,
+    dump_exit: int = 0,
+    rsync_exit: int = 0,
+    replace_lock: bool = False,
+    successor_on_release: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    local_root = tmp_path / "local"
+    mount = tmp_path / "nas"
+    staging = local_root / "backups" / "postgres" / "precis_prod_current"
+    lock = staging.parent / "pg_backup_dir.lock"
+    staging.mkdir(parents=True)
+    (staging / "original").write_text("another run", encoding="utf-8")
+    if held_lock is not None or pidless_lock:
+        lock.mkdir()
+        if held_lock is not None:
+            (lock / "pid").write_text(held_lock, encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    real_rm = shutil.which("rm")
+    assert real_rm is not None
+    commands = {
+        "mount": 'printf "test on %s type test\\n" "$TEST_MOUNT"',
+        "df": '''printf "Filesystem 1024-blocks Used Available Capacity Mounted\\n"
+printf "test 209715200 0 209715200 0%% /\\n"''',
+        "pg_dump": '''mkdir -p "$TEST_STAGING"
+printf "dump\\n" > "$TEST_STAGING/toc.dat"
+if [ "$TEST_REPLACE_LOCK" = 1 ]; then
+    printf "successor\\n" > "$TEST_LOCK/pid"
+    rm -rf "$TEST_STAGING"
+    mkdir -p "$TEST_STAGING"
+    printf "successor\\n" > "$TEST_STAGING/successor"
+fi
+exit "$TEST_DUMP_EXIT"''',
+        "rsync": 'exit "$TEST_RSYNC_EXIT"',
+        "rm": f"""{shlex.quote(real_rm)} "$@"
+if [ "$TEST_SUCCESSOR_ON_RELEASE" = 1 ] && [ "${{@: -1}}" = "$TEST_LOCK" ]; then
+    mkdir -p "$TEST_LOCK" "$TEST_STAGING"
+    printf "successor\\n" > "$TEST_LOCK/pid"
+    printf "successor\\n" > "$TEST_STAGING/successor"
+fi""",
+    }
+    for name, body in commands.items():
+        command = bin_dir / name
+        command.write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8")
+        command.chmod(0o755)
+    script = tmp_path / "pg_backup_dir.sh"
+    script.write_text(
+        _render(
+            "pg_backup_dir.sh.j2",
+            host_local_root=str(local_root),
+            dbbackup_mount=str(mount),
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.defpath}",
+            "TEST_MOUNT": str(mount),
+            "TEST_STAGING": str(staging),
+            "TEST_LOCK": str(lock),
+            "TEST_DUMP_EXIT": str(dump_exit),
+            "TEST_RSYNC_EXIT": str(rsync_exit),
+            "TEST_REPLACE_LOCK": str(int(replace_lock)),
+            "TEST_SUCCESSOR_ON_RELEASE": str(int(successor_on_release)),
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+    return result, staging, lock
+
+
+@pytest.mark.parametrize("pidless", [False, True])
+def test_pg_backup_dir_contender_preserves_holder_staging(
+    tmp_path: Path, pidless: bool
+) -> None:
+    pid = None if pidless else str(os.getpid())
+    result, staging, lock = _run_backup_dir(
+        tmp_path, held_lock=pid, pidless_lock=pidless
+    )
+    assert result.returncode == 0, result.stderr
+    assert (staging / "original").read_text(encoding="utf-8") == "another run"
+    assert lock.is_dir()
+    if pid is not None:
+        assert (lock / "pid").read_text(encoding="utf-8") == pid
+    else:
+        assert not (lock / "pid").exists()
+
+
+@pytest.mark.parametrize(("dump_exit", "rsync_exit"), [(17, 0), (0, 23)])
+def test_pg_backup_dir_failure_reclaims_owned_staging_and_keeps_status(
+    tmp_path: Path, dump_exit: int, rsync_exit: int
+) -> None:
+    result, staging, lock = _run_backup_dir(
+        tmp_path, dump_exit=dump_exit, rsync_exit=rsync_exit
+    )
+    assert result.returncode == (dump_exit or rsync_exit), result.stderr
+    assert not staging.exists()
+    assert not lock.exists()
+
+
+def test_pg_backup_dir_replaced_lock_preserves_successor_staging(
+    tmp_path: Path,
+) -> None:
+    result, staging, lock = _run_backup_dir(tmp_path, dump_exit=17, replace_lock=True)
+    assert result.returncode == 17, result.stderr
+    assert (staging / "successor").read_text(encoding="utf-8") == "successor\n"
+    assert (lock / "pid").read_text(encoding="utf-8") == "successor\n"
+
+
+def test_pg_backup_dir_releases_lock_after_staging_cleanup(tmp_path: Path) -> None:
+    result, staging, lock = _run_backup_dir(
+        tmp_path, dump_exit=17, successor_on_release=True
+    )
+    assert result.returncode == 17, result.stderr
+    assert (staging / "successor").read_text(encoding="utf-8") == "successor\n"
+    assert (lock / "pid").read_text(encoding="utf-8") == "successor\n"
 
 
 def test_restic_dbdump_snapshot_copy_forget_and_stamps() -> None:
