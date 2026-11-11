@@ -1610,6 +1610,166 @@ def test_container_model_error_still_raises(monkeypatch, _container_selected):
     assert _container_selected == []  # not an infra failure → no latch trip
 
 
+# ── gr573328: an oversized prompt rides stdin, never argv ─────────────
+#
+# ``execve`` fails E2BIG on a single argv element over
+# ``MAX_ARGV_ITEM_BYTES`` — the quest_tick dossier+frontier prompt crossed
+# it and the agent container's entrypoint died on "exec /usr/bin/tini:
+# argument list too long". A prompt over the cap must therefore leave argv
+# entirely: ``claude -p`` reads the prompt off stdin when no positional is
+# given, so the wrapper drops the ``-- <prompt>`` tail and pipes the bytes.
+
+_OVERSIZED = "frontier " * 20000  # ~160KB > MAX_ARGV_ITEM_BYTES
+
+
+def _run_claude_spy(monkeypatch, *behaviors):
+    """``run_claude`` stub recording (argv, kwargs) per call."""
+
+    class _Spy:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[str], dict[str, Any]]] = []
+            self._it = iter(behaviors)
+
+        def __call__(self, argv, **kw):
+            self.calls.append((list(argv), kw))
+            b = next(self._it)
+            if isinstance(b, BaseException):
+                raise b
+            return b
+
+    spy = _Spy()
+    monkeypatch.setattr("precis.utils.claude_agent.run_claude", spy)
+    return spy
+
+
+def test_oversized_prompt_rides_stdin_not_argv(monkeypatch) -> None:
+    """gr573328: a prompt over ``MAX_ARGV_ITEM_BYTES`` can never reach exec
+    as an argv element — the argv drops the ``-- <prompt>`` tail and the
+    prompt rides ``stdin_data`` instead."""
+    import precis.utils.claude_agent as ca
+    from precis.utils._claude_subprocess import MAX_ARGV_ITEM_BYTES
+
+    assert len(_OVERSIZED.encode("utf-8")) > MAX_ARGV_ITEM_BYTES
+    spy = _run_claude_spy(monkeypatch, _ok("done"))
+    res = ca.call_claude_agent(_OVERSIZED, model="opus")
+
+    assert isinstance(res, AgentResult)
+    argv, kw = spy.calls[0]
+    # The prompt is not an argv element — ``claude -p`` reads it off stdin.
+    assert _OVERSIZED not in argv
+    assert argv[-1] != "--"
+    assert kw["stdin_data"] == _OVERSIZED.encode("utf-8")
+    assert kw["stdin_devnull"] is False
+
+
+def test_ordinary_prompt_stays_on_argv(monkeypatch) -> None:
+    """Contrast case: a prompt under the cap keeps the byte-identical
+    ``-- <prompt>`` argv tail and a devnull'd stdin — today's shape."""
+    import precis.utils.claude_agent as ca
+
+    spy = _run_claude_spy(monkeypatch, _ok("done"))
+    res = ca.call_claude_agent("do it", model="opus")
+
+    assert isinstance(res, AgentResult)
+    argv, kw = spy.calls[0]
+    assert argv[-2:] == ["--", "do it"]
+    assert kw["stdin_devnull"] is True
+    assert kw["stdin_data"] is None
+
+
+def test_oversized_prompt_containerizes_interactive(
+    monkeypatch, _container_selected
+) -> None:
+    """The container run of an oversized prompt needs ``docker run -i`` or
+    the stdin bytes never reach the container — and the prompt element is
+    absent from BOTH the host ``podman run`` argv and the inner ``claude``
+    tail (either exec would hit E2BIG otherwise)."""
+    import precis.utils.claude_agent as ca
+
+    spy = _run_claude_spy(monkeypatch, _ok("done"))
+    res = ca.call_claude_agent(_OVERSIZED, model="opus")
+
+    assert isinstance(res, AgentResult)
+    argv, kw = spy.calls[0]
+    assert argv[0] == "podman" and "run" in argv  # containerized
+    assert "-i" in argv  # stdin forwarded
+    assert _OVERSIZED not in argv
+    assert kw["stdin_data"] == _OVERSIZED.encode("utf-8")
+    assert _container_selected == []  # healthy run → no latch trip
+
+
+def test_container_argv_too_long_raises_without_fallback_or_latch(
+    monkeypatch, _container_selected
+) -> None:
+    """An argv overflow is a deterministic defect — the identical in-proc
+    retry fails identically, so it must NOT burn the in-proc fallback or
+    the health latch; the ``argv_too_long`` flag propagates to the router."""
+    import precis.utils.claude_agent as ca
+
+    e2big = ClaudeAgentError(
+        "claude -p (agent) exited 255: exec /usr/bin/tini: argument list too long",
+        stderr="exec /usr/bin/tini: argument list too long",
+        returncode=255,
+        argv_too_long=True,
+    )
+    spy = _run_claude_spy(monkeypatch, e2big)
+    with pytest.raises(ClaudeAgentError) as exc:
+        ca.call_claude_agent("do it", model="opus")
+    assert exc.value.argv_too_long is True
+    assert len(spy.calls) == 1  # no in-proc retry
+    assert _container_selected == []  # not an infra failure → no latch trip
+
+
+def test_inproc_fallback_of_oversized_prompt_threads_stdin(
+    monkeypatch, _container_selected
+) -> None:
+    """The infra-failure fallback re-runs the SAME call — a prompt that
+    rode stdin in the container must ride stdin in-proc too (its argv has
+    no positional, so a devnull'd stdin would feed claude an empty prompt)."""
+    import precis.utils.claude_agent as ca
+
+    infra = ClaudeAgentError(
+        "cannot connect to the Docker daemon",
+        stdout="",
+        stderr="cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        returncode=125,
+    )
+    spy = _run_claude_spy(monkeypatch, infra, _ok("recovered in proc"))
+    res = ca.call_claude_agent(_OVERSIZED, model="opus")
+
+    assert isinstance(res, AgentResult)
+    argv, kw = spy.calls[1]  # the in-proc fallback call
+    assert argv[0] == "claude"  # host argv, not `podman run`
+    assert _OVERSIZED not in argv
+    assert kw["stdin_data"] == _OVERSIZED.encode("utf-8")
+    assert _container_selected == [1]  # infra failure latched the host
+
+
+def test_call_claude_agent_async_oversized_prompt_rides_stdin(
+    monkeypatch,
+) -> None:
+    """The async twin shares ``_resolve_agent_args`` — same rule: an
+    oversized prompt leaves argv and arrives as ``stdin_data``."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    seen: list[tuple[list[str], dict[str, Any]]] = []
+
+    async def _spy(argv, **kw):
+        seen.append((list(argv), kw))
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude_async", _spy)
+    res = asyncio.run(ca.call_claude_agent_async(_OVERSIZED, model="opus"))
+
+    assert isinstance(res, AgentResult)
+    argv, kw = seen[0]
+    assert _OVERSIZED not in argv
+    assert kw["stdin_data"] == _OVERSIZED.encode("utf-8")
+    assert kw["stdin_devnull"] is False
+
+
 # ── §H cycle a: env_base isolation ──────────────────────────────────
 
 

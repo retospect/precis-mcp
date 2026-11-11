@@ -50,7 +50,8 @@ class _Outcome:
         self.note = note
         #: ``QuestTickOutcome.pause_kind`` — "timeout" | "window" | None.
         self.pause_kind = pause_kind
-        #: ``QuestTickOutcome.failure_kind`` — "cli_unavailable" | None.
+        #: ``QuestTickOutcome.failure_kind`` — "cli_unavailable" |
+        #: "argv_too_long" | None.
         self.failure_kind = failure_kind
         self.candidates_created = 0
         self.sims_dispatched = 0
@@ -548,6 +549,36 @@ class TestPhaseAwaitDryTicks:
         assert out.summary_meta.get("failure_class") == "infra"
         # Never even reached the ordinary consecutive-failure counter — the
         # fast path returns before that bookkeeping runs.
+        assert "tick_failures" not in out.summary_meta
+
+    def test_argv_too_long_failure_rests_immediately_as_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr573328: a tick whose ``claude -p`` call never reached exec
+        # because the dossier+frontier prompt outgrew the kernel argv
+        # limit is a deterministic *config* defect — the identical retry
+        # fails identically, so the loop must rest on the FIRST such tick
+        # rather than grinding the consecutive-failure budget (the same
+        # fast path ``cli_unavailable`` takes), and it is stamped
+        # ``failure_class="config"`` — a prompt/exec-shape fix, not the
+        # host-side ``"infra"`` class a missing CLI gets.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(
+                status="failed",
+                note="llm error: claude -p (agent): argv element 12 "
+                "exceeds the kernel's 131071-byte exec limit",
+                failure_kind="argv_too_long",
+            ),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is False
+        assert out.summary_meta.get("last_status") == "failed"
+        assert out.summary_meta.get("failure_kind") == "argv_too_long"
+        assert out.summary_meta.get("failure_class") == "config"
         assert "tick_failures" not in out.summary_meta
 
     def test_starvation_gate_defers_without_ticking(

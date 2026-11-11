@@ -2796,6 +2796,38 @@ def test_error_result_missing_binary_is_cli_unavailable_not_paused() -> None:
     assert res2.cli_unavailable is False
 
 
+def test_error_result_argv_too_long_is_flagged_not_paused() -> None:
+    """gr573328: an argv element over the kernel exec limit is a
+    deterministic CONFIG defect — ``argv_too_long`` (not ``paused`` and
+    not a classified wire/model error), carried structurally off
+    ``ClaudeProcessError.argv_too_long`` so the quest coordinator rests
+    the loop as ``failure_class="config"`` on the first occurrence."""
+    from precis.utils._claude_subprocess import ClaudeProcessError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudeProcessError(
+        "claude -p (agent): argv element 12 exceeds the kernel's "
+        "131071-byte exec limit — refusing to spawn a call that can "
+        "never run",
+        argv_too_long=True,
+    )
+    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    assert res.argv_too_long is True
+    assert res.paused is False
+    assert res.timed_out is False
+    assert res.cli_unavailable is False
+    # A preflight refusal ran no model turn — no stdout text surfaced.
+    assert res.text == ""
+    # Unclassified — nothing retries a call that can never exec.
+    assert res.reason_class is None
+
+    # A plain non-zero exit (model/API error) is NOT flagged — the
+    # structural signal is narrow, never inferred otherwise.
+    exited = ClaudeProcessError("claude -p exited 1", returncode=1)
+    res2 = _error_result(exited, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    assert res2.argv_too_long is False
+
+
 def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
     """A request timeout on the LOCAL transport is unavailability —
     skip-and-retry, not a hard failure that can park the todo."""

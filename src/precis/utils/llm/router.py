@@ -1033,6 +1033,17 @@ class LlmResult:
     #: would fail the same way): the caller raises a visible alert and backs
     #: off. ``error`` carries the status and wait.
     mcp_not_ready: bool = False
+    #: ``True`` when the transport never reached the model because the
+    #: assembled ``claude -p`` argv exceeded the kernel's exec limit —
+    #: :attr:`~precis.utils._claude_subprocess.ClaudeProcessError.argv_too_long`
+    #: (an argv element over the per-item cap, or the container runtime's
+    #: inner ``exec`` reporting the same; gr573328). A deterministic
+    #: *config* defect — the identical retry fails identically, in-proc or
+    #: containerized. Read by
+    #: :func:`~precis.quest.tick.run_quest_tick` to stamp
+    #: :attr:`~precis.quest.tick.QuestTickOutcome.failure_kind` so the
+    #: coordinator rests the loop as ``failure_class="config"``.
+    argv_too_long: bool = False
     #: OpenAI ``usage.total_tokens`` for the local/openai-compat transports
     #: (``None`` for claude, which reports cost not tokens). Kept so a
     #: direct-``LlmClient`` pass folded through :class:`DispatchClient` still
@@ -6732,8 +6743,10 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     dispatch failure (see :attr:`LlmResult.interrupted`).
     """
     rc = getattr(exc, "returncode", None)
-    preflight = getattr(exc, "mcp_not_ready", False) or getattr(
-        exc, "binary_missing", False
+    preflight = (
+        getattr(exc, "mcp_not_ready", False)
+        or getattr(exc, "binary_missing", False)
+        or getattr(exc, "argv_too_long", False)
     )
     raw_stdout = getattr(exc, "stdout", "") or ""
     # A failed agent run's stdout is the raw stream-json transcript —
@@ -6788,14 +6801,18 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         cli_unavailable=getattr(exc, "binary_missing", False),
         # gr463517: the MCP readiness gate refused to start the pass.
         mcp_not_ready=getattr(exc, "mcp_not_ready", False),
+        # gr573328: the assembled argv exceeded the kernel exec limit —
+        # no exec, no model turn, and no retry that can self-heal.
+        argv_too_long=getattr(exc, "argv_too_long", False),
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
         cache_read_tokens=usage.get("cache_read_tokens"),
         cache_creation_tokens=usage.get("cache_creation_tokens"),
     )
-    # A host-config defect (missing binary, MCP not ready) is neither the
-    # wire nor the model — leave it unclassified so nothing retries it.
-    if result.cli_unavailable or result.mcp_not_ready:
+    # A host-config defect (missing binary, MCP not ready, argv over the
+    # exec limit) is neither the wire nor the model — leave it
+    # unclassified so nothing retries it.
+    if result.cli_unavailable or result.mcp_not_ready or result.argv_too_long:
         return result
     if not isinstance(exc, ClaudePUnparseableError):
         return _classified(result)

@@ -846,3 +846,225 @@ def test_run_claude_async_stays_in_the_worker_process_group(
 
     assert seen, "run_claude_async never spawned a subprocess"
     assert all("start_new_session" not in kw for kw in seen)
+
+
+# ── gr573328 — argv over the kernel exec limit never reaches exec ───────
+#
+# ``execve`` fails E2BIG on a single argv element over
+# ``MAX_ARGV_ITEM_BYTES`` (the quest_tick dossier+frontier prompt crossed
+# it inside the agent container). The runners refuse an oversized argv at
+# preflight, map a spawn-time E2BIG onto the same flag, and recognize the
+# container runtime's inner-exec overflow in the child's output — all as
+# ``argv_too_long``, a structural signal (like ``binary_missing``), never
+# a string sniffed downstream.
+
+
+def test_refuse_oversized_argv_fails_before_any_spawn(monkeypatch) -> None:
+    """An element over ``MAX_ARGV_ITEM_BYTES`` can never exec — the runner
+    must refuse BEFORE ``Popen`` (a spawn would raise the raw ``OSError``),
+    flagging the error ``argv_too_long`` so the router stamps it a
+    deterministic config defect."""
+    seen = _popen_spy(monkeypatch)
+    oversized = "x" * (_sub.MAX_ARGV_ITEM_BYTES + 1)
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            ["/bin/echo", oversized],
+            binary="/bin/echo",
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert exc.value.argv_too_long is True
+    assert exc.value.timed_out is False
+    assert exc.value.binary_missing is False
+    assert seen == []  # never spawned
+
+
+def test_run_claude_gated_refuses_oversized_argv_before_spawn(monkeypatch) -> None:
+    seen = _popen_spy(monkeypatch)
+    oversized = "x" * (_sub.MAX_ARGV_ITEM_BYTES + 1)
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        _sub.run_claude_gated(
+            ["claude", oversized],
+            prompt="hi",
+            require_mcp=("precis",),
+            gate_deadline_s=5.0,
+            binary="claude",
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert exc.value.argv_too_long is True
+    assert seen == []
+
+
+def test_run_claude_async_refuses_oversized_argv_before_spawn(
+    monkeypatch,
+) -> None:
+    """Same refusal on the async runner — its docstring promises the sync
+    runner's failure shape."""
+    _vault(monkeypatch, None)
+    seen: list[dict[str, object]] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(_sub.asyncio, "create_subprocess_exec", spy)
+    oversized = "x" * (_sub.MAX_ARGV_ITEM_BYTES + 1)
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        asyncio.run(
+            run_claude_async(
+                ["/bin/echo", oversized],
+                binary="/bin/echo",
+                label="claude -p (test)",
+                timeout_s=10.0,
+                error_cls=ClaudeProcessError,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
+        )
+
+    assert exc.value.argv_too_long is True
+    assert seen == []
+
+
+def _write_tini_exec_failure_stub(path: Path) -> None:
+    """The gr573328 shape: ``docker run``'s in-container entrypoint reports
+    its own ``exec`` overflow on stderr and exits 255 — the host-side
+    ``docker/podman run`` argv was fine, so the marker must come from the
+    child's OUTPUT, not a spawn-time ``OSError``."""
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf %s 'exec /usr/bin/tini: argument list too long' >&2\n"
+        "exit 255\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+
+
+def test_run_claude_inner_exec_overflow_flags_argv_too_long(tmp_path: Path) -> None:
+    stub = tmp_path / "tini_stub.sh"
+    _write_tini_exec_failure_stub(stub)
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert exc.value.returncode == 255
+    assert exc.value.argv_too_long is True
+    assert exc.value.timed_out is False
+
+
+def test_run_claude_async_inner_exec_overflow_flags_argv_too_long(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _vault(monkeypatch, None)
+    stub = tmp_path / "tini_stub.sh"
+    _write_tini_exec_failure_stub(stub)
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        asyncio.run(
+            run_claude_async(
+                [str(stub)],
+                binary=str(stub),
+                label="claude -p (test)",
+                timeout_s=10.0,
+                error_cls=ClaudeProcessError,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
+        )
+
+    assert exc.value.returncode == 255
+    assert exc.value.argv_too_long is True
+
+
+def test_run_claude_ordinary_nonzero_exit_is_not_argv_too_long(
+    tmp_path: Path,
+) -> None:
+    """Contrast case: a normal non-zero exit never sets the flag — the
+    marker must not false-fire on unrelated stderr."""
+    stub = tmp_path / "claude_stub.sh"
+    _write_failing_stub(stub, stderr="model overloaded")
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert exc.value.argv_too_long is False
+
+
+def _write_stdin_echo_stub(path: Path) -> None:
+    """A stub that copies its stdin to stdout — the oversized-prompt
+    transport ``call_claude_agent`` uses: no positional prompt, the whole
+    prompt as raw stdin bytes."""
+    path.write_text("#!/usr/bin/env bash\ncat\nexit 0\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+
+
+def test_run_claude_stdin_data_reaches_the_child(tmp_path: Path) -> None:
+    stub = tmp_path / "cat_stub.sh"
+    _write_stdin_echo_stub(stub)
+    payload = ("prompt " * 200).encode("utf-8")
+
+    res = run_claude(
+        [str(stub)],
+        binary=str(stub),
+        label="claude -p (test)",
+        timeout_s=10.0,
+        error_cls=ClaudeProcessError,
+        env={"PATH": os.environ.get("PATH", "")},
+        stdin_data=payload,
+        bootstrap_oauth=False,
+    )
+
+    assert res.stdout == payload.decode("utf-8")
+
+
+def test_run_claude_async_stdin_data_reaches_the_child(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The async runner's feeder task writes the prompt and closes stdin —
+    a stub that ``cat``s stdin proves the bytes (and the EOF that lets the
+    child proceed) made it."""
+    _vault(monkeypatch, None)
+    stub = tmp_path / "cat_stub.sh"
+    _write_stdin_echo_stub(stub)
+    payload = ("prompt " * 200).encode("utf-8")
+
+    res = asyncio.run(
+        run_claude_async(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            stdin_data=payload,
+        )
+    )
+
+    assert res.stdout == payload.decode("utf-8")

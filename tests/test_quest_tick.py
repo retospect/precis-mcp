@@ -60,6 +60,7 @@ def _fake_dispatch(
     paused: bool = False,
     timed_out: bool = False,
     quota_exhausted: bool = False,
+    argv_too_long: bool = False,
 ) -> Any:
     """A stand-in for router.route returning a canned LlmResult-shaped obj."""
 
@@ -72,6 +73,7 @@ def _fake_dispatch(
             paused=paused,
             timed_out=timed_out,
             quota_exhausted=quota_exhausted,
+            argv_too_long=argv_too_long,
         )
 
     return _d
@@ -1173,6 +1175,31 @@ class TestQuestTick:
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(None, error="boom"))
         assert out.status == "failed" and "boom" in out.note
         # nothing written
+        assert not [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+
+    def test_argv_too_long_error_stamps_failure_kind(self, store: Any) -> None:
+        # gr573328: an ``LlmResult.argv_too_long`` error (the ``claude -p``
+        # argv outgrew the kernel exec limit — no model turn ran) maps to
+        # ``failure_kind="argv_too_long"`` so the coordinator rests the
+        # loop as ``failure_class="config"`` on the first tick instead of
+        # burning its 5-failure budget on a deterministic defect.
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                None,
+                error="claude -p (agent): argv element 12 exceeds the "
+                "kernel's 131071-byte exec limit",
+                argv_too_long=True,
+            ),
+        )
+        assert out.status == "failed"
+        assert out.failure_kind == "argv_too_long"
         assert not [
             b
             for b in store.chunks.list_chunks_for_ref(qid)

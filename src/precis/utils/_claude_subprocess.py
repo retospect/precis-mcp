@@ -13,6 +13,7 @@ the invocation (new flag, auth tweak) lands in one place.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -35,6 +36,46 @@ log = logging.getLogger(__name__)
 # changes, this just returns None.
 _COST_RE = re.compile(r"\bcost\b[^$]*\$\s*([0-9]+\.[0-9]+)", re.IGNORECASE)
 
+#: Largest single element ``execve`` accepts — the kernel's
+#: ``MAX_ARG_STRLEN``, 32 pages *including* the trailing NUL (measured
+#: 131071 usable bytes; ``scripts/prod-psql`` documents the same bound).
+#: A prompt (or any element) longer than this can never exec — it must
+#: ride stdin or a file instead (gr573328).
+MAX_ARGV_ITEM_BYTES = 131071
+
+#: stderr/stdout substring the container runtime prints when its
+#: in-container ``exec`` hits the same per-element limit — the host-side
+#: ``docker/podman run`` argv may itself be fine while the container's
+#: entrypoint (``exec "$@"``) still overflows on a giant element.
+_E2BIG_OUTPUT_MARKER = "argument list too long"
+
+
+def refuse_oversized_argv(
+    argv: list[str], *, label: str, error_cls: type[ClaudeProcessError]
+) -> None:
+    """Refuse to spawn when any argv element exceeds the kernel exec limit.
+
+    ``execve`` fails ``E2BIG`` on a single element over
+    :data:`MAX_ARGV_ITEM_BYTES` — a deterministic defect the identical
+    retry can never self-heal, so surface it before spending a spawn
+    (gr573328: the quest_tick dossier+frontier prompt crossed the bound
+    and the container entrypoint died on ``exec /usr/bin/tini: argument
+    list too long``).
+    """
+    for i, element in enumerate(argv):
+        if len(element.encode("utf-8", errors="replace")) > MAX_ARGV_ITEM_BYTES:
+            raise error_cls(
+                f"{label}: argv element {i} exceeds the kernel's "
+                f"{MAX_ARGV_ITEM_BYTES}-byte exec limit — refusing to "
+                "spawn a call that can never run",
+                argv_too_long=True,
+            )
+
+
+def _e2big_in_output(stdout: str, stderr: str) -> bool:
+    """True when the child's output carries the exec-overflow marker."""
+    return _E2BIG_OUTPUT_MARKER in (stderr + "\n" + stdout).lower()
+
 
 class ClaudeProcessError(RuntimeError):
     """Base for ``claude -p`` failures (exit code, timeout, binary missing).
@@ -55,6 +96,7 @@ class ClaudeProcessError(RuntimeError):
         binary_missing: bool = False,
         mcp_not_ready: bool = False,
         mcp_status: dict[str, str] | None = None,
+        argv_too_long: bool = False,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
@@ -87,6 +129,18 @@ class ClaudeProcessError(RuntimeError):
         #: The last ``{server: status}`` map the gate saw for the servers it
         #: required (``None`` when the CLI never reported any).
         self.mcp_status = mcp_status
+        #: True when the call never executed because the assembled argv
+        #: exceeded the kernel's exec limit (``E2BIG`` — either refused by
+        #: :func:`refuse_oversized_argv`, raised by ``execve`` at spawn, or
+        #: reported by the container runtime when ITS inner ``exec``
+        #: overflowed). A deterministic config defect: retrying the
+        #: identical call can never self-heal (gr573328). Threaded
+        #: structurally through
+        #: :class:`~precis.utils.llm.router.LlmResult` (``argv_too_long``)
+        #: to :class:`~precis.quest.tick.QuestTickOutcome`
+        #: (``failure_kind``) so the coordinator can rest the loop as
+        #: ``failure_class="config"`` instead of burning its retry budget.
+        self.argv_too_long = argv_too_long
 
 
 def to_str(raw: bytes | str | None) -> str:
@@ -392,6 +446,7 @@ def run_claude(
         ensure_oauth_token(env)
     if stdin_data is not None and stdin_devnull:
         raise ValueError("run_claude: stdin_data and stdin_devnull are exclusive")
+    refuse_oversized_argv(argv, label=label, error_cls=error_cls)
     try:
         # MeasuredPopen: the reap captures this child's own rusage and
         # attributes it to the job bound on this thread (gr595536).
@@ -420,6 +475,14 @@ def run_claude(
             f"set PRECIS_CLAUDE_BIN or install Claude Code",
             binary_missing=True,
         ) from exc
+    except OSError as exc:
+        if exc.errno == errno.E2BIG:
+            raise error_cls(
+                f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
+                "the call can never run",
+                argv_too_long=True,
+            ) from exc
+        raise
     try:
         out, err = proc.communicate(input=stdin_data, timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -451,6 +514,10 @@ def run_claude(
             stdout=res.stdout,
             stderr=res.stderr,
             returncode=res.returncode,
+            # A container's INNER exec can hit the argv limit while the
+            # host-side ``docker run`` succeeded — its runtime prints the
+            # overflow on stderr and exits non-zero (gr573328).
+            argv_too_long=_e2big_in_output(res.stdout, res.stderr),
         )
     return res
 
@@ -648,6 +715,7 @@ def run_claude_gated(
     if bootstrap_oauth:
         ensure_oauth_token(env)
     poll = MCP_GATE_POLL_S if poll_s is None else poll_s
+    refuse_oversized_argv(argv, label=label, error_cls=error_cls)
     try:
         # MeasuredPopen, as in run_claude: per-child rusage at reap.
         proc = MeasuredPopen(
@@ -669,6 +737,14 @@ def run_claude_gated(
             f"set PRECIS_CLAUDE_BIN or install Claude Code",
             binary_missing=True,
         ) from exc
+    except OSError as exc:
+        if exc.errno == errno.E2BIG:
+            raise error_cls(
+                f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
+                "the call can never run",
+                argv_too_long=True,
+            ) from exc
+        raise
 
     started = time.monotonic()
     gate_end = started + min(gate_deadline_s, timeout_s)
@@ -712,6 +788,7 @@ def run_claude_gated(
             stdout=stdout,
             stderr=stderr,
             returncode=proc.returncode,
+            argv_too_long=_e2big_in_output(stdout, stderr),
         )
 
     try:
@@ -793,6 +870,7 @@ def run_claude_gated(
             stdout=stdout,
             stderr=stderr,
             returncode=proc.returncode,
+            argv_too_long=_e2big_in_output(stdout, stderr),
         )
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
@@ -806,6 +884,7 @@ async def run_claude_async(
     error_cls: type[ClaudeProcessError],
     env: dict[str, str] | None = None,
     stdin_devnull: bool = False,
+    stdin_data: bytes | None = None,
     cwd: str | None = None,
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> SimpleNamespace:
@@ -816,6 +895,13 @@ async def run_claude_async(
     in arrival order. Ported from ``asa_bot.claude_invoke``'s proven
     ``_read_stream_json`` / ``_consume`` shape — the one real caller that
     already needed real-time streaming (Discord progress updates).
+
+    ``stdin_data`` pipes raw bytes to the child's stdin — how an oversized
+    prompt reaches ``claude -p`` when it can't ride argv (gr573328; the
+    CLI reads the prompt off stdin when no positional is given). Mutually
+    exclusive with ``stdin_devnull``. The writer runs as a concurrent
+    task: claude reads stdin while producing early stdout, and a stdin
+    ``drain()`` blocked behind a full stdout pipe would deadlock.
 
     Same success/failure *contract* as :func:`run_claude` so a caller's
     ``except error_cls`` handling (notably
@@ -840,11 +926,18 @@ async def run_claude_async(
     env = dict(env) if env is not None else dict(os.environ)
     disarm_session_hooks(env)
     ensure_oauth_token(env)
+    if stdin_data is not None and stdin_devnull:
+        raise ValueError("run_claude_async: stdin_data and stdin_devnull are exclusive")
+    refuse_oversized_argv(argv, label=label, error_cls=error_cls)
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            stdin=asyncio.subprocess.DEVNULL if stdin_devnull else None,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin_data is not None
+                else (asyncio.subprocess.DEVNULL if stdin_devnull else None)
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
@@ -858,6 +951,31 @@ async def run_claude_async(
             f"set PRECIS_CLAUDE_BIN or install Claude Code",
             binary_missing=True,
         ) from exc
+    except OSError as exc:
+        if exc.errno == errno.E2BIG:
+            raise error_cls(
+                f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
+                "the call can never run",
+                argv_too_long=True,
+            ) from exc
+        raise
+
+    feeder: asyncio.Task[None] | None = None
+    if stdin_data is not None:
+
+        async def _feed() -> None:
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(stdin_data)
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # child exited before reading — the exit path reports it
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
+        feeder = asyncio.create_task(_feed())
 
     stdout_lines: list[str] = []
 
@@ -883,6 +1001,8 @@ async def run_claude_async(
     try:
         await asyncio.wait_for(_pump_stdout(), timeout=timeout_s)
     except TimeoutError:
+        if feeder is not None:
+            feeder.cancel()
         await terminate_claude_async(proc)
         stderr_partial = b""
         if proc.stderr is not None:
@@ -898,9 +1018,16 @@ async def run_claude_async(
         ) from None
     except BaseException:
         # Never leak a live CLI on cancellation/an unexpected error.
+        if feeder is not None:
+            feeder.cancel()
         if proc.returncode is None:
             await terminate_claude_async(proc)
         raise
+    if feeder is not None:
+        try:
+            await feeder
+        except BaseException:
+            pass  # a feeder failure is a write-side abort; the run stands
 
     # Read stderr to EOF (closes when the process exits) *before* ``wait()``
     # so a chatty stderr can't deadlock against an unread pipe buffer.
@@ -915,14 +1042,17 @@ async def run_claude_async(
             stdout=stdout,
             stderr=stderr,
             returncode=returncode,
+            argv_too_long=_e2big_in_output(stdout, stderr),
         )
     return SimpleNamespace(stdout=stdout, stderr=stderr)
 
 
 __all__ = [
+    "MAX_ARGV_ITEM_BYTES",
     "ClaudeProcessError",
     "exit_detail",
     "extract_cost_usd",
+    "refuse_oversized_argv",
     "resolve_binary",
     "run_claude",
     "run_claude_async",

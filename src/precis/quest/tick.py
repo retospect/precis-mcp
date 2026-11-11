@@ -415,6 +415,12 @@ class QuestTickOutcome:
     #:   (:attr:`~precis.utils.llm.router.LlmResult.cli_unavailable`) — a
     #:   host-configuration defect, not a transient/semantic one: retrying
     #:   the identical call on the SAME host can never self-heal it.
+    #: * ``"argv_too_long"`` — the rung's ``claude -p`` argv exceeded the
+    #:   kernel's exec limit before any model turn ran
+    #:   (:attr:`~precis.utils.llm.router.LlmResult.argv_too_long`,
+    #:   gr573328) — a deterministic *config* defect the identical retry
+    #:   can never self-heal; the coordinator rests the loop immediately
+    #:   as ``failure_class="config"``.
     #:
     #: The coordinator (:mod:`precis.workers.job_types.quest_tick`) fails the
     #: loop immediately on this (rather than grinding through the
@@ -3768,7 +3774,9 @@ class _TickRun:
                     cost,
                     f"llm error: {res.error}",
                     failure_kind=(
-                        "cli_unavailable"
+                        "argv_too_long"
+                        if getattr(res, "argv_too_long", False)
+                        else "cli_unavailable"
                         if getattr(res, "cli_unavailable", False)
                         else None
                     ),

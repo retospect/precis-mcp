@@ -1381,6 +1381,37 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
             },
         )
 
+    # gr573328: a tick whose LLM call never reached exec because an argv
+    # element outgrew the kernel limit (the dossier+frontier prompt —
+    # ``QuestTickOutcome.failure_kind == "argv_too_long"``, carried
+    # structurally like ``cli_unavailable``) is a deterministic *config*
+    # defect: the identical retry fails identically forever, so rest on
+    # the first occurrence instead of grinding the consecutive-failure
+    # budget through doomed retries. ``failure_class="config"`` marks it
+    # a prompt/exec-shape defect — distinct from the ``"infra"`` class a
+    # host-side CLI absence gets, and legible on the record as something
+    # a code fix (prompt on stdin), not a host fix, resolves.
+    if (
+        status in ("failed", "paused")
+        and getattr(outcome, "failure_kind", None) == "argv_too_long"
+    ):
+        _reset_dry_rest_counter(ctx.store, quest_id)
+        return Done(
+            summary=(
+                f"quest {quest_id} loop resting — the tick's LLM call "
+                f"exceeded the kernel argv limit before exec ({note}). "
+                "Re-armed by a fresh quest_tick coordinator job once the "
+                "cause is fixed."
+            ),
+            success=False,
+            summary_meta={
+                "slices": slice_count,
+                "last_status": status,
+                "failure_class": "config",
+                "failure_kind": "argv_too_long",
+            },
+        )
+
     # Return early so a failed/paused tick doesn't also fire the acquisition
     # fallback below.
     if status in ("failed", "paused"):

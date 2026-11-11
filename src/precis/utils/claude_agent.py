@@ -39,6 +39,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from precis.utils._claude_subprocess import (
+    MAX_ARGV_ITEM_BYTES,
     ClaudeProcessError,
     extract_cost_usd,
     resolve_binary,
@@ -328,6 +329,15 @@ def call_claude_agent(
     # Gated only when there is an MCP config to gate on (no config ⇒ no
     # server to wait for; the ungated argv is unchanged).
     gated = bool(require_mcp) and mcp_config is not None
+    # gr573328: a prompt too big for one argv element rides stdin instead
+    # (``claude -p`` reads the prompt off stdin when no positional is
+    # given). ``execve`` fails ``E2BIG`` on an element over
+    # :data:`MAX_ARGV_ITEM_BYTES` — the quest_tick dossier+frontier prompt
+    # crossed it and the agent container's entrypoint died on
+    # "exec /usr/bin/tini: argument list too long", a deterministic defect
+    # every retry repeated. The gated path already feeds the prompt over
+    # stdin (stream-json), so this only changes the ungated shape.
+    prompt_stdin = not gated and len(prompt.encode("utf-8")) > MAX_ARGV_ITEM_BYTES
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
         model=model,
@@ -344,6 +354,7 @@ def call_claude_agent(
         extra_args=extra_args,
         settings_extra=settings_extra,
         gated=gated,
+        prompt_via_stdin=prompt_stdin,
     )
     proc_env = _prepare_agent_env(
         active_env=active_env, bare=bare, env_overlay=env_overlay, env_base=env_base
@@ -442,9 +453,10 @@ def call_claude_agent(
             mode=container_mode,
             mounts=mounts,
             workdir=workdir,
-            # A gated run feeds the prompt over stdin, which ``docker run``
-            # only forwards with ``-i``.
-            interactive=gated,
+            # A gated run feeds the prompt over stdin — and an oversized
+            # prompt rides raw stdin bytes — which ``docker run`` only
+            # forwards with ``-i``.
+            interactive=gated or prompt_stdin,
             # gr537773: the overlay only reaches the host-side ``docker run``
             # client; its allowlisted run-context keys are re-emitted as
             # ``--env`` so the container's ``precis serve`` sees them.
@@ -503,7 +515,8 @@ def call_claude_agent(
                 timeout_s=timeout_s,
                 error_cls=ClaudeAgentError,
                 env=proc_env,
-                stdin_devnull=True,
+                stdin_devnull=not prompt_stdin,
+                stdin_data=prompt.encode("utf-8") if prompt_stdin else None,
                 cwd=cwd_str,
                 bootstrap_oauth=env_base is None,
             )
@@ -513,6 +526,11 @@ def call_claude_agent(
             # or on the host) is not usable. Not a container-infra failure and
             # not a recoverable exhaustion — re-raise as is, so the caller sees
             # ``mcp_not_ready`` rather than a silent in-proc retry.
+            raise
+        if exc.argv_too_long:
+            # The exec never ran — an argv element over the kernel limit is
+            # a deterministic defect the IDENTICAL in-proc retry repeats, so
+            # don't burn the fallback or the health latch on it (gr573328).
             raise
         if containerized and _container_infra_failure(exc):
             # The *container* failed to run (image missing, daemon unreachable,
@@ -551,7 +569,7 @@ def call_claude_agent(
                 proc_env,
                 cwd_str,
                 bootstrap_oauth=env_base is None,
-                prompt=prompt if gated else None,
+                prompt=prompt if (gated or prompt_stdin) else None,
                 require_mcp=require_mcp if gated else (),
             )
         else:
@@ -621,6 +639,10 @@ async def call_claude_agent_async(
         ClaudeAgentError: subprocess exited non-zero, timed out, or the
             binary was missing — same shape as :func:`call_claude_agent`.
     """
+    # Same oversized-prompt transport as the sync path (gr573328): the
+    # in-proc exec fails E2BIG on an argv element over the kernel limit,
+    # so the prompt rides stdin instead.
+    prompt_stdin = len(prompt.encode("utf-8")) > MAX_ARGV_ITEM_BYTES
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
         model=model,
@@ -636,6 +658,7 @@ async def call_claude_agent_async(
         envelope=envelope,
         extra_args=extra_args,
         settings_extra=settings_extra,
+        prompt_via_stdin=prompt_stdin,
     )
     proc_env = _prepare_agent_env(
         active_env=active_env, bare=bare, env_overlay=env_overlay
@@ -657,7 +680,8 @@ async def call_claude_agent_async(
             timeout_s=timeout_s,
             error_cls=ClaudeAgentError,
             env=proc_env,
-            stdin_devnull=True,
+            stdin_devnull=not prompt_stdin,
+            stdin_data=prompt.encode("utf-8") if prompt_stdin else None,
             cwd=cwd_str,
             on_event=on_event,
         )
@@ -701,6 +725,7 @@ def _resolve_agent_args(
     extra_args: tuple[str, ...],
     settings_extra: Mapping[str, Any] | None = None,
     gated: bool = False,
+    prompt_via_stdin: bool = False,
 ) -> tuple[str, list[str], str, float, float, Any]:
     """Resolve model/timeout/budget and build the full ``claude -p`` argv.
 
@@ -714,6 +739,10 @@ def _resolve_agent_args(
     ``gated`` (the MCP readiness gate, gr463517) swaps the trailing
     ``-- <prompt>`` for ``--input-format stream-json`` — the prompt is then
     delivered over stdin by :func:`run_claude_gated`.
+
+    ``prompt_via_stdin`` likewise omits the trailing ``-- <prompt>`` (for a
+    prompt too long for a single argv element — gr573328); the caller then
+    delivers the prompt as raw bytes on the subprocess stdin.
 
     Raises:
         InertDenyListError: the merged deny list (explicit
@@ -851,14 +880,15 @@ def _resolve_agent_args(
         # ``--`` sentinel below still guards the prompt). MCP tools are
         # unaffected by it; the write boundary stays the deny/env path.
         args.extend(["--tools", ",".join(active_env.builtin_tools)])
-    if not gated:
+    if not (gated or prompt_via_stdin):
         # ``--`` end-of-options sentinel, then the prompt as the sole trailing
         # positional. The prompt is UNTRUSTED (e.g. raw Discord messages), and
         # claude's Commander.js CLI parses any argv token starting with ``-`` as
         # an option — without ``--``, a prompt beginning with a dash exits the
         # binary 1 with "unknown option". MUST stay after ``extra_args`` and
         # immediately precede the prompt. (A gated run sends the prompt as a
-        # stream-json message over stdin instead — no argv parsing involved.)
+        # stream-json message over stdin instead — no argv parsing involved;
+        # a ``prompt_via_stdin`` run pipes it as raw stdin bytes.)
         args.append("--")
         args.append(prompt)
 
@@ -1198,6 +1228,7 @@ def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
                 stdout=exc.stdout,
                 stderr=exc.stderr,
                 returncode=exc.returncode,
+                argv_too_long=exc.argv_too_long,
             ) from exc
         raise exc
     log.info(
@@ -1233,7 +1264,10 @@ def _run_inproc_fallback(
 
     ``prompt``/``require_mcp`` carry a *gated* call's readiness gate onto the
     fallback: its ``args`` have no positional prompt, so it must run through
-    :func:`run_claude_gated` too, or the CLI would wait on stdin forever.
+    :func:`run_claude_gated` too, or the CLI would wait on stdin forever. A
+    ``prompt`` without ``require_mcp`` is the oversized-prompt shape
+    (gr573328): the argv has no positional, so the prompt rides raw stdin
+    bytes exactly as it did in the container.
     """
     try:
         if prompt is not None and require_mcp:
@@ -1257,7 +1291,8 @@ def _run_inproc_fallback(
             timeout_s=timeout_s,
             error_cls=ClaudeAgentError,
             env=proc_env,
-            stdin_devnull=True,
+            stdin_devnull=prompt is None,
+            stdin_data=prompt.encode("utf-8") if prompt is not None else None,
             cwd=cwd,
             bootstrap_oauth=bootstrap_oauth,
         )
