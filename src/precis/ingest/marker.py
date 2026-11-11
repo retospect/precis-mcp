@@ -207,9 +207,23 @@ _LIST_RE = re.compile(r"^[-*]\s+")
 _DISPLAY_EQ_RE = re.compile(r"^\$\$[\s\S]+\$\$$")
 _INLINE_MATH_ONLY_RE = re.compile(r"^\$[^$]+\$$")
 _TABLE_RE = re.compile(r"^\|")
+#: A figure legend line. Tolerates Marker/publisher dressings the old
+#: pattern missed (gr632958): emphasis around the label (``**Figure
+#: 1.** …`` — optional ``*_`` runs on either side of the number), the
+#: ``FIGURE 3 | caption`` separator, plural ``Figures``/``Figs``, a panel
+#: letter on the number, and multi-figure legends (``Figures 6 and
+#: 7.``). A separator is still required — bare ``Figure 3 shows …`` is
+#: prose, not a legend.
 _FIGURE_CAPTION_RE = re.compile(
-    r"^(?:Fig(?:ure)?\.?\s*\d+)\s*[:\.\-—–]\s*(.+)",
+    r"^[*_]*\s*Fig(?:ure)?s?\.?\s*\d+[a-zA-Z]?"
+    r"(?:\s*(?:,|and)\s*\d+[a-zA-Z]?)*"
+    r"[*_]*\s*[:.\-—–|][*_]*\s*(.+)",
     re.IGNORECASE,
+)
+#: Leading Marker page-anchor spans (``<span id="page-N-M"></span>``),
+#: possibly repeated, ahead of a block's real first character.
+_LEADING_PAGE_SPAN_RE = re.compile(
+    r"^(?:\s*<span\s+id=\"page-\d+-\d+\"\s*>\s*</span>\s*)+"
 )
 
 # Frontmatter headings that are journal boilerplate, not paper structure.
@@ -1064,22 +1078,64 @@ def _reconcile_continuation_table_headers(
     return blocks
 
 
+def _figure_text_remainder(text: str) -> str:
+    """The readable residue of a figure block's own text.
+
+    Image references collapse to their alt text — surya writes a VLM
+    panel description there, exactly the in-figure text a bare
+    ``![](…)`` placeholder never carries (gr632958). Page-anchor
+    ``<span>`` markers survive: downstream readers map a chunk to its
+    true PDF page through them.
+    """
+    text = _IMAGE_RE.sub(lambda m: m.group(1).strip(), text)
+    return "\n\n".join(
+        part.strip() for part in re.split(r"\n{2,}", text) if part.strip()
+    )
+
+
 def _match_captions(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Match figure blocks with captions from adjacent text blocks."""
-    result = []
+    """Match figure blocks with captions from adjacent text blocks.
+
+    A caption in the NEXT block wins (the usual legend-below-panel
+    order); when none is there the immediately PRECEDING text block is
+    tried — journals that set legends above the panel emit
+    caption-then-image. A matched caption is consumed — it never lands
+    as a standalone paragraph — and folded into the figure chunk's
+    text, with whatever readable text the figure block already carried
+    (a surya alt description, a page anchor) kept beneath it so panel
+    content isn't thrown away (gr632958). Only ``text`` blocks bind —
+    a figure can never absorb a heading, a table, or another figure's
+    already-bound caption.
+    """
+    result: list[dict[str, Any]] = []
     skip_next = False
+
+    def _caption_of(block: dict[str, Any] | None) -> str | None:
+        if not block or block.get("type") != "text":
+            return None
+        text = str(block.get("text") or "").strip()
+        # Marker leads many blocks with ``<span id="page-N-M">`` anchors;
+        # they precede the legend itself, so probe past them while the
+        # stored caption keeps them (true-page signal downstream).
+        probe = _LEADING_PAGE_SPAN_RE.sub("", text)
+        return text if _FIGURE_CAPTION_RE.match(probe) else None
 
     for i, block in enumerate(blocks):
         if skip_next:
             skip_next = False
             continue
 
-        if block.get("type") == "figure" and i + 1 < len(blocks):
-            next_block = blocks[i + 1]
-            next_text = next_block.get("text", "")
-            if _FIGURE_CAPTION_RE.match(next_text.strip()):
-                block["text"] = next_text.strip()
+        if block.get("type") == "figure":
+            caption = _caption_of(blocks[i + 1] if i + 1 < len(blocks) else None)
+            if caption is not None:
                 skip_next = True
+            elif result:
+                caption = _caption_of(result[-1])
+                if caption is not None:
+                    result.pop()
+            if caption:
+                existing = _figure_text_remainder(str(block.get("text") or ""))
+                block["text"] = f"{caption}\n\n{existing}".strip()
 
         result.append(block)
 

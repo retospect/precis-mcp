@@ -13,6 +13,7 @@ from precis.ingest.marker import (
     _clean_text,
     _fitz_fallback,
     _mark_junk,
+    _match_captions,
     _merge_small_blocks,
     _strip_margin_line_numbers_blocks,
     strip_margin_line_numbers,
@@ -189,6 +190,143 @@ class TestMarkJunk:
         result = _mark_junk(blocks)
         assert result[0]["text"] == "COPYRIGHT"
         assert result[1]["text"] == "© 2025 Authors"
+
+
+class TestMatchCaptions:
+    """gr632958: figure chunks held bare ``![](…)`` placeholders while
+    their legends sat as separate paragraphs — the matcher missed the
+    publisher dressings (``**Figure 1.**``, ``FIGURE 3 |``) and the
+    caption-before-figure order."""
+
+    @staticmethod
+    def _figure(text=""):
+        return {"type": "figure", "text": text}
+
+    @staticmethod
+    def _text(text):
+        return {"type": "text", "text": text}
+
+    def test_next_block_caption_binds(self):
+        blocks = [self._figure(), self._text("Figure 1: a schematic.")]
+        result = _match_captions(blocks)
+        assert len(result) == 1
+        assert result[0]["text"] == "Figure 1: a schematic."
+
+    def test_bold_marker_caption_binds(self):
+        """The gr632958 corpus shape: ``**Figure 1.**`` emphasis."""
+        blocks = [
+            self._figure('<span id="page-5-0"></span>![](_page_5_Figure_2.jpeg)'),
+            self._text("**Figure 1.** (A) Schematic illustration."),
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 1
+        assert result[0]["text"].startswith("**Figure 1.** (A) Schematic")
+        # The image placeholder is gone but the page anchor survives.
+        assert "![" not in result[0]["text"]
+        assert '<span id="page-5-0"></span>' in result[0]["text"]
+
+    @pytest.mark.parametrize(
+        "caption",
+        [
+            "Figure 2. XRD patterns of the samples.",
+            "Fig. 16. Temperature dependence.",
+            "FIGURE 3 | Atomic structure of the interface.",
+            "**Figure 4** | Cyclic voltammograms.",
+            "**Figure 5.** Charge-discharge profiles.",
+            "Figures 6 and 7. Combined view.",
+        ],
+    )
+    def test_caption_dressings_bind(self, caption):
+        blocks = [self._figure(), self._text(caption)]
+        result = _match_captions(blocks)
+        assert len(result) == 1
+        assert result[0]["text"] == caption
+
+    def test_caption_before_figure_binds(self):
+        """Journals that set the legend above the panel emit
+        caption-then-image; the caption is consumed the same way."""
+        blocks = [self._text("Figure 2: band diagram."), self._figure()]
+        result = _match_captions(blocks)
+        assert len(result) == 1
+        assert result[0]["type"] == "figure"
+        assert result[0]["text"] == "Figure 2: band diagram."
+
+    def test_surya_alt_text_kept_under_caption(self):
+        """An image-only figure carries the surya VLM panel description
+        as its text; binding the caption must not throw it away."""
+        blocks = [
+            self._figure("an SEM image of the composite surface"),
+            self._text("Figure 3: micrographs."),
+        ]
+        result = _match_captions(blocks)
+        assert result[0]["text"] == (
+            "Figure 3: micrographs.\n\nan SEM image of the composite surface"
+        )
+
+    def test_page_anchor_leading_caption_still_binds(self):
+        """Marker leads many blocks with ``<span id="page-N-M">``; the
+        anchor precedes the legend but must not block the match."""
+        blocks = [
+            self._figure(),
+            self._text('<span id="page-6-0"></span>**Figure 2.** Results.'),
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 1
+        assert "Figure 2." in result[0]["text"]
+
+    def test_prose_mention_does_not_bind(self):
+        """``Figure 4 shows …`` is prose, not a legend — the separator
+        after the number is the discriminator."""
+        blocks = [
+            self._figure(),
+            self._text("Figure 4 shows the XPS spectra of the samples."),
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 2
+        assert result[0]["text"] == ""
+
+    def test_bound_caption_cannot_be_stolen(self):
+        """After a caption binds to its figure, a following figure must
+        not peel it off again."""
+        blocks = [
+            self._text("Figure 1: overview."),
+            self._figure(),
+            self._figure(),
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 2
+        assert result[0]["text"] == "Figure 1: overview."
+        assert result[1]["text"] == ""
+
+    def test_non_text_neighbour_never_consumed(self):
+        """A heading that happens to start with a figure label is not a
+        caption block — only ``text`` blocks bind."""
+        blocks = [
+            self._figure(),
+            {"type": "section_header", "text": "Figure 1: overview."},
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 2
+        assert result[1]["type"] == "section_header"
+
+    def test_distant_caption_does_not_bind(self):
+        """A caption two blocks away is not this figure's legend."""
+        blocks = [
+            self._figure(),
+            self._text("Plain prose in between."),
+            self._text("Figure 7: spectra."),
+        ]
+        result = _match_captions(blocks)
+        assert len(result) == 3
+        assert result[0]["text"] == ""
+
+    def test_unmatched_figure_keeps_its_text(self):
+        """No caption in range → the figure block passes through
+        untouched, image placeholder and all."""
+        raw = '<span id="page-9-0"></span>![](_page_9_Figure_1.jpeg)'
+        blocks = [self._figure(raw), self._text("Unrelated prose.")]
+        result = _match_captions(blocks)
+        assert result[0]["text"] == raw
 
 
 class TestMergeSmallBlocks:
