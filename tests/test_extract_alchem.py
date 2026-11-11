@@ -380,6 +380,42 @@ class TestDiff:
         """Map entries added from the 2026-11-11 held-paper diff review."""
         assert their_key(alv("V1", alchem_term)) == precis_key
 
+    def test_seeded_measurands_pair_without_map_entries(self):
+        """gr632955: the 0305-seeded measurands pair through slug or alias
+        keys — the ALCHEM term slug equals the taxon slug or an alias, so
+        no ALCHEM_MEASURAND_MAP entry is needed."""
+        bet = OursValue(
+            id=1,
+            measurand_key="bet-surface-area",
+            measurand="BET surface area",
+            keys=frozenset({"bet-surface-area", "specific-surface-area"}),
+            subject_keys=frozenset({"ni-foam"}),
+            subject="Ni foam",
+            interval=(150000.0, 150000.0),
+            text=None,
+            canonical_unit="m^2/kg",
+            literal="",
+            reported_unit="m^2/g",
+            normalization=None,
+            reference=None,
+            attribution="own_work",
+            tier="measured",
+        )
+        d = diff_paper(
+            [
+                bet,
+                ours(2, "tafel-slope", interval=(0.042, 0.042)),
+                ours(3, "nucleation-overpotential", interval=(0.0408, 0.0408)),
+            ],
+            [
+                alv("V1", "specific_surface_area", value=150.0, unit="m2/g"),
+                alv("V2", "tafel_slope", value=42.0, unit="mV/dec"),
+                alv("V3", "nucleation_overpotential", value=40.8, unit="mV"),
+            ],
+        )
+        assert kinds(d) == ["match", "match", "match"]
+        assert d.unmapped == []
+
     def test_greedy_picks_closest(self):
         o = ours(1, "overpotential", interval=(0.0408, 0.0408))
         d = diff_paper(
