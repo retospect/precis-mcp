@@ -1,6 +1,6 @@
 """hexfold.catalogue: environment-keyed rows for seam/bulk geometry (SPEC
 §26 "cache", §25.3 `view='catalogue'`; `docs/backlog/hexfold-integration.md`
-ruling step 6; `docs/backlog/hexfold-seam-type-catalogue.md`).
+ruling step 6; spec `me628776` (graph memory)).
 
 Resolution is keyed to the local environment, not the instance
 (`docs/backlog/diamondoid-pattern-language.md`): a *rim type* (zigzag/

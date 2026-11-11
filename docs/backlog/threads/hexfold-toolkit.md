@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); catalogue R17 variant A (spec `me628806`).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -62,7 +62,7 @@ the candidate three-sheet seam junctions (control sp² Y, pre-paired
 k3-sp3-z, armchair-rim seams, channel junctions at R 4/6/8 Å, Reto's
 in/out compensation, fused-corner grafts, +1-row variants). Table with
 per-model excess energy per C, steps and held/reconstructed verdicts:
-`../hexfold-seam-type-catalogue.md#seam-junction-relax-campaign-2026-10-14-mac-local-gfn2-xtb`.
+spec `me628806` (the retired catalogue file's campaign table).
 Every authored sp² k3 seam dimerised into the k3-sp3-z chain at every
 radius; the two stable new forms landed as rows — `k3-sp3-a`
 (armchair, two chained sp3 atoms per period, lowest excess) and the
@@ -722,7 +722,7 @@ removed as met — the transport move it waited on happened 09-29)
    backlog file; it is ranked here, and the file is filed when it starts.
 6. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
-7. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
+7. **spec `me628776` (seam-type catalogue)** — the seam-motif rows the
    catalogue's third row type exists for. R17 variant A exposes the private
    equal120 joiner through an exclusive scene feature. Replay after source
    review/integration: `{"op":"generate","generator":"hexfold_scene",

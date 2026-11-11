@@ -2,8 +2,8 @@
 
 Like :mod:`hexfold.y_junction` and :mod:`hexfold.fin`, a deterministic
 analytic construction — finite sheets, minted seam atoms, no public ``.hx``
-grammar, no cyclic Port.  Two rows of
-``docs/backlog/hexfold-seam-type-catalogue.md``:
+grammar, no cyclic Port.  Two rows of the closed seam-type
+catalogue (spec ``me628806``, graph memory):
 
 - ``k4-sp3-90-a`` — four armchair-rimmed sheets at 0/90/180/270 degrees
   around a straight seam line, one degree-four carbon per armchair period

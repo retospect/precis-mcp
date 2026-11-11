@@ -244,8 +244,8 @@ measure it; it is not dropped on this evidence.
      seam and junction motifs, seeded with [2+2] and any [9-6] the sweep
      closes. The tiler places them as whole units and only synthesizes
      the rest.
-   - The library rows are the seam-motif rows of
-     `hexfold-seam-type-catalogue.md`, with a "QM-validated (method,
+   - The library rows are the seam-motif rows of the closed seam
+     catalogue (spec `me628806`), with a "QM-validated (method,
      protocol, max seam bond)" field. A motif without one is not "known
      good".
 3. **Drop [9-6] from figures and catalogue use** only if neither the

@@ -93,7 +93,7 @@ through `_block_from_net` and adds nothing.
 ## Explicitly NOT in scope
 
 - Unequal-dihedral k3 seams and k ≥ 5 (catalogue ruling, 2026-09-26:
-  refuse, do not approximate; `hexfold-seam-type-catalogue.md`).
+  refuse, do not approximate; spec `me628806`).
 - Stability, strength or printability claims; the judgement stays the
   preview-geometry one.
 - A new relaxer. `stick_relax_pinned` with per-primitive tethers is the
@@ -151,7 +151,7 @@ and in the gate against committed small goldens, not prod rows:
   `join.py::compose_k3` reused, not changed.
 - Skills `precis-hexfold-help`, `precis-se-atomic-help`.
 - Reads: `view='block'` rendering of stored scenes (must not change).
-- Sibling specs touching the same files: `hexfold-seam-type-catalogue.md`
+- Sibling specs touching the same files: the seams spec `me628776`
   (seam contracts), `hexfold-sp3-seam.md` (sp3 seam types; the
   `sp3-graft` seam kind here is the `bond` attachment of spec §11.1,
   not a new seam type).

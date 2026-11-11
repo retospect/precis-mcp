@@ -9,7 +9,7 @@ title: A typed instrumentation leg on an unequal 3-sheet seam
 What: Reto's torus (product-plan review, 2026-09-30) — a 3-sheet sp²
 join where two sheets carry structure and the third leg carries
 instrumentation (a sensing/actuation port), rather than three structural
-sheets. `hexfold-seam-type-catalogue.md` records Reto's ruling: "joining 3
+sheets. The closed seam catalogue (spec `me628806`) records Reto's ruling: "joining 3
 sheets unequally we just don't do yet" — the catalogue's `k=3 unequal` row
 is explicitly OUT ("Refuse, do not approximate"). The shipped "flanged
 doughnut" case is a k=3 seam of three *equal* sheets, which the catalogue
@@ -23,7 +23,7 @@ structural sheets" and may not need the same refusal. Worth a typed
 exception (a port-role leg on an otherwise-equal seam) rather than
 reopening the general unequal-join question.
 
-Owner anchor: `docs/backlog/hexfold-seam-type-catalogue.md` (the k=3 row
+Owner anchor: spec `me628806` (the k=3 row
 this item proposes narrowing, not overturning); `hexfold-sp3-seam.md` (the
 three/four-sheet sp³ join this sits next to).
 
@@ -32,7 +32,7 @@ with two equal structural sheets + one leg tagged `role=instrumentation`,
 building and `check`-passing under a narrowed catalogue rule, while a
 three-*structural*-unequal-sheet seam still refuses.
 
-Closest existing items: `hexfold-sp3-seam.md`, `hexfold-seam-type-catalogue.md`
-(the ruling this item proposes a narrow exception to), the rotary ratchet
+Closest existing items: `hexfold-sp3-seam.md`, the seams spec group
+`me628776` (holding the ruling this item proposes a narrow exception to), the rotary ratchet
 valve spec `me628980` (group `me628987`).
 Blocked-by: `hexfold-integration.md`.

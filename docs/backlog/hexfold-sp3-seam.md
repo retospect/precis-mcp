@@ -29,7 +29,7 @@ xTB-relaxed seam lengths, seam angles 106.54°×3 + 112.24°×3).
 Wrong rim type is `port.mismatch`; unequal dihedrals, odd
 k3 period counts and k ≥ 5 are `fit.unsolvable` before build. Seam ring
 censuses are derived from the built graphs and recorded in
-`hexfold-seam-type-catalogue.md`'s row table. Public `.hx` grammar was
+spec `me628806`'s row table. Public `.hx` grammar was
 not extended — the construction is private, exactly like the Y and the
 fins. What remains in this item is the vertex, not the line.
 

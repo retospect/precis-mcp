@@ -386,7 +386,7 @@ N)`; anything else — chiral tube ends, cap rims, hole rims — is mixed
 types are not interchangeable: a zigzag rim's dangling bonds sit at 90°
 to the rim line, an armchair's at 60°, so a 120° three-sheet sp² seam
 needs zigzag and a 90° four-sheet sp³ seam needs armchair (§6.2, the
-seam-type catalogue in `docs/backlog/`). Two rims fuse iff `N` matches,
+seam-type catalogue — spec `me628805`). Two rims fuse iff `N` matches,
 up to the phase `k` — unchanged; a pure-zigzag onto pure-armchair fuse of
 equal `N` is the **30° grain-boundary adapter**, its seam rings the
 alternating 5-7 line reported by `seam.rings`. **Preferred series:** `N ∈

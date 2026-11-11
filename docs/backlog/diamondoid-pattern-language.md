@@ -36,8 +36,8 @@ regimes, of which the tree has one and a half:
    different materials.
 
 What makes the framework generic across lattices is the **port type**: a
-rim `(edge-word, N)` for sp² (`hexfold-seam-type-catalogue.md` owns the
-sp² standard), a `(hkl)` facet with a termination pattern for diamondoid,
+rim `(edge-word, N)` for sp² (spec `me628807` owns the
+sp² rim standard), a `(hkl)` facet with a termination pattern for diamondoid,
 a mating face at metres. Same `GeneratedPort`, different `roles` and
 payload, typed adapters between them. This item exists so that the port
 type system is designed for two lattices from the start rather than
@@ -180,7 +180,7 @@ validation cost scale with seam atoms, not total atoms. Consequences:
 - The seams become the load-bearing design objects: the interior of a
   block is trivial once resolved, so the catalogue of *seam types* (rim
   standard, facet register, rim-facet adapter) is where correctness and
-  strain live. `hexfold-seam-type-catalogue.md` grows from an sp2 list
+  strain live. The seams spec `me628776` grows from an sp2 list
   into the framework's join catalogue.
 
 ## Three-zone resolved block, tolerance mapping, joiner (ruled 2026-09-27, "complete, plan, then build")

@@ -163,7 +163,7 @@ state against §28 and §25, not a second roadmap). **Revised 2026-09-27
    land in `diamondoid-pattern-language.md`; a test pins the decay.
 1. Declare the **rim standard** in the spec (§10/§7) — two rim types,
    multiples of 6, the 30° grain-boundary adapter; proposal in
-   `hexfold-seam-type-catalogue.md`. Same slice: **reserve the port
+   spec `me628807`. Same slice: **reserve the port
    payload** — `GeneratedPort` grows `lattice` + a typed `payload` slot,
    hexfold fills `{kind: rim, word, N, type}`; the sp³ facet is the second
    instance later. First, so `options` searches a typed space.
