@@ -66,5 +66,6 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
 
 ## Parked
 
-- **backlog/cnt-channel-staged-catalysis.md** — the general channel
-  concept and its reading list; unparks with T2.
+- **spec group `me628982`** — the general channel concept and its
+  reading list (graph memory: design `me628989`, papers `me628990`);
+  unparks with T2.

@@ -359,16 +359,13 @@ the dated detail is in `git log` and the owning items):**
   writes. qu164903's tier promotion is paused until then (Reto runs the
   meta write; the undo is in design note §19).
 
-- **backlog/cnt-channel-staged-catalysis.md** (dormant, Reto 2026-10-03):
-  a carbon channel whose arc-and-rib interior holds each intermediate of a
-  staged reaction in one pose. Blocked on hexfold building a three-arc
-  cross-section with ribs; no quest until then. 18 papers listed. Two
-  read passes (8 fetched papers, 2026-10-03) minted 20 hubs and stubbed 5
-  primaries the reviews cite. Both are listed in the item. The next pass
-  waits on 13 unfetched papers (KcsA, CPS and 3 of the 5 stubs). Hilario
-  2016 and Anderson 1991 are held as of 2026-10-04. Its concrete NO→NH₃
-  instance and design toolchain moved to the nanoreactor thread
-  (2026-10-04).
+- **Staged-catalysis carbon channel** (dormant, Reto 2026-10-03; spec
+  group `me628982`, graph memory): a carbon channel whose arc-and-rib
+  interior holds each intermediate of a staged reaction in one pose.
+  Design principles and open questions at `me628989`; the two paper
+  passes (finding ids, stubbed primaries, unfetched list) at `me628990`.
+  Its concrete NO→NH₃ instance and design toolchain moved to the
+  nanoreactor thread (2026-10-04).
 
 - **Three dormant quests owned by this thread** (Reto 2026-10-03, td460284
   for the two NO arms; qu207188 added the same day via review session).
