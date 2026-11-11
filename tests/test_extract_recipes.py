@@ -87,6 +87,7 @@ VOCAB = {
     25: _entry(25, "formation-energy", "formation energy", "eV", "heat of formation"),
     26: _entry(26, "adsorption-energy", "adsorption energy", "eV", "E_ads"),
     27: _entry(27, "absorption-energy", "absorption energy", "eV", "E_abs"),
+    28: _entry(28, "half-wave-potential", "half-wave potential", "V", "E_1/2"),
 }
 
 
@@ -484,6 +485,68 @@ class TestDrops:
         assert "subject axis" in drops[0]["detail"]
         assert len(runs) == 8
         assert all(r.output.meta["table"]["col"] != 1 for r in runs)
+
+
+class TestTableReference:
+    """gr632956: a potential column's reference prints in the header or
+    caption ('(V vs RHE)', 'potentials vs NHE'), never per cell — the
+    recipe expander fills ``reference`` off that evidence."""
+
+    def _potential_recipe(self, unit: str | None = "V") -> dict[str, Any]:
+        return {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "half-wave-potential",
+                        "unit": unit,
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+
+    def test_header_reference_fills_each_cell(self) -> None:
+        text = "| Site | E_1/2 (V vs RHE) |\n|---|---|\n| A | -0.35 |\n| B | -0.41 |"
+        runs, drops = _expand(text, self._potential_recipe(), caption=None)
+        assert drops == []
+        assert len(runs) == 2
+        assert all(r.output.reference == "RHE" for r in runs)
+
+    def test_caption_reference_fills_each_cell(self) -> None:
+        text = "| Site | E_1/2 (mV) |\n|---|---|\n| A | -350 |\n| B | -410 |"
+        recipe = self._potential_recipe(unit="mV")
+        runs, drops = _expand(
+            text, recipe, caption=(77, "Table 1. Onset potentials, all vs NHE.")
+        )
+        assert drops == []
+        assert len(runs) == 2
+        assert all(r.output.reference == "NHE" for r in runs)
+
+    def test_non_potential_column_ignores_a_caption_reference(self) -> None:
+        text = "| Site | rate (s^-1) |\n|---|---|\n| A | 0.5 |"
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "rate", "unit": "s^-1", "role": "output"}
+                ],
+            }
+        }
+        runs, _ = _expand(text, recipe, caption=(77, "Table 2. Rates measured vs RHE."))
+        (run,) = runs
+        assert run.output.reference is None
+
+    def test_override_reference_beats_printed_evidence(self) -> None:
+        text = "| Site | E_1/2 (V vs RHE) |\n|---|---|\n| A | -0.35 |"
+        recipe = self._potential_recipe()
+        recipe["table"]["overrides"] = {"0:1": {"reference": "SHE"}}
+        runs, _ = _expand(text, recipe, caption=None)
+        (run,) = runs
+        assert run.output.reference == "SHE"
 
 
 def _one_series(

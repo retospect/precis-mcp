@@ -72,9 +72,13 @@ _PARSE_ERRORS: Final[tuple[type[Exception], ...]] = (
 )
 
 #: ``mg_cat`` -> label ``cat``. The label is letters then letters/digits, so it
-#: stops at a Unicode superscript, a caret or a minus.
+#: stops at a Unicode superscript, a caret or a minus. The ``_`` may follow a
+#: bare digit or a superscript digit too — ``cm2_ECSA``/``cm²_ECSA`` carry a
+#: basis the letter-only lookbehind dropped before the unit ever parsed
+#: (gr632956). An electrode reference (``V_RHE``) is NOT a basis: it is claimed
+#: by ``split_reference`` before this regex runs.
 _BASIS_LABEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?<=[A-Za-zµμ])_([A-Za-z][A-Za-z0-9]*)"
+    r"(?<=[A-Za-z0-9µμ⁰¹²³⁴⁵⁶⁷⁸⁹])_([A-Za-z][A-Za-z0-9]*)"
 )
 
 _SUBSCRIPT_DIGITS: Final[dict[int, str]] = {
@@ -175,6 +179,121 @@ def split_basis_label(raw_unit: str) -> tuple[str, str | None]:
     return _BASIS_LABEL_RE.sub("", raw_unit), (labels[0] if labels else None)
 
 
+#: The electrode references print names — ``'vs RHE'`` after a potential,
+#: ``V_RHE`` folded into the unit. Stored on ``measures.reference``, never in
+#: the unit (gr632956: a reference left in the unit spelling either broke the
+#: pint parse or, worse, read as a ``_RHE`` basis label). The value is the
+#: canonical spelling. Only unambiguous electrode names are listed — a bare
+#: element is comparative English ('vs Pt' = versus platinum), never a
+#: reference electrode, so none appears here.
+_ELECTRODE_REFS: Final[dict[str, str]] = {
+    "rhe": "RHE",
+    "nhe": "NHE",
+    "she": "SHE",
+    "sce": "SCE",
+    "ssce": "SSCE",
+    "mse": "MSE",
+    "ag/agcl": "Ag/AgCl",
+    "ag/ag+": "Ag/Ag+",
+    "ag/agno3": "Ag/AgNO3",
+    "hg/hgo": "Hg/HgO",
+    "hg/hg2cl2": "Hg/Hg2Cl2",
+    "hg/hg2so4": "Hg/Hg2SO4",
+    "li/li+": "Li/Li+",
+    "na/na+": "Na/Na+",
+    "k/k+": "K/K+",
+    "zn/zn2+": "Zn/Zn2+",
+    "cu/cu2+": "Cu/Cu2+",
+    "mg/mg2+": "Mg/Mg2+",
+    "fc/fc+": "Fc/Fc+",
+    "fc+/fc": "Fc+/Fc",
+}
+
+#: Acronym references (``RHE``, ``SCE``) match case-sensitively — 'vs she' is
+#: English, not an electrode; the slash forms (``Ag/AgCl``, ``Li/Li+``) match
+#: case-insensitively since 'ag/agcl' cannot be prose.
+_REF_ACR: Final[str] = "|".join(
+    sorted(
+        (re.escape(v) for v in _ELECTRODE_REFS.values() if "/" not in v),
+        key=len,
+        reverse=True,
+    )
+)
+_REF_SLASH: Final[str] = "|".join(
+    sorted(
+        (re.escape(k) for k in _ELECTRODE_REFS if "/" in k),
+        key=len,
+        reverse=True,
+    )
+)
+_REF_ALT: Final[str] = rf"(?:{_REF_ACR}|(?i:{_REF_SLASH}))"
+#: What follows the reference token — not alnum or a '+'/'-' sign of a
+#: continued electrode (``Ag/Ag+``).
+_REF_TAIL: Final[str] = r"(?![A-Za-z0-9])"
+
+#: A trailing 'vs <electrode>' qualifier on a unit — 'V vs RHE',
+#: 'V (vs. RHE)', 'mV vs Ag/AgCl (sat. KCl)' — with the parenthetical
+#: electrolyte a printed reference spec often carries.
+_UNIT_VS_REF_RE: Final[re.Pattern[str]] = re.compile(
+    rf"[\s(]*vs\.?\s+(?P<ref>{_REF_ALT})(?:\s*\([^()]*\))?[\s)]*\s*$"
+)
+
+#: 'V_RHE' / 'mV_SHE' — the reference folded in with an underscore: the same
+#: slot a basis label takes, claimed here first so '_RHE' never reads as
+#: 'per RHE' normalization.
+_UNIT_USCORE_REF_RE: Final[re.Pattern[str]] = re.compile(
+    rf"_(?P<ref>{_REF_ALT}){_REF_TAIL}"
+)
+
+#: 'vs RHE' / 'vs. Ag/AgCl' printed in prose after the value — the whitelist
+#: keeps the comparative 'vs Pt'/'vs the control' out.
+_PRINTED_REF_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?<![A-Za-z])vs\.?\s+(?P<ref>{_REF_ALT}){_REF_TAIL}"
+)
+
+
+def _ref_canonical(token: str) -> str:
+    return _ELECTRODE_REFS.get(token.lower(), token)
+
+
+def split_reference(raw_unit: str | None) -> tuple[str, str | None]:
+    """``('V', 'RHE')`` — the electrode reference a printed unit folds in
+    ('V vs RHE', 'V_RHE', 'mV vs. Ag/AgCl (sat. KCl)') split off so the unit
+    parses and the reference lands on ``measures.reference``.
+    ``(text, None)`` when the unit carries none; a basis label (``_ECSA``)
+    is left for ``split_basis_label``. The text is markup-folded."""
+    text = markup_unit(raw_unit or "").strip()
+    if not text:
+        return "", None
+    m = _UNIT_VS_REF_RE.search(text) or _UNIT_USCORE_REF_RE.search(text)
+    if m is None:
+        return text, None
+    rest = (text[: m.start()] + text[m.end() :]).strip(" ()")
+    return rest, _ref_canonical(m.group("ref"))
+
+
+def printed_reference(text: str | None) -> str | None:
+    """The one electrode reference the text prints ('vs RHE'), canonicalised —
+    ``None`` when it names none, or several distinct ones (a 'vs SHE … vs
+    RHE' span claims neither)."""
+    flat = markup_surface(text or "")
+    refs = {_ref_canonical(m.group("ref")) for m in _PRINTED_REF_RE.finditer(flat)}
+    return refs.pop() if len(refs) == 1 else None
+
+
+def is_potential_unit(unit_text: str | None) -> bool:
+    """``unit_text`` names an electric potential (``V``, ``mV`` …) — the one
+    quantity an electrode reference ('vs RHE') qualifies."""
+    text = (unit_text or "").strip()
+    if not text:
+        return False
+    try:
+        unit, _, _ = _parse_unit(text, what="potential")
+    except BadInput:
+        return False
+    return bool(unit.dimensionality == _registry().Unit("V").dimensionality)
+
+
 def basis_normalization(label: str) -> str:
     """The ``measures.normalization`` text for a unit basis label."""
     if label.lower() in ("cat", "catalyst"):
@@ -237,11 +356,26 @@ def _currency_symbols_to_codes(text: str) -> str:
     return text
 
 
+#: A squared/cubed extent spelled as a bare digit on a length unit — 'cm2',
+#: 'mA/cm2', 'ft3' — which pint refuses but which is unambiguous in a unit
+#: slot ('H2'/'O2' molecules are not length units and never match).
+_SQ_CUBED_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-zµ])(cm|mm|dm|km|nm|µm|pm|in|ft|yd|mi|m)(\d+)(?!\d)"
+)
+
+
 def _pint_unit_ex(raw_unit: str) -> tuple[str, str | None, str | None]:
-    """``(text pint can parse, basis label, gas qualifier)``."""
+    """``(text pint can parse, basis label, gas qualifier)``. An electrode
+    reference folded into the unit ('V vs RHE', 'V_RHE') is stripped — it is
+    recorded by the caller on ``measures.reference``, not a unit token."""
     text = _currency_symbols_to_codes(raw_unit.strip())
-    stripped, label = split_basis_label(markup_unit(text))
+    # Unicode superscripts fold to caret exponents BEFORE markup_unit's ASCII
+    # fold flattens them to bare digits — 'cm²' -> 'cm^2', not 'cm2'.
+    text = _normalize_unit_candidate(text)
+    text, _reference = split_reference(text)
+    stripped, label = split_basis_label(text)
     text = _normalize_unit_candidate(stripped)
+    text = _SQ_CUBED_RE.sub(r"\1^\2", text)
     text, gas = _strip_gas_qualifier(text)
     if text.replace(" ", "") in ("%", "percent", "mol%"):
         # mol% is a percent of an amount fraction: dimensionless like %, which

@@ -131,6 +131,7 @@ from precis.taxonomy.measure_units import (
     molar_mass,
     parse_literal,
     si_form,
+    split_reference,
     to_canonical,
 )
 from precis.taxonomy.money import (
@@ -1113,6 +1114,25 @@ class MeasuresMixin:
         has_numbers = any(v is not None for v in (num, low, high))
         conditions = dict(spec.conditions or {})
 
+        # An electrode reference folded into the unit spelling ('V vs RHE',
+        # 'V_RHE') belongs on the reference column, never in the unit
+        # (gr632956): a spec.reference naming a DIFFERENT one contradicts the
+        # printed unit, and a wrong reference is worse than none — refuse.
+        reference = spec.reference
+        if reported_unit:
+            unit_text, unit_ref = split_reference(reported_unit)
+            if unit_ref is not None:
+                if reference is not None and slugify(reference) != slugify(unit_ref):
+                    raise BadInput(
+                        f"reference {reference!r} contradicts the electrode "
+                        f"reference folded into reported_unit "
+                        f"{spec.reported_unit!r}",
+                        next="state the reference once — reference='RHE' or "
+                        "reported_unit='V vs RHE', not both",
+                    )
+                reference = unit_ref
+                reported_unit = unit_text or None
+
         # currency (gr510555 slice 1): the reported_unit's token is recorded,
         # never converted; the price year comes from the token or the field,
         # and a disagreement between the two is refused
@@ -1350,7 +1370,7 @@ class MeasuresMixin:
                     flag,
                     err,
                     form,
-                    spec.reference,
+                    reference,
                     spec.tier,
                     spec.origin,
                     status,

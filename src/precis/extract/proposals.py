@@ -71,7 +71,11 @@ from precis.extract import anchors as _anchors
 from precis.extract import verify as _verify
 from precis.extract.tables import _is_table_separator, _table_line_cells
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
-from precis.taxonomy.measure_units import parse_literal
+from precis.taxonomy.measure_units import (
+    is_potential_unit,
+    parse_literal,
+    printed_reference,
+)
 from precis.utils.text import slugify
 
 _ATTRIBUTIONS = {"own_work", "cited_work", "not_established"}
@@ -487,6 +491,16 @@ def build_runs(
         if not _verify.unit_has_text_support(unit, chunk_text):
             flags.append("unit_without_text_support")
 
+        # gr632956: the reader rarely fills ``reference`` even when the
+        # evidence prints it — 'vs RHE' after a potential is taken off the
+        # span, else the whole chunk when it names one reference state; a
+        # potential without it cannot be compared (−0.75 V vs RHE ≠ −0.75 V
+        # vs SHE). Only a potential measurand can carry one: 'vs RHE' on a
+        # current-density sentence conditions the input, not the result.
+        reference = raw["reference"] if isinstance(raw.get("reference"), str) else None
+        if reference is None and is_potential_unit(entry.canonical_unit):
+            reference = printed_reference(span_text) or printed_reference(chunk_text)
+
         # The numeric channels — bound, sign, range — all check their
         # claim against what the span prints just before the literal. An
         # uncued claim is a guess (dropped), an opposite cue a misread
@@ -752,9 +766,7 @@ def build_runs(
             subject=raw["subject"] if isinstance(raw.get("subject"), str) else None,
             subject_group=(raw["group"] if isinstance(raw.get("group"), str) else None),
             value_form=value_form,
-            reference=(
-                raw["reference"] if isinstance(raw.get("reference"), str) else None
-            ),
+            reference=reference,
             tier=_tier(attribution, raw.get("tier")),
             source_attribution=attribution,
             measurand_status=status,

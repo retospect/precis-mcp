@@ -227,7 +227,13 @@ from precis.extract.tables import (
     printed_unit,
 )
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
-from precis.taxonomy.measure_units import NeedsMolarMass, make_converter, parse_literal
+from precis.taxonomy.measure_units import (
+    NeedsMolarMass,
+    is_potential_unit,
+    make_converter,
+    parse_literal,
+    printed_reference,
+)
 from precis.taxonomy.money import split_currency
 from precis.utils.text import markup_surface, slugify
 
@@ -2324,6 +2330,20 @@ def expand_recipe(
                     meta["transform"] = eff_spec.transform
                     if printed_value is not None:
                         meta["printed_value"] = printed_value
+                # gr632956: an electrode reference printed in the column
+                # label, caption or table notes ('(V vs RHE)', 'potentials
+                # are vs NHE') fills the reference a potential series never
+                # carries per cell — only for a potential measurand, and an
+                # override always wins.
+                reference = (
+                    over["reference"]
+                    if isinstance(over.get("reference"), str)
+                    else None
+                )
+                if reference is None and is_potential_unit(out_entry.canonical_unit):
+                    reference = printed_reference(
+                        " ".join(p for p in (label, cap_text, notes_text) if p)
+                    )
                 output = MeasureSpec(
                     measurand_ref_id=out_entry.ref_id,
                     literal=literal,
@@ -2339,11 +2359,7 @@ def expand_recipe(
                     value_text=text_v,
                     value_bool=flag_v,
                     value_form=form,
-                    reference=(
-                        over["reference"]
-                        if isinstance(over.get("reference"), str)
-                        else None
-                    ),
+                    reference=reference,
                     tier=tier,
                     source_attribution=attribution,
                     measurand_status=status,

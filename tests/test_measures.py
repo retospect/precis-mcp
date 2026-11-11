@@ -509,6 +509,125 @@ class TestGuards:
             )
 
 
+class TestElectrodeReference:
+    """gr632956: an electrode reference folded into the printed unit
+    ('V vs RHE', 'V_RHE') lands on ``measures.reference`` — never in
+    reported_unit, and never misread as a ``_RHE`` basis normalization."""
+
+    def test_vs_reference_splits_off_the_unit(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["potential"],
+                "-0.75",
+                world["paper"],
+                reported_unit="V vs RHE",
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reference"] == "RHE"
+        assert row["reported_unit"] == "V"
+        assert row["value_num"] == -0.75
+
+    def test_underscore_form_is_a_reference_not_a_basis(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # 'V_RHE' used to read 'RHE' as a basis label and store
+        # 'per RHE' in normalization — the reference column went empty.
+        run = store.insert_measure(
+            MeasureSpec(
+                world["potential"], "-0.5", world["paper"], reported_unit="V_RHE"
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reference"] == "RHE"
+        assert row["reported_unit"] == "V"
+        assert row["normalization"] is None
+
+    def test_electrolyte_parenthetical_splits(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["potential"],
+                "-350",
+                world["paper"],
+                reported_unit="mV vs. Ag/AgCl (sat. KCl)",
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reference"] == "Ag/AgCl"
+        assert row["reported_unit"] == "mV"
+        assert row["value_num"] == pytest.approx(-0.35)
+
+    def test_a_contradicting_spec_reference_is_refused(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        with pytest.raises(BadInput, match="contradicts"):
+            store.insert_measure(
+                MeasureSpec(
+                    world["potential"],
+                    "-0.5",
+                    world["paper"],
+                    reported_unit="V vs RHE",
+                    reference="SHE",
+                ),
+                actor="reader",
+            )
+
+    def test_same_reference_spelled_in_both_places_lands(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["potential"],
+                "-0.5",
+                world["paper"],
+                reported_unit="V vs RHE",
+                reference="RHE",
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reference"] == "RHE" and row["reported_unit"] == "V"
+
+    def test_an_explicit_reference_without_a_unit_reference_stays(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["potential"],
+                "-0.5",
+                world["paper"],
+                reported_unit="V",
+                reference="NHE",
+            ),
+            actor="reader",
+        )
+        assert _row(store, run.output_id)["reference"] == "NHE"
+
+    def test_basis_after_a_superscript_digit_fills_normalization(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # gr632956's second half: 'mA/cm²_ECSA' — the '_' sits after a
+        # superscript digit, which the letter-only basis regex never saw,
+        # so normalization stayed empty even though the unit parsed.
+        j = _taxon(store, "current density", unit="A m-2", parent=world["start"])
+        run = store.insert_measure(
+            MeasureSpec(j, "10", world["paper"], reported_unit="mA/cm²_ECSA"),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["normalization"] == "per ECSA"
+        assert row["normalization_status"] == "explicit"
+        assert row["reported_unit"] == "mA/cm²_ECSA"
+        assert row["value_num"] == pytest.approx(100.0)
+
+
 # ── AC 3: round trips of the hand-built fixture rows ───────────────────────
 
 

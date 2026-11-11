@@ -21,9 +21,12 @@ from precis.extract.proposals import (
 )
 from precis.store import Store
 from precis.taxonomy.measure_units import (
+    is_potential_unit,
     make_converter,
     parse_literal,
     pint_unit_text,
+    printed_reference,
+    split_reference,
 )
 from tests.extract_helpers import (
     CHUNK1,
@@ -794,6 +797,198 @@ class TestProposals:
         (prop,) = out.proposals
         assert prop.output.value_form == "categorical"
         assert prop.output.measurand_ref_id == world["product"]
+
+
+# ── electrode reference (gr632956) ───────────────────────────────────
+
+
+class TestReferenceHelpers:
+    @pytest.mark.parametrize(
+        ("unit", "rest", "ref"),
+        [
+            ("V vs RHE", "V", "RHE"),
+            ("V_RHE", "V", "RHE"),
+            ("mV vs. Ag/AgCl", "mV", "Ag/AgCl"),
+            ("V vs Ag/AgCl (sat. KCl)", "V", "Ag/AgCl"),
+            ("V (vs SHE)", "V", "SHE"),
+            ("V vs NHE", "V", "NHE"),
+            ("mV_SSCE", "mV", "SSCE"),
+            ("V vs Li/Li+", "V", "Li/Li+"),
+            ("V vs Pt", "V vs Pt", None),  # comparative English, no electrode
+            ("mA/cm²_ECSA", "mA/cm2_ECSA", None),  # a basis, not a reference
+            ("V", "V", None),
+        ],
+    )
+    def test_split_reference(
+        self, unit: str, rest: str | None, ref: str | None
+    ) -> None:
+        got_text, got_ref = split_reference(unit)
+        if rest is None:
+            assert got_text == ""
+        else:
+            assert got_text == rest
+        assert got_ref == ref
+
+    @pytest.mark.parametrize(
+        ("text", "ref"),
+        [
+            ("reached -0.75 V vs RHE at pH 7", "RHE"),
+            ("potentials vs NHE. j at -0.2 V", "NHE"),
+            ("vs RHE and vs SHE", None),  # two distinct references
+            ("vs she expected", None),  # lowercase 'she' is English
+            ("vs Pt", None),
+            ("no reference named", None),
+        ],
+    )
+    def test_printed_reference(self, text: str, ref: str | None) -> None:
+        assert printed_reference(text) == ref
+
+    def test_is_potential_unit(self) -> None:
+        assert is_potential_unit("V") and is_potential_unit("mV")
+        assert not is_potential_unit("%")
+        assert not is_potential_unit("eV")
+        assert not is_potential_unit(None)
+
+    def test_vs_form_reaches_pint_as_a_bare_unit(self) -> None:
+        assert pint_unit_text("V vs RHE") == ("V", None)
+        # '_RHE' is claimed as a reference before the basis regex — no
+        # 'per RHE' normalization ever again.
+        assert pint_unit_text("V_RHE") == ("V", None)
+
+    def test_basis_after_a_superscript_digit(self) -> None:
+        conv = make_converter("mA/cm²_ECSA", "A m-2")
+        assert conv is not None and conv.label == "ECSA"
+        conv2 = make_converter("mA/cm2_ECSA", "A m-2")
+        assert conv2 is not None and conv2.label == "ECSA"
+
+
+def _potential_result(**kw: object) -> dict:
+    result: dict = {
+        "measurand": "applied-electrode-potential",
+        "literal": "-0.75",
+        "unit": "V",
+        "anchor": "0",
+        "attribution": "own_work",
+    }
+    result.update(kw)
+    return {"results": [result]}
+
+
+class TestReferenceCapture:
+    """gr632956: the reader's ``reference`` field comes back empty ~97%
+    of the time even though the evidence prints 'vs RHE' — the span (or
+    the whole chunk when it names one reference state) fills it, but
+    only for a potential measurand."""
+
+    def test_vs_reference_in_the_span_fills_reference(self, world: dict) -> None:
+        text = "The onset potential reached -0.75 V vs RHE in 0.1 M KOH."
+        out = build_runs(
+            _potential_result(),
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference == "RHE"
+
+    def test_reference_stated_elsewhere_in_the_chunk(self, world: dict) -> None:
+        # 'all potentials are vs SHE' one sentence over is a checkable,
+        # unambiguous claim — the sampler sees the whole chunk.
+        text = "All potentials are reported vs SHE. The onset was -0.2 V."
+        reply = _potential_result(literal="-0.2", anchor="1")
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference == "SHE"
+
+    def test_span_reference_wins_over_chunk_ambiguity(self, world: dict) -> None:
+        text = "The value was -0.5 V vs RHE. Other labs converted from vs SHE."
+        out = build_runs(
+            _potential_result(literal="-0.5"),
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        # The chunk names two references (ambiguous at chunk level) but
+        # the anchored span names RHE alone — the span's claim wins.
+        (prop,) = out.proposals
+        assert prop.output.reference == "RHE"
+
+    def test_ambiguous_span_stays_empty(self, world: dict) -> None:
+        text = "Both -0.5 V vs RHE and vs SHE readings were taken."
+        out = build_runs(
+            _potential_result(literal="-0.5"),
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference is None
+
+    def test_no_reference_is_sniffed_on_a_non_potential(self, world: dict) -> None:
+        # CHUNK1's sentence 0 prints 'vs RHE' — it qualifies the -0.5 V
+        # input condition, never the Faradaic efficiency result.
+        out = build_runs(
+            fe_reply(),
+            chunk_id=world["c1"],
+            chunk_text=CHUNK1,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference is None
+
+    def test_an_explicit_reader_reference_wins(self, world: dict) -> None:
+        text = "The onset reached -0.75 V vs RHE."
+        reply = _potential_result(reference="NHE")
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference == "NHE"
+
+    def test_a_unit_carried_reference_stays_for_the_store(self, world: dict) -> None:
+        # 'V vs RHE' as the reported unit: build_runs leaves reference
+        # unset (the span names no other reference) and the store splits
+        # the unit itself — pinned in test_measures.TestElectrodeReference.
+        text = "The onset reached -0.75 V vs RHE."
+        reply = _potential_result(unit="V vs RHE")
+        out = build_runs(
+            reply,
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reported_unit == "V vs RHE"
+        assert prop.output.reference == "RHE"  # span-sniff agrees
 
 
 # ── Wilson acceptance ────────────────────────────────────────────────
