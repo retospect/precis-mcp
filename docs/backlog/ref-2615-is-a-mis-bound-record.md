@@ -73,7 +73,7 @@ supplement; the mining paper, if wanted, is a fresh import.
 
 ## Related
 
-`docs/backlog/nanobud-claim-remediation.md` — fi269509 is one of its
+`me630788` (graph memory; was `docs/backlog/nanobud-claim-remediation.md`) — fi269509 is one of its
 hubs. `docs/backlog/ingest-strips-greek-glyphs.md` is a
 different defect in the same "the evidence is not what it claims to be"
 family.

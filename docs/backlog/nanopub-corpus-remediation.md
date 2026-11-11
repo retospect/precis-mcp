@@ -766,7 +766,7 @@ The nine under 0.05 — the actionable set:
 | 0.0445 | `fi176919` / `fi177522` | contact resistance "at a single metal-molecule-metal interface" vs "per molecular interface" |
 
 Note the corpus is not only nanobuds — most of this cohort is the
-molecular-machines material, so the sweep is not a nanobud-campaign task and
+molecular-machines material, so the sweep is not a nanobuds-paper-campaign task and
 should not wait on it.
 
 ### These are four different problems wearing one shape

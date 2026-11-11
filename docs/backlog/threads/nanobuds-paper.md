@@ -377,7 +377,7 @@ td173019.
 3. **spec `me629936`** §rigidity screen (`me629928`) and
    hexfold-toolkit Horizon 17 (Cases A–D sublattice test) — the residue
    of se-nanobud-graph (folded 2026-10-21), both via the hexa session.
-4. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
+4. **graph memory `me630788`** (was `backlog/nanobud-claim-remediation.md`, transferred 2026-11-11, gr629126);
    brings the 139 claim hubs behind the nanobud draft above board — direct
    input to this thread's own claim-hub-signing end state. 2026-10-02 pass
    done (fi189536 grounded, dc2445930 cut); open = the non-empirical
@@ -400,10 +400,10 @@ td173019.
    itself (arXiv/Zenodo submission) is Reto's: td459586, qu459585's
    October todo. td459586's own text still names td450081 (venue) as a
    hold; that todo is done (Nanoscale, 2026-10-01).
-4. **backlog/nanobud-campaign.md**
-5. **backlog/nanobud-nomenclature-paper.md** — unblocked: hexfold's `.hx`
+4. **graph memory under `me474447`** (was `backlog/nanobud-campaign.md`; items `me630780`–`me630787`)
+5. **graph memory under `me628772`** (was `backlog/nanobud-nomenclature-paper.md`; `me630801`–`me630806`) — unblocked: hexfold's `.hx`
    notation is the name.
-6. **backlog/nanobud-magnetomechanical-memory.md**
+6. **graph memory under `me628772`** (was `backlog/nanobud-magnetomechanical-memory.md`; `me630795`–`me630798`)
 7. **backlog/chern-domain-memory-in-the-sheet-generator.md**
 8. **backlog/berry-phase-and-topological-defects-in-precis-models.md**
 9. **backlog/bond-critical-points-in-structure-model.md**

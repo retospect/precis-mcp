@@ -541,6 +541,6 @@ extracted passage text underneath them. This is an ingest-side defect.
 
 ### Related
 
-`docs/backlog/nanobud-claim-remediation.md` — found while stamping
+`me630788` (graph memory; was `docs/backlog/nanobud-claim-remediation.md`) — found while stamping
 Phase 2 verdicts. The hub itself is correct and was stamped; only the
 underlying chunk is wrong.

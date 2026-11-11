@@ -22,7 +22,7 @@ prio: high
 > Options 2/3 below are superseded by Part 1's D1/D2.
 
 Found 2026-08-29 while auditing the 4 disputed hubs behind the nanobud
-draft (`docs/backlog/nanobud-claim-remediation.md`). Three of the four
+draft (graph memory `me630794`; was `docs/backlog/nanobud-claim-remediation.md`). Three of the four
 turned out to be contradicted not by opposing evidence but by **review
 findings filed against the draft's prose**:
 
