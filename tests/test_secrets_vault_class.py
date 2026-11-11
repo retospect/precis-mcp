@@ -116,7 +116,10 @@ def _as(dsn: str, role: str, stmt: str, params: tuple = ()):
         ("svc/infra/hpc_ssh_key", "infra"),
         ("svc/api/openalex", "api"),
         ("user/7/feed", "user"),
-        ("CLAUDE_CODE_OAUTH_TOKEN", "infra"),
+        (
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "api",
+        ),  # 0304: the mint-door judge runs as agent_rw
         ("MELUXINA_SSH_u104186", "infra"),
         ("ANKI_PASSWORD:reto", "infra"),
         ("email.rs@example.org.password", "infra"),
@@ -267,7 +270,7 @@ _DEL = "SELECT vault.delete_secret(%s)"
 
 
 @pytest.mark.parametrize(
-    "name", ["svc/infra/hpc_ssh_key", "CLAUDE_CODE_OAUTH_TOKEN", "ANKI_PASSWORD:reto"]
+    "name", ["svc/infra/hpc_ssh_key", "MELUXINA_SSH_u104186", "ANKI_PASSWORD:reto"]
 )
 def test_agent_rw_cannot_overwrite_or_delete_infra(
     wtx: psycopg.Connection, name: str

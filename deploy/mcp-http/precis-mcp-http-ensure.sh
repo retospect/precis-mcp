@@ -733,12 +733,8 @@ UV_CACHE_VOLUME="${NAME}-uv-cache"
     mkdir -p "$SECRETS_OUT" "$SECRETS_NEW"
     printf '%s\n' "$DB_URL" > "${SECRETS_NEW}/PRECIS_DATABASE_URL"
     printf '%s\n' "$TOKEN" > "${SECRETS_NEW}/PRECIS_MCP_TOKEN"
-    # CLAUDE_CODE_OAUTH_TOKEN: the mint door's dedup judge runs claude -p inside
-    # this process, and the container binds agent_rw, which cannot reveal a
-    # class-infra vault secret. The host file is get_secret's bootstrap leg
-    # (docs/runbooks/rotate-agent-rw-credential.md §CLAUDE_CODE_OAUTH_TOKEN).
     for name in PERPLEXITY_API_KEY SEMANTIC_SCHOLAR_API_KEY WOLFRAM_APP_ID \
-                EPO_OPS_CLIENT_KEY EPO_OPS_CLIENT_SECRET CLAUDE_CODE_OAUTH_TOKEN; do
+                EPO_OPS_CLIENT_KEY EPO_OPS_CLIENT_SECRET; do
         if [ -s "${SECRETS}/${name}" ]; then
             cp "${SECRETS}/${name}" "${SECRETS_NEW}/${name}"
         fi
