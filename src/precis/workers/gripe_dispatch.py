@@ -109,8 +109,10 @@ SERVICE_NAME = "gripe_dispatch"
 #: Wait after triage, not filing: an old report may only just have been
 #: classified as code work, and the filer needs time to retract that decision.
 _MIN_AGE_MINUTES = 15
-#: Repositories the factory can land; untagged gripes belong to precis.
-_LANDABLE_PROJECTS: frozenset[str] = frozenset({"precis"})
+#: ``project:`` values the factory can land; untagged gripes belong to precis.
+#: ``precis-mcp`` is this repo's own name and ``dark-factory`` its factory
+#: code. catpath/autocatpath is a separate checkout (gr611473).
+_LANDABLE_PROJECTS: frozenset[str] = frozenset({"precis", "precis-mcp", "dark-factory"})
 _PROJECT_SKIP_PREFIX = "dispatch: skipped unsupported project:"
 #: Gripe tags that mark fixable work: code, skill, docs, web or MCP-surface
 #: changes (Reto 2026-11-10). All of them land through the same

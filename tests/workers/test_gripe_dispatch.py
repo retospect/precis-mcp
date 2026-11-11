@@ -312,7 +312,10 @@ def test_unsupported_project_is_skipped_with_one_comment(
     assert gd.open_chain_count(store) == 0
 
 
-@pytest.mark.parametrize("project_tags", [(), ("project:precis",)])
+@pytest.mark.parametrize(
+    "project_tags",
+    [(), ("project:precis",), ("project:precis-mcp",), ("project:dark-factory",)],
+)
 def test_supported_or_default_project_dispatches(
     store: Store, two_lanes: Any, project_tags: tuple[str, ...]
 ) -> None:
