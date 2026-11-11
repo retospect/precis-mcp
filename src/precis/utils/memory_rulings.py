@@ -11,7 +11,9 @@ slices) covers four things, all here:
    (:data:`STATUSES`) and ``review_by`` (ISO date), writable through
    ``put``/``edit(meta=...)`` only on a node tagged ``ruling``
    (:func:`validate_ruling_meta`). ``review_by`` defaults to
-   ``ruled_on`` + :data:`REVIEW_DAYS` days; a create defaults ``status`` to
+   the later of ``ruled_on`` and today + :data:`REVIEW_DAYS` days (a
+   transferred ruling's past ``ruled_on`` must not default it into the
+   overdue queue, gr631565); a create defaults ``status`` to
    ``in-force`` and ``ruled_on`` to today (UTC).
 2. **The status tag is dropped, not mirrored.** ``meta.status`` is the
    single truth. The backfill's duplicate open tag ``status:<value>`` is
@@ -57,7 +59,9 @@ STATUSES = ("in-force", "absorbed", "archived", "retired")
 LIVE_STATUS = "in-force"
 META_KEYS = ("ruled_by", "ruled_on", "status", "review_by")
 
-#: Days from ``ruled_on`` to the default ``review_by``.
+#: Days from the later of ``ruled_on`` and today to the default
+#: ``review_by`` — the floor keeps a backdated ``ruled_on`` (a
+#: transferred ruling) from landing already overdue (gr631565).
 REVIEW_DAYS = 14
 #: A ruling whose ``review_by`` is within this many days (or past) is
 #: "expiring" and sorts ahead of the other in-force rulings.
@@ -114,8 +118,9 @@ def validate_ruling_meta(
     ``existing=None`` is a create: ``status`` defaults to ``in-force`` and
     ``ruled_on`` to today (UTC). On an edit (``existing`` = the node's
     meta) only the given keys change. Either way ``review_by`` is filled in
-    as ``ruled_on`` + :data:`REVIEW_DAYS` days when neither the patch nor
-    the node has one, and may not precede ``ruled_on``.
+    as the later of ``ruled_on`` and today + :data:`REVIEW_DAYS` days when
+    neither the patch nor the node has one, and may not precede
+    ``ruled_on``.
     """
     out: dict[str, Any] = {}
     if "ruled_by" in raw:
@@ -147,7 +152,8 @@ def validate_ruling_meta(
     merged = {**(existing or {}), **out}
     ruled_on = _parse_or_none(merged.get("ruled_on"))
     if _parse_or_none(merged.get("review_by")) is None and ruled_on is not None:
-        out["review_by"] = (ruled_on + timedelta(days=REVIEW_DAYS)).isoformat()
+        base = max(ruled_on, today)
+        out["review_by"] = (base + timedelta(days=REVIEW_DAYS)).isoformat()
         merged["review_by"] = out["review_by"]
     review_by = _parse_or_none(merged.get("review_by"))
     if ruled_on is not None and review_by is not None and review_by < ruled_on:

@@ -971,7 +971,7 @@ documented system, integrated into skills/spec and then archived. Its
 meta (`put`/`edit(meta=...)`, only on a `ruling` node): `ruled_by`,
 `ruled_on` (ISO date, default today), `status` (`in-force` default,
 `absorbed` = integrated, `archived` = moot, `retired` = won't-do),
-`review_by` (ISO date, default `ruled_on` + 14 days). The status lives
+`review_by` (ISO date, default later of `ruled_on`/today + 14 days). The status lives
 in meta only; writing it drops a leftover `status:<v>` tag. Link what a
 ruling governs with `link(kind='memory', id=<ruling>, target='todo:N',
 rel='related-to', meta={'rel_intent': 'decides'})`.

@@ -68,8 +68,20 @@ def test_create_defaults_status_ruled_on_and_review_by() -> None:
 
 
 def test_review_by_defaults_to_ruled_on_plus_14_days() -> None:
-    out = validate_ruling_meta({"ruled_on": "2026-10-01"}, existing=None, today=TODAY)
-    assert out["review_by"] == "2026-10-15"
+    out = validate_ruling_meta({"ruled_on": "2026-11-01"}, existing=None, today=TODAY)
+    assert out["review_by"] == "2026-11-15"
+
+
+def test_review_by_default_tracks_a_future_ruled_on() -> None:
+    out = validate_ruling_meta({"ruled_on": "2026-12-01"}, existing=None, today=TODAY)
+    assert out["review_by"] == "2026-12-15"
+
+
+def test_review_by_default_floors_a_backdated_ruled_on_at_today() -> None:
+    """gr631565: a transferred ruling keeps its original ``ruled_on``; the
+    default ``review_by`` floors at today + 14d, never already overdue."""
+    out = validate_ruling_meta({"ruled_on": "2026-09-18"}, existing=None, today=TODAY)
+    assert out["review_by"] == "2026-11-15"
 
 
 def test_explicit_review_by_wins() -> None:
@@ -154,6 +166,7 @@ def test_put_ruling_keeps_explicit_meta(handler: MemoryHandler, store: Store) ->
         ruled_by="Reto",
         ruled_on="2026-10-20",
         status="in-force",
+        review_by="2026-11-30",
     )
     meta = _meta(store, mid)
     meta.pop("filed_by", None)  # the server-side origin stamp is not under test
@@ -161,8 +174,23 @@ def test_put_ruling_keeps_explicit_meta(handler: MemoryHandler, store: Store) ->
         "ruled_by": "Reto",
         "ruled_on": "2026-10-20",
         "status": "in-force",
-        "review_by": "2026-11-03",
+        "review_by": "2026-11-30",
     }
+
+
+def test_put_with_a_backdated_ruled_on_floors_review_by_at_today(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr631565's route: transferring a ruling with its original
+    ``ruled_on`` and no ``review_by`` must not land already overdue."""
+    resp = handler.put(
+        text="transferred ruling body",
+        tags=["ruling"],
+        meta={"ruled_by": "reto", "ruled_on": "2026-09-18"},
+    )
+    expected = (datetime.now(UTC).date() + timedelta(days=14)).isoformat()
+    assert f"review_by={expected}" in resp.body
+    assert _meta(store, id_of(resp.body))["review_by"] == expected
 
 
 def test_ruling_keys_on_a_non_ruling_put_are_refused(handler: MemoryHandler) -> None:
@@ -461,7 +489,9 @@ def test_migrate_rulings_apply_writes_meta_and_is_idempotent(
         "absorbed",
         "2026-11-01",
     )
-    assert meta["review_by"] == "2026-11-15"
+    assert (
+        meta["review_by"] == (datetime.now(UTC).date() + timedelta(days=14)).isoformat()
+    )
     assert "status:absorbed" not in _open_tags(store, mid)
     ref = store.get_ref(kind="memory", id=mid)
     assert ref is not None and "Meta:" in handler._body_text(ref)

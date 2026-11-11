@@ -169,8 +169,9 @@ root, so no hub passes 40 members. A **transferred ruling** keeps meta
 `ruled_on` as the original date; its status is `absorbed` where shipped
 code already carries the decision (it drops out of recall but stays
 readable), else `in-force` with **one `review_by` for the whole transfer
-wave** (kinetics: 2026-12-05) — never the default `ruled_on` plus 14
-days, which would mark every old ruling overdue on arrival. Ruling and
+wave** (kinetics: 2026-12-05) passed explicitly — the default is floored
+at today + 14 days (gr631565), which lands the wave on the transfer
+date, not its chosen review date. Ruling and
 gotcha titles carry no "Reto <date>:" or "Gotcha:" prefix; the tags and
 meta say what they are.
 
