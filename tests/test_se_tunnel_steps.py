@@ -1,7 +1,6 @@
 """Stepped rail tunnel scene: rail segments of different radius through
 solver-minted washers, sites labelled per segment, junction.strain per
-reducer seam -- the H2 rail side of
-docs/backlog/hexfold-nanoreactor-tube.md.
+reducer seam -- the H2 rail side of spec `me629889`.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ def stepped_block() -> Any:
 def test_stepped_rail_tunnel_builds(stepped_block) -> None:
     block = stepped_block
     findings = block.topology["report"]["findings"]
-    # residual (spec docs/backlog/hexfold-nanoreactor-tube.md): the star
+    # residual (spec `me629889`): the star
     # notch walls at a step seam sit ~1 A apart unbonded after relax --
     # geom.nearest_not_bonded/clash ERRORs confined to the washer zone;
     # anything else is a regression
@@ -166,7 +165,7 @@ def test_stepped_bad_pore_refused() -> None:
         build_hexfold_scene(params(tube=tube))
 
 
-#: the H2 cone gate fixture (spec docs/backlog/hexfold-nanoreactor-tube.md):
+#: the H2 cone gate fixture (spec `me629889`):
 #: an 18 -> 8 rail step, rails 3 so the cone carries p = 3 pentagons; the
 #: same tube builds under step: washer, so the two read side by side
 GATE_TUBE: dict[str, Any] = {

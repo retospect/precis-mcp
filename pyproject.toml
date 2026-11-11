@@ -592,7 +592,7 @@ se_manufacture = "precis_se.manufacture_job:SPEC"
 # hexfold_relax: assembled-hexfold-block relax on the compute group —
 # whole-block polish + GFN2 on H-capped junction fragments, strain
 # before/after stored on the scene (hexfold H3,
-# docs/backlog/hexfold-nanoreactor-tube.md). Plugin spec, not a core
+# spec `me629889`). Plugin spec, not a core
 # builtin: the core must never import precis_se.
 hexfold_relax = "precis_se.hexfold_relax_job:SPEC"
 # se_pocket_realize: the pocket realize loop's GFN2 candidate relaxes on

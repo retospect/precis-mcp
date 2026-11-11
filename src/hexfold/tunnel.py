@@ -436,8 +436,7 @@ def _cone_step(
     lattice: Lattice,
 ) -> tuple[Block, Opening, Opening, float]:
     """One ``step: cone`` transition: a truncated cone between the wide
-    and narrow rims, stitched like the washer (docs/backlog/
-    hexfold-nanoreactor-tube.md, H2).
+    and narrow rims, stitched like the washer (spec `me629889`, H2).
 
     The cone carries ``p = rails`` pentagons (the star outlines are
     N-fold, so the disclinations sit one per seam azimuth of the wide
@@ -561,7 +560,7 @@ def tunnel_steps(
 ) -> tuple[Net, Tunnel]:
     """Assemble ``sheet | seg | washer | seg | ... | sheet``.
 
-    The H2 radius-step tunnel (docs/backlog/hexfold-nanoreactor-tube.md):
+    The H2 radius-step tunnel (spec `me629889`):
     ``segments`` is a list of per-segment specs, each resolved by
     :func:`_tube_block` -- ``(n, periods)`` armchair or ``(rows, periods,
     strip_rows, rails, pores)`` rail (``kinds`` defaults to all-rail).  A

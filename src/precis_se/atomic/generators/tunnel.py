@@ -1,7 +1,7 @@
 """The ``tunnel-reservoirs`` scene feature: sheet | tube | sheet.
 
-The nanoreactor's reservoir stage (docs/backlog/hexfold-nanoreactor-tube.md,
-slice H1): a tube -- a plain ``(n, n)`` or a multi-rail ``rail_tube`` --
+The nanoreactor's reservoir stage (spec `me629886`):
+a tube -- a plain ``(n, n)`` or a multi-rail ``rail_tube`` --
 whose two ends seat into holes cut in flat reservoir sheets by
 :func:`hexfold.opening.armchair_opening` and assembled by
 :func:`hexfold.tunnel.tunnel_reservoirs`.  The bore is closed off from
@@ -54,7 +54,7 @@ FEATURE_TYPE = "tunnel-reservoirs"
 
 #: over-strain bars for a step washer's ``junction.strain`` read (the
 #: ``step.overstrained`` WARN; measured on a 16 -> 8 rail step, spec
-#: docs/backlog/hexfold-nanoreactor-tube.md)
+#: `me629889`)
 _STEP_STRAIN_BOND_A = 3.0
 _STEP_STRAIN_ANGLE_DEG = 45.0
 

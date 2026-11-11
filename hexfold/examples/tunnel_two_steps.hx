@@ -1,7 +1,7 @@
 hexfold 0.2
 # tunnel_two_steps: sheet | (18,18) -> (12,12) -> (6,6) | sheet -- the
-# multi-radius catalysis tunnel (docs/backlog/hexfold-nanoreactor-tube.md,
-# slice H2).  Each step is a fuse{reducer} (a coaxial 5/7 ring, equal
+# multi-radius catalysis tunnel (spec `me629889`).
+# Each step is a fuse{reducer} (a coaxial 5/7 ring, equal
 # pentagons and heptagons: 24 + 24, then 12 + 12); both ends seat into reservoir
 # sheets by opening(port=) -- the wide mouth into a, the narrow into b.
 a: sheet(40,40) - opening(port=t1.in)@(20,20,A)

@@ -1,6 +1,6 @@
 """``hexfold_relax`` job_type — relax an assembled hexfold block on the
 compute group and store per-seam/per-mouth strain before and after
-(hexfold H3, docs/backlog/hexfold-nanoreactor-tube.md). A ``precis_se``
+(hexfold H3, spec `me629889`). A ``precis_se``
 plugin spec (``precis.job_types`` entry point), so the core never
 imports the hexfold atomic pipeline it dispatches.
 

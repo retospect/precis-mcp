@@ -1,7 +1,7 @@
 """Openings: cut a hole in a flat sheet and stitch a tube end's rim into it.
 
-The nanoreactor's reservoir joint (docs/backlog/hexfold-nanoreactor-tube.md,
-slice H1): a flat sheet pierced by a tube whose end rim is an armchair-type
+The nanoreactor's reservoir joint (spec `me629886`):
+a flat sheet pierced by a tube whose end rim is an armchair-type
 boundary -- dangling atoms in bonded pairs -- so the sheet's hole boundary
 and the tube's rim can be zipped one-to-one, giving a valid all-sp2 seam
 whose faces are the defect ring (hexagons where the lattices happen to

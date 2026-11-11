@@ -145,7 +145,8 @@ Seams:
 - nanoreactor's T1 (spec `me629025`, graph memory)
   adds off-slab environments and a station-record export to the engine;
   chemistry owns the engine contract and the wheel bump. Its T2
-  (`backlog/hexfold-nanoreactor-tube.md`) is built by hexfold-toolkit.
+  (spec `me629892`; hexfold-side `me629886`/`me629889`) is built by
+  hexfold-toolkit.
 - hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
   `backlog/structure-kind-demotion.md` (structure kind, se as origin of
   atoms), not chemistry.

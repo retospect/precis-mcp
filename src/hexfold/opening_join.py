@@ -49,7 +49,7 @@ _TWISTS = tuple(range(0, 60, 2))
 #: the sheet must clear the rim polygon by this margin (Angstrom)
 _MARGIN = 3.0
 
-_ZIGZAG_DOC = "docs/backlog/hexfold-nanoreactor-tube.md"
+_ZIGZAG_DOC = "spec me629886"
 
 
 def _err(code: str, msg: str, where: str = "", span: tuple[int, int] | None = None):

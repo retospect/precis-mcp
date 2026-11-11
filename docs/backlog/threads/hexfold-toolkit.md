@@ -798,7 +798,7 @@ removed as met — the transport move it waited on happened 09-29)
     direct agent access. Staged, independent of the §28 pieces; ranked
     here because hexfold builds are where the structure-kind gripes
     (Do-next 4) bite.
-15. **backlog/hexfold-nanoreactor-tube.md** — T2 of the
+15. **spec `me629886` + `me629889`** (was backlog/hexfold-nanoreactor-tube.md) — T2 of the
     nanoreactor thread (Reto 2026-10-04): tube between two sheets,
     inner Y-junction attachment rails, H-inlet pores, site list. Slice 1
     landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs

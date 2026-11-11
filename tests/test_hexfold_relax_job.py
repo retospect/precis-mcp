@@ -1,5 +1,5 @@
 """``hexfold_relax`` job_type — the H3 relax pipeline as a compute-group
-job (docs/backlog/hexfold-nanoreactor-tube.md).
+job (spec `me629889`).
 
 Proved without a cluster, the way ``test_struct_relax_job`` does: a fake
 ``DispatchContext`` drives the dispatch against a generated structure,

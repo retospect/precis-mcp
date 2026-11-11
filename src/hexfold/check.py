@@ -320,7 +320,7 @@ class Relaxed(NamedTuple):
 
 #: a named zone's reach: one hexagon pitch (2.46 A x 1.05) past its
 #: seed atoms -- the H2 washer zone of a radius step
-#: (docs/backlog/hexfold-nanoreactor-tube.md)
+#: (spec `me629889`)
 ZONE_REACH_A = 2.46 * 1.05
 
 
@@ -590,7 +590,7 @@ def _geometry_findings(
 
     # per-zone residuals, uncapped: the ten-finding cap above can hide a
     # zone's pairs behind another zone's (H2 cone gate,
-    # docs/backlog/hexfold-nanoreactor-tube.md)
+    # spec `me629889`)
     zone_counts: dict[str, dict[str, int]] = {}
     if zone_of is not None:
         for name, _seeds in zones or ():

@@ -1,6 +1,6 @@
 """hexfold.tunnel.tunnel_steps: sheet | rail | washer | rail | sheet.
 
-The stepped rail tunnel of docs/backlog/hexfold-nanoreactor-tube.md H2:
+The stepped rail tunnel of spec `me629889` H2:
 solver-minted washers (the fuse{reducer} role) between star-ended rail
 segments, Junction records named reducer:seg<w>->seg<n>:outer|inner.
 """

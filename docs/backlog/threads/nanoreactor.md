@@ -47,11 +47,11 @@ The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
 
 ## Horizon
 
-1. **backlog/hexfold-nanoreactor-tube.md** — T2; reservoir sheets +
+1. **spec `me629886` + `me629889`** (was backlog/hexfold-nanoreactor-tube.md) — T2; reservoir sheets +
    armchair opening solver landed 2026-10-14 (`tunnel-reservoirs`,
    `hexfold/examples/tunnel_reservoirs.hx`); H2 stepped rail tubes
    build with `step: washer|cone` (cone landed 2026-10-21), left: the
-   cone's relaxed gate (§"H2 cone gate follow-up": 18→8 fixture,
+   cone's relaxed gate (spec `me629889`: 18→8 fixture,
    uncapped per-zone counts, judged after a real-rung `hexfold_relax`
    job; prod relax jobs allowed any time, Reto 2026-10-21); H3 relax
    landed 2026-10-19.

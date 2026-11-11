@@ -1,7 +1,7 @@
 """Relax an assembled hexfold block: cheap whole-block polish plus an
 energy-rung pass on per-junction fragments, then ``tunnel_strain``
 re-scored on the relaxed atoms (hexfold H3 —
-docs/backlog/hexfold-nanoreactor-tube.md, the
+spec `me629889`, the
 docs/backlog/hexfold-relax-pipeline.md tiers T1/T2 without the module
 cache).
 

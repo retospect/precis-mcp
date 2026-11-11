@@ -1,6 +1,6 @@
 hexfold 0.2
 # tunnel_reservoirs: sheet | tube | sheet -- the catalysis tunnel's
-# reservoir stage (docs/backlog/hexfold-nanoreactor-tube.md, slice H1):
+# reservoir stage (spec `me629886`):
 # each reservoir sheet is pierced by a hex(1) hole seating a (6,6) tube
 # end by fuse; each seam mints six heptagons.  For arbitrary rim counts
 # and rail-tube ends see the opening solver (hexfold.opening) and the

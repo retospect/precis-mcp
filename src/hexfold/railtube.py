@@ -1,7 +1,7 @@
 """A closed tube whose wall is N graphene arcs meeting at equal-120 sp2 seams.
 
-The nanoreactor's reactive-tunnel cross-section (docs/backlog/
-hexfold-nanoreactor-tube.md, slice 1): N ``strip`` wall arcs span between
+The nanoreactor's reactive-tunnel cross-section (spec `me629886`):
+N ``strip`` wall arcs span between
 N seam lines at 360/N spacing along the axis, every seam an equal-120 k3
 junction of the two adjacent arcs plus an inward strip -- a rib whose
 free edge points at the axis and whose open-edge carbons are the
