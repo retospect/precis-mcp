@@ -3164,17 +3164,30 @@ def test_cancel_requested_parked_handle_cancels_without_signaling(
     assert _meta(store, rid)["compute_handle_released"] is True
 
 
-def test_cancel_requested_unverifiable_handle_fails_closed(
+def test_cancel_requested_unverifiable_handle_follows_poll(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same identity gate as the kill paths: a handle that cannot prove
-    its process group is never signalled — the job still cancels, the
-    skip reason recorded."""
+    """gr572654: a handle the executor cannot verify can still be observed
+    by the plugin — blind-cancelling the record while the child ran on
+    dropped the land's post-steps (the ship landed, land-notify never
+    fired). The row holds ``cancel_requested`` and follows ``spec.poll``
+    to the real terminal outcome; nothing is ever signalled."""
+    polled: list[Any] = []
+    terminal: dict[str, bool] = {"done": False}
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        if not terminal["done"]:
+            return False
+        ctx.set_status("succeeded")
+        return True
+
     killed: list[tuple[Any, Any]] = []
-    reaped: list[tuple[Any, Any]] = []
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(
-        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+        ssh_node,
+        "get_job_type",
+        lambda name: replace(_kill_reap_spec(killed, []), poll=_poll),
     )
     monkeypatch.setattr(
         ssh_node.os, "killpg", lambda pg, sig: signals.append((pg, sig))
@@ -3186,11 +3199,65 @@ def test_cancel_requested_unverifiable_handle_fails_closed(
 
     ssh_node.run_ssh_node_pass(store, limit=2)
 
-    assert _status(store, rid) == "cancelled"
+    assert _status(store, rid) == "cancel_requested"
+    assert polled == [handle]
     assert killed == [] and signals == []
     meta = _meta(store, rid)
-    assert meta["detached_orphan_skipped"]["reason"] == "missing-identity"
-    assert not meta.get("compute_handle_released", False)
+    assert meta["cancel_follow"] == "missing-identity"
+    # The absent wall bound is minted on the first follow — a detached row
+    # never gets an unbounded poll.
+    assert meta["deadline"] > time.time()
+    assert any(
+        "unverifiable" in t and "following" in t for t in _job_events(store, rid)
+    )
+
+    # The child's real terminal outcome stands — not a fake "cancelled".
+    terminal["done"] = True
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert _status(store, rid) == "succeeded"
+    assert not _meta(store, rid).get("detached_orphan_skipped")
+
+
+def test_cancel_requested_unverifiable_past_deadline_cancels_blind(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The follow is bounded exactly like the running poll: past
+    ``meta.deadline`` the blind cancel is the backstop, the skip reason
+    still recorded."""
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=lambda c, s: None, poll=lambda c, h: False),
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    del handle["boot_id"]
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+    _backdate_cancel_meta(store, rid, deadline=time.time() - 60)
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancelled"
+    assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "missing-identity"
+
+
+def test_cancel_requested_unverifiable_without_poll_cancels_blind(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``poll`` hook → nothing can observe the child: the blind cancel
+    is all there is (the pre-gr572654 shape)."""
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _spec(dispatch=lambda c, s: None)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = _identity_handle()
+    del handle["boot_id"]
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert _status(store, rid) == "cancelled"
+    assert _meta(store, rid)["detached_orphan_skipped"]["reason"] == "missing-identity"
 
 
 def test_cancel_requested_dead_group_cancels_without_term(
@@ -3428,3 +3495,123 @@ def test_cancel_requested_kill_oserror_recorded(
     assert any(
         "SIGKILL" in t and "FAILED" in t and "PermissionError" in t for t in events
     )
+
+
+# ── gr572654: verifiable launch identity (Darwin ps + executor stamp) ──
+
+
+def test_detached_identity_reason_darwin_ps_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Darwin has no ``/proc``: the identity is the launch-minted
+    ``ps_identity`` (start time + user), re-read through ``ps`` — a match
+    verifies; a live leader under a DIFFERENT identity means the recorded
+    child is gone and the slot recycled."""
+    monkeypatch.setattr(ssh_node.sys, "platform", "darwin")
+    handle = {
+        "pid": 4242,
+        "pgid": 4242,
+        "ps_identity": "Mon Nov 2 09:07:00 2026 deploy",
+    }
+    monkeypatch.setattr(
+        ssh_node,
+        "_darwin_ps_identity",
+        lambda pgid: "Mon Nov 2 09:07:00 2026 deploy",
+    )
+    assert ssh_node._detached_identity_reason(handle) is None
+    monkeypatch.setattr(ssh_node, "_darwin_ps_identity", lambda pgid: "other user")
+    assert ssh_node._detached_identity_reason(handle) == "start-time-mismatch"
+    del handle["ps_identity"]
+    assert ssh_node._detached_identity_reason(handle) == "missing-identity"
+
+
+def test_detached_identity_reason_darwin_dead_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ps`` answering nothing for the leader proves nothing about the
+    group — descendants can outlive it. Only ESRCH on the group permits
+    ``group-unavailable``; a live group stays ``identity-unreadable``
+    (never a kill authorization)."""
+    monkeypatch.setattr(ssh_node.sys, "platform", "darwin")
+    handle = {"pid": 4242, "pgid": 4242, "ps_identity": "the-launch-identity"}
+    monkeypatch.setattr(ssh_node, "_darwin_ps_identity", lambda pgid: None)
+
+    def _esrch(pgid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(ssh_node.os, "killpg", _esrch)
+    assert ssh_node._detached_identity_reason(handle) == "group-unavailable"
+    monkeypatch.setattr(ssh_node.os, "killpg", lambda pgid, sig: None)
+    assert ssh_node._detached_identity_reason(handle) == "identity-unreadable"
+
+
+def test_cancel_requested_darwin_verified_terms_group(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr572654: on Darwin a launch-minted ``ps_identity`` verifies, so the
+    cancel actually reaches the plugin's kill hook — the incident's
+    "missing-identity; cancelled without signalling" hole."""
+    killed: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, [])
+    )
+    monkeypatch.setattr(ssh_node.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        ssh_node, "_darwin_ps_identity", lambda pgid: "the-launch-identity"
+    )
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: True)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = {"pid": 4242, "pgid": 4242, "ps_identity": "the-launch-identity"}
+    rid = _mk_cancel_job(store, compute_handle=handle, target_node="spark")
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert killed == [(rid, handle)]
+    assert _status(store, rid) == "cancel_requested"
+    assert _meta(store, rid)["cancel_term_at"]
+
+
+def test_submit_stamps_identity_the_plugin_left_out(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr572654: the executor fills the process-identity keys a submit
+    returned without — the launch record must name its process for the
+    cancel/kill/reap gates to verify it."""
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(
+            submit=lambda c, s: {"pid": 4242, "pgid": 4242},
+            poll=lambda c, h: False,
+        ),
+    )
+    _fake_detached_identity(monkeypatch)
+    rid = _mk_job(store)
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    handle = _meta(store, rid)["compute_handle"]
+    assert handle["boot_id"] == "boot-for-test"
+    assert handle["start_time"] == 123456
+
+
+def test_submit_keeps_the_plugin_identity(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor's stamp never overwrites what the plugin minted at
+    spawn — the plugin's read sits closer to the launch."""
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(
+            submit=lambda c, s: _identity_handle(), poll=lambda c, h: False
+        ),
+    )
+    _fake_detached_identity(monkeypatch, boot_id="other-boot", start_time=9)
+    rid = _mk_job(store)
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    handle = _meta(store, rid)["compute_handle"]
+    assert handle["boot_id"] == "boot-for-test"
+    assert handle["start_time"] == 123456

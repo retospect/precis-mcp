@@ -594,6 +594,14 @@ tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 # a parked job (STATUS:waiting_*) is cancelled where it sits by the wake runner
 ```
 
+A detached `ssh_node` job whose process handle cannot be verified on its
+node (missing launch identity — e.g. a handle minted before identity
+stamping, gr572654) cannot be signalled: the row holds
+`cancel_requested` while the plugin's poll follows the child to its real
+outcome — a running `land_slice` ship still lands and notifies — until
+`meta.deadline`, when the row cancels anyway. The remote process is never
+stopped by tagging alone.
+
 Agents drive only these `tag` edges: queued|yielded ->
 cancel_requested|cancelled;
 running/submitted/waiting_* -> cancel_requested|failed; cancel_requested ->

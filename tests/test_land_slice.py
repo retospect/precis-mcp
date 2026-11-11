@@ -3999,3 +3999,86 @@ def test_launches_carry_the_slot_cap(
     assert land_slice.poll(pctx, handle) is False  # phase alone launched
     _argv, kw = seams["launch"][-1]
     assert kw["env"]["PRECIS_GATE_SLOTS"] == str(land_slice.DEFAULT_LAND_GATE_SLOTS)
+
+
+# --- gr572654: Darwin launch identity (ps_identity) ---------------------
+
+
+def test_launch_ship_mints_ps_identity_on_darwin(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Darwin launch records ``ps_identity`` (start time + user) on the
+    ship handle — ssh_node's identity gate verifies it through ``ps``, so
+    a cancel can actually signal the ship instead of "cancelled without
+    signalling"."""
+    monkeypatch.setattr(land_slice.sys, "platform", "darwin")
+    monkeypatch.setattr(land_slice._rs, "_process_identity", lambda pid: None)
+    monkeypatch.setattr(
+        land_slice._rs,
+        "_darwin_process_identity",
+        lambda pid: "Mon Nov 2 09:07:00 2026 deploy",
+    )
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle["ps_identity"] == "Mon Nov 2 09:07:00 2026 deploy"
+
+
+def test_launch_ship_has_no_ps_identity_off_darwin(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off Darwin the handle keeps the /proc pair only — the ps read is
+    the fallback, never a second identity."""
+    monkeypatch.setattr(land_slice.sys, "platform", "linux")
+    monkeypatch.setattr(land_slice._rs, "_process_identity", lambda pid: ("boot", 1))
+    monkeypatch.setattr(
+        land_slice._rs,
+        "_darwin_process_identity",
+        lambda pid: pytest.fail("ps read off Darwin"),
+    )
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert "ps_identity" not in handle
+    assert handle["boot_id"] == "boot"
+
+
+def test_promote_verify_carries_ps_identity() -> None:
+    """The promoted probe's identity — ``ps_identity`` included — replaces
+    the dead ship's at the handle's top level, so the executor's gates
+    validate the LIVE phase; a probe without it clears the stale record."""
+    handle = {"pid": 1, "pgid": 1, "ps_identity": "ship-identity"}
+    verify = {"pid": 2, "pgid": 2, "ps_identity": "probe-identity"}
+    land_slice._promote_verify(handle, verify)
+    assert handle["pgid"] == 2
+    assert handle["ps_identity"] == "probe-identity"
+    handle2 = {"pid": 1, "pgid": 1, "ps_identity": "ship-identity"}
+    land_slice._promote_verify(handle2, {"pid": 3, "pgid": 3})
+    assert "ps_identity" not in handle2
+
+
+def test_defer_to_main_drops_ps_identity(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parked handle names no process — the dead ship's whole identity,
+    ``ps_identity`` included, is dropped so no gate acts on it."""
+    monkeypatch.setattr(land_slice.sys, "platform", "darwin")
+    exit_file = seams["tree"] / "scratch" / "land_slice.exit"
+    exit_file.write_text("1\n", encoding="utf-8")
+    handle = {
+        "pid": 1,
+        "pgid": 1,
+        "ps_identity": "ship-identity",
+        "worktree": "/t",
+        "exit_file": str(exit_file),
+    }
+    ctx = _Ctx(_Store(), _params(seams))
+
+    assert land_slice._defer_to_main(ctx, handle, "cross", 1, probe="diag") is False
+
+    assert "ps_identity" not in handle
+    assert handle["not_before"]

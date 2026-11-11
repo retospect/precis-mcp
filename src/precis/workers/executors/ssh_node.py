@@ -51,7 +51,12 @@ Each pass:
    A ``STATUS:cancel_requested`` row has left this poll set (and is not
    claimable), so :func:`_cancelling_jobs` + :func:`_cancel_one` drive it
    to ``STATUS:cancelled`` instead — TERM the group, KILL after a grace —
-   or the detached compute would run unwatched (gr567620).
+   or the detached compute would run unwatched (gr567620). A handle whose
+   process identity cannot be verified is never signalled; while the
+   plugin can still observe the child (``spec.poll``) the row then holds
+   ``cancel_requested`` and follows its real outcome until
+   ``meta.deadline`` — a blind cancel dropped a land's post-steps while
+   its ship ran on (gr572654).
 0.5. **Reap** detached orphans (gr520866): a terminal job still carrying
    ``meta.compute_handle`` — terminalized by a path that skipped
    ``spec.kill`` (the crash-loop guard, a sweeper transition, a direct
@@ -82,6 +87,8 @@ import logging
 import math
 import os
 import signal
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -297,6 +304,8 @@ def _detached_identity_reason(handle: Any) -> str | None:
     pgid = _detached_pgid(handle)
     if pgid is None:
         return "invalid-handle"
+    if sys.platform == "darwin":
+        return _darwin_identity_reason(handle, pgid)
     if not handle.get("boot_id") or handle.get("start_time") is None:
         return "missing-identity"
     try:
@@ -330,6 +339,96 @@ def _detached_identity_reason(handle: Any) -> str | None:
     except (OSError, ValueError, TypeError, IndexError, UnicodeError):
         return "identity-unreadable"
     return None
+
+
+def _darwin_ps_identity(pgid: int) -> str | None:
+    """Start time + user from ``ps`` — the Darwin process identity
+    (``/proc`` does not exist there); ``None`` when ``ps`` cannot answer —
+    a dead leader or a broken ``ps``, never proof the group is gone.
+    Mirrors ``run_slice._darwin_process_identity``, the launch-side mint."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=,user=", "-p", str(pgid)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    identity = " ".join(result.stdout.split())
+    return identity if result.returncode == 0 and identity else None
+
+
+def _darwin_identity_reason(handle: dict[str, Any], pgid: int) -> str | None:
+    """The Darwin half of :func:`_detached_identity_reason`: the recorded
+    ``ps_identity`` must still match ``ps``'s read of the group leader —
+    the same fail-closed shape as the Linux ``/proc`` branch."""
+    expected = handle.get("ps_identity")
+    if not expected:
+        return "missing-identity"
+    current = _darwin_ps_identity(pgid)
+    if current == expected:
+        return None
+    if current is not None:
+        # A live leader with a DIFFERENT identity: the recorded child is
+        # gone and its slot was recycled — never signal it.
+        return "start-time-mismatch"
+    # ps read nothing — a dead leader does not prove its group is gone
+    # (descendants can outlive it). Only ESRCH permits the
+    # group-unavailable read; this branch never authorizes a kill.
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return "group-unavailable"
+    except OSError:
+        pass
+    return "identity-unreadable"
+
+
+def _proc_identity(pgid: int) -> tuple[str, int] | None:
+    """``(kernel boot_id, process start ticks)`` of ``pgid`` from ``/proc``
+    — the pair :func:`_detached_identity_reason` re-reads; ``None`` when
+    ``/proc`` lacks them (not Linux, or the leader already exited). The
+    same read the plugins' submits do at launch."""
+    try:
+        boot_id = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+        # comm (field 2) can include spaces and ')'. Field 22 is offset
+        # 19 after its final ')', not offset 21 of whitespace-split stat.
+        stat = Path(f"/proc/{pgid}/stat").read_text(encoding="utf-8")
+        start_time = int(stat.rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError, UnicodeError):
+        return None
+    return boot_id, start_time
+
+
+def _stamp_handle_identity(handle: dict[str, Any]) -> None:
+    """Fill the process-identity keys a submit left out (gr572654).
+
+    Every detached identity gate — the cancel drive, the wall-clock kill,
+    the orphan reaper — fails closed on a handle that cannot name its
+    process, and a cancel that cannot signal the child used to drop the
+    record while the compute ran on. ``boot_id`` + ``start_time`` are the
+    Linux pair; ``ps_identity`` (start time + user) is the Darwin one. A
+    plugin's own stamp, read closer to the spawn, always wins."""
+    pgid = _detached_pgid(handle)
+    if pgid is None:
+        return
+    if sys.platform == "darwin":
+        if not handle.get("ps_identity"):
+            identity = _darwin_ps_identity(pgid)
+            if identity:
+                handle["ps_identity"] = identity
+        return
+    if handle.get("boot_id") and handle.get("start_time") is not None:
+        return
+    identity = _proc_identity(pgid)
+    if identity is not None:
+        handle["boot_id"], handle["start_time"] = identity
 
 
 def _readoptable(meta: dict[str, Any], node: str | None) -> bool:
@@ -853,6 +952,67 @@ def _cancel_terminalize(
     return True
 
 
+def _cancel_unverifiable(
+    ctx: DispatchContext, spec: JobTypeSpec | None, handle: Any, reason: str
+) -> bool:
+    """The child cannot be signalled — follow its real outcome (gr572654).
+
+    Blindly cancelling the record while the child ran on was the worst of
+    both: a ``land_slice`` ship landed on main while the job already read
+    ``cancelled``, so land-notify never fired and the todo stayed open.
+    When the plugin can still observe the child (``spec.poll``), hold
+    ``cancel_requested`` and let the poll drive the real terminal outcome
+    each pass — the status it writes is the truth (a finished ship is a
+    land, not a cancel). ``meta.deadline`` bounds the follow exactly as it
+    bounds the running poll — minted once at the wall bound when absent —
+    and past it the blind cancel is the backstop, the skip reason still
+    recorded. With no ``poll`` hook the blind cancel is all there is."""
+    store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
+    if spec is None or spec.poll is None:
+        return _cancel_terminalize(
+            ctx,
+            summary=f"runner: cancel requested — handle unverifiable "
+            f"({reason}); no poll to follow — cancelled without signalling",
+            skip_reason=reason,
+        )
+    deadline = meta.get("deadline")
+    now = time.time()
+    try:
+        past = deadline is not None and now > float(deadline)
+    except (TypeError, ValueError):
+        past = True  # an unreadable bound never justifies an unbounded follow
+    if past:
+        return _cancel_terminalize(
+            ctx,
+            summary=f"runner: cancel requested — handle unverifiable "
+            f"({reason}) and meta.deadline past; cancelled without "
+            "signalling",
+            skip_reason=reason,
+        )
+    writes: dict[str, Any] = {}
+    if deadline is None:
+        # A detached row never gets an unbounded poll (the module's own
+        # §H-piece-2 invariant) — mint the bound the submit stamp leaves.
+        writes["deadline"] = now + _wall_bound_seconds(meta, spec)
+    if not meta.get("cancel_follow"):
+        writes["cancel_follow"] = reason
+    if writes:
+        with store.pool.connection() as conn:
+            _set_meta(conn, ref_id, **writes)
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"runner: cancel requested — handle unverifiable ({reason}); "
+                "the child cannot be signalled — holding cancel_requested "
+                "and following its real outcome via the plugin's poll until "
+                "meta.deadline",
+                conn=conn,
+            )
+            conn.commit()
+    return bool(spec.poll(ctx, handle))
+
+
 def _cancel_one(ctx: DispatchContext) -> bool:
     """Drive one ``STATUS:cancel_requested`` detached job toward cancelled.
 
@@ -865,11 +1025,14 @@ def _cancel_one(ctx: DispatchContext) -> bool:
     group finalizes at once; a live verified group gets ``SIGKILL`` after
     ``_CANCEL_KILL_GRACE_S`` (``meta.cancel_kill_at``), and a group still
     alive one grace after the KILL is cancelled anyway rather than polled
-    forever. An unverifiable handle fails closed — no signal, the skip
-    reason recorded, same as the kill paths. ``spec.poll`` never runs, so
-    a ``land_slice`` cancel never reaches its green-path cleanup: the
-    worktree and branch stay for forensics (gr567620). Returns ``True``
-    once the row is terminal."""
+    forever. An unverifiable handle fails closed — never signalled — but
+    the record does not fake a cancel: when the plugin can still observe
+    the child (``spec.poll``) the row holds ``cancel_requested`` and the
+    poll drives the real terminal outcome until ``meta.deadline``
+    (:func:`_cancel_unverifiable`, gr572654). On the signalled path
+    ``spec.poll`` never runs, so a ``land_slice`` cancel never reaches its
+    green-path cleanup: the worktree and branch stay for forensics
+    (gr567620). Returns ``True`` once the row is terminal."""
     store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     spec = get_job_type(str(job_type_name)) if job_type_name else None
@@ -914,12 +1077,7 @@ def _cancel_one(ctx: DispatchContext) -> bool:
         if process_handle and skip_reason is None and not _detached_group_alive(handle):
             skip_reason = "group-unavailable"
         if skip_reason is not None and skip_reason != "group-unavailable":
-            return _cancel_terminalize(
-                ctx,
-                summary=f"runner: cancel requested — handle unverifiable "
-                f"({skip_reason}); cancelled without signalling",
-                skip_reason=skip_reason,
-            )
+            return _cancel_unverifiable(ctx, spec, handle, skip_reason)
         if skip_reason == "group-unavailable":
             return _cancel_terminalize(
                 ctx,
@@ -975,14 +1133,10 @@ def _cancel_one(ctx: DispatchContext) -> bool:
         reason = _detached_identity_reason(handle)
         if reason is not None and reason != "group-unavailable":
             # Identity broke mid-cancel (pid recycled, /proc unreadable):
-            # fail closed — never signal an unverified group.
-            return _cancel_terminalize(
-                ctx,
-                summary=f"runner: cancel requested — handle unverifiable "
-                f"({reason}) after TERM; cancelled without further "
-                "signalling",
-                skip_reason=reason,
-            )
+            # fail closed — never signal an unverified group. The TERM
+            # already went out; follow the child's real outcome when the
+            # plugin can still observe it (gr572654).
+            return _cancel_unverifiable(ctx, spec, handle, reason)
         if reason == "group-unavailable" or not _detached_group_alive(handle):
             return _cancel_terminalize(
                 ctx,
@@ -1397,6 +1551,10 @@ def _run_one(ctx: DispatchContext) -> bool:
                 _set_meta(conn, ref_id, submit_started_at=None)
                 conn.commit()
             raise
+        if isinstance(handle, dict):
+            # gr572654: the launch record must name its process — every
+            # detached gate fails closed on an anonymous handle.
+            _stamp_handle_identity(handle)
         with store.pool.connection() as conn:
             # §H piece 2: stamp a wall-clock kill deadline alongside the
             # handle — see ``_deadline_epoch`` / ``_poll_one``'s docstrings

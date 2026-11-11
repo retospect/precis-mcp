@@ -1672,6 +1672,13 @@ def _launch_ship(
     identity = _rs._process_identity(pid)
     if identity is not None:
         handle["boot_id"], handle["start_time"] = identity
+    ps_identity = (
+        _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+    )
+    if ps_identity is not None:
+        # ssh_node's identity gate verifies Darwin handles through ps —
+        # without it a cancel cannot signal the ship (gr572654).
+        handle["ps_identity"] = ps_identity
     return handle
 
 
@@ -1876,7 +1883,7 @@ def _defer_to_main(
     read differently (gr550941); a host-side one has nothing to probe."""
     delay = refusal_backoff_s() if backoff_s is None else backoff_s
     due = _now() + timedelta(seconds=delay)
-    for key in ("pid", "pgid", "boot_id", "start_time"):
+    for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
         handle.pop(key, None)
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
     handle.update(last_refusal=cross, not_before=due.strftime(_TS_FMT))
@@ -1980,19 +1987,24 @@ def _launch_verify(
     identity = _rs._process_identity(pid)
     if identity is not None:
         verify["boot_id"], verify["start_time"] = identity
+    ps_identity = (
+        _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+    )
+    if ps_identity is not None:
+        verify["ps_identity"] = ps_identity
     return verify
 
 
 def _promote_verify(handle: dict[str, Any], verify: dict[str, Any]) -> None:
     """Make the running probe the handle's live process — ``pid``,
-    ``pgid``, ``boot_id`` and ``start_time`` copied to the TOP level, the
-    same slot the ship relaunch fills. The executor's cancel, wall-clock
-    and orphan-reap gates all validate the top-level identity before
-    calling this job's ``kill``; while it still names the dead ship every
-    gate fails closed and the kill hook never runs, leaking the probe and
-    the ``slice-main-td<id>`` worktree."""
+    ``pgid``, ``boot_id``, ``start_time`` and ``ps_identity`` copied to the
+    TOP level, the same slot the ship relaunch fills. The executor's
+    cancel, wall-clock and orphan-reap gates all validate the top-level
+    identity before calling this job's ``kill``; while it still names the
+    dead ship every gate fails closed and the kill hook never runs,
+    leaking the probe and the ``slice-main-td<id>`` worktree."""
     handle["verify"] = verify
-    for key in ("pid", "pgid", "boot_id", "start_time"):
+    for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
         if key in verify:
             handle[key] = verify[key]
         else:
