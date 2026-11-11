@@ -1105,10 +1105,10 @@ ray, missing fields silently omitted, molecular-scale boundaries as
 Bader basin transitions) and §5.5 bookmarks (a stored query, not an
 answer, re-evaluated against any branch; rays stay valid as pure
 coordinates). The π isosurface a ray intersects is §4's "delocalised π
-systems are first-class" paragraph; the cavity measurements in
-[nm-face-codes-and-scale](nm-face-codes-and-scale.md) §Ray probes are
-the macro use. One verb at every scale: an se design dispatches a ray
-by block binding — cad blocks through `precis/cad/probe.py::probe_ray`,
+systems are first-class" paragraph; the cavity measurements in spec
+`me628828` §measured cavity (`me628870`) are the macro use. One verb at
+every scale: an se design dispatches a ray by block binding — cad
+blocks through `precis/cad/probe.py::probe_ray`,
 structure-bound blocks through the atomic evaluator below — and
 concatenates the hits along one world-frame ray. Nothing here
 re-derives §5.4; it names the atomic fields and the storage.

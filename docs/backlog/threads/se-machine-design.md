@@ -277,7 +277,8 @@ off that gap until it closes.
 15. **backlog/se-fret-round-2.md**
 16. **backlog/photoswitch-states-and-spectral-dof.md**
 17. **backlog/nm-stick-placement.md**
-18. **backlog/nm-face-codes-and-scale.md**
+18. **spec `me628828`** — boxel-assembly face codes, fit/reject and the
+    off-O(N²) plan (the retired backlog/nm-face-codes-and-scale.md).
 19. **backlog/se-process-skills-as-rewrites.md**
 21. **backlog/situation-rule-tables.md** — unblocked (design-state-core
     shipped in r37). Three-verdict pair

@@ -65,7 +65,8 @@ class ThreadingSpec:
 #: Complementary role halves — blocktree slice 3. Each pair is two
 #: *senses* of one joining: a port affording the left half may bond only to
 #: a port affording the right half, never to another left. The vocabulary
-#: is the face-code alphabet of docs/backlog/nm-face-codes-and-scale.md
+#: is the face-code alphabet of spec me628828 (boxel-assembly; the
+#: two-level face-code contract is section me628884)
 #: ("complementarity is elementwise: donor↔acceptor, bump↔hole, +↔−",
 #: ASCII ``-`` here) plus the click-chemistry halves; ports reuse it rather
 #: than minting a parallel one. Role strings match exactly, like every

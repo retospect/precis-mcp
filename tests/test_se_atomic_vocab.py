@@ -502,7 +502,8 @@ def test_the_symmetric_covalent_case_is_unchanged() -> None:
 
 
 def test_ports_reuse_the_face_code_alphabet() -> None:
-    """nm-face-codes-and-scale.md: complementarity is elementwise
+    """spec me628828 (boxel-assembly, face-code contract me628884):
+    complementarity is elementwise
     (donor↔acceptor, bump↔hole, +↔−) — the same pairs, not a parallel
     vocabulary."""
     assert {("donor", "acceptor"), ("bump", "hole"), ("+", "-")} <= set(

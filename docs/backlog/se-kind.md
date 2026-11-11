@@ -93,13 +93,13 @@ transport, the semantics live in the typed consumer).
 **Mate codes are scale-free** (Reto 2026-09-02: magnet patterns "to
 only fit one, 2 or 3 different ways … same with molecular things").
 The nm face-code alphabet — {donor, acceptor, bump, hole, +, −, null},
-`nm-face-codes-and-scale.md` — already covers every keying carrier
-raised: embedded magnet arrays are ±, machined key/spline surfaces are
-bump/hole, chemistry is donor/acceptor. One mate-code abstraction,
-three physical carriers, shipped once in the shared core. Orientation
-multiplicity is already that doc's first theorem: the code's rotational
-stabilizer order *is* the number of distinct ways it mates. se
-generalizes the check from nm's "demand trivial stabilizer" to a
+spec `me628828` §face codes (`me628884`) — already covers every keying
+carrier raised: embedded magnet arrays are ±, machined key/spline
+surfaces are bump/hole, chemistry is donor/acceptor. One mate-code
+abstraction, three physical carriers, shipped once in the shared core.
+Orientation multiplicity is already that spec's first theorem: the
+code's rotational stabilizer order *is* the number of distinct ways it
+mates. se generalizes the check from nm's "demand trivial stabilizer" to a
 **declared multiplicity** the checker compares against — a polar magnet
 ring meant to index 3 positions declares stabilizer order 3; "must
 assemble one way only" declares 1. Status: design-only on both sides
