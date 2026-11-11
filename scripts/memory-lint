@@ -115,9 +115,10 @@
 #      date (edits do not reset age). Report only: verify cause and fix,
 #      preserve uncertainty, and extract still-true claims before retiring.
 #  15. spec-root placement: a spec root (section:index + spec:<slug>) must
-#      reach the Specifications hub me568215 by part-of — topical hubs
-#      relate, never parent (gr631564). The manifest's parent column is
-#      walked; a legacy manifest without the spec column is skipped.
+#      carry exactly one part-of parent — a programme root directly under
+#      the Specifications hub me568215; topical hubs relate, never parent
+#      (gr631564). Every parent in the manifest's parent column is
+#      validated; a legacy manifest without the spec column is skipped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -572,10 +573,14 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
     # per-hub counts — gotchas (cols 2+9) and members — as trailing columns)
     done < <(awk -F'\t' -v OFS='\t' '
         FNR == NR {
-            # Count direct children even when their parent has no hub yet,
-            # or a child is itself a section:index sub-hub.
+            # Count direct children even when a parent has no hub yet,
+            # or a child is itself a section:index sub-hub. Column 12
+            # lists every part-of parent comma-separated — credit each.
             direct = (NF >= 12) ? $12 : ((NF >= 9) ? $9 : "")
-            if (direct != "" && direct != "-") members[direct]++
+            if (direct != "" && direct != "-") {
+                nd = split(direct, dl, ",")
+                for (i = 1; i <= nd; i++) if (dl[i] != "") members[dl[i]]++
+            }
             if (NF >= 9 && $9 != "" && $9 != "-") {
                 if ($2 == "gotchas") gotchas[$9]++
             }
@@ -590,8 +595,14 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             acc = (NF < 11) ? "?" : (($11 == "") ? "-" : $11)
             rev = (NF < 13 || $13 == "") ? "-" : $13
             gn = (NF >= 14 && $14 == 1) ? 1 : 0
-            # a part-of child of another thread inherits the parent thread qualification
-            ps = ((NF >= 12 && $12 != "") ? secof[$12] : "") ; if (ps == "") ps = "-"
+            # a part-of child of a thread inherits the thread qualification
+            # — any threads parent counts (column 12 may list several)
+            ps = "-"
+            if (NF >= 12 && $12 != "") {
+                np = split($12, pl, ",")
+                for (i = 1; i <= np; i++)
+                    if (secof[pl[i]] == "threads") { ps = "threads"; break }
+            }
             sup = (NF >= 15) ? $15 : "?"
             print $1, sec, $3, $4, $5, $6, $7, $8, hub, qual, gotchas[hub] + 0, members[$1] + 0, acc, rev, gn, ps, sup
         }' "$MANIFEST" "$MANIFEST")
@@ -641,14 +652,16 @@ PY
     fi
 fi
 
-# 15. spec-root placement (graph mode, manifest column 17). A spec root —
-#     a section:index node tagged spec:<slug> — hangs under a programme
-#     root of the Specifications hub me568215; topical hubs relate but
-#     never parent (precis-spec-help, gr631564). The parent column is
-#     walked up to 16 hops; a dead end or a chain missing me568215 is a
-#     finding. A manifest without the spec column (pre-2026-11 export)
-#     can't tell a spec root from any other index node — skipped, never
-#     clean-claimed.
+# 15. spec-root placement (graph mode, manifest columns 12 + 17). A spec
+#     root — a section:index node tagged spec:<slug> — carries exactly
+#     one part-of parent, a programme root directly under the
+#     Specifications hub me568215; topical hubs relate but never parent
+#     (precis-spec-help, gr631564). The parent column is comma-separated
+#     and every listed parent is validated: zero or several parents, a
+#     parent that is me568215 itself, or a parent not a direct child of
+#     it are all findings. A manifest without the spec column (pre-2026-11
+#     export) can't tell a spec root from any other index node — skipped,
+#     never clean-claimed.
 if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
     while IFS=$'\037' read -r h spec; do
         [[ -z "$h" ]] && continue
@@ -656,34 +669,31 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             echo "spec-root placement: skipped ($spec)"
             continue
         fi
-        echo "  spec-root parent → $(label_of "$h.md" "$SCAN_DIR/$h.md") ($spec): part-of chain never reaches the Specifications hub me568215 — spec roots hang under a programme root of it (precis-spec-help): link(kind='memory', id='$h', target='memory:<programme root>', rel='part-of')"
+        echo "  spec-root parent → $(label_of "$h.md" "$SCAN_DIR/$h.md") ($spec): needs exactly one part-of parent, a programme root directly under the Specifications hub me568215 (precis-spec-help): link(kind='memory', id='$h', target='memory:<programme root>', rel='part-of')"
         problems=$((problems+1))
     done < <(python3 - "$MANIFEST" <<'PY'
 import csv
 import sys
 
 SPEC_HUB = "me568215"
-HOP_CAP = 16
+SPEC_HUB_FORMS = (SPEC_HUB, SPEC_HUB[2:])
 
 with open(sys.argv[1], encoding="utf-8") as manifest:
     rows = [r for r in csv.reader(manifest, delimiter="\t") if r]
 if any(len(r) < 17 for r in rows):
     print("SKIPPED\x1flegacy manifest — refresh memory index --export-dir")
     sys.exit(0)
-parent = {r[0]: r[11] for r in rows if len(r) > 11}
+parents = {
+    r[0]: [p for p in r[11].split(",") if p] for r in rows if len(r) > 11
+}
 for r in rows:
     if r[1] != "index" or not r[16]:
         continue
-    cur, seen, reached = r[0], {r[0]}, False
-    for _ in range(HOP_CAP):
-        cur = parent.get(cur, "")
-        if cur in (SPEC_HUB, SPEC_HUB[2:]):
-            reached = True
-            break
-        if not cur or cur in seen:
-            break
-        seen.add(cur)
-    if not reached:
+    ps = parents.get(r[0], [])
+    ok = len(ps) == 1 and any(
+        gp in SPEC_HUB_FORMS for gp in parents.get(ps[0], ())
+    )
+    if not ok:
         print(f"{r[0]}\x1f{r[16]}")
 PY
     )

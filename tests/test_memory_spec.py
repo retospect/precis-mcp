@@ -1,13 +1,15 @@
 """Spec-root placement audit (gr631564).
 
 A spec root — a memory tagged ``spec:<slug>`` + ``section:index`` — hangs
-under a programme root of the Specifications hub me568215; topical hubs
-relate but never parent (precis-spec-help). The write path re-checks the
-root's part-of ancestry after a put/link/tag write: a miss stamps the
-system-owned ``AUDIT:spec-root-parent`` flag and the ack carries an
-advisory; a clean re-check clears the system flag (an author-set row is
-never touched). The export manifest carries the ``spec:<slug>`` column
-(17) that ``scripts/memory-lint`` check 15 walks offline.
+under exactly one part-of parent, a programme root directly under the
+Specifications hub me568215; topical hubs relate but never parent
+(precis-spec-help). The write path re-checks the root's part-of parents
+after a put/link/tag write: a miss stamps the system-owned
+``AUDIT:spec-root-parent`` flag and the ack carries an advisory; a clean
+re-check clears the system flag (an author-set row is never touched).
+The export manifest carries the ``spec:<slug>`` column (17) and every
+live parent in column 12 — ``scripts/memory-lint`` check 15 reads both
+offline.
 """
 
 from __future__ import annotations
@@ -89,6 +91,73 @@ def test_put_spec_root_under_programme_is_clean(
     ref_id = id_of(ack.body)
     assert f"{_AUDIT}:" not in ack.body
     assert _AUDIT not in _tags(store, ref_id)
+
+
+def test_put_spec_root_directly_under_spec_hub_audits(
+    handler: MemoryHandler, store: Store, specs: dict[str, int]
+) -> None:
+    """A spec root part-of me568215 itself is misplaced — it hangs under
+    a programme root, not directly off the hub (reachability alone used
+    to clear it)."""
+    ack = handler.put(
+        title="Spec: routing: the purpose",
+        text=_BODY,
+        tags=["section:index", "spec:routing"],
+        link=f"memory:{specs['hub']}",
+        rel="part-of",
+    )
+    ref_id = id_of(ack.body)
+    assert f"{_AUDIT}:" in ack.body
+    assert "the Specifications hub itself" in ack.body
+    assert _AUDIT in _tags(store, ref_id)
+
+
+def test_spec_root_under_another_spec_root_audits(
+    handler: MemoryHandler, store: Store, specs: dict[str, int]
+) -> None:
+    """A spec root part-of another spec root violates: its parent's
+    parent is the programme, not the hub — a spec nests sections, never
+    other spec roots."""
+    parent = _put(
+        handler,
+        "Spec: routing: the purpose",
+        tags=["section:index", "spec:routing"],
+        link=f"memory:{specs['programme']}",
+        rel="part-of",
+    )
+    ack = handler.put(
+        title="Spec: caching: the purpose",
+        text=_BODY,
+        tags=["section:index", "spec:caching"],
+        link=f"memory:{parent}",
+        rel="part-of",
+    )
+    ref_id = id_of(ack.body)
+    assert f"{_AUDIT}:" in ack.body
+    assert "not a programme root" in ack.body
+    assert _AUDIT in _tags(store, ref_id)
+    assert _AUDIT not in _tags(store, parent)
+
+
+def test_second_topical_parent_audits(
+    handler: MemoryHandler, store: Store, specs: dict[str, int]
+) -> None:
+    """A spec root under a programme root that picks up a second part-of
+    edge to a topical hub violates — exactly one parent is the shape;
+    the topical hub links related-to instead."""
+    ref_id = _put(
+        handler,
+        "Spec: routing: the purpose",
+        tags=["section:index", "spec:routing"],
+        link=f"memory:{specs['programme']}",
+        rel="part-of",
+    )
+    assert _AUDIT not in _tags(store, ref_id)
+
+    ack = handler.link(id=ref_id, target=f"memory:{specs['topical']}", rel="part-of")
+    assert f"{_AUDIT}:" in ack.body
+    assert "has 2 part-of parents" in ack.body
+    assert _AUDIT in _tags(store, ref_id)
 
 
 def test_put_spec_root_without_parent_audits(
@@ -236,3 +305,36 @@ def test_export_manifest_carries_spec_column(
     assert rows[f"me{spec}"][16] == "spec:routing"
     assert rows[f"me{plain}"][16] == ""
     assert rows[f"me{specs['programme']}"][16] == ""
+
+
+def test_export_manifest_parent_column_lists_every_parent(
+    handler: MemoryHandler, store: Store, specs: dict[str, int], tmp_path: Path
+) -> None:
+    """Check 15 validates every part-of parent, so the export must not
+    drop one: a spec root with a programme AND a topical parent exports
+    both handles comma-separated (td632322 — the first-parent-only
+    export hid an invalid second parent)."""
+    for rid in specs.values():
+        handler.tag(id=rid, add=["SPACE:repo-dev"])
+    spec = _put(
+        handler,
+        "Spec: routing: the purpose",
+        tags=["section:index", "spec:routing", "SPACE:repo-dev"],
+        link=f"memory:{specs['programme']}",
+        rel="part-of",
+    )
+    handler.link(id=spec, target=f"memory:{specs['topical']}", rel="part-of")
+    dest = tmp_path / "nodes"
+    export_memory_nodes(store, dest)
+    rows = {
+        r[0]: r
+        for r in csv.reader(
+            (dest / SECTIONS_MANIFEST).read_text(encoding="utf-8").splitlines(),
+            delimiter="\t",
+        )
+        if r
+    }
+    assert set(rows[f"me{spec}"][11].split(",")) == {
+        f"me{specs['programme']}",
+        f"me{specs['topical']}",
+    }

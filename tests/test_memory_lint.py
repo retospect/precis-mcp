@@ -1791,7 +1791,8 @@ def _spec_row(
 ) -> str:
     """One 17-column ``_sections.tsv`` row: the columns other checks read are
     filled quiet (live links, no hidden/dead, updated today); col 12 carries
-    the part-of parent and col 17 the ``spec:<slug>`` tag."""
+    the part-of parent(s) comma-separated and col 17 the ``spec:<slug>``
+    tag."""
     return (
         "\t".join(
             [
@@ -1821,9 +1822,9 @@ def _spec_row(
 def test_check15_flags_spec_root_off_the_spec_hub(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
-    """A spec root (section:index + spec:<slug>) must reach the Specifications
-    hub me568215 by part-of — me300 hangs off a topical hub; me200 sits under
-    a programme root and stays quiet."""
+    """A spec root (section:index + spec:<slug>) must sit under exactly one
+    programme root of the Specifications hub me568215 — me300 hangs off a
+    topical hub; me200 sits under a programme root and stays quiet."""
     home, _mem, cache, nodes = graph_setup
     (nodes / "me500.md").write_text(
         "# A repo-dev note\n\nNote body.\n", encoding="utf-8"
@@ -1846,11 +1847,58 @@ def test_check15_flags_spec_root_off_the_spec_hub(
 
     assert res.returncode == 0
     assert (
-        "spec-root parent → me300 (section node) (spec:wrong): part-of chain "
-        "never reaches the Specifications hub me568215" in res.stdout
+        "spec-root parent → me300 (section node) (spec:wrong): needs exactly "
+        "one part-of parent, a programme root directly under the "
+        "Specifications hub me568215" in res.stdout
     ), res.stdout
     assert "me200" not in res.stdout, res.stdout
     assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
+
+
+def test_check15_flags_direct_hub_nesting_and_a_second_topical_parent(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """td632322 review findings: reachability alone used to clear a spec
+    hung directly off me568215 or under another spec root, and the
+    first-parent-only export hid an invalid second parent. All three
+    shapes are findings; me200 under programme root me100 stays clean."""
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me900.md").write_text(
+        "# A repo-dev note\n\nNote body.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        "".join(
+            [
+                _spec_row("me568215", "index"),
+                _spec_row("me100", "index", parent="me568215"),
+                _spec_row("me200", "index", parent="me100", spec="spec:routing"),
+                _spec_row("me300", "index", parent="me400", spec="spec:wrong"),
+                _spec_row("me400", "index"),
+                _spec_row("me500", "index", parent="me568215", spec="spec:direct"),
+                _spec_row("me600", "index", parent="me200", spec="spec:nested"),
+                _spec_row("me700", "index", parent="me100,me400", spec="spec:two"),
+                _spec_row("me800", "index", parent="me400,me100", spec="spec:two2"),
+                _spec_row("me900", "reference", hub="me400", parent="me400"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    for h, spec in (
+        ("me300", "spec:wrong"),  # topical parent, never reaches the hub
+        ("me500", "spec:direct"),  # parent IS the hub, not a programme root
+        ("me600", "spec:nested"),  # spec root under another spec root
+        ("me700", "spec:two"),  # programme + topical parents
+        ("me800", "spec:two2"),  # same, reversed column order
+    ):
+        assert f"spec-root parent → {h} (section node) ({spec})" in res.stdout, (
+            res.stdout
+        )
+    assert "me200" not in res.stdout, res.stdout
+    assert "memory-lint: 5 hygiene issue(s) above" in res.stdout, res.stdout
 
 
 def test_check15_skips_a_manifest_without_the_spec_column(

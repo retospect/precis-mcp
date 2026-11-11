@@ -1052,7 +1052,9 @@ def _render_loaded(
 #: ``hub`` (handle of the node's ``part-of`` ``section:index`` hub; empty if
 #: none, ``-`` on a hub node), ``qualified`` (live ``qualified-by`` edges),
 #: ``accessed`` (UTC date of the last human view / agent recall; empty if never),
-#: ``parent`` (handle of the direct ``part-of`` parent; empty if none),
+#: ``parent`` (comma-separated handles of every live ``part-of`` parent;
+#: empty if none — the shape rule allows one, but a stray second edge is
+#: exactly what memory-lint check 15 must see),
 #: ``review`` (comma-separated ``td<id>:<created date>`` of the open
 #: ``memory-review`` todos linked to the node; empty if none), ``gotchas_none``
 #: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies),
@@ -1128,6 +1130,16 @@ def _handle_of(ids: list[int]) -> str:
     if not ids:
         return ""
     return handle_registry.try_format("memory", ids[0]) or str(ids[0])
+
+
+def _handles_of(ids: list[int]) -> str:
+    """Comma-separated handles of every id — a node's live ``part-of``
+    parents, all of them (the one-per-node shape is a convention the lint
+    verifies, so a stray second parent must reach the manifest). ``''``
+    for none."""
+    from precis.utils import handle_registry
+
+    return ",".join(handle_registry.try_format("memory", i) or str(i) for i in ids)
 
 
 def _hub_column(section: str, hubs: list[int]) -> str:
@@ -1248,7 +1260,7 @@ def export_memory_nodes(
                 _hub_column(section, hub_of.get(ref.id, [])),
                 qualified.get(ref.id, 0),
                 accessed.get(ref.id, ""),
-                _handle_of(parent_of.get(ref.id, [])),
+                _handles_of(sorted(parent_of.get(ref.id, []))),
                 reviews.get(ref.id, ""),
                 1 if "gotchas:none" in values else 0,
                 _sup_handles(ref.id),

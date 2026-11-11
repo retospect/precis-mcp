@@ -7,17 +7,19 @@ Nothing enforced it, so seven spec roots landed under topical hubs
 (CAD/se ``me477659``, Chemistry ``me477660``) before a manual refactor.
 
 This is the write-path half: after a ``put`` / ``link`` / ``tag`` write
-that could change spec-root-ness or membership, a spec root whose live
-``part-of`` chain never reaches ``me568215`` — or that has no live
-``part-of`` parent at all — is stamped ``AUDIT:spec-root-parent``
-(system-set, so ``search(kind='memory',
-tags=['AUDIT:spec-root-parent'])`` enumerates them) and the ack carries
-an advisory line. A clean re-check clears the flag; an author-set row
+that could change spec-root-ness or membership, a spec root is stamped
+``AUDIT:spec-root-parent`` (system-set, so ``search(kind='memory',
+tags=['AUDIT:spec-root-parent'])`` enumerates them) unless it has
+exactly one live ``part-of`` parent — a programme root, a direct
+``part-of`` child of ``me568215`` — and the ack carries an advisory
+line. A spec hung directly off the hub, under another spec root, or
+with a second topical parent all violate: the chain reaching the hub is
+not enough. A clean re-check clears the flag; an author-set row
 is never touched. Advisory only, never a write gate — the same contract
 as the shape audit (``precis.handlers._memory_shape``): a store fault
 fails open and changes no tag. ``scripts/memory-lint`` check 15 runs
-the same reachability rule offline against the export manifest's
-``spec`` column.
+the same rule offline against the export manifest's ``spec`` and
+``parent`` columns.
 """
 
 from __future__ import annotations
@@ -34,9 +36,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: The Specifications hub — every spec root's ``part-of`` chain ends
-#: here (``precis-spec-help``; Reto's ruling me568168). A programme root
-#: is one of its direct ``part-of`` children.
+#: The Specifications hub — a spec root's single ``part-of`` parent is
+#: one of its direct ``part-of`` children, a programme root
+#: (``precis-spec-help``; Reto's ruling me568168).
 SPECIFICATIONS_HUB_ID = 568215
 
 #: The ``AUDIT`` code stamped on a mis-placed spec root.
@@ -46,10 +48,6 @@ _AUDIT_TAG = Tag.closed("AUDIT", AUDIT_SPEC_ROOT_PARENT)
 
 _HUB_TAG = "section:index"
 _SPEC_TAG = "spec:"
-
-#: Spec graphs are shallow (root → programme → hub); the cap only guards
-#: a malformed cycle — same bound as ``memory_hubs.hubs_of``.
-_MAX_DEPTH = 8
 
 
 def spec_root_slug(values: Iterable[str]) -> str | None:
@@ -76,22 +74,11 @@ def _handle(store: Store, ref_id: int) -> str:
     return handle_registry.try_format("memory", ref_id) or f"me{ref_id}"
 
 
-def _reaches_hub(store: Store, start: int) -> bool:
-    """``start`` — or the live ``part-of`` chain above it — touches the
-    Specifications hub. Live parents only (``parents_of``): a chain
-    through a retired node does not count."""
-    seen = {start}
-    frontier = {start}
-    for _ in range(_MAX_DEPTH):
-        if SPECIFICATIONS_HUB_ID in frontier:
-            return True
-        frontier = {
-            p for ps in parents_of(store, sorted(frontier)).values() for p in ps
-        } - seen
-        if not frontier:
-            return False
-        seen |= frontier
-    return False
+def _is_programme_root(store: Store, ref_id: int) -> bool:
+    """``ref_id`` is a programme root — a live direct ``part-of`` child of
+    the Specifications hub. A chain through a retired node does not count
+    (``parents_of`` filters to live parents)."""
+    return SPECIFICATIONS_HUB_ID in parents_of(store, [ref_id]).get(ref_id, ())
 
 
 def _apply_audit_tag(store: Store, ref_id: int, violated: bool) -> None:
@@ -128,29 +115,47 @@ def spec_root_advisory(store: Store, ref_id: int) -> str | None:
         if slug is None and str(_AUDIT_TAG) not in tags:
             return None
         live_parents: list[int] = []
-        bad: list[int] = []
         if slug is not None:
-            live_parents = parents_of(store, [ref_id]).get(ref_id, [])
-            bad = [p for p in live_parents if not _reaches_hub(store, p)]
-        violated = slug is not None and (not live_parents or bool(bad))
+            live_parents = sorted(parents_of(store, [ref_id]).get(ref_id, []))
+        violated = slug is not None and (
+            len(live_parents) != 1 or not _is_programme_root(store, live_parents[0])
+        )
         _apply_audit_tag(store, ref_id, violated)
         if not violated:
             return None
         me = _handle(store, ref_id)
-        fix = (
-            f"spec roots hang under a programme root of the "
-            f"Specifications hub me{SPECIFICATIONS_HUB_ID} "
-            f"(precis-spec-help): link(kind='memory', id='{me}', "
-            "target='memory:<programme root>', rel='part-of')"
+        rule = (
+            f"spec roots carry exactly one part-of parent, a programme "
+            f"root of the Specifications hub me{SPECIFICATIONS_HUB_ID} "
+            "(precis-spec-help)"
         )
         if not live_parents:
             detail = "has no part-of parent"
+            how = (
+                f"link(kind='memory', id='{me}', "
+                "target='memory:<programme root>', rel='part-of')"
+            )
+        elif len(live_parents) > 1:
+            names = ", ".join(_handle(store, p) for p in live_parents)
+            detail = f"has {len(live_parents)} part-of parents ({names})"
+            how = (
+                f"unlink every extra one — link(kind='memory', id='{me}', "
+                "target='memory:<extra parent>', rel='part-of', mode='remove')"
+            )
         else:
-            names = ", ".join(_handle(store, p) for p in bad)
-            detail = f"is part-of {names}, whose chain never reaches it"
+            detail = (
+                "is part-of the Specifications hub itself, not a programme root"
+                if live_parents[0] == SPECIFICATIONS_HUB_ID
+                else f"is part-of {_handle(store, live_parents[0])}, "
+                "which is not a programme root of it"
+            )
+            how = (
+                f"link(kind='memory', id='{me}', "
+                "target='memory:<programme root>', rel='part-of')"
+            )
         return (
             f"AUDIT:{AUDIT_SPEC_ROOT_PARENT}: spec root {me} "
-            f"(spec:{slug}) {detail} — {fix}"
+            f"(spec:{slug}) {detail} — {rule}: {how}"
         )
     except Exception:
         log.warning("memory spec-root audit failed open for %s", ref_id, exc_info=True)
