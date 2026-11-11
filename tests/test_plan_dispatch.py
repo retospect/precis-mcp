@@ -5698,8 +5698,10 @@ def test_parse_verdict_verbatim_glued_tails(
         # with a non-placeholder rest; REVERT never comes from a token.
         ("all done.review: LAND", ("LAND", "")),
         ("wrapped up\nreview: LAND", ("LAND", "")),
-        # Markdown line-start markers still count as a line start.
-        ("**review: LAND**", ("LAND", "**")),
+        # Markdown line-start markers still count as a line start — the
+        # emphasis that opened the token is stripped off its rest
+        # (gr568824).
+        ("**review: LAND**", ("LAND", "")),
         ("- review: FIX — x", ("FIX", "x")),
         ("all checked.\n* review: FIX — x", ("FIX", "x")),
         ("all checked.\n> review: LAND", ("LAND", "")),
@@ -6619,6 +6621,116 @@ def test_review_ignores_the_dispatchers_own_grammar_note(store: Store) -> None:
     assert res.reviews == 0
     assert _meta(store, review)["review"]["verdict"] is None
     assert _status(store, review) == "open"
+
+
+def test_parse_verdict_mid_message_verdict_line() -> None:
+    """gr568824: one ``review:`` verdict line ANYWHERE in the message —
+    markdown emphasis stripped — is the verdict; jo568707's was a bold
+    line mid-prose, posted as the ``handoff:`` comment. REVERT comes
+    only from such a genuine line, never a glued token."""
+    assert pd.parse_verdict(
+        "handoff: Confirmed the full chain, two paragraphs of analysis.\n\n"
+        "**review: FIX — the gate is wrong**\n\n"
+        "More text after it."
+    ) == ("FIX", "the gate is wrong")
+    assert pd.parse_verdict(
+        "handoff: Two paragraphs of analysis.\n\nreview: REVERT — drops the gate"
+    ) == ("REVERT", "drops the gate")
+    assert pd.parse_verdict("handoff: ok\n*review: LAND*") == ("LAND", "")
+    assert pd.parse_verdict("handoff: ok\n~~review: LAND~~") == ("LAND", "")
+    # A ``review:``-starting comment bold-wrapped reads the same way.
+    assert pd.parse_verdict("**review: FIX — a.py misses the empty case**") == (
+        "FIX",
+        "a.py misses the empty case",
+    )
+    # The grammar echoed at line starts is still no verdict.
+    assert pd.parse_verdict("handoff: the grammar:\n- review: REVERT — <why>") is None
+
+
+def test_review_verdict_line_inside_the_handoff(store: Store) -> None:
+    """gr568824 jo568707: the review's verdict was a bold line in the
+    middle of its final message — stored as the ``handoff:`` comment,
+    never a ``review:``-starting comment. One verdict line anywhere,
+    emphasis stripped, is the verdict."""
+    mint = _reviewed(
+        store,
+        "handoff: Confirmed the full chain, two paragraphs of analysis.\n\n"
+        "**review: FIX — the gate is wrong**",
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert _meta(store, review)["review"]["verdict"] == "FIX"
+    (fix,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    ref = store.get_ref(kind="todo", id=fix)
+    assert ref is not None and ref.title == f"Fix review findings for td{build}"
+    body = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(fix)
+        if c.chunk_kind == "todo_body"
+    ]
+    assert body and str(body[0]).startswith("the gate is wrong")
+
+
+def test_review_revert_line_inside_the_handoff(store: Store) -> None:
+    """A ``review: REVERT`` verdict LINE mid-``handoff:`` is the verdict —
+    line-start only: a REVERT glued to narration stays a miss
+    (``test_review_glued_revert_is_a_miss``)."""
+    mint = _reviewed(
+        store,
+        "handoff: Confirmed the chain.\n\n**review: REVERT — drops the gate**",
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    (revert,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    ref = store.get_ref(kind="todo", id=revert)
+    assert ref is not None and ref.title == "Revert abc1234 on main"
+    assert _meta(store, review)["review"]["verdict"] == "REVERT"
+
+
+def test_review_skips_a_voided_job(store: Store) -> None:
+    """gr568824: a job the seat voided — a ``void:`` open tag on the job —
+    is never judged and burns no attempt: the node re-dispatches a fresh
+    review instead of acting on the voided run's verdict."""
+    mint = _reviewed(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    (job,) = _jobs_under(store, review)
+    store.add_tag(job[0], Tag.open("void:same-vendor"), set_by="system")
+    res = pd.run_pass(store)
+    # The voided run is ignored: no verdict read, no fix task minted, and
+    # the reviewer is re-dispatched — zero counted attempts.
+    assert (res.reviews, res.dispatched) == (0, 1)
+    assert sorted(_children(store, mint.root_id)) == sorted([build, review])
+    assert "review" not in _meta(store, review)
+    assert len(_jobs_under(store, review)) == 2
+
+
+def test_voided_review_job_does_not_count_toward_the_cap(store: Store) -> None:
+    """gr568824: the incident — the voided same-vendor review counted as
+    attempt one, so the next run's format miss hit the picked lane's
+    two-rung cap and minted the retry-cap ask. With the ``void:`` tag
+    that run burns nothing: one real attempt stays under cap and
+    retries; the cap itself still applies to the real attempts."""
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.dispatched == 1  # a format miss retries on the picked lane
+    (old, (retry, _)) = _jobs_under(store, review)
+    # The seat voids the first run by hand — a same-vendor review.
+    store.add_tag(old[0], Tag.open("void:same-vendor"), set_by="system")
+    _set_job_status(store, retry, "succeeded")  # posts nothing either
+    res = pd.run_pass(store)
+    # Attempts = 1 (the retry alone): under devin's two-rung cap the node
+    # retries again instead of entering rescue.
+    assert (res.dispatched, res.rescued) == (1, 0)
+    assert "rescue:review" not in _open_tags(store, review)
+    (third, _) = _jobs_under(store, review)[-1]
+    _set_job_status(store, third, "succeeded")
+    res = pd.run_pass(store)
+    assert res.rescued == 1
+    assert "rescue:review" in _open_tags(store, review)
 
 
 def test_dispatch_orders_by_prio_across_roots(store: Store) -> None:

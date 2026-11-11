@@ -39,9 +39,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
    its newest comment starting ``review:`` posted since that job was minted
    — a ``review:``-starting comment always wins — else its newest
-   ``handoff:`` carrying a ``review: LAND|FIX`` token at a line start
-   (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit between
-   the line start and the token) or right after sentence-final
+   ``handoff:`` carrying a ``review: LAND|FIX|REVERT`` line anywhere in
+   the message, markdown emphasis stripped (``**review: FIX — …**``
+   mid-prose, gr568824: one verdict line is that verdict; REVERT never
+   comes from a glued token — or a ``review: LAND|FIX`` token at a line
+   start (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit
+   between the line start and the token) or right after sentence-final
    punctuation, outside backticks/parens — the verdict lines too, so a
    quoted grammar echo never wins the strictest pick (td591267) — no
    ``<…>`` rest (a lane gluing
@@ -49,7 +52,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    FIX beats a LAND; REVERT never comes from a token). A LAND rest
    opening ``(clean`` or ``|`` is the grammar echo, and a placeholder
    ``review: FIX|REVERT — <…>`` template line anywhere in the comment
-   suppresses every LAND in it. Grammar, verdict word
+   suppresses every LAND in it. A job the seat voided — a ``void:``
+   open tag on the job — is skipped here and in the attempt count
+   (gr568824). Grammar, verdict word
    case-insensitive, any of ``—`` / ``–`` / ``-`` as the dash::
 
        review: LAND (read-only, tests not run)
@@ -697,8 +702,9 @@ _VERDICT_LINE_RE = re.compile(r"review:\s*(LAND|FIX|REVERT)\b", re.IGNORECASE)
 #: Sentence-final punctuation a glued token may directly follow.
 _SENTENCE_END = frozenset(".!?")
 #: Markdown line-start markers a fallback token may directly follow
-#: (``- ``/``* `` bullets, ``**`` bold, ``#`` heading, ``> `` quote).
-_MD_MARKERS = " \t-*#>"
+#: (``- ``/``* `` bullets, ``**``/``~~`` emphasis, ``#`` heading,
+#: ``> `` quote — gr568824's bold mid-brief verdict line).
+_MD_MARKERS = " \t-*#>_~"
 _LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 _TD_FROM_RE = re.compile(r"\s*td(\d+)\s*")
 _SHA_FROM_RE = re.compile(r"\s*sha:([0-9a-f]{7,40})\s*", re.IGNORECASE)
@@ -777,7 +783,7 @@ class _Node:
     prio: int | None
     depth: int
     root: int
-    #: open tag value -> when it was set (todos only).
+    #: open tag value -> when it was set (todos and jobs).
     open_tags: dict[str, datetime] = field(default_factory=dict)
     children: list[int] = field(default_factory=list)
 
@@ -1547,7 +1553,14 @@ def _verdict_lines(body: str) -> list[tuple[str, str]]:
             end = body.find("\n", m.end())
             line = body[m.end() : end if end >= 0 else len(body)]
             lead = _VERDICT_LEAD_RE.match(line)
-            out.append((m.group(1).upper(), line[lead.end() if lead else 0 :].strip()))
+            rest = line[lead.end() if lead else 0 :].strip()
+            # ``**review: FIX — x**``: the emphasis run that opened the
+            # token closes the line — strip it (gr568824).
+            prefix = body[i + 1 : m.start()].rstrip()
+            emph = prefix[len(prefix.rstrip("*_~")) :]
+            if emph:
+                rest = rest.removesuffix(emph).rstrip()
+            out.append((m.group(1).upper(), rest))
     return out
 
 
@@ -1565,7 +1578,9 @@ def parse_verdict(text: str) -> tuple[str, str] | None:
     LAND): the winner's own line is the rest, with a note naming the other
     verdict(s) present; a placeholder ``<…>`` line among them marks a
     grammar echo and is no verdict — a later ``review:`` line is never swallowed into
-    the rest (gr574380); lines that agree keep it.
+    the rest (gr574380); lines that agree keep it. A single verdict
+    line ANYWHERE in the message — markdown emphasis stripped — is that
+    verdict (gr568824: the bold mid-brief ``**review: FIX — …**``).
     When the text as a whole is no verdict line — a hand-off that glues
     the token to its narration (``… on landed main.review: FIX — …``,
     gr573564) — the fallback's surviving candidates rule: a FIX with
@@ -1592,6 +1607,23 @@ def parse_verdict(text: str) -> tuple[str, str] | None:
         if verdict != "LAND" and not rest:
             return None
         return verdict, rest
+    # A single verdict LINE anywhere in the message is that verdict —
+    # the bold mid-brief ``**review: FIX — …**`` (gr568824), emphasis
+    # already stripped by :func:`_verdict_lines`; a placeholder ``<…>``
+    # rest is the grammar echoed, not findings, and a LAND glossed
+    # ``(clean`` or continued ``|`` the same — all fall through.
+    if len(words) == 1:
+        word = next(iter(words))
+        suppress_land = _verdict_template(body)
+        for w, r in reversed(lines):
+            if w != word or r.startswith("<"):
+                continue
+            if word == "LAND" and (
+                suppress_land or r.lower().startswith("(clean") or r.startswith("|")
+            ):
+                continue
+            if r or word == "LAND":
+                return word, r
     candidates = _verdict_candidates(body)
     fixes = [rest for verdict, rest in candidates if verdict == "FIX" and rest]
     if fixes:
@@ -1612,7 +1644,13 @@ def _is_review_line(text: str) -> bool:
     if not body.startswith("handoff:"):
         return False
     inner = body[len("handoff:") :].strip()
-    return inner.startswith("review:") or bool(_verdict_candidates(inner))
+    return (
+        inner.startswith("review:")
+        # A mid-message verdict LINE incl. REVERT (gr568824) — a
+        # ``<…>`` placeholder line is the grammar echoed, not one.
+        or any(not r.startswith("<") for _, r in _verdict_lines(inner))
+        or bool(_verdict_candidates(inner))
+    )
 
 
 def _read_verdict(
@@ -2314,6 +2352,15 @@ def _step_reviews(
         if not jobs or jobs[-1].status != "succeeded":
             continue
         newest = jobs[-1]
+        if _voided(newest):
+            # The seat voided the run by hand (gr568824): it counts for
+            # nothing — drop its dead claim and reopen so the node
+            # re-dispatches, and never read its comments as a verdict.
+            w.remove_tags(n, _claims(n))
+            if n.status != "open":
+                w.set_status(n, "open")
+            res.notes.append(f"td{n.id}: review job:{newest.id} voided")
+            continue
         seen = n.meta.get("review")
         if isinstance(seen, dict) and seen.get("job") == newest.id:
             continue
@@ -3153,12 +3200,23 @@ def _retries(n: _Node) -> int:
         return DEFAULT_RETRIES
 
 
+def _voided(j: _Node) -> bool:
+    """A job the seat voided by hand — a ``void:`` open tag on the job
+    (``tag(kind='job', id=<jo>, add=['void:<why>'])``, gr568824): the run
+    happened, the outcome is ignored — a same-vendor review, a dry run —
+    so it burns no attempt and its comments are never judged."""
+    return any(t.startswith("void:") for t in j.open_tags)
+
+
 def _no_attempt(j: _Node) -> bool:
     """An ended job that burned no attempt: the lane's host refused the
-    launch (``meta.host_refusal``, gr571395) or it failed outside the
+    launch (``meta.host_refusal``, gr571395), it failed outside the
     diff's control (``meta.attempt_free``: a lane that never freed a slot,
-    gr572118; a land the gate infrastructure killed, gr570187)."""
-    return bool(j.meta.get("host_refusal") or j.meta.get(ATTEMPT_FREE_KEY))
+    gr572118; a land the gate infrastructure killed, gr570187), or the
+    seat voided it (:func:`_voided`, gr568824)."""
+    return bool(
+        j.meta.get("host_refusal") or j.meta.get(ATTEMPT_FREE_KEY) or _voided(j)
+    )
 
 
 def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:

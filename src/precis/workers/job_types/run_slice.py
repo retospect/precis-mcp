@@ -1025,12 +1025,13 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
 
     where = (
         f"Post exactly one comment on td{todo_id} (the node you were given), "
-        "or make it the FIRST line of your final message (posted as the "
-        "`handoff:` comment; the dispatcher reads the verdict there), one of:"
+        "or make the verdict line the FIRST line of your final message "
+        "(posted as the `handoff:` comment; the dispatcher reads the "
+        "verdict there), one of:"
         if mcp
-        else "Make your verdict the FIRST line of your final message (it is "
-        f"posted on td{todo_id} as the `handoff:` comment and the dispatcher "
-        "reads it there; this lane has no MCP to post with), one of:"
+        else "Make the verdict line the FIRST line of your final message (it "
+        f"is posted on td{todo_id} as the `handoff:` comment and the "
+        "dispatcher reads it there; this lane has no MCP to post with), one of:"
     )
     return [
         "",
@@ -1117,11 +1118,31 @@ _LANDED_RE = re.compile(r"^\s*landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
 _TARGET_CAP = 6000
 
 
+def _followups_on_main(root: Path, landed: str) -> list[str]:
+    """``<sha> <subject>`` lines of the commits on ``origin/main`` since
+    ``landed`` that touch a file the squash touched (gr568824): the
+    reviewer reads the squash alone and would re-find a defect a
+    follow-up already fixed. Best-effort: a sha this repo does not know —
+    or no repo at all — names none."""
+    names = _git(["show", "--format=", "--name-only", landed], root)
+    files = [f for f in names.stdout.splitlines() if f.strip()][:50]
+    if names.returncode != 0 or not files:
+        return []
+    _git(["fetch", "-q", "origin", "main"], root)
+    proc = _git(["log", "--format=%h %s", f"{landed}..origin/main", "--", *files], root)
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line.strip()][:10]
+
+
 def _review_target(store: Any, meta: Any) -> str | None:
     """What a reviewer judges, inlined so a lane without the precis MCP can
     review (td564019 cut 1): the reviewed todo's title, its newest
     ``landed: <sha>`` comment and its brief (body plus the newest
-    ``brief:``/``handoff:``), capped. ``None`` for any other node."""
+    ``brief:``/``handoff:``), capped. Commits on main since the squash
+    that touch the same files are named (gr568824) — a finding a
+    follow-up already fixed is not a finding. ``None`` for any other
+    node."""
     if _generate_role(meta) != "reviewer":
         return None
     m = _TD_FROM_RE.fullmatch(str((meta.get("generate") or {}).get("from") or ""))
@@ -1146,6 +1167,17 @@ def _review_target(store: Any, meta: Any) -> str | None:
             f"Landed squash: `{landed}` — read it with `git show {landed}` in "
             "this worktree (it is on origin/main)."
         )
+        try:
+            followups = _followups_on_main(slice_root(), landed)
+        except RuntimeError:
+            followups = []
+        if followups:
+            lines += [
+                "",
+                "Since the squash, main took these commits touching the "
+                "same files — check a finding is not already fixed there:",
+                *(f"- `{line}`" for line in followups),
+            ]
     else:
         lines.append(
             f"td{target_id} has no `landed:` comment yet: nothing is on main to "

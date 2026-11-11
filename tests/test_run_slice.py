@@ -1934,6 +1934,46 @@ def test_review_target_without_a_land_says_so(seams: dict[str, Any]) -> None:
     )
 
 
+def test_review_target_names_followups_on_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr568824: the reviewer diffs the squash alone and would re-find a
+    defect a follow-up commit on main already fixed — the target names
+    the commits since the squash that touch the same files. Best-effort:
+    a sha this repo cannot resolve names none."""
+    store = _Store()
+    store.add_todo(
+        7,
+        "Build it",
+        body="Build.",
+        comments=("landed: abc1234 — the fix",),
+    )
+    meta = {"generate": {"role": "reviewer", "from": "td7"}}
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:3] == ["show", "--format=", "--name-only"]:
+            return _proc("src/a.py\ntests/test_a.py\n", rc=0)
+        if args[:2] == ["log", "--format=%h %s"]:
+            return _proc("42e550b fix the gate\n99ff00d docs tweak\n")
+        return _proc()
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    target = run_slice._review_target(store, meta)
+    assert target is not None
+    assert "git show abc1234" in target
+    assert "not already fixed" in target
+    assert "42e550b fix the gate" in target
+
+    def no_sha(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        return _proc("", rc=1) if args[:1] == ["show"] else _proc()
+
+    monkeypatch.setattr(run_slice, "_git", no_sha)
+    target = run_slice._review_target(store, meta)
+    assert target is not None and "git show abc1234" in target
+    assert "not already fixed" not in target
+
+
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
