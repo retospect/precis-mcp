@@ -95,8 +95,7 @@ builder:
    of the hexagonal tiling with merge groups. → tiling layout (slice 4).
 4. **No interior-seam hydrogenation.** H enters a net only as open-rim
    termination (`_block_from_net`, `terminate_mode`). The decoration
-   primitive is specced in
-   [hexfold-sp3-isolation-band](hexfold-sp3-isolation-band.md) and unbuilt.
+   primitive is specced in spec `me628808` and unbuilt.
    → `decorate` (slice 2).
 5. **xtb relaxes cannot be dispatched from the session MCP host.**
    `structure` `_dispatch_relax` (`precis/handlers/structure.py`) refuses
@@ -341,7 +340,7 @@ one H at 1.09 Å along `face`, record the decoration on the net.
 `_block_from_net` emits F4 and keeps `_SP2_BOND_ORDER` off C–H. `check`:
 a decorated carbon has valence 4; WARN `geom.sp3.mismatch` as the
 isolation-band item defines it. This is the site-decoration core
-[hexfold-sp3-isolation-band](hexfold-sp3-isolation-band.md) needs (that
+spec `me628808` needs (that
 item then adds band site selection and chair face assignment) and the
 primitive behind the `decorate` op in
 [se-modules-and-assemblies](se-modules-and-assemblies.md).

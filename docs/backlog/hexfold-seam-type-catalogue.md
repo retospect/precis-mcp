@@ -398,7 +398,7 @@ and owes a seam-atom motif, a ring census and a strain figure.
 - Unequal-dihedral k=3 seams (ruled out above).
 - Seam **vertices** — points where seam curves meet. Stays excluded per
   §6.4 and owned by `hexfold-sp3-seam.md`.
-- The sp³ *isolation band* — `hexfold-sp3-isolation-band.md`, decoration
+- The sp³ *isolation band* — spec `me628808`, decoration
   within one sheet, unrelated.
 - Any electronic-structure claim.
 

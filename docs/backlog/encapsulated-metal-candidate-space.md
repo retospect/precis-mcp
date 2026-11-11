@@ -163,7 +163,7 @@ the NH₃ network (catpath `network.py`) and
 - **Overlap to watch.**
   - F1 cages and F2 nanobuds overlap `nanobud-campaign.md`,
     the closed se-nanobud-graph spec and the hexfold seam/sp3 items
-    (`hexfold-sp3-seam.md`, `hexfold-sp3-isolation-band.md`; F4's sp3-H
+    (`hexfold-sp3-seam.md`, spec `me628808`; F4's sp3-H
     crease is a relative of those).
   - **Flag: the F2 nanobud flow cell touches the nanobuds paper's
     subject.** Any F2 slice must check with the nanobuds-paper owner first.

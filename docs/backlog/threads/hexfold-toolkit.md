@@ -759,7 +759,7 @@ removed as met — the transport move it waited on happened 09-29)
 9. **valve spec `me628980` Q2** (scrubbers `me629055`) — scrubber cadence
    per poison species, decided by instrumenting the first lining, so it
    waits on 7.
-10. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
+10. **backlog/hexfold-sp3-seam.md + spec `me628808` (isolation band)**
    (§28.7) — three- and four-sheet joins at an atom, and the valve's sp³
    isolation loops. Sequenced here by choice, not blocked: §28 lists it as
    unblocked since step 2 landed. `JOINERS` is already keyed on a lattice

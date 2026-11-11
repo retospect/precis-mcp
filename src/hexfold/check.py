@@ -661,7 +661,7 @@ def _geometry_findings(
 
 #: sp3 C-C bond length (A) against graphene's sigma 1.42: the ~7% mismatch
 #: that stresses whatever a closed sp3 band encloses
-#: (docs/backlog/hexfold-sp3-isolation-band.md, open question 3).
+#: (spec `me628808`, open question on closed-band strain).
 SP3_CC_A = 1.53
 
 
