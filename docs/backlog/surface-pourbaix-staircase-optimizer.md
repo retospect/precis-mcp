@@ -153,11 +153,11 @@ needs a quest-side representation that does not exist yet.
 - catalysis-selectivity-19 gas and H* corrections
   (`scratch/catsel-catpath-brief-corrections.md`): open question 2.
 - `catalyst-discovery-quest.md`: the outer Pareto loop this feeds.
-- `neb-barriers-in-the-catpath-pipeline.md`: the reset-contour NEBs (§6.2
-  steps 2–4). The prompt's **NEBscape audit** belongs there: compare our
-  NEB setup with NEBscape on minima-hopping IS/FS generation,
-  permutation-reduced atom mapping, FS→IS symmetry alignment, μ/τ
-  reaction-distance ranking, and the fidelity criteria.
+- the NEB-barriers spec (graph memory, under `me568454`): the
+  reset-contour NEBs (§6.2 steps 2–4). The prompt's **NEBscape audit**
+  belongs there: compare our NEB setup with NEBscape on minima-hopping
+  IS/FS generation, permutation-reduced atom mapping, FS→IS symmetry
+  alignment, μ/τ reaction-distance ranking, and the fidelity criteria.
 - `pathway-selectivity-u-ph-window.md`: the window objective. This item's
   per-intermediate masks generalise it.
 

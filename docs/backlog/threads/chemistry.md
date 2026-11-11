@@ -127,8 +127,9 @@ image, which has no MPI. Rank the items below by what that paper needs.
 Items 1-4 are engine items moved down from Do next 2026-10-01 to keep it
 at five; engine-over-UI still holds.
 
-1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — NEB transition-
-   state barriers as a pipeline step (barriers, not just thermodynamics);
+1. **the NEB-barriers spec** (graph memory, under the slab-environment
+   optimiser `me568454`) — NEB transition-state barriers as a pipeline
+   step (barriers, not just thermodynamics);
    triage 2026-10-02: no code yet, the item is a design call (endpoint
    pairing, cost gate, convergence handling). Endpoint pairing now has a
    candidate method, filed in the catpath repo as

@@ -69,8 +69,9 @@ Ranked by how load-bearing it would be, not by effort:
    alone cannot give, and the geometric phase can suppress the very channel a
    naive surface-hopping estimate favours. If Précis ever ranks photochemical
    routes, ignoring this is a correctness problem, not a missing feature.
-   Adjacent: `docs/backlog/neb-barriers-in-the-catpath-pipeline.md`, which adds
-   kinetics to a thermodynamics-only pipeline — the same shape of gap.
+   Adjacent: the NEB-barriers spec (graph memory, under `me568454`),
+   which adds kinetics to a thermodynamics-only pipeline — the same
+   shape of gap.
 2. **A topological-invariant slot on `dft_calculation`.** The existing
    `derived` subkey, populated by `derive_*` job types, is the right home: a
    Chern number or a Z2 index computed from the converged wavefunction is a

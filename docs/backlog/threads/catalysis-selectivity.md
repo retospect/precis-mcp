@@ -227,9 +227,10 @@ the dated detail is in `git log` and the owning items):**
 
 ## Horizon
 
-1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — owned by
-   chemistry (its Horizon 1); Do-next 6 decides where NEB runs, this
-   item makes NEB run at all. Kinetic margins wait on it.
+1. **the NEB-barriers spec** (graph memory, under the slab-environment
+   optimiser `me568454`) — owned by chemistry (its Horizon 1); Do-next 6
+   decides where NEB runs, this item makes NEB run at all. Kinetic
+   margins wait on it.
 2. **backlog/pathway-conditions-effects-report.md** — chemistry's report
    for qu164903; consumes the window scalars from Do-next 5 instead of
    U_L / U_opt alone.
