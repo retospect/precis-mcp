@@ -14,12 +14,60 @@ shipped: sp3 seam lines k4-sp3-90-a + k3-sp3-z (692d8830a), k3-sp3-a (260218345)
 *(Transfer to graph memory is pending — spec-in-memory ruling
 `me568168`, target seams group `me628776` (beside the closed catalogue
 `me628806` and the sp³ band `me628808`; the valve's three-port node
-`me629057` defers to it), gripe `gr629124`. Not read in the 2026-11-11
-transfer pass; the builder lane had no precis MCP. Do not delete this
-file until its `section:reference` nodes are written under `me628776`,
-the hub reading order carries their handles, and the source/backlog
-references are repointed — retiring ahead of the transfer was reverted
-once already (`a331c87a4`).)*
+`me629057` defers to it), gripe `gr629124`. Both 2026-11-11 passes had
+no precis MCP; the executing lane needs the session MCP on PROD — the
+writes cannot be done from a no-MCP lane. Do not delete this file until
+the nodes below are written, `me628776`'s reading order carries their
+handles, and the references are repointed — retiring ahead of the
+transfer was reverted once already (`a331c87a4`).)*
+
+*Transfer manifest — coverage checked 2026-11-11 (read-only prod
+queries): `me628806` already carries the catalogue rows keyed on
+(k, dihedrals, rim word, hybridisation), the `port.mismatch` /
+`fit.unsolvable` refusals, the dimerisation relax verdict and this item
+as its "Not in scope: seam vertices"; `me628808` covers the isolation
+band; `me629057` the valve port. Missing from the graph — write each as
+one `section:reference` node tagged `spec:carbon-topology`, `part-of` →
+`me628776`, `Source:` line naming this file + transfer date, house shape
+of the `me630425`–`me630430` set:*
+
+1. *Title ≈ "sp³ seam rows are private `hexfold_scene` features, not
+   `.hx` grammar". Body: the three rows' construction, exclusive
+   feature types and refusal gates (this file's shipped paragraphs);
+   xTB-relaxed seeds (dimer 1.60 Å, sheet 1.51 Å, gap 3.32 Å; k3
+   106.54°×3 + 112.24°×3, k4 104.48°×4 + 120°×2); ring censuses —
+   k3-sp3-z 3·n/2 pentagons + 3·(n/2−1) octagons, k3-sp3-a 3·(n−1)
+   hexagons + 3·(n−1) decagons — which also answer `me628806`'s open
+   "ring census per entry"; the 2026-10-13 coordinator relax evidence
+   and its caveats. `Built:` commits 692d8830a, 260218345 and
+   `python:main::hexfold.sp3_seam`; `cites` → `me628806`.*
+2. *Title ≈ "`k3-sp3-z` matches the PRL erratum's sp³ junction dimer
+   motif". Body: this file's §Prior art — PRL 116, 055501 (2016)
+   all-sp² honeycomb; Erratum PRL 118, 029901 (2017) → sp³ junction,
+   verified correspondence; LTP 48, 232 (2022) 5-5-8 / 6-6-6 triples —
+   consistent, not cell-for-cell; `k4-sp3-90-a` unmatched; open octagon
+   census comparison.*
+3. *Title ≈ "Seam-vertex joins stay undesigned — χ rule and path-ID
+   class open". Body: §Scope (remaining) + §Acceptance — Plateau's
+   second law, `cone(P)` + apex vertex, extend the consistency check
+   and per-sheet χ to the vertex, decide the path-ID class, one
+   seam-vertex example or a recorded impossibility; Reto 2026-09-16
+   "join 3 or 4 sheets … after the rest is done".*
+4. *Title ≈ "A genus-0 hex net quantises box corners to 60° steps".
+   Body: §Seam vertices below — `P − H = 6χ = 12`, no eight identical
+   defect-free corners, the 12-pentagon and 24+12 exits, defect
+   quantised in π/3 → shape quantised, nearest-realizable-corner
+   return, motif per corner type, pillbox + box into the example set
+   (Reto 2026-09-27).*
+
+*Then: append the four new handles to `me628776`'s reading-order line;
+repoint `src/hexfold/spec.md` §28 step 7 ("backlog item
+`hexfold-sp3-seam`"), `docs/backlog/threads/hexfold-toolkit.md` Do-next
+10, `docs/backlog/hexfold-scene-grammar-from-primitives.md` sibling-spec
+list and `docs/backlog/chern-domain-memory-in-the-sheet-generator.md`
+§Owner to the new handles (or `me628776` where the item as a whole is
+meant); delete this file and regenerate `docs/backlog/INDEX.md`
+(`scripts/docs-index`).*
 
 Reto, 2026-09-16: "we want to add the sp3 join variant in the backlog
 also, i think that can join 3 or 4 sheets. We'll add it after the rest
