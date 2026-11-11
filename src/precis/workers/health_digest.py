@@ -1405,11 +1405,15 @@ def _check_hosts_alive(conn: Any) -> CheckResult:
            AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
            AND hh.host !~ '^[0-9a-f]{12}$'
            -- A one-off dev checkout (gr625282): it reported a worker_units
-           -- snapshot that is empty and has never recorded worker activity, so
-           -- it is not a fleet member. A row with no snapshot key stays eligible.
+           -- snapshot that is empty or probed-and-found-zero-units, and has
+           -- never recorded worker activity, so it is not a fleet member.
+           -- A row with no snapshot key stays eligible.
            AND NOT (
                hh.meta ? 'worker_units'
-               AND hh.meta->'worker_units' = '{}'::jsonb
+               AND (
+                   hh.meta->'worker_units' = '{}'::jsonb
+                   OR hh.meta->'worker_units'->'units' = '{}'::jsonb
+               )
                AND COALESCE(hh.meta->'activity', '{}'::jsonb) = '{}'::jsonb
            )
            AND EXISTS (

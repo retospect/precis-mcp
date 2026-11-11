@@ -1811,6 +1811,49 @@ def test_host_dark_fires_for_host_with_recorded_activity(store: Store) -> None:
     assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
+def test_host_dark_skips_linux_checkout_with_zero_units(store: Store) -> None:
+    """gr625282: a Linux one-off checkout probes systemctl successfully and
+    reports ``worker_units.units == {}`` — the same non-fleet shape as an
+    empty snapshot, so going quiet must not page either."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={
+            "worker_units": {
+                "observed_at": "2026-11-11T14:15:00+00:00",
+                "units": {},
+            },
+            "activity": {},
+        },
+    )
+
+    findings = _detect_host_dark(store)
+    assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_fires_for_host_with_units_no_activity(store: Store) -> None:
+    """Complement: a host whose probe found installed precis-worker units is
+    a fleet member even before any recorded activity — it still pages."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=HOST_DARK_SILENCE_MIN + 5,
+        meta={
+            "worker_units": {
+                "observed_at": "2026-11-11T14:15:00+00:00",
+                "units": {"precis-worker.service": {"ActiveState": "active"}},
+            },
+            "activity": {},
+        },
+    )
+
+    findings = _detect_host_dark(store)
+    assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
 def test_dead_worker_message_is_hedged_across_platforms() -> None:
     """gr180078: no hardcoded launchctl-only text."""
     for plat in ("Darwin", "Linux", "darwin", "linux", None):

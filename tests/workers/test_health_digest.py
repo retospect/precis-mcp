@@ -2175,6 +2175,29 @@ def test_hosts_alive_ignores_workerless_dev_checkout(store) -> None:
     assert host not in result.detail
 
 
+def test_hosts_alive_ignores_linux_checkout_with_zero_units(store) -> None:
+    """gr625282: the Linux shape — a successful systemctl probe that found
+    zero precis-worker units — is skipped the same as an empty snapshot."""
+    host = f"th-{uuid4().hex[:8]}"
+    _seed_hosts_alive_worker_log(store, host, hours_ago=1)
+    _seed_hosts_alive_heartbeat(
+        store,
+        host,
+        minutes_ago=health_digest._HOSTS_ALIVE_SILENCE_MIN + 5,
+        meta={
+            "worker_units": {
+                "observed_at": "2026-11-11T14:15:00+00:00",
+                "units": {},
+            },
+            "activity": {},
+        },
+    )
+
+    with store.pool.connection() as conn:
+        result = _check_hosts_alive(conn)
+    assert host not in result.detail
+
+
 # ── alert backlog rot ─────────────────────────────────────────────────────
 
 
