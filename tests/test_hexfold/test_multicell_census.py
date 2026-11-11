@@ -1,6 +1,6 @@
 """The multi-cell prototype census fixtures and their closed forms.
 
-Slice 0 of docs/backlog/hexfold-multicell-prism.md: the chat-99 targets
+Slice 0 of the multicell-prism spec (``me630430``): the chat-99 targets
 (prism-hcol-forced, prism-hfold-out, prism-hcol, tri-tube, bundle3,
 bundle6) at (R, P) = (2, 4) and (4, 6), counted from the prototype
 ``build.py`` at ``periodic=True`` (``scripts/hexfold-multicell-census``

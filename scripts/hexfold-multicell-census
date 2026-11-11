@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
 """Regenerate tests/test_hexfold/data/multicell/census.json from the prototype.
 
-Slice 0 of docs/backlog/hexfold-multicell-prism.md: the multi-cell
+Slice 0 of the multicell-prism spec (``me630430``): the multi-cell
 reference census comes from the scratch builder in the hexfold repo's
 ``proto/multicell-prism`` branch (commit af09a8d,
 ``prototypes/multicell-prism/build.py`` — usually checked out at

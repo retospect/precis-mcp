@@ -805,7 +805,8 @@ removed as met — the transport move it waited on happened 09-29)
     landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs
     on N equal-120 seams, each an inward rib, authored pore cells, the
     lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
-16. **backlog/hexfold-multicell-prism.md** — multi-cell prisms over
+16. **spec `me630425`/`me630427`/`me630428`/`me630429`/`me630430`** (was
+    backlog/hexfold-multicell-prism.md) — multi-cell prisms over
     shared sheet primitives (Reto 2026-10-22, "is a cell wall not just a
     graphene sheet?"): slices 0+1 landed 2026-10-22 (hexfold-ms): 45 SHA
     goldens + multicell census + glossary; `hexfold.sheetnet`

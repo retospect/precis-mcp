@@ -16,7 +16,7 @@ model: fable
 > `sheetnet` primitive, the Å-vs-macro table goes to the workspace skill.
 > Dropped: `meta.role='definition'`, `$name`, the three refusals, `def.*`.
 > Nothing below is to be built. The file stays until that spec's slice 6
-> ships because `hexfold-multicell-prism.md` links it; delete it then.
+> ships because the multicell-prism spec (`me630430`) links it; delete it then.
 
 Reto, 2026-10-22: "As we build higher complexity structures, we want to
 define parameterized building blocks, and understand those. Ideally this
@@ -84,7 +84,7 @@ The LLM already authors a language: se ops JSON, typed-feature params,
 When a definition hits any refusal it graduates to Python: one builder
 module declaring `FEATURE_TYPE`, one line in `_BUILDERS`, one section in
 `precis-hexfold-seams-help` (pinned by `tests/test_hexfold_typed_features.
-py`), one golden. That is exactly how `hexfold-multicell-prism.md` lands
+py`), one golden. That is exactly how the multicell-prism spec `me630428` lands
 `cells-k3-sp3-z`. Declarative JSON + references is enough as long as the
 derived numbers are someone else's theorem; a real language is unavoidable
 only where a new closed form or combinatorial construction appears, and

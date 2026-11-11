@@ -1,6 +1,6 @@
 """SHA-256 goldens for every tube builder and SE generator block.
 
-Slice 0 of docs/backlog/hexfold-multicell-prism.md: before the builders
+Slice 0 of the multicell-prism spec (``me630430``): before the builders
 are re-expressed as layouts over ``hexfold.sheetnet``, lock today's
 outputs.  Per builder (``prism_tube`` +/- outlines with and without
 pores, ``rail_tube``, ``channel_junction`` paired and unpaired,
