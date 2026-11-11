@@ -6657,7 +6657,7 @@ def test_asks_page_renders_data(client, monkeypatch) -> None:
     )
     resp = client.get("/asks")
     assert resp.status_code == 200
-    assert "#14634" in resp.text
+    assert "td14634" in resp.text
     assert "Write the technical section" in resp.text
     assert "two blockers" in resp.text
     assert 'action="/asks/14634/answer"' in resp.text
@@ -6935,10 +6935,34 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
     )
     resp = client.get("/needs-you")
     assert resp.status_code == 200
-    assert "#14634" in resp.text
+    assert "td14634" in resp.text
     assert "which venue?" in resp.text
     # The answer form still targets the canonical /asks write route.
     assert 'action="/asks/14634/answer"' in resp.text
+
+
+@pytest.mark.parametrize("path", ["/asks", "/needs-you"])
+def test_ask_row_leads_with_copyable_handle(client, monkeypatch, path) -> None:
+    """gr594941: the row led with a bare ``#<id>`` — no handle an agent
+    could paste into ``get`` — and repeated it on the source chip. The
+    row now leads with the universal ``td<N>`` handle, a ⧉ button copies
+    it (mouseover names what it does), and the numeric id survives only
+    on the link's hover title."""
+    from precis_web.routes import asks as asks_mod
+    from precis_web.routes import needs_you as needs_you_mod
+
+    ask = {**_ASK_14634, "handle": "td14634"}
+    monkeypatch.setattr(asks_mod, "_load_asks", lambda store, **kw: [ask])
+    monkeypatch.setattr(needs_you_mod, "_load_asks", lambda store, **kw: [ask])
+    resp = client.get(path)
+    assert resp.status_code == 200
+    text = resp.text
+    assert ">td14634</a>" in text
+    assert 'data-copy="td14634"' in text
+    assert "writeText('td14634')" in text
+    assert 'title="copy td14634' in text
+    assert 'title="#14634"' in text
+    assert ">#14634<" not in text
 
 
 def test_needs_you_ask_title_with_refs_does_not_nest_anchors(

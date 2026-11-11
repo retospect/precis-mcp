@@ -82,6 +82,11 @@ def test_load_asks_rows_carry_questions_crumb_and_project_draft(store) -> None:
     assert row["questions"] == ["which database?"]
     assert row["tags"] == ["ask-user:which database?"]
     assert [c["id"] for c in row["crumb"]] == [project.id]
+    # gr594941: the row's proper id is the universal handle, and the
+    # source chip repeats it instead of a bare ``#<id>``.
+    assert row["handle"] == f"td{todo.id}"
+    assert f"todo td{todo.id}" in row["source_link"]
+    assert f"#{todo.id}" not in row["source_link"]
     # No ``meta.anchor`` and no dc/pe handle in the prose, so the row
     # falls back to the project-level draft — the _project_draft branch.
     assert row["context"]["draft"] == {

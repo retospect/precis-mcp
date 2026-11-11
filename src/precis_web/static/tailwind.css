@@ -1221,6 +1221,10 @@ video {
   width: 44rem;
 }
 
+.w-\[5\.5rem\] {
+  width: 5.5rem;
+}
+
 .w-auto {
   width: auto;
 }
@@ -2411,8 +2415,8 @@ video {
   padding-left: 2rem;
 }
 
-.pl-\[5\.75rem\] {
-  padding-left: 5.75rem;
+.pl-\[8\.25rem\] {
+  padding-left: 8.25rem;
 }
 
 .pr-1 {

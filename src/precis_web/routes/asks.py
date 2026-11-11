@@ -338,6 +338,9 @@ def _load_asks(
             q for q in (_ask_value(store, int(ref_id), t) for t in raw_tags) if q
         ]
         rid = int(ref_id)
+        # The universal handle agents name the row by (gr594941) — the row
+        # led with the bare ``#<id>``, which nothing resolves.
+        handle = handle_registry.try_format("todo", rid) or f"todo:{rid}"
         # The source object the question is about — this row's own todo.
         # Reuses the shared click-target resolver (``/r/{kind}/{id}``,
         # ``preview.py``) + hover-preview chip (``popover_chip``, the same
@@ -346,7 +349,7 @@ def _load_asks(
         # context (project, body, parent chain) instead of the generic
         # queue landing the row title used to point at.
         source_link = popover_chip(
-            f"todo #{rid}", f"/r/todo/{rid}", f"/preview/todo/{rid}"
+            f"todo {handle}", f"/r/todo/{rid}", f"/preview/todo/{rid}"
         )
         # Prior Q/A exchanges live in the body (the answer route appends
         # them) — a re-ask renders as a follow-up with its history.
@@ -372,6 +375,7 @@ def _load_asks(
         out.append(
             {
                 "id": rid,
+                "handle": handle,
                 "title": title,
                 "created_at": created_at,
                 "questions": questions,

@@ -5,11 +5,25 @@
    gr598249: the queue mixed always-open rows with always-closed ones
    and offered no way to flip either. #}
 {% set first_line = (a.title or '').split('\n', 1)[0] %}
+{% set row_handle = a.handle or 'td' ~ a.id %}
 <li class="rounded-lg border border-line bg-surface">
   <details open class="group">
     <summary class="flex items-baseline gap-2 px-4 py-3 cursor-pointer list-none">
       <span class="w-3 shrink-0 text-xs text-fg-faint group-open:rotate-90 transition-transform">▸</span>
-      <a href="/r/todo/{{ a.id }}" class="text-xs text-fg-faint hover:text-success-strong w-12 shrink-0 font-mono">#{{ a.id }}</a>
+      {# The universal handle agents name this todo by, with a one-click
+         copy (gr594941) — the same ⧉ pair the ref detail page ships
+         (gr574990); the numeric id stays on the link's hover title.
+         stopPropagation keeps the copy click from folding the row. #}
+      <span class="flex w-[5.5rem] shrink-0 items-baseline gap-1" x-data="{copied:false}">
+        <a href="/r/todo/{{ a.id }}" title="#{{ a.id }}"
+           class="text-xs text-fg-faint hover:text-success-strong font-mono">{{ row_handle }}</a>
+        <button type="button" onclick="event.stopPropagation()"
+                class="text-fg-ghost hover:text-fg-secondary leading-none"
+                title="copy {{ row_handle }} — the universal handle naming this todo"
+                data-copy="{{ row_handle }}"
+                @click="navigator.clipboard.writeText('{{ row_handle }}'); copied=true; setTimeout(() => copied=false, 1200)"
+                x-text="copied ? '✓' : '⧉'">⧉</button>
+      </span>
       {# A div, not an <a>: linkify_refs emits anchors for handles and URLs in
          the title, and a nested <a> makes the parser close the outer one, so
          the rest of the title spills out as extra flex items and squeezes
@@ -39,9 +53,10 @@
                 title="dismiss — close this todo without answering">&times;</button>
       </form>
     </summary>
-    {# pl lands the body under the title: px-4, then caret (w-3) + id
-       (w-12) + the two gaps = 5.75rem of header before the title. #}
-    <div class="pl-[5.75rem] pr-4 pb-3">
+    {# pl lands the body under the title: px-4, then caret (w-3) + the
+       handle/copy column (w-[5.5rem]) + the two gaps = 8.25rem of header
+       before the title. #}
+    <div class="pl-[8.25rem] pr-4 pb-3">
 
   {# Where this ask lives — project › … › parent chain. #}
   {% if a.crumb %}
