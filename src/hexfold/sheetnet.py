@@ -1,6 +1,6 @@
 """sheetnet — the one primitive layer for graphene-strip construction.
 
-The DRY rule (multicell-prism spec ``me630425``, Reto 2026-10-22):
+The DRY rule (docs/backlog/hexfold-multicell-prism.md, Reto 2026-10-22):
 a wall, a fin, a rib, a rail arc and a cell wall are all one thing — a
 graphene strip, possibly pored, placed in a frame, joined to other
 strips at junctions.  ``strip`` mints the sheet (zigzag- or

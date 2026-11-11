@@ -1463,7 +1463,7 @@ the manifest's `ports`; `stamp` is a function call; `cap` is a function;
 the `remember` skill line with the workspace as the link target. se keeps
 instances (`instance_block`, `array_block`), provenance and the catalogue.
 The Å-vs-macro table lands in the skill (slice 6). The file stays until
-slice 6 ships because the multicell-prism spec (`me630430`) links it; its banner
+slice 6 ships because `hexfold-multicell-prism.md` links it; its banner
 says so. Dropped: `meta.role='definition'`, `$name`, the three refusals,
 `def.*` findings.
 
