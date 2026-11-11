@@ -23,6 +23,7 @@ from precis.errors import (
     Unsupported,
     Upstream,
 )
+from precis.handlers._numeric_ref import BATCH_ID_CAP
 from precis.handlers.memory import MemoryHandler
 from precis.response import Response
 from precis.runtime import PrecisRuntime
@@ -274,6 +275,19 @@ def test_get_batch_tilde_selector_misses_are_line_blocks(
     assert f"me{a}~nope  no section ~'nope'" in r.body
 
 
+def test_get_batch_tilde_selector_caps_like_plain_batch(
+    handler: MemoryHandler,
+) -> None:
+    """The ``~<sel>`` route skips ``_coerce_ids``, so it enforces
+    BATCH_ID_CAP itself — and names the same split in ``next=``."""
+    ids: list[str | int] = [f"me{i}~body" for i in range(1, BATCH_ID_CAP + 2)]
+    with pytest.raises(BadInput, match=f"at most {BATCH_ID_CAP}") as exc:
+        handler.get(id=ids)
+    nxt = str(exc.value.next)
+    assert f"id={ids[:BATCH_ID_CAP]!r}" in nxt
+    assert f"id={ids[BATCH_ID_CAP:]!r}" in nxt
+
+
 def test_get_links_rel_filter(handler: MemoryHandler, store: Store) -> None:
     """gr631571: ``args={'rel': 'part-of'}`` narrows view='links' to one
     relation — the spec-roots-to-programme query the gripe needed."""
@@ -336,6 +350,37 @@ def test_get_links_batch_rel_filter(handler: MemoryHandler, store: Store) -> Non
     r = handler.get(id=[a, b], view="links", rel="part-of")
     assert r.body.count("(rel=part-of)") == 2
     assert f"me{hub}" in r.body and f"me{other}" not in r.body
+
+
+def test_get_links_batch_paged_continuation_keeps_filters(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A filtered links batch's ``more — next:`` call re-lists the
+    unread ids *with* the args= selectors — resuming used to read the
+    batch unfiltered."""
+    wide = store.insert_ref(kind="memory", slug=None, title="wide", meta={}).id
+    b = store.insert_ref(kind="memory", slug=None, title="b", meta={}).id
+    c = store.insert_ref(kind="memory", slug=None, title="c", meta={}).id
+    # One links-view block big enough to page: ~200 outbound part-of
+    # edges overflow BATCH_VIEW_PAGE_CHARS on their own.
+    for i in range(200):
+        leaf = store.insert_ref(kind="memory", slug=None, title=f"leaf {i}", meta={}).id
+        store.add_link(src_ref_id=wide, dst_ref_id=leaf, relation="part-of")
+    store.add_link(src_ref_id=b, dst_ref_id=wide, relation="part-of")
+    store.add_link(src_ref_id=c, dst_ref_id=wide, relation="part-of")
+    store.add_link(src_ref_id=b, dst_ref_id=c, relation="related-to")
+    store.add_link(src_ref_id=c, dst_ref_id=b, relation="related-to")
+
+    resp = handler.get(id=[wide, b, c], view="links", rel="part-of", direction="out")
+    assert resp.result_count == 1
+    assert (
+        f"2 more — next: get(kind='memory', id=[{b}, {c}], view='links', "
+        "args={'rel': 'part-of', 'direction': 'out'})" in resp.body
+    )
+    # Re-issuing the continuation stays filtered.
+    rest = handler.get(id=[b, c], view="links", rel="part-of", direction="out")
+    assert "(rel=part-of)" in rest.body
+    assert "related-to" not in rest.body
 
 
 def test_get_view_index_reads_as_links(handler: MemoryHandler) -> None:

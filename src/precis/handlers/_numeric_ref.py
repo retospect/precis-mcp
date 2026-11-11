@@ -4334,10 +4334,16 @@ class NumericRefHandler(Handler):
             + "\n\n".join(shown)
         )
         if rest:
+            # The selectors kw carries (memory's rel/of_kind/direction,
+            # gripe's comment/comments, job's file/point/frames) ride the
+            # continuation as args= — dropping them would resume the
+            # batch unfiltered.
+            args = {k: v for k, v in kw.items() if v is not None}
+            cont = f", args={args!r}" if args else ""
             body += (
                 f"\n\n{len(rest)} more — next: "
                 f"get(kind={self.kind!r}, "
-                f"id=[{', '.join(str(i) for i in rest)}], view={view!r})"
+                f"id=[{', '.join(str(i) for i in rest)}], view={view!r}{cont})"
             )
         return Response(body=body, result_count=len(shown))
 

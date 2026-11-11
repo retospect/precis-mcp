@@ -185,8 +185,10 @@ from precis.handlers._memory_smells import (
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
+    BATCH_ID_CAP,
     BATCH_VIEW_PAGE_CHARS,
     NumericRefHandler,
+    _id_batch_next,
     _tag_names_axis,
 )
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -1471,8 +1473,15 @@ class MemoryHandler(NumericRefHandler):
         plain element the whole node — one block per element, caller
         order. A missing, deleted or malformed element is a one-line
         block, never an error for the whole call — the same contract
-        as :meth:`_get_batch`.
+        as :meth:`_get_batch`. The list honours the same
+        :data:`BATCH_ID_CAP` as a plain id batch — the ``~`` route
+        never reaches :meth:`_coerce_ids`, so the check lives here.
         """
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=_id_batch_next("get", self.kind, ids),
+            )
         if view is not None or q is not None:
             raise BadInput(
                 "a ~<section> batch takes no view= or q=",

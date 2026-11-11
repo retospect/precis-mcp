@@ -449,9 +449,10 @@ class PartHandler(Handler):
         body += f", view={view!r})\n\n" if view is not None else ")\n\n"
         body += "\n\n".join(shown)
         if rest:
+            extra = f", view={view!r}" if view is not None else ""
             body += (
                 f"\n\n{len(rest)} more — next: get(kind='part', "
-                f"id=[{', '.join(repr(c) for c in rest)}])"
+                f"id=[{', '.join(repr(c) for c in rest)}]{extra})"
             )
         return Response(body=body, result_count=len(shown))
 
