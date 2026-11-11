@@ -200,6 +200,7 @@ carry the per-paper proposals as their log.
 
 ## See also
 
+- `get(kind='skill', id='precis-read-paper')` — one paper as the job, no question: setup note, hubs, memory edits.
 - [[precis-citation-help]] — the four-step cite procedure this loop feeds.
 - [[precis-cite-paper-help]] — the router when you are writing, not reading.
 - [[precis-research-help]] — the quality bar for any research pass.
