@@ -686,12 +686,13 @@ removed as met — the transport move it waited on happened 09-29)
 
 ## Horizon
 
-1. **backlog/hexfold-fullerene-from-sphere.md — standard fullerenes from a
-   sphere** (Reto 2026-10-03). A diameter in, the canonical cage out:
-   C60-Ih, C70-D5h, C80-Ih and the other named IPR isomers, via the
-   Fowler–Manolopoulos spiral, with spirals taken from the Atlas. Hero
-   generation stops hand-building balls. It is independent of Do-next 1
-   and can be picked up between its review gates.
+1. **spec `me628775` §fullerene (`me630144`, `me630146`, `me630148`,
+   `me630149`)** — standard fullerenes from a sphere (Reto 2026-10-03). A
+   diameter in, the canonical cage out: C60-Ih, C70-D5h, C80-Ih and the
+   other named IPR isomers, via the Fowler–Manolopoulos spiral, with
+   spirals taken from the Atlas. Hero generation stops hand-building
+   balls. It is independent of Do-next 1 and can be picked up between
+   its review gates (the retired backlog/hexfold-fullerene-from-sphere.md).
 
 2. **`spec.md` §28.3 armchair lids** — the flat-lid family is done for
    zigzag `(6k,0)`; the armchair half is open. Delivers caps for
