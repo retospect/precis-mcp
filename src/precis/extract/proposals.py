@@ -72,9 +72,9 @@ from precis.extract import verify as _verify
 from precis.extract.tables import _is_table_separator, _table_line_cells
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.taxonomy.measure_units import (
+    declared_reference,
     is_potential_unit,
     parse_literal,
-    printed_reference,
 )
 from precis.utils.text import slugify
 
@@ -498,14 +498,18 @@ def build_runs(
             flags.append("unit_without_text_support")
 
         # gr632956: the reader rarely fills ``reference`` even when the
-        # evidence prints it — 'vs RHE' after a potential is taken off the
-        # span, else the whole chunk when it names one reference state; a
-        # potential without it cannot be compared (−0.75 V vs RHE ≠ −0.75 V
-        # vs SHE). Only a potential measurand can carry one: 'vs RHE' on a
+        # evidence prints it; a potential without it cannot be compared
+        # (−0.75 V vs RHE ≠ −0.75 V vs SHE). td634176: a mention counts
+        # only with evidence linking it to THIS value — 'vs RHE'
+        # trailing the literal, or sharing its clause — or as an
+        # explicit scale declaration ('all potentials are vs SHE'); a
+        # 'vs NHE' trailing a cited or comparator value belongs to that
+        # value, and a chunk naming it tells us nothing about ours.
+        # Only a potential measurand can carry one: 'vs RHE' on a
         # current-density sentence conditions the input, not the result.
         reference = raw["reference"] if isinstance(raw.get("reference"), str) else None
         if reference is None and is_potential_unit(entry.canonical_unit):
-            reference = printed_reference(span_text) or printed_reference(chunk_text)
+            reference = declared_reference(chunk_text, literal=literal)
 
         # The numeric channels — bound, sign, range — all check their
         # claim against what the span prints just before the literal. An

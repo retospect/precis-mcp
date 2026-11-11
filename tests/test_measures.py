@@ -550,6 +550,9 @@ class TestElectrodeReference:
     def test_electrolyte_parenthetical_splits(
         self, store: Store, world: dict[str, Any]
     ) -> None:
+        # td634176: the electrolyte state is the reference — sat. KCl
+        # and 3 M KCl Ag/AgCl electrodes differ by ~90 mV; the state
+        # must survive on the reference column, not drop.
         run = store.insert_measure(
             MeasureSpec(
                 world["potential"],
@@ -560,7 +563,24 @@ class TestElectrodeReference:
             actor="reader",
         )
         row = _row(store, run.output_id)
-        assert row["reference"] == "Ag/AgCl"
+        assert row["reference"] == "Ag/AgCl (sat. KCl)"
+        assert row["reported_unit"] == "mV"
+        assert row["value_num"] == pytest.approx(-0.35)
+
+    def test_a_concentration_state_is_a_distinct_reference(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["potential"],
+                "-350",
+                world["paper"],
+                reported_unit="mV vs. Ag/AgCl (3 M KCl)",
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reference"] == "Ag/AgCl (3 M KCl)"
         assert row["reported_unit"] == "mV"
         assert row["value_num"] == pytest.approx(-0.35)
 

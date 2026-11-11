@@ -21,6 +21,7 @@ from precis.extract.proposals import (
 )
 from precis.store import Store
 from precis.taxonomy.measure_units import (
+    declared_reference,
     is_potential_unit,
     make_converter,
     parse_literal,
@@ -809,7 +810,11 @@ class TestReferenceHelpers:
             ("V vs RHE", "V", "RHE"),
             ("V_RHE", "V", "RHE"),
             ("mV vs. Ag/AgCl", "mV", "Ag/AgCl"),
-            ("V vs Ag/AgCl (sat. KCl)", "V", "Ag/AgCl"),
+            # td634176: the electrolyte state is part of the reference —
+            # sat. vs 1 M KCl differ by ~90 mV — not a dropped aside.
+            ("V vs Ag/AgCl (sat. KCl)", "V", "Ag/AgCl (sat. KCl)"),
+            ("mV vs Ag/AgCl (3 M KCl)", "mV", "Ag/AgCl (3 M KCl)"),
+            ("V vs RHE (iR-corrected)", "V", "RHE"),  # not a state
             ("V (vs SHE)", "V", "SHE"),
             ("V vs NHE", "V", "NHE"),
             ("mV_SSCE", "mV", "SSCE"),
@@ -838,10 +843,46 @@ class TestReferenceHelpers:
             ("vs she expected", None),  # lowercase 'she' is English
             ("vs Pt", None),
             ("no reference named", None),
+            ("held at -0.4 V vs Ag/AgCl (sat. KCl)", "Ag/AgCl (sat. KCl)"),
+            # two concentration states of one electrode = two distinct
+            # references — ambiguity, not a coin flip (td634176)
+            ("vs Ag/AgCl (sat. KCl) and vs Ag/AgCl (1 M KCl)", None),
+            # a bare mention next to its qualified self resolves to the
+            # qualified one — same electrode, more information
+            ("vs Ag/AgCl and vs Ag/AgCl (3 M KCl)", "Ag/AgCl (3 M KCl)"),
+            ("vs RHE (see Fig. 2)", "RHE"),  # a measurement aside drops
         ],
     )
     def test_printed_reference(self, text: str, ref: str | None) -> None:
         assert printed_reference(text) == ref
+
+    @pytest.mark.parametrize(
+        ("text", "literal", "ref"),
+        [
+            # td634176: a chunk-level mention must link to the value or
+            # declare the scale — anything else is another value's or
+            # another work's reference.
+            ("An onset of -0.75 V vs RHE held. It was -0.75 V.", "-0.75", "RHE"),
+            (
+                "The onset, -0.75 V vs RHE, was stable. We report -0.75 V.",
+                "-0.75",
+                "RHE",
+            ),
+            ("Pt/C sat at -0.6 V vs NHE [12]. Ours reached -0.75 V.", "-0.75", None),
+            ("All potentials are reported vs SHE. It was -0.2 V.", "-0.2", "SHE"),
+            ("Potentials vs RHE throughout. The onset was -0.75 V.", "-0.75", "RHE"),
+            (
+                "Other groups report onsets vs SHE. Ours was -0.75 V.",
+                "-0.75",
+                None,
+            ),
+            ("Other labs converted from vs SHE. Ours was -0.75 V.", "-0.75", None),
+            # a mention trailing a different signed value is not linked
+            ("Sat 0.75 V vs RHE. The dip was -0.75 V.", "-0.75", None),
+        ],
+    )
+    def test_declared_reference(self, text: str, literal: str, ref: str | None) -> None:
+        assert declared_reference(text, literal=literal) == ref
 
     def test_is_potential_unit(self) -> None:
         assert is_potential_unit("V") and is_potential_unit("mV")
@@ -876,9 +917,11 @@ def _potential_result(**kw: object) -> dict:
 
 class TestReferenceCapture:
     """gr632956: the reader's ``reference`` field comes back empty ~97%
-    of the time even though the evidence prints 'vs RHE' — the span (or
-    the whole chunk when it names one reference state) fills it, but
-    only for a potential measurand."""
+    of the time even though the evidence prints 'vs RHE' — evidence in
+    the chunk fills it, but only for a potential measurand, and
+    (td634176) only when the mention links to the extracted value or
+    declares the chunk's scale: a 'vs NHE' trailing a cited value is
+    that value's, not ours."""
 
     def test_vs_reference_in_the_span_fills_reference(self, world: dict) -> None:
         text = "The onset potential reached -0.75 V vs RHE in 0.1 M KOH."
@@ -895,8 +938,8 @@ class TestReferenceCapture:
         assert prop.output.reference == "RHE"
 
     def test_reference_stated_elsewhere_in_the_chunk(self, world: dict) -> None:
-        # 'all potentials are vs SHE' one sentence over is a checkable,
-        # unambiguous claim — the sampler sees the whole chunk.
+        # 'all potentials are vs SHE' one sentence over is an explicit
+        # scale declaration — the one chunk-level claim that fills.
         text = "All potentials are reported vs SHE. The onset was -0.2 V."
         reply = _potential_result(literal="-0.2", anchor="1")
         out = build_runs(
@@ -910,6 +953,60 @@ class TestReferenceCapture:
         )
         (prop,) = out.proposals
         assert prop.output.reference == "SHE"
+
+    def test_a_reference_on_another_experiments_value_does_not_fill(
+        self, world: dict
+    ) -> None:
+        # td634176: the chunk's lone 'vs NHE' trails the -0.6 V of a
+        # comparison work — it is that value's reference, not ours; a
+        # unique chunk mention is no longer claimed outright.
+        text = (
+            "The Pt/C benchmark sat at -0.6 V vs NHE [12]. Our onset reached -0.75 V."
+        )
+        out = build_runs(
+            _potential_result(anchor="1"),
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference is None
+
+    def test_another_works_scale_mention_does_not_fill(self, world: dict) -> None:
+        text = "Other groups report onsets vs SHE. Our onset reached -0.75 V."
+        out = build_runs(
+            _potential_result(anchor="1"),
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference is None
+
+    def test_the_literal_links_a_reference_elsewhere_in_the_chunk(
+        self, world: dict
+    ) -> None:
+        # evidence linking: the same -0.75 prints 'vs RHE' one sentence
+        # over — the mention is this value's even though the anchored
+        # span does not name it.
+        text = "An onset of -0.75 V vs RHE was reproducible. The onset was -0.75 V."
+        out = build_runs(
+            _potential_result(anchor="1"),
+            chunk_id=world["c1"],
+            chunk_text=text,
+            paper_ref_id=world["paper"],
+            vocab=world["vocab"],
+            extraction_run="t",
+            model=None,
+        )
+        (prop,) = out.proposals
+        assert prop.output.reference == "RHE"
 
     def test_span_reference_wins_over_chunk_ambiguity(self, world: dict) -> None:
         text = "The value was -0.5 V vs RHE. Other labs converted from vs SHE."

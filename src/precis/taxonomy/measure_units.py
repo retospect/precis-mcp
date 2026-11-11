@@ -235,20 +235,37 @@ _REF_TAIL: Final[str] = r"(?![A-Za-z0-9])"
 #: 'V (vs. RHE)', 'mV vs Ag/AgCl (sat. KCl)' — with the parenthetical
 #: electrolyte a printed reference spec often carries.
 _UNIT_VS_REF_RE: Final[re.Pattern[str]] = re.compile(
-    rf"[\s(]*vs\.?\s+(?P<ref>{_REF_ALT})(?:\s*\([^()]*\))?[\s)]*\s*$"
+    rf"[\s(]*vs\.?\s+(?P<ref>{_REF_ALT})(?:\s*\((?P<qual>[^()]*)\))?[\s)]*\s*$"
 )
 
 #: 'V_RHE' / 'mV_SHE' — the reference folded in with an underscore: the same
 #: slot a basis label takes, claimed here first so '_RHE' never reads as
 #: 'per RHE' normalization.
 _UNIT_USCORE_REF_RE: Final[re.Pattern[str]] = re.compile(
-    rf"_(?P<ref>{_REF_ALT}){_REF_TAIL}"
+    rf"_(?P<ref>{_REF_ALT})(?:\s*\((?P<qual>[^()]*)\))?{_REF_TAIL}"
 )
 
 #: 'vs RHE' / 'vs. Ag/AgCl' printed in prose after the value — the whitelist
-#: keeps the comparative 'vs Pt'/'vs the control' out.
+#: keeps the comparative 'vs Pt'/'vs the control' out. A parenthetical right
+#: after the electrode is captured as ``qual``: an electrolyte state it
+#: names ('(sat. KCl)') is part of the reference.
 _PRINTED_REF_RE: Final[re.Pattern[str]] = re.compile(
-    rf"(?<![A-Za-z])vs\.?\s+(?P<ref>{_REF_ALT}){_REF_TAIL}"
+    rf"(?<![A-Za-z])vs\.?\s+(?P<ref>{_REF_ALT})"
+    rf"(?:\s*\((?P<qual>[^()]*)\))?{_REF_TAIL}"
+)
+
+#: An electrode-state qualifier inside the parenthetical a printed
+#: reference carries — '(sat. KCl)', '(3 M KCl)', '(0.1 mol L-1 NaOH)',
+#: '(pH 0)', '(seawater)' — changes the electrode's potential, so it
+#: stays part of the stored reference (td634176: Ag/AgCl at saturated
+#: vs 1 M KCl differ by ~90 mV and are NOT the same reference). A
+#: measurement aside — '(iR-corrected)', '(see Fig. 2)' — is not a
+#: state and drops.
+_REF_QUAL_KEEP: Final[re.Pattern[str]] = re.compile(
+    r"(?:\bsat\b\.?|\bsatd\b|saturated|\bpH\b|\d+\.?\d*\s*(?:mM|M|mol)|"
+    r"\bmol\b|\baq\b\.?|seawater|buffer|"
+    r"\b(?:KCl|NaCl|LiCl|AgCl|KNO3|NaClO4|HClO4|H2SO4|KOH|NaOH|Hg2Cl2)\w*)",
+    re.IGNORECASE,
 )
 
 
@@ -256,10 +273,72 @@ def _ref_canonical(token: str) -> str:
     return _ELECTRODE_REFS.get(token.lower(), token)
 
 
+def _ref_with_qual(m: re.Match[str]) -> str:
+    """The canonical reference for a ``*_REF_RE`` match, with its
+    electrolyte-state parenthetical kept — 'Ag/AgCl (sat. KCl)' —
+    and measurement asides ('(iR-corrected)') dropped."""
+    ref = _ref_canonical(m.group("ref"))
+    qual = m.groupdict().get("qual")
+    if qual and _REF_QUAL_KEEP.search(qual):
+        return f"{ref} ({' '.join(qual.split())})"
+    return ref
+
+
+def _resolve_mentions(forms: set[str]) -> str | None:
+    """The single resolved reference a mention set names — ``None`` for
+    none, for two distinct electrode states ('Ag/AgCl (sat. KCl)' vs
+    'Ag/AgCl (3 M KCl)'), or for two bases. A bare form next to its
+    qualified self ('Ag/AgCl' + 'Ag/AgCl (sat. KCl)') resolves to the
+    qualified one: same electrode, strictly more information."""
+    if len(forms) == 1:
+        return forms.pop()
+    qualified = {f for f in forms if " (" in f}
+    if len({f.split(" (", 1)[0] for f in forms}) == 1 and len(qualified) == 1:
+        return qualified.pop()
+    return None
+
+
+#: Clause edges for the declaration scan: a 'vs X' qualifies the clause
+#: it sits in — sentence breaks, semicolons, table-cell bars. A period
+#: is an edge only when it does not open a decimal tail ('-0.75' keeps
+#: its '.'); a sentence ending on a digit still breaks ('at 5. Next').
+_REF_CLAUSE_EDGE: Final[re.Pattern[str]] = re.compile(r"\.(?!\d)|[!?;|\n]")
+
+#: A 'vs X' trailing a printed number ('reached -0.6 V ', 'sat 0.2 ')
+#: qualifies THAT value — never the clause's other numbers.
+_REF_VALUE_TAIL: Final[re.Pattern[str]] = re.compile(
+    r"([-+−]?(?:\d[\d.,\s]*\d|\.\d+))\s*(?:m?V|volts?)?\s*$",
+    re.IGNORECASE,
+)
+
+#: Wording that declares the work's own scale rather than one reading:
+#: 'all potentials are reported vs SHE', 'potentials vs RHE
+#: throughout', 'E vs NHE unless otherwise noted'.
+_REF_DECL_CUES: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:all|every|each|both|throughout|herein|potentials?|"
+    r"overpotentials?|referenced|electrodes?|scales?|unless\s+otherwise|"
+    r"in\s+this\s+(?:work|paper|study|table)|with\s+respect\s+to|"
+    r"relative\s+to|normali[sz]ed\s+to)\b",
+    re.IGNORECASE,
+)
+
+#: Wording that puts the mention on another work or another scale: a
+#: citation bracket, 'et al', 'other', 'cited', 'converted from'. A
+#: clause carrying one is a comparison, not a scale declaration.
+_REF_ATTRIB_CUES: Final[re.Pattern[str]] = re.compile(
+    r"(?:\bet\s+al\b|\bcite[ds]?\b|\bothers?\b|\bprevious\w*\b|"
+    r"\bearlier\b|\bliterature\b|\bbenchmark\w*\b|\bcompar\w*\b|"
+    r"\bconverted\s+from\b|\[\s*\d+)",
+    re.IGNORECASE,
+)
+
+
 def split_reference(raw_unit: str | None) -> tuple[str, str | None]:
     """``('V', 'RHE')`` — the electrode reference a printed unit folds in
     ('V vs RHE', 'V_RHE', 'mV vs. Ag/AgCl (sat. KCl)') split off so the unit
-    parses and the reference lands on ``measures.reference``.
+    parses and the reference lands on ``measures.reference`` — an
+    electrolyte state the spec parenthesises stays on the reference
+    ('Ag/AgCl (sat. KCl)'), never in the unit.
     ``(text, None)`` when the unit carries none; a basis label (``_ECSA``)
     is left for ``split_basis_label``. The text is markup-folded."""
     text = markup_unit(raw_unit or "").strip()
@@ -269,16 +348,76 @@ def split_reference(raw_unit: str | None) -> tuple[str, str | None]:
     if m is None:
         return text, None
     rest = (text[: m.start()] + text[m.end() :]).strip(" ()")
-    return rest, _ref_canonical(m.group("ref"))
+    return rest, _ref_with_qual(m)
 
 
 def printed_reference(text: str | None) -> str | None:
-    """The one electrode reference the text prints ('vs RHE'), canonicalised —
-    ``None`` when it names none, or several distinct ones (a 'vs SHE … vs
-    RHE' span claims neither)."""
+    """The one electrode reference the text prints ('vs RHE'), canonicalised
+    and qualified ('vs Ag/AgCl (3 M KCl)' -> 'Ag/AgCl (3 M KCl)') —
+    ``None`` when it names none, or several distinct states or bases (a
+    'vs SHE … vs RHE' span claims neither)."""
     flat = markup_surface(text or "")
-    refs = {_ref_canonical(m.group("ref")) for m in _PRINTED_REF_RE.finditer(flat)}
-    return refs.pop() if len(refs) == 1 else None
+    return _resolve_mentions(
+        {_ref_with_qual(m) for m in _PRINTED_REF_RE.finditer(flat)}
+    )
+
+
+def declared_reference(text: str | None, *, literal: str | None = None) -> str | None:
+    """The one electrode reference ``text`` evidences for a potential —
+    ``None`` when no mention qualifies or several distinct ones do.
+
+    A 'vs X' mention qualifies in exactly two ways (td634176 — a unique
+    chunk-level reference must not ride onto an unqualified potential):
+
+    * it trails the ``literal`` itself ('reached -0.75 V vs RHE' with
+      literal ``-0.75`` — linked evidence), or, when it trails no
+      printed number, the literal sits in its own clause;
+    * its clause declares a scale — 'all potentials are reported vs
+      SHE', 'potentials vs RHE throughout' — with no attribution cue
+      ('et al', '[12]', 'other', 'cited', 'converted from') putting it
+      on another work.
+
+    A 'vs X' trailing a DIFFERENT printed value ('was -0.6 V vs NHE')
+    belongs to that value; a clause citing another work's scale is a
+    comparison, not a declaration. Neither is evidence here."""
+    flat = markup_surface(text or "")
+    values: set[float] = set()
+    lit_flat = ""
+    if literal:
+        parsed = parse_literal(literal)
+        values = {v for v in (parsed.num, parsed.low, parsed.high) if v is not None}
+        lit_flat = markup_surface(literal).strip()
+    forms = set()
+    for m in _PRINTED_REF_RE.finditer(flat):
+        ref = _ref_with_qual(m)
+        edges = list(_REF_CLAUSE_EDGE.finditer(flat[: m.start()]))
+        c_start = edges[-1].end() if edges else 0
+        edge = _REF_CLAUSE_EDGE.search(flat, m.end())
+        clause = flat[c_start : edge.start() if edge else len(flat)]
+        tail = _REF_VALUE_TAIL.search(flat[c_start : m.start()])
+        if tail is not None:
+            # '… -0.6 V vs NHE' — the reference is attached to the number
+            # it trails; linked evidence only when that number IS the
+            # extracted literal, else it is another value's.
+            try:
+                attached = float(
+                    re.sub(r"\s", "", tail.group(1))
+                    .translate(MINUS_FOLD)
+                    .replace(",", "")
+                )
+            except ValueError:
+                continue
+            if attached in values:
+                forms.add(ref)
+            continue
+        if lit_flat and lit_flat in clause:
+            # an unattached 'vs X' in the literal's own clause — the
+            # sentence states the reference for this value's context.
+            forms.add(ref)
+            continue
+        if _REF_DECL_CUES.search(clause) and not _REF_ATTRIB_CUES.search(clause):
+            forms.add(ref)
+    return _resolve_mentions(forms)
 
 
 def is_potential_unit(unit_text: str | None) -> bool:
