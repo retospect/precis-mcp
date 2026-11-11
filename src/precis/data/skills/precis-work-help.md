@@ -362,14 +362,23 @@ it meanwhile. The session replies with one first line:
   floor are stamped, and the corrected `brief:` comment goes on the
   node; the rebuilt run resumes on `slice/<id>`, reusing worktree and
   branch.
+- `rescue: NOFIX fixed <sha> — <why>` — the gripe's defect is already
+  fixed on main by `<sha>` (7-40 hex, any plan). If `<sha>` is an
+  ancestor of `origin/main` in the worker's fix repo, the pass closes
+  the node `won't-do` with the sha, writes `resolved: <sha> — <why>` and
+  `STATUS:verify` on the plan's gripe (left alone with
+  `hold:no-autoclose` or when already settled) and files no ask. A sha
+  it cannot verify (not an ancestor, no repo, git down, no plan gripe)
+  falls through to the ask below.
 - `rescue: NOFIX — <why>` — the cause is outside the brief.
 
 ## When does a rescued node get a diagnose task, and when an ask?
 
 A task-class rescue with `meta.rescue.n < 1` gets the diagnose task.
-Anything else (a `rescue: NOFIX`, a failed or unparsable diagnose, a
-second rescue, every engine class) files one `ask-user` + `showstopper`
-ruling todo blocking the node; closing it re-arms it.
+Anything else (a plain `rescue: NOFIX`, an unverified `NOFIX fixed`, a
+failed or unparsable diagnose, a second rescue, every engine class)
+files one `ask-user` + `showstopper` ruling todo blocking the node;
+closing it re-arms it.
 
 ## What does the transcript_audit pass sample, and how is it lit?
 

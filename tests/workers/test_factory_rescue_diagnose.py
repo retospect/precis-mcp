@@ -9,6 +9,7 @@ factory kill switch holds; ``dry_run`` lists what it would do."""
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -970,6 +971,226 @@ def test_kill_switch_writes_nothing(store: Store) -> None:
 )
 def test_parse_diagnosis_grammar(text: str, expected: tuple[str, str] | None) -> None:
     assert fr.parse_diagnosis(text) == expected
+
+
+@pytest.mark.parametrize(
+    "rest,expected",
+    [
+        (
+            "fixed b2383e574 — gr548629 landed there",
+            ("b2383e574", "gr548629 landed there"),
+        ),
+        ("fixed B2383E574 - upper-case sha", ("b2383e574", "upper-case sha")),
+        ("fixed abc1234: colon form", ("abc1234", "colon form")),
+        ("fixed abc1234", ("abc1234", "")),
+        ("fixed " + "a" * 40 + " — full sha", ("a" * 40, "full sha")),
+        ("gr1 is already fixed by abc1234", None),
+        ("fixed by abc1234 — prose", None),
+        ("fixed abc12 — too short", None),
+        ("fixed abc1234zzz — not a bare sha", None),
+        ("the engine is down", None),
+    ],
+)
+def test_parse_nofix_fixed_grammar(rest: str, expected: tuple[str, str] | None) -> None:
+    assert fr.parse_nofix_fixed(rest) == expected
+
+
+def test_nofix_fixed_line_still_parses_as_a_nofix_verdict() -> None:
+    assert fr.parse_diagnosis("rescue: NOFIX fixed abc1234 — landed under gr9") == (
+        "NOFIX",
+        "fixed abc1234 — landed under gr9",
+    )
+
+
+def test_diagnose_prompt_documents_the_fixed_form(store: Store) -> None:
+    root = _root(store)
+    task = _rescued(store, root)
+    diag = _minted_diagnose(store, task, root)
+    assert "rescue: NOFIX fixed <sha>" in _body(store, diag)
+
+
+# ── NOFIX fixed <sha>: the already-fixed close (gr635531) ──────────
+
+SHA = "b2383e574"
+
+
+class _GitCalls(list[list[str]]):
+    """The git argvs ``run_slice._git`` saw; ``rc`` is what a
+    ``merge-base`` answers (an exception instance is raised)."""
+
+    rc: Any = 0
+
+
+@pytest.fixture
+def git_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> _GitCalls:
+    """The fix repo is ``tmp_path``; ``run_slice._git`` answers
+    ``merge-base --is-ancestor`` per ``git_calls.rc`` (0 = ancestor)."""
+    from precis.workers.job_types import run_slice
+
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path))
+    rec = _GitCalls()
+
+    def fake_git(args: list[str], cwd: Any) -> Any:
+        assert str(cwd) == str(tmp_path)
+        rec.append(list(args))
+        if isinstance(rec.rc, BaseException):
+            raise rec.rc
+        rc = rec.rc if args[0] == "merge-base" else 0
+        return SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    return rec
+
+
+def _fixed_case(
+    store: Store,
+    reply: str,
+    *,
+    gripe_tags: tuple[str, ...] = (),
+    gripe_status: str = "open",
+) -> tuple[int, int, int, int]:
+    """``(root, task, diag, gripe)``: a rescued builder under a
+    gripe-fix plan whose diagnose job succeeded with ``reply``."""
+    root = _root(store)
+    gid = int(insert_gripe(store, "the defect", status=gripe_status).id)
+    for t in gripe_tags:
+        store.add_tag(gid, Tag.open(t), set_by="agent")
+    store.add_link(src_ref_id=root, dst_ref_id=gid, relation="related-to")
+    task = _rescued(store, root)
+    diag = _minted_diagnose(store, task, root)
+    _job(store, diag, status="succeeded")
+    _comment(store, diag, reply)
+    return root, task, diag, gid
+
+
+def _gripe_comments(store: Store, gid: int) -> list[str]:
+    return [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+
+
+_FIXED_REPLY = f"rescue: NOFIX fixed {SHA} — gr1 was fixed under another plan"
+
+
+def test_nofix_fixed_verified_closes_node_and_resolves_gripe(
+    store: Store, git_calls: list[list[str]]
+) -> None:
+    root, task, diag, gid = _fixed_case(store, _FIXED_REPLY)
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [] and res.closed == [task]
+    assert _ask_refs(store) == []
+    assert ["merge-base", "--is-ancestor", SHA, "origin/main"] in git_calls
+    assert _status(store, task) == "won't-do"
+    assert any(SHA in c and "already fixed" in c for c in _comments(store, task))
+    assert _meta(store, task)["rescue"]["fixed_by"] == SHA
+    assert _status(store, diag) == "done"
+    (resolved,) = _gripe_comments(store, gid)
+    assert resolved.startswith(f"resolved: {SHA} — gr1 was fixed under another plan")
+    assert _status(store, gid) == "verify"
+    # a second pass has nothing left to do
+    res2 = fr.run_rescue_pass(store, NOW + timedelta(minutes=2))
+    assert res2.asked == [] and _ask_refs(store) == []
+
+
+def test_nofix_fixed_dry_run_writes_nothing(
+    store: Store, git_calls: list[list[str]]
+) -> None:
+    root, task, diag, gid = _fixed_case(store, _FIXED_REPLY)
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1), dry_run=True)
+
+    assert (task, "close") in res.would
+    assert all(a[0] != "fetch" for a in git_calls)
+    assert _status(store, task) == "open"
+    assert _status(store, gid) == "open" and _gripe_comments(store, gid) == []
+
+
+@pytest.mark.parametrize(
+    "rc",
+    [1, 128, subprocess.TimeoutExpired("git", 1), FileNotFoundError("git")],
+    ids=["not-ancestor", "bad-object", "timeout", "git-missing"],
+)
+def test_nofix_fixed_unverified_falls_through_to_the_ask(
+    store: Store, git_calls: _GitCalls, rc: Any
+) -> None:
+    git_calls.rc = rc
+    root, task, diag, gid = _fixed_case(store, _FIXED_REPLY)
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [task] and res.closed == []
+    (ask,) = _ask_refs(store)
+    assert _blocked_by(store, task) == [diag, ask]
+    assert _status(store, task) == "open"
+    assert _status(store, gid) == "open" and _gripe_comments(store, gid) == []
+
+
+def test_nofix_fixed_without_a_fix_repo_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("PRECIS_FIX_REPO_DIR", str(tmp_path / "missing"))
+    root, task, diag, gid = _fixed_case(store, _FIXED_REPLY)
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [task] and _status(store, task) == "open"
+
+
+def test_nofix_fixed_with_no_plan_gripe_asks(
+    store: Store, git_calls: list[list[str]]
+) -> None:
+    root = _root(store)
+    task = _rescued(store, root)
+    diag = _minted_diagnose(store, task, root)
+    _job(store, diag, status="succeeded")
+    _comment(store, diag, _FIXED_REPLY)
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [task] and _status(store, task) == "open"
+
+
+def test_nofix_fixed_respects_hold_no_autoclose(
+    store: Store, git_calls: list[list[str]]
+) -> None:
+    root, task, diag, gid = _fixed_case(
+        store, _FIXED_REPLY, gripe_tags=("hold:no-autoclose",)
+    )
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [] and _status(store, task) == "won't-do"
+    assert _status(store, gid) == "open" and _gripe_comments(store, gid) == []
+
+
+@pytest.mark.parametrize("gstatus", ["done", "verify", "wontfix"])
+def test_nofix_fixed_leaves_a_settled_gripe_alone(
+    store: Store, git_calls: _GitCalls, gstatus: str
+) -> None:
+    root, task, diag, gid = _fixed_case(store, _FIXED_REPLY, gripe_status=gstatus)
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [] and _status(store, task) == "won't-do"
+    assert _status(store, gid) == gstatus and _gripe_comments(store, gid) == []
+
+
+def test_legacy_plain_nofix_naming_a_sha_still_asks(
+    store: Store, git_calls: list[list[str]]
+) -> None:
+    root, task, diag, gid = _fixed_case(
+        store, f"rescue: NOFIX — gr1 is already fixed by {SHA} on main"
+    )
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.asked == [task] and _status(store, task) == "open"
+    assert git_calls == []  # prose is never parsed for a sha
+    assert _status(store, gid) == "open"
 
 
 # ── the tick job ───────────────────────────────────────────────────

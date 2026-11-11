@@ -39,10 +39,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
+import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -1475,7 +1478,11 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # ``brief:`` comment the rebuilt run reads back through
 # ``run_slice._brief_parts``, resuming on ``slice/<id>`` — the tree and
 # branch are reused; nothing pins the run to the host holding the tree,
-# the known gap); ``rescue: NOFIX — <why>``, a failed or unparsable
+# the known gap); ``rescue: NOFIX fixed <sha> — <why>`` closes the node
+# ``won't-do`` and the plan's gripe ``verify`` with no ask once ``<sha>``
+# is an ancestor of origin/main in the worker's fix repo (gr635531; an
+# unverifiable sha falls through to the ask below); ``rescue: NOFIX —
+# <why>``, a failed or unparsable
 # diagnose, a second rescue (``meta.rescue.n >= 1``) and every engine
 # class file ONE ``ask-user`` ruling todo blocking the node — EXCEPT a
 # node under a closed ancestor (gr576258): a ``terminal-root`` rescue,
@@ -1534,6 +1541,15 @@ _DIAGNOSIS_RE = re.compile(
     r"rescue:\s*(REARM|NOFIX)\b[\s:]*(?:[—–-]+\s*)?(.*)",
     re.IGNORECASE | re.DOTALL,
 )
+#: The structured already-fixed NOFIX body (gr635531): the ``rest`` of
+#: ``rescue: NOFIX fixed <sha> — <why>``. The sha is 7-40 hex; plain
+#: prose ("fixed by …") never matches, so a legacy NOFIX stays a NOFIX.
+_NOFIX_FIXED_RE = re.compile(
+    r"fixed\s+([0-9a-f]{7,40})\b[\s:]*(?:[—–-]+\s*)?(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+#: A bare commit sha (no leading ``-``, so never an option to git).
+_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 #: A ``rescue:`` verdict token for the disagreement check: two verdict
 #: lines at line starts that disagree are no verdict at all.
 _DIAGNOSIS_LINE_RE = re.compile(r"rescue:\s*(REARM|NOFIX)\b", re.IGNORECASE)
@@ -1632,6 +1648,16 @@ def parse_diagnosis(text: str) -> tuple[str, str] | None:
     if not rest:
         return None
     return verdict, rest
+
+
+def parse_nofix_fixed(rest: str) -> tuple[str, str] | None:
+    """``(sha, why)`` when a NOFIX verdict's ``rest`` is the structured
+    already-fixed form ``fixed <sha> — <why>`` (gr635531), else ``None``
+    (a plain NOFIX). ``why`` may be empty; the sha is lower-cased."""
+    m = _NOFIX_FIXED_RE.match(rest.strip())
+    if m is None:
+        return None
+    return m.group(1).lower(), m.group(2).strip()
 
 
 def _rescued_nodes(store: Store) -> list[tuple[int, str, Any]]:
@@ -2007,6 +2033,12 @@ def _diagnose_body(store: Store, plan: Any, n: Any, cls: str) -> str:
             "- `rescue: NOFIX — <why>` (the cause is outside the brief: "
             "engine, infrastructure, a denied path, a missing secret, a "
             "task that cannot be done as asked, or you cannot tell)",
+            "- `rescue: NOFIX fixed <sha> — <why>` (the defect the todo "
+            "names is already fixed on main: `<sha>` is the commit that "
+            "fixed it, in any plan — name its hex sha, 7-40 chars, never "
+            "a branch; the tick verifies it is an ancestor of origin/main "
+            "and closes the todo and gripe itself. Use it ONLY when you "
+            "read that commit's diff against the gripe)",
             "Then, in a line or two, what you read.",
         ]
         body = "\n".join(lines)
@@ -2679,6 +2711,171 @@ def _close_diagnose(
             )
 
 
+def _fix_repo() -> Path | None:
+    """The worker host's git checkout for ancestry reads: the fix repo
+    (``PRECIS_FIX_REPO_DIR``, as ``plan_tick``'s python roots read it),
+    else ``run_slice.slice_root()``. ``None`` when neither is a
+    directory — the already-fixed close then fails closed to the ask."""
+    from precis.workers.job_types import run_slice as _rs
+
+    env = os.environ.get("PRECIS_FIX_REPO_DIR", "").strip()
+    if env:
+        p = Path(env)
+        return p if p.is_dir() else None
+    try:
+        p = _rs.slice_root()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return None
+    return p if p.is_dir() else None
+
+
+def _sha_on_main(sha: str, *, fetch: bool) -> bool:
+    """``True`` only when ``git merge-base --is-ancestor <sha>
+    origin/main`` exits 0 in the fix repo (after a best-effort ``git
+    fetch origin main`` when ``fetch``) — the check ``run_slice``'s
+    ``_verified_moot`` uses, through its ``_git`` seam. A malformed sha,
+    no repo, a non-ancestor, a missing object, git missing or a timeout
+    is ``False``: fail closed."""
+    if not _SHA_RE.fullmatch(sha):
+        return False
+    repo = _fix_repo()
+    if repo is None:
+        return False
+    from precis.workers.job_types import run_slice as _rs
+
+    try:
+        if fetch:
+            _rs._fetch_main(repo)
+        check = _rs._git(["merge-base", "--is-ancestor", sha, "origin/main"], repo)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return check.returncode == 0
+
+
+def _gripe_resolve(
+    store: Store,
+    conn: Connection,
+    gid: int,
+    sha: str,
+    why: str,
+    n: Any,
+) -> str:
+    """``resolved: <sha> — <why>`` on the plan gripe and ``STATUS:verify``
+    (``gripe_validate`` closes it once the sha is on prod) — unless the
+    gripe carries ``hold:no-autoclose`` or is already terminal/verifying.
+    Returns the one-line outcome."""
+    from precis.workers.gripe_autoclose import HOLD_TAG
+    from precis.workers.job_types import land_slice as _ls
+
+    tags = store.tags_for(gid, conn=conn)
+    if any(t.namespace == "open" and str(t.value) == HOLD_TAG for t in tags):
+        return f"gr{gid}: left alone ({HOLD_TAG})"
+    status = next((str(t.value) for t in tags if t.prefix == "STATUS"), "open")
+    if status in _ls._GRIPE_SETTLED or status in _TERMINAL_GRIPES:
+        return f"gr{gid}: left STATUS:{status}"
+    _comment(
+        store,
+        conn,
+        gid,
+        _ls._GRIPE_COMMENT_KIND,
+        f"resolved: {sha} — {why or 'already fixed on main'} "
+        f"(found by the rescue diagnose of td{n.id})",
+    )
+    store.add_tag(
+        gid,
+        Tag.closed("STATUS", "verify"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    return f"gr{gid}: resolved comment + STATUS:verify"
+
+
+def _close_fixed(
+    store: Store,
+    now: datetime,
+    res: RescuePassResult,
+    plan: Any,
+    n: Any,
+    cls: str,
+    task_id: int,
+    sha: str,
+    why: str,
+) -> bool:
+    """The already-fixed NOFIX (gr635531): the diagnose named ``sha`` as
+    the commit that fixed what the node's gripe describes. ``False`` —
+    the caller files today's ask — unless the sha is an ancestor of
+    origin/main (:func:`_sha_on_main`) and the plan has a gripe. ``True``
+    once handled: the node is closed ``STATUS:won't-do`` with a comment
+    naming the sha, the plan gripe resolved (:func:`_gripe_resolve`) and
+    the diagnose task closed ``done``. The commit message need not name
+    the plan: the diagnose already read the fix against the gripe."""
+    if not _sha_on_main(sha, fetch=not res.dry_run):
+        res.notes.append(
+            f"td{n.id}: NOFIX names {sha} but it is not verifiably on "
+            "origin/main; asking"
+        )
+        return False
+    root = _plan_root_of(n)
+    gid: int | None = None
+    if root is not None:
+        from precis.workers.job_types import land_slice as _ls
+
+        try:
+            gid = _ls._plan_gripe(store, f"plan:{root}")
+        except Exception:  # a DB fault on the plan gripe fails closed
+            log.warning("factory_rescue: plan gripe lookup for td%s raised", n.id)
+    if gid is None:
+        res.notes.append(
+            f"td{n.id}: NOFIX fixed {sha} but the plan has no gripe; asking"
+        )
+        return False
+    if res.dry_run:
+        res.would.append((n.id, "close"))
+        res.notes.append(f"td{n.id}: would close won't-do (already fixed by {sha})")
+        return True
+    gnote = ""
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_RESCUE_PASS_LOCK_KEY,))
+        # Recheck under the lock (the ``_close_orphan`` pattern): a racer
+        # that moved the node off open/doing wins; nothing is written.
+        tags_now = store.tags_for(n.id, conn=conn)
+        status = next((str(t.value) for t in tags_now if t.prefix == "STATUS"), "open")
+        if status not in ("open", "doing"):
+            res.notes.append(f"td{n.id}: STATUS {status} under the lock; not closed")
+            return True
+        store.add_tag(
+            n.id,
+            Tag.closed("STATUS", "won't-do"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        _comment(
+            store,
+            conn,
+            n.id,
+            "todo_comment",
+            f"rescue: already fixed by {sha} (verified ancestor of "
+            f"origin/main) — {why or 'no reason given'}; closed by the "
+            f"rescue pass from diagnose td{task_id}",
+        )
+        prev = n.meta.get("rescue")
+        rescue_meta = dict(prev) if isinstance(prev, dict) else {}
+        rescue_meta["at"] = _iso(now)
+        rescue_meta["cls"] = cls
+        rescue_meta["closed"] = "won't-do"
+        rescue_meta["fixed_by"] = sha
+        store.stamp_ref_meta(n.id, {"rescue": rescue_meta}, conn=conn)
+        gnote = _gripe_resolve(store, conn, gid, sha, why, n)
+    _close_diagnose(store, res, task_id, "done", f"rescue: already fixed by {sha}")
+    res.closed.append(n.id)
+    res.notes.append(f"td{n.id}: closed won't-do, already fixed by {sha} ({gnote})")
+    if root is not None:
+        log_plan_event(store, n.id, f"already fixed by {sha}", root=root)
+    return True
+
+
 def _judge_diagnose(
     store: Store,
     now: datetime,
@@ -2771,6 +2968,11 @@ def _judge_diagnose(
         return
     if verdict[0] == "REARM":
         _rearm_node(store, now, res, plan, n, cls, tag_at, task_id, verdict[1], pd)
+        return
+    fixed = parse_nofix_fixed(verdict[1])
+    if fixed is not None and _close_fixed(
+        store, now, res, plan, n, cls, task_id, fixed[0], fixed[1]
+    ):
         return
     ask_id = _ask_node(
         store,

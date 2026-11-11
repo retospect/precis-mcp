@@ -442,7 +442,11 @@ stamps `meta.rescue` (`n`, `at`, `diagnose`, `cls`) and the re-arm floor
 the corrected `brief:` comment the rebuilt run reads; the run resumes
 on `slice/<id>` through `run_slice._ensure_worktree` (the tree and
 branch are reused; nothing pins the run to the host holding the tree —
-on another host it starts from origin/main and rebuilds). NOFIX, a
+on another host it starts from origin/main and rebuilds). `rescue:
+NOFIX fixed <sha> — <why>` (gr635531) closes the node `won't-do` and
+the plan gripe `verify` with no ask when `<sha>` is an ancestor of
+origin/main in the worker's fix repo (`PRECIS_FIX_REPO_DIR`); an
+unverifiable sha is a plain NOFIX. NOFIX, a
 failed or unparsable diagnose, and every straight-ask case file ONE
 `ask-user` + `showstopper` ruling todo blocking the node; the diagnose
 task closes `done` on a verdict, `won't-do` on a failure, and a
