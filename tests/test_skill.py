@@ -128,6 +128,24 @@ def test_get_skill_chunk_omits_result_budget_hint(skill: SkillHandler) -> None:
     assert out.result_budget_hint is None
 
 
+def test_skill_chunk_next_lifts_a_referenced_section(skill: SkillHandler) -> None:
+    """gr626104: a lone ``~N`` serve has no "below" — a sibling-section
+    handle the chunk names rides the ``Next:`` trailer as a direct call,
+    and the prose names it too (``precis-paper-help~5`` → ``~6``)."""
+    out = skill.get(id="precis-paper-help~5")
+    assert "`precis-paper-help~6`" in out.body
+    assert "get(kind='skill', id='precis-paper-help~6')" in out.body
+
+
+def test_skill_chunk_next_skips_handles_inside_the_served_range(
+    skill: SkillHandler,
+) -> None:
+    """A range serve already includes a self-referenced chunk — the
+    trailer doesn't re-advertise it."""
+    out = skill.get(id="precis-paper-help~5..6")
+    assert "get(kind='skill', id='precis-paper-help~6')" not in out.body
+
+
 def test_skill_result_budget_hint_recovers_oversize_read(skill: SkillHandler) -> None:
     from precis._result_budget import fit_result_body
 

@@ -104,6 +104,18 @@ _SKILL_ID_RE = re.compile(
     r"(?:/(?P<view>[a-z]+))?$"
 )
 
+#: ``slug~N`` / ``slug~A..B`` handles mentioned in served chunk text —
+#: the block lint's ``_CHUNK_REF_RE`` twin (tests/test_skill_blocks.py).
+#: A mention is a promise to the reader, so a chunk serve lifts its
+#: referenced sections into the ``Next:`` trailer (gr626104).
+_SKILL_CHUNK_MENTION_RE = re.compile(
+    r"(?<![\w-])([a-z0-9][a-z0-9-]*)~(\d+)(?:\.\.(\d+))?"
+)
+
+#: Cap on referenced-section rows a chunk trailer lifts — enough for a
+#: "see ~6 / ~7" pair without crowding the toc/card rows.
+_CHUNK_MENTION_NEXT_CAP = 3
+
 
 def _parse_skill_id(
     raw: str,
@@ -2499,6 +2511,12 @@ class SkillHandler(Handler):
 
         trailer = render_next_section(
             [
+                *(
+                    (f"get(kind='skill', id='{handle}')", "section referenced above")
+                    for handle in _mentioned_chunk_handles(
+                        slug, chunks, (lo, hi), display=display, corpus=corpus
+                    )
+                ),
                 (
                     f"get(kind='skill', id='{display}/toc')",
                     "table of contents for this skill",
@@ -5117,6 +5135,49 @@ def _expand_wikilinks(text: str) -> str:
     which covers both conventions.
     """
     return WIKILINK_RE.sub(lambda m: f"`get(kind='skill', id='{m.group(1)}')`", text)
+
+
+def _mentioned_chunk_handles(
+    slug: str,
+    chunks: list[Any],
+    served: tuple[int, int],
+    *,
+    display: str,
+    corpus: dict[str, str] | None = None,
+) -> list[str]:
+    """``slug~N`` handles the served chunks name, in mention order.
+
+    A section fetched on its own has no "below" — when its prose points
+    at another block, the ``Next:`` trailer carries the handle so the
+    reader can follow the pointer without rebuilding the parent document
+    (gr626104). A mention keeps only slugs resolvable in the serving
+    corpus; a same-skill handle already inside the served range (or out
+    of bounds) drops — the reader has it or it can't resolve. Same-slug
+    handles render under ``display`` so a worktree-rooted serve keeps
+    pointing at that tree.
+    """
+    lo, hi = served
+    out: list[str] = []
+    seen: set[str] = set()
+    for i in range(lo, hi + 1):
+        for m in _SKILL_CHUNK_MENTION_RE.finditer(chunks[i].text):
+            mslug, mlo = m.group(1), int(m.group(2))
+            mhi = int(m.group(3) or m.group(2))
+            if mhi < mlo or not _corpus_has(corpus, mslug):
+                continue
+            if mslug == slug:
+                if (lo <= mlo and mhi <= hi) or mhi >= len(chunks):
+                    continue
+                handle = f"{display}~{mlo}" + (f"..{mhi}" if mhi != mlo else "")
+            else:
+                handle = m.group(0)
+            if handle in seen:
+                continue
+            seen.add(handle)
+            out.append(handle)
+            if len(out) >= _CHUNK_MENTION_NEXT_CAP:
+                return out
+    return out
 
 
 def _dropped_section_headings(read_body: str) -> frozenset[str]:

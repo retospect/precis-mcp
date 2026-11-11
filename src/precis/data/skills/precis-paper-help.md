@@ -132,7 +132,8 @@ search(kind="paper", q="…", args={"good": True})  # → poll get(kind='job', i
 The default free-text `q=` search matches paper **bodies** and folds
 in the embedded metadata card, so a topic query works and a title query
 *often* surfaces the paper. But `q=` is body-first: for a known title or
-author, use the targeted byline lookup below — it's more reliable.
+author, use the targeted byline lookup — `precis-paper-help~6` — it's
+more reliable.
 
 ## Look a paper up by its title
 ## Find a paper by author
