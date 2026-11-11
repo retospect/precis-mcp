@@ -14,6 +14,7 @@ answers:
   - how do I write a good memory title and description?
   - how do I avoid writing a duplicate memory?
   - how do I link a new memory to its hub / related memories?
+  - where do I file or find a prior-art survey of an external project?
   - how do I check a memory is findable after writing?
   - how do I consolidate or supersede overlapping memories?
   - how many links should a memory have?
@@ -664,6 +665,18 @@ nodes.
 Search inside one hub or summary node with
 `search(kind="memory", q="pump", args={"under": "me3"})`; add
 `"depth": 1` for direct members, `tags=["section:gotchas"]` to narrow by type.
+
+Named repo-dev hub — **Prior art surveyed** (`me608724`, part-of root
+me474312): one node per external project or group already surveyed as
+prior art — what it is, licence, paper/repo, date surveyed, what we took
+(gripe/backlog handles) or rejected and why. Search it before starting a
+gap analysis or filing a new survey; a gap-analysis or survey memory is
+`part-of` me608724 as well as its topical hub, the documented exception
+to one hub per node.
+
+```python
+search(kind='memory', tags=['SPACE:repo-dev'], args={'under': 'me608724'}, q='<group or project>')
+```
 
 `put` and `edit` on a memory end with a `Next:` block of ready-to-run
 calls when a link, type tag or split is missing: the two nearest hubs, up to
