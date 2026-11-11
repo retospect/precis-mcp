@@ -5,8 +5,11 @@ hypothesis, which the allocator rated "active" (activity, not progress) and so
 kept re-picking until the 12-tick cool. These cover the coupled fix:
 
 * **cascade** — the progress clock resets on *any* external progress (a new
-  ``result`` / a resolved hypothesis / an acquired paper), not just a compute
-  frontier gain, so a reasoning-only spin is now legible to it;
+  ``result`` / a resolved hypothesis / an acquired paper / an anchored
+  dialectic advance), not just a compute frontier gain, so a reasoning-only
+  spin is now legible to it — and (gr626871) a bare ``by=agent``
+  ``dead-end`` is restatement, not a resolution: only a *supported* kill
+  closes a hypothesis;
 * **allocator** — the score's activity term is replaced by a geometric
   ``progress_factor`` (a spinner decays) plus an anti-starvation ``aging`` bonus
   (a long-waiting quest rises), i.e. weighted round-robin;
@@ -82,9 +85,109 @@ class TestBroadenedProgress:
         cascade.update_cascade_state(store, qid, reviewed=False)
         cascade.update_cascade_state(store, qid, reviewed=False)
         assert _ticks_since(store, qid) >= 1
-        # A dead-end resolves the open hypothesis (not a `result`, so this
-        # isolates the resolved-hypothesis signal) → progress.
-        append_entry(store, qid, text="ruled out", entry_type="dead-end", by="agent")
+        # A *supported* dead-end resolves the open hypothesis (not a
+        # `result`, so this isolates the resolved-hypothesis signal) →
+        # progress.
+        append_entry(
+            store,
+            qid,
+            text="ruled out — [pc1] reports the opposite slope",
+            entry_type="dead-end",
+            by="agent",
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+
+    def test_a_bare_agent_dead_end_does_not_resolve(self, store: Any) -> None:
+        # gr626871: an uncited `by=agent` dead-end is restatement, not a
+        # kill — the paraphrase-sweep hole where a tick "closed" its open
+        # questions in new words each cycle and reset the stall clock
+        # forever.
+        qid = _mk_quest(store, "A quest with an open hypothesis")
+        append_entry(
+            store, qid, text="H: yield rises", entry_type="hypothesis", by="agent"
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        append_entry(
+            store,
+            qid,
+            text="ruled out on reflection",
+            entry_type="dead-end",
+            by="agent",
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 2
+        # …and the hypothesis still reads open downstream.
+        from precis.quest.gaps import _open_hypotheses
+
+        assert _open_hypotheses(store, qid) == ["H: yield rises"]
+
+    def test_a_human_dead_end_resolves(self, store: Any) -> None:
+        # The gate is on the model's own narration: a human/operator kill
+        # (or anything not `by=agent`) is trusted without an anchor.
+        qid = _mk_quest(store, "A quest with an open hypothesis")
+        append_entry(
+            store, qid, text="H: yield rises", entry_type="hypothesis", by="agent"
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        append_entry(store, qid, text="ruled out", entry_type="dead-end", by="human")
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+
+    def test_a_supported_objection_is_progress(self, store: Any) -> None:
+        # gr626871 acceptance: a new *supported* objection counts — an
+        # anchored dialectic `counter` entry is new evidence, not a sweep.
+        from precis.quest.dossier import apply_dialectic_op
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A quest with a hypothesis")
+        fid = seed_ref(store, title="Fe adatom lowers the barrier", kind="finding")
+        paper_id = seed_ref(store, title="a cited paper", kind="paper")
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 1
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "counter",
+                "hypothesis": f"fi{fid}",
+                "text": f"[pa{paper_id}] DFT reports the opposite ordering",
+            },
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+
+    def test_a_proposed_experiment_is_progress(self, store: Any) -> None:
+        # gr626871 acceptance: a proposed test counts. The `experiment`
+        # dialectic op lands an entry — and an in-place *revision* of it
+        # (the upsert) counts too via the fingerprint, not the count.
+        from precis.quest.dossier import apply_dialectic_op
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A quest with a hypothesis")
+        fid = seed_ref(store, title="Fe adatom lowers the barrier", kind="finding")
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "experiment",
+                "hypothesis": f"fi{fid}",
+                "text": "anneal Fe–N₄ at 600 K and re-measure",
+            },
+        )
+        cascade.update_cascade_state(store, qid, reviewed=False)
+        assert _ticks_since(store, qid) == 0
+        # A revision of the proposed test is progress too (sig, not count).
+        assert apply_dialectic_op(
+            store,
+            qid,
+            {
+                "op": "experiment",
+                "hypothesis": f"fi{fid}",
+                "text": "anneal Fe–N₄ at 700 K and re-measure",
+            },
+        )
         cascade.update_cascade_state(store, qid, reviewed=False)
         assert _ticks_since(store, qid) == 0
 

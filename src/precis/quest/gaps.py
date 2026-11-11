@@ -24,6 +24,7 @@ servers exist**.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from math import sqrt
@@ -202,7 +203,9 @@ def quest_gaps(
             )
 
     # 4. Un-answered hypotheses — a hypothesis logbook entry with no later
-    #    result / dead-end. An open question the loop never closed.
+    #    *supported* result / dead-end (:func:`_answers_hypothesis`: a bare
+    #    `by=agent` kill is restatement, not an answer). An open question
+    #    the loop never closed.
     for text in _open_hypotheses(store, quest_id):
         gaps.append(
             Gap(
@@ -320,8 +323,40 @@ def _unmet_capabilities(store: Store, quest_id: int, live: list[Ref]) -> list[Ga
     return out
 
 
+#: An inline evidence handle in a ``dead-end``'s text, e.g. ``[fi263615]`` /
+#: ``[pc2837304]`` — well-formedness, not resolvability (the dialectic's own
+#: anchor rule: a ``[ql…]`` logbook cite is evidence even though it mints no
+#: ref edge).
+_DEAD_END_ANCHOR_RE = re.compile(r"\[[a-z]{2}\d+\]")
+
+
+def _answers_hypothesis(b: ChunkRow) -> bool:
+    """True when logbook row ``b`` *resolves* an earlier hypothesis.
+
+    A ``result`` always answers — it is stamped evidence (the model cannot
+    author one: its own are clamped to ``observation`` at apply,
+    ``tick._sanitize_model_entry``). A ``dead-end`` answers only when it is
+    *supported*: stamped by anyone but the model itself (a human or system
+    kill is trusted) or carrying an inline evidence handle — the same
+    anchor rule the dialectic's support/counter entries obey
+    (:func:`precis.quest.dossier._has_anchor_handle`). A bare ``by=agent``
+    dead-end is a restatement, not a resolution — the paraphrase-sweep hole
+    gr626871 closes: a tick that "killed" its open questions in new words
+    each cycle read as progress forever.
+    """
+    meta = getattr(b, "meta", None) or {}
+    etype = str(meta.get("entry_type", "note"))
+    if etype == "result":
+        return True
+    if etype != "dead-end":
+        return False
+    return str(meta.get("by")) != "agent" or bool(
+        _DEAD_END_ANCHOR_RE.search(getattr(b, "text", "") or "")
+    )
+
+
 def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
-    """Hypothesis logbook entries with no later result / dead-end entry."""
+    """Hypothesis logbook entries with no later *answering* entry."""
     blocks = [
         b
         for b in store.chunks.list_chunks_for_ref(quest_id)
@@ -330,21 +365,17 @@ def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
     if not blocks:
         return []
 
-    def etype(b: object) -> str:
-        return str((getattr(b, "meta", None) or {}).get("entry_type", "note"))
-
     # Positions (append order) of the entries that *answer* a hypothesis.
-    answered_after = [
-        i for i, b in enumerate(blocks) if etype(b) in ("result", "dead-end")
-    ]
+    answered_after = [i for i, b in enumerate(blocks) if _answers_hypothesis(b)]
     last_answer = max(answered_after) if answered_after else -1
     # A hypothesis is open when no answer follows it. (Conservative: any
-    # result/dead-end after it counts as closing it — cheap and good enough for
-    # a surfacing signal, not a proof.)
+    # answering entry closes every hypothesis above it — cheap and good
+    # enough for a surfacing signal, not a proof.)
     return [
         b.text
         for i, b in enumerate(blocks)
-        if etype(b) == "hypothesis" and i > last_answer
+        if str((b.meta or {}).get("entry_type", "note")) == "hypothesis"
+        and i > last_answer
     ]
 
 

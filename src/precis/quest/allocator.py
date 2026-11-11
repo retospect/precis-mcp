@@ -10,8 +10,10 @@ long-running average so it damps on the smoothed trend, not a single result:
 
 * **priority** — the striving weight (slice 2's `base_weight` over `refs.prio`);
 * **progress_factor** — decays geometrically each tick a quest makes no
-  *external progress* (a new result / resolved hypothesis / paper / frontier
-  gain), floored so it never hard-zeroes. This deliberately replaced the old
+  *external progress* (a new result / resolved hypothesis / paper / anchored
+  dialectic advance / frontier gain — the full signal list lives on
+  ``cascade.update_cascade_state``), floored so it never hard-zeroes. This
+  deliberately replaced the old
   *momentum* term, which rated a furiously-logging spin "active" and let it
   monopolise the loop — activity is not progress;
 * **promise** — the frontier-improvement rate (slice 4c's acquisition term);
@@ -125,7 +127,9 @@ def progress_factor(store: Store, quest_id: int) -> float:
 
     `ticks_since_frontier_improve` is the cascade's broadened progress clock: it
     resets to 0 on any external progress (result / resolved hypothesis / paper /
-    frontier gain) and climbs otherwise. So a quest that only re-reasons decays
+    anchored dialectic advance / frontier gain — see
+    ``cascade.update_cascade_state``) and climbs otherwise. So a quest that
+    only re-reasons decays
     toward :data:`STALL_FLOOR` and loses picks to fresher / productive quests,
     while never hard-zeroing (cooling to dormant is the deliberate exit).
     """

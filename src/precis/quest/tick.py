@@ -2320,7 +2320,8 @@ restate a barrier value from the dossier or logbook; if a dossier claim \
 conflicts with this table, the table wins and you must correct the dossier. \
 You do not emit `result`/`milestone` entries — the system stamps those from \
 simulations; you close a lead with a `dead-end` when the table shows it \
-beaten.)
+beaten — cite the `[st<id>]`/evidence that beat it, an uncited `dead-end` \
+is a bare assertion.)
 
 {results_table}{axis_notes}{literature}{requested_reads}{reaction_context}{skill_injection}
 ## Your step
@@ -2341,7 +2342,10 @@ authority.
 
 **Progress means new external evidence, not more restating.** If there are open \
 hypotheses above, your job is to *close* them — resolve one with evidence \
-(a `result`) or kill it (a `dead-end`) — NOT to restate it as a fresh \
+(a `result`) or kill it (a `dead-end` that cites the evidence doing the \
+killing — an inline `[fi<id>]`/`[pc<id>]`/`[ql<id>]` handle; an uncited \
+`dead-end` is a bare assertion, not a kill, and leaves the question open) \
+— NOT to restate it as a fresh \
 hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
@@ -2631,7 +2635,10 @@ authority.
 
 **Progress means new external evidence, not more restating.** If there are open \
 hypotheses above, your job is to *close* them — resolve one with evidence \
-(a `result`) or kill it (a `dead-end`) — NOT to restate it as a fresh \
+(a `result`) or kill it (a `dead-end` that cites the evidence doing the \
+killing — an inline `[fi<id>]`/`[pc<id>]`/`[ql<id>]` handle; an uncited \
+`dead-end` is a bare assertion, not a kill, and leaves the question open) \
+— NOT to restate it as a fresh \
 hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
