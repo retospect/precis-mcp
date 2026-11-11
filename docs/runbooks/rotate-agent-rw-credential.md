@@ -149,8 +149,8 @@ gave no signal: the file was read *first*, so a rotated vault value was
 silently ignored on every host that still had a stale copy.
 
 1. Mint a fresh long-lived token: `claude setup-token` as yourself.
-2. `precis secret set CLAUDE_CODE_OAUTH_TOKEN` against prod (or the web
-   secrets editor). No deploy needed — daemons pick it up within the 60s
+2. `precis secret set CLAUDE_CODE_OAUTH_TOKEN` against prod on the owner DSN
+   (or the web secrets editor) — an `agent_rw` DSN is refused (0307). No deploy needed — daemons pick it up within the 60s
    `secrets._CACHE_TTL_SECONDS`.
 3. Confirm: `llm_call_log` gains `transport='claude_agent'` rows with no auth
    errors, and `vault.events` shows reveals from the expected `host`/`process`
@@ -158,8 +158,10 @@ silently ignored on every host that still had a stale copy.
 
 The vault row is class `api` (migration 0304, Reto 2026-11-11), not `infra`:
 the session MCP runs as `agent_rw` and calls `claude -p` in-process for the
-finding mint door's dedup judge, so it must be able to reveal the token. The
-cost is that any `agent_rw` holder can also reveal and overwrite it. There is
+finding mint door's dedup judge, so it must be able to reveal the token. Any
+`agent_rw` holder can reveal it, but writes gate as `infra` (migration 0307,
+`vault._write_class_for`): only `precis_system`, `precis_ingress` or the owner
+DSN can set or delete it. There is
 no host file and no `ensure.sh` step for this secret. gr610977 (judge on a
 credentialed worker) is the route back to `infra`.
 

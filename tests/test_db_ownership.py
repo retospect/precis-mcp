@@ -277,6 +277,37 @@ def test_vault_writes_class_gated(prod_like: psycopg.Connection) -> None:
     )
 
 
+def test_oauth_token_agent_rw_reads_but_never_writes(
+    prod_like: psycopg.Connection,
+) -> None:
+    """Reto 2026-11-11 (0307): agent_rw reveals CLAUDE_CODE_OAUTH_TOKEN (the
+    session MCP runs claude -p with it) but cannot overwrite or delete it;
+    the owner DSN still rotates it."""
+    _cutover(prod_like)
+    c = prod_like
+    c.execute("SELECT vault.set_secret('CLAUDE_CODE_OAUTH_TOKEN', 'v-orig-1234567890')")
+    rows = _as(
+        c, "agent_rw", "SELECT vault.reveal('CLAUDE_CODE_OAUTH_TOKEN')", session=True
+    )
+    assert rows == [("v-orig-1234567890",)]
+    for stmt in (
+        "SELECT vault.set_secret('CLAUDE_CODE_OAUTH_TOKEN', 'v-evil-1234567890')",
+        "SELECT vault.delete_secret('CLAUDE_CODE_OAUTH_TOKEN')",
+    ):
+        with pytest.raises(
+            psycopg.errors.InsufficientPrivilege, match="not allowed to write"
+        ):
+            _as(c, "agent_rw", stmt, session=True)
+    _as(
+        c,
+        "precis_owner",
+        "SELECT vault.set_secret('CLAUDE_CODE_OAUTH_TOKEN', 'v-new-1234567890')",
+        session=True,
+    )
+    row = c.execute("SELECT vault.reveal('CLAUDE_CODE_OAUTH_TOKEN')").fetchone()
+    assert row == ("v-new-1234567890",)
+
+
 def test_ingress_reads_the_hash_for_login(prod_like: psycopg.Connection) -> None:
     """Login (precis_web.auth → get_web_user_credentials) keeps working."""
     _cutover(prod_like)
