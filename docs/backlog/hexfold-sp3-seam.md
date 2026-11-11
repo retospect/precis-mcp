@@ -11,6 +11,16 @@ shipped: sp3 seam lines k4-sp3-90-a + k3-sp3-z (692d8830a), k3-sp3-a (260218345)
 
 # hexfold: seam vertices (sp³ seam lines shipped)
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, target seams group `me628776` (beside the closed catalogue
+`me628806` and the sp³ band `me628808`; the valve's three-port node
+`me629057` defers to it), gripe `gr629124`. Not read in the 2026-11-11
+transfer pass; the builder lane had no precis MCP. Do not delete this
+file until its `section:reference` nodes are written under `me628776`,
+the hub reading order carries their handles, and the source/backlog
+references are repointed — retiring ahead of the transfer was reverted
+once already (`a331c87a4`).)*
+
 Reto, 2026-09-16: "we want to add the sp3 join variant in the backlog
 also, i think that can join 3 or 4 sheets. We'll add it after the rest
 is done." Spec context: `src/hexfold/spec.md` §6.2–6.4 (the sp² seam
