@@ -469,12 +469,15 @@ class _TermNode:
     """A live ``concept``/``taxon`` node whose name or an alias surfaced
     in scanned text. ``surfaces`` is every normalized label the node
     answers to (name + aliases); ``hit_surfaces`` the subset the scanned
-    text actually used."""
+    text actually used. ``status`` is the taxon lifecycle marker
+    (``'proposed'`` at mint, ``'systematic'`` earned) — ``""`` on kinds
+    that don't carry one."""
 
     ref_id: int
     kind: str
     name: str
     definition: str
+    status: str
     surfaces: frozenset[str]
     hit_surfaces: frozenset[str]
 
@@ -536,6 +539,7 @@ def _term_nodes(store: Store, candidates: set[str]) -> list[_TermNode]:
                 kind=str(kind),
                 name=str(m.get("name") or title or ""),
                 definition=str(m.get("definition") or ""),
+                status=str(m.get("status") or ""),
                 surfaces=frozenset(surfaces),
                 hit_surfaces=hit,
             )
@@ -547,7 +551,8 @@ def _lit_sourced(store: Store, ref_ids: list[int]) -> set[int]:
     """The subset of ``ref_ids`` carrying an outbound ``derived-from``
     edge to a live paper/patent — the shipped literature-provenance
     signal (the glossary promotion pass stamps exactly this edge;
-    :mod:`precis.reading.promote`)."""
+    :mod:`precis.reading.promote`). Kind-agnostic: a taxon carrying the
+    edge is literature-sourced the same way a concept is."""
     if not ref_ids:
         return set()
     with store.pool.connection() as conn:
@@ -574,12 +579,17 @@ def concept_label_hint(
 
     A "label" is a surface a live ``concept``/``taxon`` node claims —
     its name or an alias — appearing in the touched text. A claimant is
-    **in-house** when it is a ``concept`` with no ``derived-from`` edge
-    to a paper/patent (the shipped literature-provenance signal), or any
-    node whose definition carries the ``(lit: …)`` marker the
-    vocabulary-alignment convention uses for "the literature's word is
-    X"; a ``taxon`` or literature-sourced concept without the marker is
-    canonical. For each newly introduced in-house label:
+    **canonical** when it carries literature provenance — a
+    ``derived-from`` edge to a paper/patent (the shipped signal;
+    :mod:`precis.reading.promote`) — or, for a ``taxon``, the earned
+    ``status='systematic'`` (:func:`precis.taxonomy.select.promote`).
+    Everything else is **in-house**: an unsourced ``concept``, a
+    ``proposed`` taxon (an in-house proposal, not the literature's
+    word), or any node whose definition carries the ``(lit: …)`` marker
+    the vocabulary-alignment convention uses for "the literature's word
+    is X". Provenance is checked on every claimant — including the ones
+    an in-house label's *other* surfaces pull in. For each newly
+    introduced in-house label:
 
     * a literature claimant on the *same* surface, or any second
       claimant at all — an ambiguous equivalent: flag for review, never
@@ -632,14 +642,22 @@ def concept_label_hint(
             used_by[n.ref_id] = fresh
     if not used_by:
         return ""
-    lit_ids = _lit_sourced(store, [n.ref_id for n in nodes if n.kind == "concept"])
+    lit_ids = _lit_sourced(store, [n.ref_id for n in nodes])
 
     def _lit_marker(n: _TermNode) -> str | None:
         m = _LIT_MARKER_RE.search(n.definition)
         return m.group(1).strip() if m else None
 
     def _is_lit(n: _TermNode) -> bool:
-        return (n.kind == "taxon" or n.ref_id in lit_ids) and _lit_marker(n) is None
+        # A ``(lit: …)`` marker keeps the node in-house — it names the
+        # literature word rather than being it. Without one, canonical
+        # means literature provenance (``derived-from`` → paper/patent)
+        # or, for a taxon, the earned ``systematic`` status — a
+        # ``proposed`` taxon is an in-house proposal like an unsourced
+        # concept.
+        if _lit_marker(n) is not None:
+            return False
+        return n.ref_id in lit_ids or (n.kind == "taxon" and n.status == "systematic")
 
     inhouse = [n for n in nodes if n.ref_id in used_by and not _is_lit(n)]
     if not inhouse:
@@ -647,9 +665,13 @@ def concept_label_hint(
 
     # Claimants of an in-house node's *other* surfaces — "X, aka Y" where
     # the canonical registry knows Y. One batched probe for all in-house
-    # nodes, then intersected per node below.
+    # nodes, then intersected per node below. Provenance follows the
+    # probe: a lit-sourced claimant reachable only through an alias is
+    # still a canonical.
     other_surfaces = {s for n in inhouse for s in n.surfaces if s not in candidates}
-    by_id = {n.ref_id: n for n in nodes + _term_nodes(store, other_surfaces)}
+    extra = _term_nodes(store, other_surfaces)
+    lit_ids |= _lit_sourced(store, [n.ref_id for n in extra])
+    by_id = {n.ref_id: n for n in nodes + extra}
 
     draft_terms: set[str] | None = None
 

@@ -1,9 +1,10 @@
 """Draft concept-label lint (gr626720) — in-house labels in paper drafts.
 
-An in-house surface (a live ``concept`` with no ``derived-from`` →
-paper/patent provenance, or a node carrying the ``(lit: …)`` canonical
-marker) used in draft prose is flagged when a literature canonical term
-exists or no definition is supplied; deliberately introduced terms with
+An in-house surface — a live ``concept`` with no ``derived-from`` →
+paper/patent provenance, a ``proposed`` taxon that hasn't earned
+``systematic``, or a node carrying the ``(lit: …)`` canonical marker —
+used in draft prose is flagged when a literature canonical term exists
+or no definition is supplied; deliberately introduced terms with
 definitions are allowed, and ambiguous equivalents flag for review
 instead of picking a side. Exercises the write-path hint through the
 draft handler (real ``store``/``hub`` fixtures).
@@ -63,14 +64,16 @@ def _paper(hub: Hub, title: str = "source paper") -> int:
     return seed_ref(hub.live_store, title=title)
 
 
-def _taxon(hub: Hub, name: str, *, definition: str = "") -> int:
+def _taxon(
+    hub: Hub, name: str, *, definition: str = "", status: str = "proposed"
+) -> int:
     from precis.taxonomy.nodes import initial_taxon_meta
 
     return hub.live_store.insert_ref(
         kind="taxon",
         slug=None,
         title=name,
-        meta=initial_taxon_meta(name, definition),
+        meta=initial_taxon_meta(name, definition, extra={"status": status}),
     ).id
 
 
@@ -141,10 +144,45 @@ class TestConceptLabelHint:
         body = _para(draft, hub, f"The {label} mechanism is well studied.")
         assert "in-house label" not in body
 
-    def test_taxon_label_clean(self, draft: DraftHandler, hub: Hub) -> None:
-        """A shared-taxonomy term is canonical — never an in-house flag."""
+    def test_systematic_taxon_label_clean(self, draft: DraftHandler, hub: Hub) -> None:
+        """A taxon that earned ``systematic`` is literature canonical —
+        never an in-house flag."""
         label = f"measuron-{_u()}"
+        _taxon(hub, label, status="systematic")
+        body = _para(draft, hub, f"The {label} dominates the response.")
+        assert "in-house label" not in body
+
+    def test_paper_sourced_taxon_label_clean(
+        self, draft: DraftHandler, hub: Hub
+    ) -> None:
+        """A ``proposed`` taxon carrying a ``derived-from`` → paper edge
+        is literature-sourced — provenance, not status alone."""
+        label = f"sourcedtax-{_u()}"
+        tid = _taxon(hub, label)
+        hub.live_store.add_link(
+            src_ref_id=tid, dst_ref_id=_paper(hub), relation="derived-from"
+        )
+        body = _para(draft, hub, f"The {label} dominates the response.")
+        assert "in-house label" not in body
+
+    def test_proposed_taxon_label_flags_unexplained(
+        self, draft: DraftHandler, hub: Hub
+    ) -> None:
+        """A ``proposed`` taxon is an in-house proposal, not a
+        canonical — with no definition it flags like an unsourced
+        concept."""
+        label = f"protazon-{_u()}"
         _taxon(hub, label)
+        body = _para(draft, hub, f"The {label} dominates the response.")
+        assert "unexplained in-house label" in body
+
+    def test_proposed_taxon_defined_allowed(
+        self, draft: DraftHandler, hub: Hub
+    ) -> None:
+        """A ``proposed`` taxon carrying a definition is a deliberately
+        introduced term — clean."""
+        label = f"draftaxon-{_u()}"
+        _taxon(hub, label, definition="a candidate measurand under review")
         body = _para(draft, hub, f"The {label} dominates the response.")
         assert "in-house label" not in body
 
@@ -155,7 +193,7 @@ class TestConceptLabelHint:
         node is an ambiguous equivalent — flagged for review, not renamed."""
         label = f"volticell-{_u()}"
         _concept(hub, label)
-        _taxon(hub, label)
+        _taxon(hub, label, status="systematic")
         body = _para(draft, hub, f"The {label} geometry controls the rate.")
         assert "ambiguous label" in body
         assert label in body
@@ -165,10 +203,36 @@ class TestConceptLabelHint:
         the concept's own alias — a literature canonical exists."""
         label, canon = f"tazx-{_u()}", f"zorbax-{_u()}"
         _concept(hub, label, aliases=[canon])
-        _taxon(hub, canon)
+        _taxon(hub, canon, status="systematic")
         body = _para(draft, hub, f"We rely on {label} throughout.")
         assert "literature canonical" in body
         assert canon in body
+
+    def test_lit_concept_via_other_surface_flags_canonical(
+        self, draft: DraftHandler, hub: Hub
+    ) -> None:
+        """The canonical claimant may sit on the in-house node's *other*
+        surface — provenance is probed on the alias reach too, so a
+        lit-sourced concept there still reads as the literature word."""
+        label, canon = f"hausword-{_u()}", f"litword-{_u()}"
+        _concept(hub, label, aliases=[canon])
+        _concept(hub, canon, paper_id=_paper(hub))
+        body = _para(draft, hub, f"We rely on {label} throughout.")
+        assert "literature canonical" in body
+        assert canon in body
+
+    def test_proposed_taxon_via_other_surface_not_canonical(
+        self, draft: DraftHandler, hub: Hub
+    ) -> None:
+        """A ``proposed`` taxon on the alias is no literature canonical —
+        no false "prefer it" suggestion; the undefined concept flags as
+        unexplained instead."""
+        label, canon = f"hauswort-{_u()}", f"proptax-{_u()}"
+        _concept(hub, label, aliases=[canon])
+        _taxon(hub, canon)
+        body = _para(draft, hub, f"We rely on {label} throughout.")
+        assert "literature canonical" not in body
+        assert "unexplained in-house label" in body
 
     def test_lit_marker_flags_canonical(self, draft: DraftHandler, hub: Hub) -> None:
         """A ``(lit: …)`` marker on the node's own definition names the
