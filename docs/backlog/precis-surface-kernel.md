@@ -15,6 +15,291 @@ grammar, §22 budget/placement, §23 editing model, §24 se interchange,
 §25 MCP surface, §26 catalogue, §27 self-intersection). This item is the
 build plan and the precis-side decisions only.
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, target carbon-topology representation group `me628774`
+(smooth-first editing `me628779`, surfaces of revolution `me628783`;
+the valve's smooth-mesh clearance form in `me629059` waits on this
+kernel), gripe `gr629127`. The 2026-11-11 transfer pass had no precis
+MCP; the executing lane needs the session MCP on PROD — the writes
+cannot be done from a no-MCP lane. Do not delete this file until the
+nodes below are written, `me628774`'s reading order carries their
+handles, `me628772`'s not-transferred list drops this file, and the
+references are repointed — retiring ahead of the transfer was reverted
+once already (`a331c87a4`).)*
+
+*Transfer manifest — coverage checked 2026-11-11 (read-only prod
+queries): `me474412` (under the CAD/se hub `me477659`) already carries
+the dual-route decision, the equilateral↔graphene correspondence and
+the NanoCap / Hyde–Pedersen / EPINET / Terrones pointers with C216
+marked unverified; its children `me571247`, `me571248`, `me571250`
+carry the three marching-cubes traps (odd `n`, the automatic counting
+residual, orient-by-gradient). `me628779`/`me628783`/`me628784`/
+`me628785` carry the smooth-first, surfaces-of-revolution, seam-budget
+and parts/cache principles; `me630415`/`me630417` carry the hexfold
+fold-in and the assembly-layer tick state. The authored-surface path
+under `me628775` (`me628788`, `me628792`, `me628793`, `me628803`)
+already holds the per-band charge census, the tether/judge and the
+drum's sparse-rows evidence from the authored side. `me629059` holds
+the valve tool chain's built half. Missing from the graph — write each
+as one `section:reference` node tagged `spec:carbon-topology` in
+`SPACE:repo-dev`, `part-of` → `me628774`, `Source:` line naming this
+file + sections + transfer date + gripe `gr629127`, house shape of the
+`me630415`–`me630430` set:*
+
+1. *Title ≈ "precis_surface is the lattice-agnostic kernel;
+   hexfold.smooth binds it to carbon". Body: §Package split — the
+   kernel owns patches, rims as Dirichlet curves, seams as Plateau film
+   clusters, a curvature bound in caller units, direction fields,
+   embedding checks and mesh realisation, in metres on se frame
+   conventions; `hexfold.smooth` owns hex-lattice singularity charges,
+   σ, the discretiser emitting the discrete `.hx` section and the
+   `smooth:` parser/emitter, one-way precis_surface → hexfold. Storage
+   is a `surface` binding kind on se blocks beside
+   cad|structure|component|part, not a new precis kind; rim frame = se
+   datum (`se-datum-measure-eval`), cross-scale addressing =
+   `se-pick-hierarchy`. Cache is `CatalogueStore` DB-first — the
+   proposed `hexfold_cache` table landed instead as
+   `se_hexfold_catalogue` keyed by `EnvKey`
+   (`python:main::hexfold.catalogue.CatalogueStore`). MCP reuses
+   `generate` (with `fidelity`), `add_port`, `connect`, `set_binding`
+   and views, plus `view='surface'`, `view='catalogue'`, op
+   `move_handle`, and `options(handle, wish)` = `fit.alternatives`
+   surfaced as ranked candidates. `Built:` `src/precis_surface/`
+   (level_set, periodic_mesh, curvature, remesh, dual, relax, report,
+   revolution, rowfit, deviation); unbuilt: `hexfold.smooth`, the
+   `surface` binding kind, `view='surface'`, `move_handle`.
+   `related-to` → `me630415`, `me630417`.*
+2. *Title ≈ "Smooth kernel open roadmap: §28.5–.6 solve, §27
+   self-intersection, §28.8 valve tools". Body: §State — §28.4 stage 1
+   done (`hexfold.chain`, state on `me630417`); open — §28.5 straight
+   tubes, symmetric collars, caps from the cache, then the
+   discrete-mesh smooth solve, the two-part curvature bound and seams
+   as film clusters (closed forms as seeds and oracle only); §28.6
+   direction field then the bent collar behind the `fit` family
+   interface; §27 self-intersection tiers (BVH in the loop, CCD in
+   relaxation, repulsive energy on finalists) riding §28.5; §28.8 valve
+   tool set (spec `me628980` §design tools, `me629059`): clearance
+   field → pocket extractor → attachment-site enumerator →
+   complementarity scorer → bond-energy audit → drag-vs-torque — the
+   atomic clearance/pocket/sites half landed, the smooth-mesh clearance
+   form waits on this kernel; `strain_max` default from a literature
+   lookup (§29 Q5). Open before trusting §28.5–.6 interactively: Q1
+   bent-collar twist well-defined on the rim loop; Q2 field ≡ ring
+   placement holds for charges (Poincaré–Hopf), positions are
+   hex-remeshing integrability; Q3 bent-collar search — instrument
+   before trusting interactivity. `qualifies` → `me629059`;
+   `related-to` → `me630417`.*
+3. *Title ≈ "Welded periodic Mesh is the contract; chi computed on the
+   quotient". Body: §Interface contract — `Mesh = (verts (N,3) f64,
+   tris (M,3) i64)` CCW outward + `wrap` (K,2) identified vertex pairs
+   + the (3,3) cell matrix, never duplicated vertices; chi computed on
+   the welded quotient; curvature functions pure and unit-agnostic;
+   `periodic_mesh()` gained optional `grad=` for exact orientation and
+   `PeriodicMesh` carries `orientation_fallback_count`; the dual
+   returns a hexfold-shaped net (vertex → ring size, triangle → atom)
+   across the precis→hexfold direction only. Acceptance met
+   2026-09-24: Gauss–Bonnet closes to ~1e-13 on P (−4), D (−16), gyroid
+   (−8) at two resolutions each — two modules cross-validating; the
+   centring trap (body-centring swaps P/D labyrinths → chi −2) is on
+   `me571247`. `Built:` `python:main::precis_surface.periodic_mesh`,
+   `precis_surface.curvature`, `precis_surface.dual`,
+   `precis_surface.level_set`. `related-to` → `me474412`, `me571247`,
+   `me571250`.*
+4. *Title ≈ "Rings are {5,6,7}: curvature ranks, spacing admits,
+   collapse/split repair count". Body: §Heptagon placement +
+   §The remesh loop — heptagon placement is constrained, not
+   curvature-greedy: the isolated-heptagon rule needs ~2:1
+   hexagons:heptagons or heptalene units form, so curvature supplies
+   the ranking while `smooth.singularity_spacing` /
+   `hexfold.defects.disks_disjoint` supply admissibility as a hard
+   filter on candidate flips. Reto ruling 2026-09-26: rings are
+   {5,6,7} only — pentagons are legitimate sp2 carbon, 4-rings and
+   below and 8-rings and above are forbidden; `count(5) − count(7)
+   == 6·chi` stays automatic, not evidence; acceptance is every degree
+   in {5,6,7} asserted hard plus hexagon dominance ≥ 0.8 as the
+   quality goal. Flips are necessary not sufficient — flip-only
+   plateaus at 155 of 1080 welded vertices outside {5,6,7} on Schwarz
+   P `n=17`, zero on the wrap seam (frozen-seam simplification kept);
+   degree ≤ 4 needs an edge COLLAPSE, degree ≥ 8 a SPLIT, both
+   chi-invariant; the collapse guard that matters is the link
+   condition; seam vertices and wrap-crossing edges stay refused —
+   nothing needing repair lives there. `Built:`
+   `python:main::precis_surface.remesh`.*
+5. *Title ≈ "Ring census and scale are invariants — bond length is the
+   first real check". Body: §The ring census cannot see the chemistry —
+   the census depends only on `n` (bit-identical across `cell_A`), so
+   it cannot see chemistry: `cell_A=8, n=17` shipped a 0.248 Å mean
+   bond, ~33× graphene density (gr451269; input-surface friction
+   gr451270). Landed part (a): `build_tpms` measures the mean C–C bond
+   and refuses outside [1.2, 1.7] Å naming the `cell_A` that would
+   work at the requested `n` (lengths scale linearly, one measurement
+   is exact); `topology.bond_mean_A`/`bond_min_A`/`bond_max_A` report
+   the spread — ungated, since gating it would refuse every input
+   until the remesh size term lands; the carbon-scale `cell_A` differs
+   per config and is derived, not tabulated. Rule: every future
+   acceptance number gets asked what it cannot see — 13 tpms tests
+   certified non-carbon output because none asserted a bond length.
+   And remesh makes the spread worse (P `n=17` raw 0.974–2.182 Å →
+   remeshed 0.727–2.375 Å): ring purity is bought with edge-length
+   uniformity. `Built:` the `build_tpms` bond gate + tests
+   (`python:main::precis_se.atomic.generators.tpms.build_tpms`,
+   `tests/test_se_atomic_generators.py`).*
+6. *Title ≈ "Remesh scars are 5-7 dislocations; the fix was cost
+   shape, not operators". Body: §Part (c) — at the carbon-scale
+   config (Schwarz P `cell_A=45.8, n=17`, census {5:114, 6:700, 7:138})
+   89% of pentagons touch a heptagon — cancelling dislocation pairs,
+   pure strain, the cause of the bond spread; per-vertex defect is
+   ~40× under the π/3 quantum so curvature cannot place rings —
+   integrate, don't sample (corr(degree,K) = −0.216 is a triangulation
+   artefact, seven ~60° angles overshoot 2π by construction); the
+   defect ceiling is a function of `n` alone and overflow was silently
+   clipped. Relaxation cannot remove a combinatorial dislocation (it
+   spends angles to buy bonds); annihilation by collapse made
+   chemistry worse — vertex count sets bond length (√(952/886) =
+   +3.6%) and `_apply_collapse_raw` relabelling damage does not anneal
+   out; the strict `improvement <= 0` refusal is load-bearing —
+   undirected score-neutral flips random-walk the plateau to bond min
+   0.36–0.58 Å. Landed fix, no new operators: break equal-degree-cost
+   ties on triangle shape, plus a distance-graded out-of-range barrier
+   in the FLIP cost only (a barrier in the collapse cost eats the 4s
+   by deletion and damages positions). Result {5:84, 6:763, 7:108}, no
+   bad rings, `collapse_rejected` reaches 0; end-to-end anneal 186 → 8
+   hard errors, strain 2363 → 1943 against stock's 395 → 16 / 2363.
+   Scoring ties on the actual dual objective (ΔΣ(dual angle − 120°)²
+   over the 6 touched atoms — every move is O(1) local, one atom per
+   triangle centroid) beats every triangle-quality proxy (angle std
+   11.25, 16.6% out) but needs a min-angle guard. `Built:`
+   `python:main::precis_surface.remesh` (`_eval_candidate`,
+   `_eval_collapse_candidate`, `RemeshReport.collapse_rejected`).*
+7. *Title ≈ "Remesh open: triangle SIZE is the second defect; the real
+   fix is an isotropic mesher". Body: §Part (c) still-open + smaller
+   corrections — bond spread among q > 0.95 triangles is still 0.213 Å
+   (triangle-area cv 0.31, uncontrolled; uniform Laplacian is not a
+   sizing tool — bond L vs the equilateral prediction from adjacent
+   areas alone: corr 0.706, size-only cv 0.153 of 0.194); the residual
+   needs length-driven split/collapse — Botsch–Kobbelt's missing half —
+   but a plain edge split mints a degree-4 intermediate the purity
+   filters refuse, so it takes a split+flip compound or final-mesh
+   gating. Forbidden degrees are inherited from marching cubes (raw MC
+   ~30% degree-4-or-8); no operator mints one. Iteration 1's 145
+   collapses + 21 splits + 29 flips against `ideal == 6` manufacture
+   most scars — length-aware scoring there is upstream of everything
+   else. The seam is not the wall for angles (16% raw vertices frozen,
+   seam-atom dual-angle deviation 17.1° vs 17.9° interior). Real fix:
+   an isotropic mesher — advancing-front Marching Triangles (Hilton &
+   Illingworth) or Lloyd/CVT relaxation of the ring centres whose
+   Voronoi vertices are the atoms; the periodic wrap seam is the hard
+   part in both. Also worth changing: the surface is a hard constraint
+   — a signed soft penalty with a tolerance band lets bond/angle terms
+   win and is more honest physically (real sp² puckers; the built mesh
+   straddles f ∈ [−1.26e-2, +7.1e-3]); a planarity term is essentially
+   free (perpendicular distance is well conditioned — |∇f| cannot
+   vanish on Schwarz P, measured min 0.139; Newton converges 0.6 Å →
+   1e-14 Å in five steps).*
+8. *Title ≈ "Dual-route prior art beyond NanoCap and Hyde–Pedersen".
+   Body: §Prior art — Braun et al., PNAS 115 (2018) E8116 `pa341376`:
+   schwarzite atoms placed exactly on the TPMS move off it under
+   relaxation, so exact-on-surface meshing buys less than it appears
+   (the scaffold-not-answer reading); the leapfrog transformation
+   (King, J. Phys. Chem. 100 (1996) 15096, doi:10.1021/jp9613201) is
+   the published combinatorial dual-based schwarzite construction —
+   C168 is the leapfrog of Klein's quartic; Teillaud/Inria's
+   "Delaunay on a TPMS is unsolved" is about INTRINSIC Delaunay on
+   hyperbolic surfaces — our loop is extrinsic isotropic remeshing in
+   E³ (Botsch–Kobbelt), routine, not a blocker; Hyde & Pedersen warn
+   that projecting a hyperbolic tiling into E³ produces collar cycles
+   around the channels — isotropy in E³ and correct valence topology
+   are in tension; the symmetry-route database is EPINET
+   (doi:10.1107/S0108767308040592). Store state: Terrones & Terrones
+   NJP 5 (2003) is `[S30]` `pa449642`; `[S27]` `pa343409` is confirmed
+   chunk-less; the giant-schwarzites Carbon 96 (2016) paper is `[S31]`
+   `pa479164` (body pending fetch). Still open before the test can
+   cite: import `pa449642` + `pa343409` and search prior art for
+   TPMS-triangulate-and-dualise — cite it, don't imply novelty.
+   `cites` → `me474412`.*
+9. *Title ≈ "Smooth drum meridian: catenoid bends, fillet radii from
+   tables". Body: §Slice — smooth drum, step 1 — Reto 2026-10-01:
+   radii calculated from strain, not authored; the agent draws the
+   drum; the discrete step should just solve to fit (the graded rings
+   `gr459928`, `tests/test_hexfold/test_graded_bend.py`, stay as the
+   hand-authoring path and the oracle the fit is compared against).
+   Concave bends are catenoids r = a cosh(z/a) — zero mean curvature,
+   neck radius fixes the shape, total curvature neck→infinity −2π = 6
+   heptagons; a defect row sits between facets, at cos α =
+   1 − (j − ½)/6 → r/a = 2.50, 1.51, 1.23, 1.10, 1.03, 1.00
+   (corrects the first-quoted 1.81 outer row; the outermost row is the
+   junction to the flat, kinking by half a step). A thin neck wants a
+   near-single-row turn (rows 3–6 within 0.7 Å at a = 4.7 Å), a wide
+   one spreads over ~11 Å — smooth drums start around a (24,0) stalk
+   and a (90,0) wall because the flare cuts at 2.5a. Convex corners
+   take the largest ρ the kept flats allow, bounded by θp ≤ C60's
+   11.6° (θp ≈ asin(σ(k1+k2)/4)); radii are TABLE values — necks
+   `tube_radius(n, m)`, fillets icosahedral fullerene radii
+   C_{20(h²+hk+k²)} at graphene area per atom — strain only picks
+   among entries, so the snap-cell band has nothing to snap at necks
+   or fillets; the fit tolerance is row quantisation (~half a lattice
+   row, ~1 Å). `Built:` `python:main::precis_surface.revolution`
+   (`drum_meridian`, `revolve`, `catenoid_row_radii`) and the carbon
+   tables `python:main::hexfold.radii`; open in this step: metres at
+   the handler, a carbon wrapper choosing defaults. `related-to` →
+   `me628783`.*
+10. *Title ≈ "rowfit lays defect rows on the meridian; smooth_drum
+    wraps it with a weak tether". Body: §Slice — smooth drum, step 3 —
+    `precis_surface.rowfit` (`fit_rows`, `loft`, `realise`) needs
+    neither remesh nor marching cubes: rows are laid on the meridian
+    and the loft propagates corners so degree ≠ 6 occurs only where
+    the per-row count steps. Findings: a closed flat lid forces
+    regular hexagonal rings — the loft must start at the pole or the
+    fillet's uneven pentagon spacing collides corners near the centre;
+    integer closures are met by holding or skipping one facet row, ≤ 2
+    moves per piece; on a (24,0) neck the last three heptagon rows land
+    in one lattice row. A spring relax needs a bending term or
+    pentagons cone out (θp → 18°) and the foot saddle buckles; ASE's
+    pure-Python Tersoff made no progress on 6.5k atoms in 30 min —
+    the relax is a force-field proxy, not Tersoff. Carbon wrapper
+    `smooth_drum`
+    (`python:main::precis_se.atomic.generators.smooth_drum`) plus the
+    numpy FIRE relax `precis_surface.relax` with a weak surface tether
+    (`k_surface` 0.01, normal distance only — without it atoms drift
+    7 Å off target); the meridian persists on
+    `meta.generated.surface_meridian`; default (24,0)/(90,0) = 6123
+    atoms, {5:12, 7:12}, θp max 8.2°, 4 s; only necks ≥ 10 fit clean
+    on a (60,0) wall — necks 6–12 can leave an 8-ring the generator
+    refuses under the ring-purity ruling. Open: rows are ~7–10% too
+    sparse — circumference match (2πr = n·edge) underweights the
+    hexagonal √3/2 packing, so place rows by AREA match
+    (n·(√3/2)·edge² = 2πr·Δs) and re-measure, then raise `k_surface`;
+    the 8-ring at necks 6–12; Tersoff energy per atom vs drum33 via a
+    minted prod `smooth_drum`; the viewer overlay, mapped
+    (`/se/{slug}/atomic3d.json` → `_atomic_block_payload`,
+    `GeneratedBlock` has no mesh field, `setEnvelopesCaged` toggle,
+    `scripts/viewer_check.py` `probe()`). `related-to` → `me628783`,
+    `me628788`.*
+
+*Then: append the ten new handles to `me628774`'s "Sections in
+reading order" line (after `me630417`); edit `me628772`'s "Not
+transferred yet" line to drop this file — close `gr629127` only once
+both its files land — repoint `me630417`'s "Smooth-mapper ticks
+(§28.4–6, §28.8) live in docs/backlog/precis-surface-kernel.md" to
+node 2; `me474412`'s "plan and acceptance are in
+docs/backlog/precis-surface-kernel.md, section 'Slice 1'" to node 3;
+`me571247`'s and `me571248`'s "Detail:
+docs/backlog/precis-surface-kernel.md …" pointers to node 3;
+`src/hexfold/spec.md` §28's roadmap line ("steps 4–6, 8") to node 2;
+`docs/backlog/threads/hexfold-toolkit.md` Do-next 8 (its §28.8
+checklist) to node 2 and Do-next 12 (the owner line + the smooth-drum
+slice) to nodes 2, 9 and 10;
+`docs/backlog/diamondoid-pattern-language.md`'s "corrected energy
+plan … parked" to node 2; and the code/test citations in
+`src/precis_surface/{__init__,level_set,periodic_mesh,curvature,dual,
+remesh,report,revolution,rowfit}.py`, `src/hexfold/radii.py`,
+`src/precis_se/atomic/generators/{__init__,tpms,smooth_drum}.py`,
+`tests/test_precis_surface_*.py` and
+`tests/test_se_atomic_generators.py` to the matching nodes
+(mesh/contract → 3, remesh/acceptance → 4–7, revolution/rowfit/drum →
+9–10) in the ``meNNN`` style commit `6ba0d4ebc` used; delete this
+file and regenerate `docs/backlog/INDEX.md` (`scripts/docs-index`).*
+
 ## Package split (decided)
 
 - `src/precis_surface/` — lattice-agnostic: patches, rims as Dirichlet
