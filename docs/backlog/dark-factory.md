@@ -53,8 +53,10 @@ steps, ranked by how many later steps each one unlocks.
   the full gate.
 - **Self-fix ladder.** `diagnose_scan` → fixer, arming rungs, kill switch
   by `service_config` prio 0 (lane OFF since 2026-10-02;
-  `dark-features-activation.md`, me474348). Halt classes and the outage
-  breaker are specced (`halt-classes-and-outage-breaker.md`).
+  `dark-features-activation.md`, me474348). Planner halt classes, audited
+  recovery and the shared infra breaker live in
+  `src/precis/workers/halt_policy.py::handle_halt` and
+  `src/precis/workers/halt_recovery.py::advance_halt_recovery`.
 - **Repo prose indexed read-only** as the `md` kind (`main/docs/...`,
   frontmatter included).
 - **Context.** Session MCP-TOKEN-FIX's rulings (2026-10-30): the twin

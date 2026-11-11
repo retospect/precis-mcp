@@ -41,6 +41,20 @@ hand-rolled ``claimed_by`` UPDATEs.
 ``gripe_dispatch`` admission (landable projects, the 15-minute triage grace
 period): skill ``precis-work-help``.
 
+Planner-declared halts are runner-owned class transitions
+(:mod:`.halt_policy`), with the producing job's full-stream retry receipt
+(:mod:`.halt_retry`). Infra failures park for recovery rather than becoming
+permanent task failures; task-design failures get one repair attempt.
+Missing audit and possible repeated writes require human review, including
+before re-executing a crashed recovery job. Dispatch explicitly releases
+audited recovery parks: the older parked-child bypass
+does not release a directly parked todo. :mod:`.halt_recovery` keeps a
+shared infra breaker on an alert ref, admits one cohort probe after
+cooldown and releases the cohort after a clean probe or owner resolution.
+This prevents a fleet outage from poisoning many individual tasks while
+preserving independent owner holds and non-agent executor lanes. Legacy
+halts are surfaced by nursery rather than automatically retried.
+
 ``run_loop`` is serial round-robin, so one slow handler starves other passes.
 This motivates scheduler leases, the separate GPU lane (``deploy/README.md``),
 and the heartbeat daemon thread: a wedged rotation must not trigger a false

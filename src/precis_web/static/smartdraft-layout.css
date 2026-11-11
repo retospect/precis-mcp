@@ -1,5 +1,6 @@
 /* Keep the existing stacked reader below Tailwind's lg breakpoint. */
 .sd-layout > div { min-width: 0; }
+.sd-work-state { grid-column: 1 / -1; min-width: 0; }
 .sd-column-heading {
   display: flex;
   align-items: center;

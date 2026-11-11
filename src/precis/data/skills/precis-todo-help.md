@@ -58,6 +58,21 @@ Hide a stale one with
 Edit the details body in place with `edit(kind='todo', id=122,
 mode='find-replace', find='old', text='new')` (or `mode='insert'`).
 
+## Why did an automatic planner stop?
+
+Read the todo's `view='meta'`: `meta.halt` records the class, producing
+job, UTC time, summary and retry-audit reason. Planner conclusions use
+`halt-class: infra|blocked|misconceived|cost-cap`; the runner applies the
+state. Infrastructure parks recover after cooldown, or one shared outage
+probe; task-design failures get one repair attempt. Dependency parks wait
+for their named dependency, and cost caps require an owner budget change.
+`ask-user:uncertain-halt-outcome` requires review before repeating possible
+writes. Never clear it to force an automatic retry. Missing audit also
+requires review. Resolving a `breaker:infra-outage` alert releases its
+audited cohort on the next dispatch pass, preserving other holds.
+The nursery's `stale-halt` alert surfaces legacy or contextless terminal
+halts older than 14 days for review; it never retries them automatically.
+
 ## See what's on my plate
 ## List my todos
 ## Show me the queue

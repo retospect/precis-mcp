@@ -1,0 +1,19 @@
+{% if work_states %}
+<aside class="sd-work-state rounded border border-warning-emphasis bg-surface p-3 text-sm" aria-label="Draft work state">
+  {% for work in work_states %}
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1{% if not loop.first %} mt-2{% endif %}">
+    <a href="/todo?focus={{ work.todo_id }}" class="font-semibold text-warning-strong hover:underline">Work {{ work.state }}{% if work.halt_class %} · {{ work.halt_class }}{% endif %}</a>
+    <span>{{ work.title }}</span>
+    <span class="text-xs text-fg-subtle">since {{ work.since }}</span>
+    {% if work.can_resume %}
+    <form method="post" action="/todo/{{ work.todo_id }}/start">
+      <input type="hidden" name="focus" value="{{ work.todo_id }}">
+      <button type="submit" class="text-info-strong hover:underline">▶ Resume</button>
+    </form>
+    {% endif %}
+    <p class="w-full">{{ work.reason }}</p>
+    {% if work.auto_recovery %}<p class="w-full text-xs text-fg-subtle">Waiting for a safe recovery attempt.</p>{% endif %}
+  </div>
+  {% endfor %}
+</aside>
+{% endif %}

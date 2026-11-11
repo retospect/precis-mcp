@@ -660,6 +660,11 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
         )
         return
 
+    from precis.workers.halt_policy import block_reclaimed_recovery
+
+    if block_reclaimed_recovery(store, parent_id, ref_id):
+        return
+
     # Review-ledger writeback (rung 3b) snapshot — captured BEFORE the
     # LLM runs so a clean completion can tell "reviewer approved" from
     # "reviewer edited the chunk itself" (a future authoring reviewer
@@ -677,6 +682,9 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     # ``meta.params`` carries the model (synthesized from the parent's
     # ``meta.llm_tier`` at dispatch time). Pull it from the job ref.
     params = _job_params(store, ref_id)
+    from precis.workers.halt_policy import snapshot_halt_tags
+
+    previous_halt_tags = snapshot_halt_tags(store, parent_id)
 
     t0 = time.perf_counter()
     try:
@@ -741,7 +749,28 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     # terminal-but-non-blocking so dispatch re-mints a fresh tick next
     # sweep — bounded by a per-parent streak cap so a tick that *always*
     # runs out can't loop forever burning spend. See CHANGELOG.
-    resume_reason = _resume_reason(outcome, raw_stream)
+    resume_reason = (
+        None
+        if conclusion is not None and conclusion.verdict == "halt"
+        else _resume_reason(outcome, raw_stream)
+    )
+    recovery_retry_reason = None
+    if (
+        (resume_reason is not None or outcome.exit_code != 0)
+        and not (conclusion is not None and conclusion.verdict == "halt")
+        and "envelope" not in params
+    ):
+        parent = store.get_ref(kind="todo", id=parent_id)
+        previous_halt = (parent.meta or {}).get("halt") if parent else None
+        if (
+            isinstance(previous_halt, dict)
+            and previous_halt.get("retry_released") is True
+        ):
+            from precis.workers.halt_retry import assess_halt_retry
+
+            safe, reason = assess_halt_retry(raw_stream)
+            if not safe:
+                recovery_retry_reason = reason
 
     # gr482938: a *window-scoped* pause (quota taper, dollar cap, a
     # saturated local slot) is a wait-for-window, not a resumable
@@ -751,7 +780,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     # pauses (the streak cap would then bubble a real child-failed for
     # what is a deliberate pause). The wake_runner re-queues this job at
     # the horizon; the parent's re-mint gate sees a live job meanwhile.
-    if resume_reason == "paused":
+    if resume_reason == "paused" and recovery_retry_reason is None:
         with store.pool.connection() as conn:
             parked = _park_job_until(
                 store,
@@ -798,6 +827,29 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
         # Resolve the resume verdict before rendering the audit chunk so
         # the job_result reads honestly ("resumed (timeout)" vs "failed").
         # The streak read+write happens in this same tx.
+        recovery_retry_blocked = recovery_retry_reason is not None
+        if recovery_retry_blocked:
+            from precis.store.types import Tag
+
+            # Recovery can outlive a manually resolved breaker, or be a
+            # repair with no breaker. Neither exhaustion nor pause may
+            # reuse its original receipt after an uncertain operation.
+            resume_reason = None
+            store.add_tag(
+                parent_id,
+                Tag.open("ask-user:uncertain-halt-outcome"),
+                set_by="system",
+                conn=conn,
+            )
+            _set_meta(conn, ref_id, recovery_retry_blocked=recovery_retry_reason)
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                "runner: recovery interrupted; automatic retry requires review: "
+                f"{recovery_retry_reason}",
+                conn=conn,
+            )
         cap = _resume_streak_cap()
         if resume_reason is not None:
             streak = _bump_resume_streak(conn, parent_id)
@@ -817,29 +869,28 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             resume=(resume_reason, streak, cap) if resume_reason else None,
         )
         _append_chunk(store, ref_id, "job_result", result_text, conn=conn)
-        # Runner-side honoring of a declared ``verdict: halt`` (2026-08-15
-        # orphaned-loop outage): the agent decided to halt but couldn't write
-        # the tag — tagging needs the very MCP tools whose failure prompted
-        # the halt — so the verdict sat unread in job_summary while dispatch
-        # re-minted the tick forever. The runner has direct store access;
-        # honor the declared verdict here. Idempotent when the agent's own
-        # tag also landed.
+        halt_tag = None
+        # The runner owns recovery even when the agent's MCP connection is
+        # broken. Environmental halts park rather than becoming permanent
+        # exclusions; only fully audited ticks are automatically retryable.
         if conclusion is not None and conclusion.verdict == "halt":
-            from precis.store.types import Tag
+            from precis.workers.halt_policy import handle_halt
 
-            store.add_tag(
+            halt_tag = handle_halt(
+                store,
+                conn,
                 parent_id,
-                Tag.open("halt:agent-declared"),
-                set_by="system",
-                conn=conn,
+                ref_id,
+                conclusion,
+                raw_stream,
+                previous_halt_tags=previous_halt_tags,
             )
             _append_chunk(
                 store,
                 ref_id,
                 _JOB_EVENT_KIND,
-                "runner: tick declared `verdict: halt` — tagged the parent "
-                "halt:agent-declared runner-side (the tick may not have been "
-                "able to write tags itself).",
+                f"runner: tick declared halt ({conclusion.halt_class or 'infra'}) "
+                f"— parent tagged {halt_tag}; recovery context stored in meta.halt.",
                 conn=conn,
             )
         if outcome.stderr:
@@ -851,6 +902,27 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 conn=conn,
             )
         _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
+        if recovery_retry_blocked:
+            _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+            conn.commit()
+            return
+        if halt_tag is not None:
+            # A declared halt is handled parent state, including when the
+            # subprocess also exited nonzero. Bubbling child-failed or
+            # auto-decomposing here would add a second permanent blocker.
+            _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+            conn.commit()
+            if halt_tag == "halt:misconceived":
+                from precis.workers.halt_policy import alert_misconceived_halt
+
+                try:
+                    alert_misconceived_halt(store, parent_id, ref_id)
+                except Exception:
+                    log.exception(
+                        "plan_tick: failed to alert terminal misconceived todo #%d",
+                        parent_id,
+                    )
+            return
         if outcome.exit_code == 0 or resume:
             # Clean tick, or a resumable exhaustion (max-turns / timeout)
             # under the cap: mark succeeded (terminal + non-blocking) so
@@ -874,6 +946,10 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                     conn=conn,
                 )
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+            if not resume:
+                from precis.workers.halt_policy import clear_repair_pending
+
+                clear_repair_pending(conn, parent_id)
         else:
             # A real failure, or a resumable exhaustion past the cap. The
             # latter (resume_reason is not None) is a *structured,

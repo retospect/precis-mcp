@@ -613,7 +613,11 @@ class TestFencedTickIgnoresAgentVerdict:
         normal planner tick still honors a declared halt runner-side
         (the 2026-08-15 orphaned-loop fix)."""
         parent_id, _job = self._run(store, {"model": "sonnet"})
-        assert "halt:agent-declared" in {str(t) for t in store.tags_for(parent_id)}
+        # This stub has no complete wire audit; the runner still honors
+        # its halt, but requires review before a potentially unsafe retry.
+        assert "ask-user:uncertain-halt-outcome" in {
+            str(t) for t in store.tags_for(parent_id)
+        }
 
     _AGENT_STREAM = (
         '{"type":"result","subtype":"success","is_error":false,'

@@ -123,6 +123,7 @@ log = logging.getLogger(__name__)
 # operator can find the canonical values without reading code.
 STALE_CLAIM_HOURS = 3
 LONG_WAIT_DAYS = 7
+STALE_HALT_DAYS = 14
 STUCK_DOABLE_HOURS = 24
 
 #: A single (ref_id, source) emitting more than this many ``ref_events``
@@ -310,6 +311,7 @@ _SEVERITY: dict[str, str] = {
     "orphan": "info",
     "stale-claim": "warn",
     "long-wait": "info",
+    "stale-halt": "info",
     "stuck-doable": "info",
     "child-failed-parked": "warn",
     "child-failed-final": "warn",
@@ -391,6 +393,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Symptom]]], ...] = (
     ("orphan", lambda s: _detect_orphans(s)),
     ("stale-claim", lambda s: _detect_stale_claims(s)),
     ("long-wait", lambda s: _detect_long_waits(s)),
+    ("stale-halt", lambda s: _detect_stale_halts(s)),
     ("stuck-doable", lambda s: _detect_stuck_doable(s)),
     ("child-failed-parked", lambda s: _detect_child_failed_parked(s)),
     ("child-failed-final", lambda s: _detect_child_failed_final(s)),
@@ -706,6 +709,69 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
             )
         )
     return out
+
+
+def _detect_stale_halts(store: Store) -> list[Symptom]:
+    """Surface old legacy or contextless halts without retrying them.
+
+    Completed job children are the history of the halt, not evidence that
+    a todo is still decomposed. Only live todo children exclude a leaf.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, min(rt.created_at),
+                   string_agg(DISTINCT t.value, ', ' ORDER BY t.value)
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND (t.value = 'halt' OR t.value LIKE 'halt:%%')
+               AND rt.created_at < now() - %(age)s::interval
+               AND (t.value = 'halt:agent-declared'
+                    OR jsonb_typeof(r.meta->'halt') IS DISTINCT FROM 'object')
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags st JOIN tags status ON status.tag_id = st.tag_id
+                    WHERE st.ref_id = r.ref_id AND status.namespace = 'STATUS'
+                      AND status.value = ANY(%(terminal)s)
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM refs child
+                    WHERE child.parent_id = r.ref_id AND child.kind = 'todo'
+                      AND child.retired_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM ref_tags cst
+                            JOIN tags cs ON cs.tag_id = cst.tag_id
+                           WHERE cst.ref_id = child.ref_id AND cs.namespace = 'STATUS'
+                             AND cs.value = ANY(%(terminal)s)
+                      )
+               )
+               AND NOT """
+            + direction_todo_sql("r")
+            + """
+             GROUP BY r.ref_id, r.title
+             ORDER BY min(rt.created_at), r.ref_id
+             LIMIT 50
+            """,
+            {
+                "age": f"{STALE_HALT_DAYS} days",
+                "terminal": sorted(TERMINAL_TODO_STATUSES),
+            },
+        ).fetchall()
+    return [
+        Symptom(
+            category="stale-halt",
+            ref_id=int(row[0]),
+            title=_first_line(row[1]),
+            detail=(
+                f"{handle_registry.format_handle('todo', int(row[0]))} halted "
+                f"{_days_since(row[2]):.0f}d since {row[2]:%Y-%m-%d} UTC "
+                f"({row[3]}); review the prior tick before resuming"
+            ),
+        )
+        for row in rows
+    ]
 
 
 # ── stuck doable ──────────────────────────────────────────────────

@@ -422,7 +422,8 @@ def test_halt_verdict_is_honored_runner_side(store: Store) -> None:
     job_id = _mk_job(store, parent_id)
     _run(store, job_id, _HALT_CONCLUSION, exit_code=0)
     parent_tags = {str(t) for t in store.tags_for(parent_id)}
-    assert "halt:agent-declared" in parent_tags
+    assert "ask-user:uncertain-halt-outcome" in parent_tags
+    assert "halt:agent-declared" not in parent_tags
 
 
 def test_non_halt_verdicts_are_not_translated(store: Store) -> None:

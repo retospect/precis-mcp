@@ -100,7 +100,10 @@ lanes — *intent* (parent is a `todo`) and *compute* (parent is a build
 artifact: derived, idempotent, content-addressed). This is "the factory."
 Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
-and the branch check before handing work to the lander.
+and the branch check before handing work to the lander. Planner-declared
+halts carry a reason class and a full-stream retry receipt; dispatch
+releases audited parks and probes shared infra outages through one alert
+cohort (`workers/halt_policy.py`, `workers/halt_recovery.py`).
 
 Memory capture (`precis-make-memory`) and graph-gardener judgments share the
 packaged memory-help reconciliation policy. The interactive agent resolves new

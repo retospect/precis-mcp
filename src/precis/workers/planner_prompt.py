@@ -359,11 +359,15 @@ move the work forward by exactly one of these output shapes:
    same thing while an ask is still open, not about following up on
    an inadequate answer.
 
-5. **Halt** via `tag(id=<your id>, add=['halt'])` or
-   `tag(add=['halt:<reason>'])`. Stronger yield: "do not call me
-   again until a human intervenes." Use when genuinely stuck
-   (`halt:planner-stuck`) or broken
-   (`halt:impossible-as-specified`).
+5. **Halt** by ending with `verdict: halt` and `halt-class:` in the
+   tick-conclusion block below. Do not add `halt` / `halt:<reason>`
+   yourself: the runner owns this transition even when tools are broken.
+   Use `infra` for broken tools, auth or infrastructure; `blocked`
+   for an external dependency (name it in `blocked-on:`);
+   `misconceived` when the task needs clarifying or re-planning; and
+   `cost-cap` when a human must raise the budget. Infrastructure waits
+   remain retryable after an audit; misconceived work gets one repair
+   attempt before a permanent halt.
 
 6. **Finish** via `tag(id=<your id>, add=['STATUS:done'])`. Your
    work is done; the parent will read your files on its next tick.
@@ -397,8 +401,9 @@ move the work forward by exactly one of these output shapes:
   container", "the file exists on disk") — you have no channel to
   check any of that, so never assert it happened. If your brief
   requires a physical or external action no tool here can perform,
-  do not claim to have done it: tag `halt:no-executor-capability`
-  (or `ask-user:<what execution is missing>`) instead of
+  do not claim to have done it: conclude `verdict: halt` with
+  `halt-class: blocked` and `blocked-on: executor-capability`
+  (or tag `ask-user:<what execution is missing>`) instead of
   `STATUS:done` — reporting blocked is correct; a fabricated "done"
   is the worse failure.
 
@@ -568,21 +573,27 @@ Format (copy verbatim, fill in the values):
 
     === TICK CONCLUSION ===
     verdict: done | continue | yield | halt
+    halt-class: infra | blocked | misconceived | cost-cap
+    blocked-on: named dependency (only for blocked)
     summary: One paragraph synthesising what this tick produced —
              what was written, what was cited, what's left for
              the parent to do.
     files: tex/intro.tex, tex/methods.tex
     === END ===
 
-Verdict semantics — informational; the actual state transition is
-still your `tag(id=N, add=['STATUS:done'])` / `ask-user:` / `halt:`
-call earlier in the tick:
+Verdict semantics — `done`, `continue` and `yield` describe the state
+changes you made earlier; the runner applies `halt` itself:
 
 * `done` — you tagged STATUS:done and the parent can read your files
 * `continue` — you minted subtasks; the parent will be re-summoned
   once they resolve
 * `yield` — you tagged `ask-user:<question>`; awaiting human input
-* `halt` — you tagged `halt:<reason>`; needs human intervention
+* `halt` — the runner parks or halts by `halt-class`; absent or unknown
+  classes default to `infra`. Include a clear reason in `summary:`.
+
+Omit `halt-class:` and `blocked-on:` for other verdicts. Before a retry,
+the runner checks the full tool-call audit: uncertain write outcomes or
+missing audit require human review rather than an automatic re-tick.
 
 `files:` lists the workspace-relative paths you wrote this tick (or
 omit if you wrote none). `summary:` is your gist — what a reader
@@ -1794,7 +1805,20 @@ def _m_contract(ctx: AssemblyContext) -> str:
 
 
 def _m_identity(ctx: AssemblyContext) -> str:
-    return f"You are working on todo #{ctx.ref_id}. Model: {ctx.model}."
+    identity = f"You are working on todo #{ctx.ref_id}. Model: {ctx.model}."
+    if ctx.store is not None:
+        ref = ctx.store.get_ref(kind="todo", id=ctx.ref_id)
+        halt = (ref.meta or {}).get("halt") if ref is not None else None
+        if isinstance(halt, dict) and halt.get("repair_pending") is True:
+            summary = str(halt.get("summary_first_line") or "No summary supplied")
+            identity += (
+                "\n\n## Plan repair (one attempt)\n"
+                f"The previous tick found this task misconceived: {summary}\n"
+                "Clarify the brief or re-plan the task before continuing. "
+                "If it is still misconceived, conclude verdict: halt with "
+                "halt-class: misconceived; that second halt is terminal."
+            )
+    return identity
 
 
 def _m_ancestry(ctx: AssemblyContext) -> str:

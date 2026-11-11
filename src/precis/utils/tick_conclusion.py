@@ -12,6 +12,8 @@ Block shape (the contract documents it; the parser is lenient):
 
     === TICK CONCLUSION ===
     verdict: done | continue | yield | halt
+    halt-class: infra | blocked | misconceived | cost-cap
+    blocked-on: a named external dependency (blocked halts only)
     summary: One paragraph synthesising what this tick produced —
              what was written, what was cited, what's left.
     files: tex/intro.tex, tex/methods.tex
@@ -28,7 +30,7 @@ Parser semantics:
   still calls ``tag(id=N, add=['STATUS:done'])`` directly; the block is
   for richer summarisation in the audit chunk. **One exception**
   (2026-08-15 zombie-loop outage): ``verdict: halt`` IS honored
-  runner-side (``halt:agent-declared`` on the parent) — an agent that
+  runner-side (class-based recovery in ``workers.halt_policy``) — an agent that
   halts *because its tools are broken* cannot write the tag itself,
   and an unhonored halt re-minted the tick forever.
 """
@@ -44,11 +46,12 @@ _BLOCK_RE: re.Pattern[str] = re.compile(
 )
 
 _FIELD_RE: re.Pattern[str] = re.compile(
-    r"^(?P<key>verdict|summary|files)\s*:\s*(?P<val>.*)$",
+    r"^(?P<key>verdict|halt-class|blocked-on|summary|files)\s*:\s*(?P<val>.*)$",
     re.IGNORECASE,
 )
 
 _VALID_VERDICTS: frozenset[str] = frozenset({"done", "continue", "yield", "halt"})
+_HALT_CLASSES = frozenset({"infra", "blocked", "misconceived", "cost-cap"})
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,8 @@ class TickConclusion:
     verdict: str | None
     summary: str | None
     files: list[str]
+    halt_class: str | None = None
+    blocked_on: str | None = None
 
 
 def parse(stdout: str) -> TickConclusion | None:
@@ -92,6 +97,8 @@ def _parse_inner(inner: str) -> TickConclusion:
     verdict: str | None = None
     summary_lines: list[str] = []
     files_raw: str | None = None
+    halt_class: str | None = None
+    blocked_on: str | None = None
 
     current: str | None = None
     for line in inner.splitlines():
@@ -102,6 +109,10 @@ def _parse_inner(inner: str) -> TickConclusion:
             if current == "verdict":
                 v = val.lower()
                 verdict = v if v in _VALID_VERDICTS else None
+            elif current == "halt-class":
+                halt_class = val.lower() if val.lower() in _HALT_CLASSES else None
+            elif current == "blocked-on":
+                blocked_on = val or None
             elif current == "summary":
                 if val:
                     summary_lines.append(val)
@@ -121,7 +132,15 @@ def _parse_inner(inner: str) -> TickConclusion:
             if p:
                 files.append(p)
 
-    return TickConclusion(verdict=verdict, summary=summary, files=files)
+    if verdict == "halt" and halt_class is None:
+        halt_class = "infra"
+    return TickConclusion(
+        verdict=verdict,
+        summary=summary,
+        files=files,
+        halt_class=halt_class,
+        blocked_on=blocked_on,
+    )
 
 
 __all__ = ["TickConclusion", "parse"]

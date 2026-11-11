@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
@@ -25,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from precis.store._tags_ops import escape_like
 from precis.store.types import Tag
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import (
@@ -359,6 +361,7 @@ async def reader(
             "hits": hits,
             "sem_degraded": sem_degraded,
             "needs": _needs_items(store, ref.id),
+            "work_states": _work_states(store, ref.id),
             "term_occurrences": term_occurrences,
             "cited_sources": cited_sources,
             "links_out": links_out,
@@ -401,6 +404,94 @@ async def reader(
             ),
         },
     )
+
+
+def _work_states(store: Store, draft_id: int) -> list[dict[str, Any]]:
+    """Show tree brakes where the user is reading the affected draft.
+
+    State comes from current tags; ``meta.halt`` supplies the runner's
+    context. A repair/outage park must go through recovery's retry-safety
+    gate, so only ordinary hard halts offer the owner's existing Start.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE work(ref_id) AS (
+                SELECT r.ref_id FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id
+                 WHERE l.src_ref_id = %(draft)s AND l.relation = 'draft-of'
+                   AND l.src_chunk_id IS NULL AND l.dst_chunk_id IS NULL
+                   AND r.kind = 'todo' AND r.retired_at IS NULL
+                UNION
+                SELECT child.ref_id FROM refs child JOIN work ON child.parent_id = work.ref_id
+                 WHERE child.kind = 'todo' AND child.retired_at IS NULL
+            )
+            SELECT r.ref_id, r.title, r.meta, min(rt.created_at),
+                   array_agg(DISTINCT t.value ORDER BY t.value)
+              FROM work JOIN refs r ON r.ref_id = work.ref_id
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE t.namespace = 'OPEN'
+               AND (t.value = 'halt' OR t.value LIKE 'halt:%%'
+                    OR t.value LIKE 'waiting-for:%%' OR t.value LIKE 'child-failed:%%'
+                    OR t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags st JOIN tags status ON status.tag_id = st.tag_id
+                    WHERE st.ref_id = r.ref_id AND status.namespace = 'STATUS'
+                      AND status.value = ANY(%(terminal)s)
+               )
+             GROUP BY r.ref_id, r.title, r.meta
+             ORDER BY min(rt.created_at), r.ref_id
+             LIMIT 20
+            """,
+            {"draft": draft_id, "terminal": sorted(TERMINAL_TODO_STATUSES)},
+        ).fetchall()
+    states = []
+    for todo_id, title, meta, tagged_at, tags in rows:
+        halt = meta.get("halt") if isinstance(meta, dict) else None
+        halt = halt if isinstance(halt, dict) else {}
+        if isinstance(halt.get("tag"), str) and halt["tag"] not in tags:
+            # Recovered tasks retain their last halt receipt. A later
+            # independent hold must not inherit that old reason/class.
+            halt = {}
+        since = tagged_at
+        try:
+            if isinstance(halt.get("at"), str):
+                parsed = datetime.fromisoformat(halt["at"].replace("Z", "+00:00"))
+                if parsed.tzinfo is not None:
+                    since = parsed
+        except ValueError:
+            pass
+        halted = any(t == "halt" or t.startswith("halt:") for t in tags)
+        failed = any(t.startswith("child-failed:") for t in tags)
+        parked = any(
+            t == "ask-user" or t.startswith(("waiting-for:", "ask-user:")) for t in tags
+        )
+        states.append(
+            {
+                "todo_id": int(todo_id),
+                "title": title,
+                "state": "halted" if halted else "child failed" if failed else "parked",
+                "halt_class": halt.get("class") or "",
+                "since": since.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                "reason": halt.get("summary_first_line") or ", ".join(tags),
+                "can_resume": halted and not failed and not parked,
+                "auto_recovery": any(
+                    (
+                        halt.get("class") == "infra"
+                        and (
+                            t == "waiting-for:infra"
+                            or t.startswith("waiting-for:outage-")
+                        )
+                    )
+                    or (
+                        halt.get("class") == "misconceived"
+                        and t == "waiting-for:plan-repair"
+                    )
+                    for t in tags
+                ),
+            }
+        )
+    return states
 
 
 @router.get("/smartdraft/{ident}/blocks", response_class=HTMLResponse)

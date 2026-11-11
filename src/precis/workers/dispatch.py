@@ -317,6 +317,9 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     * ``failed`` = number of parents we couldn't dispatch for
       (bad executor / job_type, validation failure)
     """
+    from precis.workers.halt_recovery import advance_halt_recovery
+
+    advance_halt_recovery(store)
     candidate_ids = _candidate_parent_ids(store, limit=limit)
     if not candidate_ids:
         return BatchResult(handler="dispatch", claimed=0, ok=0, failed=0)
@@ -567,6 +570,19 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
             + """
                )
                AND NOT (r.meta ? 'schedule')
+               AND (
+                   COALESCE(r.meta->>'executor',
+                       CASE WHEN r.meta ? 'llm_tier' THEN 'claude_inproc' ELSE '' END
+                   ) <> 'claude_inproc'
+                   OR NOT EXISTS (
+                       SELECT 1 FROM refs b WHERE b.kind = 'alert'
+                        AND b.retired_at IS NULL AND b.resolved_at IS NULL
+                        AND b.alert_source = 'breaker:infra-outage'
+                        AND b.fingerprint = 'infra'
+                        AND NOT COALESCE((b.meta->>'breaker_state' = 'half-open'
+                            AND b.meta->>'probe_parent' = r.ref_id::text), false)
+                   )
+               )
              ORDER BY r.ref_id
              LIMIT %s
             """,
@@ -842,6 +858,12 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool, bool]:
             # job_type by convention.
             executor = runner
             job_type = job_type or runner
+
+        if executor == "claude_inproc":
+            from precis.workers.halt_recovery import infra_dispatch_allowed
+
+            if not infra_dispatch_allowed(conn, parent_id):
+                return 1, False, True
 
         # A todo can also declare ``meta.executor``/``meta.job_type``
         # explicitly (the documented precis-job-help pattern) while

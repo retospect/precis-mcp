@@ -7,10 +7,10 @@ effort: medium
 
 ## Resume
 
-- **Next:** Make agent-declared halts stop being terminal-silent (Do next 1).
+- **Next:** Close the SMALL-tier breaker and hourly runaway-check gaps in budget-guardrails (Do next 1).
 - **Blocked by:** Nothing; active from 2026-10-17 (Reto: already landing).
 - **Unblocks:** Reliable autonomous execution lanes.
-- **Acceptance:** Use [halt-classes-and-outage-breaker](../halt-classes-and-outage-breaker.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use [budget-guardrails](../budget-guardrails.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `factory`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -33,15 +33,13 @@ quality-of-life and container items.
 
 ## Do next
 
-1. **backlog/halt-classes-and-outage-breaker.md** — agent-declared halts
-   stop being terminal-silent, so an outage no longer reads as a task verdict.
-2. **backlog/budget-guardrails.md** — the SMALL-tier breaker hole and the
+1. **backlog/budget-guardrails.md** — the SMALL-tier breaker hole and the
    unscheduled hourly runaway check are filed here as open scope; SMALL is
    all-cloud, so a tripped cap does not stop it.
-3. **backlog/bare-rung-billing-accounting.md** — bare chain rungs spend
+2. **backlog/bare-rung-billing-accounting.md** — bare chain rungs spend
    dollars the meter never counts; the meter half of the gate that
-   shipped, and 2 cannot bound what it cannot see.
-4. **backlog/sandbox-python-script.md** — `prio: high`; arbitrary Python
+   shipped, and 1 cannot bound what it cannot see.
+3. **backlog/sandbox-python-script.md** — `prio: high`; arbitrary Python
    in a no-network container (`sandbox_run mode:script`), from a job or a
    `run:python` todo. Needs no OAuth, so it does not wait on OAuth;
    started 2026-10-18 on Reto's ask. Slice 1 (job-path `mode:script`:
@@ -50,7 +48,7 @@ quality-of-life and container items.
    on a unix socket) the same day; next is slice 3 (todo sugar). Not
    live until slice 4 lights castor + pollux, which first needs async
    staging and the package allow-list review.
-5. **backlog/relax-slices.md** — `STATUS:yielded` + a per-claim wall
+4. **backlog/relax-slices.md** — `STATUS:yielded` + a per-claim wall
    budget so a checkpointed long relax gives the lane a turn; in
    progress on `worktree-g8-relax-slices`, flag-gated off until r91
    shows a real checkpoint resume on prod.
