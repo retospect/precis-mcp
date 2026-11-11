@@ -19,11 +19,11 @@ Structure-search context: AIRSS [pa3786], USPEX [pa3727], CALYPSO
 ## Motivation / why
 
 catpath's DFT side is expensive per elementary step, and the cost is the
-reason the kinetics gap in the NEB-barriers spec (graph memory, under
-`me568454`) is still open — that spec's closing question asks whether to
-"seed with a cheaper method first ... and only refine promising saddles
-with DFT". This item answers that question with a specific method rather
-than leaving it open.
+reason the kinetics gap in `docs/backlog/neb-barriers-in-the-catpath-pipeline.md`
+is still open — that item's own closing question asks whether to "seed with a
+cheaper method first ... and only refine promising saddles with DFT". This
+item answers that question with a specific method rather than leaving it
+open.
 
 The usual objection to a machine-learned interatomic potential in a pipeline
 like ours is that training one is a project: you need a large, carefully
@@ -71,9 +71,10 @@ changes what catpath can afford to enumerate.
 - Replacing DFT anywhere in the existing thermodynamic path
   (`src/precis_dft/jobs/derive.py`). This adds a filter upstream; it does not
   change how adsorption energies or free energies are computed.
-- NEB saddle search itself — that is the NEB-barriers spec (graph
-  memory, under `me568454`). This item is a candidate supplier to it,
-  and should ship after or alongside it, not instead of it.
+- NEB saddle search itself — that is
+  `docs/backlog/neb-barriers-in-the-catpath-pipeline.md`. This item is a
+  candidate supplier to it, and should ship after or alongside it, not
+  instead of it.
 - Crystal structure prediction as a précis feature. AIRSS/USPEX/CALYPSO/XtalOpt
   are cited as context for where the method comes from, not as things to
   integrate.

@@ -364,8 +364,7 @@ with no GPU, and each later slice uses the one before.
   gr515871 (inspectable trust-gate diagnostic for pathway seeds). Reto
   ruled them separate.
 - DFT/GPAW NEB, a DFT single point on the TS, ZPE or entropy corrections.
-  The NEB-barriers spec (graph memory, under `me568454`) owns the GPAW
-  lane.
+  `neb-barriers-in-the-catpath-pipeline.md` owns the GPAW lane.
 - Automatic FS enumeration, TS search without an FS (dimer, growing
   string), minima hopping for endpoints. The agent authors the FS.
 - Changes to the `pathway` kind or the autocatpath engine. A methane

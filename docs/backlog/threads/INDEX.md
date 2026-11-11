@@ -133,9 +133,8 @@ Seams:
 - catalysis-selectivity edits the ammonia network content and adds link
   fields (`added`/`removed`, typed `kind`); chemistry owns the engine
   contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
-  moved to catalysis-selectivity (Do-next 2); the NEB-barriers spec
-  (graph memory, under `me568454`) stays chemistry's,
-  catalysis-selectivity decides where NEB runs.
+  moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
+  stays chemistry's, catalysis-selectivity decides where NEB runs.
 - `backlog/kinetics-engine-v2.md` (catalysis-selectivity) owns the
   kinetic environment block (T, split input/output partial pressures,
   optional U/σ/cation/pH) and the ΔG/TS provider seam; the
