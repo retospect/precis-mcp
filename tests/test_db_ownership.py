@@ -221,10 +221,10 @@ def test_vault_writes_class_gated(prod_like: psycopg.Connection) -> None:
     secret; agent_ro writes nothing; the legitimate writers still can."""
     _cutover(prod_like)
     c = prod_like
-    c.execute("SELECT vault.set_secret('CLAUDE_CODE_OAUTH_TOKEN', 'v-orig-1234567890')")
+    c.execute("SELECT vault.set_secret('MELUXINA_SSH_KEY', 'v-orig-1234567890')")
     for stmt in (
-        "SELECT vault.set_secret('CLAUDE_CODE_OAUTH_TOKEN', 'v-evil-1234567890')",
-        "SELECT vault.delete_secret('CLAUDE_CODE_OAUTH_TOKEN')",
+        "SELECT vault.set_secret('MELUXINA_SSH_KEY', 'v-evil-1234567890')",
+        "SELECT vault.delete_secret('MELUXINA_SSH_KEY')",
         "SELECT vault.set_secret('svc/infra/dbown_new', 'v-evil-1234567890')",
     ):
         with pytest.raises(
@@ -238,7 +238,7 @@ def test_vault_writes_class_gated(prod_like: psycopg.Connection) -> None:
         session=True,
     )
     _denied(c, "agent_ro", "SELECT vault.delete_secret('DBOWN_RO')", session=True)
-    row = c.execute("SELECT vault.reveal('CLAUDE_CODE_OAUTH_TOKEN')").fetchone()
+    row = c.execute("SELECT vault.reveal('MELUXINA_SSH_KEY')").fetchone()
     assert row == ("v-orig-1234567890",)
     # The writers: api names from agent_rw; the user's AnkiWeb password and the
     # admin vault editor from precis_ingress; operator infra writes on the
@@ -265,7 +265,7 @@ def test_vault_writes_class_gated(prod_like: psycopg.Connection) -> None:
     _as(
         c,
         "precis_owner",
-        "SELECT vault.set_secret('CLAUDE_CODE_OAUTH_TOKEN', 'v-new-1234567890')",
+        "SELECT vault.set_secret('MELUXINA_SSH_KEY', 'v-new-1234567890')",
         session=True,
     )
     c.execute("GRANT agent_rw TO precis_system")  # deploy's membership
