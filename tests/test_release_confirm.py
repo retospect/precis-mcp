@@ -39,8 +39,27 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     psettings.invalidate()
 
 
-def _beat(store: Store, host: str, code_sha: str | None) -> None:
-    store.record_heartbeat(host, meta={"code_sha": code_sha})
+def _beat(store: Store, host: str, code_sha: str | None, **meta: Any) -> None:
+    store.record_heartbeat(host, meta={"code_sha": code_sha, **meta})
+
+
+def _units(process: str = "precis-worker") -> dict[str, Any]:
+    """A ``worker_units`` snapshot observing one installed unit."""
+    return {
+        "observed_at": datetime.now(UTC).isoformat(),
+        "units": {f"{process}.service": {"active_state": "active"}},
+    }
+
+
+def _ledger(store: Store, covered: list[str]) -> None:
+    """Publish ``app_settings.deploy.fleet`` as ``scripts/deploy`` does."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('deploy.fleet', %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (json.dumps({"sha": SHA, "covered": covered}),),
+        )
+        conn.commit()
 
 
 def _stale(store: Store, host: str, minutes: int = 90) -> None:
@@ -144,6 +163,95 @@ def test_a_pinned_sha_other_than_the_plan_release_is_a_problem(
     assert ev.problems == [
         f"pinned deploy sha {SHA2[:12]} is not the plan's release sha {SHA[:12]}"
     ]
+
+
+# ── worker-less hosts (gr623769) ────────────────────────────────────
+
+
+def test_a_workerless_checkout_is_a_note_not_a_failure(store: Store) -> None:
+    """gr623769: a one-off heartbeat from a machine running a precis
+    checkout — empty ``worker_units``, no ``activity``, no deploy-ledger
+    membership — is a note, not the attestor that pins the pass."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert ev.ok and ev.problems == [] and ev.workerless == ("hephaestus",)
+    assert "hephaestus (no workers)" in ev.text
+
+
+def test_worker_units_snapshot_with_units_attests(store: Store) -> None:
+    """A host whose snapshot observes installed precis-worker units runs
+    workers — its stale sha is a problem, not a note."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(store, "node-b", SHA2, worker_units=_units())
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok
+    assert ev.problems == [f"worker node-b reports {SHA2[:12]}, release is {SHA[:12]}"]
+
+
+def test_empty_worker_units_with_activity_is_a_fleet_member(store: Store) -> None:
+    """Complement of the dev-checkout skip (gr625282's shape): a launchd
+    host reports no units but real worker ``activity`` — still fleet."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(
+        store,
+        "node-mac",
+        SHA2,
+        worker_units={},
+        activity={"precis-worker": {"idle": True}},
+    )
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok and ev.workerless == ()
+    assert ev.problems == [
+        f"worker node-mac reports {SHA2[:12]}, release is {SHA[:12]}"
+    ]
+
+
+def test_a_workerless_host_in_the_deploy_ledger_is_a_member(store: Store) -> None:
+    """gr623769's other arm: ``covered`` in ``app_settings.deploy.fleet``
+    is a known fleet member even with empty worker evidence — a covered
+    host that stopped running workers must still attest."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
+    _ledger(store, ["node-a", "hephaestus"])
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok and ev.workerless == ()
+    assert ev.problems == [
+        f"worker hephaestus reports {SHA2[:12]}, release is {SHA[:12]}"
+    ]
+
+
+def test_a_workerless_host_never_parks_the_probe(store: Store) -> None:
+    """A worker-less host whose beat predates the deploy finish is not
+    'not yet restarted' — it attests nothing, so the probe does not wait
+    on it."""
+    R.record_prod_head(store, SHA, [])
+    rollout = (datetime.now(UTC) - timedelta(minutes=2)).strftime(rcf._TS_FMT)
+    psettings.set_setting(
+        "release.round",
+        _round_row(7, "deployed", {"sha": SHA, "rollout_at": rollout}),
+        store=store,
+    )
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
+    _stale(store, "hephaestus", minutes=10)  # predates the deploy finish
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert ev.ok and ev.waiting == () and ev.workerless == ("hephaestus",)
+
+
+def test_only_workerless_hosts_is_still_no_live_worker(store: Store) -> None:
+    """Every live row worker-less → nothing attests: still 'no live
+    worker host', and the note still names them."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "hephaestus", SHA, worker_units={}, activity={})
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok and ev.workerless == ("hephaestus",)
+    assert ev.problems == ["no live worker host (no heartbeat in the last 60 min)"]
+    assert "hephaestus (no workers)" in ev.text
 
 
 # ── the web clause ──────────────────────────────────────────────────

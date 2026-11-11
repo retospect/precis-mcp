@@ -11,7 +11,9 @@ runs, without a session. :func:`gather_evidence` reads the mechanical
 evidence — every live worker host's ``host_heartbeat.meta->>'code_sha'``
 (the deploy-fleet query of :mod:`precis.workers.conditions`, store only,
 no network; a heartbeat inside the last 60 minutes on a non-ephemeral
-host that is not a 12-hex container id) — plus the live web's
+host that is not a 12-hex container id and that runs workers or is a
+known fleet member — a worker-less one-off checkout is a note, never
+counted, gr623769) — plus the live web's
 ``X-Precis-Boot-Sha`` header when the ``release.health_url`` operator
 setting names its ``/healthz`` (one plain bounded ``httpx`` GET — the
 URL is operator-set, not agent-supplied, so the SSRF guard is the wrong
@@ -32,7 +34,9 @@ and keeps the probe parked (phase ``probe``, ``not_before``-paced like
 ``ci_red_digest``); a heartbeat written *after* the deploy finish at
 another sha fails at once; past the deadline anything still not at the
 release sha fails, naming each host, its last heartbeat time and its
-sha. Hosts with no heartbeat inside the liveness window stay ignored.
+sha. Hosts with no heartbeat inside the liveness window stay ignored,
+as do live hosts that run no workers and are not known fleet members
+(gr623769).
 
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
@@ -134,19 +138,27 @@ _REPROBE_EVERY = timedelta(seconds=60)
 #: parked handle carry (``precis.plans.release._stamp``'s, restated).
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
-#: The live-worker query — the same rows ``conditions._DEPLOY_FLEET_SQL``
+#: The live-fleet query — the same rows ``conditions._DEPLOY_FLEET_SQL``
 #: selects for the deploy-fleet-coverage probe plus each row's ``ts``
-#: (the restart check needs the heartbeat's write time): a heartbeat in
-#: the last ``fresh_min`` minutes, not ephemeral, host not a 12-hex
-#: container id.
+#: (the restart check needs the heartbeat's write time) and the meta the
+#: worker-membership call needs (gr623769): a heartbeat in the last
+#: ``fresh_min`` minutes, not ephemeral, host not a 12-hex container id.
 _LIVE_FLEET_SQL = """
-SELECT host, ts, meta->>'code_sha' AS code_sha
+SELECT host, ts, meta->>'code_sha' AS code_sha,
+       meta->'worker_units' AS worker_units,
+       meta->'activity' AS activity
   FROM host_heartbeat
  WHERE ts > now() - make_interval(mins => %(fresh_min)s)
    AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
    AND host !~ '^[0-9a-f]{12}$'
  ORDER BY host
 """
+
+#: ``app_settings`` key ``scripts/deploy`` refreshes after every green
+#: deploy with ``{"sha", "at", "covered": [<host>, …], "skipped"}`` —
+#: the deploy fleet's known membership (``conditions._DEPLOY_LEDGER_KEY``,
+#: restated).
+_DEPLOY_LEDGER_KEY = "deploy.fleet"
 
 #: The evidence line's and the failure reason's caps. The reason must
 #: fit the retry-cap ask's 600-character context
@@ -171,7 +183,9 @@ class Evidence:
     the web probe's is the ONLY problem — every live worker already
     attests and none is still waiting on a restart — and the job files
     the ruling ask itself (gr607271) instead of dying into the tick's
-    retry-cap showstopper."""
+    retry-cap showstopper. ``workerless`` names the live hosts that run
+    no workers and are not known fleet members (gr623769): reported as
+    a note in ``text``, never a problem and never ``waiting``."""
 
     ok: bool
     sha: str | None
@@ -180,6 +194,7 @@ class Evidence:
     waiting: tuple[str, ...] = ()
     deadline: datetime | None = None
     web_only: bool = False
+    workerless: tuple[str, ...] = ()
 
 
 def _http_get(url: str) -> Any:
@@ -250,16 +265,69 @@ def _deployed_at(store: Store, rn: str) -> datetime | None:
     return _parse_ts(rec.get("deployed_at")) if rec is not None else None
 
 
-def _live_worker_shas(store: Store) -> list[tuple[str, datetime | None, str | None]]:
-    """``(host, heartbeat ts, code_sha|None)`` of every live worker host,
-    store only; ``ts`` is the heartbeat's write time, the restart check's
-    clock."""
+def _fleet_members(conn: Any) -> frozenset[str]:
+    """The deploy fleet's known members — the ``covered`` hosts of
+    ``app_settings.deploy.fleet`` (``_DEPLOY_LEDGER_KEY``). Empty when the
+    ledger is absent or unreadable: membership then falls to the
+    heartbeat's own worker evidence."""
+    import json
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s", (_DEPLOY_LEDGER_KEY,)
+        ).fetchone()
+        ledger = json.loads(str(row[0])) if row is not None else {}
+        covered = ledger.get("covered") if isinstance(ledger, dict) else None
+    except Exception:
+        return frozenset()
+    if not isinstance(covered, list):
+        return frozenset()
+    return frozenset(str(h) for h in covered)
+
+
+def _counts_as_worker(
+    host: str, worker_units: Any, activity: Any, fleet: frozenset[str]
+) -> bool:
+    """Whether a live heartbeat row attests for the release (gr623769).
+
+    Counts when the host runs workers — its ``worker_units`` snapshot
+    observes installed precis-worker units — or is a known fleet member:
+    recorded worker ``activity`` (per-process, nested-merged on write so
+    it survives later beats) or a ``covered`` row in the deploy ledger.
+    A row with no ``worker_units`` key predates the snapshot and stays
+    eligible (gr625282's rule). A worker-less non-member — a one-off
+    checkout's lone heartbeat — is a note, never counted."""
+    if worker_units is None:
+        return True
+    units = worker_units.get("units") if isinstance(worker_units, dict) else None
+    if isinstance(units, dict) and units:
+        return True
+    return bool(activity) or host in fleet
+
+
+def _live_fleet(
+    store: Store,
+) -> tuple[list[tuple[str, datetime | None, str | None]], list[str]]:
+    """``(workers, workerless)`` of the live heartbeat rows, store only.
+
+    ``workers`` is ``(host, heartbeat ts, code_sha|None)`` per host that
+    attests (:func:`_counts_as_worker`); ``ts`` is the heartbeat's write
+    time, the restart check's clock. ``workerless`` names the live hosts
+    that run no workers and are not known fleet members (gr623769):
+    reported as a note, never counted."""
     with store.pool.connection() as conn:
         rows = conn.execute(_LIVE_FLEET_SQL, {"fresh_min": _FLEET_FRESH_MIN}).fetchall()
-    return [
-        (str(host), _parse_ts(ts), None if code_sha is None else str(code_sha))
-        for host, ts, code_sha in rows
-    ]
+        fleet = _fleet_members(conn)
+    workers: list[tuple[str, datetime | None, str | None]] = []
+    workerless: list[str] = []
+    for host, ts, code_sha, worker_units, activity in rows:
+        if _counts_as_worker(str(host), worker_units, activity, fleet):
+            workers.append(
+                (str(host), _parse_ts(ts), None if code_sha is None else str(code_sha))
+            )
+        else:
+            workerless.append(str(host))
+    return workers, workerless
 
 
 def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
@@ -290,7 +358,10 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     Required evidence is the workers — the pinned sha
     (:func:`precis.plans.release.pinned_deploy_sha`) must equal every
     live host's heartbeat ``code_sha`` exactly, and it must be the plan's
-    own release sha. The restart race: a host whose newest heartbeat
+    own release sha. Only a host that runs workers or is a known fleet
+    member attests (gr623769): a live worker-less non-member is reported
+    in ``text`` as a note, never a problem and never ``waiting``. The
+    restart race: a host whose newest heartbeat
     predates the deploy finish (:func:`_deployed_at`) has not restarted
     yet — it joins ``waiting`` until ``deadline`` (the confirm window's
     end) and is a problem only past it; a heartbeat written *after* the
@@ -300,7 +371,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     rn = str(rel.get("rN") or "")
     sha = _release.pinned_deploy_sha(store, rn)
     rel_sha = str(rel.get("sha") or "")
-    live = _live_worker_shas(store)
+    live, workerless = _live_fleet(store)
     hosts = ", ".join(host for host, _, _ in live)
     deployed_at = _deployed_at(store, rn) if sha is not None else None
     deadline = deployed_at + _CONFIRM_WINDOW if deployed_at is not None else None
@@ -363,9 +434,12 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     else:
         workers = f"workers: {len(live)} live ({hosts})"
     short = sha[:12] if sha else "unset"
-    text = mask_secrets(f"{rn or 'r?'} pinned {short}; {workers}; web: {web_clause}")[
-        :_TEXT_CAP
-    ]
+    note = ""
+    if workerless:
+        note = "; note: " + ", ".join(f"{h} (no workers)" for h in workerless)
+    text = mask_secrets(
+        f"{rn or 'r?'} pinned {short}; {workers}{note}; web: {web_clause}"
+    )[:_TEXT_CAP]
     return Evidence(
         ok=not problems and not waiting,
         sha=sha,
@@ -374,6 +448,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         waiting=tuple(waiting),
         deadline=deadline,
         web_only=(web_problem is not None and len(problems) == 1 and not waiting),
+        workerless=tuple(workerless),
     )
 
 
