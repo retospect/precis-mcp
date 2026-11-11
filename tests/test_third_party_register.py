@@ -26,6 +26,15 @@ third-party licence obligation.
 
 An ``OSError`` mid-walk surfaces as ``ScanIncomplete``
 (``tests/_policy_scan.py``), never as a verdict.
+
+Where it runs at lint time (td636908 review): the four gate tests plus
+the marker self-check are re-exported by
+``tests/test_deploy_tree_no_secrets.py`` — the one pytest file every
+lint path executes (``scripts/ship``'s ``SECRET_SCAN`` on every
+``--quick`` in both lanes, the ``--checked``/``--release`` hygiene
+batch, check.yml's gate-fast CONTRACT tier). This file is not yet named
+in ship's lint lists or check.yml's lint job — harness paths a
+test-only change cannot touch; drop the re-export once they are.
 """
 
 from __future__ import annotations

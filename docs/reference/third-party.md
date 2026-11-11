@@ -35,6 +35,14 @@ parallel vendored suites: `tests/ingest/` ← acatome-\*,
 `tests/test_precis_flow.py` ← cfdtest); `src/precis/thermo/` already
 self-registers third-party *data* in its own `NOTICE`.
 
+Where the gate runs (td636908 review): the scanner file is not yet named
+in `scripts/ship`'s lint lists or `.github/workflows/check.yml`'s lint
+job — harness paths a test-only change cannot touch — so its gate tests
+are re-exported by `tests/test_deploy_tree_no_secrets.py`, the one
+pytest file every lint path executes (ship's `SECRET_SCAN` on every
+`--quick`, the gate-fast CONTRACT tier). Drop the re-export once the
+harness names the scanner file itself.
+
 ## Register
 
 | Piece | Source | Licence | Landed | Date | Notice |

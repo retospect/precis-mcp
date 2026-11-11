@@ -72,6 +72,28 @@ from tests._policy_scan import (
     walk_files,
 )
 
+# ── Third-party register gate, riding this file's lint wiring ────────────
+# ``tests/test_third_party_register.py`` is the licence/provenance gate —
+# the same class of public-tree policy scan as this file (a vendored or
+# adapted piece carries licence obligations only *because* the repo is
+# public). The scanner file itself is not yet named in ``scripts/ship``'s
+# lint lists or ``.github/workflows/check.yml``'s lint job — those are
+# harness paths a test-only change cannot touch — so its gate tests are
+# re-exported here and run wherever the secrets scan runs: every plain
+# ``ship --quick`` (``SECRET_SCAN``, docs-only and code lanes), the
+# ``--checked``/``--release`` ``HYGIENE`` batch, and check.yml's gate-fast
+# CONTRACT tier (impacted-tests' ``CONTRACT``/``_DOCS_HYGIENE``). Pytest
+# collects imported ``test_*`` callables under this module, so the same
+# assertions report here. Drop this block once the harness names the
+# scanner file directly (td636908 review).
+from tests.test_third_party_register import (  # noqa: F401 — re-exported gate tests
+    test_every_provenance_idiom_is_registered,
+    test_marker_regex_boundaries,
+    test_register_landed_paths_exist,
+    test_register_licences_are_allowlisted,
+    test_register_rows_are_well_formed,
+)
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO_ROOT / "deploy"
 
