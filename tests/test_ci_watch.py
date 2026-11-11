@@ -628,6 +628,28 @@ def test_gh_log_retries_without_the_flag_on_an_old_gh(
     assert "FAILED tests/test_x.py::test_y" in text
 
 
+def test_gh_calls_carry_the_factory_vault_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr586856: both ``gh api`` call sites pass ``GH_TOKEN`` from the
+    factory vault token, so a service account needs no ``gh auth login``."""
+    fake_token = "fake-token-for-test"  # not a real secret
+    monkeypatch.setattr(ci_watch._factory_git, "factory_git_token", lambda: fake_token)
+    envs: list[Any] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> Any:
+        envs.append(kw.get("env"))
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(ci_watch.subprocess, "run", fake_run)
+    ci_watch._gh_json("repos/o/r/actions/runs")
+    ci_watch._gh_log(REPO, 42)
+    assert len(envs) == 2
+    for env in envs:
+        assert env is not None
+        assert env["GH_TOKEN"] == fake_token
+
+
 def test_dry_run_honours_ci_mute(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
     gid = _seed_gripe(
         store, NIGHTLY_ONE, tags=("origin:ci-watch", "ci:nightly", "ci:mute")

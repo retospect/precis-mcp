@@ -64,7 +64,9 @@ cleanly: one ``job_event`` chunk (exit code + first stderr line), no
 traceback. ``_gh_log`` asks ``gh api`` for ``--allow-escape-sequences``
 and retries ONCE without it when gh predates the flag (added in gh
 v2.97.0, GHSA-3m3g-3wcr-px46) — an old gh on a worker must not make the
-tick dark; escapes are stripped in Python on that path.
+tick dark; escapes are stripped in Python on that path. Every ``gh`` runs
+with ``factory_git.git_auth_env()`` (the vault ``PRECIS_FACTORY_GIT_TOKEN``
+as ``GH_TOKEN``), so a service account with no ``gh auth login`` still reads.
 
 Filed gripes carry ``fix:code`` (``fix:infra`` for the infra signature),
 ``project:precis``, ``ci:nightly``/``ci:soak``, ``thread:factory``,
@@ -98,6 +100,7 @@ from typing import Any
 from precis.principal import worker_comment_meta
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
+from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -299,6 +302,7 @@ def _gh_json(endpoint: str) -> Any:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=_factory_git.git_auth_env(),
             timeout=_GH_TIMEOUT,
             check=False,
         )
@@ -335,6 +339,7 @@ def _gh_log(repo: str, job_id: int) -> str:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                env=_factory_git.git_auth_env(),
                 timeout=_GH_TIMEOUT,
                 check=False,
             )
