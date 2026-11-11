@@ -4,7 +4,7 @@ title: hexfold scene grammar from primitives — tube, sheet, seam/graft line, s
 pillar: 3d-design
 prio: high
 model: opus
-blocked-by: hexfold-tethered-relax-op
+blocked-by: me630471
 ---
 
 # hexfold scene grammar from primitives
@@ -19,7 +19,7 @@ needing a deploy before Reto can look at it. The grammar makes them
 parameter sets over a small set of primitives, with one planner and one
 judgement, so a new scene is a new parameter set, not a new module.
 Slice 0, the tethered-relax generator, is its own item
-([hexfold-tethered-relax-op](hexfold-tethered-relax-op.md)) and ships
+(spec `me630471`, the retired backlog/hexfold-tethered-relax-op.md) and ships
 first; it also extracts the shared planner this item builds on. Owner
 thread: [hexfold-toolkit](threads/hexfold-toolkit.md).
 
@@ -104,7 +104,7 @@ through `_block_from_net` and adds nothing.
 - The pcb/se-level assembly (poses, joins between blocks): the grammar
   builds one block.
 - Slice 0 itself (the tethered-relax generator and the `relax_tethered`
-  extraction): `hexfold-tethered-relax-op.md`.
+  extraction): spec `me630471`.
 
 ## Acceptance criteria
 

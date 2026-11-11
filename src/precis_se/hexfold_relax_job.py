@@ -5,8 +5,8 @@ plugin spec (``precis.job_types`` entry point), so the core never
 imports the hexfold atomic pipeline it dispatches.
 
 The ``struct_relax`` job relaxes one structure at one rung into the
-run-cube; an assembled tunnel wants the pipeline of
-docs/backlog/hexfold-relax-pipeline.md instead — a cheap whole-block
+run-cube; an assembled tunnel wants the pipeline of spec ``me630478``
+(tiers in ``me630468``) instead — a cheap whole-block
 polish (``ml``/``emt``/``xtb``, whichever the relax ladder supports —
 GFN-FF has no backend in the tree) plus GFN2 on H-capped, buffer-frozen
 junction fragments — and its own write-back: the relaxed geometry

@@ -2,7 +2,7 @@
 energy-rung pass on per-junction fragments, then ``tunnel_strain``
 re-scored on the relaxed atoms (hexfold H3 —
 spec `me629889`, the
-docs/backlog/hexfold-relax-pipeline.md tiers T1/T2 without the module
+`me630468` relax-pipeline tiers T1/T2 without the module
 cache).
 
 This is the compute the ``hexfold_relax`` job type runs on the cluster —

@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); catalogue R17 variant A (spec `me628806`).
+- **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) spec `me630471` (the retired backlog/hexfold-tethered-relax-op.md, slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); catalogue R17 variant A (spec `me628806`).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use spec `me628775` and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -390,7 +390,7 @@ removed as met — the transport move it waited on happened 09-29)
 
 1a. **HELD for re-scope against structure-workspaces slice 4p (Reto
    2026-10-22; launch not to be queued until re-scoped).**
-   **backlog/hexfold-tethered-relax-op.md (slice 0, first) and
+   **spec `me630471` (the retired tethered-relax op — slice 0, first) and
    backlog/hexfold-scene-grammar-from-primitives.md (the grammar,
    blocked-by slice 0)** (Reto ruled YES 2026-10-07, via chat-interface;
    both draft, model opus; the readiness vet of 2026-10-07 said
@@ -819,10 +819,11 @@ removed as met — the transport move it waited on happened 09-29)
     code-first workspaces (W5) once they are ready; the sheetnet
     primitives are the API they call; slice 5 waits on the xtb
     dispatch route from the session host.
-17. **backlog/hexfold-relax-pipeline.md** — grammar checks, periodic-cell
-    relax, fragment GFN2 and a module cache so blocks above ~1k atoms
-    relax (junction decay < 12 Å, 2026-10-14). Slice order S1–S5 there;
-    sits behind the tunnel slice it makes relaxable (S5 waits on the Mac
+17. **spec `me630478` (the retired backlog/hexfold-relax-pipeline.md)** —
+    grammar checks, periodic-cell relax, fragment GFN2 and a module cache
+    so blocks above ~1k atoms relax (junction decay < 12 Å, 2026-10-14).
+    Slice order S1–S5 in `me630467`, pipeline tiers in `me630468`; sits
+    behind the tunnel slice it makes relaxable (S5 waits on the Mac
     probe).
 18. **Cases A–D sublattice test** (from se-nanobud-graph, folded
     2026-10-21) — a test, not new code: hexfold's `annot.sublattice`
