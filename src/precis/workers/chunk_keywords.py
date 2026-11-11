@@ -302,13 +302,13 @@ def _eligibility_sql(prefix: str) -> str:
 _ELIGIBILITY_SQL = _eligibility_sql("c.")
 
 #: The partial index the tier-2 (fresh-backlog, ``chunk_id DESC``)
-#: claim is shaped for — NOT a shipped migration. A plain
-#: ``CREATE INDEX`` on prod's ``chunks`` (~4.7M rows) takes a SHARE
-#: lock for a full heap scan and stalls ingest, so ops pre-builds it
-#: CONCURRENTLY out of band before the migration ships (see
-#: ``docs/backlog/chunk-keywords-pending-index.md``); the migration's
-#: guard then verifies the pre-built index instead of building inline.
-#: The claim works without it — just slower — and the predicate
+#: claim is shaped for. A plain ``CREATE INDEX`` on prod's ``chunks``
+#: (then ~4.7M rows) would have taken a SHARE lock for a full heap
+#: scan and stalled ingest. Migration 0277 therefore verifies the
+#: pre-built index instead of creating it inline; operators build it
+#: CONCURRENTLY out of band before applying that migration on a
+#: large table (gr520236). The claim works
+#: without it — just slower — and the predicate
 #: carries the static eligibility too because ~1.4M of the
 #: ``keywords IS NULL`` rows can never be keyworded (skip-kinds and
 #: short text stay that way forever) and would otherwise sit in the
