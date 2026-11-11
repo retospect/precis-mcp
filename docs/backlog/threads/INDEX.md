@@ -141,7 +141,7 @@ Seams:
   electrochemical-interface spec plugs a provider into that seam and
   never redefines the rate builder. Engine code lands in catpath via
   chemistry's wheel bump.
-- nanoreactor's T1 (`backlog/nanoreactor-station-path-finder.md`)
+- nanoreactor's T1 (spec `me629025`, graph memory)
   adds off-slab environments and a station-record export to the engine;
   chemistry owns the engine contract and the wheel bump. Its T2
   (`backlog/hexfold-nanoreactor-tube.md`) is built by hexfold-toolkit.

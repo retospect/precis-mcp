@@ -323,8 +323,8 @@ tube frame from the product's exit-station pose.
 ## Explicitly NOT in scope
 
 - The strain tier itself (barrier against imposed N···O restraint) —
-  [nanoreactor-station-path-finder](nanoreactor-station-path-finder.md)
-  tier 3b. This item takes its set-points as station inputs.
+  spec `me629025` tier 3b. This item takes its set-points as station
+  inputs.
 - Dynamics, solvation, transport of NO along the tube.
 - The DFT engine and the GPU dispatch; this item calls them.
 - Rendering code in `precis_web`.
@@ -404,7 +404,7 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
      inside that and steric ones near it; slice 2 should revisit this
      once a wall exists to test against.
 5. **DFT path and settings.** `struct_relax` `dft-*` rungs or
-   autocatpath's `dft` config; functional (station-path-finder names a
+   autocatpath's `dft` config; functional (spec `me629025` names a
    range-separated hybrid; GPAW's hybrid support is limited), spin
    polarisation for doublets, cluster size.
    **Decided (Reto, 2026-10-25):** autocatpath's `dft` config, not
@@ -413,7 +413,7 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    NH2 (doublets). Cluster: ring scaffold plus tethers plus the first
    wall shell, ~100–150 atoms, dangling bonds H-capped.
 6. **MLIP choice.** Reto named MACE (autocatpath's `mlip` config);
-   station-path-finder names UMA (OMol25) for this chemistry because it
+   spec `me629025` names UMA (OMol25) for this chemistry because it
    takes charge and spin. MACE-OFF, MACE-MP or UMA for the
    molecule-in-wall complex?
    **Decided (Reto, 2026-10-25):** UMA — it replaces MACE in slice 5's

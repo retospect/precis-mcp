@@ -7,8 +7,8 @@ effort: medium
 
 ## Resume
 
-- **Next:** Pocket-from-molecule slice 4 (the realize loop, `pocket-from-molecule` — slices 1–3 built 2026-10; slice 3's spin default waits on Q12), then station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
-- **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14; H2 steps and H3 relax since); the H2 cone's relaxed washer-zone gate remains open.
+- **Next:** Pocket-from-molecule slice 4 (the realize loop, `pocket-from-molecule` — slices 1–3 built 2026-10; slice 3's spin default waits on Q12), then station-path-finder (spec `me629025`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
+- **Blocked by:** Station-path-finder (spec `me629025`) is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14; H2 steps and H3 relax since); the H2 cone's relaxed washer-zone gate remains open.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
 - **Worktree:** `nanoreactor`
@@ -36,7 +36,7 @@ output.
    held-shape NH2 pocket, 2026-10-21). Q2 (tethered-ring wall
    chemistry) and Q11 (H-addition requirement) answered 2026-10-17;
    Q12 (spin polarisation) unruled, default off.
-2. **backlog/nanoreactor-station-path-finder.md** — T1. The bare and
+2. **spec `me629025` (station path finder)** — T1. The bare and
    theozyme tiers decide whether a drive is needed, and its station record
    is the contract every later tool reads. Still a draft: it needs a
    `ready` pass and slicing (engine work sits in autocatpath) before a

@@ -3,7 +3,7 @@ status: draft
 title: a four-pane reaction movie shows a substrate walking the nanoreactor — atoms, fields, frontier orbitals, strain — on one camera with an energy strip
 pillar: 3d-design
 prio: low
-blocked-by: nanoreactor-station-path-finder
+blocked-by: spec me629025
 ---
 
 # Reaction movie (T6 of the nanoreactor chain)
