@@ -22,13 +22,9 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
 * **Chunk passes** — :class:`WorkerHandler` subclasses (``embed``,
   ``summarize``, ``chunk_keywords``).
 * **Ref-passes** — self-contained claim/compute/write closures over
-  ``refs`` (``classify``, ``bib_parse``, ``bib_mark``, ``chase``, ``fetch``,
-  ``hub_refine``, ``nursery``, ``sweeper``, ``heartbeat``,
-  ``corpus_reconcile``, ``paper_reconcile``, ``paper_meta_enrich``,
-  ``openalex_enrich``, ``orcid_enrich``, ``stub_rank``, ``paper_rank``,
-  ``llm_summarize``, ``backlog_groom``, ``diagnose_scan``, ``news_poll``,
-  ``briefing``, … —
-  roster: ``registry.py``; ``news_poll``/``briefing`` dedup, backoff and
+  ``refs`` (``classify``, ``chase``, ``fetch``, ``nursery``, ``heartbeat``,
+  ``news_poll``, … — roster: ``registry.py``;
+  ``news_poll``/``briefing`` dedup, backoff and
   delivery detail: ``docs/runbooks/news-ops.md``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
   ``dispatch`` bridges intent to compute: each open todo with
@@ -42,26 +38,16 @@ hand-rolled ``claimed_by`` UPDATEs.
 period): skill ``precis-work-help``.
 
 Planner-declared halts are runner-owned class transitions
-(:mod:`.halt_policy`), with the producing job's full-stream retry receipt
-(:mod:`.halt_retry`). Infra failures park for recovery rather than becoming
-permanent task failures; task-design failures get one repair attempt.
-Missing audit and possible repeated writes require human review, including
-before re-executing a crashed recovery job. Dispatch explicitly releases
-audited recovery parks: the older parked-child bypass
-does not release a directly parked todo. :mod:`.halt_recovery` keeps a
-shared infra breaker on an alert ref, admits one cohort probe after
-cooldown and releases the cohort after a clean probe or owner resolution.
-This prevents a fleet outage from poisoning many individual tasks while
-preserving independent owner holds and non-agent executor lanes. Legacy
-halts are surfaced by nursery rather than automatically retried.
+(:mod:`.halt_policy`, retry receipt :mod:`.halt_retry`): infra failures
+park for recovery, task-design failures get one repair attempt.
+:mod:`.halt_recovery` keeps the shared infra breaker and its cohort probe.
 
-``run_loop`` is serial round-robin, so one slow handler starves other passes.
-This motivates scheduler leases, the separate GPU lane (``deploy/README.md``),
-and the heartbeat daemon thread: a wedged rotation must not trigger a false
-host-dark alert. The in-rotation heartbeat remains an idempotent non-lease
-backstop. :mod:`.activity` stamps
-each ref pass so silent work is not mistaken for a dead worker; snapshots
-appear in ``host_heartbeat.meta.activity`` and Status **Now**.
+``run_loop`` is serial round-robin, so one slow handler starves other passes;
+hence scheduler leases, the separate GPU lane (``deploy/README.md``), and the
+heartbeat daemon thread (a wedged rotation must not raise a false host-dark
+alert; the in-rotation heartbeat is an idempotent backstop). :mod:`.activity`
+stamps each ref pass so silent work is not mistaken for a dead worker
+(``host_heartbeat.meta.activity``, Status **Now**).
 
 Job digests
 -------------
@@ -154,11 +140,9 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
 Notable pass mechanics
 ----------------------
 * ``chunk_keywords`` embeds claimed chunks' paper-local candidates once via
-  ``Embedder.embed``, then scores per-chunk slices. Per-chunk RPCs held the
-  fleet advisory lock ~2 minutes/32 chunks (gr547587). Scoring/version and
-  short writes are unchanged; no pooled connection spans embedding. CLI
-  batch stays 32 until real embedder/lock timings, not mocks, justify raising
-  it well below one minute. No cadence gate: turns follow the serial rotation.
+  ``Embedder.embed``, then scores per-chunk slices (per-chunk RPCs held the
+  fleet advisory lock ~2 min/32 chunks, gr547587); no pooled connection
+  spans embedding. CLI batch stays 32 until real timings justify more.
 * ``embed`` is manual-only (``--only embed``); the ``materialize`` cadence
   mints bounded ``embed_batch`` jobs (default-ON,
   ``PRECIS_MATERIALIZE_EMBED=0`` opts out) above

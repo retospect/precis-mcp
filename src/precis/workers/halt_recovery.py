@@ -5,6 +5,11 @@ history. Maintenance and dispatch admission share a transaction advisory
 lock, so multiple dispatch workers cannot admit simultaneous probes.
 Unknown receipts never become automatic retries. Existing exclusion tags
 remain authoritative after this module removes its own recovery park.
+Dispatch releases audited parks explicitly: the older parked-child bypass
+does not release a directly parked todo. A clean probe or owner resolution
+releases the cohort, so a fleet outage does not poison many individual
+tasks; owner holds and non-agent executor lanes stay independent. Legacy
+halts are surfaced by nursery rather than automatically retried.
 """
 
 from __future__ import annotations
