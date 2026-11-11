@@ -3592,8 +3592,10 @@ class RefsMixin:
         # The gripe ``sort=`` vocabulary (gr595573) — ``/gripes`` and the
         # gripe MCP browse share ``precis.utils.gripe_order``, so one
         # helper emits these fragments and the surfaces can't drift.
-        # ``gripe_drain`` is the default queue order: explicit PRIO first
-        # (lower = hotter), size s<m<l<unsized, oldest first.
+        # ``gripe_drain`` is the default queue order: the dispatch score
+        # first, then size s<m<l<unsized, oldest first; ``gripe_prio``
+        # (gr604514) is the human-PRIO ladder — lower = hotter, unset
+        # reads as normal — then size, then oldest.
         **{
             f"gripe_{name}": gripe_order.order_by_sql(name)
             for name in gripe_order.SORT_VALUES

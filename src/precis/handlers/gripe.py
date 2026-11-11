@@ -57,18 +57,18 @@ Surface (see ``precis-gripe-help``):
   via the chunk substrate, but the verb itself never reached the
   chunk table.)
 - Queryless browse (``get(id='/open')``, ``search(kind='gripe')``)
-  sorts by the shared ``drain`` order (gr595573: explicit PRIO first
-  where set, then size s<m<l<unsized, then oldest first —
-  :mod:`precis.utils.gripe_order`), under an
+  sorts by the shared ``drain`` order (gr595573: the dispatch score
+  first — a set PRIO multiplies it — then size s<m<l<unsized, then
+  oldest first — :mod:`precis.utils.gripe_order`), under an
   ``N open · M older than 3d · oldest grX (D days)`` line
   (:func:`age_summary`, also the session-start digest line). ``/open``
   and the ``status='open'`` shorthand both mean the live cohort —
   every non-terminal ``STATUS:`` (gr530682); a literal status cohort
   is ``search(kind='gripe', tags=['STATUS:open'])``. The ``/open`` and
   ``/wontfix`` listings take ``args={'sort': '<name>'}`` — the same
-  ``drain``|``oldest``|``newest``|``size``|``source``|``status``
-  vocabulary ``search(sort=)`` takes, plus the legacy ``prio``/
-  ``recency`` spellings; the next-page call re-states it so the
+  ``drain``|``oldest``|``newest``|``prio``|``size``|``source``|``status``
+  vocabulary ``search(sort=)`` takes, plus the legacy ``recency``
+  spelling; the next-page call re-states it so the
   continuation can't silently revert to ``drain``.
 - ``tag`` / ``link`` / ``delete`` behave like every other
   first-class numeric ref kind via :class:`NumericRefHandler`.
@@ -578,14 +578,17 @@ class GripeHandler(NumericRefHandler):
     # tags=['STATUS:open'].
     live_status_spellings: ClassVar[frozenset[str]] = frozenset({"open"})
 
-    # Queryless browse is the drain queue (gr595573 ruling): explicit
-    # PRIO first where set, then size s<m<l<unsized, then oldest first —
+    # Queryless browse is the drain queue (gr595573 ruling): the
+    # dispatch score first, then size s<m<l<unsized, then oldest first —
     # the same order /gripes shows; ``sort=`` takes the shared
-    # vocabulary plus the legacy ``prio``/``recency`` spellings, on
+    # vocabulary plus the legacy ``recency`` spelling, on
     # ``search`` and on the paged ``/open``/``/wontfix`` listings
     # (td596398 review: ``/open`` used to hardcode drain).
     browse_default_sort: ClassVar[str] = "drain"
-    prio_order_by: ClassVar[str] = "prio_age"
+    # ``sort='prio'`` resolves to the shared ``gripe_prio`` fragment —
+    # the same order ``/gripes?sort=prio`` runs (gr604514), so the two
+    # surfaces' ``prio`` can't drift.
+    prio_order_by: ClassVar[str] = "gripe_prio"
     EXTRA_SORTS: ClassVar[frozenset[str]] = frozenset(gripe_order.SORT_VALUES)
 
     #: The ``/`` list ids whose ``_list_by_tags`` page takes

@@ -739,11 +739,13 @@ the local store. CQL details in `precis-patent-search-help`.
 ## Browse gripes, todos and quests by priority
 
 Without a query or special view, `args={'sort': 'prio'}` lists lower priorities first
-(unset priority sorts at 5); `args={'sort': 'recency'}` lists most recently updated first.
-Gripes take the wider shared queue vocabulary — `drain` (the default: explicit PRIO first
-where set, then size s<m<l<unsized, then oldest), `oldest`, `newest`, `size`,
-`source` (human / agent / watchdog) and `status` — the same names `?sort=` takes on
-the /gripes web view.
+(unset priority sorts at 5; on gripes it then orders by size, oldest inside);
+`args={'sort': 'recency'}` lists most recently updated first.
+Gripes take the wider shared queue vocabulary — `drain` (the default: the machine
+dispatch score first, then size s<m<l<unsized, then oldest), `prio` (the human
+rungs first — unset reads as normal — then size, then oldest), `oldest`, `newest`,
+`size`, `source` (human / agent / watchdog) and `status` — the same names `?sort=`
+takes on the /gripes web view.
 Status/tag filters and `page_size=` compose with either sort.
 
 ```python

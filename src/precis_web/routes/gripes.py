@@ -21,7 +21,9 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
   selected rows. Retired gripes (merged/duplicate/junk soft-deletes)
   bucket under a ``retired`` pseudo-status; carries the filing form.
   ``sort=`` picks the queue order (gr595573) — ``drain`` (default:
-  explicit PRIO first, then size s<m<l<unsized, then oldest),
+  the dispatch score first, then size s<m<l<unsized, then oldest),
+  ``prio`` (the human rungs first — unset reads as normal — then
+  size, then oldest; gr604514),
   ``oldest``/``newest``/``size``/``source``/``status`` — the same
   vocabulary ``search(kind='gripe', sort=…)`` takes, from the shared
   :mod:`precis.utils.gripe_order` helper.
@@ -212,6 +214,10 @@ _SORT_TOOLTIPS: dict[str, str] = {
     ),
     "oldest": "oldest filed first",
     "newest": "newest filed first",
+    "prio": (
+        "the human PRIO rungs first — urgent … low, unset counts as "
+        "normal — then size s < m < l, oldest inside"
+    ),
     "size": "size s < m < l < unsized, oldest first inside",
     "source": "who filed — human, then agent, then watchdog",
     "status": "workflow order — open through wontfix, oldest first inside",

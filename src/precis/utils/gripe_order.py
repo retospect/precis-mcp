@@ -11,6 +11,9 @@ The alternate sorts re-group the same queue, oldest first inside each
 grouping:
 
 - ``oldest`` / ``newest`` — filing time (``created_at``).
+- ``prio`` — the human-set ``refs.prio`` ladder (``urgent`` 1 <
+  ``high`` 3 < ``normal``/unset 5 < ``low`` 8), then the size ladder,
+  oldest inside — "priority and size" (gr604514).
 - ``size`` — the ``s`` → ``l`` → unsized ladder.
 - ``source`` — who filed: human, then agent, then watchdog. *Human* is a
   ``user:<login>`` filing tag, a ``filed_by.human`` stamp or a
@@ -36,6 +39,7 @@ SORT_VALUES: tuple[str, ...] = (
     "drain",
     "oldest",
     "newest",
+    "prio",
     "size",
     "source",
     "status",
@@ -126,6 +130,9 @@ _ORDER_BY: dict[str, str] = {
     "drain": f"{_score_sql()} DESC, {_SIZE_RANK_SQL} ASC, {_OLDEST_FIRST}",
     "oldest": _OLDEST_FIRST,
     "newest": "r.created_at DESC, r.ref_id DESC",
+    # Unset reads as the normal rung (``prio_age``'s coalesce — a set
+    # PRIO:low still sinks under unjudged work), then size, then oldest.
+    "prio": f"coalesce(r.prio, 5) ASC, {_SIZE_RANK_SQL} ASC, {_OLDEST_FIRST}",
     "size": f"{_SIZE_RANK_SQL} ASC, {_OLDEST_FIRST}",
     "source": f"{_SOURCE_RANK_SQL} ASC, {_OLDEST_FIRST}",
     "status": f"{_STATUS_RANK_SQL} ASC, {_OLDEST_FIRST}",

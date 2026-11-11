@@ -1,12 +1,14 @@
 """gr595573: ``/gripes`` and the MCP gripe browse share the drain order.
 
 The ruling: the queue drains — default order on ``/gripes`` AND
-``get(kind='gripe', id='/open')`` / ``search(kind='gripe')`` is explicit
-PRIO first where set (lower = hotter), then size ``s`` < ``m`` < ``l`` <
-unsized, then oldest first within a size. ``sort=`` takes the same
-vocabulary on both surfaces (``drain`` | ``oldest`` | ``newest`` |
-``size`` | ``source`` | ``status``); the ordering SQL comes from one
-helper (``precis.utils.gripe_order``) so the surfaces can't drift.
+``get(kind='gripe', id='/open')`` / ``search(kind='gripe')`` is the
+dispatch score first (a set PRIO multiplies it), then size ``s`` <
+``m`` < ``l`` < unsized, then oldest first within a size. ``sort=``
+takes the same vocabulary on both surfaces (``drain`` | ``oldest`` |
+``newest`` | ``prio`` | ``size`` | ``source`` | ``status``); the
+ordering SQL comes from one helper (``precis.utils.gripe_order``) so
+the surfaces can't drift. ``prio`` (gr604514) leads the human PRIO
+ladder — unset reads as normal — then size, then oldest.
 """
 
 from __future__ import annotations
@@ -56,9 +58,10 @@ def _positions(body: str, titles: list[str]) -> list[int]:
 
 
 def test_drain_order_is_the_default_on_both_surfaces(store: Store, hub: Hub) -> None:
-    """The pinned default: explicit PRIO first where set, then size
-    s<m<l<unsized, then oldest first — identical on ``_rows`` (the
-    /gripes query), ``get(id='/open')`` and ``search(kind='gripe')``."""
+    """The pinned default: the dispatch score first (the seeded prio=2
+    multiplies its gripe hottest), then size s<m<l<unsized, then oldest
+    first — identical on ``_rows`` (the /gripes query),
+    ``get(id='/open')`` and ``search(kind='gripe')``."""
     handler = GripeHandler(hub=hub)
     hot = _seed(store, "drain-hot unsized prio2", days=1, prio=2)
     small_old = _seed(store, "drain-small old", days=9, size="s")
@@ -132,11 +135,47 @@ def test_sort_values_reorder_the_same_queue(store: Store, hub: Hub) -> None:
     assert rows[new_unsized]["source"] == "agent"
 
 
+def test_prio_sort_orders_priority_then_size(store: Store, hub: Hub) -> None:
+    """gr604514: ``sort=prio`` — the human PRIO ladder first (unset
+    reads as the normal rung, so ``PRIO:low`` sinks under unjudged
+    work), then size s<m<l<unsized, then oldest — identical on
+    ``_rows`` and the MCP browse: the ``prio`` spelling resolves to
+    the shared ``gripe_prio`` fragment, so the two surfaces can't
+    drift."""
+    handler = GripeHandler(hub=hub)
+    urgent = _seed(store, "prio-urgent l", days=1, prio=1, size="l")
+    high_s = _seed(store, "prio-high s new", days=1, prio=3, size="s")
+    high_m = _seed(store, "prio-high m old", days=9, prio=3, size="m")
+    unset_old = _seed(store, "prio-unset oldest", days=30)
+    unset_new = _seed(store, "prio-unset newest", days=1)
+    low = _seed(store, "prio-low s oldest", days=40, prio=8, size="s")
+    expected = [urgent, high_s, high_m, unset_old, unset_new, low]
+    titles = [
+        "prio-urgent l",
+        "prio-high s new",
+        "prio-high m old",
+        "prio-unset oldest",
+        "prio-unset newest",
+        "prio-low s oldest",
+    ]
+
+    assert [
+        r["ref_id"] for r in _rows(store, status_filter="all", sort="prio")
+    ] == expected
+
+    open_body = handler.get(id="/open", sort="prio").body
+    assert "(by prio)" in open_body
+    assert _positions(open_body, titles) == sorted(_positions(open_body, titles))
+
+    search_body = handler.search(sort="prio").body
+    assert _positions(search_body, titles) == sorted(_positions(search_body, titles))
+
+
 def test_open_listing_takes_the_shared_sort_vocabulary(store: Store, hub: Hub) -> None:
     """td596398 review: ``get(id='/open')`` hardcoded drain. Now
     ``args={'sort': …}`` re-groups it with the same vocabulary
     ``search(sort=)`` and ``/gripes?sort=`` take — plus the legacy
-    ``prio``/``recency`` spellings."""
+    ``recency`` spelling."""
     handler = GripeHandler(hub=hub)
     _seed(
         store,
@@ -161,7 +200,8 @@ def test_open_listing_takes_the_shared_sort_vocabulary(store: Store, hub: Hub) -
 
     # Every seeded gripe is STATUS:open, so ``status`` ranks them all in
     # one group — oldest first inside, the same order ``oldest`` gives.
-    for sort in ("drain", "oldest", "size", "status"):
+    # ``prio`` too: all unset, so the size ladder + age decide.
+    for sort in ("drain", "oldest", "prio", "size", "status"):
         body = handler.get(id="/open", sort=sort).body
         assert f"(by {sort})" in body
         assert _positions(body, titles) == sorted(_positions(body, titles))
@@ -230,8 +270,9 @@ def test_status_sort_ranks_the_workflow(store: Store, hub: Hub) -> None:
 
 
 def test_legacy_prio_and_recency_sorts_still_work(store: Store, hub: Hub) -> None:
-    """The pre-drain spellings stay accepted — ``prio`` keeps its
-    coalesce-to-5 semantics, ``recency`` the newest-touched order."""
+    """The ``prio``/``recency`` spellings stay accepted — ``prio`` is
+    now a shared-vocabulary name (still unset-reads-as-5, with a size
+    tie-break), ``recency`` the legacy newest-touched order."""
     handler = GripeHandler(hub=hub)
     _seed(store, "legacy-cold prio9", prio=9)
     _seed(store, "legacy-unset")
