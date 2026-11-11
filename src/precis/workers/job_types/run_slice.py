@@ -69,7 +69,9 @@ that holds the lane's credentials with ``params.target_node``):
   models list`` rates — is enforced by the poll's watch; a launch on
   any other adapter is refused outright (codex/kimi report no spend —
   the bound would read zero while real spend accrued). The watch
-  SIGTERMs the group once live usage meets the bound, escalating to
+  SIGTERMs the group once live usage meets the bound — or once the
+  bound loses its spend channel entirely, no price table held and
+  nothing vendor-reported — escalating to
   SIGKILL while the group still answers past the grace. A budget stop
   is always a failed attempt — even on a clean exit, it never mints a
   land;
@@ -1714,9 +1716,10 @@ def _devin_model_prices() -> dict[str, tuple[float, float, float]] | None:
 
 
 #: Per-process cache for :func:`_devin_price_table` — the table is
-#: account-static within a run and the poll asks once per pass; a
-#: failure refetches sooner so a transient CLI error does not stall the
-#: bound for the full window.
+#: account-static within a run and the poll asks once per pass. A
+#: refresh failure keeps the last good table and refetches on the
+#: short TTL — a stale rate still bounds the watch, while dropping to
+#: ``None`` read live token-only usage as $0 (td629583 review).
 _PRICE_TABLE_TTL_S = 300.0
 _PRICE_FAIL_TTL_S = 30.0
 _price_table_cache: (
@@ -1726,18 +1729,20 @@ _price_table_cache: (
 
 def _devin_price_table() -> dict[str, tuple[float, float, float]] | None:
     """The devin account's ``{model: (input, cache_read, output)
-    USD/token}`` table, cached — ``None`` while the CLI cannot price
+    USD/token}`` table, cached — a failed refresh keeps the last good
+    table, so ``None`` means no fetch ever succeeded in this process
     (a caller fails closed on it, never "free")."""
     global _price_table_cache
     now = time.monotonic()
     if _price_table_cache is not None and now < _price_table_cache[0]:
         return _price_table_cache[1]
     table = _devin_model_prices()
-    _price_table_cache = (
-        now + (_PRICE_TABLE_TTL_S if table is not None else _PRICE_FAIL_TTL_S),
-        table,
-    )
-    return table
+    if table is not None:
+        _price_table_cache = (now + _PRICE_TABLE_TTL_S, table)
+        return table
+    stale = _price_table_cache[1] if _price_table_cache is not None else None
+    _price_table_cache = (now + _PRICE_FAIL_TTL_S, stale)
+    return stale
 
 
 def _devin_seed_trust(under: Path) -> str | None:
@@ -3515,10 +3520,11 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     answers does not end the watch — the poll keeps it live while a
     bound applies (td603296). On devin the live figure is the ATIF's
     tokens priced at the account's ``devin models list`` rates — the
-    only spend the paid plan lets a watcher see (gr628944). No live
-    usage channel (a
-    vendor reporting no spend, or none yet) means the bound simply
-    cannot trip."""
+    only spend the paid plan lets a watcher see (gr628944) — and losing
+    that channel entirely is a stop, not a free pass: no table held AND
+    nothing vendor-reported SIGTERMs the group like a crossed bound
+    (td629583 review). Other unobserved usage — none yet on a priced
+    lane — still cannot trip."""
     budget = _budget_bound(ctx)
     if budget <= 0:
         return
@@ -3557,14 +3563,33 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
         return
     usage = _adapter_usage(ctx, handle)
     usd = _usage_usd(usage, ctx.store, (ctx.meta or {}).get("lane"))
+    blind = False
     if usd < budget:
-        return
+        # Fail closed on a bound that cannot observe spend (td629583
+        # review): a ``budget_watch`` lane's only channel is the
+        # ``devin models list`` table — no table held in this process
+        # (a fresh worker whose every fetch failed) plus no
+        # vendor-reported cost reads real spend as $0 forever. A stale
+        # table still bounds (:func:`_devin_price_table` keeps the last
+        # good fetch), and vendor-reported spend under the bound can
+        # still trip, so only a wholly unreported run stops.
+        try:
+            watched = get_adapter(
+                str((ctx.meta or {}).get("adapter") or "")
+            ).budget_watch
+        except KeyError:
+            watched = False
+        if not (watched and usd <= 0 and _devin_price_table() is None):
+            return
+        blind = True
     kill = {
         "budget_usd": budget,
         "usd": round(usd, 4),
         "at": datetime.now(UTC).strftime(_TS_FMT),
         "sig": "none",
     }
+    if blind:
+        kill["blind"] = True
     if pgid:
         try:
             _signal_group(pgid, signal.SIGTERM)
@@ -3576,8 +3601,16 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     ctx.set_meta(compute_handle=handle)
     ctx.append_chunk(
         "job_event",
-        f"run_slice: session crossed its remaining budget "
-        f"(${usd:.2f} ≥ ${budget:.2f}); SIGTERM to the group",
+        (
+            "run_slice: capped session's spend is unobservable — no "
+            "devin price table and no vendor-reported cost "
+            f"(bound ${budget:.2f}); SIGTERM to the group"
+        )
+        if blind
+        else (
+            f"run_slice: session crossed its remaining budget "
+            f"(${usd:.2f} ≥ ${budget:.2f}); SIGTERM to the group"
+        ),
     )
 
 
@@ -3712,15 +3745,20 @@ def poll(ctx: Any, handle: Any) -> bool:
     # code reads, the bound's stop is a failed attempt — no outage park
     # on its error text, no worker commit, no land mint.
     budget_kill = handle.get("budget_kill")
-    budget_note = (
-        (
-            "crossed its remaining budget "
-            f"(usage ${float(budget_kill.get('usd') or 0):.2f} ≥ "
-            f"${float(budget_kill.get('budget_usd') or 0):.2f})"
-        )
-        if isinstance(budget_kill, dict)
-        else None
-    )
+    budget_note = None
+    if isinstance(budget_kill, dict):
+        if budget_kill.get("blind"):
+            budget_note = (
+                "lost spend observability under its remaining budget "
+                f"(${float(budget_kill.get('budget_usd') or 0):.2f} bound; "
+                "no devin price table, no vendor-reported cost)"
+            )
+        else:
+            budget_note = (
+                "crossed its remaining budget "
+                f"(usage ${float(budget_kill.get('usd') or 0):.2f} ≥ "
+                f"${float(budget_kill.get('budget_usd') or 0):.2f})"
+            )
     if is_error and not vanished and budget_note is None:
         outage = _lane_outage(
             result, log_text, adapter=adapter.name, exit_code=exit_code

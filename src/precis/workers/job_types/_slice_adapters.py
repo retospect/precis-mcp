@@ -284,14 +284,18 @@ def _devin_est_cost_usd(
     model's rate when no step prices. ``prompt_tokens`` includes
     ``cached_tokens`` (observed 3000.12.43: a step's 21829 prompt is
     its 10309 input + 11520 cache_read), so the uncached share is the
-    difference. An unpriced step falls back to the launch rate, then
-    to the table's dearest — an over-estimate kills early, an
-    under-estimate overspends. ``None`` when there are no tokens to
-    price."""
-    fallback = (
-        devin_model_rate(prices, model)
-        or devin_model_rate(prices, label)
-        or max(prices.values(), key=sum)
+    difference. A step whose ``model_name`` the table does not name —
+    the router billed a model we cannot price — pays the table's
+    per-token dearest bound, never the launch rate: an over-estimate
+    kills early, an under-estimate overspends (td629583 review).
+    ``None`` when there are no tokens to price."""
+    launch = devin_model_rate(prices, model) or devin_model_rate(prices, label)
+    #: The per-token-kind dearest rate in the table — the bound an
+    #: unknown model's tokens price at.
+    bound: tuple[float, float, float] = (
+        max(r[0] for r in prices.values()),
+        max(r[1] for r in prices.values()),
+        max(r[2] for r in prices.values()),
     )
     est = 0.0
     saw = False
@@ -308,7 +312,7 @@ def _devin_est_cost_usd(
         if prompt <= 0 and out <= 0:
             continue
         saw = True
-        rate = devin_model_rate(prices, step.get("model_name")) or fallback
+        rate = devin_model_rate(prices, step.get("model_name")) or bound
         est += max(prompt - cached, 0.0) * rate[0] + cached * rate[1] + out * rate[2]
     if saw:
         return est
@@ -319,11 +323,8 @@ def _devin_est_cost_usd(
     out = _num(fm.get("total_completion_tokens")) or 0.0
     if prompt <= 0 and out <= 0:
         return None
-    return (
-        max(prompt - cached, 0.0) * fallback[0]
-        + cached * fallback[1]
-        + out * fallback[2]
-    )
+    rate = launch or bound
+    return max(prompt - cached, 0.0) * rate[0] + cached * rate[1] + out * rate[2]
 
 
 def devin_atif_usage(

@@ -6745,6 +6745,154 @@ def test_watch_budget_kills_on_priced_atif_tokens(
     assert seams["signals"] == [] and "budget_kill" not in handle
 
 
+def test_devin_price_table_keeps_the_last_good_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td629583 review: a refresh failure must not drop the cached
+    table — ``None`` read live token-only ATIF usage as $0 and let a
+    capped session run unbounded. The stale table rides the short
+    retry TTL; ``None`` only when no fetch ever succeeded."""
+    table = {"swe-2-high": (8e-6, 0.2e-6, 40e-6)}
+    fetches: list[int] = []
+    state: dict[str, Any] = {"table": table}
+
+    def fake_prices() -> dict[str, tuple[float, float, float]] | None:
+        fetches.append(1)
+        return state["table"]
+
+    monkeypatch.setattr(run_slice, "_price_table_cache", None)
+    monkeypatch.setattr(run_slice, "_devin_model_prices", fake_prices)
+    assert run_slice._devin_price_table() == table
+    assert len(fetches) == 1
+    # Past the good TTL a failed refresh keeps the stale table …
+    run_slice._price_table_cache = (0.0, table)
+    state["table"] = None
+    assert run_slice._devin_price_table() == table
+    # … re-armed on the short retry TTL — the same window does not
+    # refetch.
+    assert run_slice._devin_price_table() == table
+    assert len(fetches) == 2
+    # A process that never fetched reports None — callers fail closed.
+    run_slice._price_table_cache = None
+    assert run_slice._devin_price_table() is None
+
+
+def test_watch_budget_stops_when_spend_is_unobservable(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td629583 review: a capped devin session whose spend the watch
+    cannot see — no ``devin models list`` table in this process (a
+    worker restart behind a dead CLI) and no vendor-reported cost —
+    reads as $0 forever, so it is SIGTERMed like a crossed bound
+    instead of running unbounded; the dead-process path fails the
+    attempt. Vendor-reported spend under the bound still leaves the
+    session alone."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    # Token-only ATIF, no price table (the seam's default): blind.
+    _atif(
+        Path(handle["atif"]),
+        final={"total_prompt_tokens": 1_500_000, "total_steps": 3},
+        steps=[
+            {
+                "step_id": 10,
+                "source": "agent",
+                "model_name": "swe-2-high",
+                "metrics": {"prompt_tokens": 1_500_000},
+            }
+        ],
+    )
+    pctx = _poll_ctx(store, ctx)
+    pctx.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx, handle) is False
+    assert seams["signals"] == [(handle["pgid"], signal.SIGTERM)]
+    assert handle["budget_kill"]["blind"] is True
+    assert handle["budget_kill"]["usd"] == 0.0
+    # The dead-process path then fails the attempt, naming the lost
+    # observability rather than a crossed figure.
+    seams["alive"] = False
+    _finish(handle, 143, "transcript tail\n")
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is True
+    assert pctx2.status == "failed"
+    assert pctx2.failure is not None and "observability" in pctx2.failure
+    assert "attempt:1" in store.tag_strings(42)
+    # Vendor-reported spend under the bound is still observable — no
+    # table needed, no stop.
+    seams["alive"] = True
+    store2 = _Store()
+    store2.add_todo(43, "Build")
+    ctx2, handle2 = _devin_lane_submit(store2, seams, monkeypatch, todo_id=43)
+    assert handle2 is not None
+    _atif(
+        Path(handle2["atif"]),
+        final={"total_cost_usd": 2.0, "total_prompt_tokens": 1_500_000},
+    )
+    pctx3 = _poll_ctx(store2, ctx2)
+    pctx3.meta["params"]["budget_usd"] = 5.0
+    assert run_slice.poll(pctx3, handle2) is False
+    assert "budget_kill" not in handle2
+
+
+def test_devin_est_cost_prices_unknown_models_at_the_bound(
+    tmp_path: Path,
+) -> None:
+    """td629583 review: a step the router billed on a model the account
+    table does not name must not price at the launch rate — that
+    undercounts a dearer route and overspends. Unknown models pay the
+    table's per-token dearest bound; known steps keep their own rate."""
+    from precis.workers.job_types._slice_adapters import devin_atif_usage
+
+    prices = {
+        "swe-2-high": (1e-6, 0.1e-6, 5e-6),
+        "claude-fable-5-2-medium": (8e-6, 0.2e-6, 40e-6),
+    }
+    usage = devin_atif_usage(
+        _atif(
+            tmp_path / "routed.json",
+            final={"total_prompt_tokens": 1_200_000, "total_steps": 3},
+            steps=[
+                {
+                    "step_id": 10,
+                    "source": "agent",
+                    "model_name": "swe-2-high",
+                    "metrics": {
+                        "prompt_tokens": 100_000,
+                        "completion_tokens": 1000,
+                    },
+                },
+                {
+                    # The router moved the conversation to a model the
+                    # table does not name.
+                    "step_id": 11,
+                    "source": "agent",
+                    "model_name": "routed-elsewhere",
+                    "metrics": {
+                        "prompt_tokens": 1_000_000,
+                        "cached_tokens": 200_000,
+                        "completion_tokens": 10_000,
+                    },
+                },
+                {
+                    # No model_name at all is unknown too.
+                    "step_id": 12,
+                    "source": "agent",
+                    "metrics": {"prompt_tokens": 100_000},
+                },
+            ],
+        ),
+        prices=prices,
+        model="swe-2-high",
+    )
+    assert usage is not None
+    # known: 100k×$1 + 1k×$5 = $0.105; unknown steps at the bound
+    # ($8/$0.2/$40): 800k×$8 + 200k×$0.2 + 10k×$40 = $6.84, plus
+    # 100k×$8 = $0.80.
+    assert usage["cost_usd"] == pytest.approx(0.105 + 6.84 + 0.80)
+
+
 def test_devin_submit_exports_atif(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6816,7 +6964,11 @@ def test_watch_budget_ignores_under_allowance_and_unreported(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td601015: usage under the bound — or a vendor reporting no spend
-    fields — never kills; the allowance is a bound, not a tripwire."""
+    fields — never kills; the allowance is a bound, not a tripwire. A
+    token-only ATIF prices under the bound through ``devin models
+    list`` — a table gone entirely is the stop of
+    :func:`test_watch_budget_stops_when_spend_is_unobservable`."""
+    seams["devin"]["prices"] = {"swe-2-high": (8e-6, 0.2e-6, 40e-6)}
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
@@ -6826,14 +6978,21 @@ def test_watch_budget_ignores_under_allowance_and_unreported(
     pctx.meta["params"]["budget_usd"] = 5.0
     assert run_slice.poll(pctx, handle) is False
     assert seams["signals"] == [] and "budget_kill" not in handle
-    # Tokens only — no spend field means the bound cannot trip.
+    # Tokens only — priced through the table, still under the bound.
     Path(handle["atif"]).write_text(
         json.dumps(
-            {"schema_version": "ATIF-v1.7", "final_metrics": {"total_steps": 4}}
+            {
+                "schema_version": "ATIF-v1.7",
+                "final_metrics": {
+                    "total_prompt_tokens": 1000,
+                    "total_steps": 4,
+                },
+            }
         ),
         encoding="utf-8",
     )
-    assert run_slice.poll(pctx, handle) is False
+    pctx2 = _poll_ctx(store, pctx)
+    assert run_slice.poll(pctx2, handle) is False
     assert seams["signals"] == [] and "budget_kill" not in handle
 
 
