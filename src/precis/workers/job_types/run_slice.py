@@ -105,7 +105,11 @@ that holds the lane's credentials with ``params.target_node``):
   -s --format=%B``) names the plan's gripe — its ``gr<N>`` or a
   ``td<M>`` of the plan's chain — as a whole token; a line naming a
   different ``gr<N>`` is rejected, and every ``tests/…​.py`` the plan
-  gripe's text names must exist on main.
+  gripe's text names must exist on main. An ancestor sha whose message
+  names another plan can still verify without the message (gr638658):
+  under a ``release-pass`` root the loop's own re-cut re-proves the
+  claim, elsewhere the named failing tests must pass on a clean tree at
+  ``origin/main`` — neither holding fails closed.
   Verified, the todo closes done tagged ``verdict:moot`` and the job
   carries ``meta.moot_verified = {sha, line}`` so the tick resolves the
   plan's gripe on that sha exactly as a land does. Unverified, the
@@ -637,6 +641,23 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         check=False,
         timeout=300,
+    )
+
+
+def _run(
+    argv: list[str], cwd: Path, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` in ``cwd``; never raises on a non-zero exit — the
+    non-git sibling of :func:`_git` (the moot fallback's ``uv run
+    pytest`` on a clean ``origin/main`` tree, gr638658)."""
+    return subprocess.run(
+        argv,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=timeout,
     )
 
 
@@ -3002,6 +3023,9 @@ _MOOT_TEST_RE = re.compile(r"\btests/[\w./-]+\.py\b")
 #: one cannot pass. Position-free like :data:`_MOOT_LINE_RE`.
 _FIX_VERIFIED_RE = re.compile(r"^\s*verified\s*:\s*(.*?)\s*$", re.IGNORECASE)
 _FIX_VERIFIED_GREEN_RE = re.compile(r"green on origin/main", re.IGNORECASE)
+#: Bound on the moot fallback's clean-tree pytest run (gr638658): a cold
+#: ``uv`` env sync plus the named test files.
+_MOOT_TEST_TIMEOUT_S = 1200.0
 
 
 def _moot_line(result: str | None) -> str | None:
@@ -3100,6 +3124,49 @@ def _fetch_main(tree: Path) -> None:
         pass
 
 
+def _tests_green_on_main(tree: Path, tests: list[str]) -> bool:
+    """``True`` only when every named ``tests/…​.py`` passes in a clean
+    detached worktree at ``origin/main`` — the moot fallback's
+    independent proof (gr638658): the claim "the fix is already on
+    main" holds when the slice's named failing tests re-run green
+    there. An empty list, a failed ``worktree add``, a missing ``uv``, a
+    red run or a timeout is ``False`` — fail closed. The probe tree is
+    always removed."""
+    if not tests:
+        return False
+    base = Path(tempfile.mkdtemp(prefix="precis-moot-"))
+    probe = base / "tree"
+    uv = os.environ.get("PRECIS_UV_BIN") or "uv"
+    try:
+        add = _git(["worktree", "add", "--detach", str(probe), "origin/main"], tree)
+        if add.returncode != 0:
+            return False
+        try:
+            proc = _run(
+                [
+                    uv,
+                    "run",
+                    "pytest",
+                    "-q",
+                    "-n0",
+                    "-p",
+                    "no:cacheprovider",
+                    *tests,
+                ],
+                probe,
+                _MOOT_TEST_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return proc.returncode == 0
+    finally:
+        try:
+            _git(["worktree", "remove", "--force", str(probe)], tree)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def _verified_moot(
     store: Any, tree: Path, result: str | None, todo_id: int
 ) -> dict[str, str] | None:
@@ -3109,20 +3176,29 @@ def _verified_moot(
     Verified means: after a best-effort ``git fetch origin main`` (a
     failure, a timeout or an ``OSError`` only means the check runs on
     whatever ref exists) the line names a sha that ``git merge-base
-    --is-ancestor`` confirms on ``origin/main`` — AND that sha's own
-    commit message (``git show -s --format=%B``) names the plan's gripe
-    as a whole token: the ``gr<N>`` ``land_slice._plan_gripe`` resolves
-    for the root, or a ``td<M>`` of its chain (the moot node, the root,
-    any node under it — :func:`_plan_chain_ids`). Every sha-shaped token
-    in the line is tried; the first satisfying both wins. A line naming
-    a ``gr<N>`` different from the plan's gripe is rejected outright;
-    one naming none verifies only through the message. When the plan
+    --is-ancestor`` confirms on ``origin/main`` — AND either that sha's
+    own commit message (``git show -s --format=%B``) names the plan's
+    gripe as a whole token (the ``gr<N>`` ``land_slice._plan_gripe``
+    resolves for the root, or a ``td<M>`` of its chain — the moot node,
+    the root, any node under it — :func:`_plan_chain_ids`), or the claim
+    proves independently of the message (gr638658 — td638632's fix
+    landed by hand under a message naming no plan, so the gate could
+    never pass and the true moot burned a failed attempt): under a
+    ``release-pass`` root the loop's own re-cut from main re-proves it
+    (a false claim reads red again), elsewhere the named failing tests
+    — every ``tests/…​.py`` the gripe's text and the node's own body and
+    comments name — pass on a clean detached worktree at
+    ``origin/main`` (:func:`_tests_green_on_main`). Every sha-shaped
+    token in the line is tried for the message gate; the fallback
+    accepts the first ancestor. A line naming a ``gr<N>`` different
+    from the plan's gripe is rejected outright; one naming none
+    verifies through the message or the fallback. When the plan
     gripe's text names test files every ``tests/….py`` must still exist
     on main (``git cat-file -e origin/main:<path>``) — an extra gate,
     never a verification by itself. No line, no plan tag, no plan
-    gripe, a ``_plan_gripe`` raise, an unreadable gripe, no ancestor, a
-    ``cat-file`` timeout/OSError or a message naming neither handle
-    fails closed: the no-commit exit stays a failed attempt
+    gripe, a ``_plan_gripe`` raise, an unreadable gripe or todo, no
+    ancestor, a ``cat-file`` timeout/OSError, or a message and fallback
+    both failing fails closed: the no-commit exit stays a failed attempt
     (S1a's straight-to-rescue path, the moot line in the evidence).
     """
     line = _moot_line(result)
@@ -3153,26 +3229,53 @@ def _verified_moot(
     except Exception:  # an unreadable gripe fails closed
         log.warning("run_slice: moot gripe gr%s unreadable", gid)
         return None
+    try:
+        # gr638658: the slice's own named tests join the gripe's for the
+        # fallback's run — a fix node's ``brief:`` carries the digest's
+        # red ids, a build's body the tests it must turn green.
+        named_tests = set(paths)
+        for c in _todo_chunks(store, todo_id):
+            named_tests.update(_MOOT_TEST_RE.findall(str(c.text or "")))
+    except Exception:  # an unreadable todo fails closed like the gripe
+        log.warning("run_slice: moot todo td%s chunks unreadable", todo_id)
+        return None
     chain = sorted(_plan_chain_ids(store, root, todo_id))
     handles = [
         re.compile(rf"\bgr{gid}\b", re.IGNORECASE),
         re.compile(rf"\btd(?:{'|'.join(str(i) for i in chain)})\b", re.IGNORECASE),
     ]
     _fetch_main(tree)
-    sha = None
+    ancestors: list[str] = []
     for cand in _MOOT_SHA_RE.findall(line):
         try:
             check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
-            if check.returncode != 0:
-                continue
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if check.returncode == 0:
+            ancestors.append(cand)
+    sha = None
+    for cand in ancestors:
+        try:
             msg = _git(["show", "-s", "--format=%B", cand], tree)
         except (OSError, subprocess.TimeoutExpired):
             continue
-        if msg.returncode != 0:
-            continue
-        if any(h.search(msg.stdout) for h in handles):
+        if msg.returncode == 0 and any(h.search(msg.stdout) for h in handles):
             sha = cand
             break
+    if (
+        sha is None
+        and ancestors
+        and (
+            "release-pass" in _open_tag_values(store, root)
+            or _tests_green_on_main(tree, sorted(named_tests))
+        )
+    ):
+        # gr638658: a true moot under another plan's fix can never pass
+        # the message gate — verify it without the message: under a
+        # ``release-pass`` root the pass's own re-cut from main is the
+        # proof; anywhere else the named failing tests must pass on a
+        # clean ``origin/main`` tree. Neither holds → fail closed.
+        sha = ancestors[0]
     if sha is None:
         return None
     for p in sorted(paths):

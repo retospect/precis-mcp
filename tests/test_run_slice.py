@@ -194,7 +194,13 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         calls["git"].append((args, Path(cwd)))
         if args[:2] == ["worktree", "add"]:
             tree = args[4] if args[2] == "-b" else args[2]
+            if tree.startswith("-"):
+                # ``add --detach <tree> <ref>`` — the moot fallback's
+                # clean probe (gr638658).
+                tree = args[3]
             Path(tree).mkdir(parents=True, exist_ok=True)
+            if "--detach" in args:
+                return _proc(rc=calls.get("probe_add_rc", 0))
         if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
             return _proc(calls.get("git_common", ""))
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
@@ -240,6 +246,16 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     def fake_launch(argv: list[str], **kw: Any) -> int:
         calls["launch"].append((argv, kw))
         return 4242
+
+    calls["run"] = []
+
+    def fake_run(
+        argv: list[str], cwd: Path, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        calls["run"].append((argv, cwd))
+        return _proc(rc=calls.get("probe_rc", 0))
+
+    monkeypatch.setattr(run_slice, "_run", fake_run)
 
     calls["lands"] = []
     calls["land_checked"] = []
@@ -4416,10 +4432,10 @@ def test_poll_verified_moot_closes_and_stamps_the_sha(
         ("moot: already fixed by f628e681f", "fix(x): y (td43)", 0, 0, "verified"),
         # A 7-char sha verifies.
         ("moot: gr7 already fixed by abc1234", "fix(x): y (gr7)", 0, 0, "verified"),
-        # An ancestor sha whose message names neither handle — the
-        # gr602896 incident shape: the claim is true but unprovable,
-        # the verdict still closes (no ``resolved:`` stamp).
-        ("moot: gr7 already fixed by f628e681f", "fix(x): y (td999)", 0, 0, "trusted"),
+        # gr638658 incident shape: the ancestor sha's message names no
+        # plan handle, but the gripe's named test passes on a clean
+        # ``origin/main`` probe — verified without the message.
+        ("moot: gr7 already fixed by f628e681f", "fix(x): y (td999)", 0, 0, "verified"),
         # A moot line pinned to a DIFFERENT gripe is rejected even when
         # the sha's message names the plan gripe — never this plan's
         # verdict, so the no-commit failure stands.
@@ -4532,10 +4548,13 @@ def test_poll_moot_unverifiable_git_still_closes_trusted(
     """gr602896: a git error on the ancestor or the message check means
     the sha cannot VERIFY — no ``meta.moot_verified`` stamp — but the
     ``moot:`` verdict itself still closes the node tagged, never a
-    crash out of poll and never the no-commit failure."""
+    crash out of poll and never the no-commit failure. gr638658: the
+    message check's error only diverts to the named-tests fallback, so
+    the probe must read red too for the claim to stay unverified."""
     _pin_plan_gripe(monkeypatch)
     store = _mooted_store()
     seams["show_rc"] = 1
+    seams["probe_rc"] = 1
     ctx, handle = _submit(store, seams)
     _finish(handle, 0, _moot_result())
     pctx = _poll_ctx(store, ctx)
@@ -4599,6 +4618,157 @@ def test_poll_moot_plan_gripe_raise_still_closes_trusted(
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     assert "verdict:moot" in store.tag_strings(42)
+
+
+def test_poll_moot_other_plan_message_verified_by_named_tests(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: the moot sha IS on ``origin/main`` but its message
+    names another plan's td — the message gate can never pass, so the
+    named failing tests run on a clean ``origin/main`` probe; green,
+    the todo closes verified moot with no attempt burned."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    moot = pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]
+    assert moot["sha"] == "f628e681f"
+    assert "STATUS:done" in store.tag_strings(42)
+    # The fallback probed a clean detached origin/main tree and ran
+    # the named test file there.
+    [add] = [g for g in seams["git"] if g[0][1:3] == ["add", "--detach"]]
+    [probe] = seams["run"]
+    assert probe[0][:2] == ["uv", "run"]
+    assert "tests/test_widget.py" in probe[0]
+    assert probe[1] == Path(add[0][3])
+    assert any(g[0][:2] == ["worktree", "remove"] for g in seams["git"])
+
+
+def test_poll_moot_other_plan_message_probe_red_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: same shape but the named tests stay RED on
+    ``origin/main`` — the claim does not hold, so the verdict still
+    closes unverified (gr602896) with no ``moot_verified`` stamp."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    seams["probe_rc"] = 1
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert "verdict:moot" in store.tag_strings(42)
+    assert seams["run"]
+
+
+def test_poll_moot_other_plan_message_no_named_tests_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: nothing names a test file anywhere, the root is no
+    release pass — there is no independent proof to run, so the
+    ancestor sha stays unverified."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    store.chunks.rows[7] = [_Chunk(0, "the gripe names no file", "gripe")]
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert seams["run"] == []
+
+
+def test_poll_moot_release_pass_accepts_other_plan_sha(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: under a ``release-pass`` root the loop's own re-cut
+    re-proves the claim — an ancestor sha whose message names another
+    plan verifies with no test probe at all."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    store.add_tag(50, Tag.open("release-pass"))
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]["sha"] == "f628e681f"
+    assert seams["run"] == []
+
+
+def test_poll_moot_release_pass_non_ancestor_still_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: the release-pass shortcut still needs the ancestor —
+    a sha not on ``origin/main`` verifies on nothing."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    store.add_tag(50, Tag.open("release-pass"))
+    seams["ancestor_rc"] = 1
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert seams["run"] == []
+
+
+def test_poll_moot_todo_comment_names_the_test(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: the slice's own ``brief:``/comments name the failing
+    tests too — a fix node's digest ids land in the probe run even when
+    the gripe names no file."""
+    _pin_plan_gripe(monkeypatch)
+    store = _Store()
+    store.add_todo(50, "Fix gr7 plan")
+    store.add_todo(
+        42,
+        "Fix the red legs",
+        parent_id=50,
+        comments=("brief: tests/test_beta.py and tests/test_gamma.py",),
+        tags=("plan:50",),
+    )
+    store.chunks.rows[7] = [_Chunk(0, "the gripe names no file", "gripe")]
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert pctx.meta_set[run_slice.MOOT_VERIFIED_KEY]["sha"] == "f628e681f"
+    [probe] = seams["run"]
+    assert "tests/test_beta.py" in probe[0]
+    assert "tests/test_gamma.py" in probe[0]
+
+
+def test_poll_moot_probe_add_failure_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr638658: a probe that cannot be built proves nothing — the
+    verdict still closes unverified."""
+    _pin_plan_gripe(monkeypatch)
+    store = _mooted_store()
+    seams["show_msg"] = "fix(ci): another plan's fix (td99999)\n"
+    seams["probe_add_rc"] = 128
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, _moot_result())
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert run_slice.MOOT_VERIFIED_KEY not in pctx.meta_set
+    assert seams["run"] == []
 
 
 def test_poll_moot_without_a_plan_still_closes_trusted(
