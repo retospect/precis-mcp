@@ -1042,7 +1042,9 @@ def test_migration_number_above_next_free_is_renumbered(rig: Rig) -> None:
 
 def test_gap_mint_with_a_sealed_migration_edit_still_refuses(rig: Rig) -> None:
     """Ambiguous: the branch also edits a migration already on main. That is
-    not ours to renumber around — refuse exactly as before, nothing moved."""
+    not ours to renumber around — refuse exactly as before, nothing moved.
+    The sealed-edit guard (gr632897) normally refuses first; the override
+    env (deliberate ledger repair) reaches the mint guard's own check."""
     wt = rig.worktree(
         "m",
         {
@@ -1050,7 +1052,9 @@ def test_gap_mint_with_a_sealed_migration_edit_still_refuses(rig: Rig) -> None:
             "src/precis/migrations/0001_init.sql": "select 1; -- edited\n",
         },
     )
-    p, log = rig.ship(wt, "--quick", sleep=1)
+    p, log = rig.ship(
+        wt, "--quick", sleep=1, PRECIS_SHIP_ALLOW_SEALED_MIGRATION_EDIT="1"
+    )
     rc = p.wait(timeout=120)
     out = log.read_text(encoding="utf-8")
     assert rc != 0, out
