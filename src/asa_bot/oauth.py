@@ -24,11 +24,12 @@ homes and, sitting ahead of the vault, silently shadowed a rotation. Idempotent
 and override-safe: a token already present in the env wins; we only fill the
 gap.
 
-Failure mode (2026-11): ``CLAUDE_CODE_OAUTH_TOKEN`` is vault class ``infra``,
-which only members of ``precis_system`` may reveal. A stale inherited
-``PRECIS_DATABASE_URL`` naming ``agent_rw`` made the reveal fail with
-``InsufficientPrivilege`` and ``claude -p`` answer ``Not logged in``. The
-DSN must be ``precis_system``; config.yaml's wins over the env var.
+History (2026-11): until migration 0304 ``CLAUDE_CODE_OAUTH_TOKEN`` was vault
+class ``infra``, which only members of ``precis_system`` may reveal, so a stale
+inherited ``PRECIS_DATABASE_URL`` naming ``agent_rw`` made the reveal fail with
+``InsufficientPrivilege`` and ``claude -p`` answer ``Not logged in``. Since 0304
+the name is class ``api`` and an ``agent_rw`` DSN may reveal it; config.yaml's
+DSN still wins over the env var.
 """
 
 from __future__ import annotations

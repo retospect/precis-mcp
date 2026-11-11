@@ -142,11 +142,13 @@ def pin_process_dsn(dsn: str | None) -> None:
     binds via ``build_runtime`` → ``load_config`` on the first turn, and the
     ``precis.utils.claude_oauth.ensure_oauth_token`` → ``get_secret`` /
     ``reveal_unbound`` lookups run for the spawned ``claude -p`` env. A stale
-    plist ``agent_rw`` value must not outrank the ``precis_system`` DSN —
-    ``CLAUDE_CODE_OAUTH_TOKEN`` is vault class infra (``vault._class_check``,
-    migration 0285), an ``agent_rw`` reveal is denied, and the turn's
-    ``claude -p`` answers "Not logged in" (gr605685; the sibling of what
-    ca980886c fixed on the Discord bridge). ``adopt_process_store`` scrubs
+    plist ``agent_rw`` value must not outrank the config.yaml DSN. Until
+    migration 0304, ``CLAUDE_CODE_OAUTH_TOKEN`` was vault class infra
+    (``vault._class_check``, migration 0285), an ``agent_rw`` reveal was denied,
+    and the turn's ``claude -p`` answered "Not logged in" (gr605685; the
+    sibling of what ca980886c fixed on the Discord bridge); the token is class
+    api now, but the other infra secrets still need the right DSN.
+    ``adopt_process_store`` scrubs
     the var from the env subprocesses inherit, so the DSN does not leak
     onward. No-op when the config names no DSN — the env var is then the
     fallback ``Config.load`` resolved.
