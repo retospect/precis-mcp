@@ -5,6 +5,127 @@ pillar: quests
 
 # Nanobud campaign
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, gripe `gr629126`. Owner after reading: the nanobuds-paper
+quest/paper hub — this file is dr173020's claim-hygiene campaign
+state, not carbon-topology spec material (`me628772` owns only the
+structure/nomenclature items); the executing lane resolves the hub
+with `search(kind='memory', q='nanobuds paper')`. Both 2026-11-11
+transfer passes had no precis MCP; the executing lane needs the
+session MCP on PROD — the writes cannot be done from a no-MCP lane.
+Do not delete this file until the nodes below are written, the hub
+reading order carries their handles, and the references are repointed
+— retiring ahead of the transfer was reverted once already
+(`a331c87a4`).)*
+
+*Transfer manifest — coverage unchecked (this lane had no MCP; the
+executing lane searches the graph first and folds in what already
+exists). Write each as one `section:reference` node, `part-of` → the
+nanobuds-paper quest hub, `Source:` line naming this file + transfer
+date:*
+
+1. *Title ≈ "Nanobud claim tree admits only covalently bonded
+   hybrids". Body: Reto scope rule — true nanobuds only, covalently
+   bonded fullerene–tube/graphene hybrids; no vdW/deposited/mixed
+   systems in the claim tree; cited-finding count and re-approval
+   state are owned by `claim-review-mechanism.md`'s worked-example
+   section; the title/body reconciliation pass reset all
+   `nanopub_publish` rows (incl. fi191146) to `candidate`, so the
+   sign-off queue is a full re-review, not just withheld edges.*
+2. *Title ≈ "dr173020 adjudications wait on Reto's single sitting".
+   Body: the open calls — seven blocked hubs (fi191169 OEM-supply
+   unsupported — "prototyping phase with >30 customers"; fi191282 ref
+   3838 Terzyk lacks a DOI row; fi191286 hearsay-only grounding citing
+   Mpourmpakis; fi191316 live `contradicts` from fi192706; fi189536
+   SCC-DFTB chunk never asserts deposition/blending; fi189542
+   intro-recap chunk + live contradicts edge; fi189549 bibliographic
+   meta-claim, no epistemic mode); keep-or-drop fi191307/fi191308
+   (near-duplicate hubs, both ground pa5887), fi191323
+   (methodological-capability), fi189526 (literature-scope); staged
+   n1–n9 non-covalent own-result hubs (pa39796/pa40723/pa170590,
+   scratchpad session `e26f279b` `specs3/`) awaiting go/no-go;
+   minted-but-uncited weave-ins fi211848–54 + h1–h5 (Reto may retire
+   fi211852/53 — caveat-passed covalency); dc-level suspects
+   (dc2445908 soluble-derivatives thread, dc2445887
+   induction-plasma specifics, dc2445902 5-vs-6 heptagons, dc2445888
+   −0.48 eV unverified, dc2445939 says B3LYP-D3 but pa3941 used
+   CAM-B3LYP); pc436382 wrong-source call on dc2445855; re-ingest
+   pa199068/pa40723/pa170590 (abstract+intro-only ingests); pa1638 is
+   genuinely DOI-less — h11 stays mint-only under the one-DOI rule.*
+3. *Title ≈ "Passage-vs-claim mismatch has three causes, not one".
+   Body: the 2026-08-20 grounding audit over dr173020's cited hubs —
+   ~106 supported, ~10 partial, 7 no-grounding, **0** contradictions
+   after verification (counts ±2–3, quarters overlapped; re-derive
+   before quoting). Both contradiction verdicts were wrong in
+   different directions: fi192819's passage is corrupt (pa494 has zero
+   Greek letters — a Symbol-font extraction scar turned `V/μm` into
+   `V/ mm`; the claim is right) and fi211523's source is pure
+   simulation (pa2857 LAMMPS/Tersoff–Brenner; the claim is right). The
+   causes are claim-wrong / passage-corrupt / study-type-misjudged;
+   cause 2 inverts the fix — check the source's character inventory
+   and study type before recording a contradiction. The PARTIAL class
+   is claims asserting more structure than the passage (a cause,
+   comparison or generality it never states) — invisible to every
+   existing gate; argues for re-running `_verify_support_with_caveats`
+   over attached evidence. fi191292–96 and fi190978/fi191002 cannot
+   be audited at all (no evidence edges / NULL `src_chunk_id`).*
+4. *Title ≈ "12% of attached nanobud evidence failed retro-verify".
+   Body: the 2026-08-21 pass — 239 withheld edges over 108 hubs under
+   `_chase_llm._PROMPT_VERIFY`: 52 yes, 157 scoped partial, 30 no.
+   The apply is asymmetric: any `support` write releases the edge, so
+   a rejection is never written back (`support:"no"` would publish
+   the rejection). Applied 2026-08-21/22: the 30 rejects deleted (row
+   backup first); the 44 `draft-backfill` auto-`yes` edges re-judged →
+   5 more deleted (11.4%, consistent with 12%). fi191021 retitled to
+   the draft's two-factor sentence via `refine_claim_sentence`;
+   fi191015's draft framing fixed on dc2445891 (barrier lowering ≠
+   defect siting). 62 of 108 hubs carry nothing but scoped partials —
+   a conjunctive claim-shape artifact of the taproot extractor.
+   fi189549's literature-about shape swept corpus-wide: 5 genuine + 1
+   borderline of 1714 — rare, but four non-nanobud survey hubs sit
+   past the gate on self-citation.*
+5. *Title ≈ "Sample ~30 released edges before signing dr173020".
+   Body: judge calibration on the 30-edge gold set
+   (`llm-judge-reliability.md`) — rejections had zero false alarms;
+   releases hid a real defect at 27% (disagreement-enriched sample, so
+   an upper bound). The 209 released edges are the only bucket where
+   a silent error survives to publication: sample 25–30 and
+   adjudicate them the way the gold set was built, before sign-off.
+   Do not add majority voting — a single judge beat the 3-way modal
+   87% vs 80%. Frozen instrument
+   `docs/runbooks/grounding-verifier-instrument.md` +
+   `llm-judge-reliability-data/score_vs_gold.py` apply unchanged.*
+6. *Title ≈ "Ten grounded tier-2 mint candidates queue behind
+   sign-off". Body: the 2026-08-17 survey table (paper / claim /
+   grounding chunk, none minted). Candidate 4 first — pa948's
+   0.57–0.76 eV gaps vs pa4365's 0.12/0.18 eV is a live disagreement,
+   the cheapest real test of the opposition machinery. Candidates 6,
+   7, 10 carry non-covalent/"free C₆₀" framing — state scope
+   explicitly at mint or they read as nanobud claims. Marginals on
+   file, not recommended. Draft-integrity flags: pa1638 reports no
+   H₂-storage measurement despite its title (synthesis + FTIR only);
+   pa170590's C₂₀–C₄₀ dimer "nanobud" is the scope-boundary case;
+   pc175737 is OCR-corrupted beyond grounding; pa206485's stability
+   sentence straddles a chunk boundary (unmintable as-is).*
+7. *Title ≈ "Draft prose edits go through draft_handler.edit, never
+   UPDATE". Body: a hub retitle replaces the `finding_body` row
+   (2612007 → 3119389, `embedding NULL`, cascade re-runs); a draft
+   edit keeps `chunk_id` and updates `text` + `content_sha` together
+   — the sha-staleness is what re-queues the embedding, so a raw
+   `UPDATE chunks SET text` leaves the stale embedding permanent and
+   invisible. There is no `precis draft edit` CLI verb — use the web
+   reader or `scripts/prod-precis tools edit --kind draft`. Also
+   durable: `chunks` and `refs` both soft-delete via `retired_at` —
+   queries without `retired_at IS NULL` silently include retired
+   rows.*
+
+*Then: append the new handles to the quest hub's reading-order line;
+repoint `docs/backlog/threads/nanobuds-paper.md` Horizon 4,
+`docs/backlog/nanobud-magnetomechanical-memory.md`'s `blocked-by:` +
+§Decisions line, and `docs/backlog/nanopub-corpus-remediation.md`'s
+mention; delete this file and regenerate `docs/backlog/INDEX.md`
+(`scripts/docs-index`).*
+
 Grouped 2026-09-26 from 4 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
 ## Decisions (Reto 2026-10-21)

@@ -7,6 +7,119 @@ pillar: quests
 
 # Nanobud claim remediation (dr173020)
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, gripe `gr629126`. Owner after reading: the nanobuds-paper
+quest/paper hub — this is dr173020's claim-hub remediation state; the
+machinery lessons (nodes 2–6 below) may belong on the claims/taproot
+hub instead if the graph has one — the executing lane decides and
+resolves handles with `search(kind='memory', q='nanobuds paper')` /
+`q='taproot claims'`. Both 2026-11-11 transfer passes had no precis
+MCP; the executing lane needs the session MCP on PROD — the writes
+cannot be done from a no-MCP lane. Do not delete this file until the
+nodes below are written, the hub reading order carries their handles,
+and the references are repointed — retiring ahead of the transfer was
+reverted once already (`a331c87a4`).)*
+
+*Transfer manifest — coverage unchecked (this lane had no MCP; the
+executing lane searches the graph first and folds in what already
+exists). Write each as one `section:reference` node, `part-of` → the
+owning hub, `Source:` line naming this file + transfer date:*
+
+1. *Title ≈ "dr173020 remediation open: artifact approves, ref 2615,
+   phase 5". Body: resume state — the four non-empirical hubs
+   (fi189535 definition, fi191169 + fi191260 commercial/supply-chain,
+   fi192855 vague generalization) go through the shipped
+   `report`/`definition` artifact types, their own `/go`; ref 2615
+   stays mis-bound (`ref-2615-is-a-mis-bound-record.md` — the main
+   paper is pa2069, doi 10.1038/nnano.2007.37; fi269509 is
+   evidence-fine, only the 2615 edge would emit a false citation);
+   Phase 5 adversarial pass never ran — its only trigger is
+   `mint_review_fanout` on the draft's review block, hold it until
+   Reto's findings check so the two don't edit the same prose;
+   fi269443 split optional; fi189536's support was stripped — narrow
+   to what pc2412082 states or attach a paper-170574 passage, do not
+   re-stamp by hand; fi189543 says 19° but its own paper (5828) says
+   θ≈20° — the 19 came from fi189542's paper; mint jobs owed —
+   fi190987 mechanical behaviour, fi192836 touch-sensor application,
+   fi191318 "tunable" interpretive step, fi269543's dropped clause.*
+2. *Title ≈ "Reword before verify — rewording stales
+   verified_claim_sha". Body: `refine_claim_sentence` never touches
+   `links.meta`; `preflight.withheld_edges` compares
+   `meta.verified_claim_sha` against `claim_sha(live refs.title)` at
+   read time and withholds on mismatch — verify-first pays for the
+   same LLM work twice.*
+3. *Title ≈ "Never write a reviewed sentence via sweep/mint --apply".
+   Body: `_reword_one` calls `propose_fn` unconditionally then writes,
+   so `reword-sweep --apply` re-rolls the MEDIUM proposal — the same
+   trap `direct-mint --apply` had before its `--plan` file; apply
+   reviewed text through `refine_claim_sentence` directly (both
+   observed writes returned `alias_kept=True`).*
+4. *Title ≈ "no-epistemic-mode needs the method in a pinned passage".
+   Body: `propose_reword` sees only (sentence, scope, lint_codes) but
+   the method lives in the hub's evidence chunk — the sweep is
+   constitutionally unable to fix its dominant lint (14 of 18); some
+   evidence names no method at all, so read every evidence chunk
+   before concluding (fi269443's first chunk was procedural; later
+   ones named mass spec / IR / X-ray diffraction);
+   `EPISTEMIC_MODE_TOKENS` accepts generic heads (`analysis`,
+   `calculations`, `measurements`, `modelling`, `imaging`); `report`
+   is not an evidence verb — `show` is; local lint check:
+   `lint_claim_sentence` / `lint_notation` via `uv run python -c`,
+   splitting returned `code: description` on `:` before intersecting
+   `_BLOCKING_LINT_CODES`; `past-tense` is advisory, `past-passive`
+   blocking.*
+5. *Title ≈ "report/definition artifact types serve non-empirical
+   hubs". Body: Reto ruling 2026-10-02 (nanobuds-paper-13) — set only
+   on the approve payload (`gates.resolve_artifact_type`,
+   `requested_nonempirical_type`); they replace the epistemic pair
+   with `check_nonempirical` codes (`report-attribution`,
+   `report-genre`, `report-source-genre`, `definition-copula`);
+   persist on `nanopub_publish.artifact_type` (migration 0201) and
+   `refs.meta.artifact_type`; sign as `precis:Report`
+   (`prov:wasAttributedTo` its source) / `precis:Definition`; the
+   measurement behind the shape (5 of ~2,270 hubs fail the epistemic
+   pair) is in the `_ARTIFACT_LINT_EXEMPTIONS` comment; the `web`
+   source-identifier part of the ruling is open.*
+6. *Title ≈ "Numeric grounding blocks rewords; mode grounding warns".
+   Body: shipped 2026-09-01 in `taproot/reword.py` — numeric grounding
+   (a quantity-shaped digit run absent from every pinned passage)
+   blocks; mode grounding warns via `HubReword.warnings`. Corpus dry
+   run over 1,230 strict claim hubs: 10.8% numeric would-block (8
+   eyeballed → 6 true; the 2 false drove sci-notation and
+   decimal-precision canon fixes), 45% mode warn — stays advisory
+   until measured. `_UNVERIFIED_STAMPED_CLAUSE` now covers stamped
+   edges missing `verified_by` or `verified_claim_sha` (311 edges /
+   186 hubs, a historical cohort — `taproot/authoring.py` stamps the
+   sha at mint): strip on non-corroboration, never backfill the sha.*
+7. *Title ≈ "Prose-misuse contradicts dissolve on inspection". Body:
+   three of four `disputed` hubs were review findings against the
+   draft's own prose, not opposing evidence (fi191315←fi255164 and
+   fi191316←fi192706 — the prose is since fixed and only the stale
+   `disputed` posture remains; fi191329←fi255165 — the clause was
+   supported by uncited pc209495 → minted fi272040); fi189542's
+   `contradicts` edge was simply wrong — both passages state the same
+   discrete cone-angle set (link 999192 deleted, user-approved);
+   fixing the prose does not clear a hub's `disputed` posture on its
+   own → `contradicts-conflates-evidence-and-prose-misuse.md`.*
+8. *Title ≈ "scripts/prod-precis runs the prod DSN locally". Body:
+   reads `~/.secrets/pw/PRECIS_DATABASE_URL` in-process and runs
+   `uv run precis` where `claude` is authenticated — the prod-write
+   path that sidesteps a headless host's locked keychain; possibly a
+   `SPACE:repo-dev` node rather than product memory — the executing
+   lane decides.*
+
+   — *Skip (already covered / landed history): the melchior `claude`
+   keychain blocker is `live-model-tests-need-host-claude`; the
+   per-hub reword ledger and deleted link 999192 are history, not
+   claims.*
+
+*Then: append the new handles to the owning hub's reading-order line;
+repoint `docs/backlog/threads/nanobuds-paper.md` Do-next 4,
+`docs/backlog/ref-2615-is-a-mis-bound-record.md`,
+`docs/backlog/contradicts-conflates-evidence-and-prose-misuse.md` and
+`docs/backlog/ingest-strips-greek-glyphs.md`; delete this file and
+regenerate `docs/backlog/INDEX.md` (`scripts/docs-index`).*
+
 In-flight. Full phase plan + rationale:
 `~/.claude/plans/greedy-gliding-anchor.md`. This file is the durable
 resume pointer — the measured state and the decisions already made.

@@ -8,6 +8,68 @@ blocked-by: nanobud-campaign
 
 # Nanobud magnetomechanical memory
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, gripe `gr629126`. Owner after reading: `me628837`
+(boxel-assembly memory/actuation) is the relating hub named in the
+gripe, but this doc's own Target is spec `me629936` (nanobuds
+mechanical architecture) — the executing lane picks one `part-of`
+and links the other. Both 2026-11-11 transfer passes had no precis
+MCP; the executing lane needs the session MCP on PROD — the writes
+cannot be done from a no-MCP lane. Do not delete this file until the
+nodes below are written, the hub reading order carries their handles,
+and the references are repointed — retiring ahead of the transfer was
+reverted once already (`a331c87a4`).)*
+
+*Transfer manifest — coverage unchecked (this lane had no MCP; the
+executing lane searches the graph first and folds in what already
+exists). Write each as one `section:reference` node, `part-of` → the
+owning hub, `Source:` line naming this file + transfer date:*
+
+1. *Title ≈ "Mechanical-write, magnetic-read cell on nanobud order".
+   Body: Reto 2026-09-14 — explore whether magnetic state in an
+   all-carbon nanostructure can couple to structural configuration,
+   giving mechanical write + magnetic read (or vice versa). Seed
+   observation: fi189548 (dr173020) asserts intrinsic magnetic
+   moments with no magnetising step — order from topology, not
+   ferromagnetic elements. Motivation: the nanobuds architecture has
+   no high-density purely-mechanical storage layer; one substrate
+   would give write (actuate) + read (sense) with no extrinsic
+   magnetic material.*
+2. *Title ≈ "Scope: validate order, bistability, energetics, cell
+   sketch". Body: in scope — establish whether fi189548's magnetism
+   is genuine local order (not impurity / spin contamination /
+   measurement noise) and its Curie temperature; whether the state is
+   bistable and mechanically coupled to a structural degree of
+   freedom; write/read energies + retention; a first-pass write/read
+   cell (actuator type, sensing modality, cycle life). Out of scope —
+   new synthesis or experiment on nanobuds; competing magnetic
+   substrates (the rare-earth benchmark is a separate research pass);
+   device integration/fabrication; thermal management unless the
+   Curie temperature forces it. Acceptance: genuine-order review; Tc
+   determined (below ambient kills the premise); a reversible
+   mechanically-coupled DOF identified; order-of-magnitude write/read
+   energies; a cell sketch (bits per nanobud; actuator — STM tip,
+   electrostatic, photonic; magnetometry type; cycle life).*
+3. *Title ≈ "fi189548's sign-off gates the memory premise". Body:
+   parked behind nanobud-campaign's re-review of fi189548 (Reto
+   2026-10-21) — that re-review IS the magnetism validation, no
+   separate item. Open questions: real order vs artefact; Tc vs
+   300 K — the single most-gating number; which structural DOF
+   couples and is it bistable (C–C bond-bending, point-defect
+   mobility, larger distortion — must reverse without bond rupture);
+   write-energy floor vs tolerated actuation; the
+   density-vs-cycle-life sweet spot. Blast radius: spec `me629936`
+   (structural state / envelope work), the dr173020/fi189548 claim
+   corpus, the concurrent rare-earth evaluation, a future
+   storage-layer subsystem. `cites`/`qualifies` → `me629936` and the
+   campaign node.*
+
+*Then: append the new handles to the owning hub's reading order;
+repoint `docs/backlog/threads/nanobuds-paper.md` Horizon 6 and this
+file's `blocked-by:` front-matter (to the campaign node's handle);
+delete this file and regenerate `docs/backlog/INDEX.md`
+(`scripts/docs-index`).*
+
 Reto, 2026-09-14: explore whether magnetic state in an all-carbon nanostructure can be mechanically coupled to mechanical/structural configuration, enabling mechanical write + magnetic read (or vice versa).
 
 Seed observation: claim `fi189548` in draft `dr173020` ("Carbon Nanobuds at the Interface of Theory and Experiment") asserts intrinsic magnetic moments in an all-carbon nanostructure **without any magnetising step** — i.e. magnetic order arising from topology/structure rather than from ferromagnetic elements. The conjecture: if magnetic state is genuinely tied to structural configuration, a memory element could in principle be written by mechanical means and read magnetically.
