@@ -34,7 +34,7 @@ table the se binding's ``pcb_height_proposed`` finding reads.
 + ``through_mm`` (the board thickness). Whether a bound board's holes
 become derived child blocks or wait for a compound envelope is the
 carried question (pcb-workspace-code §Slices note; shared with
-cross-scale-single-assembly.md), deliberately not decided here.
+spec me630088), deliberately not decided here.
 """
 
 from __future__ import annotations

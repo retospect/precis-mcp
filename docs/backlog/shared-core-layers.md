@@ -37,7 +37,7 @@ prose only (gr522025), PCB edit/route/place/DRC ops fail as prose
 (gr522027), hex/structure workspace runs likewise (gr522031), and no
 domain can be asked what a selector resolves to (gr522026, gr522028,
 gr522032). Layer-stack kinds are coming (EWOD, flex, cartridge/microfluidic
-laminates: `pcb-ewod-multitile.md`, `cross-scale-single-assembly.md`) and
+laminates: `pcb-ewod-multitile.md`, spec `me630082`) and
 would each re-grow the stackup model inside pcb. Built separately these
 drift.
 

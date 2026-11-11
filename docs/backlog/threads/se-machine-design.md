@@ -179,7 +179,8 @@ off that gap until it closes.
    row owed (a job_type rides the `job_inproc` lane). Left: the browser
    click check (human);
    `pcb-argue-backport-se` unblocked.
-9. **backlog/cross-scale-single-assembly.md** — blocked-by 6
+9. **spec `me630082` + `me630088`** (was
+   backlog/cross-scale-single-assembly.md) — blocked-by 6
    (pcb-se-binding).
 
 ## Flat-pack open questions (argued 2026-10-03, for Do next 3)
@@ -308,7 +309,7 @@ off that gap until it closes.
 
 - **[cad-pattern-ops](../cad-pattern-ops.md)** — DSL mirror/rotate/tile as one motif mechanism; unparks on Reto's ruling whether a model-side pattern mechanism beats the Python-generator path.
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
-  the Horizon only, and lives inside `backlog/cross-scale-single-assembly.md`
+  the Horizon only, and lives inside spec `me630082`
   (Do-next 9) rather than as its own entry.
 - **backlog/method-transfer-stellar-signal-separation.md** — Graz notes;
   maybe useful for object manipulation (Reto, 2026-10-01). Unparks if an

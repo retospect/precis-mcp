@@ -28,7 +28,7 @@ Separately, `pcb_nets` has a `domain` column with `fluidic`/`thermal`
 schema-reserved, and `src/precis/handlers/pcb.py::_reject_non_electrical`
 refuses any non-`electrical` domain at write time ("v1 routes electrical
 nets only" — `handlers/pcb.py:401`). That refusal is the intended door for
-fluidic/thermal co-design (`cross-scale-single-assembly.md`), currently
+fluidic/thermal co-design (spec `me630082`), currently
 locked.
 
 ## Motivation / why
@@ -36,7 +36,7 @@ locked.
 `pcb-missing-constraint-classes.md`'s survey names crystal/oscillator
 keepout as a §A correctness item but assumed the mechanism existed to hang
 it on. It doesn't. A fluidic channel or a motor mount authored as a
-mechanical keepout (the exact use case `cross-scale-single-assembly.md`
+mechanical keepout (the exact use case spec `me630082`
 wants) is currently invisible to both the placer and the router — the
 constraint is expressible in the schema and silently ignored everywhere
 else.
@@ -57,13 +57,13 @@ else.
   an explicit warning so a round-tripped board doesn't lose the constraint.
 - **Name the fluidic/thermal door** — `_reject_non_electrical`'s refusal is
   the documented entry point for non-electrical nets; this item names it as
-  such (pointer, not implementation) so `cross-scale-single-assembly.md`
+  such (pointer, not implementation) so spec `me630082`
   has a concrete seam to unlock rather than rediscovering it.
 
 ## Explicitly NOT in scope
 
 - Unlocking `_reject_non_electrical` itself, or building fluidic/thermal
-  net support — that's `cross-scale-single-assembly.md`'s scope; this item
+  net support — that's spec `me630082`'s scope; this item
   only names the door.
 - New keepout *shapes* or authoring ergonomics beyond what `pcb_features`
   already carries — the defect is that the existing value does nothing,

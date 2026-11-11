@@ -411,7 +411,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Seam
 
-`backlog/cross-scale-single-assembly.md` (owned by se-machine-design) is
+Spec `me630082` (owned by se-machine-design) is
 where the EWOD cartridge stack — the ITO/adhesive/alignment
 layers, the physical assembly above the PCB — becomes part of one
 cross-scale design rather than a bare PCB; not ranked here.

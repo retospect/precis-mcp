@@ -340,7 +340,7 @@ already amended; nothing to do there.
 ## Follow-up v2 — moved (Reto 2026-10-23)
 
 The v2 remainder (per-part real heights, hole geometry, the se-side
-multi-solid call shared with `cross-scale-single-assembly.md`) moved to
+multi-solid call shared with spec `me630082`) moved to
 [pcb-workspace-code](pcb-workspace-code.md) slice 0b, "Board 3-D shape
 in the container": the board's 3-D shape is exposed as data and as a
 callable inside the workspace container, so a script checks the board
@@ -360,7 +360,7 @@ folded: thickness plumbing, the other `bound_kind` readers,
 `mode_binding_mismatch`, tighter acceptance criteria, `model: opus`,
 stale pointers. Round 1's "single write-time gate" confirmation below
 was wrong — the se CHECK is a second gate. Stale in the sibling item,
-not fixed here: `cross-scale-single-assembly.md` still calls this item
+not fixed here: spec `me630082` still calls this item
 "in flight" and cites `handlers/pcb.py:1826` (the caller is now
 ~1981).
 
@@ -538,7 +538,7 @@ Verdict needs-work for the rough-box slice: the slice is defined only in `thread
 - **advisory** — stale migration claim: "spec `me629029` (region property layer, folded) slice A takes 0018" but se migrations already reach 0022; "next free number at land" is fine, drop the 0018 note. Core next-free is after 0228.
 - **advisory** — acceptance criteria are for the full v1; the slice needs its own (box dimension test with a bottom/top part fixture, finding naming every non-own-height part, `set_binding(kind='pcb')` accepted and resolved at load).
 - **advisory** — `handlers/pcb.py` thickness plumbing: the caller at ~3480 is the JLC order path (`args.get("thickness_mm") or DEFAULT`); `mechanical_profile`'s caller must be re-located by name, not the "~1981" cited elsewhere.
-- **advisory** — spec is `status: draft`; the dangling-link check passed (`pcb-flexboard.md`, `cross-scale-single-assembly.md` all exist; the region property layer is spec `me629029`). Split: pass A (thickness column, `mechanical_profile` keys, connector roles) is separable from the rough box and should be deferred explicitly, not left implied.
+- **advisory** — spec is `status: draft`; the dangling-link check passed (`pcb-flexboard.md`, spec `me630082` all exist; the region property layer is spec `me629029`). Split: pass A (thickness column, `mechanical_profile` keys, connector roles) is separable from the rough box and should be deferred explicitly, not left implied.
 
 #### Rough-box addendum (readychecks, 2026-10-21, after coordinator message)
 

@@ -175,7 +175,7 @@ does not establish relaxed carbon stability.
 addressing, ports, the level ladder, validate findings, replayable op
 lists). Three things were on no item at the review and now are: the
 per-region property layer, the DNA wrap, and one assembly across scales
-(`backlog/cross-scale-single-assembly.md`; microfluidic cartridges,
+(spec `me630082`; microfluidic cartridges,
 parked 2026-09-12, unparked to the horizon only). Pockets as defined
 classes and pick-and-join as a membership query are
 `backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
