@@ -142,6 +142,26 @@ def test_tag_toc_scope_narrows_the_forest(hub: Hub, forest: dict[str, int]) -> N
     assert "Spec: routing" not in out
 
 
+def test_tag_toc_counts_members_past_non_memory_intermediates(
+    store: Store, hub: Hub
+) -> None:
+    """The forest member count is the ``view='members'`` subtree size:
+    the recursive walk transmits non-memory intermediates without
+    counting them, so a memory leaf under a ``todo`` bridge counts —
+    matching the node TOC, which re-attaches the leaf to its nearest
+    live memory ancestor (td633593 review of td633592)."""
+    h = MemoryHandler(hub=hub)
+    root = _put(h, "Spec: bridged", tags=("spec:bridged",))
+    bridge = store.insert_ref(kind="todo", slug=None, title="bridge", meta={})
+    leaf = _put(h, "Bridged leaf")
+    store.add_link(src_ref_id=bridge.id, dst_ref_id=root, relation="part-of")
+    store.add_link(src_ref_id=leaf, dst_ref_id=bridge.id, relation="part-of")
+    out = h.search(tags=["spec:bridged"], view="toc").body
+    assert "· 1 member" in out
+    node = h.get(id=root, view="toc").body
+    assert "· 1 in subtree" in node
+
+
 def test_tag_toc_pages_by_page_size(hub: Hub, forest: dict[str, int]) -> None:
     h = MemoryHandler(hub=hub)
     first = h.search(tags=["spec:*"], view="toc", page_size=2).body
@@ -216,6 +236,24 @@ def test_node_toc_reading_order_from_body_mentions(store: Store, hub: Hub) -> No
     h.link(id=alpha, target=f"memory:{parent}", rel="part-of")
     out = h.get(id=parent, view="toc").body
     assert out.index("Beta section") < out.index("Alpha section")
+
+
+def test_node_toc_meta_order_outranks_a_mention_at_offset_zero(
+    store: Store, hub: Hub
+) -> None:
+    """``meta.order`` is its own precedence tier: a child ranked 1
+    precedes an unranked sibling even when the sibling's handle sits
+    at body offset 0 — order values and character offsets are
+    different units, not one number line (td633593 review of
+    td633592)."""
+    h = MemoryHandler(hub=hub)
+    first = _put(h, "Mentioned first")
+    ranked = _put(h, "Ranked one", meta={"order": 1})
+    parent = _put(h, "Parent", text=f"me{first} leads, me{ranked} trails.")
+    h.link(id=first, target=f"memory:{parent}", rel="part-of")
+    h.link(id=ranked, target=f"memory:{parent}", rel="part-of")
+    out = h.get(id=parent, view="toc").body
+    assert out.index("Ranked one") < out.index("Mentioned first")
 
 
 def test_node_toc_orders_by_title_without_rank_or_mention(

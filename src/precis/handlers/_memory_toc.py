@@ -153,9 +153,13 @@ def _matched_cte(
 
 
 #: The tag's forest in one statement: live roots (a matched node whose
-#: live part-of parents are all unmatched), then a bounded walk counting
-#: every live memory member under each root — the same subtree size
-#: ``view='members'`` reports. ``UNION`` dedup makes cycles terminate.
+#: matched part-of parents are all unmatched — ``matched`` rows are
+#: live memory by definition, so the parent join needs no liveness
+#: filter), then a bounded walk over the raw part-of/contains edges
+#: counting only the live memory rows under each root — the same
+#: subtree size ``view='members'`` and ``get(view='toc')`` report, so
+#: non-memory and dead intermediates transmit the walk without
+#: counting. ``UNION`` dedup makes cycles terminate.
 _FOREST_SQL = """
     WITH RECURSIVE matched AS MATERIALIZED (
         SELECT r.ref_id FROM refs r WHERE {where}
@@ -165,25 +169,22 @@ _FOREST_SQL = """
         UNION ALL
         SELECT l.dst_ref_id, l.src_ref_id FROM links l
          WHERE l.relation = 'contains'
-    ), live_edges AS (
-        SELECT e.child, e.parent FROM edges e
-          JOIN refs c ON c.ref_id = e.child AND c.retired_at IS NULL
-          JOIN refs p ON p.ref_id = e.parent AND p.retired_at IS NULL
     ), roots AS (
         SELECT m.ref_id FROM matched m
         WHERE NOT EXISTS (
-            SELECT 1 FROM live_edges le
-              JOIN matched p ON p.ref_id = le.parent
-             WHERE le.child = m.ref_id)
+            SELECT 1 FROM edges e
+              JOIN matched p ON p.ref_id = e.parent
+             WHERE e.child = m.ref_id)
     ), walk(root, node) AS (
         SELECT ref_id, ref_id FROM roots
         UNION
-        SELECT w.root, le.child FROM walk w
-          JOIN live_edges le ON le.parent = w.node
-          JOIN refs mc ON mc.ref_id = le.child
-                      AND mc.retired_at IS NULL AND mc.kind = 'memory'
+        SELECT w.root, e.child FROM walk w
+          JOIN edges e ON e.parent = w.node
     )
-    SELECT w.root, COUNT(*) - 1 AS members FROM walk w GROUP BY w.root
+    SELECT w.root, COUNT(*) - 1 AS members FROM walk w
+      JOIN refs r ON r.ref_id = w.node
+                 AND r.retired_at IS NULL AND r.kind = 'memory'
+     GROUP BY w.root
 """
 
 
@@ -530,15 +531,16 @@ def render_node_toc(
     bodies = _bodies(store, [p for p, cs in children.items() if len(cs) > 1])
     mentions = {p: _mention_positions(b) for p, b in bodies.items()}
 
-    def rank(child_id: int, parent_id: int) -> tuple[float, str, int]:
+    def rank(child_id: int, parent_id: int) -> tuple[int, float, str, int]:
         child = memories[child_id]
+        title = (child.title or "").lower()
         order = (child.meta or {}).get("order")
         if isinstance(order, (int, float)) and not isinstance(order, bool):
-            return (float(order), (child.title or "").lower(), child_id)
+            return (0, float(order), title, child_id)
         pos = mentions.get(parent_id, {}).get(child_id)
         if pos is not None:
-            return (float(pos), (child.title or "").lower(), child_id)
-        return (float("inf"), (child.title or "").lower(), child_id)
+            return (1, float(pos), title, child_id)
+        return (2, 0.0, title, child_id)
 
     def subtree_size(node_id: int) -> int:
         total = 0
