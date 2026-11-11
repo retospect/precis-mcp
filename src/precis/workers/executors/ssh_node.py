@@ -311,6 +311,27 @@ def _detached_group_alive(handle: Any) -> bool:
         return False
 
 
+def _handle_log_mtime(handle: Any) -> datetime | None:
+    """mtime of a detached job's session log on THIS host, or ``None``.
+
+    ``_polling_jobs`` only hands this host jobs pinned to it (a NULL pin
+    on a node-less worker), so a stat here is the session's true
+    freshness — persisted to ``meta.log_fresh_at`` by every non-terminal
+    poll so the unpinned ``factory_rescue_tick`` reads it cluster-wide
+    (td639132: a tick claimed by another host stats a path it cannot
+    see). ``None`` on a non-dict handle, no ``log`` key, or an
+    unreadable path."""
+    if not isinstance(handle, dict):
+        return None
+    raw = handle.get("log")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(Path(raw).stat().st_mtime, UTC)
+    except OSError:
+        return None
+
+
 def _detached_identity_reason(handle: Any) -> str | None:
     """Fail closed unless the local group leader has the recorded identity."""
     pgid = _detached_pgid(handle)
@@ -1492,12 +1513,24 @@ def _poll_one(ctx: DispatchContext) -> bool:
 
     terminal = bool(spec.poll(ctx, handle))
     if not terminal:
+        from psycopg.types.json import Jsonb
+
+        # This host is the job's target, so the session-log mtime it can
+        # stat is real freshness — persist it for the unpinned
+        # ``factory_rescue_tick`` to judge on any host (td639132).
+        stamp = _handle_log_mtime(handle)
         with store.pool.connection() as conn:
             conn.execute(
                 "UPDATE refs SET meta = meta || jsonb_build_object("
                 "  'lease_until', (now() + make_interval(secs => %s))::text"
-                ") WHERE ref_id = %s",
-                (_lease_seconds(meta), ref_id),
+                ") || %s::jsonb WHERE ref_id = %s",
+                (
+                    _lease_seconds(meta),
+                    Jsonb(
+                        {"log_fresh_at": stamp.isoformat()} if stamp is not None else {}
+                    ),
+                    ref_id,
+                ),
             )
             conn.commit()
     return terminal

@@ -444,8 +444,10 @@ def enter_rescue(
 #
 # ``run_stall_pass`` is the first caller of ``enter_rescue``: the
 # ``factory_rescue_tick`` job's stall pass — DB-only but for one host
-# read, a live job's session-log mtime (:func:`_job_log_at`, gr626270).
-# It finds the plan nodes
+# read, a live job's session-log mtime (:func:`_job_log_at`, gr626270)
+# — which the job's target host persists as ``meta.log_fresh_at`` and a
+# local stat adds only when the pin says this host may hold the file
+# (td639132). It finds the plan nodes
 # that went silent past their stage deadline and sends each to RESCUE —
 # never dispatched, a cancelled newest job, queued/build/land/review
 # overrunning, a sha-in-prod gate that never opens, a root closed under
@@ -701,23 +703,44 @@ def _unblocked_at(store: Store, plan: Any, n: Any) -> datetime | None:
 
 
 def _job_log_at(j: Any) -> datetime | None:
-    """mtime of a detached job's session log (``meta.compute_handle.log``)
-    on this host, or ``None`` — no handle, no log path, or the file
-    unreadable here (a run pinned to another node). The one non-DB
-    signal the pass reads (gr626270): a run_slice session writes its
-    progress to the log, not to job events, so a build whose log still
-    moves is alive past its last DB stamp, and one whose log stopped is
-    dead at the deadline whether or not its pid still lives."""
+    """Newest observed mtime of a detached job's session log, or ``None``.
+
+    The log lives on the job's TARGET host: the owning ssh_node poll
+    stats it each pass and persists ``meta.log_fresh_at`` — the
+    cluster-wide signal this unpinned tick reads (td639132: a watchdog
+    claimed by another host statting ``compute_handle.log`` locally saw
+    only its own filesystem, so fresh builder logs were invisible and
+    live builds still rescued on DB silence). A direct stat still counts
+    when this host may hold the file — the job unpinned, or pinned to
+    ``PRECIS_NODE`` — covering the window before a job's first stamp
+    lands (gr626270): a run_slice session writes its progress to the
+    log, not to job events, so a build whose log still moves is alive
+    past its last DB stamp, and one whose log stopped is dead at the
+    deadline whether or not its pid still lives."""
+    stamps: list[datetime] = []
+    raw = j.meta.get("log_fresh_at")
+    if isinstance(raw, str):
+        try:
+            stamp = datetime.fromisoformat(raw)
+        except ValueError:
+            stamp = None
+        if stamp is not None:
+            stamps.append(stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC))
     handle = j.meta.get("compute_handle")
-    if not isinstance(handle, dict):
-        return None
-    raw = handle.get("log")
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        return datetime.fromtimestamp(Path(raw).stat().st_mtime, UTC)
-    except OSError:
-        return None
+    if isinstance(handle, dict):
+        params = j.meta.get("params")
+        pinned = params.get("target_node") if isinstance(params, dict) else None
+        path = handle.get("log")
+        if (
+            isinstance(path, str)
+            and path
+            and (pinned is None or pinned == os.environ.get("PRECIS_NODE"))
+        ):
+            try:
+                stamps.append(datetime.fromtimestamp(Path(path).stat().st_mtime, UTC))
+            except OSError:
+                pass
+    return max(stamps) if stamps else None
 
 
 def _node_signals(
@@ -1463,9 +1486,12 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 
     ``now`` is passed in (timezone-aware UTC). The pass is DB-only but
     for one host read — the mtime of a live job's session log, the
-    liveness signal a run_slice writes progress to (gr626270) — and
-    writes nothing while the factory is switched off: ``read_only_reason``
-    forces a dry run that still lists every ``would_rescue`` node.
+    liveness signal a run_slice writes progress to (gr626270). The
+    job's target host persists it as ``meta.log_fresh_at``; a local stat
+    adds it only when the job's pin says this host may hold the file
+    (td639132). The pass writes nothing while the factory is switched
+    off: ``read_only_reason`` forces a dry run that still lists every
+    ``would_rescue`` node.
     """
     from precis.workers.job_types import plan_dispatch as pd
 

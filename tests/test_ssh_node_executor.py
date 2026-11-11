@@ -12,6 +12,7 @@ import signal
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
 from typing import Any
@@ -1090,6 +1091,58 @@ def test_poll_still_running_renews_lease_without_finishing(
         assert row is not None
         (still_future,) = row
     assert still_future is True
+
+
+def test_poll_still_running_persists_log_freshness(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """td639132: the non-terminal poll runs on the job's target host, so
+    the session-log mtime it stats is real freshness — persisted to
+    ``meta.log_fresh_at`` for the unpinned ``factory_rescue_tick`` to
+    judge cluster-wide."""
+    log_file = tmp_path / "run_slice.log"
+    log_file.write_text("progress\n", encoding="utf-8")
+    polled: list[Any] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_poll, submit=lambda c, s: None),
+    )
+    handle = {"pid": 1, "log": str(log_file)}
+    rid = _mk_running_job(store, lease_offset_s=-60, compute_handle=handle)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert polled == [handle]
+    stamp = _meta(store, rid).get("log_fresh_at")
+    assert stamp is not None
+    assert datetime.fromisoformat(stamp) == datetime.fromtimestamp(
+        log_file.stat().st_mtime, UTC
+    )
+
+
+def test_poll_still_running_without_a_log_writes_no_stamp(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A handle with no readable ``log`` stamps nothing — the key stays
+    absent rather than going null (td639132)."""
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=lambda c, h: False, submit=lambda c, s: None),
+    )
+    rid = _mk_running_job(store, lease_offset_s=-60, compute_handle={"pid": 1})
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert "log_fresh_at" not in _meta(store, rid)
 
 
 def test_poll_terminal_drives_status_and_counts_ok(

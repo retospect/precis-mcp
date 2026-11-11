@@ -15,8 +15,11 @@ succeeded pass in 30 min. A hold is not a stall: ``waiting-for:``,
 target exempt a node; release plans belong to
 ``release_poll::watch_stuck`` and are skipped. DB-only but for one
 host read — the mtime of a live job's session log, the liveness a
-``run_slice`` writes progress to (gr626270) — no checkout, no host
-capabilities.
+``run_slice`` writes progress to (gr626270). The job's target host
+persists it as ``meta.log_fresh_at`` each ssh_node poll, so this
+unpinned job judges it cluster-wide; a local stat adds it only when
+the job's pin says this host may hold the file (td639132). No
+checkout, no host capabilities.
 
 Read-only while the kill switch holds (``PRECIS_FACTORY=off`` or a
 ``service_config`` ``plan_dispatch`` row with ``prio = 0``) or under

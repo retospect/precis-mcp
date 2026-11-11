@@ -32,8 +32,10 @@ The lanes
   node. A job_type exposing ``spec.submit``/``spec.poll`` runs DETACHED:
   ``submit`` launches (nohup / ``docker run -d`` / sbatch) and returns a
   handle persisted to ``meta.compute_handle``; each pass polls in-flight
-  handles — a cheap status check + lease renewal, never a multi-hour
-  block. A legacy blocking ``spec.dispatch`` still works but logs a
+  handles — a cheap status check + lease renewal (plus the session-log
+  mtime stamp ``meta.log_fresh_at`` the unpinned stall watchdog reads
+  cluster-wide, td639132), never a multi-hour block. A legacy blocking
+  ``spec.dispatch`` still works but logs a
   deprecation naming gr187627 (a blocking call starved a worker's whole
   rotation long enough to trip host-dark). A reclaimed row that already
   carries a handle is re-adopted, never re-submitted.

@@ -386,6 +386,117 @@ def test_running_build_with_an_unreadable_log_keeps_db_judgment(
     assert res.rescued == [(task, "stalled", "build")]
 
 
+def test_running_build_with_a_fresh_persisted_stamp_is_not_rescued(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td639132: the tick is unpinned — claimed by a host that cannot
+    see the builder's filesystem, the local stat adds nothing. The
+    owning host's poll persists the log mtime as ``meta.log_fresh_at``;
+    that cluster-wide stamp judges a build whose log is still moving
+    on another host."""
+    monkeypatch.setenv("PRECIS_NODE", "watchdog")
+    root = _root(store)
+    task = _node(store, root)
+    fresh = NOW + timedelta(hours=4, minutes=55)
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "params": {"target_node": "builder"},
+            "compute_handle": {"pid": 1, "log": str(tmp_path / "gone.log")},
+            "log_fresh_at": fresh.isoformat(),
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_running_build_pinned_elsewhere_ignores_a_local_log(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other edge of the pin: a same-named file on THIS host is not
+    the job's log — when the pin names another node the local stat is
+    no signal at all, so it can never mask a real stall."""
+    monkeypatch.setenv("PRECIS_NODE", "watchdog")
+    root = _root(store)
+    task = _node(store, root)
+    log = tmp_path / "run_slice.log"
+    log.write_text("not this job's log\n", encoding="utf-8")
+    fresh = NOW + timedelta(hours=4, minutes=55)
+    os.utime(log, (fresh.timestamp(), fresh.timestamp()))
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "params": {"target_node": "builder"},
+            "compute_handle": {"pid": 1, "log": str(log)},
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == [(task, "stalled", "build")]
+
+
+def test_running_build_pinned_here_reads_the_local_log(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job pinned to THIS host gets the direct stat before its first
+    ``log_fresh_at`` stamp lands — the local read is still a signal."""
+    monkeypatch.setenv("PRECIS_NODE", "builder")
+    root = _root(store)
+    task = _node(store, root)
+    log = tmp_path / "run_slice.log"
+    log.write_text("progress\n", encoding="utf-8")
+    fresh = NOW + timedelta(hours=4, minutes=55)
+    os.utime(log, (fresh.timestamp(), fresh.timestamp()))
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "params": {"target_node": "builder"},
+            "compute_handle": {"pid": 1, "log": str(log)},
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_running_build_with_a_stale_persisted_stamp_is_rescued(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stamp is honest evidence, not a heartbeat: a ``log_fresh_at``
+    older than the deadline still rescues, cross-host or not."""
+    monkeypatch.setenv("PRECIS_NODE", "watchdog")
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "params": {"target_node": "builder"},
+            "compute_handle": {"pid": 1, "log": str(tmp_path / "gone.log")},
+            "log_fresh_at": (NOW - timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == [(task, "stalled", "build")]
+    (comment,) = _comments(store, task)
+    assert "log mtime" in comment
+
+
 def test_gate_not_open_is_judged_at_72_hours(store: Store) -> None:
     root = _root(store)
     build = _node(store, root, title="build", status="done")
