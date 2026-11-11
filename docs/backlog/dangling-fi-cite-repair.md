@@ -9,7 +9,7 @@ title: Existing dangling [fi] cites in draft prose need a data repair
 A draft chunk citing `[fi<id>]` kept the cite when the hub was deleted or
 merged away, so grounded prose reverted to ungrounded while still looking
 grounded (and every conversion census counts it as done; see the dr42995
-sections in [dr42995-boxel-draft.md](dr42995-boxel-draft.md)). The code side
+sections now in graph memory — census me630174, residue me630175). The code side
 is done: `retire_ref` refuses a cited finding (70bca5d9), draft lint flags
 tombstone cites, and `merge_hubs` rewrites live `[fi<loser>]` cites to the
 winner in the same transaction (collapsing a doubled winner cite), listing

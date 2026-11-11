@@ -91,8 +91,9 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 
 ## Parked
 
-- **dr42995-boxel-draft** — one-draft content chore, not tooling; unpark with
-  Reto's word on that draft. (`dft-hbond-draft-27-paywalled-dois` shipped:
+- **dr42995-boxel-draft** — retired into graph memory 2026-11-11 (gr629117):
+  campaign state me474326 with children me630172–me630177. Still a one-draft
+  content chore, not tooling; unpark with Reto's word on that draft. (`dft-hbond-draft-27-paywalled-dois` shipped:
   all 27 sources fetched, the one genuine over-attribution cite fixed.)
 - **Patents** — `patent-authoring-loop` (status draft; absorbed
   patent-drafting-merge's expansions) · `fto-defensive-publication`: dormant on Reto's word (2026-10-01);
