@@ -7,12 +7,13 @@ claim deterministically (no LLM): every unit-bearing number
 as a citation, attributed to the citation its clause belongs to — the
 clause's own handle, else the nearest handle after the number, then the
 nearest before it — must appear in that citation's evidence as the same
-``(number, unit)`` pair. Evidence pools over the citation group: adjacent
-cites (a cluster) plus every cite inside the same bracketed list, since
-"(pa1; findings fi1–fi3)" is one list though its ``;`` separates the
-spans (gr631570 — and a ``;`` inside brackets never ends the sentence).
-Non-cite handles are skipped, never checked: a ``python:``/``md:`` anchor
-or a gripe/todo/job/agentlog/skill ref owns the number nearest to it —
+``(number, unit)`` pair. Evidence pools over every citation in the
+sentence — "(pa1; findings fi1–fi3)" is one list though its ``;``
+separates the spans, and a cite far down the same sentence still grounds
+the claim (gr631570 — and a ``;`` inside brackets never ends the
+sentence). Non-cite handles are skipped, never checked: a
+``python:``/``md:`` anchor or a gripe/todo/job/agentlog/skill ref —
+``kind:id``, ``[code<N>]`` or bare — owns the number nearest to it —
 ``python:main::x 0.63 nm/nt [me1]`` attributes the number to the code
 anchor, not to me1 (gr631570). A parenthetical glosses what precedes it:
 a number inside one belongs to the nearest citation before its opening
@@ -123,10 +124,6 @@ _SENTENCE_BREAK_RE = re.compile(
     r"\s+(?=[A-Z(\[\"~≈<>\-\d]|[a-z]+:\w)|\n\s*|;\s+"
 )
 
-#: Citation spans closer than this (same sentence) form one cluster whose
-#: evidence is pooled: "(pc1, pc2)", "[pc1][pc2]", "pa5 / pa6".
-_CLUSTER_GAP_CHARS = 12
-
 #: Text-evidence loading cap per ref (whichever hits first).
 _EVIDENCE_MAX_CHUNKS = 200
 _EVIDENCE_MAX_BYTES = 400_000
@@ -162,9 +159,11 @@ _REF_NUMERAL_TAIL_RE = re.compile(r"-[A-Z]")
 #: bindings that belonged to them).
 _SINK_KINDS = frozenset({"python", "md", "gripe", "todo", "job", "agentlog", "skill"})
 
-#: Bare handle codes for the sink kinds (``gr5``, ``td12``, ``jo3``,
-#: ``ag44``, ``sk9``). Chunk codes stay citations: ``[gc12]``/``[jc12]``
-#: quote a gripe/job's text like any other record.
+#: Bare handle codes for the sink kinds (``gr515812``, ``td123``,
+#: ``jo456``, ``ag789``, ``sk101``); the ≥3-digit floor keeps short
+#: tokens prose — bracketed short handles are unambiguous and caught by
+#: the markup pass instead. Chunk codes stay citations:
+#: ``[gc12]``/``[jc12]`` quote a gripe/job's text like any other record.
 _SINK_HANDLE_RE = re.compile(r"\b(?:gr|td|jo|ag|sk)\d{3,}\b")
 
 #: Clause joints inside a sentence: commas, brackets and dashes bound the
@@ -382,6 +381,23 @@ class _Span:
     drop_if_unresolved: bool = False
 
 
+def _markup_handle(
+    m: re.Match[str],
+) -> tuple[str, tuple[str, bool, int] | None]:
+    """The registry handle a draft-markup match names: its written token
+    and ``parse`` decode — ``None`` for a non-handle target
+    (``[text](https://…)``, ``[¶h]``)."""
+    if m.group("auth") is not None:
+        token = m.group("auth").strip()
+    elif m.group("tgt") is not None:
+        token = m.group("tgt").strip()
+    elif m.group("bare") is not None:
+        token = m.group("bare")
+    else:
+        return "", None
+    return token, handle_registry.parse(handle_registry.normalize(token))
+
+
 def _cite_spans(body: str) -> list[_Span]:
     """Citation spans in priority order (markup, kind:id, bare handle, bare
     paper key); a later span overlapping an earlier one is dropped."""
@@ -391,16 +407,14 @@ def _cite_spans(body: str) -> list[_Span]:
         return all(end <= s.start or start >= s.end for s in spans)
 
     for m in DRAFT_MARKUP_PATTERN.finditer(body):
-        if m.group("auth") is not None:
-            token = m.group("auth").strip()
-        elif m.group("tgt") is not None:
-            token = m.group("tgt").strip()
-        elif m.group("bare") is not None:
-            token = m.group("bare")
-        else:
+        token, parsed = _markup_handle(m)
+        if parsed is None:
             continue
-        # A ``[text](https://…)`` / ``[¶h]`` is not a registry handle.
-        if not handle_registry.is_well_formed(handle_registry.normalize(token)):
+        kind, is_chunk, _pk = parsed
+        # A bracketed process handle (``[gr515812]``) is a sink, never a
+        # citation — ``_sink_spans`` owns the number beside it (gr631570).
+        # Chunk codes stay cites: ``[gc12]`` quotes a gripe's text.
+        if kind in _SINK_KINDS and not is_chunk:
             continue
         spans.append(_Span(m.start(), m.end(), token, "h:" + token))
     for m in REF_PATTERN.finditer(body):
@@ -454,15 +468,25 @@ def _with_prose_pinpoint(body: str, span: _Span) -> _Span:
 
 
 def _sink_spans(body: str, cite_spans: list[_Span]) -> list[_Span]:
-    """Positions of non-cite handles (:data:`_SINK_KINDS` prefixed forms and
-    :data:`_SINK_HANDLE_RE` bare codes), skipping any spot a citation
-    already claims. They are never resolved or checked: a sink only *owns*
-    the number nearest to it, which is then attributed to no citation."""
+    """Positions of non-cite handles (:data:`_SINK_KINDS` — ``kind:id``
+    forms and bracketed handles — plus :data:`_SINK_HANDLE_RE` bare
+    codes), skipping any spot a citation already claims. They are never
+    resolved or checked: a sink only *owns* the number nearest to it,
+    which is then attributed to no citation."""
     out: list[_Span] = []
 
     def _free(start: int, end: int) -> bool:
         return all(end <= s.start or start >= s.end for s in [*cite_spans, *out])
 
+    for m in DRAFT_MARKUP_PATTERN.finditer(body):
+        _tok, parsed = _markup_handle(m)
+        if (
+            parsed is not None
+            and parsed[0] in _SINK_KINDS
+            and not parsed[1]
+            and _free(m.start(), m.end())
+        ):
+            out.append(_Span(m.start(), m.end(), m.group(0), "sink"))
     for m in REF_PATTERN.finditer(body):
         if m.group("kind") in _SINK_KINDS and _free(m.start(), m.end()):
             out.append(_Span(m.start(), m.end(), m.group(0), "sink"))
@@ -650,22 +674,6 @@ def _cite_parenthetical(
     return None
 
 
-def _clusters(spans: list[_Span], seg_of_span: list[int]) -> list[int]:
-    """Cluster id per span: neighbours in one sentence within
-    ``_CLUSTER_GAP_CHARS`` characters share an id."""
-    ids: list[int] = []
-    for i, sp in enumerate(spans):
-        if (
-            i
-            and seg_of_span[i] == seg_of_span[i - 1]
-            and sp.start - spans[i - 1].end <= _CLUSTER_GAP_CHARS
-        ):
-            ids.append(ids[-1])
-        else:
-            ids.append(ids[-1] + 1 if ids else 0)
-    return ids
-
-
 def ungrounded_cited_numbers(
     store: Store, body: str, *, cache: AttributionCache | None = None
 ) -> list[UngroundedNumber]:
@@ -705,7 +713,6 @@ def ungrounded_cited_numbers(
 
     seg_of_span = [_segment(sp.start) for sp in spans]
     seg_of_sink = [_segment(sp.start) for sp in sinks]
-    cluster_of = _clusters(spans, seg_of_span)
     clause_breaks = [m.start() for m in _CLAUSE_BREAK_RE.finditer(body)]
 
     def _clause(s: int, e: int) -> tuple[int, int]:
@@ -794,31 +801,14 @@ def ungrounded_cited_numbers(
     if not picks:
         return []
 
-    # A pick checks against its whole citation group's pooled evidence:
-    # the cluster plus every cite bracketed with a cluster member —
-    # "(pa1; findings fi1–fi3)" is one group though its ";" separates the
-    # spans (gr631570).
-    paren_of: list[tuple[int, int] | None] = [None] * len(spans)
-    for o, c in groups:
-        for j, sp in enumerate(spans):
-            have = paren_of[j]
-            if (
-                o < sp.start
-                and sp.end <= c
-                and (have is None or c - o < have[1] - have[0])
-            ):
-                paren_of[j] = (o, c)
-    pools: dict[int, list[int]] = {}
-    for i in {i for _t, _s, i in picks}:
-        member = {j for j, cid in enumerate(cluster_of) if cid == cluster_of[i]}
-        for j in list(member):
-            grp = paren_of[j]
-            if grp is not None:
-                o, c = grp
-                member.update(
-                    k for k, sp in enumerate(spans) if o < sp.start and sp.end <= c
-                )
-        pools[i] = sorted(member)
+    # A pick checks against the pooled evidence of every citation in its
+    # sentence: "per pa555 … also pa666" and "(pa1; findings fi1–fi3)"
+    # are one claim's citation set however far apart the cites sit
+    # (gr631570).
+    pools: dict[int, list[int]] = {
+        i: [j for j, sg in enumerate(seg_of_span) if sg == seg_of_span[i]]
+        for i in {i for _t, _s, i in picks}
+    }
     resolved = {
         j: _resolve_cite(store, spans[j], cache) for js in pools.values() for j in js
     }

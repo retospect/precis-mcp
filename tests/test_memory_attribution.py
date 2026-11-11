@@ -221,11 +221,14 @@ def test_cite_cluster_pools_evidence(world, body):
     assert [m.token for m in _check(body)] == ["7 nm"]
 
 
-def test_distant_cites_do_not_cluster(world):
+def test_distant_cites_in_one_sentence_pool(world):
+    """Every cite in the number's sentence pools its evidence, however far
+    apart the cites sit; a sentence break still ends the pool."""
     world[(5, None)] = "nothing"
     world[(6, None)] = "found 7 nm"
-    body = "gap of 7 nm per pa555 and then a long aside here, also pa666"
-    assert [m.token for m in _check(body)] == ["7 nm"]
+    assert _check("gap of 7 nm per pa555 and then a long aside here, also pa666") == []
+    out = _check("gap of 7 nm per pa555. A long aside here, also pa666")
+    assert [m.token for m in out] == ["7 nm"]
 
 
 def test_unit_aware_comparison(world):
@@ -534,6 +537,17 @@ def test_gripe_and_todo_handles_own_the_number_beside_them(world):
     assert _check("5 nm per gripe:123 and [pa12]") == []
     assert _check("5 nm per gr515812 and [pa12]") == []
     assert _check("5 nm per todo:99 and [pa12]") == []
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["[gr515812]", "[[td12]]", "[see](jo999)", "[ag44]", "[sk9]", "[gr5]"],
+)
+def test_bracketed_process_handles_own_the_number_beside_them(world, form):
+    """A bracketed process handle is a sink, never a citation: it owns the
+    number beside it and is never resolved or checked."""
+    world[(12, None)] = "nothing numeric"
+    assert _check(f"5 nm per {form} and [pa12]") == []
 
 
 def test_nearer_cite_still_binds_over_a_farther_sink(world):
