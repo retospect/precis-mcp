@@ -342,13 +342,32 @@ summaries); the armed `section:threads` sweep never reads `pinned`.
 ```python
 put(
     kind="memory",
-    text="Does CACHE: pinning play well with re-ingest?",
+    text="Does CACHE: pinning survive a re-ingest of the pinned source?\n"
+         "Checked 2026-11-10: the re-ingest path never reads CACHE: tags;\n"
+         "settling evidence would be a real re-ingest run.",
     tags=["confidence-tentative", "topic:caching", "wip"],
 )
 ```
 
 `confidence-tentative` + `wip` is the convention for unresolved
-questions. Drop `wip` and bump confidence when you settle it.
+questions. The body carries the last-checked UTC date and what would
+settle it — a later session re-asks or settles from the evidence, not
+the tag. When settling needs work, link a follow-up todo to the memory;
+the todo is the scheduled work, the memory is the tagged question:
+
+```python
+put(kind="todo", text="re-ingest a CACHE:-pinned memory and check survival",
+    link="me<N>", rel="related-to")  # the returned question handle
+```
+
+Tags alone implement no recurrence or backoff — nothing re-surfaces a
+`wip` memory on a cadence, so a question that must come back belongs on
+the linked todo (a real cadence is `meta.schedule`, [[precis-todo-help]]),
+never on tag edits. A question whose answer sits in the corpus settles by
+the research pass in [[precis-research-help]]. A proposed loose-end
+lifecycle (me626709) would give `wip` nodes review cadence; until it lands
+the linked todo is the only mechanism. Settled → drop `wip`, record the
+settling evidence in the body and bump confidence.
 
 ## Find memories I wrote earlier
 ## Search my notes by topic
