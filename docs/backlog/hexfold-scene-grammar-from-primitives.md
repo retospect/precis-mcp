@@ -11,12 +11,23 @@ blocked-by: me630471
 
 *(Transfer to graph memory is pending — spec-in-memory ruling
 `me568168`, target spec `me628772` (representation group `me628774`),
-gripe `gr629123`. Not read in the 2026-11-11 transfer pass; the builder
-lane had no precis MCP. Do not delete this file until its
-`section:reference` nodes are written under `me628774`, the hub reading
-order carries their handles, and the source/backlog references are
-repointed — retiring ahead of the transfer was reverted once already
-(`a331c87a4`).)*
+gripe `gr629123`. The 2026-11-11 transfer pass wrote nothing for this
+file (the builder lane had no precis MCP) and review `td630492` found
+`gr629123` still open on the banner alone. An MCP-capable lane must
+write this file's claims as `section:reference` nodes under `me628774`
+with `Source:`/`Built:` anchors (the `me630415`/`me630417` shape):
+the Reto 2026-10-07 ruling and slice-0 ordering (`me630471` first),
+the primitive/tether table, the composition rule over exactly the
+three existing solvers (`plan_scene` wrapped, not decomposed), the
+typed-scene → primitive backward-compat mapping, the NOT-in-scope
+list, the acceptance criteria (gate parity on committed goldens at
+`terminate:"none"`, the prod-parity RMS procedure, the (10,10)
+two-strip scene bars, unchanged stored-scene rendering) and the
+decisions log. Then the hub reading order carries their handles, the
+file references (`threads/hexfold-toolkit.md` item 1a,
+`structure-workspaces.md`, `packaging/geom/README.md`) are repointed
+and only then is this file deleted — retiring ahead of the transfer
+was reverted once already (`a331c87a4`).)*
 
 Reto, 2026-10-07 (via chat-interface, after the Y-junction and the fin
 scenes): ruled YES on growing the `hexfold_scene` grammar from primitives.
