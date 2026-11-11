@@ -454,13 +454,15 @@ Tests in `tests/test_precis_flow_species.py` (kernel) and
    slip-aware regime card (`from_physical(slip_length=)` raises the
    knudsen continuum bound 0.01→0.1 via `KN_SLIP_MAX`; `route()` reads the
    knudsen line's own threshold; an informational `slip` line reports
-   `b/h0`). No-slip walls are bit-for-bit the slice-1 solve. **Still open:**
+   `b/h0`). No-slip walls are bit-for-bit the slice-1 solve. The species-side
+   profile and Taylor coefficient live in
+   `src/precis_flow/slip.py::gap_profile` and `taylor_coefficient`;
+   `SlipProfile` supplies the tracer hook and the Eulerian solver uses
+   `shear_velocity = U* sqrt(210 kappa)`. Kernel tests cover S1–S5.
+   **Still open:**
    the se surface — a `slip-length` patch measurand (needs the core seed
    migration, release owner) and the token/computer wiring in
-   `precis_se/flow.py`; and the species-side Taylor reduction (the
-   `(1+6b/h)⁻²` equal-slip shortcut and the slip-shifted tracer profile;
-   the general path already rides the existing `shear_velocity`/`profile`
-   args of `species.transport`).
+   `precis_se/flow.py`, including the adapter acceptance cases.
 6. **Compliant walls.** Wall material `E, ν, t`; the closure is named by
    `t/W` (wall thickness over channel width):
    - thick PDMS (`t ≫ W`): Winkler `K_w ≈ E/(c₁ W)`, `c₁` a stated
