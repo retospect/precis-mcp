@@ -8,6 +8,7 @@ description: "Use when you learned something durable for repo-dev memory (a gotc
 **Memory shape card**
 - One claim per node; no second topic.
 - The title IS the claim: at most 12 words, the sūtra, with its scope.
+- A subject hub's or sub-hub's title is `<Name> hub: <scope list>`, set explicitly; `Belongs here:` / `Not here:` stay in its body. Spec and programme roots keep `Spec:` / `Programme:` titles.
 - The body is the gloss: why, when it bites, what to do, one live anchor, a UTC date.
 - Edges carry roles: `part-of` the hub, `cites`/`derived-from` for evidence, `qualifies` for scope.
 - Name entities by handle; their current state belongs on their refs, never restated here.

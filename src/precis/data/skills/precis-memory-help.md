@@ -677,7 +677,7 @@ and the parent's type (`section:reference` for a result). It inherits
 the summary's `qualifies` scope and nearest hub; give the detail node no
 `qualifies` links of its own.
 
-A summary node that grows past 8 children becomes a sub-hub (`section:index`), still `part-of` its parent hub.
+A summary node that grows past 8 children becomes a sub-hub (`section:index`), still `part-of` its parent hub; title it per "Title a hub or sub-hub".
 
 `get(kind="memory", id="me3", view="fisheye+1hop")` on a hub lists every
 member on one line (handle, title, hook) — no cap. Other relation groups
@@ -727,6 +727,17 @@ concept puts take `dry_run=True` too, without the kind line. The `rel=`
 choices between two memories:
 `precis-relations` (the memory↔memory block); where each edge renders:
 `precis-fisheye-help`.
+
+## Title a hub or sub-hub
+
+Title a subject hub or sub-hub `<Name> hub: <scope>`, the scope a comma
+list of what it holds and the whole title at most 12 words (`Chemistry &
+catalysis hub: pathway kind, autocatpath, catalysis import, surveys`). Set
+`title=` explicitly: an untitled hub takes its first body line, cut
+mid-word in every `Parts:` row. The filing rules stay in the body as
+`Belongs here:` and `Not here:` lines; the parent is the `part-of` edge,
+not title text. Spec roots, programme roots and their section groups keep
+their own `Spec:` / `Programme:` / claim titles.
 
 ## Update or new node? — the duplicate check
 ## Merge a duplicate instead of keeping both
