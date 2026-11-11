@@ -536,7 +536,7 @@ class TestPutAccount:
         assert a.vendor == "anthropic"
         assert a.plan == "subscription"
         assert a.adapter == "claude_p"
-        assert a.default_model == "claude-sonnet-5"
+        assert a.default_model == "claude-sonnet-5-5"
         assert set(a.pools) == {"llm:claude-sub:5h", "llm:claude-sub:7d"}
 
     def test_create_requires_vendor_plan_adapter(

@@ -440,7 +440,7 @@ def call_codex_exec(
         model: ``-m`` override (``PRECIS_CODEX_MODEL`` else the CLI's own
             default — unset passes no flag). A ``claude*`` id can never be
             a codex model: the router resolves a tier default like
-            ``claude-sonnet-5`` into a model-less codex rung, and passing it
+            ``claude-sonnet-5-5`` into a model-less codex rung, and passing it
             would hard-fail every call — dropped here, at the wire boundary.
         timeout_s: Wall-clock cap (``PRECIS_CODEX_TIMEOUT_S`` or ``120``).
         extra_args: Additional ``codex exec`` flags, verbatim. Most callers

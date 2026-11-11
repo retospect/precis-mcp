@@ -304,7 +304,7 @@ def _log_spend(
         conn.execute(
             "INSERT INTO llm_call_log "
             "(source, transport, model, cost_usd, billed_usd, ref_id) "
-            "VALUES ('plan_tick', 'claude_agent', 'claude-opus-4-8', %s, %s, %s)",
+            "VALUES ('plan_tick', 'claude_agent', 'claude-opus-5-5', %s, %s, %s)",
             (cost, billed, ref_id),
         )
         conn.commit()

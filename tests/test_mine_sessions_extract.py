@@ -51,7 +51,7 @@ def _tool_use_event(
         "gitBranch": "main",
         "timestamp": ts,
         "message": {
-            "model": "claude-sonnet-5",
+            "model": "claude-sonnet-5-5",
             "usage": usage if usage is not None else {"input_tokens": 5},
             "content": [
                 {
@@ -129,7 +129,7 @@ def test_local_tool_use_joins_result_with_usage() -> None:
     assert ev.result_head == "3 hits"
     assert ev.result_bytes == len("3 hits")
     assert ev.usage == {"input_tokens": 5, "output_tokens": 9}
-    assert ev.model == "claude-sonnet-5"
+    assert ev.model == "claude-sonnet-5-5"
     assert ev.is_error is False
     assert stats.parse_failures == 0
 

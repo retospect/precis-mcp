@@ -343,7 +343,7 @@ def _argv_for(
 
     _, args, *_ = _resolve_agent_args(
         prompt="hi",
-        model="claude-opus-4-8",
+        model="claude-opus-5-5",
         system_prompt=None,
         mcp_config=mcp_config,
         max_turns=5,
@@ -609,7 +609,7 @@ def test_leading_dash_prompt_survives_after_sentinel() -> None:
     for hostile in ("-- MARK --", "--dangerously-skip-permissions", "-rf /"):
         _, argv, *_ = _resolve_agent_args(
             prompt=hostile,
-            model="claude-opus-4-8",
+            model="claude-opus-5-5",
             system_prompt=None,
             mcp_config=None,
             max_turns=5,
@@ -1004,8 +1004,8 @@ def test_model_override(stub_bin: Path) -> None:
         encoding="utf-8",
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
-    res = call_claude_agent("do", model="claude-opus-4-7")
-    assert "claude-opus-4-7" in res.final_text
+    res = call_claude_agent("do", model="claude-sonnet-5-5")
+    assert "claude-sonnet-5-5" in res.final_text
 
 
 def test_extra_args_passthrough(stub_bin: Path) -> None:
@@ -1030,7 +1030,7 @@ def test_extra_args_passthrough(stub_bin: Path) -> None:
 def test_env_model_default_honoured(
     stub_bin: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PRECIS_CLAUDE_AGENT_MODEL", "claude-opus-4-7")
+    monkeypatch.setenv("PRECIS_CLAUDE_AGENT_MODEL", "claude-sonnet-5-5")
     stub_bin.write_text(
         textwrap.dedent(
             """\
@@ -1042,7 +1042,7 @@ def test_env_model_default_honoured(
     )
     stub_bin.chmod(stub_bin.stat().st_mode | stat.S_IXUSR)
     res = call_claude_agent("do")
-    assert "claude-opus-4-7" in res.final_text
+    assert "claude-sonnet-5-5" in res.final_text
 
 
 def test_env_max_usd_default_honoured(

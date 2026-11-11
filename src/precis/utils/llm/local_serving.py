@@ -255,7 +255,7 @@ def _same_family(a: str, b: str) -> bool:
     dropped quant/precision suffix, ``qwen3-next-80b`` vs the served
     ``qwen3-next-80b-a3b-q4_k_m``), or they share a two-token vendor+series
     stem (``gpt-oss-120b`` vs ``gpt-oss-20b``). A frontier cloud model shares
-    neither with a served OSS model (``claude-opus-4-8`` vs ``qwen3-next-…``),
+    neither with a served OSS model (``claude-opus-5-5`` vs ``qwen3-next-…``),
     so its mismatch warning is the false alarm gr178888 flagged."""
     if a == b or a.startswith(b + "-") or b.startswith(a + "-"):
         return True
@@ -574,7 +574,7 @@ def _warn_family_mismatch(
       llama-swap slot, so "falling back to local" is intended. The
       in-process dedup meant this flooded once per short-lived summarize
       worker (gr178498: 3907 hits/48h on melchior, all ``summarizer``).
-    * Legitimately-cloud models (``claude-opus-4-8`` and other frontier
+    * Legitimately-cloud models (``claude-opus-5-5`` and other frontier
       tiers melchior is never expected to serve) — falling back to the
       cloud is correct, not a misconfiguration (gr178888).
 

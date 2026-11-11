@@ -77,7 +77,7 @@ def attempt_llm_fix(
     # definition not mechanically fixable. Ask sonnet.
     claude_bin = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
     # Model selection via the LLM routing seam resolver's BIG tier
-    # (``PRECIS_MODEL_SONNET`` / ``claude-sonnet-5``) — byte-identical to
+    # (``PRECIS_MODEL_SONNET`` / ``claude-sonnet-5-5``) — byte-identical to
     # the previous inline read.
     sonnet_model = resolve_model(Tier.BIG)
     prompt = _build_fixer_prompt(text=text, errors=chktex_errors)

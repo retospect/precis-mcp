@@ -239,7 +239,7 @@ def test_resolve_model_falls_back_to_env_then_default(
     assert router.resolve_model(Tier.FRONTIER) == "pinned-opus"
     live_config.bust_cache()
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    assert router.resolve_model(Tier.FRONTIER) == "claude-opus-4-8"
+    assert router.resolve_model(Tier.FRONTIER) == "claude-opus-5-5"
 
 
 def test_resolve_model_dark_without_store_is_env(
@@ -248,7 +248,7 @@ def test_resolve_model_dark_without_store_is_env(
     # No store → no DB tier → pure env/compiled default, byte-identical.
     _bind(monkeypatch, None)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
-    assert router.resolve_model(Tier.BIG) == "claude-sonnet-5"
+    assert router.resolve_model(Tier.BIG) == "claude-sonnet-5-5"
 
 
 # ── Part 3: resolve_model backend-coherence ─────────────────────────────
@@ -268,7 +268,7 @@ def test_resolve_model_drops_oss_override_under_anthropic_backend(
     _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
     assert (
         router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
-        == "claude-opus-4-8"
+        == "claude-opus-5-5"
     )
 
 
@@ -290,10 +290,10 @@ def test_resolve_model_keeps_claude_override_under_anthropic_backend(
 ) -> None:
     """A claude-family override is coherent with ANTHROPIC — kept, not dropped."""
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    _bind(monkeypatch, {"llm.model.frontier": "claude-opus-4-9-preview"})
+    _bind(monkeypatch, {"llm.model.frontier": "claude-opus-5-5-preview"})
     assert (
         router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
-        == "claude-opus-4-9-preview"
+        == "claude-opus-5-5-preview"
     )
 
 
@@ -333,7 +333,7 @@ def test_resolve_model_big_override_is_cloud_bound_and_dropped(
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
     _bind(monkeypatch, {"llm.model.big": "qwen/qwen3.7-max"})
     assert (
-        router.resolve_model(Tier.BIG, backend=Backend.ANTHROPIC) == "claude-sonnet-5"
+        router.resolve_model(Tier.BIG, backend=Backend.ANTHROPIC) == "claude-sonnet-5-5"
     )
 
 
@@ -378,7 +378,7 @@ def test_dispatch_openai_override_no_base_url_resolves_claude_model(
 
     out = route(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
 
-    assert calls["model"] == "claude-opus-4-8"  # NOT "z-ai/glm-5.2"
+    assert calls["model"] == "claude-opus-5-5"  # NOT "z-ai/glm-5.2"
     assert out.text == "claude ran"
 
 

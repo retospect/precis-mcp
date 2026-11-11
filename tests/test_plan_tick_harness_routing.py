@@ -119,7 +119,7 @@ def test_harness_agrees_with_what_dispatch_will_resolve(monkeypatch):
 #: rung; with no pin the chain's own order decides.
 _CLOUD_CLAUDE_RUNG = {
     "placement": "cloud",
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5-5",
     "transport": "claude_agent",
 }
 _LOCAL_OSS_RUNG = {

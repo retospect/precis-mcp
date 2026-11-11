@@ -4,7 +4,7 @@ cleanup (``fixer-spec-tiering-and-split`` (git-only)).
 Two load-bearing behaviors:
 
 * **Model resolution.** ``FixerConfig.default_model`` now defaults to
-  ``claude-sonnet-5`` (down from ``claude-opus-4-8``); a proposal's
+  ``claude-sonnet-5-5`` (down from ``claude-opus-5-5``); a proposal's
   ``model:`` tier (via ``WorkItem.model``) overrides it through
   ``TIER_MODELS``.
 * **Local branch cleanup after a real ship.** ``scripts/ship`` deletes
@@ -50,7 +50,7 @@ def _cfg(
         backlog_dir=repo_root / "docs" / "proposals",
         work_dir=tmp_path / "work",
         claude_bin="claude",
-        default_model="claude-sonnet-5",
+        default_model="claude-sonnet-5-5",
         autonomy=autonomy,
         build_timeout_s=60,
         gate_cmds=(("true",),),
@@ -79,26 +79,26 @@ def test_resolve_model_defaults_to_cfg_default_when_item_unset(
     tmp_path: Path,
 ) -> None:
     cfg = _cfg(tmp_path, tmp_path, Autonomy.REPORT)
-    assert _resolve_model(cfg, _item(model=None)) == "claude-sonnet-5"
+    assert _resolve_model(cfg, _item(model=None)) == "claude-sonnet-5-5"
 
 
 def test_resolve_model_opus_tier_overrides_default(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, tmp_path, Autonomy.REPORT)
     assert _resolve_model(cfg, _item(model="opus")) == TIER_MODELS["opus"]
-    assert TIER_MODELS["opus"] == "claude-opus-4-8"
+    assert TIER_MODELS["opus"] == "claude-opus-5-5"
 
 
 def test_resolve_model_haiku_tier_overrides_default(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, tmp_path, Autonomy.REPORT)
     assert _resolve_model(cfg, _item(model="haiku")) == TIER_MODELS["haiku"]
-    assert TIER_MODELS["haiku"] == "claude-haiku-4-5-20251001"
+    assert TIER_MODELS["haiku"] == "claude-haiku-5-5"
 
 
 def test_resolve_model_unrecognised_tier_falls_back_to_default(
     tmp_path: Path,
 ) -> None:
     cfg = _cfg(tmp_path, tmp_path, Autonomy.REPORT)
-    assert _resolve_model(cfg, _item(model="not-a-real-tier")) == "claude-sonnet-5"
+    assert _resolve_model(cfg, _item(model="not-a-real-tier")) == "claude-sonnet-5-5"
 
 
 def test_fixer_config_from_env_default_model_is_sonnet(
@@ -106,7 +106,7 @@ def test_fixer_config_from_env_default_model_is_sonnet(
 ) -> None:
     monkeypatch.delenv("PRECIS_FIXER_CLAUDE_MODEL", raising=False)
     cfg = FixerConfig.from_env(tmp_path)
-    assert cfg.default_model == "claude-sonnet-5"
+    assert cfg.default_model == "claude-sonnet-5-5"
 
 
 def test_fixer_config_from_env_respects_explicit_override(

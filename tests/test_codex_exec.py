@@ -164,7 +164,7 @@ def test_call_codex_exec_drops_claude_model_id(
     monkeypatch.setenv("PRECIS_CODEX_BIN", str(stub))
     monkeypatch.delenv("PRECIS_CODEX_MODEL", raising=False)
 
-    call_codex_exec("x", model="claude-sonnet-5")
+    call_codex_exec("x", model="claude-sonnet-5-5")
     args = rec.read_text(encoding="utf-8").splitlines()
     assert "--model" not in args
 

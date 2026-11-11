@@ -12,7 +12,7 @@ Examples::
     precis service list
     precis service prio melchior classify 0      # turn classify off on melchior
     precis service prio '*' llm_reconcile 3      # on everywhere at weight 3
-    precis service model melchior briefing claude-opus-4-8
+    precis service model melchior briefing claude-opus-5-5
     precis service clear melchior classify       # revert to env/profile default
     precis service seed melchior classify 5      # deploy-time only: insert
                                                   # iff absent, never clobbers

@@ -37,7 +37,7 @@ _DB_CHAIN = (
     '"transport": "openai_compat"}]'
 )
 _DB_BIG_CHAIN = (
-    '[{"placement": "cloud", "model": "claude-opus-4-8", "transport": "claude_agent"}]'
+    '[{"placement": "cloud", "model": "claude-opus-5-5", "transport": "claude_agent"}]'
 )
 
 
@@ -108,7 +108,7 @@ def test_env_chain_does_not_leak_across_tiers(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("PRECIS_LLM_CHAIN_SMALL", _QWEN_CHAIN)
     assert live_config.chain_override(Tier.MEDIUM) is None
     big = live_config.chain_override(Tier.BIG)
-    assert big is not None and big[0]["model"] == "claude-opus-4-8"
+    assert big is not None and big[0]["model"] == "claude-opus-5-5"
     assert not live_config.chain_env_active(Tier.BIG)
 
 

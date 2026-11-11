@@ -104,7 +104,7 @@ def _fake_agent(calls: dict[str, Any] | None = None):
 
 
 def test_match_keyword_whole_word_case(kw_rules) -> None:
-    kw_rules([_rule("1", "opus", {"model": "claude-opus-4-8"})])
+    kw_rules([_rule("1", "opus", {"model": "claude-opus-5-5"})])
     assert keyword_route.match("please ask Opus about this", source=None, tier=None)
     assert (
         keyword_route.match("the opuses were catalogued", source=None, tier=None)
@@ -115,7 +115,7 @@ def test_match_keyword_whole_word_case(kw_rules) -> None:
 def test_match_first_wins(kw_rules) -> None:
     kw_rules(
         [
-            _rule("1", "opus", {"model": "claude-opus-4-8"}),
+            _rule("1", "opus", {"model": "claude-opus-5-5"}),
             _rule("2", "opus", {"model": "claude-fable-5"}),
         ]
     )
@@ -129,7 +129,7 @@ def test_match_scope_source_and_tier(kw_rules) -> None:
             _rule(
                 "1",
                 "deep",
-                {"model": "claude-opus-4-8"},
+                {"model": "claude-opus-5-5"},
                 sources={"dream"},
                 tiers={"big"},
             ),
@@ -148,7 +148,7 @@ def test_match_scope_source_and_tier(kw_rules) -> None:
 
 
 def test_match_disabled_and_bad_pattern_skipped(kw_rules) -> None:
-    bad = _rule("1", "(((((", {"model": "claude-opus-4-8"}, is_regex=True)
+    bad = _rule("1", "(((((", {"model": "claude-opus-5-5"}, is_regex=True)
     assert bad.compiled is None  # rejected at compile, not at match time
     kw_rules(
         [
@@ -165,7 +165,7 @@ def test_match_regex_rule(kw_rules) -> None:
     kw_rules(
         [
             _rule(
-                "1", r"run on (opus|fable)", {"model": "claude-opus-4-8"}, is_regex=True
+                "1", r"run on (opus|fable)", {"model": "claude-opus-5-5"}, is_regex=True
             )
         ]
     )
@@ -205,7 +205,7 @@ def test_route_keyword_retires_to_rule_model(
     """A matched bare-model target dispatches to that model on the claude
     wire, and the rule id lands on the logged request."""
     _stub_claude_host(tmp_path, monkeypatch)
-    kw_rules([_rule("7", "opus", {"model": "claude-opus-4-8"})])
+    kw_rules([_rule("7", "opus", {"model": "claude-opus-5-5"})])
     calls: dict[str, Any] = {}
     monkeypatch.setattr(router, "call_claude_p", _fake_p(calls))
 
@@ -219,7 +219,7 @@ def test_route_keyword_retires_to_rule_model(
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="please ask opus"))
 
     assert out.error is None
-    assert calls["model"] == "claude-opus-4-8"
+    assert calls["model"] == "claude-opus-5-5"
     assert seen_reqs and seen_reqs[0].keyword_rule == "7"
 
 
@@ -229,7 +229,7 @@ def test_route_keyword_no_match_unchanged(
     """No rule hit ⇒ today's resolution, byte-for-byte: the MEDIUM tier's
     claude_p model."""
     _stub_claude_host(tmp_path, monkeypatch)
-    kw_rules([_rule("7", "zzz-never", {"model": "claude-opus-4-8"})])
+    kw_rules([_rule("7", "zzz-never", {"model": "claude-opus-5-5"})])
     calls: dict[str, Any] = {}
     monkeypatch.setattr(router, "call_claude_p", _fake_p(calls))
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
@@ -237,7 +237,7 @@ def test_route_keyword_no_match_unchanged(
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
 
     assert out.error is None
-    assert calls["model"] == "claude-haiku-4-5-20251001"
+    assert calls["model"] == "claude-haiku-5-5"
 
 
 def test_route_keyword_chain_target(
@@ -293,7 +293,7 @@ def test_route_keyword_unavailable_target_falls_back(
         out = route(LlmRequest(tier=Tier.MEDIUM, prompt="use oss please"))
 
     assert out.error is None
-    assert calls["model"] == "claude-haiku-4-5-20251001"
+    assert calls["model"] == "claude-haiku-5-5"
     assert any("rule 7 matched but is unusable" in r.message for r in caplog.records)
 
 
@@ -317,7 +317,7 @@ def test_route_keyword_over_limiter_falls_back(
         out = route(LlmRequest(tier=Tier.BIG, prompt="go cheap"))
 
     assert out.error is None
-    assert calls["model"] == "claude-sonnet-5"
+    assert calls["model"] == "claude-sonnet-5-5"
     assert any("over its limiter" in r.message for r in caplog.records)
 
 
@@ -332,7 +332,7 @@ def test_route_keyword_never_bypasses_tools(
             _rule(
                 "7",
                 "opus",
-                {"chain": [{"model": "claude-opus-4-8", "transport": "claude_p"}]},
+                {"chain": [{"model": "claude-opus-5-5", "transport": "claude_p"}]},
             )
         ]
     )
@@ -343,7 +343,7 @@ def test_route_keyword_never_bypasses_tools(
     out = route(LlmRequest(tier=Tier.BIG, prompt="ask opus", tools_needed=True))
 
     assert out.error is None
-    assert calls["model"] == "claude-sonnet-5"
+    assert calls["model"] == "claude-sonnet-5-5"
 
 
 def test_route_keyword_does_not_steal_model_pin(
@@ -352,7 +352,7 @@ def test_route_keyword_does_not_steal_model_pin(
     """A call-site ``req.model`` pin is a correctness constraint — a
     matching rule must not retarget it."""
     _stub_claude_host(tmp_path, monkeypatch)
-    kw_rules([_rule("7", "opus", {"model": "claude-opus-4-8"})])
+    kw_rules([_rule("7", "opus", {"model": "claude-opus-5-5"})])
     calls: dict[str, Any] = {}
     monkeypatch.setattr(router, "call_claude_p", _fake_p(calls))
 

@@ -53,7 +53,7 @@ _CLAUDE_LANE_CMD = [
     "--max-turns",
     "100",
     "--model",
-    "claude-opus-4-8",
+    "claude-opus-5-5",
     "--output-format",
     "stream-json",
     "--include-partial-messages",
@@ -394,14 +394,14 @@ def test_invoke_parses_model_and_max_turns_from_command(
             "--max-turns",
             "7",
             "--model",
-            "claude-haiku-4-5",
+            "claude-haiku-5-5",
             "--output-format",
             "stream-json",
         ]
     )
     result = asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-7"))
 
-    assert seen["model"] == "claude-haiku-4-5"
+    assert seen["model"] == "claude-haiku-5-5"
     assert seen["max_turns"] == 7
     # This fake never calls on_event (unlike the other tests' subprocess-
     # level stub), so ClaudeResult.text is deliberately NOT populated from

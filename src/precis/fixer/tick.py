@@ -49,13 +49,12 @@ log = logging.getLogger("precis.fixer")
 
 
 #: Per-proposal ``model:`` tier → concrete model id. A pinned literal per
-#: tier (not a live lookup) — the repo carries two divergent haiku ids in
-#: different subsystems (``utils/claude_p.py`` vs ``utils/llm/router.py``);
-#: reconciling those is a separate, pre-existing concern, not the fixer's.
+#: tier (not a live lookup); kept equal to ``utils/llm/router.py``'s
+#: ``_TIER_MODEL`` cloud defaults.
 TIER_MODELS: dict[str, str] = {
-    "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-4-8",
-    "haiku": "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+    "haiku": "claude-haiku-5-5",
 }
 
 
@@ -97,7 +96,7 @@ class FixerConfig:
     def from_env(cls, repo_root: Path) -> FixerConfig:
         work = os.environ.get("PRECIS_FIXER_WORK_DIR")
         work_dir = Path(work).resolve() if work else repo_root / ".fixer-work"
-        model = os.environ.get("PRECIS_FIXER_CLAUDE_MODEL", "claude-sonnet-5")
+        model = os.environ.get("PRECIS_FIXER_CLAUDE_MODEL", "claude-sonnet-5-5")
         return cls(
             repo_root=repo_root,
             backlog_dir=repo_root / "docs" / "backlog",

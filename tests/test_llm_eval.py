@@ -788,10 +788,10 @@ def test_pinned_cloud_picks_transport_by_model(
 
     monkeypatch.setattr(breaker, "gate_tier", _gate)
     calls, _ = _pin_env(monkeypatch)
-    r1 = pinned_dispatch("claude-haiku-4-5", "cloud")(_req())
+    r1 = pinned_dispatch("claude-haiku-5-5", "cloud")(_req())
     r2 = pinned_dispatch("qwen3-235b", "cloud")(_req())
     assert [c[0] for c in calls] == [Transport.CLAUDE_P, Transport.OPENAI_COMPAT]
-    assert [c[2] for c in calls] == ["claude-haiku-4-5", "qwen3-235b"]
+    assert [c[2] for c in calls] == ["claude-haiku-5-5", "qwen3-235b"]
     assert r1.placement == r2.placement == "cloud"
     assert seen[0]["local"] is False and seen[0]["bare"] is False
 
@@ -804,7 +804,7 @@ def test_pinned_cloud_honours_tripped_breaker(
 
     monkeypatch.setattr(breaker, "gate_tier", lambda tier, **kw: "daily cap hit")
     calls, recs = _pin_env(monkeypatch)
-    res = pinned_dispatch("claude-haiku-4-5", "cloud")(_req())
+    res = pinned_dispatch("claude-haiku-5-5", "cloud")(_req())
     assert res.error == "daily cap hit" and not calls and not recs
 
 

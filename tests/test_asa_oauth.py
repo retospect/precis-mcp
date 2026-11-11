@@ -213,7 +213,7 @@ def test_invoke_reveals_over_the_config_dsn(tmp_path, monkeypatch):
 
     monkeypatch.setattr(claude_agent, "run_claude_async", _fake_run)
     cfg = dataclasses.replace(
-        LLMConfig(), command=["claude", "-p", "--model", "claude-opus-4-8"]
+        LLMConfig(), command=["claude", "-p", "--model", "claude-opus-5-5"]
     )
     asyncio.run(invoke(cfg, "sys", "hi", conv_slug="c-dsn", dsn=_CONFIG_DSN))
     assert _CONFIG_DSN in seen

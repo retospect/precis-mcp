@@ -599,7 +599,7 @@ def _default_client() -> Any:
     ``claude_agent`` (free-text/JSON final answer, no tools advertised) rather
     than the tool-less ``claude_p`` judge shape, which drops the system prompt
     these cloze/rework prompts rely on. A ``PRECIS_CARD_FORGE_MODEL`` override
-    still wins, but must now name a real model id (e.g. ``claude-opus-4-8``),
+    still wins, but must now name a real model id (e.g. ``claude-opus-5-5``),
     not the retired litellm ``claude-opus`` alias. Mirrors
     `build_meditation`'s default-client branch. Tests inject a fake.
 

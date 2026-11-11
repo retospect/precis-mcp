@@ -354,7 +354,7 @@ def test_kg_review_stamp_records_model_and_date_structured(
             "__extras__": {
                 "trust": {
                     "confidence": "considered",
-                    "reason": "kg-review:claude-opus-4-8:2026-10-22:ok",
+                    "reason": "kg-review:claude-opus-5-5:2026-10-22:ok",
                     "expected_sha": sha,
                 }
             },
@@ -364,14 +364,14 @@ def test_kg_review_stamp_records_model_and_date_structured(
     (review,) = [
         a for a in store.trust_acts_for("ref", mid) if a["action"] == "consider"
     ]
-    assert review["model"] == "claude-opus-4-8"
+    assert review["model"] == "claude-opus-5-5"
     assert review["payload"]["kg_review"] == {
-        "model": "claude-opus-4-8",
+        "model": "claude-opus-5-5",
         "date": "2026-10-22",
         "verdict": "ok",
     }
     models = [r.model for r in store.revisions_for("ref", mid) if r.model]
-    assert models[-1] == "claude-opus-4-8"
+    assert models[-1] == "claude-opus-5-5"
 
 
 def test_kg_review_stamp_on_put_marks_the_reviewer(

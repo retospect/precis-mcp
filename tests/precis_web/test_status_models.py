@@ -66,7 +66,7 @@ def test_cloud_card_view_extracts_price_provider_and_caps() -> None:
 
 
 def test_claude_slug_maps_to_anthropic_provider() -> None:
-    v = _llm_card_view(_ref(1, "claude-opus-4-8", tier_floor="frontier"))
+    v = _llm_card_view(_ref(1, "claude-opus-5-5", tier_floor="frontier"))
     assert v["provider"] == "anthropic"
 
 

@@ -48,7 +48,7 @@ class TestUpsertCard:
 
         ref_id, created = llm_catalog.upsert_card(
             store,
-            model_id="claude-opus-4-8",
+            model_id="claude-opus-5-5",
             text="Cloud reasoning tier; strong at careful SQL and refactors.",
             tier_floor="frontier",
             offerings=[{"effort": "medium", "transport": "claude_agent"}],
@@ -58,7 +58,7 @@ class TestUpsertCard:
         assert created is True
         ref = store.get_ref(kind="llm", id=ref_id)
         assert ref is not None
-        assert ref.meta["model_id"] == "claude-opus-4-8"
+        assert ref.meta["model_id"] == "claude-opus-5-5"
         assert ref.meta["tier_floor"] == "frontier"
         assert ref.meta["offerings"][0]["transport"] == "claude_agent"
         # embeddable card_combined (ord=-1) = the model vector
@@ -480,7 +480,7 @@ class TestHandler:
 
         llm_catalog.upsert_card(
             store,
-            model_id="claude-haiku-4-5",
+            model_id="claude-haiku-5-5",
             text="Fast cheap triage classifier for one-shot JSON judgement.",
             tier_floor="medium",
         )
@@ -642,16 +642,16 @@ class TestReconcile:
         )
 
         rid, _ = llm_catalog.upsert_card(
-            store, model_id="claude-opus-4-8", text="Opus card."
+            store, model_id="claude-opus-5-5", text="Opus card."
         )
-        # OpenRouter names it anthropic/claude-opus-4.8 — normalisation must fold
+        # OpenRouter names it anthropic/claude-opus-5.5 — normalisation must fold
         # both to the same key.
-        assert _norm_model_key("anthropic/claude-opus-4.8") == _norm_model_key(
-            "claude-opus-4-8"
+        assert _norm_model_key("anthropic/claude-opus-5.5") == _norm_model_key(
+            "claude-opus-5-5"
         )
         feed = {
-            _norm_model_key("claude-opus-4-8"): {
-                "id": "anthropic/claude-opus-4.8",
+            _norm_model_key("claude-opus-5-5"): {
+                "id": "anthropic/claude-opus-5.5",
                 "context_length": 1_000_000,
                 "top_provider": {"max_completion_tokens": 128_000},
                 "pricing": {"prompt": "0.00001", "completion": "0.00005"},
@@ -676,18 +676,18 @@ class TestReconcile:
         # A card whose offering routes through the loopback proxy.
         llm_catalog.upsert_card(
             store,
-            model_id="claude-opus-4-8",
+            model_id="claude-opus-5-5",
             text="Opus, also served via the loopback local transport.",
             offerings=[{"transport": "local", "endpoint": "http://127.0.0.1:4000"}],
         )
-        # Proxy serves opus + 4-7, but NOT 4-8 → drift.
-        proxy = {_norm_model_key("claude-opus"), _norm_model_key("claude-opus-4-7")}
+        # Proxy serves opus + sonnet-5-5, but NOT opus-5-5 → drift.
+        proxy = {_norm_model_key("claude-opus"), _norm_model_key("claude-sonnet-5-5")}
         run_llm_reconcile_pass(store, models={}, proxy_models=proxy, force=True)
         alerts = _open_drift_alerts(store)
-        assert any("claude-opus-4-8" in title for _id, title in alerts)
+        assert any("claude-opus-5-5" in title for _id, title in alerts)
 
-        # Proxy now serves 4-8 → the drift clears on the next pass.
-        proxy_fixed = proxy | {_norm_model_key("claude-opus-4-8")}
+        # Proxy now serves opus-5-5 → the drift clears on the next pass.
+        proxy_fixed = proxy | {_norm_model_key("claude-opus-5-5")}
         run_llm_reconcile_pass(store, models={}, proxy_models=proxy_fixed, force=True)
         assert not _open_drift_alerts(store)
 
@@ -697,7 +697,7 @@ class TestReconcile:
 
         llm_catalog.upsert_card(
             store,
-            model_id="claude-opus-4-8",
+            model_id="claude-opus-5-5",
             text="Opus via proxy.",
             offerings=[{"transport": "local"}],
         )
@@ -1030,11 +1030,11 @@ class TestDevinEntitlement:
         )
 
         rid, _ = llm_catalog.upsert_card(
-            store, model_id="claude-opus-4-8", text="Opus card."
+            store, model_id="claude-opus-5-5", text="Opus card."
         )
         feed = {
-            _norm_model_key("claude-opus-4-8"): {
-                "id": "anthropic/claude-opus-4.8",
+            _norm_model_key("claude-opus-5-5"): {
+                "id": "anthropic/claude-opus-5.5",
                 "context_length": 1_000_000,
             }
         }
@@ -1104,11 +1104,11 @@ class TestDevinEntitlement:
         from precis.workers import llm_reconcile as lr
 
         rid, _ = llm_catalog.upsert_card(
-            store, model_id="claude-opus-4-8", text="Opus card."
+            store, model_id="claude-opus-5-5", text="Opus card."
         )
         feed = {
-            lr._norm_model_key("claude-opus-4-8"): {
-                "id": "anthropic/claude-opus-4.8",
+            lr._norm_model_key("claude-opus-5-5"): {
+                "id": "anthropic/claude-opus-5.5",
                 "context_length": 123_000,
             }
         }

@@ -41,7 +41,7 @@ def test_uses_resolved_sonnet_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Env unset → BIG default, byte-identical to the legacy default."""
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
     cmd = _capture_cmd(monkeypatch)
-    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5"
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5-5"
     # Behavior preserved: still one-shot, permission default.
     assert cmd[cmd.index("--max-turns") + 1] == "1"
     assert cmd[cmd.index("--permission-mode") + 1] == "default"

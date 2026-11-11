@@ -321,7 +321,7 @@ def test_claude_p_json_reply_is_parsed(store: Any, hub: Any) -> None:
             return SimpleNamespace(
                 text=json.dumps({"description": desc}),
                 data={"description": desc},
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
             )
 
     client = _JsonClient()
@@ -1074,11 +1074,11 @@ def _chat_then_json(head: str) -> _FakeClient:
         def complete(self, messages: list[dict[str, str]]) -> Any:
             self.calls.append(messages)
             if len(self.calls) == 1:
-                return SimpleNamespace(text=head, model="claude-sonnet-5")
+                return SimpleNamespace(text=head, model="claude-sonnet-5-5")
             return SimpleNamespace(
                 text=json.dumps({"description": _DESC}),
                 data={"description": _DESC},
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
             )
 
     return _ChatThenJson()
@@ -1137,7 +1137,7 @@ def test_unparseable_dispatch_error_retries_once(store: Any, hub: Any) -> None:
             return SimpleNamespace(
                 text=json.dumps({"description": _DESC}),
                 data={"description": _DESC},
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
             )
 
     client = _UnparseableThenJson()
@@ -1233,7 +1233,7 @@ def test_unparseable_dispatch_reply_is_salvaged_without_retry(
                 "claude -p returned no parseable JSON block",
                 reason_class="unparseable",
                 reply=_TRUNC_MID_STRING_REPLY,
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
             )
 
     client = _UnparseableWithReply()
@@ -1243,7 +1243,7 @@ def test_unparseable_dispatch_reply_is_salvaged_without_retry(
     assert len(client.calls) == 1  # recovered — the nudge retry is skipped
     chunks = _desc_chunks(store, ref_id)
     assert chunks[0][1] == _TRUNC_MID_STRING_STORED
-    assert chunks[0][2]["model"] == "claude-sonnet-5"
+    assert chunks[0][2]["model"] == "claude-sonnet-5-5"
 
 
 def test_unsalvageable_dispatch_reply_retries_once_with_diag(
@@ -1272,7 +1272,7 @@ def test_unsalvageable_dispatch_reply_retries_once_with_diag(
             return SimpleNamespace(
                 text=json.dumps({"description": _DESC}),
                 data={"description": _DESC},
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
             )
 
     with caplog.at_level(logging.WARNING, logger="precis.workers.card_describe"):

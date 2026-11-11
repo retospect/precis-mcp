@@ -94,7 +94,7 @@ def test_claude_p_provider_threads_req_thinking(monkeypatch: Any) -> None:
 
     out = router.ClaudePProvider().run(
         router.LlmRequest(tier=router.Tier.MEDIUM, prompt="x", thinking=False),
-        model="claude-haiku-4-5",
+        model="claude-haiku-5-5",
     )
 
     assert seen["thinking"] is False

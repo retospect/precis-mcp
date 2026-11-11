@@ -84,7 +84,7 @@ _BRIEF_MAX_TOKENS = 1200
 # runs on the router's ``FRONTIER`` tier (opus-class reasoning), not the
 # free ``SMALL`` tier the per-chunk glosses use. A
 # ``PRECIS_BRIEFING_MODEL`` override still wins — but it must now name a real
-# model id the ``claude`` CLI accepts (e.g. ``claude-opus-4-8``), not the
+# model id the ``claude`` CLI accepts (e.g. ``claude-opus-5-5``), not the
 # retired litellm ``claude-opus`` alias: routing folds through
 # :func:`~precis.utils.llm.router.route` onto ``claude_agent`` (direct
 # Anthropic OAuth), so litellm is no longer in the loop for this pass.

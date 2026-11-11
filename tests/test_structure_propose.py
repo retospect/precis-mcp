@@ -271,9 +271,9 @@ def test_dispatch_pins_build_to_sonnet_mid_tier_with_override(seeded, monkeypatc
     assert seen["model"] == resolve_model(Tier.BIG)  # sonnet, the default now
     assert seen["model"] != resolve_model(Tier.FRONTIER)  # NOT opus
 
-    monkeypatch.setenv("PRECIS_STRUCTURE_PROPOSE_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("PRECIS_STRUCTURE_PROPOSE_MODEL", "claude-opus-5-5")
     sp._dispatch(_FakeCtx(store, ref.id, params), sp.SPEC)
-    assert seen["model"] == "claude-opus-4-8"  # explicit override / revert wins
+    assert seen["model"] == "claude-opus-5-5"  # explicit override / revert wins
 
 
 def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):

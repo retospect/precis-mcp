@@ -56,7 +56,7 @@ def _log_spend(
         conn.execute(
             "INSERT INTO llm_call_log (ts, source, transport, model, cost_usd, ref_id) "
             "VALUES (now() - make_interval(mins => %s), 'plan_tick', "
-            "'claude_agent', 'claude-opus-4-8', %s, %s)",
+            "'claude_agent', 'claude-opus-5-5', %s, %s)",
             (int(hours_ago * 60), cost, ref_id),
         )
         conn.commit()

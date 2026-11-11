@@ -381,7 +381,7 @@ def test_out_of_credits_payload_reply_is_paused_quota_with_retry_at() -> None:
             duration_s=0.0,
             turns_used=1,
         ),
-        model="claude-opus-4-7",
+        model="claude-opus-5-5",
         tier=Tier.BIG,
     )
     assert res.paused and res.quota_exhausted
@@ -407,7 +407,7 @@ _MEDIUM_LADDER = json.dumps(
     [
         {
             "placement": "cloud",
-            "model": "claude-haiku-4-5-20251001",
+            "model": "claude-haiku-5-5",
             "transport": "claude_p",
         },
         {

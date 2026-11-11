@@ -510,10 +510,10 @@ def test_stream_models_used_reads_model_usage_keys() -> None:
     line = (
         '{"type":"result","result":"ok","modelUsage":'
         '{"claude-sonnet-4-5-20250929":{"inputTokens":1},'
-        '"claude-haiku-4-5-20251001":{"inputTokens":2}}}'
+        '"claude-haiku-5-5":{"inputTokens":2}}}'
     )
     assert stream_models_used(line) == [
-        "claude-haiku-4-5-20251001",
+        "claude-haiku-5-5",
         "claude-sonnet-4-5-20250929",
     ]
     assert stream_models_used("") == []
@@ -527,9 +527,9 @@ def test_run_result_meta_carries_actual_and_used() -> None:
     from types import SimpleNamespace
 
     raw = '{"type":"result","modelUsage":{"claude-x-1":{}}}'
-    res = SimpleNamespace(model="claude-sonnet-5", raw_text=raw)
+    res = SimpleNamespace(model="claude-sonnet-5-5", raw_text=raw)
     assert agentlog.run_result_meta(res) == {
-        "model_actual": "claude-sonnet-5",
+        "model_actual": "claude-sonnet-5-5",
         "models_used": ["claude-x-1"],
     }
     # No stream → model_actual only; no model at all → empty patch.
@@ -548,12 +548,12 @@ def test_stamp_result_meta_writes_and_never_raises(hub: Hub) -> None:
     agentlog.stamp_result_meta(
         hub.live_store,
         log_id=log_id,
-        res=SimpleNamespace(model="claude-sonnet-5", raw_text=None),
+        res=SimpleNamespace(model="claude-sonnet-5-5", raw_text=None),
     )
     ref = hub.live_store.get_ref(kind="agentlog", id=log_id)
     assert ref is not None
     assert ref.meta["model"] == "sonnet"  # requested name untouched
-    assert ref.meta["model_actual"] == "claude-sonnet-5"
+    assert ref.meta["model_actual"] == "claude-sonnet-5-5"
     # log_id=None and a dead id are both quiet no-ops.
     agentlog.stamp_result_meta(
         hub.live_store, log_id=None, res=SimpleNamespace(model="m")

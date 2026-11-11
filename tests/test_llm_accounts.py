@@ -269,8 +269,12 @@ class TestSeededAccounts:
         assert a.adapter == "claude_p"
         assert a.concurrency == 2
         assert a.task_classes == ("*",)
-        assert "claude-sonnet-5" in a.models
-        assert a.default_model == "claude-sonnet-5"
+        assert tuple(a.models) == (
+            "claude-haiku-5-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+        )
+        assert a.default_model == "claude-sonnet-5-5"
         assert a.enabled is True
         assert a.api_key_ref is None
         assert set(a.pools) == {"llm:claude-sub:5h", "llm:claude-sub:7d"}

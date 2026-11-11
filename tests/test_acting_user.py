@@ -207,7 +207,7 @@ def _claude_cfg() -> Any:
     from asa_bot.config import LLMConfig
 
     return dataclasses.replace(
-        LLMConfig(), command=["claude", "-p", "--model", "claude-opus-4-8"]
+        LLMConfig(), command=["claude", "-p", "--model", "claude-opus-5-5"]
     )
 
 

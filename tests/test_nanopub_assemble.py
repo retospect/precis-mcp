@@ -312,11 +312,11 @@ def profile() -> Any:
 def test_sign_produces_valid_w3id_trusty_artifact(profile: Any) -> None:
     from precis.nanopub.mint import _build_and_sign
 
-    np = _build_and_sign(_claim_input(), profile, ["claude-opus-5"])
+    np = _build_and_sign(_claim_input(), profile, ["claude-opus-5-5"])
     assert str(np.source_uri).startswith("https://w3id.org/np/RA")
     assert np.has_valid_trusty and np.has_valid_signature
     trig = np.rdf.serialize(format="trig")
-    assert "llmModel" in trig and "claude-opus-5" in trig
+    assert "llmModel" in trig and "claude-opus-5-5" in trig
     # The mint timestamp is written by the sign step, never hand-authored
     # (gate #12) — the library stamps prov:generatedAtTime in pubinfo.
     assert "generatedAtTime" in trig

@@ -350,7 +350,7 @@ class TestLoadConfig:
         monkeypatch.delenv("PRECIS_FIX_CLAUDE_MODEL", raising=False)
         monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
         cfg = load_config_from_env()
-        assert cfg.claude_model == "claude-opus-4-8"
+        assert cfg.claude_model == "claude-opus-5-5"
 
     def test_claude_model_bespoke_override_wins(
         self, monkeypatch: pytest.MonkeyPatch
@@ -456,7 +456,7 @@ class TestMaxTurnsConfig:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-8",
+            claude_model="claude-opus-5-5",
             timeout_seconds=900,
             max_turns=77,
         )
@@ -520,7 +520,7 @@ class TestMaxUsdConfig:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-8",
+            claude_model="claude-opus-5-5",
             timeout_seconds=900,
             max_usd=6.5,
         )
@@ -554,7 +554,7 @@ class TestResolveRepoForGripe:
             default_repo_dir=None,
             work_dir=Path("/tmp/work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-7",
+            claude_model="claude-opus-5-5",
             timeout_seconds=1800,
             repos={"my-other-project": Path("/tmp/other")},
         )
@@ -572,7 +572,7 @@ class TestResolveRepoForGripe:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-7",
+            claude_model="claude-opus-5-5",
             timeout_seconds=1800,
             repos={},
         )
@@ -590,7 +590,7 @@ class TestResolveRepoForGripe:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-7",
+            claude_model="claude-opus-5-5",
             timeout_seconds=1800,
             repos={"precis-mcp": Path("/tmp/precis-mcp")},
         )
@@ -608,7 +608,7 @@ class TestResolveRepoForGripe:
             default_repo_dir=None,
             work_dir=Path("/tmp/work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-7",
+            claude_model="claude-opus-5-5",
             timeout_seconds=1800,
             repos={"precis-mcp": Path("/tmp/precis-mcp")},
         )
@@ -770,7 +770,7 @@ class TestUnsandboxedAckGate:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-8",
+            claude_model="claude-opus-5-5",
             timeout_seconds=1800,
         )
 
@@ -894,7 +894,7 @@ class TestSpawnClaudeCallShape:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-8",
+            claude_model="claude-opus-5-5",
             timeout_seconds=900,
         )
 
@@ -926,7 +926,7 @@ class TestSpawnClaudeCallShape:
         assert captured["cwd"] == clone_dir
         assert captured["workdir"] == str(clone_dir)
         assert captured["require_container"] is True  # no ack set
-        assert captured["model"] == "claude-opus-4-8"
+        assert captured["model"] == "claude-opus-5-5"
         assert captured["timeout_s"] == 900.0
         assert captured["max_turns"] == 120  # gr451357 default (self._cfg())
 
@@ -1053,7 +1053,7 @@ class TestRunExceptionMapping:
             default_repo_dir=repo,
             work_dir=tmp_path / "work",
             claude_bin="claude",
-            claude_model="claude-opus-4-8",
+            claude_model="claude-opus-5-5",
             timeout_seconds=60,
         )
 
@@ -1233,7 +1233,7 @@ class TestTerminalGripeSkip:
             default_repo_dir=Path("/tmp/precis-mcp"),
             work_dir=Path("/tmp/precis-fix-work"),
             claude_bin="claude",
-            claude_model="claude-opus-4-8",
+            claude_model="claude-opus-5-5",
             timeout_seconds=1800,
         )
 

@@ -819,9 +819,9 @@ def test_tier_from_str_unknown_falls_back_to_default(
         # the pinned plan_tick._model_alias defaults. FRONTIER's default is
         # the consolidated opus-4.8 reasoning tier (reviewers / dream /
         # fix-gripe / generic claude_agent all resolve it).
-        (Tier.FRONTIER, "claude-opus-4-8"),
-        (Tier.BIG, "claude-sonnet-5"),
-        (Tier.MEDIUM, "claude-haiku-4-5-20251001"),
+        (Tier.FRONTIER, "claude-opus-5-5"),
+        (Tier.BIG, "claude-sonnet-5-5"),
+        (Tier.MEDIUM, "claude-haiku-5-5"),
         # the local summarizer alias (LlmConfig.model default).
         (Tier.SMALL, "summarizer"),
     ],
@@ -909,12 +909,12 @@ def test_result_from_agent() -> None:
         cache_read_tokens=0,
         cache_creation_tokens=46653,
     )
-    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.FRONTIER)
+    got = result_from_agent(raw, model="claude-opus-5-5", tier=Tier.FRONTIER)
     assert got == LlmResult(
         text="done thinking",
         cost_usd=0.42,
         turns_used=5,
-        model="claude-opus-4-7",
+        model="claude-opus-5-5",
         tier=Tier.FRONTIER,
         duration_s=3.1,  # preserved for dream/review telemetry
         # The raw stream + terminal reason ride through so a caller (plan_tick)
@@ -936,7 +936,7 @@ def test_result_from_agent_usage_defaults_none() -> None:
     text/stub path) propagates ``None`` for all four onto ``LlmResult`` —
     never a false zero."""
     raw = AgentResult(final_text="ok", cost_usd=None, duration_s=0.0, turns_used=None)
-    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.FRONTIER)
+    got = result_from_agent(raw, model="claude-opus-5-5", tier=Tier.FRONTIER)
     assert got.input_tokens is None
     assert got.output_tokens is None
     assert got.cache_read_tokens is None
@@ -966,7 +966,7 @@ def test_result_from_agent_quota_text_pauses_with_quota_kind(
     quota_text: str,
 ) -> None:
     raw = AgentResult(final_text=quota_text, cost_usd=0.0, duration_s=0.5, turns_used=1)
-    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_agent(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.paused is True
     assert got.quota_exhausted is True
     assert got.error is not None and quota_text in got.error
@@ -983,7 +983,7 @@ def test_result_from_agent_quota_wording_drift_still_pauses() -> None:
         duration_s=0.5,
         turns_used=1,
     )
-    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_agent(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.paused is True
     assert got.quota_exhausted is True
 
@@ -1002,7 +1002,7 @@ def test_result_from_agent_long_answer_quoting_quota_phrase_not_paused() -> None
     raw = AgentResult(
         final_text=long_answer, cost_usd=1.0, duration_s=3.0, turns_used=2
     )
-    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_agent(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.paused is False
     assert got.quota_exhausted is False
     assert got.error is None
@@ -1040,7 +1040,7 @@ def test_result_from_agent_quota_notice_with_completed_terminal_reason_pauses() 
         raw_stdout=stream,
         terminal_reason=terminal,
     )
-    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_agent(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.paused is True
     assert got.quota_exhausted is True
 
@@ -1057,7 +1057,7 @@ def test_result_from_agent_quota_text_on_abnormal_exit_not_paused() -> None:
         turns_used=1,
         terminal_reason="max_turns",
     )
-    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_agent(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.quota_exhausted is False
     assert got.paused is False
 
@@ -1078,7 +1078,7 @@ def test_result_from_claude_p_quota_text_pauses_with_quota_kind(
     gr345336 classification — the quota notice fell through to
     ``extract_json_object`` and the tick FAILED instead of pausing."""
     raw = ClaudePResult(data={}, raw_stdout=quota_text, cost_usd=0.0, text=quota_text)
-    got = result_from_claude_p(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_claude_p(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.paused is True
     assert got.quota_exhausted is True
     assert got.error is not None and quota_text in got.error
@@ -1093,7 +1093,7 @@ def test_result_from_claude_p_parsed_json_never_classifies_as_quota() -> None:
         cost_usd=0.0,
         text="You're out of extra usage · resets 11am (UTC)",
     )
-    got = result_from_claude_p(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    got = result_from_claude_p(raw, model="claude-sonnet-5-5", tier=Tier.BIG)
     assert got.paused is False
     assert got.quota_exhausted is False
 
@@ -1104,7 +1104,7 @@ def test_result_from_claude_p() -> None:
         raw_stdout='{"verdict": "ok"}',
         cost_usd=0.01,
     )
-    got = result_from_claude_p(raw, model="claude-haiku-4-5-20251001", tier=Tier.MEDIUM)
+    got = result_from_claude_p(raw, model="claude-haiku-5-5", tier=Tier.MEDIUM)
     # text is the raw stdout (JSON block lives inside); turns None.
     assert got.text == '{"verdict": "ok"}'
     assert got.cost_usd == 0.01
@@ -1183,7 +1183,7 @@ def test_dispatch_cloud_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out.duration_s == 1.0  # telemetry preserved through route
     assert out.error is None
     assert calls["prompt"] == "hi"
-    assert calls["model"] == "claude-sonnet-5"  # resolved from tier
+    assert calls["model"] == "claude-sonnet-5-5"  # resolved from tier
 
 
 def test_dispatch_agent_forwards_disallowed_tools_and_log_event(
@@ -1368,7 +1368,7 @@ def test_dispatch_cloud_helper(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert out.text == '{"ok": true}'
     assert out.turns_used is None
-    assert calls["model"] == "claude-haiku-4-5-20251001"
+    assert calls["model"] == "claude-haiku-5-5"
 
 
 # ── gr255847: claude_p rung 0 tier-aware default max_usd ────────────────
@@ -1670,7 +1670,7 @@ def test_dispatch_claude_p_tier_default_thinking_stays_off_the_wire(
     monkeypatch.setattr(
         router,
         "resolve_chain",
-        lambda *a, **k: [router.Rung(Transport.CLAUDE_P, model="claude-haiku-4-5")],
+        lambda *a, **k: [router.Rung(Transport.CLAUDE_P, model="claude-haiku-5-5")],
     )
 
     # SMALL's (False, 0.0) tier default fills `thinking` but never forwards.
@@ -1870,7 +1870,7 @@ def test_drain_refusal_names_the_served_rung_not_the_tier_alias(
     ``openai/gpt-oss-120b``, the id ``resource_slots``/``served_by`` are keyed
     on — not the pre-chain tier/source alias (``summarizer``). Prod's
     "worker draining" rows were logged under ``glm-4.7-flash``/
-    ``claude-sonnet-5`` (the alias leaking into the refusal), which read as a
+    ``claude-sonnet-5-5`` (the alias leaking into the refusal), which read as a
     per-model outage in router-readiness checks. The decide path already
     names ``serve_model`` (``_gated_attempt``); the ``_route_inner`` drain
     branch did not."""
@@ -1954,7 +1954,7 @@ def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
 
     assert out.text == "looped"
     assert out.turns_used == 2
-    assert seen["model"] == "claude-sonnet-5"  # resolved from the tier table
+    assert seen["model"] == "claude-sonnet-5-5"  # resolved from the tier table
 
 
 def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2523,7 +2523,7 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
 
     client = DispatchClient(
         tier=Tier.FRONTIER,
-        model="claude-opus-4-8",
+        model="claude-opus-5-5",
         tools_needed=True,
         source="cloud_tier_test",
         log_call=True,
@@ -2537,7 +2537,7 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
     assert out.text == "a lovely nidra"
     assert seen["prompt"] == "Walk these ideas: gravity, entropy."
     assert seen["system_prompt"] == "You are a calm narrator."
-    assert seen["model"] == "claude-opus-4-8"
+    assert seen["model"] == "claude-opus-5-5"
     assert seen["mcp_config"] is None  # no tools advertised — text-only agent wrapper
 
 
@@ -2601,7 +2601,7 @@ def test_dispatch_client_threads_extra_args_to_claude_p(
     monkeypatch.setattr(
         router,
         "resolve_chain",
-        lambda *a, **kw: [Rung(Transport.CLAUDE_P, model="claude-sonnet-5")],
+        lambda *a, **kw: [Rung(Transport.CLAUDE_P, model="claude-sonnet-5-5")],
     )
 
     client = DispatchClient(
@@ -2632,7 +2632,7 @@ def test_dispatch_client_error_carries_reason_class(
     monkeypatch.setattr(
         router,
         "resolve_chain",
-        lambda *a, **kw: [Rung(Transport.CLAUDE_P, model="claude-sonnet-5")],
+        lambda *a, **kw: [Rung(Transport.CLAUDE_P, model="claude-sonnet-5-5")],
     )
 
     client = DispatchClient(tier=Tier.BIG)
@@ -2642,7 +2642,7 @@ def test_dispatch_client_error_carries_reason_class(
     # gr545026: the rejected reply and the rung's model ride the error so
     # a caller's tolerant parse can recover without a second dispatch.
     assert ei.value.reply == "prose"
-    assert ei.value.model == "claude-sonnet-5"
+    assert ei.value.model == "claude-sonnet-5-5"
 
 
 def test_dispatch_log_call_false_skips_route_log(
@@ -2761,12 +2761,12 @@ def test_error_result_claude_timeout_is_paused() -> None:
     from precis.utils.llm.router import _error_result
 
     timed = ClaudeProcessError("claude -p timed out after 600s", timed_out=True)
-    res = _error_result(timed, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(timed, model="claude-opus-5-5", tier=Tier.FRONTIER)
     assert res.paused is True
     assert res.error and "timed out" in res.error  # still carries the error
 
     exited = ClaudeProcessError("claude -p exited 1", returncode=1)
-    res2 = _error_result(exited, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res2 = _error_result(exited, model="claude-opus-5-5", tier=Tier.FRONTIER)
     assert res2.paused is False
 
 
@@ -2784,7 +2784,7 @@ def test_error_result_missing_binary_is_cli_unavailable_not_paused() -> None:
         "install Claude Code",
         binary_missing=True,
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
     assert res.cli_unavailable is True
     assert res.paused is False
     assert res.timed_out is False
@@ -2792,7 +2792,7 @@ def test_error_result_missing_binary_is_cli_unavailable_not_paused() -> None:
     # A plain non-zero exit (model/API error, not a missing binary) is NOT
     # flagged — the structural signal is narrow, never inferred otherwise.
     exited = ClaudeProcessError("claude -p exited 1", returncode=1)
-    res2 = _error_result(exited, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res2 = _error_result(exited, model="claude-opus-5-5", tier=Tier.FRONTIER)
     assert res2.cli_unavailable is False
 
 
@@ -3400,7 +3400,7 @@ def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     assert out.text == '{"ok": true}'  # claude_p ran, not the OSS path
-    assert calls["model"] == "claude-haiku-4-5-20251001"
+    assert calls["model"] == "claude-haiku-5-5"
 
 
 # ── _dispatch_openai_compat: PRECIS_LLM_BASE_URL validation (gr259631) ──
@@ -3893,7 +3893,7 @@ def test_failover_ladder_oss_tools_has_claude_fallback(
         Transport.CLAUDE_AGENT,
     ]
     # the claude fallback pins the compiled-in claude id…
-    assert ladder[1].model == "claude-opus-4-8"
+    assert ladder[1].model == "claude-opus-5-5"
 
 
 def test_failover_ladder_oss_judge_has_claude_p_fallback() -> None:
@@ -3921,11 +3921,11 @@ def test_claude_default_big_resolves_sonnet_ignoring_override(
     indirection that used to reroute a local tier's claude-fallback rung
     through its cloud analogue (LOCAL_BIG → CLOUD_MID) because LOCAL_BIG's
     own _TIER_MODEL default was an OSS alias ("qwen-heavy"), not a claude id.
-    BIG's own row is already claude-sonnet-5, so _claude_default reads it
+    BIG's own row is already claude-sonnet-5-5, so _claude_default reads it
     directly — still ignoring a PRECIS_MODEL_SONNET override that might point
     the primary at an OSS id."""
     monkeypatch.setenv("PRECIS_MODEL_SONNET", "deepseek-ai/DeepSeek-V3")
-    assert router._claude_default(Tier.BIG) == "claude-sonnet-5"
+    assert router._claude_default(Tier.BIG) == "claude-sonnet-5-5"
 
 
 def test_failover_ladder_small_has_no_claude_rung(
@@ -3945,7 +3945,7 @@ def test_claude_default_ignores_model_override(
     # Even with PRECIS_MODEL_OPUS pointed at an OSS id, the claude fallback
     # resolves the compiled-in claude id — so OSS ids never leak onto claude -p.
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "deepseek-ai/DeepSeek-V3")
-    assert router._claude_default(Tier.FRONTIER) == "claude-opus-4-8"
+    assert router._claude_default(Tier.FRONTIER) == "claude-opus-5-5"
 
 
 def test_dispatch_failover_flag_falls_back_to_claude(
@@ -3973,7 +3973,7 @@ def test_dispatch_failover_flag_falls_back_to_claude(
 
     assert out.text == "claude saved it"
     assert out.error is None
-    assert calls["model"] == "claude-opus-4-8"  # claude fallback, not the OSS id
+    assert calls["model"] == "claude-opus-5-5"  # claude fallback, not the OSS id
 
 
 def test_dispatch_failover_all_rungs_timeout_is_paused(
@@ -4112,7 +4112,7 @@ def test_resolve_chain_valid_override_maps_rungs_in_order(
                 },
                 {
                     "placement": "cloud",
-                    "model": "claude-opus-4-8",
+                    "model": "claude-opus-5-5",
                     "transport": "claude_agent",
                 },
             ]
@@ -4127,7 +4127,7 @@ def test_resolve_chain_valid_override_maps_rungs_in_order(
 
     assert chain == [
         Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="cloud"),
-        Rung(Transport.CLAUDE_AGENT, model="claude-opus-4-8", label="cloud"),
+        Rung(Transport.CLAUDE_AGENT, model="claude-opus-5-5", label="cloud"),
     ]
 
 
@@ -4136,8 +4136,8 @@ def test_resolve_chain_parses_bare_opt_in(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
         lambda _tier: [
-            {"model": "claude-sonnet-5", "transport": "claude_p", "bare": True},
-            {"model": "claude-sonnet-5", "transport": "claude_p"},
+            {"model": "claude-sonnet-5-5", "transport": "claude_p", "bare": True},
+            {"model": "claude-sonnet-5-5", "transport": "claude_p"},
         ],
     )
 
@@ -4146,9 +4146,9 @@ def test_resolve_chain_parses_bare_opt_in(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     assert chain == [
-        Rung(Transport.CLAUDE_P, model="claude-sonnet-5", label="chain", bare=True),
+        Rung(Transport.CLAUDE_P, model="claude-sonnet-5-5", label="chain", bare=True),
         # Absent → False. Never inherited from a sibling rung.
-        Rung(Transport.CLAUDE_P, model="claude-sonnet-5", label="chain", bare=False),
+        Rung(Transport.CLAUDE_P, model="claude-sonnet-5-5", label="chain", bare=False),
     ]
 
 
@@ -4159,7 +4159,7 @@ def test_resolve_chain_non_boolean_bare_degrades_whole_chain(
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
         lambda _tier: [
-            {"model": "claude-sonnet-5", "transport": "claude_p", "bare": "true"}
+            {"model": "claude-sonnet-5-5", "transport": "claude_p", "bare": "true"}
         ],
     )
 
@@ -4215,8 +4215,8 @@ def test_failover_passes_the_rung_bare_flag_to_the_transport(
     monkeypatch.setattr(router, "provider_for", _fake_provider_for, raising=True)
 
     router.FailoverProvider(
-        [Rung(Transport.CLAUDE_P, model="claude-sonnet-5", bare=True)]
-    ).run(router.LlmRequest(tier=Tier.BIG, prompt="hi"), model="claude-sonnet-5")
+        [Rung(Transport.CLAUDE_P, model="claude-sonnet-5-5", bare=True)]
+    ).run(router.LlmRequest(tier=Tier.BIG, prompt="hi"), model="claude-sonnet-5-5")
 
     assert seen == [True]
 
@@ -4461,7 +4461,7 @@ def test_resolve_chain_mixed_override_keeps_only_tool_carrying_rungs(
             {"placement": "cloud", "model": "sonnet", "transport": "claude_p"},
             {
                 "placement": "cloud",
-                "model": "claude-opus-4-8",
+                "model": "claude-opus-5-5",
                 "transport": "claude_agent",
             },
         ],
@@ -4473,7 +4473,7 @@ def test_resolve_chain_mixed_override_keeps_only_tool_carrying_rungs(
 
     assert chain == [
         Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="cloud"),
-        Rung(Transport.CLAUDE_AGENT, model="claude-opus-4-8", label="cloud"),
+        Rung(Transport.CLAUDE_AGENT, model="claude-opus-5-5", label="cloud"),
     ]
 
 
@@ -4521,7 +4521,7 @@ def test_dispatch_chain_override_honored_flag_off(
                 },
                 {
                     "placement": "cloud",
-                    "model": "claude-opus-4-8",
+                    "model": "claude-opus-5-5",
                     "transport": "claude_agent",
                 },
             ]
@@ -4540,7 +4540,7 @@ def test_dispatch_chain_override_honored_flag_off(
     assert out.error is None
     assert oss.calls == 1 and claude.calls == 1
     assert oss.model_seen == "z-ai/glm-5.2"  # rung 0's pinned model
-    assert claude.model_seen == "claude-opus-4-8"  # rung 1's pinned model
+    assert claude.model_seen == "claude-opus-5-5"  # rung 1's pinned model
 
 
 def test_dispatch_single_rung_chain_override_honors_pinned_model(
@@ -4863,7 +4863,7 @@ def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
     assert out.error is None
     assert out.paused is False
     assert seen["local_url"] is None  # rung 0 retried WITHOUT the busy endpoint
-    assert seen["model"] == "claude-sonnet-5"
+    assert seen["model"] == "claude-sonnet-5-5"
 
 
 def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
@@ -4904,7 +4904,7 @@ def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
     assert out.text == "claude saved it"
     assert out.error is None
     # The claude fallback rung pins BIG's own compiled claude default.
-    assert calls["model"] == "claude-sonnet-5"
+    assert calls["model"] == "claude-sonnet-5-5"
 
 
 def test_dispatch_paused_local_slot_small_default_backend_still_paused(
@@ -5835,7 +5835,7 @@ def test_planner_rung0_model_none_for_claude_rung0(
     monkeypatch.setattr(
         router,
         "resolve_chain",
-        lambda tier, **kw: [Rung(Transport.CLAUDE_AGENT, model="claude-opus-4-8")],
+        lambda tier, **kw: [Rung(Transport.CLAUDE_AGENT, model="claude-opus-5-5")],
     )
 
     assert router.planner_rung0_model("opus") is None
@@ -6980,7 +6980,7 @@ def test_op_chain_escape_passes_gates_and_runs_next_rung(
 _CAST_QUOTA_CHAIN = [
     {
         "transport": "claude_agent",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "placement": "cloud",
     },
     {
@@ -7075,7 +7075,7 @@ def test_unpaused_cast_uses_the_subscription_rung(
     out = route(_cast_req())
 
     assert out.text == "subscription"
-    assert agent.calls == [("claude-sonnet-5", None)] and oss.calls == []
+    assert agent.calls == [("claude-sonnet-5-5", None)] and oss.calls == []
 
 
 def test_quota_paused_cast_with_no_fallback_rung_pauses(
@@ -7704,7 +7704,11 @@ def test_route_advances_to_usable_rung_when_claude_missing(
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
         lambda tier: [
-            {"model": "claude-sonnet-5", "transport": "claude_p", "placement": "cloud"},
+            {
+                "model": "claude-sonnet-5-5",
+                "transport": "claude_p",
+                "placement": "cloud",
+            },
             {"model": "qwen-local", "transport": "local", "placement": "local"},
         ],
     )
@@ -7800,7 +7804,7 @@ def test_route_prunes_bare_rung_without_api_key(
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
         lambda tier: [
-            {"model": "claude-sonnet-5", "transport": "claude_p", "bare": True},
+            {"model": "claude-sonnet-5-5", "transport": "claude_p", "bare": True},
         ],
     )
 
@@ -8005,7 +8009,7 @@ def test_error_result_unparseable_quota_notice_is_a_quota_pause() -> None:
         "claude -p returned no parseable JSON block",
         stdout="You're out of extra usage · resets 3am (UTC)",
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.paused is True
     assert res.quota_exhausted is True
@@ -8025,7 +8029,7 @@ def test_error_result_quota_notice_inside_json_envelope_is_a_quota_pause() -> No
     exc = ClaudePUnparseableError(
         "claude -p returned no parseable JSON block", stdout=stdout
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.paused is True
     assert res.quota_exhausted is True
@@ -8048,7 +8052,7 @@ def test_error_result_unparseable_prose_is_not_a_quota_pause() -> None:
     exc = ClaudePUnparseableError(
         "claude -p returned no parseable JSON block", stdout=prose
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.paused is False
     assert res.quota_exhausted is False
@@ -8165,7 +8169,7 @@ def test_error_result_is_error_envelope_without_quota_wording_not_paused() -> No
     exc = ClaudePUnparseableError(
         "claude -p returned no parseable JSON block", stdout=stdout
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.paused is False
     assert res.quota_exhausted is False
@@ -8191,7 +8195,7 @@ def test_error_result_is_error_envelope_quota_wording_is_a_quota_pause() -> None
     exc = ClaudePUnparseableError(
         "claude -p returned no parseable JSON block", stdout=stdout
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.paused is True
     assert res.quota_exhausted is True
@@ -8211,7 +8215,7 @@ def test_error_result_short_usage_limit_prose_is_not_a_quota_pause() -> None:
         "claude -p returned no parseable JSON block",
         stdout="I could not find the usage limit in this datasheet.",
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.paused is False
     assert res.quota_exhausted is False
@@ -8232,7 +8236,7 @@ def test_error_result_non_unparseable_error_never_classifies_quota() -> None:
         stderr="",
         returncode=1,
     )
-    res = _error_result(exc, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    res = _error_result(exc, model="claude-opus-5-5", tier=Tier.FRONTIER)
 
     assert res.quota_exhausted is False
     assert res.reason_class != "quota"
@@ -8416,7 +8420,7 @@ def test_error_result_null_result_envelope_unwraps_to_transport() -> None:
     exc = ClaudePUnparseableError(
         "claude -p returned no parseable JSON block", stdout=stdout
     )
-    res = _error_result(exc, model="claude-sonnet-5", tier=Tier.BIG)
+    res = _error_result(exc, model="claude-sonnet-5-5", tier=Tier.BIG)
 
     assert res.reason_class == "transport"
     assert res.cost_usd == 0.02
@@ -8445,7 +8449,7 @@ def test_error_result_clean_success_envelope_stays_unparseable() -> None:
     exc = ClaudePUnparseableError(
         "claude -p returned no parseable JSON block", stdout=stdout
     )
-    res = _error_result(exc, model="claude-sonnet-5", tier=Tier.BIG)
+    res = _error_result(exc, model="claude-sonnet-5-5", tier=Tier.BIG)
 
     assert res.reason_class == "unparseable"
 
