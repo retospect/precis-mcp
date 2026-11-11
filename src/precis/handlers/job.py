@@ -6019,8 +6019,12 @@ class JobHandler(NumericRefHandler):
         "N of K" and the count's facets describe an identical set.
         ``q=`` is title-lexical here (``refs.title`` tsquery, like the
         count's ``q``); the hybrid ranked path stays the unfiltered
-        one. ``view='count'`` delegates to the shared aggregate, so
-        ``group_by='state'`` gives the status facets.
+        one. ``mode='lexical'`` names that same leg, so it applies
+        trivially — every other mode spelling asks for a leg this
+        path doesn't run and still refuses (gr608736: callers kept
+        repeating the refused ``mode='lexical'`` call). ``view='count'``
+        delegates to the shared aggregate, so ``group_by='state'``
+        gives the status facets.
         """
         # job_type=None is the plain dated listing, not a job_type
         # search — its refusals describe that shape, not "job_type-".
@@ -6051,9 +6055,10 @@ class JobHandler(NumericRefHandler):
                     "search(kind='job', q='…', sort='recency', since='…')"
                 ),
             )
-        if mode is not None:
+        if mode is not None and str(mode).strip().lower() != "lexical":
             raise BadInput(
-                f"mode= has no ranked-search meaning on {label} — q= is title-lexical",
+                f"mode={mode!r} has no ranked-search meaning on {label} — "
+                "q= is title-lexical (mode='lexical' names the same leg)",
                 next=(
                     "drop mode=, or drop job_type= for the hybrid ranked path"
                     if job_type is not None

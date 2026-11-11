@@ -122,6 +122,45 @@ class TestJobTypeListing:
         assert resp.result_count == 1
         assert str(ref.id) in resp.body
 
+    def test_mode_lexical_names_the_same_leg(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """gr608736: ``mode='lexical'`` asks for what the job_type-filtered
+        path already is — the title-lexical ``q=`` leg — so it applies
+        instead of refusing (callers kept repeating the refused call)."""
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="graph_garden nightly sweep",
+            meta={"job_type": "sweep"},
+        )
+        store.insert_ref(kind="job", slug=None, title="t", meta={"job_type": "sweep"})
+        resp = jobs.search(job_type="sweep", q="nightly", mode="lexical", status="*")
+        assert resp.result_count == 1
+        assert str(ref.id) in resp.body
+
+    def test_ranked_mode_spellings_still_refuse(self, jobs: JobHandler) -> None:
+        """The modes that ask for a leg this path doesn't run —
+        ``semantic``/``hybrid`` (vector) and ``verbatim``/``literal``
+        (exact-match) — keep refusing, with the same label."""
+        for m in ("semantic", "hybrid", "verbatim", "literal"):
+            with pytest.raises(BadInput, match="mode=") as exc_info:
+                jobs.search(job_type="sweep", q="nightly", mode=m)
+            assert "job_type-filtered" in str(exc_info.value), exc_info.value
+
+    def test_mode_lexical_on_the_dated_listing(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """The job_type=None sibling (the dated listing) takes the same
+        lexical spelling — ``q=`` is title-lexical there too."""
+        _job(store, job_type="sweep", status="queued")
+        resp = jobs.search(
+            status="*",
+            since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            mode="lexical",
+        )
+        assert resp.body.startswith("# 1 job entry"), resp.body
+
     def test_no_matches_offers_next(self, jobs: JobHandler, store: Store) -> None:
         _job(store, job_type="sweep", status="queued")
         resp = jobs.search(job_type="nonexistent_type", status="*")
@@ -133,6 +172,32 @@ class TestJobTypeListing:
             _job(store, job_type="sweep", status="queued")
         resp = jobs.search(job_type="sweep", status="*", page_size=2, page=2)
         assert resp.body.startswith("# rows 3-3 of 3"), resp.body
+
+    def test_dispatch_q_mode_lexical_job_type(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """The gripe's call shape (gr608736): ``search(kind='job',
+        q='…', mode='lexical', args={'job_type': …})`` — refused as
+        "mode= has no ranked-search meaning" even though the lexical
+        spelling names the leg that runs."""
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title="run_slice nightly attempt",
+            meta={"job_type": "run_slice"},
+        )
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "job",
+                "q": "nightly",
+                "mode": "lexical",
+                "status": "*",
+                "__extras__": {"job_type": "run_slice"},
+            },
+        )
+        assert "[error" not in body, body
+        assert "with job_type 'run_slice'" in body
 
     def test_empty_job_type_rejected(self, jobs: JobHandler) -> None:
         with pytest.raises(BadInput, match="non-empty"):
