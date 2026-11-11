@@ -469,13 +469,17 @@ def test_module_level_site_cannot_borrow_a_sibling_def() -> None:
 
 
 @pytest.fixture
-def _run_store_state(monkeypatch: pytest.MonkeyPatch) -> Any:
+def _run_store_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     """Isolate the module-level attribution pool state per test — a prior
-    test's bound Store or connect-failure timestamp mustn't leak in."""
+    test's bound Store or connect-failure timestamp mustn't leak in. HOME is
+    redirected so ``Config.load`` (the unthreaded-DSN resolution rung,
+    gr605686) can't pick up a real ``~/.asa/config.yaml``."""
     import asa_bot.claude_invoke as ci
 
     monkeypatch.setattr(ci, "_run_store", None)
     monkeypatch.setattr(ci, "_run_store_failed_at", None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ASA_CONFIG", raising=False)
     return ci
 
 
@@ -540,7 +544,8 @@ def test_attribution_store_passed_dsn_beats_stale_env(
 def test_attribution_store_env_dsn_is_the_fallback(
     monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
 ) -> None:
-    """No threaded DSN → ``PRECIS_DATABASE_URL`` still feeds the pool."""
+    """No threaded DSN and no config value → ``PRECIS_DATABASE_URL`` still
+    feeds the pool; env fills only the config gap (gr605686)."""
     ci = _run_store_state
     monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://env-dsn/x")
     seen = _record_pool_dsn(monkeypatch)
@@ -548,6 +553,26 @@ def test_attribution_store_env_dsn_is_the_fallback(
     ci._attribution_store()
 
     assert seen == ["postgresql://env-dsn/x"]
+
+
+def test_attribution_store_config_dsn_beats_env_when_unthreaded(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any, tmp_path: Path
+) -> None:
+    """gr605686: a caller threading no ``dsn`` still resolves config first —
+    a ``precis.database_url`` in config.yaml beats the inherited env var."""
+    ci = _run_store_state
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        "precis:\n  database_url: postgresql://precis_system@cfg/x\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ASA_CONFIG", str(cfg_file))
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://agent_rw@stale/x")
+    seen = _record_pool_dsn(monkeypatch)
+
+    ci._attribution_store()
+
+    assert seen == ["postgresql://precis_system@cfg/x"]
 
 
 def test_open_turn_log_threads_the_config_dsn(

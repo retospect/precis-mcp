@@ -16,9 +16,13 @@ asa_common_env:
   # Bot/app tokens are NOT set here — each bridge resolves its own from the
   # precis DB vault (ADR 0055) via env→vault→file order, revealing over this
   # DSN. §L (gr171431 §1): password-free — the pgpass role also drops
-  # ~hermes/.pgpass on the gateway matching this host:port:database:agent_rw
-  # tuple.
-  PRECIS_DATABASE_URL: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  # ~hermes/.pgpass on the gateway matching this host:port:database tuple for
+  # both agent_rw and (post-cutover) precis_system. The user follows the
+  # db-own cutover (gr605686): after it, the config.yaml DSN and the claude
+  # MCP env already name precis_system, and a stale agent_rw value here is a
+  # wrong last-resort fallback — agent_rw cannot reveal infra-class vault
+  # secrets (vault._class_check, migration 0285).
+  PRECIS_DATABASE_URL: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   # Route the spawned precis MCP subprocess at the always-hot embedding
   # service (precis_embedder role, loopback 8181) so skill / cross-kind
   # semantic search lands instantly instead of waiting on a ~30s bge-m3

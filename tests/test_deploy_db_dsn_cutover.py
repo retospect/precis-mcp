@@ -353,6 +353,20 @@ def test_asa_bot_templates_stay_on_agent_rw_before_the_cutover(template: str) ->
     assert "SYS-PASS" in post or template == "claude_mcp.json.j2"
 
 
+def test_asa_common_env_dsn_user_follows_the_cutover() -> None:
+    """gr605686: the launchd env DSN both chat bridges export is the
+    last-resort fallback for every unthreaded in-process read
+    (claude_invoke._attribution_store, secrets.reveal_secret) — its user
+    must follow the db-own cutover like the worker DSNs, not stay on
+    agent_rw, which cannot reveal infra-class vault secrets."""
+    rel = "roles/asa_common/defaults/main.yml"
+    assert _user(_render_dsn(rel, "PRECIS_DATABASE_URL")) == "agent_rw"
+    assert (
+        _user(_render_dsn(rel, "PRECIS_DATABASE_URL", precis_db_own_cutover_done=True))
+        == "precis_system"
+    )
+
+
 def test_asa_bot_plist_notify_dsn_user_matches_its_password() -> None:
     src = (_ASA_BOT / "com.asa.bot.plist.j2").read_text(encoding="utf-8")
     ctx = {

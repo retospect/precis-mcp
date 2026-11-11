@@ -79,7 +79,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any
 
-from asa_bot.config import LLMConfig
+from asa_bot.config import Config, LLMConfig
 from asa_bot.llm_runtime import warm_runtime
 from asa_bot.oauth import ensure_oauth_token
 from precis import agentlog
@@ -286,8 +286,9 @@ def _turn_overlay(
 # asa binds no Store in-process (it talks to precis over a subprocess MCP
 # server), so run attribution opens its own small pool the first time a
 # turn needs it — on the config.yaml DSN threaded in per turn (config
-# wins, gr605686); ``PRECIS_DATABASE_URL`` is only the fallback when no
-# caller passes one.
+# wins, gr605686). A caller that threads none still resolves config first:
+# ``Config.load`` folds ``PRECIS_DATABASE_URL`` in only when the YAML names
+# no DSN, so the env var is always the last fallback, never an override.
 _run_store: Any = None
 _run_store_lock = threading.Lock()
 #: ``time.monotonic()`` of the last failed connect; a down DB is retried only
@@ -301,23 +302,38 @@ _RUN_STORE_RETRY_S = 60.0
 _RUN_STORE_CONNECT_S = 3.0
 
 
+def _config_database_url() -> str:
+    """The effective ``precis.database_url`` for a caller that threaded no
+    ``dsn`` — the loaded asa config first; the raw env var is reached only
+    through it (or directly, if the config machinery itself fails).
+
+    ``Config.load`` folds ``PRECIS_DATABASE_URL`` into the config value only
+    when the YAML names none, so a configured DSN always beats an inherited
+    (possibly stale ``agent_rw``) env value (gr605686)."""
+    try:
+        return Config.load().precis.database_url
+    except Exception:
+        return os.environ.get("PRECIS_DATABASE_URL") or ""
+
+
 def _attribution_store(dsn: str | None = None) -> Any:
     """asa's process-wide Store for agentlog writes, or ``None`` without a DSN
     or inside the retry back-off after a failed connect. ``dsn`` is the
-    config.yaml ``precis.database_url`` the turn threads in; the env var is
-    only the fallback when none is given (gr605686)."""
+    config.yaml ``precis.database_url`` the turn threads in; a caller that
+    passes none resolves the loaded config next, with ``PRECIS_DATABASE_URL``
+    only the last fallback (gr605686 — config wins, env fills gaps)."""
     global _run_store, _run_store_failed_at
     with _run_store_lock:
         if _run_store is not None:
             return _run_store
-        dsn = dsn or os.environ.get("PRECIS_DATABASE_URL")
-        if not dsn:
-            return None
         now = time.monotonic()
         if (
             _run_store_failed_at is not None
             and now - _run_store_failed_at < _RUN_STORE_RETRY_S
         ):
+            return None
+        dsn = dsn or _config_database_url()
+        if not dsn:
             return None
         from precis.store import Store
         from precis.store.pool import create_pool
