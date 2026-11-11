@@ -76,8 +76,12 @@ precis_suspended_job_types: ""
 # pyproject.toml/uv.lock.
 autocatpath_min_version: "0.50.0"
 
-# Verify-tier autocatpath seed wall (PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS): 24 h, the code clamp ceiling (gr493237, Reto 2026-10-17). 20 verify successes ran 4.6-8.9 h, but that tail is censored: 7 solo seeds died at the old 9 h bound and one solo seed was still running at 14.1 h when OOM-killed; three 3-way-contended seeds died at the 19 h bound (al480803 history). Omit to fall back to max(PRECIS_AUTOCATPATH_WALL_SECONDS, 86400).
-precis_autocatpath_verify_wall_seconds: 86400
+# Autocatpath seed walls (gr614723, Reto 2026-11-10): full-network general
+# NEB gets 24 h; exhaustive coadsorbed verify gets 48 h, the code clamp ceiling.
+# Seeds exhausted the previous 2.5 h/25 h runner deadlines; the runner keeps
+# its one-hour margin. Omitted pins use the same tier defaults.
+precis_autocatpath_wall_seconds: 86400
+precis_autocatpath_verify_wall_seconds: 172800
 
 # Per-step ceiling for the autocatpath_kinetics child (PRECIS_AUTOCATPATH_KINETICS_SECONDS): the sweep gets 3x this, the job wall 5x + 300 s. 6000 s = ~5 h sweep budget; q164903 kinetics sweeps died at 2700 s (3 x the 900 default). Reto 2026-11-01. Rendered into EVERY ssh_node-claiming lane (20b, 20g, 43) so the lease and the child budget agree; tests/test_deploy_kinetics_budget.py.
 precis_autocatpath_kinetics_seconds: 6000

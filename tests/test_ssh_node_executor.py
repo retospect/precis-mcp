@@ -1376,22 +1376,27 @@ def test_poll_past_deadline_calls_kill_hook_when_present(
     assert _status(store, rid) == "failed"
 
 
-def test_verify_seed_survives_19h_and_is_killed_past_its_wall(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("tier", "wall_seconds", "elapsed_hours"),
+    [("neb", 86400, 3), ("verify", 172800, 26)],
+)
+def test_seed_survives_previous_deadline_and_is_killed_past_its_wall(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    tier: str,
+    wall_seconds: int,
+    elapsed_hours: int,
 ) -> None:
-    """gr493237: verify seeds 489188/489256/489258 were killed at 19 h
-    (64800 s wall + margin). At the default verify wall a seed 19 h in is
-    still polled; one past wall + margin still hits the kill hook and fails
-    as ``timeout``."""
+    """gr614723: general/verify seeds outlive the previous 2.5 h/25 h
+    deadlines. They remain polled within the new wall plus one-hour margin;
+    a seed beyond its new deadline still fails as ``timeout``."""
     from precis.quest import compute
 
     monkeypatch.delenv(compute._AUTOCATPATH_WALL_SECONDS_ENV, raising=False)
     monkeypatch.delenv(compute._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False)
-    params = {
-        "resources": {"wall_seconds": compute._autocatpath_wall_seconds("verify")}
-    }
+    params = {"resources": {"wall_seconds": compute._autocatpath_wall_seconds(tier)}}
     bound = ssh_node._wall_bound_seconds({"params": params})
-    assert bound == 86_400 + ssh_node._LEASE_MARGIN_S
+    assert bound == wall_seconds + 3600
 
     polled: list[Any] = []
     killed: list[tuple[Any, Any]] = []
@@ -1411,18 +1416,23 @@ def test_verify_seed_survives_19h_and_is_killed_past_its_wall(
             params_schema={"type": "object"},
             compatible_executors=frozenset({"ssh_node"}),
             requires=frozenset(),
-            description="fake verify seed",
+            description="fake autocatpath seed",
             run=lambda *a, **k: "noop",
             submit=lambda c, s: None,
             poll=_poll,
             kill=_kill,
         ),
     )
-    alive = _mk_running_job(store, lease_offset_s=3600, compute_handle="seed-19h")
+    alive = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle=f"seed-{elapsed_hours}h"
+    )
     over = _mk_running_job(store, lease_offset_s=3600, compute_handle="seed-over")
     now = time.time()
     with store.pool.connection() as conn:
-        for rid, started in ((alive, now - 19 * 3600), (over, now - bound - 5)):
+        for rid, started in (
+            (alive, now - elapsed_hours * 3600),
+            (over, now - bound - 5),
+        ):
             conn.execute(
                 "UPDATE refs SET meta = meta || jsonb_build_object("
                 "'params', %s::jsonb, 'deadline', %s::float) WHERE ref_id = %s",
@@ -1433,7 +1443,7 @@ def test_verify_seed_survives_19h_and_is_killed_past_its_wall(
     result = ssh_node.run_ssh_node_pass(store, limit=2)
 
     assert result == {"claimed": 0, "ok": 1, "failed": 0}
-    assert polled == ["seed-19h"]
+    assert polled == [f"seed-{elapsed_hours}h"]
     assert _status(store, alive) == "running"
     assert killed == [(over, "seed-over")]
     assert _status(store, over) == "failed"

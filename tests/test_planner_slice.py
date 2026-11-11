@@ -152,6 +152,8 @@ def test_system_prompt_states_no_shell_container_host_access() -> None:
     out = _build_system_prompt(store=None)
     assert "no shell, container, or host access" in out
     assert "never assert it happened" in out
+    assert "verdict: halt" in out
+    assert "halt-class: blocked" in out
     assert "blocked-on: executor-capability" in out
 
 

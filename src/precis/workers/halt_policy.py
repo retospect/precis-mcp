@@ -14,6 +14,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.store.types import Tag
 from precis.workers.executors._common import (
     SUCCEEDED,
@@ -205,7 +206,7 @@ def alert_misconceived_halt(store: Store, parent_id: int, job_ref_id: int) -> No
 
     raise_alert(
         store,
-        source="planner:misconceived",
+        source=RULES_BY_ID["planner:misconceived/misconceived:{parent_id}"].rule,
         fingerprint=f"misconceived:{parent_id}",
         title=f"Todo #{parent_id} halted after one plan repair",
         detail=f"Tick job #{job_ref_id} still found the task misconceived; review its halt summary.",

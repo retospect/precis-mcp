@@ -5,10 +5,9 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 ``serves`` DAG into rotation/acquisition/reading), `gaps` (health + the
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
-``structure`` sims), `frontier` (Pareto rank), `protocol` (the per-quest
-measurement-protocol record, the deduped logbook "protocol drift" line when
-a dispatched/harvested run departs from it, and the frontier-header +
-status-report protocol histogram — gr593142), `environment_basis` (the
+``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
+measurement protocols, deduped dispatch/harvest drift logbook entries, and
+frontier/status protocol histograms; gr593142), `environment_basis` (the
 engine-free kinetics v2 environment hash folded into the network basis),
 `atomcost` (static
 element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
@@ -54,6 +53,8 @@ Package-level invariants (detail lives on the named module):
 - **Infra failure is never a physical verdict.** A failed relax or
   autocatpath job retries once then gripes — it is never ``ruled-out:``
   (``compute``; dossier-owned-by-process).
+- **Seed budgets preserve full-network search.** Defaults, caps, runner margins
+  and retry eligibility: ``compute._autocatpath_wall_seconds`` (gr614723).
 - **Untrusted measures don't rank — but they stay visible.** A pathway with
   NEB-not-converged / adsorbate-detached warnings, a nonphysical barrier
   (> ``compute._BARRIER_ABSURD_EV``), a symmetry-twin pair whose barriers

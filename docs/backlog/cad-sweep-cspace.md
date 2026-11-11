@@ -70,6 +70,14 @@ so the same walk covers it.
 
 ## Acceptance criteria
 
+- Recovery: `rescue/cad-sweep-cspace` preserves the unfinished implementation
+  and its tests. Do not land it as-is: a resolution-band step can miss a
+  narrow penetration. Add a regression for
+  `gap(q) = min(abs(q - .55) - .01, .001)`, resolution `.002`, range `[0,1]`,
+  speed bound `1`, tolerance `1e-6`, evaluation cap `9`: the walk currently
+  reports persistent contact with no intervals despite penetration at `.55`.
+  A bounded walk must report uncertainty when it cannot exclude that event.
+  Preserve main's batched sweep scoring when integrating the recovery.
 - `test_sweep_sees_gear_driven_collisions` still passes, and a new test
   asserts the a2 × post window brackets 90° with edges within 2° of the
   analytic value for the rig geometry (derive it in the test from the

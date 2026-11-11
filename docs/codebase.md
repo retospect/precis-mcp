@@ -136,6 +136,11 @@ cannot provide a revision-specific receipt.
 | **Diagnostics core** | `src/precis_diag/` | domain-free `Diag`/`RunResult`/`Anchor`/`FrameSite`/`Status` + `render` (shared-core-layers S1a): the structured failure/check record every domain adapter emits — stdlib-only, ships in the precis-geom wheel; `precis_geom.run_diag` anchors CAD failures at the user-facing op and script call site, retaining inner frames in `anchor.chain`; a report-carrying exception (hexfold `BuildError`) yields one Diag per finding instead of the single `cad.run-failed`; `hexfold.diag` owns the reverse Finding conversion |
 | **Geom workspace kernel** | `src/precis_geom/` | DB-free builder for 3D-design workspace scripts (`docs/backlog/structure-workspaces.md`, `docs/backlog/pcb-workspace-code.md`); today hosts `precis_geom.trace`/`trace_schema` (the structure slice-2 construction tracer), `precis_geom.pcb` (the pcb builder, slice 0: `Board`/`Net`/`Part`/`Pin`/`Footprint`/`module`, `to_batch()` is the `pcb_apply`-shaped payload), `precis_geom.pcb_shape` (slice 0b: the board's 3-D shape + fit check — the ONE mechanical derivation, which `precis.pcb.export.mechanical_profile` and `precis_se.board` delegate to) and `precis_geom.flow`/`physics` (flow 4a — the Flow kernel row); trace/pcb/pcb_shape are pure stdlib, flow/physics pull numpy + `precis_flow` + the wheel's carved `precis` subset — the trusted-side importer and place/route services are later slices |
 
+Editable geometry feature graphs live in `precis_geom.design.Recipe`, with
+stable feature IDs and isolated edit, snapshot and restore boundaries.
+`precis_flow.slip` supplies Navier-slip gap profiles and Taylor dispersion
+coefficients through the species solver and tracer hooks.
+
 Thin-gap extensions declare their token keys, evaluate keys, input measures
 and outputs in `src/precis_flow/physics.py::PHYSICS`; `TESTED` gates declared
 combinations before evaluation. Card builders register through

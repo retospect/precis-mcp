@@ -30,7 +30,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +217,127 @@ def test_an_impacted_error_widens_to_full() -> None:
     assert res["full"] is True
     assert set(res["files"]) == {"tests/a.py"}
     assert res["notes"] == ["impacted-tests exit 2: bad ref"]
+
+
+def test_impacted_uses_the_frozen_project_runtime(tmp_path: Path) -> None:
+    calls = []
+
+    def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='{"mode": "selected", "files": {}}', stderr=""
+        )
+
+    assert GF.impacted(tmp_path, "base", "head", runner=run)["mode"] == "selected"
+    assert calls == [
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "--project",
+            str(tmp_path),
+            "python",
+            "scripts/impacted-tests",
+            "base",
+            "head",
+            "--json",
+        ]
+    ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable shim")
+def test_clean_planner_bootstraps_impacted_project_imports(
+    tmp_path: Path,
+) -> None:
+    """The outer interpreter has no project imports. A fake uv supplies
+    the fixture project's source path using the test interpreter, offline.
+    Directly invoking that interpreter on the selector still fails."""
+    root = tmp_path / "project"
+    (root / "scripts").mkdir(parents=True)
+    (root / "src").mkdir()
+    (root / "src" / "project_analysis.py").write_text(
+        'RESULT = {"mode": "selected", "files": {"tests/test_changed.py": {}}}\n',
+        encoding="utf-8",
+    )
+    (root / "scripts" / "impacted-tests").write_text(
+        "import json\nfrom project_analysis import RESULT\nprint(json.dumps(RESULT))\n",
+        encoding="utf-8",
+    )
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    uv = fakebin / "uv"
+    uv.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\nfrom pathlib import Path\n"
+        "assert sys.argv[1:4] == ['run', '--frozen', '--project']\n"
+        "root = Path(sys.argv[4])\n"
+        "assert Path.cwd() == root\n"
+        "assert sys.argv[5] == 'python'\n"
+        "env = {**os.environ, 'PYTHONPATH': str(root / 'src')}\n"
+        "os.execve(sys.executable, [sys.executable, *sys.argv[6:]], env)\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    driver = (
+        "import json, runpy, subprocess, sys\nfrom pathlib import Path\n"
+        "root = Path(sys.argv[2])\n"
+        "direct = subprocess.run([sys.executable, 'scripts/impacted-tests', "
+        "'base', 'head', '--json'], cwd=root, capture_output=True, "
+        "text=True, encoding='utf-8', check=False, timeout=10)\n"
+        "result = runpy.run_path(sys.argv[1])['impacted'](root, 'base', 'head')\n"
+        "print(json.dumps({'direct_rc': direct.returncode, "
+        "'direct_error': direct.stderr, 'result': result}))\n"
+    )
+    cp = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            driver,
+            str(REPO / "scripts/lib/gate_fast.py"),
+            str(root),
+        ],
+        env={**os.environ, "PATH": f"{fakebin}{os.pathsep}{os.defpath}"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=30,
+    )
+    assert cp.returncode == 0, cp.stderr
+    result = json.loads(cp.stdout)
+    assert result["direct_rc"] != 0
+    assert (
+        "ModuleNotFoundError: No module named 'project_analysis'"
+        in result["direct_error"]
+    )
+    assert result["result"] == {
+        "mode": "selected",
+        "files": {"tests/test_changed.py": {}},
+    }
+
+
+def test_impacted_failure_retains_bounded_final_exception() -> None:
+    final = "ModuleNotFoundError: No module named 'docstring_parser'"
+
+    def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="Traceback frame\n" * 500 + final + "\n"
+        )
+
+    impacted = GF.impacted(REPO, "base", "head", runner=run)
+    note = impacted["notes"][0]
+    assert note.endswith(final)
+    assert len(note) <= 1000 + len("impacted-tests exit 1: ")
+    res = _sel(
+        seconds={"tests/a.py": 1.0},
+        disk_files=["tests/a.py"],
+        impacted_result=impacted,
+    )
+    assert res["full"] is True
+    assert res["files"] == ["tests/a.py"]
+    assert res["notes"] == [note]
 
 
 # ── files that are gone ──────────────────────────────────────────────
@@ -407,6 +531,26 @@ def test_pack_balances_on_non_nightly_seconds() -> None:
         n=2,
     )
     assert sorted(load) == [10.0, 50.0]
+
+
+def test_pack_spreads_zero_cost_files_despite_unequal_positive_loads() -> None:
+    positive = {"tests/test_large.py": 90.0, "tests/test_small.py": 30.0}
+    zero = [f"tests/pkg/test_zero_{i:02d}.py" for i in range(16)]
+    seconds = {**positive, **dict.fromkeys(zero, 0.0)}
+    # One measured file has its entire measured cost removed by nightly marks.
+    seconds[zero[0]] = 15.0
+    nightly = {zero[0]: 15.0}
+    files = [*reversed(zero), *positive]
+    shards, load = GF.pack(files, seconds, nightly, n=3)
+    assert load == [90.0, 30.0, 0.0]
+    assert [len(bucket) for bucket in shards.values()] == [6, 6, 6]
+    assert sorted(f for bucket in shards.values() for f in bucket) == sorted(files)
+    assert shards == GF.pack(list(reversed(files)), seconds, nightly, n=3)[0]
+    for k, bucket in shards.items():
+        assert bucket == sorted(bucket)
+        assert load[int(k) - 1] == pytest.approx(
+            sum(GF.non_nightly_seconds(f, seconds, nightly) for f in bucket)
+        )
 
 
 def test_pack_emits_each_shard_path_sorted() -> None:

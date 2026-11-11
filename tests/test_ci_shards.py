@@ -145,6 +145,13 @@ def test_gate_fast_leg_wiring() -> None:
     assert "gate_fast_full: ${{ steps.gatefast.outputs.gate_fast_full }}" in WORKFLOW
     assert "shard: ${{ fromJSON(needs.plan.outputs.gate_fast_shard_list) }}" in WORKFLOW
     assert "GATE_FAST_FILES: ${{ needs.plan.outputs.gate_fast_files }}" in WORKFLOW
+    # FULL runs the non-nightly suite with test-linux's 40-minute budget;
+    # ordinary selections retain their 25-minute cap. Pin the condition
+    # and both branches on the parsed job, not an unrelated timeout line.
+    fast_job = yaml.safe_load(WORKFLOW)["jobs"]["gate-fast"]
+    assert fast_job["timeout-minutes"] == (
+        "${{ needs.plan.outputs.gate_fast_full == 'true' && 40 || 25 }}"
+    )
     # gate-fast collects its pack with `-m "not nightly"` and no --shard
     # flag — the pack IS the partition, a crc32 net would deselect it.
     fast = WORKFLOW.split("gate-fast:", 1)[1].split("test-linux:", 1)[0]

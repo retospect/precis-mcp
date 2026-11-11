@@ -37,6 +37,10 @@ tests/gate_fast.json is committed and looks like::
 is the file's total junit seconds of those marked functions — including
 params under 30 s, which a function-level mark removes too — so a file's
 non-nightly cost is ``seconds[f] - nightly_seconds[f]``.
+
+The outer planner is stdlib-only; impacted Python analysis needs project
+dependencies, so its subprocess uses the frozen project runtime rather than
+inheriting the planner's project-free interpreter.
 """
 
 from __future__ import annotations
@@ -45,7 +49,6 @@ import ast
 import json
 import runpy
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -193,9 +196,10 @@ def impacted(
     runner: Any = None,
 ) -> dict[str, Any]:
     """``scripts/impacted-tests BASE HEAD --json`` — the ONE diff->tests
-    selector, invoked bare (stdlib only; the measured tier just reports
-    'absent' without a coverage DB). A fetch/parse failure returns the
-    ``error`` mode, which ``select`` widens to FULL — never narrows."""
+    selector, under the frozen project runtime: Python analysis imports
+    project dependencies unavailable to the stdlib-only outer planner.
+    A fetch/parse failure returns ``error``, which ``select`` widens to
+    FULL — never narrows. Diagnostics retain the bounded exception tail."""
     run = runner or (
         lambda argv: subprocess.run(
             argv,
@@ -208,16 +212,34 @@ def impacted(
         )
     )
     try:
-        cp = run([sys.executable or "python3", IMPACTED, base, head, "--json"])
+        cp = run(
+            [
+                "uv",
+                "run",
+                "--frozen",
+                "--project",
+                str(root),
+                "python",
+                IMPACTED,
+                base,
+                head,
+                "--json",
+            ]
+        )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"mode": "error", "files": {}, "full_because": [], "notes": [str(exc)]}
+        return {
+            "mode": "error",
+            "files": {},
+            "full_because": [],
+            "notes": [str(exc)[-1000:]],
+        }
     if cp.returncode != 0:
         return {
             "mode": "error",
             "files": {},
             "full_because": [],
             "notes": [
-                f"impacted-tests exit {cp.returncode}: {cp.stderr.strip()[:300]}"
+                f"impacted-tests exit {cp.returncode}: {cp.stderr.strip()[-1000:]}"
             ],
         }
     try:
@@ -380,8 +402,12 @@ def pack(
     nightly_s: dict[str, float],
     n: int = SHARDS,
 ) -> tuple[dict[str, list[str]], list[float]]:
-    """LPT-pack the selection into ``n`` buckets on non-nightly seconds —
-    the same partition shape ci-shard-plan's shard_files has, down to the
+    """LPT-pack positive costs, then spread zero-cost files by file count.
+
+    Zero-cost files still incur collection/setup; measured-load ordering
+    would pile them onto one shard when its initial load is lowest.
+    Preserve measured loads, using load/index only to break count ties.
+    Positive-cost packing follows ci-shard-plan's shard_files, including
     path-sorted buckets. The sort is not cosmetic: check.yml hands each
     bucket to pytest as bare file args, and pytest 9.1's deferred conftest
     binding attaches a directory's conftest fixtures to the first Directory
@@ -397,9 +423,17 @@ def pack(
         files,
         key=lambda f: (-non_nightly_seconds(f, seconds, nightly_s), f),
     )
+    zero_cost: list[str] = []
     for f in order:
+        cost = non_nightly_seconds(f, seconds, nightly_s)
+        if cost == 0:
+            zero_cost.append(f)
+            continue
         k = min(range(n), key=lambda i: (load[i], i))
-        load[k] += non_nightly_seconds(f, seconds, nightly_s)
+        load[k] += cost
+        out[str(k + 1)].append(f)
+    for f in zero_cost:
+        k = min(range(n), key=lambda i: (len(out[str(i + 1)]), load[i], i))
         out[str(k + 1)].append(f)
     for bucket in out.values():
         bucket.sort()

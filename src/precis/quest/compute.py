@@ -1208,10 +1208,10 @@ _AUTOCATPATH_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_WALL_SECONDS"
 #: unset → the verify floor below.
 _AUTOCATPATH_VERIFY_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS"
 
-#: Floor (s) for the verify-tier wall hint when its env pin is unset — 24 h,
-#: the clamp ceiling (gr493237; evidence in :func:`_autocatpath_wall_seconds`).
-#: The general default is never enough: every measured verify run needs >4 h.
-_DEFAULT_VERIFY_WALL_SECONDS = 86400
+#: Floor (s) for the verify-tier wall hint when its env pin is unset — 48 h,
+#: the clamp ceiling (gr614723; evidence in :func:`_autocatpath_wall_seconds`).
+#: Exhaustive verify seeds have outlasted the previous 25 h runner deadline.
+_DEFAULT_VERIFY_WALL_SECONDS = 172800
 
 
 #: Interim GB10 unified-memory guard (gr491506): the fixed
@@ -1264,50 +1264,36 @@ def _autocatpath_seed_cpuset() -> str | None:
 
 
 def _autocatpath_wall_seconds(tier: str | None = None) -> int:
-    """Expected wall-time hint (s) for a autocatpath NEB, stamped into the job's
-    ``resources`` so the ssh_node lease outlives a full-network run.
+    """Wall-time hint (s) stamped into each autocatpath job's resources.
 
-    Env-tunable (``PRECIS_AUTOCATPATH_WALL_SECONDS``, default 5400 = 90 min): a
-    3×3×4 full ammonia-network run is ~15-20 min uncontended but can stretch
-    under load. ssh_node leases at ``max(2h floor, wall_seconds + 1h margin)``,
-    so 5400 → a 2.5h lease. Confirmed wired end-to-end (this value lands on
-    the dispatched job's ``params.resources.wall_seconds``, which is exactly
-    the field ``ssh_node._lease_seconds`` reads) by
-    ``TestDispatchAutocatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease``
-    in ``tests/test_quest_compute.py``.
+    General NEB defaults to 24 h (PRECIS_AUTOCATPATH_WALL_SECONDS); exhaustive
+    coadsorbed verify seeds get 48 h (PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS).
+    Recent seeds exhausted the former 2.5 h general and 25 h verify runner
+    deadlines (gr614723), so the longer defaults preserve their scientific
+    search rather than cutting convergence or replaying the failed population.
 
-    The ``verify`` tier has its own pin
-    (``PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS``). Verify seeds are
-    exhaustive coadsorbed NEB (no best_first), so they run far longer than
-    the fast-screening tiers: the 2026-10-03 prod read had 24/27 verify
-    seeds killed at the 2.5 h lease while the successes took 1.9–2.25 h;
-    the 2026-10-13 read had 11 coadsorbed successes at 4.6–8.7 h and seed-2
-    cells of td322478 killed twice at the 9 h bound while still band-
-    splitting (al480803). The 2026-10-17 read (gr493237) showed the success
-    tail is censored by the wall itself: 20 verify successes at 4.6–8.9 h,
-    but 7 solo seeds died at the 9 h bound, one solo seed was still running
-    at 14.1 h when OOM-killed, and three seeds sharing castor's one GPU
-    3-way died at the 19 h bound (64800 s + margin). Reto ruled to raise the
-    wall rather than retry or abandon per candidate, so the pin sits at the
-    86 400 s clamp ceiling (deadline 25 h) — an unset
-    or malformed verify pin therefore floors at
-    ``max(general value, _DEFAULT_VERIFY_WALL_SECONDS)`` rather than the
-    90-min general default, which is a guaranteed deadline kill for this
-    tier. Same clamp when the pin is set.
+    An unset or malformed verify pin uses
+    ``max(general value, _DEFAULT_VERIFY_WALL_SECONDS)``; a malformed general
+    pin uses its 24 h default. Explicit pins clamp to 60 s–48 h. ssh_node
+    adds its existing 3600 s margin, giving default deadlines of 25 h and
+    49 h. ``params.resources.wall_seconds`` drives both the initial lease and
+    detached deadline; the dispatch regressions in tests/test_quest_compute.py
+    exercise that wiring. Raising a wall also releases older, shorter
+    timeout holds under the existing bounded harvest/retry policy.
     """
     if tier == _TIER_VERIFY:
         raw = os.environ.get(_AUTOCATPATH_VERIFY_WALL_SECONDS_ENV)
         if raw is not None:
             try:
-                return max(60, min(86_400, int(raw)))
+                return max(60, min(172_800, int(raw)))
             except ValueError:
                 pass  # malformed pin → the verify floor, as if unset
         return max(_autocatpath_wall_seconds(), _DEFAULT_VERIFY_WALL_SECONDS)
     try:
-        n = int(os.environ.get(_AUTOCATPATH_WALL_SECONDS_ENV, "5400"))
+        n = int(os.environ.get(_AUTOCATPATH_WALL_SECONDS_ENV, "86400"))
     except ValueError:
-        return 5400
-    return max(60, min(86_400, n))
+        return 86400
+    return max(60, min(172_800, n))
 
 
 #: The engine-version token (``_autocatpath_engine_token`` & co.) lives in

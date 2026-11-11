@@ -125,3 +125,46 @@ def test_never_touch_windows():
     assert not fc.is_protected_window("devin-gf-pagefold")
     assert not fc.is_protected_window("codex-foo")
     assert not fc.is_protected_window("local-bar")
+
+
+def _repo_with_probe(tmp_path, body):
+    """A repo dir carrying a stub mcp-http ensure script with `body`."""
+    d = tmp_path / "repo" / "deploy" / "mcp-http"
+    d.mkdir(parents=True)
+    script = d / "precis-mcp-http-ensure.sh"
+    script.write_text(body, encoding="utf-8")
+    script.chmod(0o755)
+    return str(tmp_path / "repo")
+
+
+def test_path_in_use_missing_script_fails_closed(tmp_path, capsys):
+    """gr516960: a missing probe must NOT read as 'free'."""
+    assert fc.path_in_use(str(tmp_path), "/whatever") is True
+    assert "probe script missing" in capsys.readouterr().out
+
+
+def test_path_in_use_free_only_on_exit_10(tmp_path):
+    repo = _repo_with_probe(tmp_path, "#!/bin/sh\nexit 10\n")
+    assert fc.path_in_use(repo, "/whatever") is False
+
+
+def test_path_in_use_in_use_on_exit_0(tmp_path):
+    repo = _repo_with_probe(tmp_path, "#!/bin/sh\nexit 0\n")
+    assert fc.path_in_use(repo, "/whatever") is True
+
+
+def test_path_in_use_unknown_exit_fails_closed(tmp_path, capsys):
+    repo = _repo_with_probe(tmp_path, "#!/bin/sh\necho unverifiable\nexit 3\n")
+    assert fc.path_in_use(repo, "/whatever") is True
+    assert "unverifiable" in capsys.readouterr().out
+
+
+def test_path_in_use_timeout_fails_closed(tmp_path, monkeypatch, capsys):
+    repo = _repo_with_probe(tmp_path, "#!/bin/sh\nexit 10\n")
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="bash", timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    assert fc.path_in_use(repo, "/whatever") is True
+    assert "probe failed" in capsys.readouterr().out

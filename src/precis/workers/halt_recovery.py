@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import _flip_resolved, raise_alert
 from precis.store.types import Tag
 from precis.workers.executors._common import TERMINAL
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
     from precis.store import Store
 
-SOURCE = "breaker:infra-outage"
+SOURCE = RULES_BY_ID["breaker:infra-outage/infra"].rule
 FINGERPRINT = "infra"
 COOLDOWN_S = 15 * 60
 MAX_COOLDOWN_S = 24 * 60 * 60

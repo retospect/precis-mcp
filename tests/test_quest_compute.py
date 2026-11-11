@@ -2223,7 +2223,7 @@ class TestHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert "quest_seed_infra_retries" not in meta
         assert meta.get("quest_seed_timeout_noted")
-        held = [n for n in step1.notes if "timed out at the neb wall (5400s)" in n]
+        held = [n for n in step1.notes if "timed out at the neb wall (86400s)" in n]
         assert len(held) == 1 and "not an infra fault" in held[0]
         assert not any("timed out" in n for n in step2.notes)  # noted once
 
@@ -2416,7 +2416,7 @@ class TestHarvest:
         assert not any("timed out" in n for n in step.notes)
 
     @pytest.mark.parametrize(
-        ("ran_wall", "redispatched"), [(64800, True), (86400, False)]
+        ("ran_wall", "redispatched"), [(64800, True), (86400, True), (172800, False)]
     )
     def test_verify_seed_killed_at_old_floor_is_released_by_default(
         self,
@@ -2425,9 +2425,9 @@ class TestHarvest:
         ran_wall: int,
         redispatched: bool,
     ) -> None:
-        """gr493237: the q164903cand-* verify seeds killed at the 64800 s
-        wall are held for a longer one. With no pin, the default verify wall
-        (86400 s) releases them; a seed killed at the new wall stays held."""
+        """Older 64800 s/86400 s verify timeouts are eligible under the
+        existing bounded retry policy once the default grows to 172800 s.
+        A seed killed at the new wall stays held."""
         qid, sid, calls, gripes = self._timeout_harness(
             store, monkeypatch, ran_wall=ran_wall
         )
@@ -10266,8 +10266,18 @@ class TestDispatchAutocatpath:
         cfg = (jmeta.get("params") or {})["config"]
         assert cfg["search"]["neb_pool_size"] == 8
 
+    @pytest.mark.parametrize(
+        ("wall_pin", "wall_seconds"),
+        [
+            (None, 86400),
+            ("x", 86400),
+            ("129600", 129600),
+            ("999999", 172800),
+            ("0", 60),
+        ],
+    )
     def test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease(
-        self, store: Any, monkeypatch: Any
+        self, store: Any, monkeypatch: Any, wall_pin: str | None, wall_seconds: int
     ) -> None:
         """``PRECIS_AUTOCATPATH_WALL_SECONDS`` must reach the dispatched job's
         ``resources.wall_seconds`` (the field ``ssh_node``'s ``_lease_seconds``
@@ -10275,16 +10285,20 @@ class TestDispatchAutocatpath:
         of either side in isolation."""
         from precis.workers.executors import ssh_node
 
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
+        if wall_pin is None:
+            monkeypatch.delenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, wall_pin)
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
-        assert params["resources"]["wall_seconds"] == 9000
-        # the full job meta (as stored) is what ssh_node's claim loop reads
+        assert params["resources"]["wall_seconds"] == wall_seconds
+        # The stored job meta drives the lease and detached deadline.
         full_meta = {"params": params}
-        assert ssh_node._lease_seconds(full_meta) == 9000 + ssh_node._LEASE_MARGIN_S
+        assert ssh_node._wall_bound_seconds(full_meta) == wall_seconds + 3600
+        assert ssh_node._lease_seconds(full_meta) == max(7200, wall_seconds + 3600)
 
     def _aggregate_params(self, store: Any, sid: int) -> list[dict]:
         with store.pool.connection() as conn:
@@ -10333,15 +10347,32 @@ class TestDispatchAutocatpath:
         for agg in self._aggregate_params(store, sid):
             assert "cpuset" not in agg["resources"]
 
+    @pytest.mark.parametrize(
+        ("wall_pin", "wall_seconds"),
+        [
+            (None, 172800),
+            ("x", 172800),
+            ("129600", 129600),
+            ("999999", 172800),
+            ("0", 60),
+        ],
+    )
     def test_verify_wall_pin_reaches_verify_job_and_lease_only(
-        self, store: Any, monkeypatch: Any
+        self, store: Any, monkeypatch: Any, wall_pin: str | None, wall_seconds: int
     ) -> None:
         """``PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS`` sizes the verify tier's
         job + lease; the general value still governs other tiers."""
         from precis.workers.executors import ssh_node
 
         monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "28800")
+        if wall_pin is None:
+            monkeypatch.delenv(
+                compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False
+            )
+        else:
+            monkeypatch.setenv(
+                compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, wall_pin
+            )
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(
@@ -10349,10 +10380,10 @@ class TestDispatchAutocatpath:
         )
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
-        assert params["resources"]["wall_seconds"] == 28800
-        assert ssh_node._lease_seconds({"params": params}) == (
-            28800 + ssh_node._LEASE_MARGIN_S
-        )
+        assert params["resources"]["wall_seconds"] == wall_seconds
+        full_meta = {"params": params}
+        assert ssh_node._wall_bound_seconds(full_meta) == wall_seconds + 3600
+        assert ssh_node._lease_seconds(full_meta) == max(7200, wall_seconds + 3600)
         assert compute_mod._autocatpath_wall_seconds("neb") == 9000
         assert compute_mod._autocatpath_wall_seconds() == 9000
 
@@ -10360,8 +10391,8 @@ class TestDispatchAutocatpath:
         self, store: Any, monkeypatch: Any
     ) -> None:
         """Verify pin unset → ``max(general, _DEFAULT_VERIFY_WALL_SECONDS)``:
-        the 90-min general default is a guaranteed deadline kill for a tier
-        whose measured runs are all >4 h (al480803)."""
+        exhaustive verify retains its longer budget even with a shorter
+        general pin."""
         monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
         monkeypatch.delenv(
             compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False
@@ -10378,29 +10409,28 @@ class TestDispatchAutocatpath:
         assert jmeta["params"]["resources"]["wall_seconds"] == (
             compute_mod._DEFAULT_VERIFY_WALL_SECONDS
         )
-        # the floor is the clamp ceiling (gr493237): a large general pin
-        # cannot push past it, and cannot pull the verify wall below it
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "80000")
-        assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
+        # The verify floor is the clamp ceiling: a larger general pin
+        # cannot push past it, and a shorter pin cannot pull verify below it.
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "999999")
+        assert compute_mod._autocatpath_wall_seconds() == 172_800
+        assert compute_mod._autocatpath_wall_seconds("verify") == 172_800
         # clamp; a malformed verify pin falls back to the floor
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "999999")
-        assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
+        assert compute_mod._autocatpath_wall_seconds("verify") == 172_800
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "x")
-        assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
+        assert compute_mod._autocatpath_wall_seconds("verify") == 172_800
 
     def test_verify_floor_clears_the_censored_seed_tail(self) -> None:
-        """gr493237: q164903cand-* verify seeds died at every bound so far —
-        7 solo at 9 h, one solo still running at 14.1 h when OOM-killed,
-        three 3-way-contended at 19 h. The floor sits at the 24 h clamp
-        ceiling, so its ssh_node deadline (wall + margin) is 25 h."""
+        """gr614723: verify exhausted the previous 25 h runner deadline.
+        Its 48 h default plus the unchanged one-hour margin gives 49 h."""
         from precis.workers.executors import ssh_node
 
-        assert compute_mod._DEFAULT_VERIFY_WALL_SECONDS == 86_400
+        assert compute_mod._DEFAULT_VERIFY_WALL_SECONDS == 172_800
         params = {
             "resources": {"wall_seconds": compute_mod._DEFAULT_VERIFY_WALL_SECONDS}
         }
-        assert ssh_node._wall_bound_seconds({"params": params}) == 90_000
-        assert ssh_node._lease_seconds({"params": params}) == 90_000
+        assert ssh_node._wall_bound_seconds({"params": params}) == 176_400
+        assert ssh_node._lease_seconds({"params": params}) == 176_400
 
     def test_unrouted_job_leaves_device_unset(
         self, store: Any, monkeypatch: Any

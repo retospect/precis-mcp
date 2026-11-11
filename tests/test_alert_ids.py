@@ -270,6 +270,17 @@ def test_every_critical_rule_carries_a_triage_line() -> None:
             "review:empty:{reviewer}/{reviewer}:empty-pass",
         ),
         ("budget:quota", "quota-day", "budget:quota/quota-{window}"),
+        (
+            "planner:misconceived",
+            "misconceived:123",
+            "planner:misconceived/misconceived:{parent_id}",
+        ),
+        ("breaker:infra-outage", "infra", "breaker:infra-outage/infra"),
+        (
+            "nursery:stale-halt",
+            "stale-halt:123",
+            "nursery:stale-halt/stale-halt:{ref_id}",
+        ),
     ],
 )
 def test_resolve_picks_the_most_specific_rule(

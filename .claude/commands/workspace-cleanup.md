@@ -34,10 +34,14 @@ Live census at invocation:
    means per-list — never cherry-pick entries out of a list silently,
    and never touch the live-lock, dirty, clean+unmerged or unique
    buckets this way. Before each `git worktree remove`, run
-   `deploy/mcp-http/precis-mcp-http-ensure.sh --check-path <path>`: exit 0
-   means a canonical-checkout marker or a container mount still references
-   the path, so leave it alone and say so (gr516960: a strays cleanup once
-   deleted the recorded checkout out from under the live backends).
+   `deploy/mcp-http/precis-mcp-http-ensure.sh --check-path <path>`: only
+   exit 10 proves the path free of canonical-checkout marker and container
+   mount references. Exit 0 means in use; every other result means the
+   probe could not prove it free (including missing Docker or failed Docker
+   queries). Preserve the path and report the reason unless the result is
+   10 (gr516960: a strays cleanup once deleted the recorded checkout out
+   from under the live backends). This probe does not replace the removal
+   authorization above.
 
 3. **Judge what the report can't.** `locked (holder live)`, `dirty`
    (real tracked changes), `clean+unmerged` worktrees and `unique`

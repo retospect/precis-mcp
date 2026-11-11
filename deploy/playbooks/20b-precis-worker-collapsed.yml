@@ -353,6 +353,10 @@
           if ((precis_capabilities.autocatpath | default([])) | length > 0) else {}
         )
         | combine(
+          {'PRECIS_AUTOCATPATH_WALL_SECONDS': precis_autocatpath_wall_seconds | string}
+          if (precis_autocatpath_wall_seconds is defined) else {}
+        )
+        | combine(
           {'PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS': precis_autocatpath_verify_wall_seconds | string}
           if (precis_autocatpath_verify_wall_seconds is defined) else {}
         )

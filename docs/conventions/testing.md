@@ -186,7 +186,12 @@ numbers. The ship gate
 selection on 3.13, 12 jobs (me580555) — then the whole non-nightly
 suite as a non-blocking `soak` (the renamed test-linux job, 10 shards
 at ≤5 parallel; a red leg is `release.soak_red` debt `round cut`
-refuses on, never a veto). Under the
+refuses on, never a veto). Ordinary `gate-fast` selections have a
+25-minute job cap. When selection falls back to `FULL`
+(`gate_fast_full=true`), `gate-fast` runs the whole non-nightly suite
+with the existing Linux/soak 40-minute cap and skips the duplicate soak.
+The FULL exception changes the time budget; test coverage and the blocking
+verdict stay intact. Under the
 release train `ci/**` is the harness gate: `scripts/ship --remote` pushes
 there only for diffs the `scripts/ship` harness classifier counts
 (`scripts/ship`, `scripts/test`, `scripts/lib/*`, `.github/*` — the

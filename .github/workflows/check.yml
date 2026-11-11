@@ -437,10 +437,10 @@ jobs:
       && (needs.failed-first.result == 'success'
           || needs.failed-first.result == 'skipped')
     runs-on: ubuntu-latest
-    # ~5 min of tests + setup steady-state; the cap catches hangs and the
-    # rare impacted pull of an over-cap file (scripts/lib/gate_fast.py
-    # warns past 300 s of non-nightly time in one file).
-    timeout-minutes: 25
+    # Ordinary selections keep the 25 min hang cap (~5 min of tests + setup;
+    # scripts/lib/gate_fast.py warns past 300 s in one non-nightly file).
+    # FULL runs the whole non-nightly suite, so use test-linux's 40 min cap.
+    timeout-minutes: ${{ needs.plan.outputs.gate_fast_full == 'true' && 40 || 25 }}
     strategy:
       fail-fast: false
       matrix:

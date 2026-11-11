@@ -144,6 +144,8 @@ topology_surface_env() {
 
     if [ -n "$acap_plugin" ] && [ -n "$acap" ]; then
         printf 'PRECIS_AUTOCATPATH_ROUTE_NODE=%s\n' "$acap"
+        v="$(topology_var precis_autocatpath_wall_seconds)"
+        [ -n "$v" ] && printf 'PRECIS_AUTOCATPATH_WALL_SECONDS=%s\n' "$v"
         v="$(topology_var precis_autocatpath_verify_wall_seconds)"
         [ -n "$v" ] && printf 'PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS=%s\n' "$v"
         v="$(topology_var precis_autocatpath_seed_cpuset)"

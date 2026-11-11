@@ -57,6 +57,7 @@ _HOSTS_NO_SANDBOX = _HOSTS[: _HOSTS.index("    agent_sandbox_hosts:")]
 #: exactly this set; a new gateway/worker surface var lands here too.
 _SURFACE_VARS = {
     "PRECIS_AUTOCATPATH_ROUTE_NODE",
+    "PRECIS_AUTOCATPATH_WALL_SECONDS",
     "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS",
     "PRECIS_AUTOCATPATH_SEED_CPUSET",
     "PRECIS_CHEM_ENABLED",
@@ -142,7 +143,8 @@ def test_full_topology_renders_the_web_plist_surface(tmp_path: Path) -> None:
     # autocatpath keeps the WHOLE list (the plist `join(',')`), and carries
     # the optional tunables from tracked deploy/group_vars/all.yml
     assert "PRECIS_AUTOCATPATH_ROUTE_NODE=node-gpu,node-gpu2" in lines
-    assert "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS=86400" in lines
+    assert "PRECIS_AUTOCATPATH_WALL_SECONDS=86400" in lines
+    assert "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS=172800" in lines
     assert "PRECIS_AUTOCATPATH_SEED_CPUSET=0-4,10-14" in lines
     assert "PRECIS_DFT_NODE=node-gpu2" in lines
     # the whole agent_sandbox_hosts group, like the worker unit's join(',')
