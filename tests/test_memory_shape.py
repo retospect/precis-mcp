@@ -177,6 +177,23 @@ def test_top_level_headings_count_but_fences_and_nested_bullets_do_not():
     )
 
 
+def test_ruling_is_grab_bag_exempt_like_incident():
+    """gr631570 (me631991): a ruling's bullets are one decision's
+    consequences, not independent claims — the other checks still apply."""
+    title = "Tags stay flat axis:value; hierarchy lives only in part-of"
+    body = (
+        "- Tags keep the one-level axis:value namespace.\n"
+        "- Topic hierarchies belong in the taxon kind.\n"
+        "- The generated TOC lists roots then walks part-of.\n"
+        "- Spec tags land on the spec root only."
+    )
+    assert "grab-bag" in _codes(title=title, body=body)
+    audit = shape.audit_shape(title=title, body=body, tags=("ruling",))
+    assert "grab-bag" not in {f.code for f in audit.findings}
+    # An exempt check is clean, not unavailable: stale grab-bag tags can clear.
+    assert audit.checked_codes == shape.SHAPE_CODES
+
+
 @pytest.mark.parametrize(
     "label", ["slice 4a", "round 6", "R17", "R196", "leg 3", "wave 3"]
 )
@@ -193,6 +210,22 @@ def test_plan_labels_need_handle_on_same_line(label):
     )
     assert "unanchored-plan" in _codes(
         title=title, body=f"{label} fixed this on 2026-10-01."
+    )
+
+
+def test_plan_label_inside_a_hyphenated_doc_name_is_not_a_label():
+    """gr631570 (me628980): ``se-atomic-round2`` / ``se-atomic round 2`` are
+    document names; the audit needs a real label."""
+    title = "The parser preserves input"
+    assert "unanchored-plan" not in _codes(
+        title=title, body="docs not yet transferred: se-atomic-round2."
+    )
+    assert "unanchored-plan" not in _codes(
+        title=title, body="docs not yet transferred: se-atomic round 2."
+    )
+    # A bullet/dash before the match is no name part: real labels still fire.
+    assert "unanchored-plan" in _codes(
+        title=title, body="- round 6 needs a review pass."
     )
 
 

@@ -4,16 +4,24 @@ A memory that writes "~10 nm for stiff solids per websearch:170350" asserts
 that the cited text says so. :func:`ungrounded_cited_numbers` checks that
 claim deterministically (no LLM): every unit-bearing number
 (:func:`precis.utils.numerics.numeric_spans`) that sits in the same sentence
-as a citation, attributed to the *nearest* citation (a cluster of adjacent
-citations pools its evidence), must appear in that evidence as the same
-``(number, unit)`` pair. A parenthetical glosses what precedes it: a number
-inside one belongs to the nearest citation before its opening bracket (in
-the same sentence), or to a citation inside the brackets when that is
-nearer — never to a citation after the closing bracket. "paper:x (… 60 kPa
-…) and paper:y" pins 60 kPa to x, and so does "paper:x (~151) exploits …
-(releasing 660 mg/g) — the same bond paper:y describes" (the dream prose
-shapes; the prod samples of 2026-10-10 had them mis-pinned to the following
-cite in 5 of 80 rows). A chunk cite is checked
+as a citation, attributed to the citation its clause belongs to — the
+clause's own handle, else the nearest handle after the number, then the
+nearest before it — must appear in that citation's evidence as the same
+``(number, unit)`` pair. Evidence pools over the citation group: adjacent
+cites (a cluster) plus every cite inside the same bracketed list, since
+"(pa1; findings fi1–fi3)" is one list though its ``;`` separates the
+spans (gr631570 — and a ``;`` inside brackets never ends the sentence).
+Non-cite handles are skipped, never checked: a ``python:``/``md:`` anchor
+or a gripe/todo/job/agentlog/skill ref owns the number nearest to it —
+``python:main::x 0.63 nm/nt [me1]`` attributes the number to the code
+anchor, not to me1 (gr631570). A parenthetical glosses what precedes it:
+a number inside one belongs to the nearest citation before its opening
+bracket (in the same sentence), or to a handle inside the brackets when
+that is nearer — never to a citation after the closing bracket. "paper:x
+(… 60 kPa …) and paper:y" pins 60 kPa to x, and so does "paper:x (~151)
+exploits … (releasing 660 mg/g) — the same bond paper:y describes" (the
+dream prose shapes; the prod samples of 2026-10-10 had them mis-pinned to
+the following cite in 5 of 80 rows). A chunk cite is checked
 against its chunk and, failing that, the whole document: a pinpoint a few
 chunks off is a reading aid, not a mis-sourced number. A chunk range
 (``~18..28``) is checked against every chunk in it. Evidence text is read
@@ -21,8 +29,9 @@ generously: "0.44 and 0.26 eV" grounds both numbers, and a markdown table
 whose header names the unit (``Pore aperture [Å]``) grounds its cells. Two
 tokenizer artefacts are not claims: the exponent in ``10^7 cm/s``, a
 patent reference numeral (``216A-N``) and a thousands count (``130K
-molecules``). A semicolon ends a clause: "… at 9nm; paper:y shows …" keeps
-9 nm with the citation before the semicolon. A pinpoint the prose writes
+molecules``). A semicolon outside brackets ends a clause: "… at 9nm;
+paper:y shows …" keeps 9 nm with the citation before the semicolon. A
+pinpoint the prose writes
 after a cite, "paper:x (chunks ~97–98: …)", scopes the evidence like
 ``paper:x~97..98`` would. A bare digit run never grounds a unit-bearing claim:
 a websearch body whose only "10" is the DOI prefix ``10.1098`` does not say
@@ -144,6 +153,24 @@ _DECADE_RE = re.compile(r"(?:1[89]|20)\d\ds")
 #: single capital letter followed by ``-`` and another capital.
 _REF_NUMERAL_RE = re.compile(r"\d+[A-Z]")
 _REF_NUMERAL_TAIL_RE = re.compile(r"-[A-Z]")
+
+#: Kinds whose handles point at process objects or file-backed anchors,
+#: not quotable text: ``python:``/``md:`` anchors, gripe/todo/job/
+#: agentlog/skill refs. A number sitting nearest one of these is code- or
+#: work-derived, so the handle *owns* it for binding but is never resolved
+#: or checked (gr631570: a ``python:`` anchor and a gripe handle stole
+#: bindings that belonged to them).
+_SINK_KINDS = frozenset({"python", "md", "gripe", "todo", "job", "agentlog", "skill"})
+
+#: Bare handle codes for the sink kinds (``gr5``, ``td12``, ``jo3``,
+#: ``ag44``, ``sk9``). Chunk codes stay citations: ``[gc12]``/``[jc12]``
+#: quote a gripe/job's text like any other record.
+_SINK_HANDLE_RE = re.compile(r"\b(?:gr|td|jo|ag|sk)\d{3,}\b")
+
+#: Clause joints inside a sentence: commas, brackets and dashes bound the
+#: clause a number's own citation sits in. Colons are not joints —
+#: ``kind:id`` handles, ``Source:`` and times carry them.
+_CLAUSE_BREAK_RE = re.compile(r"[(),;—–]")
 
 #: "130K molecules" is a count, not 130 kelvin: a glued ``K`` counts as a
 #: temperature only after a cue ("at 77K", "T = 4K", "below 20K", "~300K").
@@ -378,7 +405,7 @@ def _cite_spans(body: str) -> list[_Span]:
         spans.append(_Span(m.start(), m.end(), token, "h:" + token))
     for m in REF_PATTERN.finditer(body):
         kind = m.group("kind")
-        if kind not in LINKIFY_KINDS or kind in LOW_SIGNAL_KINDS:
+        if kind not in LINKIFY_KINDS or kind in LOW_SIGNAL_KINDS or kind in _SINK_KINDS:
             continue
         if not _free(m.start(), m.end()):
             continue
@@ -424,6 +451,26 @@ def _with_prose_pinpoint(body: str, span: _Span) -> _Span:
     return _Span(
         span.start, span.end, span.cite, span.key + chunk, span.drop_if_unresolved
     )
+
+
+def _sink_spans(body: str, cite_spans: list[_Span]) -> list[_Span]:
+    """Positions of non-cite handles (:data:`_SINK_KINDS` prefixed forms and
+    :data:`_SINK_HANDLE_RE` bare codes), skipping any spot a citation
+    already claims. They are never resolved or checked: a sink only *owns*
+    the number nearest to it, which is then attributed to no citation."""
+    out: list[_Span] = []
+
+    def _free(start: int, end: int) -> bool:
+        return all(end <= s.start or start >= s.end for s in [*cite_spans, *out])
+
+    for m in REF_PATTERN.finditer(body):
+        if m.group("kind") in _SINK_KINDS and _free(m.start(), m.end()):
+            out.append(_Span(m.start(), m.end(), m.group(0), "sink"))
+    for m in _SINK_HANDLE_RE.finditer(body):
+        if _free(m.start(), m.end()):
+            out.append(_Span(m.start(), m.end(), m.group(0), "sink"))
+    out.sort(key=lambda s: s.start)
+    return out
 
 
 def _resolve_cite(
@@ -642,54 +689,138 @@ def ungrounded_cited_numbers(
     if not numbers:
         return []
 
-    breaks = [0] + [m.end() for m in _SENTENCE_BREAK_RE.finditer(body)]
+    groups = _paren_groups(body)
+    sinks = _sink_spans(body, spans)
+
+    # A ``;`` inside brackets is a list separator, not a clause end:
+    # "(pa1; findings fi1–fi3)" is one citation list (gr631570).
+    breaks = [0]
+    for m in _SENTENCE_BREAK_RE.finditer(body):
+        if body[m.start()] == ";" and any(o < m.start() < c for o, c in groups):
+            continue
+        breaks.append(m.end())
 
     def _segment(pos: int) -> int:
         return bisect.bisect_right(breaks, pos) - 1
 
     seg_of_span = [_segment(sp.start) for sp in spans]
+    seg_of_sink = [_segment(sp.start) for sp in sinks]
     cluster_of = _clusters(spans, seg_of_span)
-    groups = _paren_groups(body)
+    clause_breaks = [m.start() for m in _CLAUSE_BREAK_RE.finditer(body)]
+
+    def _clause(s: int, e: int) -> tuple[int, int]:
+        lo = max((b + 1 for b in clause_breaks if b < s), default=0)
+        hi = min((b for b in clause_breaks if b >= e), default=len(body))
+        return lo, hi
 
     def _dist(sp: _Span, s: int, e: int) -> int:
         return sp.start - e if sp.start >= e else s - sp.end
 
-    # Attribute each number to its citation: inside a parenthetical, the
-    # citation before its opener unless a citation inside is nearer; else
-    # the nearest in-window citation in the same sentence.
+    def _winner(cands: list[tuple[int, int | None]]) -> int | None:
+        """The nearest candidate's span index; ``None`` when a sink wins —
+        a non-cite handle owns the number, so there is nothing to check."""
+        return min(cands, key=lambda t: (t[0], t[1] is None))[1]
+
+    def _pick(s: int, e: int) -> int | None:
+        """The citation a number is attributed to, or ``None``.
+
+        Inside a gloss parenthetical, the cite before its opener unless a
+        handle inside is nearer; else the number's own clause's nearest
+        handle; else the nearest handle after it, then before it. At every
+        stage a non-cite handle (a ``python:``/``md:`` anchor or a gripe /
+        todo / job / agentlog / skill ref) competes on distance and a win
+        ends the search with no pick — the number belongs to it
+        (gr631570)."""
+        seg = _segment(s)
+        scope = _cite_parenthetical(groups, spans, s, e, _segment)
+        if scope is not None:
+            o, c, opener = scope
+            cands: list[tuple[int, int | None]] = [(s - o, opener)]
+            for i, sp in enumerate(spans):
+                if i != opener and o < sp.start and sp.end <= c:
+                    dist = _dist(sp, s, e)
+                    if dist <= _WINDOW_CHARS:
+                        cands.append((dist, i))
+            for sp in sinks:
+                if o < sp.start and sp.end <= c:
+                    dist = _dist(sp, s, e)
+                    if dist <= _WINDOW_CHARS:
+                        cands.append((dist, None))
+            return _winner(cands)
+        lo, hi = _clause(s, e)
+        cands = [
+            (dist, i)
+            for i, sp in enumerate(spans)
+            if seg_of_span[i] == seg
+            and lo <= sp.start
+            and sp.end <= hi
+            and (dist := _dist(sp, s, e)) <= _WINDOW_CHARS
+        ] + [
+            (dist, None)
+            for sp, sg in zip(sinks, seg_of_sink, strict=True)
+            if sg == seg
+            and lo <= sp.start
+            and sp.end <= hi
+            and (dist := _dist(sp, s, e)) <= _WINDOW_CHARS
+        ]
+        if cands:
+            return _winner(cands)
+        for after in (True, False):
+            cands = []
+            for i, sp in enumerate(spans):
+                if seg_of_span[i] != seg:
+                    continue
+                dist = sp.start - e if after else s - sp.end
+                if 0 <= dist <= _WINDOW_CHARS:
+                    cands.append((dist, i))
+            for sp, sg in zip(sinks, seg_of_sink, strict=True):
+                if sg != seg:
+                    continue
+                dist = sp.start - e if after else s - sp.end
+                if 0 <= dist <= _WINDOW_CHARS:
+                    cands.append((dist, None))
+            if cands:
+                return _winner(cands)
+        return None
+
+    # Attribute each number to its citation.
     picks: list[tuple[str, int, int]] = []  # (token, number start, span index)
     for tok, s, e in numbers:
         if _exempt(body, s, e):
             continue
-        cands: list[tuple[int, int]] = []
-        scope = _cite_parenthetical(groups, spans, s, e, _segment)
-        if scope is not None:
-            o, c, opener = scope
-            cands.append((s - o, opener))
-            for i, sp in enumerate(spans):
-                if i != opener and sp.start > o and sp.end <= c:
-                    dist = _dist(sp, s, e)
-                    if dist <= _WINDOW_CHARS:
-                        cands.append((dist, i))
-        else:
-            seg = _segment(s)
-            for i, (sp, sp_seg) in enumerate(zip(spans, seg_of_span, strict=True)):
-                if sp_seg != seg:
-                    continue
-                dist = _dist(sp, s, e)
-                if dist <= _WINDOW_CHARS:
-                    cands.append((dist, i))
-        if cands:
-            picks.append((tok, s, min(cands)[1]))
+        picked = _pick(s, e)
+        if picked is not None:
+            picks.append((tok, s, picked))
     if not picks:
         return []
 
-    # A pick checks against its whole cluster's pooled evidence.
-    members: dict[int, list[int]] = {}
+    # A pick checks against its whole citation group's pooled evidence:
+    # the cluster plus every cite bracketed with a cluster member —
+    # "(pa1; findings fi1–fi3)" is one group though its ";" separates the
+    # spans (gr631570).
+    paren_of: list[tuple[int, int] | None] = [None] * len(spans)
+    for o, c in groups:
+        for j, sp in enumerate(spans):
+            have = paren_of[j]
+            if (
+                o < sp.start
+                and sp.end <= c
+                and (have is None or c - o < have[1] - have[0])
+            ):
+                paren_of[j] = (o, c)
+    pools: dict[int, list[int]] = {}
     for i in {i for _t, _s, i in picks}:
-        members[i] = [j for j, c in enumerate(cluster_of) if c == cluster_of[i]]
+        member = {j for j, cid in enumerate(cluster_of) if cid == cluster_of[i]}
+        for j in list(member):
+            grp = paren_of[j]
+            if grp is not None:
+                o, c = grp
+                member.update(
+                    k for k, sp in enumerate(spans) if o < sp.start and sp.end <= c
+                )
+        pools[i] = sorted(member)
     resolved = {
-        j: _resolve_cite(store, spans[j], cache) for js in members.values() for j in js
+        j: _resolve_cite(store, spans[j], cache) for js in pools.values() for j in js
     }
     need: set[tuple[int, int | None]] = set()
     for r, p in resolved.values():
@@ -706,7 +837,7 @@ def ungrounded_cited_numbers(
     for tok, _s, i in picks:
         sp = spans[i]
         live: list[tuple[int, int | None]] = []
-        for j in members[i]:
+        for j in pools[i]:
             rid, pos = resolved[j]
             if rid is not None:
                 live.append((rid, pos))

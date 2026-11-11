@@ -485,6 +485,71 @@ def test_prose_pinpoint_after_a_cite_scopes_it(body, key):
     assert attr._cite_spans(body)[0].key == key
 
 
+def test_number_binds_to_the_cite_after_its_clause(world):
+    """gr631570 (me628970): a number belongs to the cite following its own
+    clause, not to a nearer cite behind an earlier clause."""
+    world[(12, None)] = "desolvation open questions"
+    world[(13, None)] = "a 5 Å channel passes small species"
+    body = (
+        "the desolvation cost model is open ([pa12]) and confined "
+        "single-file water in 5 Å channels changes pocket electrostatics ([pa13])."
+    )
+    assert _check(body) == []
+    world[(13, None)] = "nothing numeric"
+    assert [(m.token, m.cite) for m in _check(body)] == [("5 Å", "pa13")]
+
+
+def test_semicolon_inside_brackets_keeps_the_citation_list(world):
+    """gr631570 (me628990): "(pa1; findings fi1–fi3)" is one list — its ";"
+    ends no sentence and every bracketed cite pools its evidence."""
+    world[(5, None)] = "the pore opens up averaging about 4 Å over ~15 Å"
+    world[(6, None)] = "nothing numeric"
+    world[(101, None)] = "nothing numeric"
+    body = (
+        "AQP1 (pa555; findings pa666–pc111, numbers as the repo doc summarises "
+        "them): a ~4 Å × 15 Å pore beyond the constriction."
+    )
+    assert _check(body) == []
+    world[(5, None)] = "nothing numeric"
+    assert [(m.token, m.cite) for m in _check(body)] == [
+        ("4 Å", "pc111"),
+        ("15 Å", "pc111"),
+    ]
+
+
+def test_python_anchor_owns_the_number_beside_it(world):
+    """gr631570 (me628899): a ``python:`` anchor owns the number nearest it;
+    the audit never reaches the real cite beside it."""
+    world[(12, None)] = "nothing numeric"
+    body = (
+        "the number table (B-DNA rise, ssDNA contour 0.63 nm/nt) lives in "
+        "python:main::precis_se.chain.nucleic — findings: [pa12]."
+    )
+    assert _check(body) == []
+
+
+def test_gripe_and_todo_handles_own_the_number_beside_them(world):
+    """Process refs are never citations: a number nearest one is not pinned."""
+    world[(12, None)] = "nothing numeric"
+    assert _check("5 nm per gripe:123 and [pa12]") == []
+    assert _check("5 nm per gr515812 and [pa12]") == []
+    assert _check("5 nm per todo:99 and [pa12]") == []
+
+
+def test_nearer_cite_still_binds_over_a_farther_sink(world):
+    world[(12, None)] = "nothing numeric"
+    out = _check("5 nm [pa12] — see gripe:123")
+    assert [m.cite for m in out] == ["pa12"]
+
+
+def test_cite_in_an_earlier_clause_still_binds_when_nothing_follows(world):
+    """No handle after the number: the last cite before it still owns it."""
+    world[(12, None)] = "nothing numeric"
+    assert [
+        m.token for m in _check("[pa12] measured it, finding 8 nm along the way")
+    ] == ["8 nm"]
+
+
 def test_evidence_math_dollars_and_plus_minus(world):
     """Prod sample 2026-10-10 (me39603): the paper writes ``$1.78±0.11$ Å``."""
     world[(12, None)] = "displaced by a distance of $1.78±0.11$ Å from the plane"

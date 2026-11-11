@@ -135,6 +135,22 @@ class ShapeAudit:
     git_context: tuple[str, str] | None = None
 
 
+def _plan_label(line: str) -> bool:
+    """A plan-label match that is not part of a hyphenated name.
+
+    ``se-atomic-round2`` and ``se-atomic round 2`` are document names, not
+    labels: a match inside or right after a hyphenated token does not
+    count (gr631570). A bare ``-`` before the match (a bullet, a dash) is
+    no name part.
+    """
+    for m in _PLAN.finditer(line):
+        before = line[: m.start()].rstrip()
+        last = before.rsplit(None, 1)[-1] if before else ""
+        if not re.search(r"\w-", last):
+            return True
+    return False
+
+
 def _prose_lines(body: str) -> list[str]:
     """Ignore fenced examples; keep indentation for top-level list detection."""
     lines = []
@@ -267,16 +283,19 @@ def audit_shape(
     an absolute (always/never/only) claim in its body. Ordinary descriptive
     verbs and sentence punctuation are not evidence of such a claim.
     Incident narratives intentionally group cause, impact and timeline;
-    only their grab-bag check is exempt, not the other shape checks. A
-    section:index hub is a member list by design, so it is grab-bag exempt
-    on the same terms.
+    a ruling's bullets are one decision's consequences, not independent
+    claims (gr631570). Only their grab-bag check is exempt, not the other
+    shape checks. A section:index hub is a member list by design, so it is
+    grab-bag exempt on the same terms.
     """
     lines = _prose_lines(body)
     findings: list[ShapeFinding] = []
     checked = set(SHAPE_CODES)
     tag_set = set(tags)
     titles = (
-        () if tag_set & {"incident", "section:index"} else _atomic_titles(title, lines)
+        ()
+        if tag_set & {"incident", "section:index", "ruling"}
+        else _atomic_titles(title, lines)
     )
     if titles:
         count = max(2, len(titles))
@@ -288,7 +307,7 @@ def audit_shape(
                 titles,
             )
         )
-    if any(_PLAN.search(line) and not _HANDLE.search(line) for line in [title, *lines]):
+    if any(_plan_label(line) and not _HANDLE.search(line) for line in [title, *lines]):
         findings.append(
             ShapeFinding(
                 "unanchored-plan",
