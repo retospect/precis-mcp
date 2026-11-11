@@ -1053,8 +1053,8 @@ def _render_loaded(
 #: none, ``-`` on a hub node), ``qualified`` (live ``qualified-by`` edges),
 #: ``accessed`` (UTC date of the last human view / agent recall; empty if never),
 #: ``parent`` (comma-separated handles of every live ``part-of`` parent;
-#: empty if none — the shape rule allows one, but a stray second edge is
-#: exactly what memory-lint check 15 must see),
+#: empty if none — the shape rule allows one, so a stray second edge must
+#: stay visible here),
 #: ``review`` (comma-separated ``td<id>:<created date>`` of the open
 #: ``memory-review`` todos linked to the node; empty if none), ``gotchas_none``
 #: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies),
@@ -1062,8 +1062,7 @@ def _render_loaded(
 #: edge targets; empty if none), ``incident_created`` (UTC creation date
 #: for nodes tagged ``incident``, empty otherwise; edits must not reset age),
 #: ``spec`` (the node's ``spec:<slug>`` tag; empty if none — a
-#: ``section:index`` row carrying one is a spec root, and memory-lint check 15
-#: walks its ``parent`` chain to the Specifications hub me568215).
+#: ``section:index`` row carrying one is a spec root).
 #: ``hub`` is the nearest ``section:index``
 #: *ancestor* along the part-of chain, so a detail node under a summary
 #: node names the summary's hub.

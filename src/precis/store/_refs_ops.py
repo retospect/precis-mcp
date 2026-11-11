@@ -2139,6 +2139,39 @@ class RefsMixin:
             ).fetchall()
         return {int(r[0]) for r in rows}
 
+    def part_of_subtree_edges(self, root_ref_id: int) -> list[tuple[int, int]]:
+        """``(child, parent)`` pairs of the part-of subtree below
+        ``root_ref_id`` — :meth:`part_of_descendants`' walk with the
+        parent edge kept, both stored orientations. A node with several
+        ``part-of`` parents yields one row per parent. Children are
+        returned regardless of kind or liveness — the walk traverses
+        dead intermediates exactly like ``part_of_descendants``, so a
+        live node under a retired parent still reaches the caller,
+        which picks the nearest live ancestor for display. The
+        ``d < 64`` guard terminates relation cycles."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE edges(child, parent) AS (
+                    SELECT src_ref_id, dst_ref_id FROM links
+                     WHERE relation = 'part-of'
+                    UNION ALL
+                    SELECT dst_ref_id, src_ref_id FROM links
+                     WHERE relation = 'contains'
+                ), sub(child, parent, d) AS (
+                    SELECT child, parent, 1 FROM edges WHERE parent = %s
+                    UNION
+                    SELECT e.child, e.parent, s.d + 1 FROM edges e
+                      JOIN sub s ON e.parent = s.child
+                     WHERE s.d < 64
+                )
+                SELECT DISTINCT s.child, s.parent FROM sub s
+                 WHERE s.child <> %s
+                """,
+                (root_ref_id, root_ref_id),
+            ).fetchall()
+        return [(int(c), int(p)) for c, p in rows]
+
     def folder_ref_ids_by_title(self, title: str) -> list[int]:
         """Live ``kind='folder'`` ref_ids whose title matches (case-insensitive).
 

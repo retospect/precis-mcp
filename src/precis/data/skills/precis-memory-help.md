@@ -689,6 +689,18 @@ Search inside one hub or summary node with
 `search(kind="memory", q="pump", args={"under": "me3"})`; add
 `"depth": 1` for direct members, `tags=["section:gotchas"]` to narrow by type.
 
+Two generated outlines (gr631890) replace hand-maintained member lists:
+`get(kind="memory", id="me3", view="toc")` renders the node's part-of
+subtree as an indented tree with extracted keywords per line — children
+ordered by `meta.order`, then handle-mention position in the parent
+body, then title; `args={"depth": k}` collapses below a level with
+subtree counts, `offset=` pages. And
+`search(kind="memory", tags=["spec:*"], view="toc")` renders a tag's
+*forest* — every node carrying the tag whose own `part-of` parents do
+not — one line each with keywords and member count. A trailing `*` on
+a `tags=` entry prefix-matches the tag value inside this view only;
+`view='members'` stays the flat paged listing.
+
 Named repo-dev hub — **Prior art surveyed** (`me608724`, part-of root
 me474312): one node per external project or group already surveyed as
 prior art — what it is, licence, paper/repo, date surveyed, what we took

@@ -1501,12 +1501,14 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # from two references. Stamped on the citing paper by the
             # worker; flags only, never rewrites the entry.
             "spliced-ref",
-            # Spec-root placement (gr631564): a spec root (spec:<slug> +
-            # section:index) whose part-of chain never reaches the
-            # Specifications hub me568215 — e.g. hung off a topical hub.
-            # System-set by utils/memory_spec.py on put/link/tag writes;
-            # cleared by a clean re-check. scripts/memory-lint check 15
-            # lists them offline.
+            # Spec-root placement (gr631564, dropped by gr631890): a spec
+            # root (spec:<slug> + section:index) whose part-of chain never
+            # reached the Specifications hub me568215 — e.g. hung off a
+            # topical hub. The write-time audit and memory-lint check are
+            # retired — listing by tag (search view='toc') makes placement
+            # free, so nothing needs enforcing beyond tagging. The axis
+            # value stays registered: rows stamped while the check ran
+            # remain filterable history.
             "spec-root-parent",
         }
     ),

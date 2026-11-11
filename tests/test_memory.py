@@ -1045,7 +1045,8 @@ def test_meta_expires_rejects_unparseable(handler: MemoryHandler) -> None:
     "bad",
     [
         {"slug": "x"},
-        {"hook": "ok", "order": 3},
+        {"order": "third"},
+        {"order": True},
         {"hook": 5},
         {"hook": "two\nlines"},
         {"hook": "   "},
@@ -1067,7 +1068,9 @@ def test_bad_meta_raises_on_put_and_edit(
 
 
 def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
-    with pytest.raises(BadInput, match=r"allowed keys: \['hook', 'type', 'expires'\]"):
+    with pytest.raises(
+        BadInput, match=r"allowed keys: \['hook', 'type', 'expires', 'order'\]"
+    ):
         handler.put(text="x", meta={"nope": "y"})
 
 

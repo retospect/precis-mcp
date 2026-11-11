@@ -652,53 +652,6 @@ PY
     fi
 fi
 
-# 15. spec-root placement (graph mode, manifest columns 12 + 17). A spec
-#     root — a section:index node tagged spec:<slug> — carries exactly
-#     one part-of parent, a programme root directly under the
-#     Specifications hub me568215; topical hubs relate but never parent
-#     (precis-spec-help, gr631564). The parent column is comma-separated
-#     and every listed parent is validated: zero or several parents, a
-#     parent that is me568215 itself, or a parent not a direct child of
-#     it are all findings. A manifest without the spec column (pre-2026-11
-#     export) can't tell a spec root from any other index node — skipped,
-#     never clean-claimed.
-if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
-    while IFS=$'\037' read -r h spec; do
-        [[ -z "$h" ]] && continue
-        if [[ "$h" == SKIPPED ]]; then
-            echo "spec-root placement: skipped ($spec)"
-            continue
-        fi
-        echo "  spec-root parent → $(label_of "$h.md" "$SCAN_DIR/$h.md") ($spec): needs exactly one part-of parent, a programme root directly under the Specifications hub me568215 (precis-spec-help): link(kind='memory', id='$h', target='memory:<programme root>', rel='part-of')"
-        problems=$((problems+1))
-    done < <(python3 - "$MANIFEST" <<'PY'
-import csv
-import sys
-
-SPEC_HUB = "me568215"
-SPEC_HUB_FORMS = (SPEC_HUB, SPEC_HUB[2:])
-
-with open(sys.argv[1], encoding="utf-8") as manifest:
-    rows = [r for r in csv.reader(manifest, delimiter="\t") if r]
-if any(len(r) < 17 for r in rows):
-    print("SKIPPED\x1flegacy manifest — refresh memory index --export-dir")
-    sys.exit(0)
-parents = {
-    r[0]: [p for p in r[11].split(",") if p] for r in rows if len(r) > 11
-}
-for r in rows:
-    if r[1] != "index" or not r[16]:
-        continue
-    ps = parents.get(r[0], [])
-    ok = len(ps) == 1 and any(
-        gp in SPEC_HUB_FORMS for gp in parents.get(ps[0], ())
-    )
-    if not ok:
-        print(f"{r[0]}\x1f{r[16]}")
-PY
-    )
-fi
-
 # 10. thread hygiene (graph mode, manifest + node bodies) — the drift the
 #     memory_thread_sweep cadence and the one-node-per-campaign rule fix:
 #     (a) a body saying `supersedes meN` with NO such edge retires nothing

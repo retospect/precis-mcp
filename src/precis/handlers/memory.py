@@ -237,7 +237,6 @@ from precis.utils.memory_rulings import (
     render_rulings,
     validate_ruling_meta,
 )
-from precis.utils.memory_spec import spec_root_advisory, spec_root_slug
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.secret_scan import mask_secrets
@@ -481,8 +480,9 @@ _TITLE_MAX = 80
 #: index text of a ``SPACE:repo-dev`` memory (``precis memory index``);
 #: ``expires`` is the node's declared expiry instant (the garden's
 #: review-due signal — and on ``SPACE:scratch`` the auto-retire override,
-#: gr568398).
-_META_ALLOWED = ("hook", "type", "expires")
+#: gr568398); ``order`` is a numeric reading-order rank a child's
+#: ``view='toc'`` parent listing sorts on (gr631890).
+_META_ALLOWED = ("hook", "type", "expires", "order")
 
 #: ``meta.expires`` duration grammar — mirrors the alias handler's
 #: ``expires=`` (``'7d'``/``'12h'``/``'30m'``/``'2w'``), resolved at write
@@ -678,6 +678,17 @@ def _validate_meta(
         out["type"] = meta["type"]
     if "expires" in meta:
         out["expires"] = _expires_meta(meta["expires"])
+    if "order" in meta:
+        order = meta["order"]
+        if isinstance(order, bool) or not isinstance(order, (int, float)):
+            raise BadInput(
+                f"meta['order'] must be a number, got {order!r}",
+                next=(
+                    "meta={'order': 3} ranks a child in its parent's "
+                    "view='toc' listing — lower reads first"
+                ),
+            )
+        out["order"] = order
     if ruling:
         out.update(validate_ruling_meta(ruling_keys, existing=existing))
     return out
@@ -843,13 +854,6 @@ class MemoryHandler(NumericRefHandler):
                 hint for rid in sorted(ref_ids) for hint in sub_hub_hints(self, rid)
             ]
             body = response.body + render_next_section(hints)
-            advisories = [
-                adv
-                for rid in sorted(ref_ids)
-                if (adv := spec_root_advisory(self.store, rid)) is not None
-            ]
-            if advisories:
-                body += "\n\n" + "\n".join(advisories)
             return replace(response, body=body)
         except Exception:
             log.debug("memory link ack hints skipped", exc_info=True)
@@ -932,9 +936,9 @@ class MemoryHandler(NumericRefHandler):
     ) -> Response:
         # Log offsets count events, or payload characters when event_id
         # selects one event. Keep members' independent cursor contract.
-        if depth is not None and (view != "members" or q is not None):
+        if depth is not None and (view not in {"members", "toc"} or q is not None):
             raise BadInput(
-                "depth= only applies to get(kind='memory', view='members')",
+                "depth= only applies to get(kind='memory', view='members' or 'toc')",
                 next="get(kind='memory', id=N, view='members', args={'depth': 1})",
             )
         if any(v is not None for v in (hops, mermaid)) and (
@@ -944,9 +948,11 @@ class MemoryHandler(NumericRefHandler):
                 "hops=/mermaid= only apply to get(kind='memory', view='environment')",
                 next="get(kind='memory', id=N, view='environment', args={'hops': 2})",
             )
-        if offset is not None and (view not in {"members", "log"} or q is not None):
+        if offset is not None and (
+            view not in {"members", "log", "toc"} or q is not None
+        ):
             raise BadInput(
-                "offset= can only apply to memory view='members' or view='log'",
+                "offset= can only apply to memory view='members', 'log' or 'toc'",
                 next="get(kind='memory', id=N, view='log', args={'offset': 0})",
             )
         if any(v is not None for v in (limit, event_id)) and (
@@ -1077,6 +1083,11 @@ class MemoryHandler(NumericRefHandler):
         if view == "members" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_members(ref, offset=offset, depth=depth)
+        if view == "toc" and concrete:
+            from precis.handlers._memory_toc import render_node_toc
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return render_node_toc(self.store, ref, depth=depth, offset=offset)
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
@@ -1106,6 +1117,7 @@ class MemoryHandler(NumericRefHandler):
                 "environment",
                 "members",
                 "processing",
+                "toc",
                 *EYE_LADDER,
                 *_BASE_VIEWS,
             ]
@@ -1118,6 +1130,7 @@ class MemoryHandler(NumericRefHandler):
                     + "view='argument' (kind:lemma/kind:inference proof tree) "
                     f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
                     "· body (the ~body read) · members (paged part-of listing) "
+                    "· toc (generated part-of tree) "
                     "· processing (before recall) "
                     "· environment (graph neighbourhood + shape smells) "
                     "· links, log, raw (generic)"
@@ -1866,7 +1879,15 @@ class MemoryHandler(NumericRefHandler):
         # too, so a rule-first / warrant-later authoring order works).
         meta: dict[str, Any] = {
             k: create_meta[k]
-            for k in ("rule", "warrant", "hook", "type", "expires", *_RULING_META_KEYS)
+            for k in (
+                "rule",
+                "warrant",
+                "hook",
+                "type",
+                "expires",
+                "order",
+                *_RULING_META_KEYS,
+            )
             if k in create_meta
         }
         if system_meta:
@@ -1964,13 +1985,6 @@ class MemoryHandler(NumericRefHandler):
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
         ack = self._facts_note(ack, facts_deferred)
         ack = self._with_attribution_advisory(ack, misses, shape)
-        # Spec-root placement audit (gr631564) — runs post-commit so its
-        # reads see the just-written part-of edge; only spec roots pay for
-        # its queries.
-        if spec_root_slug(str(t) for t in parsed_tags) is not None:
-            adv = spec_root_advisory(self.store, ref.id)
-            if adv is not None:
-                ack = Response(body=f"{ack.body}\n\n{adv}", cost=ack.cost)
         return self._with_processing_hint(ref.id, ack), int(ref.id)
 
     def _put_dry_run(
@@ -2689,7 +2703,14 @@ class MemoryHandler(NumericRefHandler):
             self._write_retried(ref.id, "meta edit", _patch_meta)
             changed = ", ".join(
                 k
-                for k in ("rule", "warrant", "hook", "type", *_RULING_META_KEYS)
+                for k in (
+                    "rule",
+                    "warrant",
+                    "hook",
+                    "type",
+                    "order",
+                    *_RULING_META_KEYS,
+                )
                 if k in meta_patch
             )
             out = f"updated {self._sense()} id={ref.id} meta: {changed}"
@@ -3805,32 +3826,7 @@ class MemoryHandler(NumericRefHandler):
                         "id=N, view='argument') to read it, not tag() to set it"
                     ),
                 )
-        response = super().tag(id=id, add=add, remove=remove, **_kw)
-        # Spec-root placement audit (gr631564): spec:*/section:index tag
-        # writes are what make (or unmake) a spec root — re-check the
-        # touched nodes so the flag lands or clears with the verdict.
-        touched = [*(add or []), *(remove or [])]
-        if any(
-            t.lower().startswith(("spec:", "section:index"))
-            for t in touched
-            if isinstance(t, str)
-        ):
-            try:
-                ids = id if isinstance(id, list) else [id]
-                advisories = [
-                    adv
-                    for i in ids
-                    if (adv := spec_root_advisory(self.store, self._coerce_id(i)))
-                    is not None
-                ]
-                if advisories:
-                    response = replace(
-                        response,
-                        body=response.body + "\n\n" + "\n".join(advisories),
-                    )
-            except Exception:
-                log.debug("memory tag spec-root advisory skipped", exc_info=True)
-        return response
+        return super().tag(id=id, add=add, remove=remove, **_kw)
 
     # ── read: title header + body chunk ─────────────────────────────
 
@@ -4243,6 +4239,53 @@ class MemoryHandler(NumericRefHandler):
                     exclude_ref_ids=exclude_ref_ids,
                 ),
             )
+        if view == "toc":
+            # gr631890: the tag's forest — matched nodes whose own
+            # part-of parents are unmatched (``spec:*``-shape entries
+            # prefix-match inside the view; the exact filter can't
+            # spell them). A listing, so q/mode/scope/status/sort don't
+            # apply; ``under=`` arrives resolved into include_ref_ids.
+            from precis.handlers._memory_toc import count_tag_toc, render_tag_toc
+
+            rejected = [
+                name
+                for name, val in (
+                    ("q", fold_match_all_q(q)),
+                    ("mode", mode),
+                    ("scope", scope),
+                    ("status", status),
+                    ("sort", sort),
+                )
+                if val not in (None, "")
+            ]
+            if rejected:
+                raise BadInput(
+                    f"{', '.join(rejected)}= is not applied by view='toc'",
+                    next="search(kind='memory', tags=['spec:*'], view='toc')",
+                )
+            return self._domain_space_footer(
+                render_tag_toc(
+                    self.store,
+                    tags=tags,
+                    page=page,
+                    page_size=page_size,
+                    include_ref_ids=include_ref_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                    under=under,
+                    depth=depth,
+                ),
+                domain=domain,
+                q=None,
+                exclude_ref_ids=exclude_ref_ids,
+                before=(caller_tags, caller_include),
+                after=(tags, include_ref_ids),
+                count=lambda scope_tags, scope_ids: count_tag_toc(
+                    self.store,
+                    tags=scope_tags,
+                    include_ref_ids=scope_ids,
+                    exclude_ref_ids=exclude_ref_ids,
+                ),
+            )
         if status is not None:
             kw["status"] = status
         if view in (None, "index") and (out_of_force := hidden_ids(self.store)):
@@ -4501,7 +4544,15 @@ class MemoryHandler(NumericRefHandler):
         if view != "index":
             raise BadInput(
                 f"unknown view {view!r} for search(kind='memory')",
-                options=["index", "count", "reads", "rulings", "shape", "smells"],
+                options=[
+                    "index",
+                    "count",
+                    "reads",
+                    "rulings",
+                    "shape",
+                    "smells",
+                    "toc",
+                ],
                 next=(
                     "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
                     "view='index')"
@@ -5207,11 +5258,6 @@ class MemoryHandler(NumericRefHandler):
             ),
             misses,
         )
-        # Links just migrated onto the survivor — re-check spec-root
-        # placement on the merged result (gr631564).
-        adv = spec_root_advisory(self.store, survivor.id)
-        if adv is not None:
-            resp = Response(body=f"{resp.body}\n\n{adv}", cost=resp.cost)
         return resp
 
 

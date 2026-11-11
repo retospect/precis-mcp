@@ -1112,3 +1112,39 @@ def test_without_q_the_cli_prints_the_plain_index(
     _run_index_cli(store, monkeypatch, "--full")
     assert capsys.readouterr().out == before
     assert re.search(r"\(me\d+, ", before) is None  # no filename suffix
+
+
+def test_export_manifest_spec_and_parent_columns(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    """Column 17 carries the node's ``spec:<slug>`` tag; column 12 lists
+    every live part-of parent comma-separated — a stray second edge must
+    stay visible (td632322: the first-parent-only export hid one)."""
+    handler = MemoryHandler(hub=hub)
+    programme = _created_id(
+        handler.put(text="body", title="Programme", tags=[SPACE_TAG])
+    )
+    topical = _created_id(handler.put(text="body", title="Topical", tags=[SPACE_TAG]))
+    spec = _created_id(
+        handler.put(
+            text="body",
+            title="Spec: routing: the purpose",
+            tags=[SPACE_TAG, "section:index", "spec:routing"],
+            link=f"memory:{programme}",
+            rel="part-of",
+        )
+    )
+    handler.link(id=spec, target=f"memory:{topical}", rel="part-of")
+
+    export_memory_nodes(store, tmp_path / "nodes")
+
+    manifest = (tmp_path / "nodes" / "_sections.tsv").read_text(encoding="utf-8")
+    rows = {r[0]: r for r in (line.split("\t") for line in manifest.splitlines())}
+    assert all(len(r) == 17 for r in rows.values())
+    assert rows[f"me{spec}"][16] == "spec:routing"
+    assert rows[f"me{programme}"][16] == ""
+    assert rows[f"me{topical}"][16] == ""
+    assert set(rows[f"me{spec}"][11].split(",")) == {
+        f"me{programme}",
+        f"me{topical}",
+    }

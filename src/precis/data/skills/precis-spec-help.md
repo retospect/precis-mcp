@@ -60,14 +60,14 @@ its sections directly or through design sub-hubs.
   thread hangs under its programme, not directly under the hub.
 - Move a misplaced node by replacing its parent edge, preserving
   evidence and its other links.
-- Enforcement is advisory, not a write gate: a `put`/`link`/`tag` that
-  leaves a spec root (`spec:<slug>` + `section:index`) with anything but
-  exactly one `part-of` parent — a programme root directly under
-  `me568215` — acks `AUDIT:spec-root-parent` and stamps the system tag;
-  a clean re-check clears it, and `scripts/memory-lint` check 15 lists
-  every miss offline (gr631564).
-- Programme membership plus the ordered root/section outlines are the
-  navigable inventory. **No file index** is required or wanted.
+- Placement is free, listing is generated (gr631890): a spec root is
+  defined by its tags, not its address, so nothing enforces where it
+  hangs. `search(kind='memory', tags=['spec:*'], view='toc')` lists
+  every spec root wherever it sits — the tips of the `spec:` tag's
+  forest — with keywords and member counts.
+- Programme membership plus the generated TOCs are the navigable
+  inventory. **No file index** is required or wanted, and no
+  hand-maintained outline either.
 - A legacy reference with no graph replacement becomes a clearly scoped
   unresolved dependency on the owning plan — never an invented complete
   spec standing in for unseen content.
@@ -85,12 +85,14 @@ put(kind="memory", text="Spec: routing: task-aware MCP tool routing",
 ```
 
 Body order: purpose; owner thread and quest handles; the plan todo
-`td<N>` that carries state ("state lives on plan todo td<N>"); the
-ordered section or sub-hub handles; scope exclusions; graph dependencies;
-source gripes and evidence. A hub's `contains` ring is **unordered**, so
-the body supplies the reading order. Large roots list sub-hubs, each of
-which owns its own ordered outline (see the size rules,
-`precis-spec-help~7`).
+`td<N>` that carries state ("state lives on plan todo td<N>"); scope
+exclusions; graph dependencies; source gripes and evidence. The
+generated outline — `get(kind='memory', id=<root>, view='toc')` —
+renders the subtree as an indented tree, ordering children by
+`meta.order`, then by where each handle is first mentioned in the body,
+then by title. A body's "Sections in reading order: […]" list still
+supplies order through that mention rank, but the TOC makes it
+redundant — write the handles once and let the tree render (gr631890).
 
 - Make the contract maturity explicit: proposed requirement, unresolved
   decision or verified behavior.
@@ -104,14 +106,16 @@ which owns its own ordered outline (see the size rules,
 ## What does a section node look like, and how big may it be?
 
 A section node is `section:reference`, part-of its spec root. The title
-is the section's **claim in at most 12 words**, with no slug prefix — the
-`spec:<slug>` tag and the hook carry "<slug> section <n>", and the spec
-root body gives the reading order:
+is the section's **claim in at most 12 words**, with no slug prefix —
+the hook carries "<slug> section <n>", and the section's spec follows
+from its `part-of` ancestry (me631991: no `spec:<slug>` tag on
+sections; `spec:*` tags stay on spec roots only, now that tags+`under`
+search scopes correctly — gr621795 is fixed and pinned):
 
 ```python
 put(kind="memory", text="Routing prefers cache hits over model calls",
     link="memory:<spec root id>", rel="part-of",
-    tags=["section:reference", "spec:routing", "SPACE:repo-dev"],
+    tags=["section:reference", "SPACE:repo-dev"],
     meta={"hook": "routing section 3"})
 ```
 
@@ -150,7 +154,7 @@ rots:
 ```python
 put(kind="memory", text="<the decision, one claim>",
     link="memory:<spec root id>", rel="part-of",
-    tags=["ruling", "spec:routing", "SPACE:repo-dev"],
+    tags=["ruling", "SPACE:repo-dev"],
     meta={"ruled_by": "reto", "ruled_on": "2026-11-05",
           "review_by": "2026-12-05"})
 link(kind="memory", id=<ruling id>, rel="related-to",
@@ -268,11 +272,11 @@ The writer procedure (from the kinetics conversion, 2026-11-05):
 Multiple writers own **disjoint subtrees**; the **coordinator resolves
 shared nodes** — one writer's placeholder in a shared body is the
 coordinator's cross-file resolution pass, run before the transfer is
-called complete. Scope-verification caveat: `gr621795` records a
-reproduced tags-plus-`under` search leak; until its fix is verified,
-establish membership from `part-of` links and inspect the actual returned
-handles — a scoped banner alone is not evidence that every result belongs
-to the subtree.
+called complete. `gr621795`'s tags-plus-`under` search leak is fixed —
+`under=` resolves into the same `include_ref_ids` set the tag filter
+intersects (pinned by `test_search_under.py`). Still inspect the
+returned handles on a scoped read: a banner says what was asked, not
+what came back.
 
 ## How do I prune a transferred spec against the code?
 
@@ -299,12 +303,16 @@ built. Run it after a transfer and repeat it as code lands.
 
 ## How do I read a spec?
 
-1. `get(kind='memory', id=<spec root>, extent='fisheye')` — the root
-   body carries the ordered section or sub-hub handles.
-2. Walk the handles **in the root body's reading order** (the `contains`
-   ring is unordered); `get` each section. Use `fisheye+1hop` when you
-   need a section's evidence and rulings ring; the extent ladder is
-   [[precis-fisheye-help]].
+1. `get(kind='memory', id=<spec root>, view='toc')` — the generated
+   outline: the whole subtree as an indented tree with keywords,
+   ordered by `meta.order` then handle-mention position in the body
+   (`args={'depth': 2}` collapses below a level with counts).
+   `search(kind='memory', tags=['spec:*'], view='toc')` lists every
+   spec root across the graph (gr631890).
+2. `get(kind='memory', id=<spec root>, extent='fisheye')` for the root
+   body, then `get` each section in the TOC's order. Use `fisheye+1hop`
+   when you need a section's evidence and rulings ring; the extent
+   ladder is [[precis-fisheye-help]].
 3. For execution state, cross to the plan: `get(kind='todo', id=<plan
    root>, view='tree')` shows the slices, their STATUS, leases and
    `blocked-by` sequence.
