@@ -739,7 +739,7 @@ def test_sweep_labels_a_persistent_contact_pair_not_a_collision(cad):
 
 @pytest.mark.timeout(30)
 def test_sweep_gear_rig_uses_fewer_evaluations_than_the_old_sampler(cad):
-    # gr-cad-sweep-cspace: the old sweep ran the full clearance
+    # td563587: the old sweep ran the full clearance
     # minimisation at every one of `n` fixed samples, for every scored
     # pair — n * 3 pairs (pre-gr561417; the group-skip this view keeps
     # already drops the in-chain a1 x a2 pair in practice). The cspace

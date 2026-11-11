@@ -13,13 +13,17 @@ couples to it is just another point on the same curve — still one DOF): a
 pair with signed gap ``g`` at joint value ``q`` cannot touch within
 ``|dq| <= g / v``, where ``v`` is a caller-supplied bound on how fast any
 point of the moving material can move per unit ``q``. Stepping by that bound
-never skips a sign change (clear → interfering or back), so it brackets every
-collision; bisecting each bracket to a caller-given tolerance then gives the
-window edges to that precision. Far from an obstacle the bound lets the step
-grow large (``g`` is large); near one it shrinks — but never below a floor,
-which is also what keeps a pair held in permanent near-zero contact (a
-joint's own hinge-pin-and-its-bore partners, who touch at every state by
-construction) from stalling the walk: see ``persistent_contact`` below.
+cannot skip a sign change (clear → interfering or back); bisecting each
+bracket (at most :data:`_BISECT_MAX_ITERS` halvings) then gives the window
+edges. Far from an obstacle the step grows large (``g`` is large); near one
+it shrinks, down to the bisection tolerance — a grazing pass spends
+evaluations and, if it exhausts ``eval_cap``, is refused rather than
+skipped. The one exception is a pair whose gap sits inside its own
+resolution band (a joint's hinge-pin-and-its-bore partners touch at every
+state by construction, so ``|g|/v`` would be 0 and stall the walk): that
+state advances by the old uniform-sampling step ``span / (eval_cap - 1)``,
+and a window narrower than that opening from such a state can be stepped
+over. See ``persistent_contact`` below.
 
 The speed bound ``v`` and the gap function are both the caller's concern —
 this module is pure cspace-walk arithmetic, agnostic of what "gap" or "the
@@ -40,7 +44,7 @@ from dataclasses import dataclass
 GapFn = Callable[[float], tuple[float, float]]
 
 #: Bisection's own iteration ceiling, independent of ``tol``: halving even
-#: a half-turn bracket (the largest ``min_step`` can be, at the smallest
+#: a half-turn bracket (the largest ``coarse_step`` can be, at the smallest
 #: legal ``eval_cap``) this many times already lands under 2° / 2 mm — far
 #: past what a report needs, and a small, fixed cost per crossing regardless
 #: of how tight the caller's ``tol`` asks to go (reaching the exact
@@ -128,11 +132,15 @@ def sweep_pair(
             False,
         )
 
-    # The floor is what stops a near-zero gap (about to cross, or a
-    # permanently-touching pair) from collapsing the step to nothing — the
-    # same granularity the old uniform sampling used, so a pair that needs
-    # it costs no more than before.
-    min_step = max(span / max(1, eval_cap - 1), tol)
+    # ``coarse_step`` is used only while the gap sits inside its own
+    # resolution band (touching to within what the query can tell apart: a
+    # permanently-touching pair, whose |g|/v step would collapse to nothing)
+    # — the old uniform sampling's granularity, so the one place a window
+    # narrower than it could be stepped over is a pair already in contact.
+    # Outside the band the step is the conservative |g|/v, floored only at
+    # ``tol`` (the bisection width) so a grazing pass costs evaluations
+    # (and hits ``eval_cap`` -> refused) rather than silently skipping.
+    coarse_step = max(span / max(1, eval_cap - 1), tol)
 
     g_prev, resolution = walk_sample(lo)
     q_prev = lo
@@ -146,9 +154,9 @@ def sweep_pair(
         if walk_evaluations >= eval_cap:
             capped = True
             break
-        step = min_step
-        if speed_bound > 0.0:
-            step = max(min_step, abs(g_prev) / speed_bound)
+        step = coarse_step
+        if speed_bound > 0.0 and abs(g_prev) > resolution:
+            step = max(tol, abs(g_prev) / speed_bound)
         q = min(q_prev + step, hi)
         g, resolution = walk_sample(q)
         ever_clear = ever_clear or g > resolution

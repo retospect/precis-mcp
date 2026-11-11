@@ -1682,6 +1682,9 @@ class CadHandler(Handler):
         couples = couples_of(spec)
         own_ports = {pt.name: pt for pt in ports_of(spec)}
         kind_of = _joint_kind_map(spec)
+        pitch_of = {m.instance: m.pitch for m in mates_of(spec)} | {
+            j.component: j.pitch for j in joints_of(spec)
+        }
         hit_intervals: dict[tuple[str, str, str], list[cspace.Interval]] = {}
         contact_pairs: set[tuple[str, str, str]] = set()
         eval_counts: dict[tuple[str, str, str], int] = {}
@@ -1723,7 +1726,7 @@ class CadHandler(Handler):
             # invariant: the component list, each chain member's own joint
             # axis, and — since a rigid rotation/translation about a fixed
             # axis never changes a material point's distance from it — the
-            # per-component speed bound (gr-cad-sweep-cspace; see cspace.py
+            # per-component speed bound (td563587; see cspace.py
             # and _joint_axis_point).
             built0 = self._expand(spec, state=state_at(lo))
             design0 = build_design(built0)
@@ -1752,7 +1755,14 @@ class CadHandler(Handler):
                     )
                     r = max(math.dist(c, tuple(axis)) for c in corners)
                 member_kind = kind_of.get(jn, kind)
-                base = r if member_kind in ("revolute", "cylindrical", "screw") else 1.0
+                if member_kind == "screw":
+                    # rotation about the axis plus the axial advance
+                    # (pitch metres per radian/2π) — both move a point.
+                    base = r + pitch_of.get(jn, 0.0) / (2.0 * math.pi)
+                elif member_kind in ("revolute", "cylindrical"):
+                    base = r
+                else:
+                    base = 1.0
                 return base * abs(ratios[jn])
 
             speeds = {comp: speed_of(comp) for comp in comps}
