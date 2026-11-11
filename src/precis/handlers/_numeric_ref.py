@@ -120,7 +120,14 @@ _FILLER_FIRST_LINE = re.compile(
 #: ``retired`` (gr548660) is a base view too — the opt-in tombstone
 #: read every numeric kind shares through ``NumericRefHandler.get`` —
 #: so subclass view gates (``view not in _BASE_VIEWS``) pass it through
-#: instead of refusing it as unknown.
+#: instead of refusing it as unknown. ``meta``/``tags`` (gr613470) are
+#: the per-ref reads agents kept guessing (~70 refused get calls / 30d
+#: across todo, paper, job, quest, gripe — a local PreToolUse hint
+#: advertised exactly ``get(kind, id, view='meta'|'tags')``); kinds that
+#: already gave the spelling an own reading keep it — todo/quest/pres/
+#: taxon 'meta', memory's card fold, job's ``'meta'→'raw'``, todo's and
+#: gripe's ``'tags'→None`` — those branches run ahead of the base
+#: dispatch.
 _BASE_VIEWS: tuple[str, ...] = (
     "links",
     "log",
@@ -128,6 +135,8 @@ _BASE_VIEWS: tuple[str, ...] = (
     "history",
     "diff",
     "retired",
+    "meta",
+    "tags",
 )
 
 # Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
@@ -1092,6 +1101,10 @@ class NumericRefHandler(Handler):
                 from precis.handlers._revision_view import render_revision_diff
 
                 return render_revision_diff(self.store, ref, since)
+            if view == "meta":
+                return Response(body=self._render_meta_view(ref), result_count=1)
+            if view == "tags":
+                return Response(body=self._render_tags_view(ref), result_count=1)
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's
@@ -4595,6 +4608,31 @@ class NumericRefHandler(Handler):
             ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
         )
         return body
+
+    def _render_meta_view(self, ref: Ref) -> str:
+        """``view='meta'`` — the ref's full ``meta`` dict as JSON
+        (gr613470). The card surfaces title/body/tags but never the
+        ``meta`` a kind's behaviour lives in (todo's ``workspace``/
+        ``llm_tier``, a job's run params, a finding's ``reground_log``);
+        the refused-call ledger kept re-issuing this spelling. The
+        same render todo introduced under gr573038, generalised onto
+        every numeric-ref kind. ``view='raw'`` stays the wider read
+        (meta + scalars + tags + links); the kind-level key inventory
+        is ``search(kind=<K>, view='meta')``."""
+        import json
+
+        return f"# {self._sense()} {ref.id} — meta\n" + json.dumps(
+            ref.meta or {}, indent=2, sort_keys=True, default=str
+        )
+
+    def _render_tags_view(self, ref: Ref) -> str:
+        """``view='tags'`` — the ref's tag set, one per line
+        (gr613470). The kind-level axis/value counts stay on
+        ``search(kind=<K>, view='tags')``."""
+        tags = self.store.tags_for(ref.id)
+        lines = [f"# {self._sense()} {ref.id} — tags"]
+        lines += [str(t) for t in tags] or ["(no tags)"]
+        return "\n".join(lines)
 
     def _render_links_section(
         self, ref: Ref, *, limit: int | None = None, priority: bool = False

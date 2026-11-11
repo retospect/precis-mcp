@@ -885,7 +885,7 @@ class TaxonHandler(NumericRefHandler):
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         if view == "meta":
-            return self._render_meta_view(id=id, under=under)
+            return self._render_meta_inventory(id=id, under=under)
         if under is not None:
             raise BadInput(
                 "under= applies to get(kind='taxon', view='meta') only",
@@ -924,7 +924,7 @@ class TaxonHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='taxon'",
-                options=["path", "facets", "meta", *_BASE_VIEWS],
+                options=["path", "facets", *_BASE_VIEWS],
                 next=(
                     "view='path' (chains up to the start nodes) "
                     "· view='facets' (counts per axis of the instances beneath) "
@@ -1041,7 +1041,7 @@ class TaxonHandler(NumericRefHandler):
             out += ["", f"{total - len(chains)} more chain(s) cut (limit {limit})"]
         return Response(body="\n".join(out))
 
-    def _render_meta_view(self, *, id: Any, under: str | int | None) -> Response:
+    def _render_meta_inventory(self, *, id: Any, under: str | int | None) -> Response:
         """``view='meta'`` — one row per node: handle, name, slug,
         ``display_unit``, ``required_conditions`` and the axis of its
         ``specialises`` edge to its (first) parent — the measurand

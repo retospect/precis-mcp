@@ -351,6 +351,7 @@ _SUPPORTED_VIEWS = (
     "page_image",
     "comments",
     "retired",
+    "tags",
 )
 
 #: Chunk kinds that always get a figure pointer on read (gr520326).
@@ -9138,6 +9139,17 @@ class PaperHandler(Handler):
             from precis.handlers._paper_measures import render_measures_view
 
             return render_measures_view(self.store, ref)
+
+        if view == "tags":
+            # The ref's tag set, one per line — the same read the
+            # numeric-ref base serves (gr613470). The kind-level
+            # axis/value counts stay on ``search(kind=K, view='tags')``;
+            # 'meta' is the no-op alias onto the overview card
+            # (gr551843) — a paper's biblio fields ARE its meta card.
+            tags = self.store.tags_for(ref.id)
+            lines = [f"# {_pa(ref)} — tags"]
+            lines += [str(t) for t in tags] or ["(no tags)"]
+            return Response(body="\n".join(lines))
 
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
