@@ -6,6 +6,16 @@ title: tube(n,m) reports its chirality class and electronic rule, and a fit doma
 
 # hexfold: `tube(n,m)` names its kind (zigzag / armchair / chiral) and its electronic class
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, target carbon-topology spec `me628772` (the
+surface-then-tile path it also touches is spec `me628775`), gripe
+`gr629125`. Not read in the 2026-11-11 transfer pass; the builder lane
+had no precis MCP. Do not delete this file until its
+`section:reference` nodes are written under `me628772`, the hub reading
+order carries their handles, and the source/backlog references are
+repointed — retiring ahead of the transfer was reverted once already
+(`a331c87a4`).)*
+
 Reto, 2026-10-09 (via chat-interface, pasting the standard (n,m) table):
 "when we specify cnt we should pick one, or it should tell us which kind
 it is, and explain basic property." Owner: the hexfold build

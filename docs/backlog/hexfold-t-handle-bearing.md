@@ -8,6 +8,15 @@ blocked-by: me628772
 
 # T-handle bearing — third hexfold test piece
 
+*(Transfer to graph memory is pending — spec-in-memory ruling
+`me568168`, target carbon-topology spec `me628772` (this is a rotary
+test piece related to the valve `me629053`), gripe `gr629125`. Not read
+in the 2026-11-11 transfer pass; the builder lane had no precis MCP. Do
+not delete this file until its `section:reference` nodes are written
+under `me628772`, the hub reading order carries their handles, and the
+source/backlog references are repointed — retiring ahead of the
+transfer was reverted once already (`a331c87a4`).)*
+
 Reto, product-plan review 2026-09-30: the third hexfold test piece after
 the box (`src/hexfold/spec.md` §28 roadmap step 3) and the rotary ratchet
 valve (spec `me628980`, group `me628987`). A nanotube with buds on
