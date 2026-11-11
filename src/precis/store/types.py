@@ -1501,6 +1501,13 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # from two references. Stamped on the citing paper by the
             # worker; flags only, never rewrites the entry.
             "spliced-ref",
+            # Spec-root placement (gr631564): a spec root (spec:<slug> +
+            # section:index) whose part-of chain never reaches the
+            # Specifications hub me568215 — e.g. hung off a topical hub.
+            # System-set by utils/memory_spec.py on put/link/tag writes;
+            # cleared by a clean re-check. scripts/memory-lint check 15
+            # lists them offline.
+            "spec-root-parent",
         }
     ),
     # Argument graph — retraction-ripple marker. Set by the

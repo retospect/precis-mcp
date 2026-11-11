@@ -60,6 +60,11 @@ its sections directly or through design sub-hubs.
   thread hangs under its programme, not directly under the hub.
 - Move a misplaced node by replacing its parent edge, preserving
   evidence and its other links.
+- Enforcement is advisory, not a write gate: a `put`/`link`/`tag` that
+  leaves a spec root (`spec:<slug>` + `section:index`) with no `part-of`
+  chain to `me568215` acks `AUDIT:spec-root-parent` and stamps the
+  system tag; a clean re-check clears it, and `scripts/memory-lint`
+  check 15 lists every miss offline (gr631564).
 - Programme membership plus the ordered root/section outlines are the
   navigable inventory. **No file index** is required or wanted.
 - A legacy reference with no graph replacement becomes a clearly scoped

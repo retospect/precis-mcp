@@ -219,6 +219,7 @@ from precis.utils.memory_rulings import (
     render_rulings,
     validate_ruling_meta,
 )
+from precis.utils.memory_spec import spec_root_advisory, spec_root_slug
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.secret_scan import mask_secrets
@@ -705,7 +706,15 @@ class MemoryHandler(NumericRefHandler):
             hints = [
                 hint for rid in sorted(ref_ids) for hint in sub_hub_hints(self, rid)
             ]
-            return replace(response, body=response.body + render_next_section(hints))
+            body = response.body + render_next_section(hints)
+            advisories = [
+                adv
+                for rid in sorted(ref_ids)
+                if (adv := spec_root_advisory(self.store, rid)) is not None
+            ]
+            if advisories:
+                body += "\n\n" + "\n".join(advisories)
+            return replace(response, body=body)
         except Exception:
             log.debug("memory link ack hints skipped", exc_info=True)
             return response
@@ -1711,6 +1720,13 @@ class MemoryHandler(NumericRefHandler):
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
         ack = self._facts_note(ack, facts_deferred)
         ack = self._with_attribution_advisory(ack, misses, shape)
+        # Spec-root placement audit (gr631564) — runs post-commit so its
+        # reads see the just-written part-of edge; only spec roots pay for
+        # its queries.
+        if spec_root_slug(str(t) for t in parsed_tags) is not None:
+            adv = spec_root_advisory(self.store, ref.id)
+            if adv is not None:
+                ack = Response(body=f"{ack.body}\n\n{adv}", cost=ack.cost)
         return self._with_processing_hint(ref.id, ack), int(ref.id)
 
     def _put_dry_run(
@@ -3399,7 +3415,32 @@ class MemoryHandler(NumericRefHandler):
                         "id=N, view='argument') to read it, not tag() to set it"
                     ),
                 )
-        return super().tag(id=id, add=add, remove=remove, **_kw)
+        response = super().tag(id=id, add=add, remove=remove, **_kw)
+        # Spec-root placement audit (gr631564): spec:*/section:index tag
+        # writes are what make (or unmake) a spec root — re-check the
+        # touched nodes so the flag lands or clears with the verdict.
+        touched = [*(add or []), *(remove or [])]
+        if any(
+            t.lower().startswith(("spec:", "section:index"))
+            for t in touched
+            if isinstance(t, str)
+        ):
+            try:
+                ids = id if isinstance(id, list) else [id]
+                advisories = [
+                    adv
+                    for i in ids
+                    if (adv := spec_root_advisory(self.store, self._coerce_id(i)))
+                    is not None
+                ]
+                if advisories:
+                    response = replace(
+                        response,
+                        body=response.body + "\n\n" + "\n".join(advisories),
+                    )
+            except Exception:
+                log.debug("memory tag spec-root advisory skipped", exc_info=True)
+        return response
 
     # ── read: title header + body chunk ─────────────────────────────
 
@@ -4766,7 +4807,7 @@ class MemoryHandler(NumericRefHandler):
             nudge_fresh_embed(self.store, conn=conn, reason="supersede memory")
 
         merged = ", ".join(str(m) for m in ids)
-        return self._with_attribution_advisory(
+        resp = self._with_attribution_advisory(
             Response(
                 body=(
                     f"superseded memories [{merged}] → new memory id={survivor.id} "
@@ -4776,6 +4817,12 @@ class MemoryHandler(NumericRefHandler):
             ),
             misses,
         )
+        # Links just migrated onto the survivor — re-check spec-root
+        # placement on the merged result (gr631564).
+        adv = spec_root_advisory(self.store, survivor.id)
+        if adv is not None:
+            resp = Response(body=f"{resp.body}\n\n{adv}", cost=resp.cost)
+        return resp
 
 
 def _roundtrip_hint(handler: Any, ref_id: int) -> list[tuple[str, str]]:

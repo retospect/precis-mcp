@@ -1779,3 +1779,91 @@ def test_taxon_pointers_resolve_in_current_worktree_not_main(
     assert "missing path → tn6 (Main): docs/main-only.md" in res.stdout
     assert "missing path → tn5" not in res.stdout
     assert "taxon pointers: 1 missing path(s), 0 unresolvable form(s)" in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# check 15 — spec-root placement (gr631564)
+# ---------------------------------------------------------------------------
+
+
+def _spec_row(
+    h: str, sec: str, *, hub: str = "-", parent: str = "", spec: str = ""
+) -> str:
+    """One 17-column ``_sections.tsv`` row: the columns other checks read are
+    filled quiet (live links, no hidden/dead, updated today); col 12 carries
+    the part-of parent and col 17 the ``spec:<slug>`` tag."""
+    return (
+        "\t".join(
+            [
+                h,
+                sec,
+                _today(),
+                "10",
+                "10",
+                "1",
+                "0",
+                "0",
+                hub,
+                "0",
+                "-",
+                parent,
+                "",
+                "0",
+                "",
+                "",
+                spec,
+            ]
+        )
+        + "\n"
+    )
+
+
+def test_check15_flags_spec_root_off_the_spec_hub(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """A spec root (section:index + spec:<slug>) must reach the Specifications
+    hub me568215 by part-of — me300 hangs off a topical hub; me200 sits under
+    a programme root and stays quiet."""
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me500.md").write_text(
+        "# A repo-dev note\n\nNote body.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        "".join(
+            [
+                _spec_row("me568215", "index"),
+                _spec_row("me100", "index", parent="me568215"),
+                _spec_row("me200", "index", parent="me100", spec="spec:routing"),
+                _spec_row("me300", "index", parent="me400", spec="spec:wrong"),
+                _spec_row("me400", "index"),
+                _spec_row("me500", "reference", hub="me400", parent="me400"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    assert (
+        "spec-root parent → me300 (section node) (spec:wrong): part-of chain "
+        "never reaches the Specifications hub me568215" in res.stdout
+    ), res.stdout
+    assert "me200" not in res.stdout, res.stdout
+    assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
+
+
+def test_check15_skips_a_manifest_without_the_spec_column(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """A pre-column-17 export can't tell a spec root: skipped, never a
+    clean-claim and never a finding."""
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me1.md").write_text("# Hub\n\nBody.\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text("me1\tindex\nme2\tindex\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    assert "spec-root placement: skipped (legacy manifest" in res.stdout, res.stdout
+    assert "spec-root parent →" not in res.stdout, res.stdout

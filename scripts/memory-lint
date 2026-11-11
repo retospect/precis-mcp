@@ -114,6 +114,10 @@
 #  14. incidents older than 90 UTC calendar days, from the manifest's creation
 #      date (edits do not reset age). Report only: verify cause and fix,
 #      preserve uncertainty, and extract still-true claims before retiring.
+#  15. spec-root placement: a spec root (section:index + spec:<slug>) must
+#      reach the Specifications hub me568215 by part-of — topical hubs
+#      relate, never parent (gr631564). The manifest's parent column is
+#      walked; a legacy manifest without the spec column is skipped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -635,6 +639,54 @@ with open(sys.argv[1], encoding="utf-8") as manifest:
 PY
         )
     fi
+fi
+
+# 15. spec-root placement (graph mode, manifest column 17). A spec root —
+#     a section:index node tagged spec:<slug> — hangs under a programme
+#     root of the Specifications hub me568215; topical hubs relate but
+#     never parent (precis-spec-help, gr631564). The parent column is
+#     walked up to 16 hops; a dead end or a chain missing me568215 is a
+#     finding. A manifest without the spec column (pre-2026-11 export)
+#     can't tell a spec root from any other index node — skipped, never
+#     clean-claimed.
+if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
+    while IFS=$'\037' read -r h spec; do
+        [[ -z "$h" ]] && continue
+        if [[ "$h" == SKIPPED ]]; then
+            echo "spec-root placement: skipped ($spec)"
+            continue
+        fi
+        echo "  spec-root parent → $(label_of "$h.md" "$SCAN_DIR/$h.md") ($spec): part-of chain never reaches the Specifications hub me568215 — spec roots hang under a programme root of it (precis-spec-help): link(kind='memory', id='$h', target='memory:<programme root>', rel='part-of')"
+        problems=$((problems+1))
+    done < <(python3 - "$MANIFEST" <<'PY'
+import csv
+import sys
+
+SPEC_HUB = "me568215"
+HOP_CAP = 16
+
+with open(sys.argv[1], encoding="utf-8") as manifest:
+    rows = [r for r in csv.reader(manifest, delimiter="\t") if r]
+if any(len(r) < 17 for r in rows):
+    print("SKIPPED\x1flegacy manifest — refresh memory index --export-dir")
+    sys.exit(0)
+parent = {r[0]: r[11] for r in rows if len(r) > 11}
+for r in rows:
+    if r[1] != "index" or not r[16]:
+        continue
+    cur, seen, reached = r[0], {r[0]}, False
+    for _ in range(HOP_CAP):
+        cur = parent.get(cur, "")
+        if cur in (SPEC_HUB, SPEC_HUB[2:]):
+            reached = True
+            break
+        if not cur or cur in seen:
+            break
+        seen.add(cur)
+    if not reached:
+        print(f"{r[0]}\x1f{r[16]}")
+PY
+    )
 fi
 
 # 10. thread hygiene (graph mode, manifest + node bodies) — the drift the

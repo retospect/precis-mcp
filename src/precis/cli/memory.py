@@ -1058,7 +1058,10 @@ def _render_loaded(
 #: (1 if tagged ``gotchas:none``: reviewed, no gotcha applies),
 #: ``supersedes`` (comma-separated handles of the node's ``supersedes``
 #: edge targets; empty if none), ``incident_created`` (UTC creation date
-#: for nodes tagged ``incident``, empty otherwise; edits must not reset age).
+#: for nodes tagged ``incident``, empty otherwise; edits must not reset age),
+#: ``spec`` (the node's ``spec:<slug>`` tag; empty if none — a
+#: ``section:index`` row carrying one is a spec root, and memory-lint check 15
+#: walks its ``parent`` chain to the Specifications hub me568215).
 #: ``hub`` is the nearest ``section:index``
 #: *ancestor* along the part-of chain, so a detail node under a summary
 #: node names the summary's hub.
@@ -1252,6 +1255,7 @@ def export_memory_nodes(
                 ref.created_at.astimezone(UTC).strftime("%Y-%m-%d")
                 if "incident" in values
                 else "",
+                next((v for v in sorted(values) if v.startswith("spec:")), ""),
             )
             manifest.append("\t".join(map(str, row)) + "\n")
         (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")
