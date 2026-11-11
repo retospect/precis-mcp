@@ -541,7 +541,30 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "A job_type whose runs are mostly cancelled — down while looking clean.",
         severity="warn",
     ),
+    _nursery(
+        "stale-halt",
+        "stale-halt:{ref_id}",
+        "A legacy or contextless halted todo awaiting review.",
+        severity="info",
+        triage="Read the prior tick's halt summary before resuming the todo.",
+    ),
     # ── other producers ────────────────────────────────────────────────
+    AlertRule(
+        "planner:misconceived",
+        "misconceived:{parent_id}",
+        "A todo still halted as misconceived after its one plan repair.",
+        "info",
+        None,
+        triage="Review the halt summary; re-scope or retire the todo.",
+    ),
+    AlertRule(
+        "breaker:infra-outage",
+        "infra",
+        "Repeated infrastructure halts paused the agent todo lane.",
+        "critical",
+        None,
+        triage="Fix the outage; resolving the alert releases audited cohort parks.",
+    ),
     AlertRule(
         "nanopub-demote",
         "contradicted-frozen:{hub_ref_id}",
