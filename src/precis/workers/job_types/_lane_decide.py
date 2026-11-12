@@ -265,6 +265,7 @@ def shadow_stamp(
         legacy = _legacy_ladder(pairs or [picked], offerings, ledger, chosen_rung)
         return {
             "site": site,
+            "task_class": task_class,
             **shadow.explain(),
             "legacy": {
                 "chosen": decide.compact_offering(legacy.chosen)

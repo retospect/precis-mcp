@@ -239,6 +239,73 @@ class TestDecisionsView:
         assert (row.calls, row.projected_known) == (2, 1)
 
 
+class TestSliceDecisionRows:
+    """``/decisions`` lists lane-pick shadow agreement per task class off
+    the ``meta.decision`` stamp on ``run_slice`` jobs (td572552)."""
+
+    @staticmethod
+    def _job(
+        store: Any,
+        decision: dict[str, Any] | None,
+        *,
+        job_type: str = "run_slice",
+        age_days: int = 0,
+    ) -> None:
+        meta: dict[str, Any] = {"job_type": job_type}
+        if decision is not None:
+            meta["decision"] = decision
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO refs (kind, title, meta, created_at) VALUES "
+                "('job', 'slice-decision', %s, now() - (%s * interval '1 day'))",
+                (Jsonb(meta), age_days),
+            )
+
+    def test_agreement_per_task_class(self, store: Any) -> None:
+        from precis import llm_catalog
+
+        def stamp(cls: str | None, agree: bool, match: bool) -> dict[str, Any]:
+            out: dict[str, Any] = {
+                "site": "submit",
+                "agree": agree,
+                "lane_match": match,
+            }
+            if cls is not None:
+                out["task_class"] = cls
+            return out
+
+        for cls, agree, match in (
+            ("code", True, True),
+            ("code", False, False),
+            ("code", True, True),
+            ("review", False, True),
+            (None, True, True),
+        ):
+            self._job(store, stamp(cls, agree, match))
+        # Outside the window, another job type and an unstamped job: not counted.
+        self._job(store, stamp("code", True, True), age_days=30)
+        self._job(store, stamp("code", True, True), job_type="other")
+        self._job(store, None)
+        rows = {r.task_class: r for r in llm_catalog.slice_decision_rollup(store)}
+        assert (rows["code"].picks, rows["code"].agree, rows["code"].lane_match) == (
+            3,
+            2,
+            2,
+        )
+        assert (rows["review"].picks, rows["review"].agree) == (1, 0)
+        assert rows["unknown"].picks == 1
+        body = _handler(store).get(id="/decisions").body
+        assert "# slice lane picks (5 picks, 7 d)" in body
+        assert "  code: picks=3 agree=67% lane_match=2" in body
+        assert "  review: picks=1 agree=0% lane_match=1" in body
+
+    def test_no_slice_section_without_stamps(self, store: Any) -> None:
+        self._job(store, None)
+        assert _handler(store).get(id="/decisions").body == (
+            "# llm decisions (0 calls, 7 d)"
+        )
+
+
 class TestSuitabilityView:
     """``/suitability`` renders the stored ``meta.suitability`` posteriors
     for the ten busiest task kinds — it never recomputes them."""

@@ -20,7 +20,8 @@ this handler's store, not the process-global routing cache. These are
 configuration reads, never LLM calls or claims about effective runtime
 routing: request pins and runtime gates can change where a call lands.
 
-``/decisions`` compares shadow routing with executed legacy calls per task kind.
+``/decisions`` compares shadow routing with executed legacy calls per task kind, and the run_slice lane-pick shadow
+(``meta.decision``) per task class.
 ``/suitability`` shows the stored suitability posteriors — validated
 outcomes rolled up per ``model@adapter`` × task kind × difficulty band
 by the nightly ``llm_suitability`` cadence (read-only; decide() never
@@ -1396,6 +1397,20 @@ class LlmHandler(NumericRefHandler):
                 f"usd actual={row.actual_usd:.6f} projected={row.projected_usd:.6f} "
                 f"({row.projected_known}/{row.calls} priced)"
             )
+        slice_rows = llm_catalog.slice_decision_rollup(
+            self.store, window_days=window_days
+        )
+        if slice_rows:
+            lines.append(
+                f"# slice lane picks ({sum(r.picks for r in slice_rows)} picks, "
+                f"{window_days} d)"
+            )
+            for r in slice_rows:
+                pct = 100 * r.agree / r.picks if r.picks else 0
+                lines.append(
+                    f"  {r.task_class}: picks={r.picks} agree={pct:.0f}% "
+                    f"lane_match={r.lane_match}"
+                )
         return "\n".join(lines)
 
     def _render_suitability(self, *, window_days: int = 7, limit: int = 10) -> str:

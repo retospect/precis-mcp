@@ -565,6 +565,38 @@ def decision_rollup(store: Store, *, window_days: int = 7) -> list[DecisionRow]:
     ]
 
 
+class SliceDecisionRow(NamedTuple):
+    """Lane-pick shadow agreement for one task class (td572552)."""
+
+    task_class: str
+    picks: int
+    agree: int
+    lane_match: int
+
+
+def slice_decision_rollup(
+    store: Store, *, window_days: int = 7
+) -> list[SliceDecisionRow]:
+    """Per-task-class agreement of ``decide()``'s lane shadow with the pick.
+
+    Reads ``meta.decision`` (stamped by ``_lane_decide.shadow_stamp``) off
+    ``run_slice`` job refs created inside the window. A stamp from before
+    ``task_class`` was recorded groups under ``unknown``.
+    """
+    query = (
+        "SELECT COALESCE(meta->'decision'->>'task_class', 'unknown'), count(*), "
+        "count(*) FILTER (WHERE meta->'decision'->>'agree' = 'true'), "
+        "count(*) FILTER (WHERE meta->'decision'->>'lane_match' = 'true') "
+        "FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+        "AND meta->>'job_type' = 'run_slice' AND meta ? 'decision' "
+        "AND created_at > now() - (%s * interval '1 day') "
+        "GROUP BY 1 ORDER BY count(*) DESC, 1"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(query, (window_days,)).fetchall()
+    return [SliceDecisionRow(str(r[0]), int(r[1]), int(r[2]), int(r[3])) for r in rows]
+
+
 def _tote_row(row: tuple[Any, ...]) -> ToteRow:
     return ToteRow(
         calls=int(row[0] or 0),

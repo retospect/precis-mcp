@@ -63,6 +63,7 @@ def test_stamp_agrees_with_the_free_first_pick() -> None:
     )
     assert stamp is not None
     assert stamp["site"] == "submit" and stamp["executed"] == "legacy"
+    assert stamp["task_class"] == "code"
     assert stamp["chosen"]["lane"] == "devin"
     assert stamp["chosen"]["model"] == "swe-2-high"
     assert stamp["legacy"]["chosen"]["lane"] == "devin"
