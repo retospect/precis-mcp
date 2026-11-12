@@ -702,6 +702,32 @@ def test_submit_without_commits_fails_and_reopens(seams: dict[str, Any]) -> None
     assert store.comments(42)[-1].startswith("handoff: lander: land FAILED")
 
 
+def test_submit_nothing_to_land_closes_done(seams: dict[str, Any]) -> None:
+    """gr648125: a land minted over a branch that carries NOTHING — no
+    commit ahead of origin/main and no net diff (the fix is already on
+    main by another route) — finishes done, not red: submit launches no
+    ship and the poll writes the same nothing-new record (the dependent
+    re-cut unblocks instead of burning a ladder). A dirty/diff branch
+    keeps the failure above."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and ctx.status is None
+    assert handle == {"no_land": True, "worktree": str(seams["tree"])}
+    assert seams["launch"] == []
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert pctx.meta_set["landed_sha"] is None
+    assert store.comments(42)[-1] == land_slice.NO_DIFF_NOTE
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags and "claimed-by:lane-claude-sub" not in tags
+    # the useless branch and worktree are still cleaned up
+    assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
+
+
 def test_submit_missing_worktree_fails(seams: dict[str, Any], tmp_path: Path) -> None:
     store = _Store()
     store.add_todo(42)

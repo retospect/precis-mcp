@@ -143,7 +143,13 @@ that holds the lane's credentials with ``params.target_node``):
   closed it): ``moot: <sha>`` needs only the ancestor check and
   ``verified: <ids> green on origin/main`` needs none; the node closes
   done untagged — the release plan itself is not moot — and the loop's
-  next cut is the check a false claim fails. Otherwise (non-zero exit, a
+  next cut is the check a false claim fails. A declared
+  ``moot:``/``no-op:`` those gates cannot verify still closes the same
+  way when the branch carries no net diff against ``origin/main``
+  (:func:`_fix_declared`, gr648125 — the empty branch is itself the
+  proof nothing is left to land; a ``no_commit`` stamp would only
+  climb the ladder into a rescue the work never needed). Otherwise
+  (non-zero exit, a
   deny-path hit, a code node with no commit to land) it ends ``failed``
   with the log tail and releases the lease; a deny hit on a
   :data:`precis.plans.lanes.HUMAN_ONLY_PATHS` glob also stamps
@@ -3544,7 +3550,8 @@ def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
     message gate could never pass for the claim that is in fact true
     (r256's td597541). No marker, or a ``moot:`` whose shas are all
     non-ancestors or unreadable, is ``None`` — the no-commit failure
-    :data:`NO_COMMIT_KEY` stamps stands."""
+    :data:`NO_COMMIT_KEY` stamps stands, unless :func:`_fix_declared`
+    holds (gr648125)."""
     for ln in (result or "").splitlines():
         m = _FIX_VERIFIED_RE.match(ln)
         if m is not None and _FIX_VERIFIED_GREEN_RE.search(m.group(1)):
@@ -3561,6 +3568,57 @@ def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
         if check.returncode == 0:
             return {"kind": "moot", "sha": cand, "line": line[:300]}
     return None
+
+
+#: A ``moot:``/``no-op:`` declaration line — the fix node's own words for
+#: "the work is already on main" (gr648125).
+_DECLARED_RE = re.compile(r"^\s*(?:moot|no-op)\s*:\s*(.*?)\s*$", re.IGNORECASE)
+
+
+def _diff_empty(tree: Path) -> bool:
+    """``True`` only when ``git diff --quiet origin/main...HEAD`` reports
+    no net change on the branch — a git error counts as NOT empty (the
+    caller's fallback is the no-commit failure; fail closed)."""
+    try:
+        return _git(["diff", "--quiet", "origin/main...HEAD"], tree).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _fix_declared(tree: Path, result: str | None) -> dict[str, str] | None:
+    """``{"kind", "line"}`` (plus ``"sha"`` when a named sha still
+    verifies) for the fix node's DECLARED close (gr648125 — r288 and
+    r290 each idled 75+ min on it): the builder reports the fix already
+    on main by another route and the branch carries no net diff against
+    ``origin/main`` (the caller found no commits ahead), so the empty
+    branch itself is the proof there is nothing to land.
+
+    :func:`_fix_moot`'s gates stay the STRONGER close — they name the
+    sha the fix landed under; this arm is the declaration those gates
+    could not verify (a missing, abbreviated or unfetched sha, a
+    ``no-op:`` wording, a ``moot:`` the fetch never reached). The node
+    closes done untagged like ``_fix_moot`` — the release plan is not
+    moot — and the loop's next cut re-checks a false claim. ``None``
+    without a declaration or with a real diff: a builder that produced
+    nothing and declared nothing stays :data:`NO_COMMIT_KEY`."""
+    line = None
+    for ln in (result or "").splitlines():
+        if _DECLARED_RE.match(ln):
+            line = ln.strip()
+            break
+    if line is None or not _diff_empty(tree):
+        return None
+    out = {"kind": "declared", "line": line[:300]}
+    _fetch_main(tree)
+    for cand in _MOOT_SHA_RE.findall(line):
+        try:
+            check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if check.returncode == 0:
+            out["sha"] = cand
+            break
+    return out
 
 
 def changed_paths(tree: Path) -> list[str] | None:
@@ -4460,6 +4518,17 @@ def poll(ctx: Any, handle: Any) -> bool:
         ):
             # A ``moot:`` pinned to another gripe is not this plan's.
             found = None
+        # gr648125 (r288/r290): the fix node's declared ``moot:``/``no-op:``
+        # close when ``_fix_moot``'s sha gates could not verify it — the
+        # branch's empty diff against ``origin/main`` is itself the proof
+        # there is nothing to land. Only the fix node takes it: anywhere
+        # else ``found``/``verdict`` already owns the declaration, and a
+        # ``validated:`` keeps ``_fix_norepro``'s rerun ruling.
+        declared = (
+            _fix_declared(tree, result)
+            if fix_node and fix_moot is None and norepro is None
+            else None
+        )
         if verified is not None:
             # td584381 S1d (td584601): the session found the fix already
             # on main and named a sha the worker could verify. That is a
@@ -4501,6 +4570,29 @@ def poll(ctx: Any, handle: Any) -> bool:
                     else ""
                 )
                 + f"); td{todo_id} closed done."
+            )
+        elif declared is not None:
+            # The fix is on main by another route: the builder declared
+            # it and the empty branch proves nothing is left to land.
+            # Done, untagged like ``_fix_moot`` (the release plan is not
+            # moot) — never a ``no_commit`` attempt, so no rescue and the
+            # blocked re-cut dispatches.
+            land = False
+            line_ = _WITHHELD_TEXT if unscrubbed else declared["line"]
+            note = (
+                f"already on main: {declared['sha'][:12]}"
+                if declared.get("sha")
+                else "already on main: no diff"
+            )
+            close_todo(ctx.store, todo_id, str(lane) if lane else None)
+            try:
+                _append_comment(ctx.store, todo_id, note)
+            except Exception:  # pragma: no cover — the close still stands
+                log.warning("run_slice: declared-moot note on td%d failed", todo_id)
+            ctx.set_meta(**{FIX_VERIFIED_KEY: {**declared, "line": line_}})
+            summary.append(
+                f"Land: none — the fix node's `{line_[:160]}` holds on "
+                f"an empty branch ({note}); td{todo_id} closed done."
             )
         elif norepro == "rerun":
             # Closing the fix node would unblock the recut while the run

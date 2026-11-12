@@ -225,6 +225,10 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             return _proc(calls.get("porcelain_z", ""), rc=calls.get("status_rc", 0))
         if args[:2] == ["diff", "--name-only"]:
             return _proc(calls.get("diff", ""))
+        if args[:2] == ["diff", "--quiet"]:
+            # rc 0 = no net diff vs origin/main (the declared-moot
+            # probe); rc 1 = a real diff, rc >1 = git failed.
+            return _proc(rc=calls.get("diff_quiet_rc", 0))
         if args[:3] == ["diff", "--cached", "--quiet"]:
             # rc 1 = something staged (git's own convention).
             return _proc(rc=1 if calls.get("staged") else 0)
@@ -4352,15 +4356,93 @@ def test_poll_fix_node_verified_marker_closes_done(
     assert seams["lands"] == []
 
 
-def test_poll_fix_node_moot_on_a_non_ancestor_sha_fails(
+def test_poll_fix_node_declared_moot_on_an_empty_diff_closes_done(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr597599: the marker names a sha that is NOT on origin/main —
-    nothing verified, the ordinary no-commit failure stands."""
+    """gr648125 (r288/r290): the fixer's ``moot:`` names a sha the
+    ancestor check cannot verify — unfetched, abbreviated, gone — but
+    the branch carries no net diff against ``origin/main``, so the
+    empty branch is itself the proof there is nothing to land. The node
+    closes done untagged like ``_fix_moot`` (the release plan is not
+    moot; the loop's next cut re-checks a false claim) — no
+    ``no_commit`` attempt, no rescue, and the todo gets the
+    ``already on main:`` note."""
     store = _Store()
     store.add_todo(42, "Fix the failures", tags=("plan:1",))
     _fix_norepro_env(store, monkeypatch)
     seams["ancestor_rc"] = 1
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "moot: td42 already fixed by d0dc82d40\n",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    fv = pctx.meta_set[run_slice.FIX_VERIFIED_KEY]
+    assert fv["kind"] == "declared" and "sha" not in fv
+    assert run_slice.NO_COMMIT_KEY not in pctx.meta_set
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags and "verdict:moot" not in tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert seams["lands"] == []
+    assert store.comments(42)[-1] == "already on main: no diff"
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["diff", "--quiet", "origin/main...HEAD"] in git_cmds
+
+
+def test_poll_fix_node_declared_moot_names_the_ancestor_sha(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``already on main:`` note names the sha when the declared
+    line's claim verifies anyway (a ``no-op:`` line rides the same
+    arm — ``_fix_moot`` only reads ``moot:``)."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Checked main first — the fix is already in.\n"
+                "no-op: nothing left; d0dc82d40 already covers it\n",
+            }
+        )
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    fv = pctx.meta_set[run_slice.FIX_VERIFIED_KEY]
+    assert fv["kind"] == "declared" and fv["sha"] == "d0dc82d40"
+    assert store.comments(42)[-1] == "already on main: d0dc82d40"
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_poll_fix_node_moot_with_a_real_diff_still_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr648125 keeps the real no-commit failure: the ``moot:`` claim is
+    unverifiable AND the branch's diff against ``origin/main`` is not
+    empty — something was left to land, so the declaration proves
+    nothing."""
+    store = _Store()
+    store.add_todo(42, "Fix the failures", tags=("plan:1",))
+    _fix_norepro_env(store, monkeypatch)
+    seams["ancestor_rc"] = 1
+    seams["diff_quiet_rc"] = 1
     ctx, handle = _submit(store, seams)
     _finish(
         handle,

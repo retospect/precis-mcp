@@ -27,7 +27,10 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   :func:`test_nproc` — ``PRECIS_LAND_TEST_NPROC``, default 3 — because a
   static-wide selection on melchior OOM-killed a worker twice, gr567471;
   ``PRECIS_TEST_NPROC`` carries the same count to any ``scripts/test``
-  run inside the ship).
+  run inside the ship). A branch carrying nothing at all — no commit
+  ahead and no net diff, the fix already on main by another route —
+  gets no ship: submit returns the ``no_land`` handle and the poll
+  writes the same nothing-new record, done not red (gr648125).
 * :func:`poll` waits for ship's exit. Green: the landed sha (ship's
   ``shipped — landed on main:`` line, else ``git rev-parse origin/main``)
   goes on the job (``meta.landed_sha``); a ``landed: <sha>`` comment and
@@ -1662,6 +1665,13 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     if subject is None:
+        if subjects == [] and not paths:
+            # gr648125: the land was minted over a branch carrying
+            # nothing — no commit ahead of origin/main and no net diff
+            # (the fix is already on main by another route). Nothing to
+            # land is done, not red: the poll's ``no_land`` path writes
+            # the same record ship's nothing-new guard does.
+            return {"no_land": True, "worktree": str(tree)}
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(
             ctx,
@@ -2570,7 +2580,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         return _relaunch_when_due(ctx, handle)
     if isinstance(handle.get("verify"), dict):
         return _poll_verify(ctx, handle)
-    exit_code = _rs._read_exit(handle)
+    # submit's ``no_land`` sentinel (gr648125): the branch carried
+    # nothing — no commit ahead, no net diff — so no ship ran; the
+    # nothing-new record below closes the todo done the same way.
+    no_land = bool(handle.get("no_land"))
+    exit_code = 0 if no_land else _rs._read_exit(handle)
     if exit_code is None and _process_alive(int(handle.get("pid") or 0)):
         # gr598110 item 4: while ship queues inside gate_slot_acquire the
         # wait is real queueing on the host, not gate time — the wall
@@ -2792,7 +2806,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     # gr561142: ship's nothing-new guard squashes nothing and then names
     # main's existing head on its ``landed on main:`` line. That sha is
     # another land's; it must not reach the todo, the gate or the logbook.
-    no_diff = nothing_new(log_text)
+    no_diff = no_land or nothing_new(log_text)
     sha = None if no_diff else _landed_sha(log_text, tree)
     if sha is None and not no_diff:
         ctx.record_failure(
