@@ -25,12 +25,11 @@ See [[precis-taproot-help]] for what a claim hub is, `fi<id>` vs
 Extraction order: **admissibility test → mint → notation autofix → dedup
 check → park for review.** Runs first, on the sentence, before any
 supporter is attached. Skip it and what gets minted is often not a claim
-at all — the orphan-hub bucket (no evidence edge) turned out to be
-bibliography stubs.
+at all (the orphan hubs were bibliography stubs).
 
 **Admissible is not true.** This test and every gate below it check that
 a claim is well-formed, sourced, and traceable — none checks whether it
-is *correct*. Passing the gates means "safe to cite," not "verified."
+is *correct*: "safe to cite," not "verified."
 
 A sentence earns `TAPROOT:claim` only if it passes all four:
 
@@ -60,8 +59,12 @@ A sentence earns `TAPROOT:claim` only if it passes all four:
 4. **Single assertion** — see [[precis-notation-canon]]'s terseness rule.
 
 An unfalsifiable entry can never be corroborated or contradicted, so it's
-inert mass in the graph, not just badly worded. Something was minting
-reading-list entries as claims; this test is what stops it at the door.
+inert mass in the graph, not just badly worded.
+
+**Literature-state claims carry an as-of date.** Markers like "only",
+"not yet", "never been", "remains challenging" assert what the literature
+shows at a time: write "As of 2016, …" (fi176536). Dropping the marker
+is the fallback, not the default — it leaves the claim vague and timeless.
 
 **Enforcement asymmetry.** Notation/sentence lint *advises* at mint —
 flags, never blocks or rewrites. At approve it *blocks* on the
@@ -77,8 +80,7 @@ corpus at a zero false-positive rate. `hyphen-numeric-range` and
 `ascii-x-multiplier` cleared that bar and block; `formula-ascii-subscript`
 did not and stays advisory forever.
 Authoring stays frictionless; nothing ungoverned reaches *publishable*,
-but a hub can sit `candidate` indefinitely with an advisory flag
-unresolved.
+though a hub can sit `candidate` with an advisory flag unresolved.
 
 **The blocking set is scoped by artifact type** — a scope, not a
 loosening. A `hypothesis`
@@ -89,8 +91,7 @@ yet, so its mode lives in the type plus the mandatory `testable_by`.
 it — the default is strict, so a new artifact type fails closed.
 
 **Expect refusal at approve, not malfunction.** A legacy hub failing
-approve is the intended workflow, not a bug — the sentence gets authored
-properly at that point, not patched around.
+approve is intended: author the sentence properly, don't patch around it.
 
 ## When it isn't a claim yet — mint a hypothesis instead
 
