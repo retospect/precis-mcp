@@ -197,6 +197,27 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         # selection (``--checked`` earned), False = wide/empty/FULL/
         # unreadable (``--quick``).
         "spot": True,
+        # gr650484 seams: what ``rev-parse --absolute-git-dir`` answers.
+        # The fixture points it at a real dir under tmp_path (set below)
+        # so every submit exercises the land-lock/index-lock/
+        # already-landed checks; "" would mark it unresolved and skip
+        # them all.
+        "gitdir": "",
+        # ``--git-common-dir``: "" (or equal to gitdir) = a primary
+        # checkout, no second index.lock pair.
+        "common": "",
+        # ``fetch``/``diff --quiet``/``log --max-count`` results for
+        # ``_already_landed``: fetch_rc!=0 disables the check; diff_rc==0
+        # = branch tree identical to main's; main_log carries
+        # ``<sha>\x00<subject>`` lines for the subject scan. The content
+        # proof rides ``merge_base``/``diff_names``/``path_diff_rc`` —
+        # the paths since merge-base must be identical on main for a
+        # same-subject commit to count as this land.
+        "fetch_rc": 0,
+        "diff_rc": 1,
+        "main_log": "",
+        "merge_base": "b" * 40,
+        "path_diff_rc": 0,
     }
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -205,6 +226,20 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             return _proc("".join(f"{s}\n" for s in calls["subjects"]))
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
             return _proc(FULL_SHA + "\n")
+        if args == ["rev-parse", "--absolute-git-dir"]:
+            return _proc(calls["gitdir"] + "\n" if calls["gitdir"] else "")
+        if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            return _proc(calls["common"] + "\n" if calls["common"] else "")
+        if args[:2] == ["fetch", "--quiet"]:
+            return _proc(rc=calls["fetch_rc"])
+        if args[:2] == ["diff", "--quiet"]:
+            # A path-scoped proof ("diff --quiet a b -- <paths>") answers
+            # path_diff_rc; the whole-tree check answers diff_rc.
+            return _proc(rc=calls["path_diff_rc"] if "--" in args else calls["diff_rc"])
+        if args[:1] == ["merge-base"]:
+            return _proc(calls["merge_base"] + "\n" if calls["merge_base"] else "")
+        if args[:1] == ["log"] and any(a.startswith("--max-count=") for a in args):
+            return _proc(calls["main_log"])
         if args[:2] == ["ls-remote", "--exit-code"]:
             if calls["remote"]:
                 return _proc(f"{FULL_SHA}\trefs/heads/slice/42\n")
@@ -268,6 +303,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
     (tree / "scratch").mkdir(parents=True)
     calls["tree"] = tree
+    calls["gitdir"] = str(tmp_path / "gitdir")
+    Path(calls["gitdir"]).mkdir()
     return calls
 
 
@@ -4308,3 +4345,449 @@ def test_defer_to_main_drops_ps_identity(
 
     assert "ps_identity" not in handle
     assert handle["not_before"]
+
+
+# ── gr650484: one ship per worktree, index.lock, already-landed ──────
+
+
+def _job_summary(ctx: _Ctx) -> str:
+    return "\n".join(t for k, t in ctx.chunks if k == "job_summary")
+
+
+def _job_events(ctx: _Ctx) -> str:
+    return "\n".join(t for k, t in ctx.chunks if k == "job_event")
+
+
+def test_foreign_ship_lockdir_holder_defers_retryable(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr650484: a live holder in ship's own worktree lockdir — a ship
+    launched without our flock (a hand run, or a pre-stamp land) names
+    no slice, so it cannot be adopted: the job defers attempt-free,
+    never succeeded-without-record, and exits before any git read that
+    could collide with the running ship's index.lock (two live ships on
+    slice-td649847 was the incident)."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    gitdir = Path(seams["gitdir"])
+    lockdir = gitdir / land_slice.SHIP_LOCK_DIR
+    lockdir.mkdir()
+    (lockdir / "holder").write_text(
+        f"{seams['tree']} pid=5150 host=test\n", encoding="utf-8"
+    )
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == [] and seams["probed"] == [] and seams["swept"] == []
+    assert "ship busy" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "ship-busy"
+    assert "attempt:1" not in store.tag_strings(42)
+    # Only the gitdir rev-parse ran — no branch-subject or changed-path
+    # read could bump the running ship's index.lock.
+    assert seams["git"] == [(["rev-parse", "--absolute-git-dir"], seams["tree"])]
+
+
+def test_foreign_slice_land_lock_defers_retryable(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr650484: a live pid holds ``<gitdir>/precis-land.lock`` behind a
+    DIFFERENT slice's stamp — not adoptable, so the job defers
+    attempt-free; a green exit could leave no land record anywhere."""
+    gitdir = Path(seams["gitdir"])
+    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    assert not held and fd is not None
+    land_slice._stamp_lock_holder(fd, 5150, 99, "slice/99", "feat(x): w (td99)")
+    try:
+        store = _Store()
+        store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+        ctx, handle = _submit(store, seams)
+    finally:
+        os.close(fd)
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert "held by a live pid 5150" in (ctx.failure or "")
+    assert "td=99" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "ship-busy"
+
+
+def test_own_ship_stamp_is_adopted_not_relaunched(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr650484: the land flock is held by a live pid behind THIS
+    slice's stamp — the earlier land's ship is still running, so this
+    job adopts it (polls its exit file, lands the record) instead of
+    exiting clean or launching a second ship."""
+    gitdir = Path(seams["gitdir"])
+    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    assert not held and fd is not None
+    land_slice._stamp_lock_holder(fd, 5150, 42, "slice/42", SUBJECT)
+    try:
+        store = _Store()
+        store.add_todo(42)
+        ctx, handle = _submit(store, seams)
+    finally:
+        os.close(fd)
+    assert handle is not None and seams["launch"] == []
+    assert handle["pid"] == 5150 and handle["adopted"] is True
+    assert handle["worktree"] == str(seams["tree"])
+    assert handle["subject"] == SUBJECT
+    assert ctx.meta_set["land_subject"] == SUBJECT
+    assert "adopted the already-running ship pid 5150" in _job_events(ctx)
+
+
+def test_dead_stamp_pid_with_live_holders_is_retryable_orphan(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr650484: the stamped land-lock pid is dead yet the flock is
+    still held — orphaned descendants pin the inherited fd — so the job
+    fails retryable naming the holder pids lsof reports, never
+    "already shipping"."""
+    gitdir = Path(seams["gitdir"])
+    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    assert not held and fd is not None
+    land_slice._stamp_lock_holder(fd, 99999, 42, "slice/42", SUBJECT)
+    seams["alive"] = False  # the stamped pid is dead
+    try:
+        store = _Store()
+        store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+        ctx, handle = _submit(store, seams)
+    finally:
+        os.close(fd)
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert "orphan" in (ctx.failure or "")
+    # The message names the holder pids lsof reports (or "no live
+    # holder listed" where lsof cannot answer — either way retryable).
+    assert "holder pids:" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "ship-busy"
+
+
+def test_ship_busy_peek_releases_a_free_lock(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """Submit's peek must not keep the lock: a free flock is released at
+    once (``_launch_ship`` makes the same check while acquiring)."""
+    gitdir = Path(seams["gitdir"])
+    assert land_slice._ship_busy(seams["tree"], 42, "slice/42") is None
+    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    try:
+        assert not held and fd is not None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_launch_passes_the_land_flock_fd_to_ship(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """The acquired flock rides ``pass_fds`` into the ship process on a
+    high fd (>=100, out of shell shuffling range), so the lock is held
+    for the run's whole life even if this worker dies — the window a
+    retried land_slice used to launch a duplicate in."""
+    gitdir = Path(seams["gitdir"])
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+    _argv, kw = seams["launch"][0]
+    fds = kw.get("pass_fds", ())
+    assert len(fds) == 1 and isinstance(fds[0], int)
+    assert fds[0] >= 100
+    # The holder stamp names the launched ship's pid and slice for the
+    # next land's adopt-or-defer decision.
+    stamp = (gitdir / land_slice.LAND_LOCK_FILE).read_text(encoding="utf-8")
+    assert "pid=5151" in stamp and "td=42" in stamp
+    # The parent closed its copies after launch; with no real child
+    # keeping it the lock is acquirable again (never a wedging residue).
+    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    try:
+        assert not held
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_stale_index_lock_is_reaped_with_a_log_line(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provably-dead index.lock (old, no live git in the checkout, no
+    open handle — the reaper's rule) is removed before the ship and the
+    reap is a job_event line (jo650396's squash red)."""
+    gitdir = Path(seams["gitdir"])
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - 1200
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx2, handle = _submit(store, seams)
+    ctx = _ctx2
+
+    assert handle is not None and seams["launch"]
+    assert not lock.exists()
+    assert "reaped stale index.lock" in _job_events(ctx)
+
+
+def test_linked_worktree_primary_index_lock_is_also_reaped(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A linked worktree's land clears the PRIMARY checkout's index.lock
+    too — ship's main-sync fast-forwards the primary's local main and a
+    lock there wedges the land (jo650356's red was the shared index)."""
+    gitdir = Path(seams["gitdir"])
+    common = tmp_path / "repo" / ".git"
+    common.mkdir(parents=True, exist_ok=True)
+    seams["common"] = str(common)
+    lock = common / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - 1200
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+    assert not lock.exists()
+
+
+def test_live_index_lock_waits_then_fails_retryable(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live index.lock is waited on briefly, then the job fails
+    attempt-free (``infra-land`` — the tick re-mints the land) with a
+    clear message, never the branch-charging red path."""
+    gitdir = Path(seams["gitdir"])
+    (gitdir / "index.lock").write_bytes(b"")
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert "index.lock" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "index-lock"
+    # The live lock is never removed, and no attempt:<n> burned.
+    assert (gitdir / "index.lock").exists()
+    assert "attempt:1" not in store.tag_strings(42)
+
+
+def test_live_index_lock_clearing_mid_wait_still_ships(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live lock whose writer finishes inside the wait ships normally."""
+    gitdir = Path(seams["gitdir"])
+    (gitdir / "index.lock").write_bytes(b"")
+    states = iter(["live", "live", "absent"])
+    monkeypatch.setattr(
+        land_slice,
+        "_index_lock_state",
+        lambda lock, checkout: next(states, "absent"),
+    )
+    monkeypatch.setattr(land_slice.time, "sleep", lambda s: None)
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+
+
+def test_index_lock_state_keeps_every_doubt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The keep-on-doubt ladder: absent → young → git-in-tree →
+    unjudgeable → held-open all keep the lock; only the old, fully
+    disproven lock reads stale."""
+    lock = tmp_path / "index.lock"
+    assert land_slice._index_lock_state(lock, tmp_path) == "absent"
+    lock.write_bytes(b"")
+    assert land_slice._index_lock_state(lock, tmp_path) == "live"  # young
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 60)
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: True)
+    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: None)
+    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: True)
+    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: None)
+    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    assert land_slice._index_lock_state(lock, tmp_path) == "stale"
+
+
+def test_already_on_main_identical_tree_finishes_green_without_ship(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr650484: the branch's tree already equals origin/main's — the
+    land writes the nothing-new record, cleans up, and never launches."""
+    seams["diff_rc"] = 0
+    store = _Store()
+    store.add_todo(42)
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "succeeded"
+    assert seams["launch"] == [] and seams["swept"] == [] and seams["probed"] == []
+    assert ctx.meta_set["ship_status"] == "already-landed"
+    assert ctx.meta_set.get("landed_sha") is None
+    assert any("landed: nothing" in c for c in store.comments(42))
+    gits = [a for a, _cwd in seams["git"]]
+    assert ["worktree", "remove", str(seams["tree"])] in gits
+    assert ["branch", "-D", "slice/42"] in gits
+
+
+def test_already_on_main_subject_match_finishes_with_sha(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr650484: the squash subject is already a commit on origin/main
+    AND the slice's changed paths are identical there — the land closes
+    with that sha; td649946's second ship never runs."""
+    sha = "f" * 40
+    seams["main_log"] = f"{sha}\x00{SUBJECT}\n{'a' * 40}\x00unrelated (gr7)\n"
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42)
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "succeeded"
+    assert seams["launch"] == []
+    assert ctx.meta_set["landed_sha"] == sha
+    assert any(f"landed: {sha[:9]}" in c for c in store.comments(42))
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_same_subject_same_handle_different_content_still_ships(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """A main commit carrying the same ``(td<id>)`` and the same subject
+    but DIFFERENT content is an earlier land of the same todo (td572037,
+    td572552 and td626856 each landed twice) — not this one: without the
+    content proof the land must ship, not close and reap unshipped
+    work."""
+    sha = "e" * 40
+    seams["main_log"] = f"{sha}\x00{SUBJECT}\n"
+    seams["diff_names"] = "src/precis/x.py\n"
+    seams["path_diff_rc"] = 1  # the slice's paths differ from main's
+    store = _Store()
+    store.add_todo(42)
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+    assert ctx.status != "succeeded"
+    assert ctx.meta_set.get("landed_sha") is None
+    assert "STATUS:done" not in store.tag_strings(42)
+
+
+def test_neighbouring_td_handles_do_not_cross_match(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """td4, td42 and td423 are distinct lands: a main commit's subject
+    must equal this land's squash subject byte for byte — a handle
+    substring never satisfies it."""
+    seams["main_log"] = (
+        f"{'c' * 40}\x00feat(x): widget (td4)\n{'d' * 40}\x00feat(x): widget (td423)\n"
+    )
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+
+
+def test_already_landed_check_is_a_fast_path_not_a_gate(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """A fetch that cannot answer only disables the check — ship still
+    runs and its own nothing-new guard is the arbiter."""
+    seams["fetch_rc"] = 128
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+
+
+def test_already_landed_no_match_still_ships(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """A diff with no subject/handle match on main ships as usual."""
+    seams["main_log"] = f"{'b' * 40}\x00feat(x): other work (gr9)\n"
+    store = _Store()
+    store.add_todo(42)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and seams["launch"]
+
+
+def test_held_open_lsof_no_holders_is_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lsof's exit 1 with empty output is the ordinary "nothing holds
+    this file" — ``False``, not "can't tell" (keep-on-doubt would pin
+    every provably-dead lock forever)."""
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(land_slice.shutil, "which", lambda cmd: "/usr/sbin/lsof")
+    monkeypatch.setattr(
+        land_slice.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
+    )
+    assert land_slice._held_open(lock) is False
+
+
+def test_held_open_lsof_stderr_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any lsof stderr means the open-handle question went unanswered —
+    ``None`` keeps the lock on doubt."""
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    monkeypatch.setattr(land_slice.shutil, "which", lambda cmd: "/usr/sbin/lsof")
+    monkeypatch.setattr(
+        land_slice.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="lsof: can't stat"
+        ),
+    )
+    assert land_slice._held_open(lock) is None
+
+
+def test_git_in_tree_unparseable_ps_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ps listing that parses to zero ``pid comm`` rows never answered
+    the question — ``None`` keeps the lock; only a parsed scan with no
+    git in the checkout disproves the writer."""
+    monkeypatch.setattr(
+        land_slice.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            [], 0, stdout="garbage\n%%%\n", stderr=""
+        ),
+    )
+    assert land_slice._git_in_tree(tmp_path) is None

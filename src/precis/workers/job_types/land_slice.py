@@ -178,6 +178,28 @@ with a comment naming the squash sha (:func:`_gh`, the host's ``gh auth``:
 the attribution gap of gr543694 applies). A failed close is reported in
 the summary, not a job failure.
 
+**Pre-launch hygiene** (gr650484). Before ship runs, :func:`_launch_ship`
+serialises lands on the worktree: the lander's ``precis-land.lock``
+flock is probed first because its stamp carries the slice's identity —
+held by a live pid behind this slice's stamp, the running ship is
+adopted (this job polls its exit file and lands the record); held by a
+foreign stamp, a dead stamp's orphaned descendants, or ship's own
+``precis-ship-worktree.lock.d`` (a hand-run ship names no slice), the
+land ends attempt-free — never ``succeeded`` without a land record.
+The fd is passed into the launched ship so the lock outlives a worker
+that dies mid-land (the window a retried ``land_slice`` used to launch
+a duplicate in — jo650396, td649847). Then the cheap outs: when the
+slice's work is already on ``origin/main`` — a tree-identical branch,
+or the squash subject already on main with the slice's changed paths
+verified identical (:func:`_already_landed`) — the land finishes green
+without a ship (:func:`_landed_finish`, the same tail poll's green
+runs); and every ``index.lock`` the ship would hit — the slice's and,
+for a linked worktree, the primary checkout's its main-sync
+fast-forwards — is reaped when provably stale (:data:`INDEX_LOCK_STALE_S`
+plus no live git in the checkout and no open handle — the reaper's
+keep-on-doubt rule) or waited on briefly then failed retryable
+(``attempt_free``, never the red path; :func:`_clear_index_locks`).
+
 Guard: ``PRECIS_FACTORY=off`` refuses every submit. Git, launch, docker
 and process probes go through module-level seams (:func:`_git`,
 :func:`_launch`, :func:`_process_alive`, :func:`_pending_gates`,
@@ -435,6 +457,32 @@ GATE_KILL_BACKOFF_S = 120
 GATE_KILL_CROSS = "gate killed (exit 137, VM memory) - infrastructure, not the branch"
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
+#: The flock file in the worktree's gitdir. One land holds it for the
+#: ship's whole life — the fd is passed to the launched ship process —
+#: so a second land on the same worktree finds it held: its own stamp
+#: means adopt the running ship; a foreign or orphaned holder means a
+#: retryable busy (gr650484).
+LAND_LOCK_FILE = "precis-land.lock"
+
+#: scripts/ship's own per-worktree lock dir in the gitdir
+#: (scripts/lib/ship-lock.sh). A live holder means a ship is already in
+#: flight in this worktree — from a land or a hand run.
+SHIP_LOCK_DIR = "precis-ship-worktree.lock.d"
+
+#: An ``index.lock`` this old, with no live git in the checkout and no
+#: process holding it open, is reaped before the ship — the same
+#: keep-on-doubt rule as scripts/reap-index-locks' STALE_SECONDS.
+INDEX_LOCK_STALE_S = 600
+
+#: How long a live ``index.lock`` is waited on before the job fails
+#: retryable (``attempt_free`` — the tick re-mints the land; the red
+#: path would charge the branch for infra that is not its fault).
+INDEX_LOCK_WAIT_S = 30.0
+
+#: How far down origin/main the already-landed subject scan reads. A
+#: missed match costs one ship run, not a wrong record.
+ALREADY_LANDED_WINDOW = 400
+
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -508,6 +556,29 @@ def gate_kill_backoff_s() -> int:
     return max(n, 0)
 
 
+def index_lock_stale_s() -> float:
+    """Age over which a git-less, unheld ``index.lock`` is reaped
+    (``PRECIS_LAND_INDEX_LOCK_STALE_S``, default
+    :data:`INDEX_LOCK_STALE_S`)."""
+    try:
+        return float(
+            os.environ.get("PRECIS_LAND_INDEX_LOCK_STALE_S") or INDEX_LOCK_STALE_S
+        )
+    except ValueError:
+        return INDEX_LOCK_STALE_S
+
+
+def index_lock_wait_s() -> float:
+    """The brief wait on a live ``index.lock`` before the retryable fail
+    (``PRECIS_LAND_INDEX_LOCK_WAIT_S``, default :data:`INDEX_LOCK_WAIT_S`)."""
+    try:
+        return float(
+            os.environ.get("PRECIS_LAND_INDEX_LOCK_WAIT_S") or INDEX_LOCK_WAIT_S
+        )
+    except ValueError:
+        return INDEX_LOCK_WAIT_S
+
+
 def ship_bin(tree: Path) -> str:
     """``PRECIS_SHIP_BIN`` (the test seam), else the worktree's own
     ``scripts/ship``."""
@@ -567,12 +638,26 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _launch(
-    argv: list[str], *, cwd: Path, log: Path, exit_file: Path, env: dict[str, str]
+    argv: list[str],
+    *,
+    cwd: Path,
+    log: Path,
+    exit_file: Path,
+    env: dict[str, str],
+    pass_fds: tuple[int, ...] = (),
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
-    ``/dev/null``). Returns the pid (= the process group)."""
+    ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
+    flock rides one so it is held for the ship's whole life (gr650484).
+    Returns the pid (= the process group)."""
     return _rs._launch(
-        argv, cwd=cwd, stdin=Path(os.devnull), log=log, exit_file=exit_file, env=env
+        argv,
+        cwd=cwd,
+        stdin=Path(os.devnull),
+        log=log,
+        exit_file=exit_file,
+        env=env,
+        pass_fds=pass_fds,
     )
 
 
@@ -1602,6 +1687,27 @@ def submit(ctx: Any, spec: Any) -> Any:
                 handoff=f"land FAILED: worktree {tree} is missing; rebuild the slice.",
             )
             return None
+    # gr650484: a ship already running in this worktree owns the land —
+    # resolve before the branch-subject/changed-path reads below, whose
+    # git could bump into the running ship's index.lock. Ours (the land
+    # lock's stamp names this slice/branch behind a live pid) is
+    # adopted so its land record still lands here; anything else —
+    # foreign stamp, orphaned flock, hand-run ship — defers retryable.
+    # `_launch_ship` re-checks while actually acquiring (the race window).
+    branch_hint = str(
+        params.get("branch")
+        or (
+            f"slice/pr-{number}"
+            if number is not None
+            else _rs.slice_branch(int(todo_id))
+        )
+    )
+    busy = _ship_busy(tree, int(todo_id), branch_hint)
+    if busy is not None:
+        if busy["kind"] == "mine":
+            return _adopt_ship(ctx, tree, int(todo_id), busy)
+        _land_busy(ctx, int(todo_id), lane, busy["why"])
+        return None
     subjects = _branch_subjects(tree)
     subject = squash_subject(
         subjects or [], todo_id, node=_node_subject(ctx.store, todo_id)
@@ -1704,6 +1810,594 @@ def submit(ctx: Any, spec: Any) -> Any:
     return handle
 
 
+def _worktree_gitdir(tree: Path) -> Path | None:
+    """The worktree's own git dir (a linked worktree's is
+    ``<repo>/.git/worktrees/<name>``); ``None`` when git cannot answer —
+    the locks below are skipped then and ship's own worktree lock is all
+    that serialises."""
+    proc = _git(["rev-parse", "--absolute-git-dir"], tree)
+    raw = (proc.stdout or "").strip()
+    return Path(raw) if proc.returncode == 0 and raw else None
+
+
+def _git_common_dir(gitdir: Path, tree: Path) -> Path | None:
+    """The shared ``.git`` behind a linked worktree's gitdir — its
+    ``index.lock`` belongs to the primary checkout. ``None`` for a
+    primary checkout or when git cannot answer."""
+    proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
+    raw = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not raw:
+        return None
+    common = Path(raw)
+    return common if common != gitdir else None
+
+
+def _ship_lock_holder(gitdir: Path) -> int | None:
+    """The pid holding ship's own per-worktree lock
+    (``<gitdir>/precis-ship-worktree.lock.d``, scripts/lib/ship-lock.sh)
+    when that pid is alive — a ship in flight in this worktree, from a
+    land or a hand run. ``None`` when no live holder answers."""
+    try:
+        holder = (gitdir / SHIP_LOCK_DIR / "holder").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"\bpid=(\d+)\b", holder)
+    if m is None:
+        return None
+    pid = int(m.group(1))
+    return pid if _process_alive(pid) else None
+
+
+def _lock_holder_text(path: Path) -> str:
+    try:
+        return (path.read_text(encoding="utf-8") or "").strip()
+    except OSError:
+        return ""
+
+
+def _stamp_lock_holder(
+    fd: int | None,
+    pid: int,
+    todo_id: int = 0,
+    branch: str = "",
+    subject: str = "",
+) -> None:
+    """Record the holder in the lock file — ``pid=N td=M branch=B
+    subject=S`` — so the next land can tell its own already-running
+    ship (adopt it) from a foreign or orphaned holder (retryable).
+    Best-effort: a failed write never wedges the lock — the flock
+    itself is the gate."""
+    if fd is None:
+        return
+    parts = [f"pid={pid}"]
+    if todo_id:
+        parts.append(f"td={todo_id}")
+    if branch:
+        parts.append(f"branch={branch}")
+    if subject:
+        parts.append(f"subject={subject.splitlines()[0]}")
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, (" ".join(parts) + "\n").encode())
+    except OSError:
+        pass
+
+
+def _lock_holder_stamp(text: str) -> dict[str, str]:
+    """Parse a ``_stamp_lock_holder`` line into a dict; absent fields
+    are simply missing keys (an old ``pid=N``-only stamp reads as
+    ``{"pid": ...}``)."""
+    stamp: dict[str, str] = {}
+    for key, pat in (
+        ("pid", r"\bpid=(\d+)\b"),
+        ("td", r"\btd=(\d+)\b"),
+        ("branch", r"\bbranch=(\S+)"),
+        ("subject", r"\bsubject=([^\n]*)"),
+    ):
+        m = re.search(pat, text)
+        if m is not None:
+            stamp[key] = m.group(1).strip()
+    return stamp
+
+
+def _classify_land_lock(
+    gitdir: Path, todo_id: int, branch: str, holder_text: str
+) -> dict[str, Any]:
+    """Read a held ``precis-land.lock``'s stamp into a verdict.
+
+    ``"mine"`` — the stamp names this same slice or branch and the
+    stamped pid is alive: the caller adopts the running ship
+    (:func:`_adopt_ship`). ``"orphan"`` — the stamped pid is dead or
+    unreadable while some descendant still pins the fd
+    (:func:`_lock_holders` names them). ``"other"`` — a live pid behind
+    a different slice's stamp. Anything but ``"mine"`` is a retryable
+    busy for the caller."""
+    stamp = _lock_holder_stamp(holder_text)
+    pid = int(stamp["pid"]) if stamp.get("pid") else None
+    if pid is not None and _process_alive(pid):
+        if stamp.get("td") == str(todo_id) or (
+            branch and stamp.get("branch") == branch
+        ):
+            return {
+                "kind": "mine",
+                "pid": pid,
+                "stamp": stamp,
+                "why": f"this slice's ship is already running (pid {pid})",
+            }
+        who = f"td={stamp.get('td') or '?'} branch={stamp.get('branch') or '?'}"
+        return {
+            "kind": "other",
+            "pid": pid,
+            "stamp": stamp,
+            "why": f"the land lock is held by a live pid {pid} ({who})",
+        }
+    holders = _lock_holders(gitdir / LAND_LOCK_FILE) or []
+    holding = ", ".join(holders) if holders else "no live holder listed"
+    return {
+        "kind": "orphan",
+        "pid": pid,
+        "stamp": stamp,
+        "why": (
+            "the land lock is held by orphan(s) — stamped pid "
+            f"{pid if pid is not None else 'unreadable'} is dead; "
+            f"holder pids: {holding}"
+        ),
+    }
+
+
+def _try_land_lock(gitdir: Path) -> tuple[bool, int | None, str]:
+    """One ``flock(LOCK_EX|LOCK_NB)`` attempt on
+    ``<gitdir>/precis-land.lock``. ``(False, fd, "")`` — ours: the fd IS
+    the lock, and :func:`_launch` passes it to the ship process so a
+    second land finds it held for the run's whole life, not just this
+    call's (a worker dying mid-land is exactly the window a retried
+    land_slice would otherwise relaunch in — jo650396's duplicate
+    ships). ``(True, None, <holder line>)`` — held: flocks release at
+    process death, so a held lock means a live process owns it.
+    ``(False, None, <why>)`` — the mechanism failed; the caller proceeds
+    because ship's own ``precis-ship-worktree.lock.d`` still serialises
+    a real overlap. The holder stamp is the caller's write —
+    :func:`_launch_ship` stamps it once it owns the fd."""
+    path = gitdir / LAND_LOCK_FILE
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as exc:
+        return False, None, f"{exc}"
+    try:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except ImportError:
+        os.close(fd)
+        return False, None, "fcntl unavailable"
+    except BlockingIOError:
+        os.close(fd)
+        return True, None, _lock_holder_text(path)
+    except OSError as exc:
+        os.close(fd)
+        return False, None, f"{exc}"
+    return False, fd, ""
+
+
+def _land_busy(ctx: Any, todo_id: int, lane: Any, why: str) -> None:
+    """The busy exit when a ship we cannot adopt owns this worktree —
+    another slice's land lock, a hand-run ship, or an orphaned flock a
+    dead land left pinned (gr650484: two ``scripts/ship --quick`` on
+    slice-td649847 raced one worktree). It ends attempt-free, never
+    ``succeeded``: a green exit could leave the land record, gate and
+    cleanup unwritten if the original land job is gone; the tick
+    re-mints under ``infra-land`` instead."""
+    ctx.append_chunk(
+        "job_summary",
+        f"land_slice td{todo_id}: ship busy — {why}; deferred, no second ship launched",
+    )
+    _fail(
+        ctx,
+        todo_id,
+        lane,
+        f"ship busy: {why}",
+        handoff=(
+            "land DEFERRED (not red): a ship already owns this worktree "
+            f"({why}). The tick re-mints the land attempt-free; the "
+            "running ship's own land record — or a later pass's "
+            "already-landed check — finishes the slice."
+        ),
+        attempt_free="ship-busy",
+    )
+
+
+def _adopt_ship(
+    ctx: Any,
+    tree: Path,
+    todo_id: int,
+    busy: dict[str, Any],
+    subject: str | None = None,
+) -> dict[str, Any]:
+    """Adopt the ship this slice's earlier land already launched: the
+    land lock's stamp names this same slice/branch and a live pid, so
+    this job polls its exit file the way a relaunched handle's poll
+    does and drives :func:`_landed_finish` when it exits — the land
+    record, gate and cleanup are written even if the original land job
+    is gone (gr650484). The subject rides the stamp; a stamp without
+    one (a pre-stamp land) falls back to the branch's squash subject —
+    a ``git log`` read, never an index write the running ship could
+    collide with."""
+    pid = int(busy["pid"])
+    subject = (
+        subject
+        or busy["stamp"].get("subject")
+        or squash_subject(
+            _branch_subjects(tree) or [],
+            todo_id,
+            node=_node_subject(ctx.store, todo_id),
+        )
+        or ""
+    )
+    scratch = tree / "scratch"
+    launched = _now()
+    handle: dict[str, Any] = {
+        "pid": pid,
+        "pgid": pid,
+        "worktree": str(tree),
+        "log": str(scratch / "land_slice.log"),
+        "exit_file": str(scratch / "land_slice.exit"),
+        "subject": subject,
+        "flag": "",
+        "adopted": True,
+        "started_at": launched.strftime(_TS_FMT),
+        "deadline": launched.timestamp() + wall_seconds(),
+    }
+    identity = _rs._process_identity(pid)
+    if identity is not None:
+        handle["boot_id"], handle["start_time"] = identity
+    ps_identity = (
+        _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+    )
+    if ps_identity is not None:
+        handle["ps_identity"] = ps_identity
+    ctx.set_meta(land_subject=subject)
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: adopted the already-running ship pid {pid} in "
+        f"{tree} — its exit file lands this job's record",
+    )
+    return handle
+
+
+def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
+    """``(index.lock, checkout it guards)`` this land must clear: the
+    slice's own first, then the primary checkout's when ``tree`` is a
+    linked worktree — ship's main-sync fast-forwards the primary's
+    local main, and a lock there wedges the land just as surely
+    (jo650356's red was the shared index, not the slice's). The guard
+    tree is what :func:`_git_in_tree` scans for a live writer."""
+    pairs = [(gitdir / "index.lock", tree)]
+    common = _git_common_dir(gitdir, tree)
+    if common is not None:
+        pairs.append((common / "index.lock", common.parent))
+    return pairs
+
+
+def _index_lock_state(lock: Path, checkout: Path) -> str:
+    """``"absent" | "stale" | "live"``. ``"stale"`` only on positive
+    evidence — the same keep-on-doubt rule scripts/reap-index-locks
+    runs: mtime older than :func:`index_lock_stale_s`, no process holds
+    the file open (:func:`_held_open` answered ``False``), and no live
+    git has its cwd inside ``checkout`` (:func:`_git_in_tree` answered
+    ``False``). A young lock, one lsof or ps cannot judge, or one with a
+    live git in the tree is ``"live"`` — waited on, never removed."""
+    try:
+        st = lock.stat()
+    except OSError:
+        return "absent"
+    if time.time() - st.st_mtime < index_lock_stale_s():
+        return "live"
+    if _git_in_tree(checkout) is not False:
+        return "live"
+    if _held_open(lock) is not False:
+        return "live"
+    return "stale"
+
+
+def _lock_holders(lock: Path) -> list[str] | None:
+    """The pids holding ``lock`` open (lsof), or ``None`` when lsof
+    cannot answer — missing, dead, timed out, or stderr. lsof exits 1
+    on an ordinary "nothing holds it": that is ``[]``, not a failure."""
+    if shutil.which("lsof") is None:
+        return None
+    try:
+        cp = subprocess.run(
+            ["lsof", "-t", "--", str(lock)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.stderr.strip():
+        return None
+    return [p for p in cp.stdout.split() if p]
+
+
+def _held_open(lock: Path) -> bool | None:
+    """``True``/``False``/``None`` for "a live process has ``lock``
+    open" — :func:`_lock_holders` with the pid list dropped. ``None``
+    keeps the lock on doubt."""
+    holders = _lock_holders(lock)
+    return None if holders is None else bool(holders)
+
+
+def _proc_cwd(pid: str) -> str | None:
+    """A process's cwd: ``/proc`` where it exists, else lsof."""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    if shutil.which("lsof") is None:
+        return None
+    try:
+        cp = subprocess.run(
+            ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for ln in cp.stdout.splitlines():
+        if ln.startswith("n"):
+            return ln[1:]
+    return None
+
+
+def _is_zombie(pid: str) -> bool:
+    """A zombie's cwd reads back empty — it is dead for staleness
+    purposes. Linux ``/proc`` first, ``ps`` fallback."""
+    try:
+        with Path(f"/proc/{pid}/stat").open(encoding="utf-8") as fh:
+            return fh.read().rsplit(")", 1)[-1].split()[0] == "Z"
+    except OSError:
+        pass
+    try:
+        cp = subprocess.run(
+            ["ps", "-o", "stat=", "-p", pid],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return cp.stdout.strip().startswith("Z")
+
+
+def _proc_dead(pid: str) -> bool:
+    """Positive evidence only: the pid is gone or a zombie."""
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return _is_zombie(pid)
+
+
+def _git_in_tree(checkout: Path) -> bool | None:
+    """``True``/``False``/``None`` for "a live git/git-* of this user has
+    its cwd inside ``checkout``" — the writer a lock is meant to stop.
+    ``None`` (the process table or a live git's cwd is unreadable) keeps
+    the lock: a lock whose holder cannot be disproven is live."""
+    try:
+        cp = subprocess.run(
+            ["ps", "-U", str(os.getuid()), "-o", "pid=,comm="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0:
+        return None
+    root = os.path.realpath(checkout)
+    saw_proc = False
+    for line in cp.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        saw_proc = True
+        pid, comm = parts[0].strip(), parts[1].strip()
+        base = os.path.basename(comm)
+        if base != "git" and not base.startswith("git-"):
+            continue
+        cwd = _proc_cwd(pid)
+        if cwd is None:
+            if _proc_dead(pid):
+                continue
+            return None
+        real = os.path.realpath(cwd)
+        if real == root or real.startswith(root + os.sep):
+            return True
+    # A ps that parsed nothing at all did not answer — a user's process
+    # table is never empty — so the empty/garbage scan cannot disprove
+    # a live writer either.
+    return False if saw_proc else None
+
+
+def _reap_index_lock(ctx: Any, lock: Path) -> bool:
+    """Remove a judged-stale ``index.lock``. The re-stat right before
+    the unlink must match the first stat's ``st_ino``/``st_mtime_ns`` —
+    a lock replaced between judgement and unlink is a live writer's,
+    never ours to remove (gr650484). ``False`` when the unlink lost a
+    race (another reaper got there first — fine either way)."""
+    try:
+        st = lock.stat()
+    except OSError:
+        return False
+    try:
+        again = lock.stat()
+    except OSError:
+        return False
+    if st.st_ino != again.st_ino or st.st_mtime_ns != again.st_mtime_ns:
+        return False
+    try:
+        lock.unlink()
+    except OSError:
+        return False
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: reaped stale index.lock {lock} "
+        f"(age {int(time.time() - st.st_mtime)}s; no live git in the "
+        "tree held it)",
+    )
+    return True
+
+
+def _clear_index_locks(
+    ctx: Any, gitdir: Path, tree: Path, todo_id: int, lane: Any
+) -> bool:
+    """gr650484 — ``False`` means ``_fail`` already ran, launch nothing.
+
+    A stale ``index.lock`` (a killed git's remnant — jo650396's squash
+    red, jo650356's main-sync red) wedges ship's first write and every
+    retry after it; a live one is a git in flight ship must wait out,
+    not collide with. Each pair of :func:`_index_lock_pairs` gets the
+    same rule: provably dead → removed with a job_event line; live or
+    unjudgeable → the brief :func:`index_lock_wait_s` wait, then a
+    retryable ``attempt_free`` fail — never the red path, which would
+    charge the branch for infra that is not its fault (the tick
+    re-mints the land under ``infra-land``)."""
+    deadline = time.monotonic() + index_lock_wait_s()
+    for lock, checkout in _index_lock_pairs(gitdir, tree):
+        while True:
+            state = _index_lock_state(lock, checkout)
+            if state == "absent":
+                break
+            if state == "stale" and _reap_index_lock(ctx, lock):
+                break
+            if time.monotonic() >= deadline:
+                _fail(
+                    ctx,
+                    todo_id,
+                    lane,
+                    f"index.lock {lock} was still held after "
+                    f"{index_lock_wait_s():.0f}s — a live git owns the "
+                    "checkout",
+                    handoff=(
+                        "land DEFERRED (not red): index.lock "
+                        f"{lock} was held by a live git past the brief "
+                        "wait — nothing on the branch to fix. The tick "
+                        "re-mints the land attempt-free; if it keeps "
+                        "recurring, find the git process running in "
+                        "that checkout."
+                    ),
+                    attempt_free="index-lock",
+                )
+                return False
+            time.sleep(1.0)
+    return True
+
+
+def _already_landed(tree: Path, subject: str) -> tuple[bool, str | None]:
+    """``(True, sha|None)`` when the slice's work already sits on
+    ``origin/main``: the branch's tree identical to main's tip (ship's
+    own nothing-new verdict — the sha is another land's, none returned;
+    gr561142), or a commit on origin/main already carrying this land's
+    squash subject AND its content — a ship that landed but died before
+    its record wrote (gr650484: td649946's land ran a second ship on an
+    already-landed slice). The subject match alone is never enough:
+    one todo can land twice (td572037, td572552, td626856 did), so the
+    proof is content — the paths the slice changed since
+    ``merge-base origin/main HEAD`` must already be identical between
+    ``origin/main`` and ``HEAD``. ``(False, None)`` otherwise — and
+    whenever git cannot answer: this is a fast path, never a gate; on
+    doubt ship still runs and its own nothing-new guard is the
+    arbiter."""
+    if _git(["fetch", "--quiet", "origin", "main"], tree).returncode != 0:
+        return False, None
+    if _git(["diff", "--quiet", "origin/main", "HEAD"], tree).returncode == 0:
+        return True, None
+    base = _git(["merge-base", "origin/main", "HEAD"], tree)
+    merge_base = (base.stdout or "").strip()
+    if base.returncode != 0 or not merge_base:
+        return False, None
+    names = _git(["diff", "--name-only", merge_base, "HEAD"], tree)
+    if names.returncode != 0:
+        return False, None
+    paths = [ln.strip() for ln in names.stdout.splitlines() if ln.strip()]
+    proc = _git(
+        [
+            "log",
+            f"--max-count={ALREADY_LANDED_WINDOW}",
+            "--format=%H%x00%s",
+            "origin/main",
+        ],
+        tree,
+    )
+    if proc.returncode != 0:
+        return False, None
+    for line in proc.stdout.splitlines():
+        sha, _, subj = line.partition("\x00")
+        if subj.strip() != subject:
+            continue
+        # A same-subject commit on main is this land's only when the
+        # slice's own changed paths are already identical there.
+        if (
+            _git(
+                ["diff", "--quiet", "origin/main", "HEAD", "--", *paths], tree
+            ).returncode
+            == 0
+        ):
+            return True, sha.strip()
+        return False, None
+    return False, None
+
+
+def _ship_busy(tree: Path, todo_id: int, branch: str) -> dict[str, Any] | None:
+    """A verdict when a ship already owns this worktree, else ``None``.
+
+    The land flock is probed first because its stamp carries identity:
+    ``"mine"`` (same slice/branch, live stamped pid) the caller adopts
+    via :func:`_adopt_ship`; ``"other"``/``"orphan"`` it exits
+    retryable via :func:`_land_busy`. A live holder in ship's own
+    ``precis-ship-worktree.lock.d`` — a ship launched without our
+    flock, e.g. by hand — names no slice, so it reads ``"ship"`` and is
+    retryable too. Submit's early peek: a free flock is released at
+    once; :func:`_launch_ship` makes the same checks while actually
+    acquiring. Kept to lock files and ``rev-parse`` so the peek never
+    collides with the running ship's ``index.lock``."""
+    gitdir = _worktree_gitdir(tree)
+    if gitdir is None:
+        return None
+    held, fd, detail = _try_land_lock(gitdir)
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if held:
+        return _classify_land_lock(gitdir, todo_id, branch, detail)
+    holder = _ship_lock_holder(gitdir)
+    if holder is not None:
+        return {
+            "kind": "ship",
+            "pid": holder,
+            "stamp": {},
+            "why": (
+                "a ship is already running in this worktree (its "
+                f"lockdir names live pid {holder})"
+            ),
+        }
+    return None
+
+
 def _launch_ship(
     ctx: Any,
     tree: Path,
@@ -1714,126 +2408,241 @@ def _launch_ship(
 ) -> dict[str, Any] | None:
     """Launch ``scripts/ship <flag> <subject>`` detached in ``tree`` and
     return the fresh handle (``flag`` kept in it so :func:`poll` can relaunch;
-    ``main_refusals`` / ``last_refusal`` copied from ``carry``). ``None`` after
-    driving the job terminal when the launch itself failed."""
+    ``main_refusals`` / ``last_refusal`` copied from ``carry``). A live ship
+    this same slice already launched returns an adopted handle instead —
+    :func:`poll` then drives its exit file like a relaunch's. ``None`` after
+    driving the job terminal: the launch itself failed, a foreign or
+    orphaned holder owns the worktree (retryable), the branch's work is
+    already on origin/main, or an ``index.lock`` never freed."""
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
+    lane = params.get("lane")
+    number = _pr_param(params)
+    branch = str(
+        params.get("branch")
+        or (f"slice/pr-{number}" if number is not None else _rs.slice_branch(todo_id))
+    )
     scratch = tree / "scratch"
     log_path = scratch / "land_slice.log"
     exit_path = scratch / "land_slice.exit"
-    evicted = _sweep_stacks(keep=tree)
-    if evicted:
-        ctx.append_chunk(
-            "job_event",
-            "land_slice: evicted idle slice stacks: " + ", ".join(evicted),
-        )
-    pre = _drift_preflight(tree)
-    if _gate_unknown(pre):
-        # Fail closed: the lander's identity cannot see main's gate, so do not
-        # let ship's "unknown never refuses" carry an unattended land. Park
-        # under the same backoff and cap as a main-side refusal.
-        parked: dict[str, Any] = {
+    # gr650484 — serialize ships before anything else touches the tree.
+    # Our flock comes first because its stamp carries the slice's
+    # identity: held by a live pid behind our own stamp means this
+    # slice's ship is already running — adopt it so its land record is
+    # still written; held by anything else (a foreign stamp, a dead
+    # stamped pid whose orphan descendants pin the fd, a live ship's
+    # lockdir) fails retryable, never succeeded-without-record. The fd
+    # we hold rides into the launched ship so the lock outlives this
+    # worker if it dies mid-land. Then the cheap outs: already-on-main
+    # finishes green, a stale index.lock is reaped, a live one is
+    # waited on and then fails retryable.
+    gitdir = _worktree_gitdir(tree)
+    lock_fd: int | None = None
+    ship_fd: int | None = None
+    try:
+        if gitdir is None:
+            ctx.append_chunk(
+                "job_event",
+                "land_slice: worktree gitdir unresolved — the land lock, "
+                "already-landed and index.lock checks are skipped; "
+                "ship's own worktree lock still serialises",
+            )
+        else:
+            held, lock_fd, detail = _try_land_lock(gitdir)
+            if held:
+                busy = _classify_land_lock(gitdir, todo_id, branch, detail)
+                if busy["kind"] == "mine":
+                    return _adopt_ship(ctx, tree, todo_id, busy, subject=subject)
+                _land_busy(ctx, todo_id, lane, busy["why"])
+                return None
+            if lock_fd is None:
+                ctx.append_chunk(
+                    "job_event",
+                    f"land_slice: land lock unavailable ({detail}) — "
+                    "proceeding; ship's own worktree lock still serialises",
+                )
+            else:
+                _stamp_lock_holder(lock_fd, os.getpid(), todo_id, branch, subject)
+            holder = _ship_lock_holder(gitdir)
+            if holder is not None:
+                _land_busy(
+                    ctx,
+                    todo_id,
+                    lane,
+                    "a ship is already running in this worktree (its "
+                    f"lockdir names live pid {holder})",
+                )
+                return None
+            landed, landed_sha = _already_landed(tree, subject)
+            if landed:
+                ctx.append_chunk(
+                    "job_event",
+                    "land_slice: the slice's work is already on origin/main"
+                    + (
+                        f" (sha {landed_sha[:9]})"
+                        if landed_sha
+                        else " (branch tree identical to main's)"
+                    )
+                    + " — no scripts/ship run",
+                )
+                _landed_finish(
+                    ctx,
+                    {"worktree": str(tree), "subject": subject},
+                    params,
+                    sha=landed_sha,
+                    exit_code=None,
+                    status="already-landed",
+                )
+                return None
+            if not _clear_index_locks(ctx, gitdir, tree, todo_id, lane):
+                return None
+        evicted = _sweep_stacks(keep=tree)
+        if evicted:
+            ctx.append_chunk(
+                "job_event",
+                "land_slice: evicted idle slice stacks: " + ", ".join(evicted),
+            )
+        pre = _drift_preflight(tree)
+        if _gate_unknown(pre):
+            # Fail closed: the lander's identity cannot see main's gate, so do not
+            # let ship's "unknown never refuses" carry an unattended land. Park
+            # under the same backoff and cap as a main-side refusal.
+            parked: dict[str, Any] = {
+                "worktree": str(tree),
+                "log": str(log_path),
+                "exit_file": str(exit_path),
+                "subject": subject,
+                "flag": flag,
+            }
+            for key in ("main_refusals", "last_refusal", "gate_kills"):
+                if carry is not None and key in carry:
+                    parked[key] = carry[key]
+            refusals = int(parked.get("main_refusals") or 0) + 1
+            if refusals > MAX_MAIN_REFUSALS:
+                branch = str(params.get("branch") or _rs.slice_branch(todo_id))
+                reason, handoff = _blocked_handoff(branch, refusals, UNKNOWN_GATE_CROSS)
+                ctx.append_chunk(
+                    "job_summary",
+                    f"land_slice td{todo_id}: BLOCKED — {UNKNOWN_GATE_CROSS}\n"
+                    f"drift probe (lander identity): {pre['diag']}",
+                )
+                _fail(ctx, todo_id, params.get("lane"), reason, handoff=handoff)
+                return None
+            _defer_to_main(ctx, parked, UNKNOWN_GATE_CROSS, refusals, probe=pre["diag"])
+            return parked
+        if pre.get("ran"):
+            # What the lander's identity saw before ship ran: a verdict's age or
+            # the helper's own "none" — on the job even when the land goes on
+            # (jo550940 launched nine times and never recorded which).
+            ctx.append_chunk(
+                "job_event",
+                f"land_slice: drift preflight (lander identity): age="
+                f"{pre.get('age') or '-'}; {pre.get('diag')}",
+            )
+        # Dup the lock fd to a high number for the child: a low fd is
+        # what scripts and shells shuffle (scripts/lib/round-lock.sh
+        # uses fd 9), and a descendant closing or reusing it would drop
+        # the flock early. F_DUPFD floor 100, the plain fd as fallback.
+        if lock_fd is not None:
+            try:
+                import fcntl
+
+                ship_fd = fcntl.fcntl(lock_fd, fcntl.F_DUPFD, 100)
+            except (ImportError, OSError):
+                ship_fd = lock_fd
+        try:
+            scratch.mkdir(parents=True, exist_ok=True)
+            exit_path.unlink(missing_ok=True)
+            pid = _launch(
+                [ship_bin(tree), flag, subject],
+                cwd=tree,
+                log=log_path,
+                exit_file=exit_path,
+                # The factory token (vault) as git's credential helper: the slice
+                # host's service account has none of its own (td543734). UV_PYTHON
+                # pins ship's `uv run` steps to the worker's Python line: with no
+                # .venv in a slice tree uv takes the newest interpreter satisfying
+                # requires-python — Homebrew 3.15 on melchior, for which rdkit has
+                # no wheel, so the frozen sync fails and gen-devin-hooks' check
+                # reads as "stale" (jo551780 event 6).
+                env={
+                    **_factory_git.git_auth_env(),
+                    "PRECIS_SHIP_VERBOSE": "1",
+                    "UV_PYTHON": ship_python(),
+                    # Cap the checked run's xdist workers (gr567471): ship's
+                    # checked gate runs `pytest -n ${PRECIS_GATE_N:-6}` itself,
+                    # not scripts/test, so both names carry the count.
+                    "PRECIS_GATE_N": test_nproc(),
+                    "PRECIS_TEST_NPROC": test_nproc(),
+                    # Bound the land's share of the shared gate semaphore
+                    # (td599058): without it gate-slot.sh derives up to 6
+                    # slots and a land wave can take the whole VM.
+                    "PRECIS_GATE_SLOTS": land_gate_slots(),
+                },
+                # The land flock rides into the ship process, so the lock
+                # is held for the run's whole life — a second land_slice
+                # finds it held even after this worker dies (gr650484).
+                pass_fds=() if ship_fd is None else (ship_fd,),
+            )
+        except Exception as exc:
+            log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
+            _fail(
+                ctx,
+                todo_id,
+                params.get("lane"),
+                f"ship launch failed: {exc}",
+                handoff=f"land FAILED: scripts/ship did not start ({exc}).",
+            )
+            return None
+        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject)
+        # The deadline rides the handle (gr647913): ``started_at`` + the wall
+        # — the clock stamps share the ``_now()`` seam so a worker restart's
+        # re-adoption resumes the job's own count instead of restarting the
+        # wall at the re-adopt poll.
+        launched = _now()
+        handle: dict[str, Any] = {
+            "pid": pid,
+            "pgid": pid,
             "worktree": str(tree),
             "log": str(log_path),
             "exit_file": str(exit_path),
             "subject": subject,
             "flag": flag,
+            "started_at": launched.strftime(_TS_FMT),
+            "deadline": launched.timestamp() + wall_seconds(),
         }
-        for key in ("main_refusals", "last_refusal", "gate_kills"):
+        for key in (
+            "main_refusals",
+            "last_refusal",
+            "gate_kills",
+            "fell_back_full",
+        ):
             if carry is not None and key in carry:
-                parked[key] = carry[key]
-        refusals = int(parked.get("main_refusals") or 0) + 1
-        if refusals > MAX_MAIN_REFUSALS:
-            branch = str(params.get("branch") or _rs.slice_branch(todo_id))
-            reason, handoff = _blocked_handoff(branch, refusals, UNKNOWN_GATE_CROSS)
-            ctx.append_chunk(
-                "job_summary",
-                f"land_slice td{todo_id}: BLOCKED — {UNKNOWN_GATE_CROSS}\n"
-                f"drift probe (lander identity): {pre['diag']}",
-            )
-            _fail(ctx, todo_id, params.get("lane"), reason, handoff=handoff)
-            return None
-        _defer_to_main(ctx, parked, UNKNOWN_GATE_CROSS, refusals, probe=pre["diag"])
-        return parked
-    if pre.get("ran"):
-        # What the lander's identity saw before ship ran: a verdict's age or
-        # the helper's own "none" — on the job even when the land goes on
-        # (jo550940 launched nine times and never recorded which).
-        ctx.append_chunk(
-            "job_event",
-            f"land_slice: drift preflight (lander identity): age="
-            f"{pre.get('age') or '-'}; {pre.get('diag')}",
+                handle[key] = carry[key]
+        identity = _rs._process_identity(pid)
+        if identity is not None:
+            handle["boot_id"], handle["start_time"] = identity
+        ps_identity = (
+            _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
         )
-    try:
-        scratch.mkdir(parents=True, exist_ok=True)
-        exit_path.unlink(missing_ok=True)
-        pid = _launch(
-            [ship_bin(tree), flag, subject],
-            cwd=tree,
-            log=log_path,
-            exit_file=exit_path,
-            # The factory token (vault) as git's credential helper: the slice
-            # host's service account has none of its own (td543734). UV_PYTHON
-            # pins ship's `uv run` steps to the worker's Python line: with no
-            # .venv in a slice tree uv takes the newest interpreter satisfying
-            # requires-python — Homebrew 3.15 on melchior, for which rdkit has
-            # no wheel, so the frozen sync fails and gen-devin-hooks' check
-            # reads as "stale" (jo551780 event 6).
-            env={
-                **_factory_git.git_auth_env(),
-                "PRECIS_SHIP_VERBOSE": "1",
-                "UV_PYTHON": ship_python(),
-                # Cap the checked run's xdist workers (gr567471): ship's
-                # checked gate runs `pytest -n ${PRECIS_GATE_N:-6}` itself,
-                # not scripts/test, so both names carry the count.
-                "PRECIS_GATE_N": test_nproc(),
-                "PRECIS_TEST_NPROC": test_nproc(),
-                # Bound the land's share of the shared gate semaphore
-                # (td599058): without it gate-slot.sh derives up to 6
-                # slots and a land wave can take the whole VM.
-                "PRECIS_GATE_SLOTS": land_gate_slots(),
-            },
-        )
-    except Exception as exc:
-        log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
-        _fail(
-            ctx,
-            todo_id,
-            params.get("lane"),
-            f"ship launch failed: {exc}",
-            handoff=f"land FAILED: scripts/ship did not start ({exc}).",
-        )
-        return None
-    # The deadline rides the handle (gr647913): ``started_at`` + the wall
-    # — the clock stamps share the ``_now()`` seam so a worker restart's
-    # re-adoption resumes the job's own count instead of restarting the
-    # wall at the re-adopt poll.
-    launched = _now()
-    handle: dict[str, Any] = {
-        "pid": pid,
-        "pgid": pid,
-        "worktree": str(tree),
-        "log": str(log_path),
-        "exit_file": str(exit_path),
-        "subject": subject,
-        "flag": flag,
-        "started_at": launched.strftime(_TS_FMT),
-        "deadline": launched.timestamp() + wall_seconds(),
-    }
-    for key in ("main_refusals", "last_refusal", "gate_kills", "fell_back_full"):
-        if carry is not None and key in carry:
-            handle[key] = carry[key]
-    identity = _rs._process_identity(pid)
-    if identity is not None:
-        handle["boot_id"], handle["start_time"] = identity
-    ps_identity = (
-        _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
-    )
-    if ps_identity is not None:
-        # ssh_node's identity gate verifies Darwin handles through ps —
-        # without it a cancel cannot signal the ship (gr572654).
-        handle["ps_identity"] = ps_identity
-    return handle
+        if ps_identity is not None:
+            # ssh_node's identity gate verifies Darwin handles through ps —
+            # without it a cancel cannot signal the ship (gr572654).
+            handle["ps_identity"] = ps_identity
+        return handle
+    finally:
+        # Our end of the land flock: the launched ship's inherited copy
+        # of the dup'd fd keeps it held for the run's life; every
+        # pre-launch return (busy, adopted, already-landed, deferred,
+        # failed) releases it so the next land is not wedged by a dead
+        # worker's lock. ``ship_fd`` must close here too — it shares the
+        # flock's open file description, so a launch-time exception
+        # leaving it open would pin the lock.
+        for fd in {fd for fd in (lock_fd, ship_fd) if fd is not None}:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 #: Seconds the drift preflight may take before it counts as unanswered.
@@ -2814,6 +3623,34 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"be read (log {handle.get('log')}); check git log origin/main"
         )
         return True
+    return _landed_finish(
+        ctx, handle, params, sha=sha, exit_code=exit_code, status=status
+    )
+
+
+def _landed_finish(
+    ctx: Any,
+    handle: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    sha: str | None,
+    exit_code: int | None,
+    status: str | None,
+) -> bool:
+    """The green tail — the land record, the plan gate, the gripe rung,
+    the logbook, cleanup, the PR close — shared by :func:`poll`'s
+    ship-green path and :func:`_launch_ship`'s pre-ship already-landed
+    finish (gr650484: ``status="already-landed"``, no ship log exists,
+    ``exit_code`` is None). ``handle`` only needs ``worktree`` and
+    ``subject`` (plus ``fell_back_full`` on the relaunch path)."""
+    todo_id = int(params.get("todo_id") or 0)
+    number = _pr_param(params)
+    default_branch = (
+        f"slice/pr-{number}" if number is not None else _rs.slice_branch(todo_id)
+    )
+    branch = str(params.get("branch") or default_branch)
+    tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+    subject = str(handle.get("subject") or "")
     landed = f"landed {sha[:9]} — {subject}" if sha else NO_DIFF_NOTE
     summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
@@ -2837,11 +3674,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         log.warning("land_slice: land record on td%d failed", todo_id, exc_info=True)
         summary.append(f"todo: land record FAILED ({exc})")
     gate_id = None
-    # ``sha`` is what THIS job's ship squashed; ``gate_sha`` is what the
-    # plan's gate ends up holding — the recovered prior land's on a
-    # no-diff reland (gr576154). The gripe verify comment and the PR
-    # close ride ``gate_sha``: the work is on main under that sha
-    # whichever land pushed it.
+    # ``sha`` is what THIS land pushed; ``gate_sha`` is what the plan's
+    # gate ends up holding — the recovered prior land's on a no-diff
+    # reland (gr576154). The gripe verify comment and the PR close ride
+    # ``gate_sha``: the work is on main under that sha whichever land
+    # pushed it.
     gate_sha = sha
     try:
         gate_id = pending_gate(store, todo_id)
@@ -2919,6 +3756,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     ctx.set_meta(
         exit_code=exit_code,
         ship_status=status or "shipped",
+        land_subject=subject,
         landed_sha=sha,
         gate_id=gate_id,
         cleanup=cleanup,
@@ -3036,6 +3874,7 @@ SPEC = JobTypeSpec(
 
 
 __all__ = [
+    "ALREADY_LANDED_WINDOW",
     "CHECKED_RED_MARK",
     "COMPATIBLE_EXECUTORS",
     "DEADLINE_KILL_META",
@@ -3046,6 +3885,9 @@ __all__ = [
     "GATE_KILL_CROSS",
     "GATE_KILL_XDIST_RE",
     "HOST_REFUSAL_MARKS",
+    "INDEX_LOCK_STALE_S",
+    "INDEX_LOCK_WAIT_S",
+    "LAND_LOCK_FILE",
     "MAIN_REFUSAL_BACKOFF_S",
     "MAIN_REFUSAL_MARKS",
     "MAX_GATE_KILL_RETRIES",
@@ -3055,6 +3897,7 @@ __all__ = [
     "PREFLIGHT_HELPER_REL",
     "PREFLIGHT_LIB_REL",
     "REQUIRES",
+    "SHIP_LOCK_DIR",
     "SPEC",
     "SUBJECT_CAP",
     "UNKNOWN_GATE_CROSS",
@@ -3065,6 +3908,8 @@ __all__ = [
     "gate_kill_line",
     "gate_red_excerpt",
     "host_refusal_line",
+    "index_lock_stale_s",
+    "index_lock_wait_s",
     "is_host_refusal",
     "is_main_refusal",
     "kill",

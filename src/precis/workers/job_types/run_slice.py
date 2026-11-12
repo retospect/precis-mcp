@@ -689,11 +689,14 @@ def _launch(
     log: Path,
     exit_file: Path,
     env: dict[str, str],
+    pass_fds: tuple[int, ...] = (),
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
     wrapping shell (a restarted worker, no longer the parent, still reads
-    it). ``stdin=None`` feeds ``/dev/null``. Returns the process group pid."""
+    it). ``stdin=None`` feeds ``/dev/null``. ``pass_fds`` are fds the child
+    inherits (an flock held for the run's life — gr650484). Returns the
+    process group pid."""
     script = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
     full_env = {
         **env,
@@ -710,6 +713,7 @@ def _launch(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        pass_fds=pass_fds,
     )
     return int(proc.pid)
 
