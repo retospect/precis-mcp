@@ -657,7 +657,11 @@ class Adapter:
             # ``error`` event text is the vendor's own failure wording —
             # surfaced as the result so ``run_slice._lane_outage`` can
             # class a usage-limit death as the lane's window, not the
-            # task's attempt (td572037).
+            # task's attempt (td572037). Only the TERMINAL turn's events
+            # count: an earlier turn's ``turn.failed``/``error`` was
+            # recovered from — the run started another turn after it —
+            # so joining it would let a mid-stream "rate limit" flake
+            # misclass a later silent death (td645467 review).
             errors: list[str] = []
             for line in reversed(log_text.strip().splitlines()):
                 try:
@@ -667,6 +671,8 @@ class Adapter:
                 if not isinstance(event, dict):
                     continue
                 etype = event.get("type")
+                if etype == "turn.started":
+                    break
                 if etype == "item.completed":
                     item = event.get("item")
                     if isinstance(item, dict) and item.get("type") == "agent_message":

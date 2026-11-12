@@ -3491,6 +3491,68 @@ def test_poll_codex_usage_limit_death_parks_with_no_attempt(
     assert pools["llm:codex:weekly"]["notice"] == "estimate"
 
 
+@pytest.mark.parametrize(
+    ("result", "cls"),
+    [
+        ("Claude AI usage limit reached", "quota"),
+        ("API error 429: rate limit exceeded", "rate"),
+    ],
+)
+def test_poll_outage_estimate_horizon_is_not_stamped_provider(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    result: str,
+    cls: str,
+) -> None:
+    """td645467 review: a non-None ``retry_at`` is not a provider-named
+    reset — the two-hour quota message fallback
+    (``QUOTA_MESSAGE_PATTERN``, no reset clause) and the fifteen-minute
+    rate default (:data:`~precis.utils.llm.failure.DEFAULT_HORIZON`) are
+    classifier estimates, so the pool record reads ``notice='estimate'``,
+    never ``'provider'``."""
+    pools = _pool_failures(monkeypatch)
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, json.dumps({"is_error": True, "result": result}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert handle["outage"] == cls
+    # No week named: the shorter window alone, parked on the estimate.
+    assert set(pools) == {"llm:claude-sub:5h"}
+    pool = pools["llm:claude-sub:5h"]
+    assert pool["reason_class"] == cls
+    assert pool["parked_until"] > datetime.now(UTC)
+    assert pool["notice"] == "estimate"
+
+
+def test_poll_cli_missing_outage_never_reaches_the_pool_ledger(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td645467 review: an ``auth`` outage — here ``cli-missing``, one
+    host's absent adapter binary — is not the account's window: the
+    shared pool ledger hears nothing although the lane itself still
+    parks."""
+    parked = _parks(monkeypatch)
+    pools = _pool_failures(monkeypatch)
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    monkeypatch.delenv("PRECIS_CLAUDE_BIN", raising=False)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 127, "sh: claude: command not found\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert handle["outage"] == "auth"
+    assert pools == {}
+    assert len(parked) == 1
+
+
 def test_poll_plain_error_is_still_a_failed_attempt(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "t")
@@ -6103,6 +6165,39 @@ def test_codex_parse_prefers_file_else_last_agent_event(
 )
 def test_codex_parse_missing_message_is_error(tmp_path: Path, log: str) -> None:
     assert get_adapter("codex_exec").parse_result(log, tmp_path) == (None, True)
+
+
+def test_codex_parse_reads_the_terminal_turns_errors_only(tmp_path: Path) -> None:
+    """td645467 review: a ``turn.failed``/``error`` an earlier turn
+    recovered from — a later ``turn.started`` exists — is not the
+    death's wording: a mid-stream "rate limit" flake plus a silent
+    terminal death must not surface as a rate outage."""
+    recovered = "\n".join(
+        (
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "error", "message": "rate limit reached"}),
+            json.dumps({"type": "turn.failed", "error": {"message": "rate limit"}}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {"type": "item.completed", "item": {"type": "command_execution"}}
+            ),
+        )
+    )
+    # The terminal turn died with no events at all: nothing to join.
+    assert get_adapter("codex_exec").parse_result(recovered, tmp_path) == (None, True)
+    # The terminal turn's own failure IS the wording.
+    dying = (
+        recovered
+        + "\n"
+        + json.dumps(
+            {"type": "turn.failed", "error": {"message": "usage limit reached"}}
+        )
+    )
+    assert get_adapter("codex_exec").parse_result(dying, tmp_path) == (
+        "usage limit reached",
+        True,
+    )
 
 
 def test_claude_adapter_parse_preserves_result_error(tmp_path: Path) -> None:
