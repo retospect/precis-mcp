@@ -37,13 +37,16 @@ recommended one marked (gr595189: the batch digest's bare
 ``recommend:`` prose delegated the deciding upward; Reto's ask
 grammar already existed for the job).
 
-A gripe carrying a ``Reto <date>:`` ruling comment is already
-answered (gr633601): the tick never re-parks it ``needs_spec`` and
-never re-asks a settled question — it lands ``triaged`` instead —
-and the per-tick ask sync sheds a ``reto:ask`` that outlived its
-ruling (gr548906's tag stayed on after the ruling it asked for, so
-the gripe kept resurfacing in the decision queue with nothing
-pending).
+A ``Reto <date>:`` ruling — a comment, or a line in the gripe's own
+body — settles the asks pending when it was recorded (gr633601): the
+tick never re-parks a settled gripe ``needs_spec`` and never
+re-asks a settled question — it lands ``triaged`` instead — and the
+per-tick ask sync sheds a ``reto:ask`` that outlived its ruling
+(gr548906's tag stayed on after the ruling it asked for, so the
+gripe kept resurfacing in the decision queue with nothing pending).
+The suppression is scoped to the settled question (td652983): an
+ask minted AFTER the newest ruling is fresh and unanswered — its
+tag, todo and spec-park all stand.
 
 Lease, not a lock (the 0045 lesson, 30766194a — never hold a transaction
 across the model call): the claim is one short transaction stamping
@@ -838,10 +841,14 @@ class ClaimedGripe:
     #: gr652790: a hand-filed triaged gripe never got the fix tag
     #: ``gripe_dispatch`` mints on).
     backfill: bool = False
-    #: A ``Reto <date>:`` ruling comment is already on the gripe
-    #: (gr633601): the decision the tick would ask for was made — a
-    #: ruled gripe stays ``triaged`` (never ``needs_spec``) and never
-    #: takes ``reto:ask`` again.
+    #: A ``Reto <date>:`` ruling on the gripe postdates every pending
+    #: question marker — the live ``reto:ask`` ask todo (or the tag
+    #: itself when stranded) and the newest ``needs-spec:`` comment —
+    #: or no marker exists at all (gr633601): the decision the tick
+    #: would ask for was made, so a ruled gripe stays ``triaged``
+    #: (never ``needs_spec``) and never takes ``reto:ask``. A marker
+    #: stamped after the ruling is a fresh, unanswered question and
+    #: clears the flag (td652983).
     ruled: bool = False
 
     def age_days(self, now: datetime) -> float:
@@ -1030,6 +1037,8 @@ def _batch_rows(
     across the model call. ``backfill`` names the ids claimed by the
     severity-backfill arm — they ride the same batch but take the
     severity-only write."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -1047,18 +1056,59 @@ def _batch_rows(
                    (SELECT count(*) FROM links l
                      WHERE l.src_ref_id = r.ref_id
                        AND l.relation = 'supersedes'),
-                   EXISTS (SELECT 1 FROM chunks c
-                            WHERE c.ref_id = r.ref_id
-                              AND c.chunk_kind = %s
-                              AND c.text ~ %s) AS ruled
+                   (SELECT max(c.created_at) FROM chunks c
+                     WHERE c.ref_id = r.ref_id
+                       AND c.chunk_kind = ANY(%s)
+                       AND c.text ~ %s) AS ruled_at,
+                   (SELECT max(c.created_at) FROM chunks c
+                     WHERE c.ref_id = r.ref_id
+                       AND c.chunk_kind = %s
+                       AND c.text LIKE %s) AS spec_asked_at,
+                   (SELECT max(a.created_at) FROM refs a
+                     WHERE a.kind = 'todo' AND a.retired_at IS NULL
+                       AND a.meta->>'digest' = %s
+                       AND a.meta->>'ask_of' = r.ref_id::text
+                       AND COALESCE(
+                             (SELECT t.value FROM ref_tags art
+                                JOIN tags t ON t.tag_id = art.tag_id
+                               WHERE art.ref_id = a.ref_id
+                                 AND t.namespace = 'STATUS' LIMIT 1),
+                             'open') <> ALL(%s)) AS ask_todo_at,
+                   (SELECT rt.created_at FROM ref_tags rt
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND t.namespace = 'OPEN'
+                       AND t.value LIKE 'reto:%%'
+                     ORDER BY t.value LIMIT 1) AS ask_tag_at
               FROM refs r
              WHERE r.ref_id = ANY(%s)
             """,
-            (_COMMENT_KIND, _RULING_COMMENT_SQL, [int(i) for i, _s in claimed]),
+            (
+                list(_RULING_CHUNK_KINDS),
+                _RULING_SQL,
+                _COMMENT_KIND,
+                f"{_NEEDS_SPEC_PREFIX}%",
+                _DIGEST_META,
+                sorted(TERMINAL_TODO_STATUSES),
+                [int(i) for i, _s in claimed],
+            ),
         ).fetchall()
     stamps = {int(i): s for i, s in claimed}
     by_id: dict[int, ClaimedGripe] = {}
-    for ref_id, title, created_at, meta, set_by, body, tags, dup_count, ruled in rows:
+    for (
+        ref_id,
+        title,
+        created_at,
+        meta,
+        set_by,
+        body,
+        tags,
+        dup_count,
+        ruled_at,
+        spec_asked_at,
+        ask_todo_at,
+        ask_tag_at,
+    ) in rows:
         meta = meta if isinstance(meta, dict) else {}
         parents = meta.get("dup_parents") or ()
         checked = meta.get("dup_checked") or ()
@@ -1090,7 +1140,8 @@ def _batch_rows(
                 None,
             ),
             backfill=int(ref_id) in backfill,
-            ruled=bool(ruled),
+            ruled=ruled_at is not None
+            and ruled_at > _pending_question_at(spec_asked_at, ask_todo_at, ask_tag_at),
         )
     # Claim order (reopened first, then oldest) drives the prompt order.
     return [by_id[i] for i, _s in claimed if i in by_id]
@@ -1754,17 +1805,48 @@ _COMMENT_KIND = "gripe_comment"
 _DUP_SUGGEST_PREFIX = "dup-suggest: "
 _RECOMMEND_PREFIX = "recommend: "
 _TRIAGE_PREFIX = "triage: "
+_NEEDS_SPEC_PREFIX = "needs-spec: "
 
-#: A comment opening ``Reto <date>:`` IS the owner's recorded ruling
+#: Chunk kinds a recorded ruling may live on: a ``gripe_comment``
+#: appended by ``put`` (the convention), or the ``gripe_body``
+#: itself — a ruling written into the filed text (Reto answered by
+#: editing the gripe, or the gripe was filed already-ruled) settles
+#: the ask just the same. Comment-only detection is what re-asked
+#: gr572846, gr595737 and gr573338 (td652983).
+_RULING_CHUNK_KINDS = ("gripe_comment", "gripe_body")
+
+#: A line opening ``Reto <date>:`` IS the owner's recorded ruling
 #: (gr633601; the ``precis-gripe-help`` convention, also matched by
 #: ``handlers.gripe._RETO_RULING_RE`` — the worker keeps its own POSIX
 #: copy for the SQL ``~`` match rather than importing the layer it
-#: watches). A ruled gripe never re-parks ``needs_spec`` and never
-#: re-asks; a ``reto:ask`` that outlived its ruling sheds in the
-#: per-tick sweep.
-_RULING_COMMENT_SQL = (
-    r"^[[:space:]]*Reto[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]*:"
+#: watches). Line-anchored, not chunk-anchored — a body ruling sits
+#: on its own line inside the filed text. It settles only the asks
+#: pending when it landed: a ``reto:ask``, ask todo or ``needs-spec``
+#: park stamped AFTER the newest ruling is a fresh, unanswered
+#: question (td652983); a stuck marker stamped before it sheds in
+#: the per-tick sweep.
+_RULING_SQL = (
+    r"(^|\n)[[:space:]]*Reto[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]*:"
 )
+
+#: tz-aware floor for "no pending-question marker on record" — a
+#: gripe whose only word is the ruling itself reads as settled.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _pending_question_at(
+    spec_asked_at: datetime | None,
+    ask_todo_at: datetime | None,
+    ask_tag_at: datetime | None,
+) -> datetime:
+    """The newest pending-question stamp on the gripe — the live ask
+    todo's ``created_at`` when one exists (an in-place refresh keeps
+    it, so the todo, not a re-stamped tag, carries the ask's true
+    generation), else the ``reto:*`` tag's own stamp, and the newest
+    ``needs-spec:`` comment's park time — floored at the epoch."""
+    return max(
+        t for t in (spec_asked_at, ask_todo_at or ask_tag_at, _EPOCH) if t is not None
+    )
 
 
 def _drop_lease(meta: dict[str, Any]) -> dict[str, Any]:
@@ -1935,10 +2017,13 @@ def _write_verdict(
             close.append(f"resolved: wontfix — {v.verdict}: {v.reason} ({day})")
         elif status == "triaged" and v.verdict == "bug" and _needs_spec(g, v):
             if g.ruled:
-                # gr633601: a ``Reto <date>:`` ruling is already on
-                # record — the call the spec-park waits on was made.
-                # The gripe goes back on the pick list instead of
-                # re-parking to re-ask a settled question (gr548906).
+                # gr633601: a ``Reto <date>:`` ruling settled the
+                # pending question — the call the spec-park waits on
+                # was made. The gripe goes back on the pick list
+                # instead of re-parking to re-ask it (gr548906). A
+                # spec-wait opened AFTER the ruling is a fresh
+                # question — ``ruled`` is False then and the park
+                # stands (td652983).
                 comments.append(
                     f"{_TRIAGE_PREFIX}Reto ruling on record — "
                     "stays triaged, not needs_spec"
@@ -1949,7 +2034,8 @@ def _write_verdict(
                 # deploy verifier closes it once a docs/backlog spec names it.
                 status = "needs_spec"
                 comments.append(
-                    f"needs-spec: {v.recommendation or v.reason or '(see gripe)'}"
+                    f"{_NEEDS_SPEC_PREFIX}"
+                    f"{v.recommendation or v.reason or '(see gripe)'}"
                 )
         # Replace the OPEN triage tags + a stale disagreement flag.
         conn.execute(
@@ -2638,9 +2724,11 @@ def run_gripe_triage_pass(
         # closes the owner's own report on a disagreement) — and NO
         # verdict that closes gets reto:ask or a digest entry (Opus
         # review 7): a written done/verify/wontfix needs no ruling.
-        # gr633601: a ``Reto <date>:`` ruling is already on record —
-        # the question triage would pose was answered; the verdict
-        # writes ``triaged`` and no ask mints.
+        # gr633601: a ``Reto <date>:`` ruling already settled the
+        # pending question — the verdict writes ``triaged`` and no ask
+        # mints. An ask pending BEFORE the ruling is what it settles;
+        # a marker stamped after it leaves ``ruled`` False, so a
+        # fresh question still asks (td652983).
         wants_reto = (
             not closing and not g.ruled and (_needs_reto(v) or v.verdict in _DISPUTES)
         )
@@ -2958,10 +3046,11 @@ def _stranded_reto_gripes(
     """``(gripe id, title, last recommend text)`` for live gripes
     carrying the OPEN ``reto:ask`` tag with no live ask todo, capped at
     :data:`_RETO_CAP`; ``skip`` are the ids this tick already handled.
-    A gripe with a ``Reto <date>:`` ruling on record is excluded
-    (gr633601) — belt for the ruled-ask drop in :func:`_sync_reto_asks`
-    so a ruled gripe never mints a fresh ask even when the drop pass
-    itself failed."""
+    A gripe whose tag predates a ``Reto <date>:`` ruling is excluded
+    (gr633601) — the tag marks the question the ruling already
+    answered, and the ruled-ask drop in :func:`_sync_reto_asks` sheds
+    it — while a tag stamped AFTER the newest ruling is a fresh,
+    unanswered ask and does mint (td652983)."""
     try:
         with store.tx() as conn:
             live = {k for k in _live_reto_asks(conn) if k is not None}
@@ -2981,15 +3070,23 @@ def _stranded_reto_gripes(
                                   AND t.value = 'reto:ask')
                    AND NOT EXISTS (SELECT 1 FROM chunks c
                                      WHERE c.ref_id = r.ref_id
-                                       AND c.chunk_kind = %s
-                                       AND c.text ~ %s)
+                                       AND c.chunk_kind = ANY(%s)
+                                       AND c.text ~ %s
+                                       AND c.created_at > (SELECT rt.created_at
+                                                             FROM ref_tags rt
+                                                             JOIN tags t
+                                                               ON t.tag_id = rt.tag_id
+                                                            WHERE rt.ref_id = r.ref_id
+                                                              AND t.namespace = 'OPEN'
+                                                              AND t.value = 'reto:ask'
+                                                            LIMIT 1))
                  ORDER BY r.ref_id
                 """,
                 (
                     _COMMENT_KIND,
                     f"{_RECOMMEND_PREFIX}%",
-                    _COMMENT_KIND,
-                    _RULING_COMMENT_SQL,
+                    list(_RULING_CHUNK_KINDS),
+                    _RULING_SQL,
                 ),
             ).fetchall()
     except Exception:
@@ -3005,38 +3102,75 @@ def _stranded_reto_gripes(
 
 
 def _drop_ruled_asks(store: Store) -> int:
-    """Shed the OPEN ``reto:ask`` tag from every live gripe carrying a
-    ``Reto <date>:`` ruling comment (gr633601) — the ask the tag marks
-    was answered wherever it was pending, so the tag leaves the
-    decision queue (gr548906's stuck state: ruled 11-01, re-asked
-    11-02, ``reto:ask`` + ``needs_spec`` still on). The ask-retire
-    sweep in :func:`_sync_reto_asks` then clears the answered todo.
-    Returns the count dropped; any store fault logs and reads 0 — the
-    sweep is best-effort."""
+    """Shed the OPEN ``reto:ask`` tag from every live gripe whose
+    pending ask predates a ``Reto <date>:`` ruling (gr633601) — the
+    ask the tag marks was answered wherever it was pending, so the
+    tag leaves the decision queue (gr548906's stuck state: ruled
+    11-01, re-asked 11-02, ``reto:ask`` + ``needs_spec`` still on).
+    The ask's generation is the live ask todo's ``created_at`` when
+    one exists — an in-place refresh keeps it, so a re-stamped tag on
+    a settled todo still sheds — else the tag's own stamp. A tag or
+    todo stamped AFTER the newest ruling is a fresh, unanswered ask
+    and keeps its tag (td652983). The ask-retire sweep in
+    :func:`_sync_reto_asks` then clears the answered todo. Returns
+    the count dropped; any store fault logs and reads 0 — the sweep
+    is best-effort."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
     try:
         with store.tx() as conn:
             rows = conn.execute(
                 """
-                DELETE FROM ref_tags rt
-                 USING tags t
-                 WHERE rt.tag_id = t.tag_id
-                   AND t.namespace = 'OPEN' AND t.value = 'reto:ask'
+                SELECT rt.ref_id, rt.created_at,
+                       (SELECT max(c.created_at) FROM chunks c
+                         WHERE c.ref_id = rt.ref_id
+                           AND c.chunk_kind = ANY(%s)
+                           AND c.text ~ %s) AS ruled_at,
+                       (SELECT max(a.created_at) FROM refs a
+                         WHERE a.kind = 'todo' AND a.retired_at IS NULL
+                           AND a.meta->>'digest' = %s
+                           AND a.meta->>'ask_of' = rt.ref_id::text
+                           AND COALESCE(
+                                 (SELECT st.value FROM ref_tags srt
+                                    JOIN tags st ON st.tag_id = srt.tag_id
+                                   WHERE srt.ref_id = a.ref_id
+                                     AND st.namespace = 'STATUS' LIMIT 1),
+                                 'open') <> ALL(%s)) AS ask_todo_at
+                  FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE t.namespace = 'OPEN' AND t.value = 'reto:ask'
                    AND EXISTS (SELECT 1 FROM refs r
                                  WHERE r.ref_id = rt.ref_id
                                    AND r.kind = 'gripe'
                                    AND r.retired_at IS NULL)
-                   AND EXISTS (SELECT 1 FROM chunks c
-                                 WHERE c.ref_id = rt.ref_id
-                                   AND c.chunk_kind = %s
-                                   AND c.text ~ %s)
-                RETURNING rt.ref_id
                 """,
-                (_COMMENT_KIND, _RULING_COMMENT_SQL),
+                (
+                    list(_RULING_CHUNK_KINDS),
+                    _RULING_SQL,
+                    _DIGEST_META,
+                    sorted(TERMINAL_TODO_STATUSES),
+                ),
             ).fetchall()
+            settled = [
+                int(ref_id)
+                for ref_id, tag_at, ruled_at, todo_at in rows
+                if ruled_at is not None and ruled_at > (todo_at or tag_at)
+            ]
+            if settled:
+                conn.execute(
+                    """
+                    DELETE FROM ref_tags rt
+                     USING tags t
+                     WHERE rt.tag_id = t.tag_id
+                       AND t.namespace = 'OPEN' AND t.value = 'reto:ask'
+                       AND rt.ref_id = ANY(%s)
+                    """,
+                    (settled,),
+                )
     except Exception:
         log.warning("gripe_triage: ruled-ask sweep failed", exc_info=True)
         return 0
-    return len({int(r[0]) for r in rows})
+    return len(settled)
 
 
 def _write_ask(
@@ -3202,9 +3336,11 @@ def _sync_reto_asks(
         written += 1
         if todo_id is None:
             todo_id = tid
-    # gr633601: a recorded ruling answers the ask wherever it was
-    # pending — shed a ``reto:ask`` still stuck on a ruled gripe BEFORE
-    # the stranded scan below would mint it a fresh one.
+    # gr633601: a ruling newer than the ask answers it wherever it
+    # was pending — shed a ``reto:ask`` that outlived its ruling
+    # BEFORE the stranded scan below would mint it a fresh todo (a
+    # tag stamped after the ruling is a new question and survives,
+    # td652983).
     dropped = _drop_ruled_asks(store)
     if dropped:
         log.info("gripe_triage: dropped reto:ask on %d ruled gripe(s)", dropped)

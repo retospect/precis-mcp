@@ -190,25 +190,68 @@ def _comments(store: Store, ref_id: int) -> list[str]:
     return [str(r[0]) for r in rows]
 
 
-def _comment_on(store: Store, ref_id: int, text: str) -> None:
+def _comment_on(store: Store, ref_id: int, text: str, *, days_ago: float = 0.0) -> None:
     """Append one ``gripe_comment`` chunk — the recorded-ruling /
-    needs-spec markers the tick reads (gr633601)."""
+    needs-spec markers the tick reads (gr633601). ``days_ago``
+    backdates it so a test can order a ruling against an ask's
+    generation (td652983)."""
     with store.tx() as conn:
         row = conn.execute(
             "SELECT coalesce(max(ord) + 1, 0) FROM chunks WHERE ref_id = %s",
             (ref_id,),
         ).fetchone()
         assert row is not None
+        ord_ = int(row[0])
         store.chunks.insert_chunks(
             ref_id,
             [
                 ChunkInsert(
-                    ord=int(row[0]),
+                    ord=ord_,
                     text=text,
                     meta={"chunk_kind": "gripe_comment"},
                 )
             ],
             conn=conn,
+        )
+        if days_ago:
+            conn.execute(
+                "UPDATE chunks SET created_at = now() - make_interval(days => %s) "
+                "WHERE ref_id = %s AND ord = %s",
+                (days_ago, ref_id, ord_),
+            )
+
+
+def _backdate_ref(store: Store, ref_id: int, days_ago: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - make_interval(days => %s) "
+            "WHERE ref_id = %s",
+            (days_ago, ref_id),
+        )
+
+
+def _backdate_tag(store: Store, ref_id: int, value: str, days_ago: float) -> None:
+    """Rewind one tag's attachment stamp — the pending-ask generation
+    the ruling check compares against (td652983)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - make_interval(days => %s) "
+            "FROM tags t WHERE rt.tag_id = t.tag_id "
+            "AND rt.ref_id = %s AND t.value = %s",
+            (days_ago, ref_id, value),
+        )
+
+
+def _backdate_chunk(
+    store: Store, ref_id: int, chunk_kind: str, days_ago: float
+) -> None:
+    """Rewind every chunk of one kind — the body-recorded ruling's
+    stamp (td652983)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - make_interval(days => %s) "
+            "WHERE ref_id = %s AND chunk_kind = %s",
+            (days_ago, ref_id, chunk_kind),
         )
 
 
@@ -1788,6 +1831,217 @@ class TestRuledGripes:
         todos = _digest_todos(store)
         assert len(todos) == 1
         assert f"gr{gid}" in _body(store, todos[0])
+
+
+class TestBodyRulings:
+    """gr572846 / gr595737 / gr573338 (td652983): the ruling lives on
+    the ``gripe_body`` chunk — answered by editing the filed text or
+    filed already-ruled — and comment-only detection re-asked them."""
+
+    def test_body_ruling_gets_no_reto_ask(self, store: Store) -> None:
+        gid = _gripe(
+            store,
+            "ruled inside the body",
+            body="what broke\n\nReto 2026-11-01: keep the old API\n\nmore detail",
+        )
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="keep the old API",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 0
+        assert _status(store, gid) == "triaged"
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == []
+
+    def test_body_ruling_skips_needs_spec(self, store: Store) -> None:
+        gid = _gripe(
+            store,
+            "body-ruled but vague",
+            body="vague report\n\nReto 2026-11-01: go once compute is free",
+        )
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, fix="spec", recommend="decide the design")]}
+            ),
+        )
+        assert _status(store, gid) == "triaged"
+        comments = _comments(store, gid)
+        assert not any(c.startswith("needs-spec:") for c in comments)
+        assert any("Reto ruling on record" in c for c in comments)
+
+    def test_mid_body_ruling_line_counts(self, store: Store) -> None:
+        """The match is line-anchored, not chunk-anchored — a ruling
+        buried under later body lines still settles."""
+        gid = _gripe(
+            store,
+            "ruling mid-body",
+            body="filed vague\n\nReto 2026-11-01: ship it\n\nafterthought: see logs",
+        )
+        _light(store)
+        _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, fix="spec", recommend="decide it")]}),
+        )
+        assert _status(store, gid) == "triaged"
+
+
+class TestAskGenerationAfterRuling:
+    """td652983: suppression is scoped to the question the ruling
+    settled — an ask minted AFTER the newest ruling is fresh and
+    unanswered, and the sweep/stranded scan must leave it standing."""
+
+    def test_fresh_ask_after_ruling_survives_sweep(self, store: Store) -> None:
+        gid = _gripe(store, "ruled once, new question", status="needs_spec")
+        _comment_on(store, gid, "Reto 2026-11-01: ship the small fix", days_ago=3)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="agent")
+        tid = gripe_triage._write_ask(
+            store,
+            gid,
+            "ruled once, new question",
+            gripe_triage._fallback_ask(
+                gid, "ruled once, new question", "now: redo on B"
+            ),
+            "now: redo on B",
+        )
+        assert tid is not None
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        assert tid in _digest_todos(store)
+
+    def test_fresh_ask_after_body_ruling_survives(self, store: Store) -> None:
+        """The same scoped preservation when the old ruling sits in
+        the body (gr572846's shape) — the settled ask was answered,
+        the new one stands."""
+        gid = _gripe(
+            store,
+            "body-ruled, new question",
+            status="needs_spec",
+            body="filed text\n\nReto 2026-11-01: settled the first call",
+        )
+        _backdate_chunk(store, gid, "gripe_body", 3)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="agent")
+        tid = gripe_triage._write_ask(
+            store,
+            gid,
+            "body-ruled, new question",
+            gripe_triage._fallback_ask(gid, "body-ruled, new question", "and on B?"),
+            "and on B?",
+        )
+        assert tid is not None
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        assert tid in _digest_todos(store)
+
+    def test_restamped_tag_on_settled_ask_still_sheds(self, store: Store) -> None:
+        """The ask's generation rides the todo, not the tag: a tag
+        stamped after the ruling on a todo minted before it is the
+        same settled ask — gr548906's re-stamp still sheds."""
+        gid = _gripe(store, "ruled then re-asked", status="needs_spec")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = gripe_triage._write_ask(
+            store,
+            gid,
+            "ruled then re-asked",
+            gripe_triage._fallback_ask(gid, "ruled then re-asked", "go on A"),
+            "go on A",
+        )
+        assert tid is not None
+        # Ask minted 5d ago; ruling landed 3d ago; the tag's own stamp
+        # (now) postdates it — the todo still gives the settled generation.
+        _backdate_ref(store, tid, 5)
+        _comment_on(store, gid, "Reto 2026-11-01: go once compute is free", days_ago=3)
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert tid not in _digest_todos(store)
+
+    def test_stranded_tag_after_ruling_mints_fallback(self, store: Store) -> None:
+        """A ``reto:ask`` tag stamped after the ruling carries no todo
+        — the stranded scan reads it as the fresh ask it is and mints
+        the fallback rather than shedding."""
+        gid = _gripe(store, "fresh stranded ask", status="needs_spec")
+        _comment_on(store, gid, "recommend: ship the small fix first")
+        _comment_on(store, gid, "Reto 2026-11-01: settled the old call", days_ago=3)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="agent")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        assert f"gr{gid}" in _body(store, todos[0])
+
+    def test_stranded_tag_predating_ruling_sheds(self, store: Store) -> None:
+        """A stranded tag left over from before the ruling IS the
+        settled ask — the sweep drops it and nothing re-mints."""
+        gid = _gripe(store, "stuck pre-ruling ask", status="needs_spec")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _backdate_tag(store, gid, "reto:ask", 5)
+        _comment_on(store, gid, "Reto 2026-11-01: settled it", days_ago=3)
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == []
+
+    def test_spec_wait_after_ruling_parks_again(self, store: Store) -> None:
+        """A needs-spec park opened after the ruling is a new
+        spec-wait — the settled-question suppression doesn't reach it."""
+        gid = _gripe(store, "ruled, then newly vague")
+        _comment_on(store, gid, "Reto 2026-11-01: settled the old call", days_ago=3)
+        _comment_on(store, gid, "needs-spec: decide the follow-up design", days_ago=1)
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(gid, fix="spec", recommend="decide the follow-up")
+                    ]
+                }
+            ),
+        )
+        assert _status(store, gid) == "needs_spec"
+
+    def test_ruled_gripe_still_suppresses_same_verdict(self, store: Store) -> None:
+        """Unchanged state keeps suppressing: a gripe re-claimed with
+        nothing pending since the ruling is not re-asked."""
+        gid = _gripe(store, "settled, nothing new")
+        _comment_on(store, gid, "Reto 2026-11-01: settled the old call", days_ago=3)
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="settled the old call",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 0
+        assert "reto:ask" not in _open_tag_values(store, gid)
 
 
 class TestParseAskStrict:
