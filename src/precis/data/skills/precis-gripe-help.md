@@ -416,8 +416,9 @@ A numeric `PRIO:3` is the same axis spelled as the column number —
 `PRIO:3` writes `prio=3`; `prio=3` on `tag()` is the kwarg form.
 
 Answering a `reto:ask`: when Reto's question is fully resolved, write
-the answer and drop the ask in the same call —
-`put(kind='gripe', id=42, text='Reto 2026-11-11: do X', tags=['STATUS:triaged'], untags=['reto:ask'])`.
+the answer and drop the ask together —
+`put(kind='gripe', id=42, text='Reto 2026-11-11: do X')`, then
+`tag(kind='gripe', id=42, add=['STATUS:triaged'], remove=['reto:ask'])`.
 A stale `reto:ask` inflates his decision queue. A `Reto <date>:` comment
 that moves a gripe off `needs_spec` drops it automatically.
 

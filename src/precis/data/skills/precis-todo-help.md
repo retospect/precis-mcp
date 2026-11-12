@@ -160,8 +160,9 @@ records what it's waiting on. Targets carry an explicit kind prefix
 (`todo:158`, `paper:<slug>`, `markdown:notes/x.md`).
 
 `waiting-for:reto` marks a question for Reto. Once he has ruled and the
-todo carries the answer, remove the tag in that same write
-(`untags=['waiting-for:reto']`) so it leaves his decision queue.
+todo carries the answer, remove the tag right after that write
+(`tag(kind='todo', id=T, remove=['waiting-for:reto'])`) so it leaves
+his decision queue.
 
 ## Move a todo under another (reparent)
 ## Change a todo's parent in the tree
