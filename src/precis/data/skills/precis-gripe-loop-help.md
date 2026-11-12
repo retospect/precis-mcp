@@ -197,17 +197,17 @@ put(kind="gripe", id=514335, text="in progress draft-reads — covers all asks; 
 The `lane:` comment is one line — `<vendor>:<window>@<host>, tree
 <tree>[, model <id>]` — so the fleet row `vendor:host:project:tree`
 resolves from its prefix. A devin launch prints the line verbatim,
-including the `, model <id>` tail when a model was set
-(`--devin-model`, else `--model`/`FLEET_MODEL`); event-watch reads the
-recorded id to keep its quota reflex off non-SWE models (td573330).
+with the `, model <id>` tail when set (`--devin-model`, else
+`--model`/`FLEET_MODEL`); event-watch reads the recorded id to keep
+its quota reflex off non-SWE models (td573330).
 The claim is a lease, not a mark: `expires_at` is stamped 4 h out and
 re-claiming refreshes it (`guards.CLAIM_TTL_HOURS`,
-`guards.stamp_claim_lease`) — re-issue the same tag at each coordinator
-poll while the build runs. A live lease held by someone else refuses
+`guards.stamp_claim_lease`) — re-issue at each coordinator poll while
+the build runs. A live lease held by someone else refuses
 the claim and names the holder. Keep the gripe's lease alive too:
-dropping it without a `resolved:` comment bounces the gripe back to
-`triaged`. Under `waiting-for:fleet` the todo's own STATUS stays
-`open`; the gripe's lease is what marks the work claimed.
+dropping it without a `resolved:` bounces the gripe to `triaged`.
+Under `waiting-for:fleet` the todo's own STATUS stays `open`; the
+gripe's lease is what marks the work claimed.
 
 ## Step 4 — record the handoff
 
@@ -433,17 +433,21 @@ where, `handoff:` where it stopped, `review:` the verdict, `attempt:<n>`
 the round. `open` under a live lease is in-build, a `review: FIX` after
 it is a fix round, `done` with `landed:` is awaiting deploy.
 
+Wave aggregates stay on the MCP, not raw SQL:
+`view='count'`+`group_by`+`since=` is the snapshot, `view='flow'` the
+burn-down (`precis-search-help`).
+
 ## How do I resume a wave after a crash?
 
 Nothing is in files — `get(kind='todo', id=559473, view='tree')` is the
 state: `handoff:`-last items want a review spawned, `review: FIX` items
 want a fix brief, `done` rows carrying `landed:` are awaiting deploy.
-A `claimed-by` holder with no recent `lane:` or `handoff:` comment is a
+A `claimed-by` holder with no recent `lane:` or `handoff:` is a
 candidate for a dead build — the stored lease expiry is not shown by
 any view. From the gripe side, the `fixed-by` link on the card finds
 its todo; from a tree name,
-`search(kind='todo', q='<tree>')` finds the item (the `lane:` comment
-carries it).
+`search(kind='todo', q='<tree>')` finds the item (the `lane:` carries
+it).
 
 ## See also
 

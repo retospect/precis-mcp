@@ -529,6 +529,36 @@ per call — no cross-kind or `sort=` on this shape.
 "how many `graph_garden` jobs failed" question is `view='count'` +
 `group_by='state'`; listing knobs still narrow (`precis-job-help`).
 
+## How fast is the backlog burning down? (view='flow')
+## Opened vs closed per day — the burn-down and lane-health read
+
+`view='count'` buckets by `refs.created_at` — it answers "how many
+jobs minted today", never "how many closed today". `view='flow'`
+reads each `STATUS:` tag's *set-time* instead: per-bucket opens,
+closes and net, plus median/p90 open-to-close time and a live
+`open now` count — the pipeline questions that used to send you to
+raw `ref_tags` SQL:
+
+```python
+search(kind="gripe", view="flow")                     # last 7d by day (default window)
+search(kind="gripe", view="flow", since="2026-11-01") # explicit window; until= exclusive
+search(kind="job", view="flow",
+       args={"job_type": "run_slice", "bucket": "hour"})
+```
+
+`args={'bucket': 'hour'|'day'|'week'|'month'}` picks the grain
+(default `day`); `args={'closed': 'done,wontfix'}` (or a list)
+overrides the per-kind terminal set — gripe `done,wontfix`, todo
+`done,won't-do,auto-timeout`, job `succeeded,failed,cancelled,
+timed-out`, every other kind falls back to `done,wontfix,won't-do`.
+`since=`/`until=` take an ISO bound or the job age spellings
+(`'7d'`, `'24'`) and bound the *event* clock — a ref opened before
+the window but closed inside it lands on the closed side, the
+burn-down semantic you want. `tags=`/`status=`/`args={'job_type'}`/
+`under=`/`folder=` filter the cohort on both sides. A close is the
+set-time of a live ref's *latest* terminal STATUS — a
+reopened-then-reclosed ref counts its newest close only.
+
 ## What keys/tags does a kind actually carry? (view='meta' / 'tags')
 ## Inventory a kind's meta fields or tag values — no raw SQL
 

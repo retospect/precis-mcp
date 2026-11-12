@@ -572,12 +572,18 @@ again).
 back does the streak reach". The bare `group_by='job_type'` spelling
 reads as `meta.job_type`, so
 `args={'group_by': 'job_type,state'}` is the one-call diagnosis table
-(counts by type × status, per-group span, error-heads trailer for the
-failed rows). Facet rows page like a listing: `page_size` groups per
+(counts by type × status, per-group span, error-heads trailer for
+the failed rows — the fastest lane-health read). Facet rows page
+like a listing: `page_size` groups per
 page (default 10, raise it for the whole table — `page_size=100`
 covers ~39 job types), `page` the window; rows past the page fold
 into one `other: N groups, M jobs` tail naming the hidden groups,
 and its `next:` is the next page's call.
+
+For the *trend* behind the snapshot — minted vs terminal per day,
+with mint→terminal percentiles per lane —
+`search(kind='job', view='flow', args={'job_type': '<type>'})`
+(`precis-search-help`'s flow section).
 
 ## When does a cadence fire next? — [[precis-job-observe-help]]
 

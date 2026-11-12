@@ -2941,10 +2941,16 @@ class DispatchMixin(RuntimeShape):
         ).strip() in (
             "meta",
             "tags",
+            "flow",
         ):
-            return self._dispatch_introspect_view(
-                str(args.get("view") or "").strip(), kind, dict(args)
-            )
+            view_name = str(args.get("view") or "").strip()
+            # ``folder=`` folds into the include_ref_ids channel the
+            # flow view reads — same trick as view='count' above,
+            # otherwise it would route to the cross-kind fan-out.
+            if view_name == "flow" and args.get("folder") is not None:
+                folder_scope, _ = self._resolve_folder_scope(args.pop("folder"))
+                self._intersect_include_ref_ids(args, folder_scope)
+            return self._dispatch_introspect_view(view_name, kind, dict(args))
 
         # Plan view (gr503028): ``search(kind=K, q=…, view='plan')``
         # renders the route a kind-scoped search *would* take — mode,

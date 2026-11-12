@@ -763,6 +763,26 @@ Rule of thumb: if the body leads with a draft/paper chunk handle
 `todo` (or `finding`) anchored to that chunk — never a `gripe`. A
 citation audit emits findings and todos, not gripes.
 
+## How fast are gripes burning down?
+## Pipeline questions — cohort counts, facets, flow
+
+```python
+search(kind="gripe", view="count", args={"group_by": "state"})  # cohorts now
+search(kind="gripe", view="count", status="*",
+       args={"group_by": "tag:area"})                           # by theme
+search(kind="gripe", view="flow", since="7d")                   # opens/closes per day
+```
+
+`view='count'` + `group_by` (`state`, `meta.<key>`, `tag:<axis>`)
+is the **snapshot** — "which cohorts are busy right now" — and
+`since=`/`until=` bound the counted set by mint time.
+`view='flow'` is the **trend** — opened vs closed per bucket
+(`args={'bucket': 'hour'|'day'|'week'|'month'}`), net, and
+median/p90 open-to-close time read off the STATUS tag's set-times,
+plus a live `open now` count. Together they answer "is the backlog
+draining" and "which lanes are busy" without leaving the MCP — the
+full vocabulary is in `precis-search-help`'s count/flow sections.
+
 ## Lifecycle reference
 
 | Tag                    | Meaning                                 |

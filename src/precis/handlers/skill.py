@@ -4661,6 +4661,9 @@ _INTROSPECTION_POINTERS: tuple[str, ...] = (
     "- passages inside one ref: `get(kind=K, id=N, q='<text>' | 're:<regex>')`",
     "- totals and facets: `search(kind=K, view='count')` "
     "(every kind — block-search kinds count live refs)",
+    "- opens/closes per bucket + time-to-close percentiles: "
+    "`search(kind=K, view='flow', since=…)` "
+    "(STATUS tag set-times; `args={'bucket','closed'}`)",
     "- corpus storage facts: `get(kind='job', id='/facts')` "
     "(refs per kind, chunk coverage, PDF bytes, DB size)",
 )
