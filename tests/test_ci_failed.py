@@ -557,6 +557,77 @@ def test_blind_shared_log_is_backfilled_from_the_job_log(tmp_path: Path) -> None
     assert "/actions/jobs/555/logs" in calls  # then the job's own log
 
 
+def test_pytest_final_summary_is_named_per_job(tmp_path: Path) -> None:
+    """td650667: pytest's final ``= … in Ns =`` line is the digest's proof
+    that a job's log reached the end of the run; a job without one gets
+    no ``pytest summary:`` line."""
+    cp = _run(["223355"], _gh_stub(tmp_path))
+    assert cp.returncode == 0, cp.stderr
+    section = cp.stdout.split("== lint ==")[0]
+    assert "  pytest summary: 1 failed, 5 passed in 3.21s\n" in section
+    assert cp.stdout.count("pytest summary:") == 1
+
+
+_SOAK_RUN = {
+    "status": "completed",
+    "conclusion": "failure",
+    "jobs": [
+        {
+            "name": "soak (3.13, 4)",
+            "databaseId": 444,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+        {
+            "name": "gate-fast (3.13, 1)",
+            "databaseId": 555,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    ],
+}
+
+
+def test_per_job_reads_each_failed_jobs_full_log_on_a_completed_run(
+    tmp_path: Path,
+) -> None:
+    """td650667: `--log-failed` carries only the failed step, so a leg
+    whose upload step failed after a green pytest step shows no summary.
+    --per-job reads the job's whole log (every step) instead."""
+    env = _api_dir(
+        tmp_path,
+        {
+            "444": (
+                f"{TS} + pytest --shard 4/10\n"
+                f"{TS} \x1b[32m===== 3456 passed, 12 skipped in 290.12s "
+                f"(0:04:50) =====\x1b[0m\n"
+                f"{TS} Attempt 5 of 5 failed with error: Unexpected token '<'\n"
+            ),
+        },
+    )
+    env["GH_STUB_RUN"] = json.dumps(_SOAK_RUN)
+    cp = _run(["223355", "--job-prefix", "soak", "--per-job", "-n", "0"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "== soak (3.13, 4) ==" in cp.stdout
+    assert "  pytest summary: 3456 passed, 12 skipped in 290.12s (0:04:50)" in cp.stdout
+    assert "gate-fast" not in cp.stdout
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert "--log-failed" not in calls
+    assert "/actions/jobs/444/logs" in calls
+    assert "/actions/jobs/555/logs" not in calls
+
+
+def test_per_job_with_unreadable_metadata_exits_one(tmp_path: Path) -> None:
+    """Without the run's job list there is no job log to read: --per-job
+    never falls back to the step-only shared stream."""
+    env = _api_dir(tmp_path, {})
+    env["GH_STUB_META_RC"] = "1"
+    cp = _run(["223355", "--per-job"], env)
+    assert cp.returncode == 1
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert "--log-failed" not in calls
+
+
 def test_blind_shared_and_job_log_fall_back_to_the_tail(tmp_path: Path) -> None:
     """A job log that is itself just the step header keeps the tail
     fallback — now the fuller per-job log's tail — plus the jobs-logs

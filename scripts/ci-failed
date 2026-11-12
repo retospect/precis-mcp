@@ -6,7 +6,9 @@ megabytes when a shard dies mid-suite, and the pointer the ship/release/
 round/main-ci-status scripts print on red sent the reader to grep. This
 filters that stream to the part a human or agent reads first: per failed
 job, a ``failed ids:`` roll-up of the node ids its pytest FAILED/ERROR
-summary lines name (immune to the -n cap), then the short-test-summary and
+summary lines name (immune to the -n cap), a ``pytest summary:`` line
+carrying pytest's final ``= … in Ns =`` count when the log reached it
+(the proof the log is complete, td650667), then the short-test-summary and
 generic signal lines (errors, ✖ markers, timeouts, the runner's own
 "Process completed with exit code" verdict), deduplicated. A failed job
 with no signal lines — a lint gate, an infra kill — gets its tail
@@ -32,6 +34,12 @@ alone — the read the r236 gate got wrong (gr580432).
                                           with P (e.g. `soak` — reads only
                                           those jobs' logs on the per-job
                                           path too)
+    scripts/ci-failed <run-id> --per-job  read each failed job's whole log
+                                          through the jobs API, even on a
+                                          completed run — `--log-failed`
+                                          carries only the failed steps,
+                                          so a green pytest step before a
+                                          red upload never shows
     scripts/ci-failed <run-id> --probe    not a digest: one `probe:` line
                                           naming what the gh credential may
                                           read on the run's logs endpoint —
@@ -100,6 +108,10 @@ _SUMMARY_ID = re.compile(r"^(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+.*)?$")
 #: The ``failed ids:`` roll-up's own cap — independent of -n, so the
 #: verdict survives a tight per-job signal budget.
 _ID_CAP = 20
+#: pytest's final summary line, ``==== 12 passed, 1 skipped in 3.2s ====``
+#: — printed only when the session ran to its end, so it is the digest's
+#: proof a job log is complete (td650667).
+_PYTEST_SUMMARY = re.compile(r"^=+ (.*\bin \d+(?:\.\d+)?s\b.*?) =+$")
 
 #: ``unknown flag: --allow-escape-sequences`` — the flag exists only on
 #: gh ≥2.97 (GHSA-3m3g-3wcr-px46), so an older gh needs the retry.
@@ -290,6 +302,9 @@ def digest_jobs(
             out.extend(f"    {i}" for i in ids[:_ID_CAP])
             if len(ids) > _ID_CAP:
                 out.append(f"    … +{len(ids) - _ID_CAP} more in the full log")
+        summaries = [m.group(1) for m in map(_PYTEST_SUMMARY.match, entries) if m]
+        if summaries:
+            out.append(f"  pytest summary: {summaries[-1]}")
         out.extend(_select(entries, lines=lines, tail=tail))
     return "\n".join(out)
 
@@ -383,13 +398,17 @@ def _failed_jobs_digest(run: dict[str, Any], a: argparse.Namespace) -> int:
     if err is not None:
         print(f"ci-failed: every failed job's log unreadable ({err})", file=sys.stderr)
         return 1
+    done = run.get("status") == "completed"
     if not jobs:
         print(
-            f"ci-failed: run {a.run_id} still "
+            "ci-failed: no failed-job log lines"
+            if done
+            else f"ci-failed: run {a.run_id} still "
             f"{run.get('status') or 'running'}; no failed-job log lines yet"
         )
         return 0
-    print(f"(run {a.run_id} {run.get('status')}: digesting the failed jobs so far)")
+    so_far = "" if done else " so far"
+    print(f"(run {a.run_id} {run.get('status')}: digesting the failed jobs{so_far})")
     print(digest_jobs(jobs, lines=a.lines, tail=a.tail))
     return 0
 
@@ -408,6 +427,12 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         metavar="P",
         help="digest only jobs whose name starts with P (e.g. soak)",
+    )
+    ap.add_argument(
+        "--per-job",
+        action="store_true",
+        help="read each failed job's whole log (every step), never the "
+        "failed-steps-only --log-failed stream",
     )
     ap.add_argument(
         "--probe",
@@ -447,8 +472,10 @@ def main(argv: list[str] | None = None) -> int:
         metadata_ok = False
     # --log-failed waits for a run's completion; an in-progress run's
     # already-failed jobs are read per job through the jobs API instead.
-    if run is not None and run.get("status") != "completed":
+    if run is not None and (a.per_job or run.get("status") != "completed"):
         return _failed_jobs_digest(run, a)
+    if a.per_job:
+        return 1  # no job list, no job logs; the metadata error is printed
     try:
         cp = subprocess.run(
             ["gh", "run", "view", a.run_id, "--log-failed"],

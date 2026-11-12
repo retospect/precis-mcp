@@ -557,22 +557,51 @@ def _soak_log(state: Path, line: str) -> None:
 
 
 #: ``ci-failed`` digest markers: a job section header, the roll-up that
-#: names a failed test id, and a job log it could not read.
+#: names a failed test id, pytest's final summary (the proof a job log is
+#: complete) and the counts in it that are a test failure.
 _SOAK_SECTION_RE = re.compile(r"^== (.+) ==$", re.MULTILINE)
 _SOAK_FAILED_IDS_RE = re.compile(r"^\s+failed ids \(\d+\):", re.MULTILINE)
+_SOAK_SUMMARY_RE = re.compile(r"^\s+pytest summary: (.+)$", re.MULTILINE)
+_SOAK_SUMMARY_RED_RE = re.compile(r"\b\d+ (?:failed|errors?)\b")
+_SOAK_SUMMARY_PASSED_RE = re.compile(r"\b\d+ passed\b")
+
+
+def _soak_leg_proven_green(section: str) -> bool:
+    """One digested leg's tests passed: its log is complete (pytest's
+    final summary is present and counts passes) and names no failed or
+    error test — neither as an id nor as a count (td650667)."""
+    if "(log unreadable" in section or _SOAK_FAILED_IDS_RE.search(section):
+        return False
+    m = _SOAK_SUMMARY_RE.search(section)
+    if m is None:
+        return False
+    return bool(_SOAK_SUMMARY_PASSED_RE.search(m.group(1))) and not (
+        _SOAK_SUMMARY_RED_RE.search(m.group(1))
+    )
 
 
 def _soak_infra_only(root: Path, run_id: str, jobs: list[str]) -> bool:
-    """True only when ``scripts/ci-failed`` digested every red ``soak*``
-    leg of ``run_id`` and none names a FAILED/ERROR test id (gr639737):
-    the leg is red from infrastructure (an API outage, a runner kill),
-    not from a test. Anything unreadable or partial is False — a real
-    failure must never be mistaken for infra."""
+    """True only when ``scripts/ci-failed --per-job`` digested every red
+    ``soak*`` leg of ``run_id`` from its whole log, each log is complete
+    (pytest's final summary, all passed) and none names a FAILED/ERROR
+    test (gr639737, td650667): the leg is red from infrastructure after
+    its tests passed (an API outage in a later step). ``--per-job`` is
+    required — ``--log-failed`` carries only the failed step, which
+    never holds a green pytest step's summary. A partial, truncated or
+    unreadable log is False — a real failure must never pass as infra."""
     legs = [j for j in jobs if j.startswith("soak")]
     if not run_id.isdigit() or not legs:
         return False
     cp = _NETWORK["run_command"](
-        [str(_HERE / "ci-failed"), run_id, "--job-prefix", "soak", "-n", "0"],
+        [
+            str(_HERE / "ci-failed"),
+            run_id,
+            "--job-prefix",
+            "soak",
+            "--per-job",
+            "-n",
+            "0",
+        ],
         cwd=root,
         timeout=420,
         report=False,
@@ -582,19 +611,43 @@ def _soak_infra_only(root: Path, run_id: str, jobs: list[str]) -> bool:
         return False
     if _SOAK_FAILED_IDS_RE.search(out):
         return False
-    seen = set(_SOAK_SECTION_RE.findall(out))
-    return all(leg in seen for leg in legs)
+    heads = list(_SOAK_SECTION_RE.finditer(out))
+    if not heads:
+        return False
+    ends = [h.start() for h in heads[1:]] + [len(out)]
+    sections = {
+        h.group(1): out[h.end() : end] for h, end in zip(heads, ends, strict=True)
+    }
+    return all(
+        leg in sections and _soak_leg_proven_green(sections[leg]) for leg in legs
+    )
 
 
 def _soak_infra_rerun(
     root: Path, sha: str, run_id: str, jobs: list[str]
 ) -> dict[str, Any] | None:
     """Re-fire the failed soak legs when their logs carry no failed test
-    (gr639737) and record why; None = not infra, or the rerun did not
-    fire — the refusal stands. The rerun leaves the legs pending, which
-    the next read treats as no veto; ``infra_rerun`` on the debt row
-    keeps this to once per run, so a leg that goes red again blocks."""
+    (gr639737) and record why; None = not infra, the stamp did not save,
+    or the rerun did not fire — the refusal stands. The rerun leaves the
+    legs pending, which the next read treats as no veto; ``infra_rerun``
+    on the debt row keeps this to once per run, so a leg that goes red
+    again blocks. The stamp is saved BEFORE the rerun fires: an unsaved
+    stamp would let every later read rerun again (td650667). A rerun
+    that then fails to fire leaves the caller's refusal row, which
+    drops the stamp — no rerun happened, so none is spent."""
     if not _soak_infra_only(root, run_id, jobs):
+        return None
+    info = {"run_id": run_id, "at": _now(), "why": "no FAILED test in red soak logs"}
+    written = _write_soak_red(
+        {"sha": sha, "run_id": run_id, "jobs": jobs, "at": _now(), "infra_rerun": info}
+    )
+    if written is None or written[0] != 0:
+        print(
+            f"scripts/round: soak red on {sha[:9]} is infra-only but the "
+            f"infra_rerun stamp on {SOAK_RED_KEY} did not save — no rerun "
+            "(the stamp is what holds it to once per run); the refusal stands",
+            file=sys.stderr,
+        )
         return None
     cp = _NETWORK["run_command"](
         [str(_HERE / "ci-rerun"), run_id], cwd=root, timeout=120, report=False
@@ -607,10 +660,6 @@ def _soak_infra_rerun(
         )
         return None
     shown = ", ".join(jobs[:6])
-    info = {"run_id": run_id, "at": _now(), "why": "no FAILED test in red soak logs"}
-    _write_soak_red(
-        {"sha": sha, "run_id": run_id, "jobs": jobs, "at": _now(), "infra_rerun": info}
-    )
     line = (
         f"soak red on {sha[:9]} run {run_id} is infra-only (no FAILED test line "
         f"in {shown}) — failed legs rerun, not a veto"

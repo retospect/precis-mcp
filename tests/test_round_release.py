@@ -3190,9 +3190,25 @@ def _soak_stubs(
     return calls, reruns
 
 
-#: What `scripts/ci-failed` prints for a soak leg that died on the API
-#: outage after a full pass (r281, gr639737): no `failed ids` roll-up.
+#: What `scripts/ci-failed --per-job` prints for a soak leg that died on
+#: the API outage after a full pass (r281, gr639737): pytest's final
+#: summary proves the log complete, and there is no `failed ids` roll-up.
 _INFRA_DIGEST = (
+    "== soak (3.13, 4) ==\n"
+    "  pytest summary: 3456 passed, 12 skipped in 290.12s (0:04:50)\n"
+    "  Error: Process completed with exit code 1.\n"
+    "  Attempt 5 of 5 failed with error: Unexpected token '<', \"<!DOCTYPE\"\n"
+)
+#: The same leg when only the step header reached the digest (a per-job
+#: read that failed, a truncated log): nothing proves pytest finished.
+_HEADER_ONLY_DIGEST = (
+    "== soak (3.13, 4) ==\n"
+    "  (no signal lines — last 1 of 1 lines)\n"
+    "  next: if the job log has FAILED lines, re-read it via "
+    "gh api repos/{owner}/{repo}/actions/jobs/<id>/logs\n"
+    "  + pytest --shard 4/10\n"
+)
+_TRUNCATED_DIGEST = (
     "== soak (3.13, 4) ==\n"
     "  Error: Process completed with exit code 1.\n"
     "  Attempt 5 of 5 failed with error: Unexpected token '<', \"<!DOCTYPE\"\n"
@@ -3227,6 +3243,7 @@ def test_an_infra_only_soak_red_reruns_the_legs_and_does_not_refuse(
         "4242",
         "--job-prefix",
         "soak",
+        "--per-job",
         "-n",
         "0",
     ]
@@ -3259,8 +3276,31 @@ def test_a_soak_red_with_a_failed_test_still_refuses_and_never_reruns(
         (_INFRA_DIGEST, 1),
         ("== soak (3.13, 4) ==\n  (log unreadable: exit 1: 502)\n", 0),
         ("== soak (3.13, 7) ==\n  Error: Process completed\n", 0),
+        (_HEADER_ONLY_DIGEST, 0),
+        (_TRUNCATED_DIGEST, 0),
+        (
+            "== soak (3.13, 4) ==\n"
+            "  pytest summary: 1 failed, 3455 passed in 290.12s\n"
+            "  Error: Process completed with exit code 1.\n",
+            0,
+        ),
+        (
+            "== soak (3.13, 4) ==\n  pytest summary: 3456 passed, 1 error in 290.12s\n",
+            0,
+        ),
+        ("== soak (3.13, 4) ==\n  pytest summary: no tests ran in 0.12s\n", 0),
     ],
-    ids=["no-logs", "digest-failed", "log-unreadable", "red-leg-missing"],
+    ids=[
+        "no-logs",
+        "digest-failed",
+        "log-unreadable",
+        "red-leg-missing",
+        "header-only",
+        "truncated-no-summary",
+        "summary-counts-a-failure",
+        "summary-counts-an-error",
+        "summary-ran-nothing",
+    ],
 )
 def test_an_unprovable_infra_soak_red_still_refuses(
     rig: Rig, monkeypatch: pytest.MonkeyPatch, digest: str, digest_rc: int
@@ -3296,12 +3336,66 @@ def test_a_soak_red_after_the_infra_rerun_refuses(
 def test_an_infra_soak_red_whose_rerun_fails_to_fire_refuses(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mod = _published(rig, monkeypatch, _Prod())
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
     monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
     _red_soak_leg(rig, "soak (3.13, 4)")
     _calls, reruns = _soak_stubs(rig, _INFRA_DIGEST, rerun_rc=1)
     assert "soak red on last gated main" in mod._soak_debt_check(rig.root)
     assert reruns.exists()
+    # the rerun never fired, so no stamp spends the run's one rerun
+    assert prod.row is not None and "infra_rerun" not in prod.row
+
+
+def test_an_infra_soak_red_with_one_leg_unproven_refuses(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every red leg needs its own complete log: one proven leg does not
+    vouch for a second leg whose log stops at the step header."""
+    mod = _published(rig, monkeypatch, _Prod())
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)", "soak (3.13, 7)")
+    digest = _INFRA_DIGEST + _HEADER_ONLY_DIGEST.replace("4)", "7)", 1)
+    _calls, reruns = _soak_stubs(rig, digest)
+    assert "soak red on last gated main" in mod._soak_debt_check(rig.root)
+    assert not reruns.exists()
+
+
+class _StampFails(_Prod):
+    """The debt-row transport answers reads but refuses (or raises on)
+    every ``settings set``."""
+
+    def __init__(self, *, raises: bool) -> None:
+        super().__init__()
+        self.raises = raises
+
+    def __call__(self, args: list[str], **kw: Any) -> tuple[int, str, str]:
+        if args[:2] == ["settings", "set"]:
+            self.calls.append(args)
+            if self.raises:
+                raise subprocess.TimeoutExpired(args, 1)
+            return 1, "", "refused"
+        return super().__call__(args, **kw)
+
+
+@pytest.mark.parametrize("raises", [False, True], ids=["set-refused", "set-raised"])
+def test_an_infra_soak_red_whose_stamp_cannot_be_saved_refuses_without_rerun(
+    rig: Rig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    raises: bool,
+) -> None:
+    """The infra_rerun stamp is what holds the rerun to once per run: an
+    unsaved stamp would let every read rerun again, so it refuses and
+    fires nothing (td650667)."""
+    prod = _StampFails(raises=raises)
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)")
+    _calls, reruns = _soak_stubs(rig, _INFRA_DIGEST)
+    assert "soak red on last gated main" in mod._soak_debt_check(rig.root)
+    assert not reruns.exists()
+    assert "stamp" in capsys.readouterr().err
 
 
 def test_a_waived_row_lets_the_check_pass_with_a_note(
