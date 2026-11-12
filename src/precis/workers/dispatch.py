@@ -709,7 +709,8 @@ def _pending_job_of_type_exists(conn: Any, job_type: str) -> bool:
 
     Non-terminal only — ``queued`` / ``running`` / ``waiting_*`` / an
     untagged row all count as pending work; ``succeeded`` / ``failed`` /
-    ``cancelled`` settle it. Used by ``JobTypeSpec.dedupe_pending``
+    ``cancelled`` / ``timed-out`` settle it. Used by
+    ``JobTypeSpec.dedupe_pending``
     (gr506771) to coalesce a recurring tick while an earlier run of the
     same type is still in flight.
     """
@@ -722,7 +723,7 @@ def _pending_job_of_type_exists(conn: Any, job_type: str) -> bool:
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                  'open'
-               ) NOT IN ('succeeded', 'failed', 'cancelled')
+               ) NOT IN ('succeeded', 'failed', 'cancelled', 'timed-out')
          LIMIT 1
         """,
         (job_type,),

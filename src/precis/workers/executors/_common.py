@@ -61,6 +61,15 @@ SUCCEEDED = "succeeded"
 FAILED = "failed"
 CANCEL_REQUESTED = "cancel_requested"
 CANCELLED = "cancelled"
+#: Terminal wall-deadline verdict (gr647914 / td648501): the wall-clock
+#: kill's distinct status, exposed only when the job_type declares a
+#: ``deadline_kill_meta`` verdict (``land_slice``) — a plain deadline kill
+#: of any other type still lands ``failed``. Hyphenated (not
+#: ``timed_out``) so the job card renders the verdict as ``timed-out``;
+#: only ``ssh_node``'s deadline path writes it. ``run_slice`` never
+#: carries it, which is what keeps ``plans/lanes.py``'s restated
+#: terminal tuple (run_slice lane slots, unreadable from here) correct.
+TIMED_OUT = "timed-out"
 
 # STATUS:waiting_* values written by a coordinator Yield; each maps to
 # one ``WakeWhen.kind`` so the wake_runner's selectivity stays cheap
@@ -90,7 +99,7 @@ CLAIMABLE = (QUEUED, YIELDED)
 
 # Terminal STATUS values — a row carrying any of these is not
 # claimable. Waiting statuses are NOT terminal; they're paused.
-TERMINAL = (SUCCEEDED, FAILED, CANCELLED)
+TERMINAL = (SUCCEEDED, FAILED, CANCELLED, TIMED_OUT)
 
 #: Non-terminal values that mean the job LEFT ``STATUS:running``
 #: (checkpoint yield, park, requeue) — the footprint segment folds
@@ -2754,6 +2763,7 @@ __all__ = [
     "STATUS_NAMESPACE",
     "SUCCEEDED",
     "TERMINAL",
+    "TIMED_OUT",
     "WAITING",
     "WAITING_ASK_USER",
     "WAITING_CHILDREN",

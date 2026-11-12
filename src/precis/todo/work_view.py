@@ -526,7 +526,7 @@ _DONE_TODO = frozenset({"done", "won't-do"})
 #: Terminal job STATUS values listed by the completed toggle — mirrors
 #: ``store._tags_ops._JOB_TERMINAL``; local constant so this module
 #: stays out of the store import chain.
-_DONE_JOB = frozenset({"succeeded", "failed", "cancelled"})
+_DONE_JOB = frozenset({"succeeded", "failed", "cancelled", "timed-out"})
 
 #: How far back the completed toggle looks (td573298); the quest's
 #: logbook holds the older history.

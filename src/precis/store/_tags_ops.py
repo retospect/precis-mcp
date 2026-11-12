@@ -116,7 +116,7 @@ def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
 
 #: ``STATUS:`` values that end a job's run (mirrors
 #: ``workers.executors._common.TERMINAL``; the store can't import workers).
-_JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
+_JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed-out"})
 
 
 def _stamp_job_completion(conn: Connection, ref_id: int) -> None:

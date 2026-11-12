@@ -124,6 +124,9 @@ from precis.workers.executors._common import (
     TERMINAL as _TERMINAL,
 )
 from precis.workers.executors._common import (
+    TIMED_OUT as _TIMED_OUT,
+)
+from precis.workers.executors._common import (
     append_chunk as _append_chunk,
 )
 from precis.workers.executors._common import (
@@ -1301,7 +1304,7 @@ def _kill_and_terminalize(
 ) -> bool:
     """Shared terminalize-via-kill path for both the wall-clock deadline and
     the §B-2 operator ``kill_requested`` backstop: call the job_type's
-    optional ``spec.kill``, then a terminal ``STATUS:failed`` + the given
+    optional ``spec.kill``, then a terminal ``STATUS`` + the given
     ``swept:<tag>`` + a bubble to the parent — and, when the job's resolved
     requirements include ``gpu``, a best-effort GPU reclaim recorded on
     ``meta.kill_gpu_reset`` (:func:`_common.maybe_reset_gpu_after_kill`).
@@ -1315,8 +1318,12 @@ def _kill_and_terminalize(
     counted from meta without reading each job's event log. A deadline
     kill (``swept_tag`` ``"wall-timeout"``/``"deadline"``) also merges the
     job_type's :attr:`~precis.workers.job_types.JobTypeSpec.deadline_kill_meta`
-    — its distinct timed-out verdict — into the same write.
-    ``polled_alive``
+    — its distinct timed-out verdict — into the same write, and that same
+    declaration switches the terminal write from ``STATUS:failed`` to
+    ``STATUS:timed-out`` (:data:`_common.TIMED_OUT`, td648501): a job_type
+    carrying a timed-out verdict exposes it as the job's status, so the
+    card renders ``status: timed-out``; a deadline kill of any other type
+    still lands ``STATUS:failed``. ``polled_alive``
     is same-call evidence for the legacy deadline exception only: it still
     requires a locked running row owned by this node. Returns False on
     lock contention without changing the row; True after terminalization."""
@@ -1409,21 +1416,34 @@ def _kill_and_terminalize(
             _set_meta(conn, ref_id, compute_handle_released=True)
         if gpu_reset is not None:
             _set_meta(conn, ref_id, kill_gpu_reset=gpu_reset)
+        # The job_type's distinct timed-out verdict (gr647914,
+        # td648501): a wall-deadline kill of a spec declaring
+        # ``deadline_kill_meta`` (``land_slice``) lands the meta marks
+        # AND the ``STATUS:timed-out`` terminal — the card renders
+        # ``status: timed-out`` — while any other kill keeps
+        # ``STATUS:failed``. ``land_slice`` marks the kill attempt-free
+        # and caps the re-land lane, so the plan tick parks the slice at
+        # the re-land ask — never a gate failure, never a silent
+        # re-land of a possibly half-landed branch. Merged here,
+        # inside the kill transaction: ``spec.kill``'s own
+        # ``ctx.set_meta`` would block on the row lock this path
+        # holds.
+        deadline_verdict = (
+            failure_class is not None
+            and swept_tag in {"wall-timeout", "deadline"}
+            and getattr(spec, "deadline_kill_meta", None) is not None
+        )
         if failure_class is not None:
             marks: dict[str, Any] = {"failure_class": failure_class, "error": summary}
-            if swept_tag in {"wall-timeout", "deadline"}:
-                # The job_type's distinct timed-out verdict
-                # (``JobTypeSpec.deadline_kill_meta``, gr647914):
-                # ``land_slice`` marks the kill attempt-free and caps the
-                # re-land lane, so the plan tick parks the slice at the
-                # re-land ask — never a gate failure, never a silent
-                # re-land of a possibly half-landed branch. Merged here,
-                # inside the kill transaction: ``spec.kill``'s own
-                # ``ctx.set_meta`` would block on the row lock this path
-                # holds.
+            if deadline_verdict:
                 marks.update(getattr(spec, "deadline_kill_meta", None) or {})
             _set_meta(conn, ref_id, **marks)
-        _set_status(store, ref_id, _FAILED, conn=conn)
+        _set_status(
+            store,
+            ref_id,
+            _TIMED_OUT if deadline_verdict else _FAILED,
+            conn=conn,
+        )
         conn.commit()
     bubble_job_failure(store, ref_id)
     _release_job(ctx)

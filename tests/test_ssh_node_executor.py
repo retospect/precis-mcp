@@ -1390,10 +1390,11 @@ def test_poll_past_deadline_terminalizes_without_kill_hook(
 def test_poll_past_deadline_applies_deadline_kill_meta(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr647914: a spec's ``deadline_kill_meta`` rides the wall-timeout
-    terminalize write — ``land_slice`` marks the kill attempt-free and
-    caps the re-land lane, so the job reads as a distinct timed-out
-    verdict, never a gate failure."""
+    """gr647914 / td648501: a spec's ``deadline_kill_meta`` rides the
+    wall-timeout terminalize write AND switches the terminal status —
+    ``land_slice`` marks the kill attempt-free and caps the re-land
+    lane, so the job reads as a distinct ``STATUS:timed-out`` verdict,
+    never a gate failure."""
     monkeypatch.setattr(
         ssh_node,
         "get_job_type",
@@ -1420,7 +1421,7 @@ def test_poll_past_deadline_applies_deadline_kill_meta(
     result = ssh_node.run_ssh_node_pass(store, limit=2)
 
     assert result == {"claimed": 0, "ok": 1, "failed": 0}
-    assert _status(store, rid) == "failed"
+    assert _status(store, rid) == "timed-out"
     assert "swept:wall-timeout" in {str(t) for t in store.tags_for(rid)}
     meta = _meta(store, rid)
     assert meta["failure_class"] == "timeout"

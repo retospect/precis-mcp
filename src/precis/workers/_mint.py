@@ -38,7 +38,12 @@ JOB_ORIGINS: tuple[str, ...] = ("human", "agent", "recurring", "background")
 #: Terminal job statuses for the idem-key reuse check — a queued /
 #: running / parked job with the key blocks a re-mint; a terminal one
 #: doesn't. Same tuple ``handlers.job`` keeps for ``_lookup_idem``.
-JOB_TERMINAL_STATUSES: tuple[str, ...] = ("succeeded", "failed", "cancelled")
+JOB_TERMINAL_STATUSES: tuple[str, ...] = (
+    "succeeded",
+    "failed",
+    "cancelled",
+    "timed-out",
+)
 
 
 def idem_lock_key(idem: str) -> int:

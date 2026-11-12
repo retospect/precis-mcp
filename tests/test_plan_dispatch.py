@@ -1504,9 +1504,9 @@ def test_gate_kill_capped_land_goes_to_the_ask(store: Store) -> None:
 
 
 def test_deadline_killed_land_locks_the_slice(store: Store) -> None:
-    """gr647914: a land killed at its wall deadline — ``failure_class ==
-    "timeout"`` plus the marks ``land_slice.DEADLINE_KILL_META`` has
-    ``ssh_node`` stamp — is a distinct timed-out verdict: no attempt
+    """gr647914 / td648501: a land killed at its wall deadline —
+    ``STATUS:timed-out`` plus the marks ``land_slice.DEADLINE_KILL_META``
+    has ``ssh_node`` stamp — is a distinct timed-out verdict: no attempt
     burned, no builder minted, the run parked at the "land again" ask so
     a possibly half-landed ship never re-lands on its own."""
     mint = _one_task_plan(store)
@@ -1516,7 +1516,7 @@ def test_deadline_killed_land_locks_the_slice(store: Store) -> None:
         store,
         task,
         "land_slice",
-        "failed",
+        "timed-out",
         meta={
             "failure_class": "timeout",
             "error": "runner: killed at wall-clock deadline",

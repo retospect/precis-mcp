@@ -1019,6 +1019,24 @@ class TestJobCardErrorLine:
         i = lines.index("status: failed")
         assert lines[i + 1] == "error: budget: claude subscription quota reached"
 
+    def test_timed_out_card_shows_the_verdict_and_error(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """td648501: a wall-deadline kill lands ``STATUS:timed-out`` and the
+        card renders the distinct verdict — ``status: timed-out``, not
+        ``failed`` — with the kill reason under it like any failure."""
+        job_id = _insert_job(
+            store,
+            meta={
+                "job_type": "land_slice",
+                "error": "runner: killed at wall-clock deadline",
+            },
+            status="timed-out",
+        )
+        lines = jobs.get(id=job_id).body.splitlines()
+        i = lines.index("status: timed-out")
+        assert lines[i + 1] == "error: runner: killed at wall-clock deadline"
+
     def test_event_head_fallback_keeps_digits(
         self, jobs: JobHandler, store: Store
     ) -> None:

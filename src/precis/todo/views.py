@@ -1865,7 +1865,7 @@ UNMINTED_ALERT_MIN = 30
 
 #: Job statuses that no longer count as a live child (mirrors
 #: ``handlers.job._TERMINAL_STATUSES``).
-_JOB_TERMINAL = ("succeeded", "failed", "cancelled")
+_JOB_TERMINAL = ("succeeded", "failed", "cancelled", "timed-out")
 
 
 def _attention_unminted(

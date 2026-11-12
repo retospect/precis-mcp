@@ -108,7 +108,10 @@ _CLASS_NAME_BY_RANK: dict[float, str] = {
 }
 _CLASS_NAME_BY_RANK[_RELEASE_LEG_RANK] = "release"
 
-_TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
+#: Terminal job statuses — includes ``timed-out`` (gr647914 / td648501):
+#: the wall-deadline kill's distinct verdict, written only by
+#: ``ssh_node`` for a job_type declaring ``deadline_kill_meta``.
+_TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "timed-out")
 
 # ── /logs list view: read-only worker_logs surface (Piece A, approved
 # 2026-09-18) ────────────────────────────────────────────────────────
@@ -4550,10 +4553,10 @@ class JobHandler(NumericRefHandler):
         # Validates the job exists and is live (not soft-deleted).
         job_ref = self._resolve_live_ref(job_id)
         status = _status_of(self.store.tags_for(job_id))
-        if status not in ("failed", "cancelled"):
+        if status not in ("failed", "cancelled", "timed-out"):
             raise BadInput(
-                f"job id={job_id} is STATUS:{status or 'unset'}; only a failed "
-                "or cancelled job can be retried",
+                f"job id={job_id} is STATUS:{status or 'unset'}; only a failed, "
+                "timed-out or cancelled job can be retried",
                 next="wait for the job to reach a terminal state, or delete it",
             )
 
@@ -4767,6 +4770,7 @@ class JobHandler(NumericRefHandler):
         "succeeded": frozenset(),
         "failed": frozenset(),
         "cancelled": frozenset(),
+        "timed-out": frozenset(),
     }
 
     def _guard_tag_add(
@@ -4926,10 +4930,12 @@ class JobHandler(NumericRefHandler):
         )
         if status is not None:
             lines.append(f"status: {status}")
-        if status == "failed":
+        if status in ("failed", "timed-out"):
             # ``error:`` rides under ``status:`` — gr536316: the reason
             # used to sit at the END of the event timeline, where the
             # card's byte cap cut it on exactly the jobs that needed it.
+            # A ``timed-out`` kill writes its reason the same way
+            # (td648501).
             reason = _job_error_head(meta, blocks)
             if reason is not None:
                 lines.append(f"error: {reason}")
@@ -6350,7 +6356,8 @@ class JobHandler(NumericRefHandler):
         "Active" = any **non-terminal** status — not just `queued` /
         `running`, but also e.g. `waiting_time` / `waiting_children` (a
         coordinator parked between phases). Only the terminal statuses
-        (succeeded / failed / cancelled) don't block a fresh attempt — the
+        (succeeded / failed / cancelled / timed-out) don't block a fresh
+        attempt — the
         caller asked for a retry and the substrate delivers it. This is what
         makes ``idem_key`` alone a sufficient single-loop guard for a
         perpetual coordinator (e.g. ``quest_tick``): a sleeping loop still

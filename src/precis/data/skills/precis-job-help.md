@@ -825,6 +825,7 @@ shapes for the LLM-facing call.
 | `STATUS:running`          | A runner has claimed it                |
 | `STATUS:succeeded`        | Finished cleanly; check `job_summary`  |
 | `STATUS:failed`           | Exited without a usable result         |
+| `STATUS:timed-out`        | Killed at its wall-clock deadline with the job type's timed-out verdict (`land_slice`); the plan tick parks the slice at the re-land ask |
 | `STATUS:cancel_requested` | Cancellation in flight                 |
 | `STATUS:cancelled`        | Runner stopped on cancel request       |
 

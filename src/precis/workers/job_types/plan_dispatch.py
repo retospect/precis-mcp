@@ -508,8 +508,8 @@ _COMMENT_KIND = "todo_comment"
 #: The gripe comment chunk kind (``handlers.gripe._COMMENT_KIND``; restated).
 _GRIPE_COMMENT_KIND = "gripe_comment"
 
-_JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
-_JOB_ENDED = frozenset({"succeeded", "failed"})
+_JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed-out"})
+_JOB_ENDED = frozenset({"succeeded", "failed", "timed-out"})
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
 
 #: The ONLY cancelled-job types the tick re-queues blind
@@ -3344,18 +3344,20 @@ def _rearm_floor(n: _Node) -> int | None:
 
 
 def _infra_red_lands(plan: _Plan, n: _Node) -> int:
-    """The run of consecutive failed ``land_slice`` jobs marked
+    """The run of consecutive failed/timed-out ``land_slice`` jobs marked
     ``attempt_free == "infra-land"`` at the tail of ``n``'s jobs, counting
     only jobs after ``meta.rearmed_after_job`` (an answered ask re-arms,
     gr570187). A land red on the diff itself — or any other job — ends the
-    run: the node goes back through a build, not another land."""
+    run: the node goes back through a build, not another land. A
+    wall-deadline kill carries ``STATUS:timed-out`` instead of ``failed``
+    (td648501) but is the same infra-class red."""
     floor = _rearm_floor(n)
     count = 0
     for j in reversed(plan.jobs(n)):
         if floor is not None and j.id <= floor:
             break
         if not (
-            j.status == "failed"
+            j.status in ("failed", "timed-out")
             and j.meta.get("job_type") == "land_slice"
             and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
         ):
@@ -3391,7 +3393,7 @@ def _reland_params(plan: _Plan, n: _Node, store: Any) -> dict[str, Any] | None:
         return None
     j = jobs[-1]
     if not (
-        j.status == "failed"
+        j.status in ("failed", "timed-out")
         and j.meta.get("job_type") == "land_slice"
         and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
     ):
@@ -3426,7 +3428,7 @@ def _land_again_capped(plan: _Plan, n: _Node) -> bool:
     j = jobs[-1] if jobs else None
     return bool(
         j is not None
-        and j.status == "failed"
+        and j.status in ("failed", "timed-out")
         and j.meta.get("job_type") == "land_slice"
         and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
         and j.meta.get("land_again_cap")

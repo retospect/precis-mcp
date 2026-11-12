@@ -76,7 +76,7 @@ def _pending_fresh_status_job(conn: Any) -> bool:
                  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                  'open'
-               ) NOT IN ('succeeded', 'failed', 'cancelled')
+               ) NOT IN ('succeeded', 'failed', 'cancelled', 'timed-out')
          LIMIT 1
         """,
         (STATUS_JOB_TYPE, _PENDING_FRESH_S),

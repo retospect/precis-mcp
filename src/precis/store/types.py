@@ -1294,6 +1294,12 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
             "waiting_ask_user",
             "waiting_manual_kick",
             "yielded",
+            # Terminal wall-deadline verdict (gr647914 / td648501):
+            # ``ssh_node``'s deadline kill writes it only for a job_type
+            # declaring ``deadline_kill_meta`` (``land_slice``), so the
+            # card renders ``status: timed-out``; hyphenated is the
+            # canonical spelling (``_common.TIMED_OUT``).
+            "timed-out",
         }
     ),
 }
@@ -1409,6 +1415,12 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # waiting_* park (nothing wakes it; it competes in the
             # claim order) and not terminal.
             "yielded",
+            # Terminal wall-deadline verdict (gr647914 / td648501) —
+            # the job axis's distinct timed-out status, written only by
+            # ``ssh_node``'s deadline kill for a job_type declaring
+            # ``deadline_kill_meta``. Keep in sync with
+            # ``_common.TIMED_OUT``.
+            "timed-out",
             # quest lifecycle (migration 0065 / ``quest-layer`` (git-only)).
             # A quest is a perpetual striving — it has NO `done`. `active` (we
             # strive) → `dormant` (set aside, may reawaken) → `abandoned`

@@ -164,7 +164,7 @@ def _wake_children_done(conn: Connection, *, limit: int) -> list[int]:
                               AND t.namespace = 'STATUS'
                             LIMIT 1),
                           'open'
-                        ) NOT IN ('succeeded', 'failed', 'cancelled')
+                        ) NOT IN ('succeeded', 'failed', 'cancelled', 'timed-out')
                )
          ORDER BY r.ref_id
          LIMIT %s
@@ -199,7 +199,7 @@ def _non_terminal_children(conn: Connection, child_job_ids: list[int]) -> list[i
                      AND t.namespace = 'STATUS'
                    LIMIT 1),
                  'open'
-               ) NOT IN ('succeeded', 'failed', 'cancelled')
+               ) NOT IN ('succeeded', 'failed', 'cancelled', 'timed-out')
          ORDER BY c.ref_id
         """,
         (child_job_ids,),
