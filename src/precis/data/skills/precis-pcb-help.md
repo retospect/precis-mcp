@@ -542,6 +542,14 @@ without `route` reports every fanout `unrouted`. Stored routes on boards
 routed before the cut still render, and `view='route-status'` /
 `view='congestion'` still read them.
 
+### Lock convention — fix only connectors and screw holes
+
+Set `fixed` only on what is mechanically pinned: connectors, the card
+connector and the parts around it, mounting/screw holes. Everything else
+stays unfixed so place/shove can move it. Over-locking (every part
+`fixed='both'`) leaves shove nothing to move — it stops, whatever the
+clearance. Unfix parts to let it work.
+
 ### The judged-mutation gate
 
 A batch `put`, `op='class_rules'`, `op='pad'` and `op='footprint'` on a design with placed

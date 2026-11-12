@@ -69,6 +69,9 @@ put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo", "route"
   anneal — a worse placement refuses the write, `force=True` overrides.
   Locks (`fixed`, `max_travel_mm`) and the fixed-copper rip-up rules of
   `op='place'` apply unchanged — [[precis-pcb-help]] for both.
+  Lock only connectors and screw holes; everything else stays unfixed
+  — an over-locked board (all parts `fixed='both'`) gives place/shove
+  nothing to move.
 
 ## Read back a topo-place run — `view='topo'`
 
