@@ -618,6 +618,10 @@ self-improvement loop.
 
 ### 4. Release pass, event-driven
 
+**Superseded in part (Reto 2026-11-12):** `docs/backlog/release-train.md`
+replaces the re-cut loop below: fixes land on the release branch, the
+release merges back into main after deploy, reviews hold the deploy.
+
 (one build + one ruling). A worker pass: previous release done, new
 shas on main, no release open → cut `release/r<N>`, gate, deploy
 pinned, close `awaiting-deploy` rows. Judgment steps (verify the live

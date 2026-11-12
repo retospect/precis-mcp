@@ -1,281 +1,158 @@
----
-status: draft
-title: Release train — qland all, gate one release at 10 shards, fix in place, pipeline the next cut
-pillar: platform
-prio: high
----
+# Release train: a release branch that holds still (gr653036)
 
-# Release train
+Ruled by Reto 2026-11-12 in the coordinator session. Replaces the
+re-cut loop of `docs/backlog/dark-factory.md` § "4. Release pass,
+event-driven"; folds gr653036 and gr653037.
 
-Reto 2026-10-23 ~21:30Z (verbatim): "We shard the tests and stuff over the
-40 cores. We qland. (change of judgement). we qland all the features when
-ready. then we cut the deploy branch. We run CI. completely. It has failures,
-we fix, we run failures, then complete CI again (should be fast bc 40
-cores!). when pass sqash merge fixes to main deploy that sha (or deploy
-branch). (meanwhile more landed on main) when deploy starts, we cut another
-deploy branch, if there are any updates, repeat."
+## Bottom line
 
-Rulings that refine it (Reto 2026-10-23 ~21:50Z):
+A release is cut once and never re-cut. Its failures are fixed **on the
+release branch**: re-run only the failed tests and their surround until
+they pass, then one full run, then deploy the release head. After the
+deploy starts, the release branch is merged into main with a real merge
+commit, and the next release is cut from main's tip.
 
-- A red release is fixed **in the release by the release owner** (`ship
-  --release`, which merges forward to main). Failures are not routed back to
-  authoring trees.
-- **Harness** changes (`scripts/ship`, `scripts/test`, `scripts/lib/`,
-  `.github/`) keep `--remote` pre-merge gates; everything else lands
-  `--quick`. The `ci/**` trigger stays, for harness only.
-- "give everyone 10 concurrent jobs. 10 is fine, we don't need 40. But no
-  fewer." Every full CI run (release, harness gate, nightly leg) uses at
-  least 10 test shards; a 10-shard gate is 12 jobs (plan + lint + 10), so 3
-  fit the 40-job cap (GitHub Pro standard-runner cap,
-  `.github/workflows/check.yml` "Job budget" comment).
+Why: today a red cut is fixed on main and re-cut from main's tip. Main
+moves while the fixes land, so a re-cut waits for every new land's review
+(the gr611217 livelock), and a fresh pass can cut below the fixes
+(r292, 2026-11-12, red on the same 12 tests as r291). Prod sat on one sha
+for about ten hours. A target that holds still removes both.
 
-Replaces memory me499045's "one release at a time" with a pipelined train.
-Related: thread `docs/backlog/threads/ship-gate-ci.md` (gr495187),
-`docs/runbooks/release-cycle.md`, `release-ci-diff-coverage.md`.
+## Ruled design
 
-## Measurements (2026-10-23, `gh run view <id> --json jobs`)
+### Flow
 
-| Run | Shards | Slowest shard | Mean pytest step | Non-pytest steps/shard |
-|---|---|---|---|---|
-| 40018273776 (`ci/`, green) | 10 | 28.5 min | 21.7 min | 1.4–2.0 min |
-| 40020802837 (main, green, queued 8 min) | 10 | 34.9 min | 24.7 min | 1.3–1.9 min |
-| 39978678657 (`release/r88`, green) | 12 | 28.1 min | 19.4 min | 1.4–2.0 min |
-| 39926555648 (`release/r87`, red) | 10 | 35.9 min | 24.7 min | 0.8–1.7 min |
+1. **Cut.** `release_cut` cuts `release/r<N>` from origin/main's tip, as
+   today's first cut does. Only one release is open at a time.
+2. **Full run.** The gate (check.yml on the release branch) runs the
+   whole suite and collects every failure.
+3. **Fix rounds, on the branch.** On red, the digest
+   (`ci_red_digest`) groups the failures into clusters (by test file,
+   then by failing module) and mints **one fix todo per cluster**, run in
+   parallel. Each fixer branches from `release/r<N>` and lands onto
+   `release/r<N>`, never main. Fix forward only: no skip, no xfail
+   without a waiver (`precis.plans.red_waiver`).
+4. **Targeted re-run.** When every fix of a round has landed, re-run only
+   the failed test ids plus their surround: the tests the spot selector
+   picks for the files the round changed (the same selection
+   `land_slice` uses for `--checked`). Red → back to 3 with the
+   remaining failures.
+5. **Full run on the fixed head.** Required before deploy, never
+   skipped: a fix can break a test that was green.
+6. **Deploy** the release head (`deploy r<N>`, the approval ask and
+   `release.auto_deploy` as today).
+7. **Merge back.** As soon as the deploy starts, merge `release/r<N>`
+   into main with a real merge commit (`Merge release/r<N> fix forward`,
+   as r271 and r275 were by hand). The release head becomes an ancestor
+   of main, so every `sha-in-prod` gate keeps reading plain git ancestry.
+   Hunks main already has (the same fix landed twice) resolve to main's
+   side by content (`land_slice`'s already-landed-by-content proof); a
+   real conflict mints one builder todo that resolves it on a branch off
+   main. Main does not require linear history.
+8. **Next cut** from main's tip once the merge-back is on main and the
+   deploy is confirmed (`release_confirm`).
 
-- **Setup is small.** Per shard: ~1.5 min of steps (checkout, node, uv,
-  apt pg17 client, postgres service) plus ~1.2 min inside the pytest step
-  (shard 9 of 40018273776: `uv sync` 2 s, collection and xdist start 74 s).
-  ~2.7 min of a ~28 min shard. A cached image saves at most the ~1.5 min of
-  steps; not worth a moving part.
-- **The heavy cluster dominates.** One run is ~205–218 runner-min of pytest
-  (≈ 410 xdist-worker-min on 2-vCPU runners). The 61 tests ≥ 60 s in
-  `tests/shard_weights.json` `seconds` sum to 208 worker-min, half the
-  suite; the top eight (6.7–11.3 min each, led by
-  `test_pcb_nano_usb_pd_testboard_r2.py::test_nano_board_place_route_drc_baseline`
-  at 678 s) are 63 worker-min. Slowest/mean shard is 1.25–1.4: pinning
-  balance plus ~30% runner-speed spread.
-- **Wall at 10 shards: ~28–36 min.** Fix, in order: (1) cut the heavy
-  cluster (split the top pcb/SE/xtb tests by seed or stage, or move fixed
-  seed sweeps to the nightly) so no test exceeds ~4 min; (2) re-run
-  `scripts/shard-weights` after each such change. Estimated result: ~20 min
-  at 10 shards. More shards is off the table per the ruling.
+### Reviews hold the deploy, not the cut
 
-## 1. Landing
+The engine-review gate covers the lands **inside** the release (the cut's
+range) plus the fixes on its branch, and holds step 6, not step 1. Lands
+after the cut belong to the next release and hold nothing. A FIX verdict
+on a land inside the release mints its fix onto the release branch like
+any other fix (step 3). This retires the tip-review re-cut hold
+(`release_poll.note_cut_hold` kind `tip`) and the cut freeze
+(`release_poll.land_freeze`, gr651885): with no re-cut there is nothing
+to freeze for.
 
-**Exists.** `scripts/ship` `--quick` path: dirty-tree refusal, sync,
-`_refuse_stale_migration_mint`, `_refuse_stray_adds`,
-`_squawk_new_migrations`, the qland drift guard (24 h warn / 48 h refuse via
-`scripts/last-gated-main-sha --age-hours`), the pre-qland lint (ruff, mypy,
-import contracts, DB-free hygiene tests; gate env `uv sync` catches a broken
-lock), the in-lock migration collision guard, CAS squash push. `--remote`:
-`remote_gate_wait`, `_remote_gate_admit` (`PRECIS_REMOTE_GATE_SLOTS`=2).
-Main pushes run lint only since b92cb5e95 (`plan` output `lint_only`).
+### No abandon; an alarm instead
 
-**Delta.**
+A fixed target is always worth finishing, so the pass never drops a
+release for a fresh cut. The coordinator ask fires when:
 
-- Classify the diff in `scripts/ship` before any gate: harness = any path
-  under `scripts/ship`, `scripts/test`, `scripts/lib/`, `.github/`.
-  Harness diff + `--quick`/`--checked` → refuse, naming `--remote`.
-  Non-harness diff + `--remote` → refuse, naming `--quick`. `uv.lock`,
-  `pyproject.toml`, migrations and schema are not harness: `--quick`.
-- Keep every `--quick` refusal listed above. `scripts/qgo-guard` stays a
-  deploy-time guard (`/qgo`), not a landing one.
-- Docs: CLAUDE.md ship bullets, `docs/conventions/shipping.md` §/land and
-  §/qland, `.claude/commands/land.md`, `qland.md`,
-  `docs/conventions/testing.md` CI shapes. `.claude/fleet/authority.md` Tier W
-  still limits `--quick` to docs/lint (me499045): Reto's file, flag it.
+- a fix round ends with no fewer failing tests than it started with;
+- the release is still red two hours after its cut;
+- the failure is not code (runners down, network, an expired
+  credential): at once, naming the class.
 
-**Accepted risk.** Main can be red at test level for up to one release
-cycle; only lint runs on main pushes, and `scripts/main-ci-status` no longer
-sees test reds there. The release gate catches them; the drift guard bounds
-how long main runs without a full verdict.
+The ask lists, per failing test, any main commit since the cut that
+touched it, so the coordinator can cherry-pick a fix main already has
+onto the release branch. Answering it never closes the release. The
+2-iteration loop cap (`_RELEASE_LOOP_MAX`) goes; progress is the limit.
 
-**Acceptance.** Tests in `tests/test_ship*.py`: harness diff refused by
-`--quick` and `--checked`, non-harness diff refused by `--remote`, a
-`uv.lock`-only diff lands under `--quick`.
+### Holds ask at once
 
-## 2. Shard width: fixed 10
+A hold that cannot clear itself (a FIX whose fix ended without a land, a
+reviewer under a dead root) files its ask on the next poll, not after an
+hour (gr653037 a). `plan_dispatch` routes a brief to the coordinator for
+a deny path only when the brief asks to edit that path, not when it cites
+it as checked (gr653037 b).
 
-**Exists.** `scripts/ci-shard-plan` `choose()` picks 12 (≤1 other active
-run) or 10 from the live run count; weights tables `10` and `12`;
-`max-parallel` 12 (gate) / 20 (nightly); `scripts/last-gated-main-sha`
-`GATE_SHARD_COUNTS = (6, 10, 12)`.
+### Timing target
 
-**Delta.** Every full run uses exactly 10 shards: `choose()` returns 10
-always (keep the `FORCE_SHARDS` input for measurement, floor 10). Drop the
-`12` table from `tests/shard_weights.json` and `scripts/shard-weights`
-`NS`. Keep 6 and 12 in `GATE_SHARD_COUNTS` until no sha inside its 48 h
-window carries them, then drop. Budget comment in check.yml and
-`tests/test_ci_shards.py`: release 12 + two harness gates 24 + main lint 2
-= 38; nightly (25) + one gate (12) = 37; a fourth gate queues.
-
-Separate slice: the heavy-cluster diet from the Measurements section.
-
-**Acceptance.** Three consecutive release runs show 10 `test-linux (3.13,
-K)` jobs; `tests/test_ci_shards.py` pins the arithmetic. Heavy slice: no
-test in a fresh `seconds` table above 240 s; release wall ≤ 22 min on three
-consecutive runs.
-
-## 3. Fix loop (release owner)
-
-**Exists.** `scripts/release` `ci_red()` exits 2 on a completed red
-`lint`/`test-linux*` check-run of the head. `scripts/ship --release`
-(`_release_land`, `_release_after_landing`): applies a tree's change onto
-`release/r<N>`, then merges forward into main as a `--no-ff` merge, both in
-one narrow-lock section; `_release_migration_guard`; `--allow-migration`.
-Every `release/**` push runs the full shape, one concurrency group per sha,
-never cancelled.
-
-**Delta.**
-
-- The release owner fixes every failure itself, from a tree cut at the
-  release head (`coder` sub-agents allowed). No per-failure routing.
-  Before each `ship --release` it runs the failing ids locally
-  (`scripts/test <nodeid>…`); that is its check, not the gate.
-- Fixes reach main at fix time (today's forward merge), not after the
-  release is green. Required by §5: the next cut is taken from main and must
-  contain every fix of the release it follows.
-- **Failures first, in CI, in the same run.** On a `release/**` push, `plan`
-  finds the newest completed run on that branch with conclusion `failure`
-  whose test-linux shards all uploaded `junit-10-K` artifacts, extracts
-  failed and errored node ids (cap 200), and outputs `failed_ids`. A new job
-  `failed-first` (pg17 service, same steps as test-linux, `pytest
-  <ids>` without `--shard`) runs when `failed_ids` is set; `test-linux`
-  `needs` it and runs only if it succeeded or was skipped. No prior red, a
-  shard without junit (timeout), or over the cap → straight to the full
-  matrix.
-  - Why CI, not local: release failures are the ones local lanes missed,
-    often runner-specific (2 vCPU, pg17 client, node). Why the same run: the
-    exact certificate stays one run on one sha, and no dispatch input or
-    driver step is needed. Cost: +~4–6 min on a green head; saves a full
-    12-job run when a fix does not fix.
-- Readers: `scripts/release` `ci_red()` and `scripts/round` `_red_above()`
-  treat a red `failed-first` as red (today the skipped shards would read as
-  "not red" until `--ci-timeout`). `last-gated-main-sha` needs no change:
-  its exact shape check counts only `lint` and `test-linux*` names.
-- Concurrency: `release/**` gets one group per branch with
-  `cancel-in-progress: true`. Only the newest head deploys; fixes never
-  arrive during a deploy (the journal refuses `ship --release`).
-
-**Acceptance.** `tests/test_last_gated_main_sha.py` pins `failed-first`
-ordering and the `needs`/`if`; `tests/test_ci_failed_first.py` extracts ids
-from fixture junit; a real release red→fix shows `failed-first` then 10
-shards in one run.
-
-## 4. Deploy the green head pinned
-
-**Exists, no delta.** `scripts/round deploy` (exact certificate, `--pinned`,
-journal, ff `gated`/`prod`), the playbook's `/healthz` X-Precis-Boot-Sha
-check, exit 3 then `--confirm-runtime`, the 03:00–04:20Z no-deploy window.
-§5 adds one hook: deploy start triggers the next cut.
-
-## 5. Pipelining
-
-**Exists.** One release at a time: `scripts/round` `cmd_cut` refuses while
-round.json records a release or any `release/*` branch exists;
-`scripts/release` queues (step 3, `--queue-timeout`); `scripts/ship`
-`_release_preflight` refuses unless exactly one `release/*` exists.
-
-**States** (per release record in round state):
-
-| State | Entered by | Accepts fixes | Next cut allowed |
-|---|---|---|---|
-| `cut` | `round cut` | yes | no |
-| `gating` | check.yml run on head in flight | yes (cancels run) | no |
-| `fixing` | head red | yes | no |
-| `green` | exact certificate on head | yes (→ `gating`) | no |
-| `deploying` | `round deploy` writes its journal | no | yes |
-| `deployed` | rollout returned, exit 3 | no | yes |
-| `confirmed` | `--confirm-runtime`: tag, branch deleted | — | yes |
-| `superseded` | the next release deploys over it | — | yes |
-| `abandoned` | `round cut --abandon` | — | yes |
-
-**Invariants.** At most one release in `cut`…`green` (the *open* release)
-and at most one in `deploying`/`deployed`. Release N+1 is cut only when N
-is `deploying` or later **and** origin/main's tree differs from N's head
-tree (`git diff --quiet <N head> origin/main` fails), at origin/main, which
-must contain N's head (refuse otherwise). N+1 enters `deploying` only after
-N is `confirmed`, `superseded` or `abandoned`; `prod` stays fast-forward.
-
-**N's deploy fails while N+1 gates.**
-
-- Rollout fault, code unchanged (host down, playbook error, health
-  timeout): resume N at the same pinned sha (journal resume / `--catch-up`).
-  N+1 keeps gating and waits.
-- Code defect in N (deploy health or runtime check): N takes no fixes. The
-  owner fixes it on N+1 via `ship --release`. N+1, once green, deploys with
-  `round deploy --supersede r<N>`: allowed only when N+1's head contains N's
-  head; N's journal and receipt are kept, N gets no `deployed/r<N>` tag and
-  is marked `superseded`. No rollback (prod moves ff-only); prod runs the
-  defect until N+1 lands. Today close/abandon refuse a partial deployment;
-  `--supersede` is the one exception.
-
-**`ship --release` target.** The open release from round state, not the
-count of `release/*` branches. None open (N deploying, N+1 not cut yet):
-refuse with "land on main with --quick; it rides r<N+1>". Optional
-`--release-branch release/r<N>` must name the open release.
-
-**Delta, code.** Round state holds a list of release records with `state`
-(round.json today holds one `release`); `cmd_cut` gates on the invariants
-above; `round deploy --supersede`; `_release_preflight` reads round state;
-`scripts/release` step 3 stops queueing: S in the open release → ride; else
-exit 0 "rides the next cut". Peer marks (`round in|none|eta`) attach to the
-open release.
-
-**Acceptance.** `tests/test_round_release.py` cases: cut refused while a
-release is `gating`; cut allowed at `deploying` with main moved, refused
-with main's tree equal to N's head; `--supersede` refused when N+1 lacks
-N's head; `ship --release` targets the open release with two
-`release/*` branches present.
-
-## 6. Driver
-
-**Exists.** `scripts/release` (cut → wait → deploy for one sha), `/round`,
-`/go`; the owner today is the builder-ce session.
-
-**Recommendation.** A loop script plus one owner session. New
-`scripts/release-train` (`--once` | `--watch`): each tick reads round state
-and GitHub, takes the one idempotent next step through `scripts/round`
-(cut, deploy when green and outside 03:00–04:20Z, cut N+1 at deploy start),
-and prints one event line (`red r<N> <ids>`, `green r<N>`,
-`deploy-start r<N>`, `cut r<N+1> <sha>`, `runtime-pending r<N>`). The
-owner session (builder-ce) runs it under Monitor and does the steps that
-need judgment: fixes on `red`, runtime confirmation on `runtime-pending`,
-supersede decisions. No unattended daemon: runtime confirmation and fixes
-need a session, and an unwatched deploy is `/qgo`'s risk profile.
-
-**Acceptance.** `--once` against fixture state takes exactly one step per
-state in the §5 table; a real cycle runs cut → green → deploy → cut N+1
-with only the session's fix and confirm steps by hand.
-
-## 7. What goes away, what stays
-
-| Item | Fate |
-|---|---|
-| `--remote` for non-harness diffs | refused (§1) |
-| `ci/**` trigger, `PRECIS_REMOTE_GATE_SLOTS`, `_remote_gate_admit`, `sweep_ci_refs` | stay, harness only |
-| `--remote` race retries / hybrid local fallback (`REMOTE_CI_RETRIES`, `REMOTE_FALLBACK`) | stay; revisit once harness gate volume is known |
-| `ci-shard-plan` load-based 12 | removed, fixed 10 (§2) |
-| `scripts/release` queueing | removed (§5) |
-| per-sha never-cancel group for `release/**` | per-branch, cancel-in-progress (§3) |
-| nightly full matrix, `coverage-db`, PR trigger, `workflow_dispatch` | stay |
-| main lint-only lane (b92cb5e95) | stays |
+Green within about three hours of the cut: full run ~90 min, a fix round
+(builder plus targeted re-run) 20–40 min, final full run ~90 min.
+Parallel fixers per cluster are what make one round enough.
 
 ## Slices
 
-| # | Slice | Depends | Acceptance |
-|---|---|---|---|
-| 1 | done 72b4c3689 — harness classifier in `scripts/ship`; `--quick` for all non-harness; docs. Reto-only files still need the lane wording: `.claude/commands/land.md` step 4 → `--remote` is the harness lane (non-harness → `--quick`); `.claude/commands/qland.md` → `--quick` is the default lane, harness refused; `.claude/fleet/authority.md` Tier W "--quick is for docs or lint only" is stale under the train — flag to Reto | — | §1 tests; shipping.md/CLAUDE.md agree |
-| 2 | done c7ba4cd9b — fixed 10 shards; dropped the `12` table (Reto-only files still saying "6 shards" → 10: `.claude/commands/land.md:69`, `.claude/commands/go.md:78`) | — | §2 first acceptance |
-| 3 | Heavy-cluster diet + reweigh — rt-s3: seed/stage/candidate splits + duplicate-solve dedup landed; reweighed from the last green gate junit; the 22-min wall is checked on the next three release runs. Ruled (Reto 2026-10-24, relayed chat-9a): the over-240 s ids move to the nightly run — rt-s3-nightly marked them `nightly` (gate shards `-m "not nightly"`; the full shape and `scripts/nightly` still run them): nano per-seed sweep x8, both nano baselines, cad BOM roll-up, xtb pillar neck | 2 | no test > 240 s in the gate; release wall ≤ 22 min ×3 |
-| 4 | done 6377acfc7 — `failed-first` job, reader updates, per-branch release concurrency | — | §3 acceptance |
-| 5 | Round state as release list; cut at `deploying`; `ship --release` targets open release; no queueing | — | §5 tests except supersede |
-| 6 | `round deploy --supersede` | 5 | §5 supersede tests |
-| 7 | `scripts/release-train` driver, owner runbook in `docs/runbooks/release-cycle.md`; shrink the `round deploy` lifecycle-lock hold (it currently spans the whole rollout, so `cut` and `ship --release` read busy during a slow rollout — the driver hits this every cycle) | 5 | §6 acceptance |
+Each lands on main; the machinery runs from `origin/prod`, so it takes
+effect from the release after the one that deploys it. Harness files
+(`scripts/round`, `scripts/release`, `scripts/ship`, `scripts/lib`) ship
+`--remote` and are built by hand (builder deny paths).
 
-## Rulings on the open questions (Reto 2026-10-23 ~23:15Z)
+### T1: fixes land on the release branch, one per cluster
 
-- A code defect in release N's deploy while N+1 gates: N+1 supersedes N,
-  no rollback (§5 as written). Reto: "yes."
-- `pyproject.toml` and `uv.lock` are not harness: they land `--quick` (§1
-  as written). Reto: "no harness".
+- `precis.plans.templates.mint_release_fix`: the fix node's brief and
+  task name `release/r<N>` as base and land target; the recut node goes.
+- `ci_red_digest`: clusters failures and mints one fix node per cluster.
+- `land_slice` (and `scripts/ship`'s land target, hand-built `--remote`):
+  land onto a named release branch, rebasing on it, not main.
+- Done when: a red gate with failures in two files mints two fix todos
+  whose lands are commits on `release/r<N>`, and main does not move.
+
+### T2: targeted re-run, then full run
+
+- A `release_rerun` node after each fix round: runs the failed ids plus
+  the spot-selected surround on a slice host against the release head
+  (`scripts/test <ids>`), and records pass/fail per id on the plan.
+- Green → a full gate run on the release head (push or `gh workflow
+  run` on the branch); red → next fix round with the remaining ids.
+- Done when: a round that fixes all failures goes rerun → full run →
+  deploy ask with no re-cut and no new `release/r<N+1>`.
+
+### T3: merge back with a real merge
+
+- A `release_merge_back` node fired by the deploy start: `git merge
+  --no-ff release/r<N>` into main on a slice host, push; hunks main
+  already carries resolve by content; a real conflict mints one builder
+  todo and holds the next cut until it lands.
+- The next cut waits for the merge-back on main and `release_confirm`.
+- Done when: after a deploy, main has one merge commit whose second
+  parent is the release head, and `sha-in-prod` on a release-branch fix
+  reads open.
+
+### T4: reviews hold the deploy, scoped to the release
+
+- `release_poll`'s review gate reads the cut's range plus the release
+  branch's fix commits and holds the deploy node, not the cut.
+- Retire the tip-review re-cut hold, `land_freeze` and their
+  `PRECIS_CUT_FREEZE_*` settings, and `_RELEASE_LOOP_MAX`.
+- Done when: lands after the cut, reviewed or not, never hold the
+  release; an unreviewed land inside the range holds the deploy.
+
+### T5: the alarm and immediate hold asks
+
+- The no-progress / two-hour / not-code ask, with the main-commits-per-
+  failing-test list.
+- Hopeless holds file on the next poll (gr653037 a); deny-path routing
+  only for paths the brief edits (gr653037 b).
+- Done when: a round with no progress files one ask naming the stuck
+  ids; a won't-do fix files its review-wait ask within one poll.
+
+Order: T1 and T4 first (independent), then T2 (needs T1), T3, T5.
+
+## Explicitly not in scope
+
+- Faster full runs (shard split, gr576324 quick-guards): separate.
+- Hotfix releases off a deployed release: not needed while every
+  release is cut from main's tip.
+- The manual deploy override (gr653038): Reto's decision, separate.
