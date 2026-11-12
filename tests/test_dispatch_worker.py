@@ -525,6 +525,100 @@ def test_cancelled_child_job_does_not_block_redispatch(
     assert any(c["id"] != job.id for c in children)
 
 
+def _fix_gripe_todo_for(
+    handler: TodoHandler, store: Store, status: str
+) -> tuple[int, int]:
+    """A fix_gripe-dispatched todo with a ``fixes`` link to a gripe at ``status``."""
+    from tests._refs import insert_gripe
+
+    gripe = insert_gripe(store, f"gripe at {status}", status=status)
+    parent = handler.put(
+        text=f"fix gripe at {status}",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    pid = id_of(parent.body)
+    store.add_link(src_ref_id=pid, dst_ref_id=gripe.id, relation="fixes")
+    return pid, gripe.id
+
+
+def _status_tag(store: Store, ref_id: int) -> str | None:
+    for t in store.tags_for(ref_id):
+        if str(t).startswith("STATUS:"):
+            return str(t).split(":", 1)[1]
+    return None
+
+
+@pytest.mark.parametrize(
+    ("gripe_status", "parent_status"),
+    [("done", "done"), ("wontfix", "won't-do")],
+)
+def test_fix_gripe_mint_gate_closes_parent_of_closed_gripe(
+    handler: TodoHandler, store: Store, gripe_status: str, parent_status: str
+) -> None:
+    """A fix_gripe todo whose gripe is already resolved mints nothing and is
+    closed — the handler would skip it (cancelled child), the cancelled child
+    never blocks, and the next pass would re-mint forever."""
+    pid, _gid = _fix_gripe_todo_for(handler, store, gripe_status)
+    run_dispatch_pass(store)
+    assert _child_jobs_under(store, pid) == []
+    assert _status_tag(store, pid) == parent_status
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    # A second pass is a no-op too.
+    run_dispatch_pass(store)
+    assert _child_jobs_under(store, pid) == []
+
+
+@pytest.mark.parametrize(
+    "gripe_status", ["verify", "auto_verify", "user_verify", "needs_spec"]
+)
+def test_fix_gripe_mint_gate_parks_parent_of_parked_gripe(
+    handler: TodoHandler, store: Store, gripe_status: str
+) -> None:
+    """A fix_gripe todo whose gripe is parked (needs_spec / awaiting
+    verification) mints nothing and is parked with a ``waiting-for:`` tag the
+    candidate query excludes, with the reason on its timeline."""
+    pid, _gid = _fix_gripe_todo_for(handler, store, gripe_status)
+    run_dispatch_pass(store)
+    assert _child_jobs_under(store, pid) == []
+    assert any(v.startswith("waiting-for:") for v in _open_tag_values(store, pid))
+    assert _status_tag(store, pid) not in {"done", "won't-do"}
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    run_dispatch_pass(store)
+    assert _child_jobs_under(store, pid) == []
+
+
+def test_fix_gripe_mint_gate_falls_back_to_params_gripe_id(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No ``fixes`` link: the gate reads ``params.gripe_id`` like the link carry."""
+    from tests._refs import insert_gripe
+
+    gripe = insert_gripe(store, "parked gripe", status="needs_spec")
+    parent = handler.put(
+        text="fix gripe via params",
+        meta={
+            "executor": "claude_inproc",
+            "job_type": "fix_gripe",
+            "params": {"gripe_id": gripe.id},
+        },
+    )
+    pid = id_of(parent.body)
+    run_dispatch_pass(store)
+    assert _child_jobs_under(store, pid) == []
+    assert pid not in _candidate_parent_ids(store, limit=10)
+
+
+def test_fix_gripe_mint_gate_open_gripe_still_mints(
+    handler: TodoHandler, store: Store
+) -> None:
+    pid, gid = _fix_gripe_todo_for(handler, store, "open")
+    result = run_dispatch_pass(store)
+    assert result.ok == 1
+    children = _child_jobs_under(store, pid)
+    assert len(children) == 1
+    assert children[0]["meta"]["job_type"] == "fix_gripe"
+
+
 def test_succeeded_plan_tick_child_exempts_non_tier_parent(
     handler: TodoHandler, store: Store
 ) -> None:

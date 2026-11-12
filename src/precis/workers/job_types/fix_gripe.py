@@ -107,6 +107,18 @@ def _gripe_status(store: Any, gripe_id: int) -> str | None:
     return None
 
 
+def fix_blocking_gripe_status(store: Any, gripe_id: int) -> str | None:
+    """The gripe's ``STATUS:`` value when it rules out a fix attempt, else ``None``.
+
+    One predicate for both ends of the lane: :func:`run` skips on it, and
+    ``workers.dispatch._claim_and_dispatch`` refuses to mint on it. Without
+    the mint-side check the skip maps to a cancelled job, which deliberately
+    never blocks re-dispatch (gr508689), so the parent re-minted forever.
+    """
+    status = _gripe_status(store, gripe_id)
+    return status if status in _NO_DOWNGRADE_GRIPE_STATUSES else None
+
+
 # ── Declared metadata (read by the dispatcher and the runner) ──────
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -584,8 +596,8 @@ def run(
     # clone/agent effort, and leave the gripe's status untouched. A
     # ``verify`` gripe is past fixing too — its fix is deployed awaiting
     # the probe, so this job has nothing left to do.
-    gripe_status = _gripe_status(store, gripe_id)
-    if gripe_status in _NO_DOWNGRADE_GRIPE_STATUSES:
+    gripe_status = fix_blocking_gripe_status(store, gripe_id)
+    if gripe_status is not None:
         wall = time.perf_counter() - t0
         log.info(
             "fix_gripe: gripe:%d is already STATUS:%s — skipping fix attempt "

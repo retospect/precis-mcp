@@ -701,6 +701,82 @@ def _carry_fixes_link(
     )
 
 
+#: Parent todo STATUS for a fix_gripe parent whose gripe is already resolved.
+_FIX_GRIPE_CLOSED_PARENT_STATUS = {"done": "done", "wontfix": "won't-do"}
+
+
+def _settle_parent_of_unfixable_gripe(
+    store: Store, conn: Any, parent_id: int, *, params: dict[str, Any]
+) -> bool:
+    """Settle a fix_gripe parent whose gripe rules out a fix; True if settled.
+
+    Resolves the gripe like :func:`_carry_fixes_link` (the parent's
+    ``fixes`` link, else ``params.gripe_id``) and asks the handler's own
+    predicate (``fix_gripe.fix_blocking_gripe_status``). A resolved gripe
+    (``done`` / ``wontfix``) closes the parent (``done`` / ``won't-do``); a
+    parked one (``needs_spec``, ``verify`` family) parks the parent under a
+    ``waiting-for:`` tag so it leaves the candidate set. Either way a
+    ``dispatch-skipped`` event records why. Runs under the parent's row lock.
+    """
+    from precis.workers.job_types.fix_gripe import fix_blocking_gripe_status
+
+    row = conn.execute(
+        "SELECT dst_ref_id FROM links "
+        " WHERE src_ref_id = %s AND relation = 'fixes' LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    raw = row[0] if row is not None else params.get("gripe_id")
+    if raw is None:
+        return False
+    try:
+        gripe_id = int(raw)
+    except (TypeError, ValueError):
+        return False
+    gripe_status = fix_blocking_gripe_status(store, gripe_id)
+    if gripe_status is None:
+        return False
+
+    closed_as = _FIX_GRIPE_CLOSED_PARENT_STATUS.get(gripe_status)
+    reason = f"gripe:{gripe_id} is STATUS:{gripe_status}"
+    if closed_as is not None:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('skipped', %s::text) "
+            "WHERE ref_id = %s",
+            (reason, parent_id),
+        )
+        store.add_tag(
+            parent_id,
+            Tag.closed("STATUS", closed_as),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+    else:
+        wait = "spec" if gripe_status == "needs_spec" else "verify"
+        store.add_tag(
+            parent_id, Tag.open(f"waiting-for:{wait}"), set_by="system", conn=conn
+        )
+    store.append_event(
+        parent_id,
+        source="minter",
+        event="dispatch-skipped",
+        payload={
+            "reason": reason,
+            "job_type": "fix_gripe",
+            "gripe_id": gripe_id,
+            "gripe_status": gripe_status,
+        },
+        conn=conn,
+    )
+    log.info(
+        "dispatch: parent #%d fix_gripe not minted (%s); %s",
+        parent_id,
+        reason,
+        f"closed as {closed_as}" if closed_as else "parked",
+    )
+    return True
+
+
 # ── per-parent locked mint ────────────────────────────────────────
 
 
@@ -896,6 +972,18 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool, bool]:
                 job_type,
             )
             return (0, False, False)
+
+        # fix_gripe mint gate: a gripe that is already resolved or parked
+        # (done / wontfix / verify* / needs_spec) leaves nothing to fix. The
+        # handler would skip such a job, the skip lands as ``cancelled``, and
+        # a cancelled child deliberately never blocks (gr508689) — so without
+        # this the parent re-mints every pass. Settle the parent instead.
+        if job_type == "fix_gripe":
+            settled = _settle_parent_of_unfixable_gripe(
+                store, conn, ref_id, params=params
+            )
+            if settled:
+                return (1, False, True)
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on
