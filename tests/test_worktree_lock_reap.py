@@ -3188,16 +3188,40 @@ def test_inflight_reads_another_users_live_pid_as_live(
 
 
 def _fake_lsof(
-    tmp_path: Path, cwds: list[Path], *, fail: bool = False
+    tmp_path: Path,
+    cwds: list[Path],
+    *,
+    fail: bool = False,
+    held: dict[Path, int] | None = None,
 ) -> dict[str, str]:
-    """Env with a fake `lsof` first on PATH printing `-Fn` cwd records."""
+    """Env with a fake `lsof` first on PATH printing `-Fn` cwd records.
+
+    ``held`` maps a file path to a pid: the fake answers a
+    ``lsof -t -- <file>`` call (inflight's launch-dir probe) with that pid —
+    the probe's own ``kill -0`` still decides live vs stale. Each path is
+    emitted both as given and realpath'd: git may record either form for a
+    worktree (``/var`` -> ``/private/var`` on macOS).
+    """
     fakebin = tmp_path / "fakebin-lsof"
     fakebin.mkdir(exist_ok=True)
     if fail:
         body = "exit 1\n"
     else:
-        body = "printf 'p42\\nfcwd\\nn/\\n'\n" + "".join(
-            f"printf 'p42\\nfcwd\\nn{c}\\n'\n" for c in cwds
+        held_cases = "".join(
+            f'            "{form}") printf "%s\\n" {pid} ;;\n'
+            for f, pid in (held or {}).items()
+            for form in {str(f), str(f.resolve())}
+        )
+        body = (
+            "for last; do :; done\n"
+            'if [ "$1" = "-t" ]; then\n'
+            '    case "$last" in\n'
+            f"{held_cases}"
+            "    esac\n"
+            "else\n"
+            "    printf 'p42\\nfcwd\\nn/\\n'\n"
+            + "".join(f"    printf 'p42\\nfcwd\\nn{c}\\n'\n" for c in cwds)
+            + "fi\n"
         )
     script = fakebin / "lsof"
     script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
@@ -3347,6 +3371,96 @@ def test_reap_worktrees_removes_an_idle_lock_tree(
     assert result.returncode == 0, result.stderr
     assert not b.exists()
     assert _pid_alive(alive_pid)
+
+
+# --- launch-dir marker (gr644716): a live holder of the tree's own ----------
+# .claude/scheduled_tasks.lock means the tree is a live session's
+# CLAUDE_PROJECT_DIR — hooks still resolve there — so it must never be a
+# reap candidate, whatever the worktree lock (or its absence) says.
+
+
+def _launch_marker(tree: Path) -> Path:
+    marker = tree / ".claude" / "scheduled_tasks.lock"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("", encoding="utf-8")
+    return marker
+
+
+def test_inflight_launch_dir_marker_marks_unlocked_tree_live(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    """gr644716's reported shape: clean + merged + UNLOCKED, yet a live
+    session's launch dir — the marker must flip safe_remove to live."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    marker = _launch_marker(b)
+    env = _fake_lsof(tmp_path, [], held={marker: alive_pid})
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == f"live#{alive_pid}", bucket
+    assert bucket["bucket"] == "live_session", bucket
+
+
+def test_inflight_idle_lock_with_launch_marker_stays_live(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    """The full incident mechanism: the lock demoted to idle-lock# (pid
+    alive, nothing in the tree, idle for hours) while the session still
+    holds its launch marker — it must read live#<holder>, not safe_remove.
+    The holder is a DIFFERENT live pid than the lock's, so the upgrade can
+    only have come from the marker."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    marker = _launch_marker(b)
+    holder = subprocess.Popen(["sleep", "120"], env=_test_env())
+    try:
+        env = _fake_lsof(tmp_path, [tmp_path / "elsewhere"], held={marker: holder.pid})
+        env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+
+        bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+        assert bucket["session"] == f"live#{holder.pid}", bucket
+        assert bucket["bucket"] == "live_session", bucket
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+
+
+def test_inflight_dead_marker_holder_still_buckets_safe_remove(
+    guard_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A stale scheduled_tasks.lock — held by nobody alive — must not keep
+    the tree off the reap list: the probe prints a pid but kill -0 is the
+    verdict."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    marker = _launch_marker(b)
+    dead = subprocess.Popen(["true"], env=_test_env())
+    dead.wait(timeout=10)
+    assert _wait_for(lambda: not _pid_alive(dead.pid), timeout=5.0)
+    env = _fake_lsof(tmp_path, [], held={marker: dead.pid})
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["bucket"] == "safe_remove", bucket
+
+
+def test_reap_worktrees_keeps_a_live_launch_dir(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    """End to end: a marker-held launch tree survives a real reap run."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    marker = _launch_marker(b)
+    env = _fake_lsof(tmp_path, [], held={marker: alive_pid})
+    env["PRECIS_REAP_GRACE_SECONDS"] = "0"
+    env["PRECIS_REAPED_SCRATCH_DIR"] = str(tmp_path / "reaped-scratch")
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    assert b.exists()
 
 
 # --- reap-worktrees --report: the read-only census --------------------------

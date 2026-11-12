@@ -78,7 +78,10 @@
 #
 #   Worktrees (primary excluded):
 #     missing dir (prunable)   the git admin entry outlives its checkout
-#     locked (holder live)     session field live#<pid>/live-task#<id>, or a
+#     locked (holder live)     session field live#<pid>/live-task#<id> (live#
+#                              also covers a live holder of the tree's
+#                              .claude/scheduled_tasks.lock — a session's
+#                              launch dir, gr644716), or a
 #                              lock with no parseable `pid <N>` — never
 #                              assumed dead (incident 2026-08-15, defect 2)
 #     locked (holder dead)     dead-lock#<pid>, or idle-lock#<pid> (pid alive
