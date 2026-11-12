@@ -137,7 +137,10 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   on the todo. When the selection IS the suite (FULL) no minus-them gate
   runs at all (td602151 removed the 3 h full-gate budget: no land runs
   the suite); the ids are recorded as excluded on the todo and ship
-  relaunches ``--quick`` on the 1 h wall the same way. Only a
+  relaunches ``--quick`` on the 1 h wall the same way. An unreadable
+  selector (timeout or error) counts as FULL (gr586292): ``scripts/test
+  --selected`` would re-read it without a timeout and run the whole
+  suite on a FULL answer; the deploy gate runs the suite. Only a
   main-green red burns an attempt; any launch, probe or
   exclusion-record failure falls back to the ordinary red.
 * :func:`kill` SIGTERMs the live phase's process group (a running
@@ -1017,8 +1020,10 @@ def _checked_selection_full(tree: Path) -> bool | None:
     whole suite. Then no deselect gate runs (td602151: the minus-ids
     run would BE the suite, and no land runs the suite); the main-red
     ids are recorded as excluded and the land relaunches ``--quick``.
-    ``None`` — unreadable selector — counts as non-FULL: the deselect
-    run bounds itself by what it actually is."""
+    ``None`` — unreadable selector (timeout or error) — counts as FULL
+    at the caller (gr586292): ``scripts/test --selected`` re-reads the
+    selector without a timeout and runs the whole suite on a FULL
+    answer, and no land runs the suite."""
     out = _selector_stdout(tree, 120)
     if out is None:
         return None
@@ -3290,11 +3295,19 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     # suite (FULL) no gate runs — the deselect run would BE the suite
     # and the 3 h full-gate budget is gone; the ids are recorded as
     # excluded on the todo and ``--quick`` lands, the release gate's CI
-    # keeping the suite honest.
+    # keeping the suite honest. An unreadable selector takes the FULL
+    # path too (gr586292).
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     if full_fallback_flag() is None:
         return _ordinary_ship_red(ctx, handle)
-    if _checked_selection_full(tree):
+    full = _checked_selection_full(tree)
+    if full is None:
+        ctx.append_chunk(
+            "job_event",
+            "land_slice: the selector was unreadable (timeout or error) — "
+            "counted as FULL; the full suite is deferred to the deploy gate",
+        )
+    if full is not False:
         return _land_without_main_reds(
             ctx,
             handle,

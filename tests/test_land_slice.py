@@ -3238,6 +3238,7 @@ def test_poll_checked_red_outside_alone_red_main_red_deselects_then_quick(
     The probe worktree and its stack are removed, and the todo carries
     the note naming the ids."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
     seams["diff_names"] = "src/precis/x.py\n"
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
@@ -3317,6 +3318,7 @@ def test_poll_checked_red_main_red_on_an_engine_land_deselects_checked(
     detached ``scripts/test --selected --deselect`` — and lands
     ``--quick`` on its green. ``--full`` never launches."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
     _relaxed_deny(monkeypatch)
     seams["diff_names"] = "src/precis/x.py\n"
     seams["changed_paths"] = [_ENGINE_PATH]
@@ -3396,6 +3398,51 @@ def test_poll_checked_red_main_red_full_selection_lands_quick(
     assert any("red on origin/main too" in e and "excluded" in e for e in events)
 
 
+def test_poll_checked_red_main_red_unreadable_selector_never_runs_selected(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr586292 (Reto 2026-11-12: no land runs FULL; the deploy gate
+    does): a selector read that times out counts as FULL. ``scripts/test
+    --selected`` re-reads the selector without a timeout and runs the
+    whole suite on a FULL answer, so the land never launches it; the
+    main-red ids are excluded and ``--quick`` lands, as for FULL."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    sel = seams["tree"] / "scripts" / "impacted-tests"
+    sel.parent.mkdir(parents=True)
+    sel.write_text("#!/bin/sh\n", encoding="utf-8")
+    timed_out: list[str] = []
+    real_run = subprocess.run
+
+    def slow_selector(argv: Any, *args: Any, **kw: Any) -> Any:
+        if argv and str(argv[0]) == str(sel):
+            timed_out.append(str(argv[0]))
+            raise subprocess.TimeoutExpired(argv, 120)
+        return real_run(argv, *args, **kw)
+
+    monkeypatch.setattr(land_slice.subprocess, "run", slow_selector)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    assert timed_out
+    assert all("--selected" not in call[0] for call in seams["launch"])
+    assert all("--full" not in call[0] for call in seams["launch"])
+    argv, _kw = seams["launch"][-1]
+    assert argv[1] == "--quick" and argv[2] == SUBJECT
+    assert handle["flag"] == "--quick" and "verify" not in handle
+    [note] = store.comments(42)
+    assert note.startswith("handoff:") and OUTSIDE_ID in note and "excluded" in note
+    events = [t for k, t in pctx.chunks if k == "job_event"]
+    assert any("unreadable" in e and "deploy gate" in e for e in events)
+
+
 def _refuse_exclusion_note(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_rs._append_comment`` raises on the main-red exclusion note —
     the write ``--quick`` must not relaunch without (td602837) — and
@@ -3449,6 +3496,7 @@ def test_poll_checked_red_main_red_deselect_note_failure_is_ordinary(
     gate does not earn ``--quick`` when the exclusion note could not be
     written; the ordinary red burns the attempt."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
     _refuse_exclusion_note(monkeypatch)
     seams["diff_names"] = "src/precis/x.py\n"
     store = _Store()
