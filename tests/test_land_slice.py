@@ -345,6 +345,21 @@ def test_registered_as_detached_ssh_node_type() -> None:
     )
 
 
+def test_deadline_kill_meta_marks_the_timed_out_verdict() -> None:
+    """gr647914: a wall-deadline kill of a land is a distinct timed-out
+    verdict — attempt-free (the deadline, not the diff, ended it) and
+    capped at the re-land ask so a possibly half-landed ship never
+    auto re-lands. ``ssh_node`` merges ``deadline_kill_meta`` into the
+    ``swept:wall-timeout`` write."""
+    spec = get_job_type("land_slice")
+    assert spec is not None
+    assert spec.deadline_kill_meta == {
+        "attempt_free": "infra-land",
+        "red_class": "timed-out",
+        "land_again_cap": True,
+    }
+
+
 def test_validate_submit(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _Store()
     store.add_todo(42)

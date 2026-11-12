@@ -1503,6 +1503,48 @@ def test_gate_kill_capped_land_goes_to_the_ask(store: Store) -> None:
     assert _jobs_under(store, task)[-1][1]["job_type"] == "land_slice"
 
 
+def test_deadline_killed_land_locks_the_slice(store: Store) -> None:
+    """gr647914: a land killed at its wall deadline — ``failure_class ==
+    "timeout"`` plus the marks ``land_slice.DEADLINE_KILL_META`` has
+    ``ssh_node`` stamp — is a distinct timed-out verdict: no attempt
+    burned, no builder minted, the run parked at the "land again" ask so
+    a possibly half-landed ship never re-lands on its own."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        meta={
+            "failure_class": "timeout",
+            "error": "runner: killed at wall-clock deadline",
+            "attempt_free": "infra-land",
+            "red_class": "timed-out",
+            "land_again_cap": True,
+        },
+    )
+    res = pd.run_pass(store)
+    # No re-land, no builder: the kill burns no attempt and caps the
+    # re-land lane at once — the ask IS the lock.
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if c != task]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert "timed out mid-ship" in str(ask_ref.title)
+    assert _meta(store, ask)["ask"]["options"][0] == "land again (no builder)"
+    body = _body_text(store, ask)
+    assert "killed at the wall deadline" in body
+    assert "may already have merged" in body
+    assert "not at fault" not in body
+    # Answering "land again" still re-arms and re-lands the old branch.
+    _answer_ask(store, ask, "land again (no builder)")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _jobs_under(store, task)[-1][1]["job_type"] == "land_slice"
+
+
 def test_retry_climbs_the_lane_model_ladder(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

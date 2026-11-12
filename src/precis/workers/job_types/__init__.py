@@ -169,6 +169,18 @@ class JobTypeSpec:
     #: ``claude_docker``'s ``_terminate``, which always CAN kill because
     #: it owns the container directly).
     kill: Callable[..., Any] | None = None
+    #: Optional extra ``refs.meta`` stamps the executor merges into the
+    #: wall-deadline kill's own write (``ssh_node``'s ``swept:wall-timeout``
+    #: path, in the same transaction) — the job_type's distinct timed-out
+    #: verdict, riding the executor's ``failure_class="timeout"`` +
+    #: ``error``. ``spec.kill`` cannot stamp these itself: its
+    #: ``ctx.set_meta`` opens a second connection that would block on the
+    #: row lock the deadline path already holds. ``land_slice`` uses this
+    #: to mark the kill attempt-free and cap the re-land lane
+    #: (``land_again_cap``): the ship may already have merged, so the plan
+    #: tick parks the slice at the "land again (no builder)" ask rather
+    #: than auto re-landing a possibly half-landed branch (gr647914).
+    deadline_kill_meta: dict[str, Any] | None = None
     #: Optional post-terminal scratch reap, ``reap(ctx, handle)``. ``kill``
     #: runs BEFORE the row is terminalized, so a kill that also deleted the
     #: compute dir would destroy it before ``meta.finished_at`` / ``wall_s``

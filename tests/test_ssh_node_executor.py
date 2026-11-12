@@ -1387,6 +1387,48 @@ def test_poll_past_deadline_terminalizes_without_kill_hook(
     assert any("killed at wall-clock deadline" in t for t in events)
 
 
+def test_poll_past_deadline_applies_deadline_kill_meta(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr647914: a spec's ``deadline_kill_meta`` rides the wall-timeout
+    terminalize write — ``land_slice`` marks the kill attempt-free and
+    caps the re-land lane, so the job reads as a distinct timed-out
+    verdict, never a gate failure."""
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: replace(
+            _spec(submit=lambda c, s: None, poll=lambda c, h: False),
+            deadline_kill_meta={
+                "attempt_free": "infra-land",
+                "red_class": "timed-out",
+                "land_again_cap": True,
+            },
+        ),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle="remote-pid-timed-out"
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+            "WHERE ref_id = %s",
+            (time.time() - 5, rid),
+        )
+        conn.commit()
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "failed"
+    assert "swept:wall-timeout" in {str(t) for t in store.tags_for(rid)}
+    meta = _meta(store, rid)
+    assert meta["failure_class"] == "timeout"
+    assert meta["attempt_free"] == "infra-land"
+    assert meta["red_class"] == "timed-out"
+    assert meta["land_again_cap"] is True
+
+
 def test_poll_past_deadline_calls_kill_hook_when_present(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

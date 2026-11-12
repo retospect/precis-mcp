@@ -1312,7 +1312,11 @@ def _kill_and_terminalize(
 
     ``failure_class`` (optional) is stamped on ``meta.failure_class`` with
     ``summary`` as ``meta.error``, so a deadline kill (``"timeout"``) can be
-    counted from meta without reading each job's event log. ``polled_alive``
+    counted from meta without reading each job's event log. A deadline
+    kill (``swept_tag`` ``"wall-timeout"``/``"deadline"``) also merges the
+    job_type's :attr:`~precis.workers.job_types.JobTypeSpec.deadline_kill_meta`
+    — its distinct timed-out verdict — into the same write.
+    ``polled_alive``
     is same-call evidence for the legacy deadline exception only: it still
     requires a locked running row owned by this node. Returns False on
     lock contention without changing the row; True after terminalization."""
@@ -1406,7 +1410,19 @@ def _kill_and_terminalize(
         if gpu_reset is not None:
             _set_meta(conn, ref_id, kill_gpu_reset=gpu_reset)
         if failure_class is not None:
-            _set_meta(conn, ref_id, failure_class=failure_class, error=summary)
+            marks: dict[str, Any] = {"failure_class": failure_class, "error": summary}
+            if swept_tag in {"wall-timeout", "deadline"}:
+                # The job_type's distinct timed-out verdict
+                # (``JobTypeSpec.deadline_kill_meta``, gr647914):
+                # ``land_slice`` marks the kill attempt-free and caps the
+                # re-land lane, so the plan tick parks the slice at the
+                # re-land ask — never a gate failure, never a silent
+                # re-land of a possibly half-landed branch. Merged here,
+                # inside the kill transaction: ``spec.kill``'s own
+                # ``ctx.set_meta`` would block on the row lock this path
+                # holds.
+                marks.update(getattr(spec, "deadline_kill_meta", None) or {})
+            _set_meta(conn, ref_id, **marks)
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     bubble_job_failure(store, ref_id)

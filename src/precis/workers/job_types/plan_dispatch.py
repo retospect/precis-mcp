@@ -5151,13 +5151,24 @@ def _mint_ask(
     mech: str | None = None,
 ) -> int:
     newest = plan.jobs(n)[-1]
+    # A deadline-killed land (``red_class == "timed-out"``,
+    # ``land_slice.DEADLINE_KILL_META`` — gr647914) gets the same re-land
+    # ask with its own wording: the ship may already have merged, so the
+    # answer must weigh a half-landed run, not gate infrastructure.
+    timed_out = newest.meta.get("red_class") == "timed-out"
     if relands:
         head = (
-            f"job:{newest.id} {newest.status} — {relands} land(s) in a row "
+            f"job:{newest.id} {newest.status} — the land was killed at the "
+            "wall-clock deadline"
+            if timed_out
+            else f"job:{newest.id} {newest.status} — {relands} land(s) in a row "
             "died outside the diff (gate infrastructure)"
         )
         title = (
-            f"td{n.id}: land failed outside the diff {relands} times: "
+            f"td{n.id}: the land timed out mid-ship: land again, "
+            "rewrite the brief, or drop it?"
+            if timed_out
+            else f"td{n.id}: land failed outside the diff {relands} times: "
             "land again, rewrite the brief, or drop it?"
         )
         options = list(_RELAND_ASK_OPTIONS)
@@ -5209,7 +5220,15 @@ def _mint_ask(
     }
     check_ask_meta(meta)
     if relands:
-        if newest.meta.get("land_again_cap"):
+        if timed_out:
+            # gr647914: the SIGTERM may have raced the merge — the answer
+            # weighs a possibly half-landed run, never an automatic one.
+            verdict = (
+                "The ship was killed at the wall deadline and may already "
+                "have merged — check the `landed:` comment or origin/main "
+                "before re-landing."
+            )
+        elif newest.meta.get("land_again_cap"):
             # A capped exit-137 (the land's own gate-kill retries spent):
             # land_slice's blocked-handoff wording — the 137 can be the
             # container's mem_limit on the branch's own memory, so the

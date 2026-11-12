@@ -135,7 +135,14 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   exclusion-record failure falls back to the ordinary red.
 * :func:`kill` SIGTERMs the live phase's process group (a running
   verify's during verify, ship's otherwise) and drops the main probe's
-  worktree and stack.
+  worktree and stack. A WALL-DEADLINE kill additionally carries
+  :data:`DEADLINE_KILL_META` — applied by ``ssh_node``'s terminalize write
+  as :attr:`~precis.workers.job_types.JobTypeSpec.deadline_kill_meta`:
+  the land reads as a distinct timed-out verdict (attempt-free,
+  ``red_class="timed-out"``, ``land_again_cap``), so the plan tick parks
+  the slice at the "land again (no builder)" ask instead of counting a
+  gate failure or auto re-landing a ship that may already have merged
+  (gr647914).
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
 plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
@@ -2819,6 +2826,21 @@ def _push_branch(tree: Path, branch: str) -> str:
     return f"branch push of {branch}: FAILED ({err})"
 
 
+#: The wall-deadline kill's timed-out verdict (gr647914): ``ssh_node``
+#: merges these into the ``swept:wall-timeout`` terminalize write
+#: (``JobTypeSpec.deadline_kill_meta``). ``attempt_free == "infra-land"``
+#: keeps the kill off the attempt count — the deadline, not the diff,
+#: ended the land — and ``land_again_cap`` parks the run at the plan
+#: tick's "land again (no builder)" ask: the SIGTERMed ship may already
+#: have merged, so nothing may auto re-land the possibly half-landed
+#: branch. ``red_class`` is the distinct verdict the ask's wording reads.
+DEADLINE_KILL_META: dict[str, Any] = {
+    _rs.ATTEMPT_FREE_KEY: "infra-land",
+    "red_class": "timed-out",
+    "land_again_cap": True,
+}
+
+
 def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: SIGTERM the live phase's process group —
     a running verify's during verify, ship's otherwise (a ship that
@@ -2881,6 +2903,7 @@ SPEC = JobTypeSpec(
     submit=submit,
     poll=poll,
     kill=kill,
+    deadline_kill_meta=DEADLINE_KILL_META,
     wall_seconds=wall_seconds,
 )
 
@@ -2888,6 +2911,7 @@ SPEC = JobTypeSpec(
 __all__ = [
     "CHECKED_RED_MARK",
     "COMPATIBLE_EXECUTORS",
+    "DEADLINE_KILL_META",
     "DESCRIPTION",
     "DRIFT_PROBE_TIMEOUT_S",
     "GATE_KILL_137_RE",
