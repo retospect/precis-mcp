@@ -1570,6 +1570,18 @@ class NumericRefHandler(Handler):
             parts.append(status_note)
         if trunc:
             parts.append(trunc)
+        if total > len(hit_refs) and (
+            facets := self._facet_line(
+                normalized_tags or [],
+                exclude_tags=excluded or None,
+                id_min=None,
+                id_max=None,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                q=q,
+            )
+        ):
+            parts.append(facets)
         parts.append(table)
         return Response(
             body="\n".join(parts),
@@ -2509,6 +2521,7 @@ class NumericRefHandler(Handler):
         id_max: int | None,
         include_ref_ids: list[int] | None,
         exclude_ref_ids: list[int] | None,
+        q: str | None = None,
     ) -> str:
         """``clusters: a 12 · b 7 · … +3 groups (5) · (none) 40 — narrow: tags=[…, 'a']``.
 
@@ -2518,7 +2531,9 @@ class NumericRefHandler(Handler):
         is one paste instead of a ``view='count'`` round trip. Empty when
         the kind sets no axis or no member carries a tag on it. Open-axis
         groups can overlap (a ref with two tags counts in both), so the
-        coverage is an upper bound."""
+        coverage is an upper bound. ``q=`` (ranked search) narrows the
+        count with the same WHERE as ``view='count'``, so the groups
+        describe the ranked set rather than the tag set."""
         axis = self.facet_axis
         if axis is None:
             return ""
@@ -2526,6 +2541,9 @@ class NumericRefHandler(Handler):
             kind=self.kind,
             tags=tags,
             exclude_tags=exclude_tags,
+            q=q,
+            q_in_chunks=self.search_body_chunks,
+            q_card_kinds=self.search_card_kinds,
             facets=[("open_axis", axis)],
             group_limit=_COUNT_GROUP_LIMIT,
             id_min=id_min,
@@ -3162,6 +3180,18 @@ class NumericRefHandler(Handler):
         )
         if trunc:
             lines.append(trunc)
+        if total > (page - 1) * page_size + len(shown) and (
+            facets := self._facet_line(
+                tags or [],
+                exclude_tags=exclude_tags,
+                id_min=None,
+                id_max=None,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                q=q,
+            )
+        ):
+            lines.append(facets)
         if compact:
             id_lines = self._id_lines(
                 [ref for _, ref, _ in shown], titles=compact == "list"

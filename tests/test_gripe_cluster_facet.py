@@ -15,6 +15,7 @@ from precis.handlers import _numeric_ref
 from precis.handlers.gripe import GripeHandler
 from precis.store import Tag
 from tests._refs import insert_gripe
+from tests.conftest import id_of
 
 
 @pytest.fixture
@@ -72,4 +73,30 @@ def test_overflow_without_any_cluster_has_no_line(handler: GripeHandler) -> None
         _gripe(handler, f"loose {i}")
     body = handler.search(tags=["STATUS:open"], page_size=2).body
     assert "more past this page" in body
+    assert "clusters:" not in body
+
+
+def _put(handler: GripeHandler, text: str, cluster: str) -> None:
+    """A gripe with a body chunk (``q=`` ranks on chunks), tagged ``cluster``."""
+    rid = id_of(handler.put(text=text).body)
+    handler.store.add_tag(rid, Tag.open(f"cluster:{cluster}"), set_by="system")
+
+
+def test_ranked_search_overflow_names_clusters_of_the_ranked_set(
+    handler: GripeHandler,
+) -> None:
+    for i in range(3):
+        _put(handler, f"needle alpha probe {i}", "alpha")
+    _put(handler, "needle beta probe", "beta")
+    for i in range(4):
+        _put(handler, f"unrelated gamma thing {i}", "gamma")
+    body = handler.search(q="needle", tags=["STATUS:open"], page_size=2).body
+    assert "clusters: cluster:alpha 3 · cluster:beta 1" in body
+    assert "cluster:gamma" not in body
+    assert "narrow: tags=['STATUS:open', 'cluster:alpha']" in body
+
+
+def test_ranked_search_that_fits_has_no_cluster_line(handler: GripeHandler) -> None:
+    _put(handler, "needle alpha probe", "alpha")
+    body = handler.search(q="needle", tags=["STATUS:open"], page_size=10).body
     assert "clusters:" not in body
