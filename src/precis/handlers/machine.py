@@ -20,6 +20,15 @@ Slice 1 shape (the ruling's spec):
   substring on the meta fact) and ``status`` (``live`` / ``stale`` /
   ``no heartbeat``, derived from heartbeat age against the same 600 s
   horizon the web Status tab uses). Unfiltered lists every ref.
+* ``view='daemons'`` (gr627361) — the read-only release daemon cohort:
+  every live host that attests for a deploy (the shared
+  :mod:`precis.daemon_fleet` read ``release_confirm`` counts), with
+  each host's heartbeat ``code_sha`` — the actual process boot version —
+  and beat time beside the installed ``worker_units`` snapshot, so
+  installed metadata is never read as the running version. Ephemeral,
+  container-id and stale (>60 min) beats are excluded; live
+  worker-less non-members show as a note, never counted (gr623769).
+  The same ``code_sha`` / units facts overlay the single-host ``get``.
 * ``put(kind='machine', mode='sync')`` upserts one ref per host in
   ``host_heartbeat`` (plus any extra ``hosts=[...]`` named in args — a
   daemon-free host that never beats still gets a ref). There is no
@@ -43,6 +52,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from precis import daemon_fleet
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -110,7 +120,11 @@ def status_of(hb: HostHeartbeat | None, *, now: datetime) -> str:
 def _age_label(hb: HostHeartbeat | None, *, now: datetime) -> str:
     if hb is None:
         return "never"
-    age = max(0.0, (now - hb.ts).total_seconds())
+    return _beat_age(hb.ts, now=now)
+
+
+def _beat_age(ts: datetime, *, now: datetime) -> str:
+    age = max(0.0, (now - ts).total_seconds())
     if age < 90:
         return f"{int(age)}s ago"
     if age < 90 * 60:
@@ -118,6 +132,23 @@ def _age_label(hb: HostHeartbeat | None, *, now: datetime) -> str:
     if age < 48 * 3600:
         return f"{age / 3600:.0f}h ago"
     return f"{age / 86400:.0f}d ago"
+
+
+def _units_label(worker_units: dict[str, Any] | None) -> str:
+    """The installed-metadata column: the ``worker_units`` systemctl
+    snapshot — installed unit files and their states, never the running
+    version (that is ``code_sha``)."""
+    if worker_units is None:
+        return "no snapshot"
+    units = worker_units.get("units")
+    if not isinstance(units, dict):
+        return "—"
+    if not units:
+        return "none installed"
+    return ", ".join(
+        f"{name}:{(state or {}).get('active_state') or '?'}"
+        for name, state in units.items()
+    )
 
 
 def _ts_z(ts: datetime) -> str:
@@ -166,7 +197,12 @@ class MachineHandler(Handler):
             "unfiltered lists all. Refs are created/refreshed by "
             "put(kind='machine', mode='sync'), run by hand, or "
             "put(kind='machine', id='<host>', args={'platform':…,"
-            "'role':…,'gpu':…}) for one. Linkable — "
+            "'role':…,'gpu':…}) for one. "
+            "get(kind='machine', view='daemons') reads the release daemon "
+            "cohort — each live worker host's heartbeat code_sha (the "
+            "actual process boot version) and beat time beside its "
+            "installed worker_units, the same cohort release_confirm "
+            "attests. Linkable — "
             "link(target='machine:ma_<host>'). See precis-machine-help."
         ),
         supports_get=True,
@@ -178,7 +214,7 @@ class MachineHandler(Handler):
         is_numeric=False,
         id_required=False,
         modes=("sync",),
-        views=("links",),
+        views=("daemons", "links"),
     )
 
     kind: ClassVar[str] = "machine"
@@ -202,11 +238,20 @@ class MachineHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if id is None:
+            if view == "daemons":
+                if q is not None:
+                    raise BadInput(
+                        "view='daemons' takes no q= — it is the whole "
+                        "release daemon cohort",
+                        next="get(kind='machine', view='daemons')",
+                    )
+                return self._daemons_view()
             if view is not None and not is_eye_view(view):
                 raise BadInput(
                     f"kind='machine' has no view {view!r} without id=",
-                    next="search(kind='machine') lists all; "
-                    "get(kind='machine', id='ma_<host>') reads one",
+                    next="get(kind='machine', view='daemons') reads the "
+                    "release daemon cohort; search(kind='machine') lists "
+                    "all; get(kind='machine', id='ma_<host>') reads one",
                 )
             return self.search(q=q)
         if isinstance(id, list):
@@ -217,6 +262,13 @@ class MachineHandler(Handler):
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
+            if view == "daemons":
+                raise BadInput(
+                    "machine view='daemons' takes no id= — it reads the whole cohort",
+                    next="get(kind='machine', view='daemons'); "
+                    "get(kind='machine', id='ma_<host>') shows one host's "
+                    "code_sha",
+                )
             if view != "links":
                 raise BadInput(
                     f"kind='machine' has no view {view!r}",
@@ -242,9 +294,26 @@ class MachineHandler(Handler):
         platform: str | None = None,
         role: str | None = None,
         status: str | None = None,
+        view: str | None = None,
         page_size: int = 50,
         **_kw: Any,
     ) -> Response:
+        if view is not None:
+            if view != "daemons":
+                raise BadInput(
+                    f"kind='machine' has no search view {view!r}",
+                    next="search(kind='machine') lists all; "
+                    "view='daemons' reads the release daemon cohort",
+                )
+            if any(f is not None for f in (q, platform, role, status)):
+                raise BadInput(
+                    "view='daemons' takes no filters — it is the whole "
+                    "release daemon cohort, already freshness- and "
+                    "membership-gated",
+                    next="get(kind='machine', view='daemons') — or drop "
+                    "view= to filter refs",
+                )
+            return self._daemons_view()
         want_status = self._parse_status(status)
         if q is not None and q.strip():
             pairs = self.store.search_refs_lexical(
@@ -335,6 +404,83 @@ class MachineHandler(Handler):
         return search_hits_slug_refs(
             self.store, kind=self.kind, q=q, page_size=page_size
         )
+
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        return ["daemons", "links"]
+
+    # ── view='daemons' — the release daemon cohort (gr627361) ────────
+
+    def _daemons_view(self) -> Response:
+        """Read-only release-attestation evidence: the same live-fleet
+        read :mod:`precis.workers.job_types.release_confirm` counts —
+        every configured daemon host's heartbeat ``code_sha`` (the actual
+        process boot version) and beat time beside the installed
+        ``worker_units`` snapshot, so installed metadata is never read as
+        the running version. Ephemeral, container-id and >60-min-stale
+        beats are out; live worker-less non-members show as a note
+        (gr623769), never counted."""
+        beats, workerless = daemon_fleet.live_fleet(self.store)
+        ledger = daemon_fleet.deploy_ledger(self.store)
+        now = datetime.now(UTC)
+        deployed = ledger.get("sha")
+        deploying = ledger.get("deploying")
+        head = f"# release daemon cohort — {len(beats)} live host(s)"
+        if isinstance(deployed, str) and deployed:
+            head += f" — deployed {deployed[:12]}"
+        elif not ledger:
+            head += " — no deploy.fleet ledger"
+        if (
+            isinstance(deploying, dict)
+            and isinstance(deploying.get("sha"), str)
+            and deploying["sha"]
+        ):
+            head += f" (deploying {deploying['sha'][:12]})"
+        lines = [head]
+        if beats:
+            rows = [
+                {
+                    "machine": slug_for(b.host),
+                    "host": b.host,
+                    "code_sha": b.code_sha[:12] if b.code_sha else "—",
+                    "last_beat": (
+                        f"{_ts_z(b.ts)} ({_beat_age(b.ts, now=now)})"
+                        if b.ts is not None
+                        else "—"
+                    ),
+                    "installed_units": _units_label(b.worker_units),
+                    "processes": ", ".join(sorted(set(b.activity) | set(b.boot_ids)))
+                    or "—",
+                }
+                for b in beats
+            ]
+            lines.append(
+                render_agent_table(
+                    rows,
+                    schema=[
+                        "machine",
+                        "host",
+                        "code_sha",
+                        "last_beat",
+                        "installed_units",
+                        "processes",
+                    ],
+                )
+            )
+        else:
+            lines.append(
+                "none — no live daemon heartbeat in the last "
+                f"{daemon_fleet.FLEET_FRESH_MIN} min from a non-ephemeral, "
+                "non-container host running workers or on the "
+                "deploy.fleet ledger"
+            )
+        if workerless:
+            lines.append(
+                "note: "
+                + ", ".join(workerless)
+                + " — live but runs no workers and is not a deploy.fleet "
+                "member; not counted (gr623769)"
+            )
+        return Response(body="\n".join(lines))
 
     # ── put ──────────────────────────────────────────────────────────
 
@@ -626,6 +772,16 @@ class MachineHandler(Handler):
             lines.append(
                 f"temp_c: {f'{hb.temp_c:.1f}' if hb.temp_c is not None else 'n/a (no sensor)'}"
             )
+            # Boot-version evidence (gr627361): code_sha is the serving
+            # process's actual boot version; worker_units is installed
+            # metadata — never read one as the other.
+            code_sha = hb.meta.get("code_sha")
+            if code_sha not in (None, ""):
+                lines.append(f"code_sha: {code_sha} — the serving boot version")
+            wu = hb.meta.get("worker_units")
+            units = wu.get("units") if isinstance(wu, dict) else None
+            if isinstance(units, dict) and units:
+                lines.append(f"worker units (installed): {_units_label(wu)}")
         section = render_links_section(self.store, ref, limit=12)
         if section:
             lines.append(section)

@@ -7,6 +7,7 @@ answers:
   - how do I point a job or memory at the host it ran on?
   - which hosts are live, stale, or have no heartbeat?
   - how do I list machines by platform or role?
+  - how do I see the code SHA each live worker daemon is actually booted on?
   - how do I create or refresh the machine refs?
   - where do load and temperature come from, and why does a host show 'no heartbeat'?
   - how do I record a host's platform, role or GPU?
@@ -48,6 +49,23 @@ search(kind='machine', role='worker')
 search(kind='machine', status='stale')          # live | stale | 'no heartbeat'
 search(kind='machine', q='alpha')               # match on host name
 ```
+
+## Daemon cohort — release attestation
+
+```python
+get(kind='machine', view='daemons')      # the live release daemon cohort
+search(kind='machine', view='daemons')   # same read via search
+```
+
+One row per live host that runs workers or is a `deploy.fleet` member —
+the cohort `release_confirm` attests. Each row carries the heartbeat
+`code_sha` (**actual process boot version**) and beat time beside the
+installed `worker_units` snapshot (**installed metadata**, not the
+running version — never read one as the other) plus the live process
+names. Ephemeral, container-id and >60-min-stale beats are excluded;
+live hosts running no workers show as a note, never counted. A single
+host's `get` overlays the same `code_sha` / units lines. The header
+shows the ledger's deployed sha when published.
 
 ## Create or refresh refs — run by hand
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -158,6 +160,130 @@ def test_sync_skips_retired_hosts(h: MachineHandler, store: Store) -> None:
     store.set_host_retired("alpha", retired=True)
     h.put(mode="sync")
     assert store.get_ref(kind="machine", id="ma_alpha") is None
+
+
+# ── view='daemons' — the release daemon cohort (gr627361) ────────────
+
+SHA = "d5e4f3a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"
+
+
+def _daemon_meta(**over: Any) -> dict[str, Any]:
+    """A live worker host's heartbeat meta: the served boot sha, an
+    installed-unit snapshot and per-process activity."""
+    meta: dict[str, Any] = {
+        "code_sha": SHA,
+        "worker_units": {
+            "observed_at": "2026-11-12T00:00:00Z",
+            "units": {"precis-worker": {"active_state": "active"}},
+        },
+        "activity": {"precis-worker": {"idle": True}},
+    }
+    meta.update(over)
+    return meta
+
+
+def _stale_beat(store: Store, host: str, minutes: int = 90) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE host_heartbeat SET ts = now() - make_interval(mins => %s) "
+            "WHERE host = %s",
+            (minutes, host),
+        )
+
+
+def _deploy_ledger(store: Store, covered: list[str]) -> None:
+    """Publish ``app_settings.deploy.fleet`` as ``scripts/deploy`` does."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('deploy.fleet', %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (json.dumps({"sha": SHA, "covered": covered}),),
+        )
+
+
+def test_daemons_view_lists_live_cohort(h: MachineHandler, store: Store) -> None:
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    body = h.get(view="daemons").body
+    assert "release daemon cohort — 1 live host(s)" in body
+    assert "alpha" in body and "ma_alpha" in body
+    assert SHA[:12] in body
+    assert "precis-worker" in body  # installed unit and live process
+
+
+def test_daemons_view_excludes_non_cohort_hosts(
+    h: MachineHandler, store: Store
+) -> None:
+    """Ephemeral, container-id and stale beats never attest (the same
+    live-row gate release_confirm counts)."""
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    store.record_heartbeat("0123456789ab", meta=_daemon_meta())
+    store.record_heartbeat("ephem", meta=_daemon_meta(ephemeral=True))
+    store.record_heartbeat("stale", meta=_daemon_meta())
+    _stale_beat(store, "stale")
+    body = h.get(view="daemons").body
+    assert "1 live host(s)" in body
+    for ghost in ("0123456789ab", "ephem", "stale"):
+        assert ghost not in body
+
+
+def test_daemons_view_workerless_host_is_a_note(
+    h: MachineHandler, store: Store
+) -> None:
+    """gr623769: a live one-off checkout (empty worker evidence, no
+    ledger membership) is a note, never counted."""
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    store.record_heartbeat(
+        "bare",
+        meta={"code_sha": SHA, "worker_units": {}, "activity": {}},
+    )
+    body = h.get(view="daemons").body
+    assert "1 live host(s)" in body
+    assert "bare" in body and "not counted" in body
+
+
+def test_daemons_view_deploy_ledger_member_counts(
+    h: MachineHandler, store: Store
+) -> None:
+    """A covered deploy.fleet member attests even with empty worker
+    evidence; the header carries the ledger's deployed sha."""
+    store.record_heartbeat(
+        "bare",
+        meta={"code_sha": SHA, "worker_units": {}, "activity": {}},
+    )
+    _deploy_ledger(store, ["bare"])
+    body = h.get(view="daemons").body
+    assert "1 live host(s)" in body
+    assert f"deployed {SHA[:12]}" in body
+
+
+def test_daemons_view_empty(h: MachineHandler) -> None:
+    body = h.get(view="daemons").body
+    assert "0 live host(s)" in body
+    assert "no live daemon heartbeat" in body
+
+
+def test_daemons_view_via_search(h: MachineHandler, store: Store) -> None:
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    assert "alpha" in h.search(view="daemons").body
+
+
+def test_daemons_view_rejects_bad_spellings(h: MachineHandler) -> None:
+    with pytest.raises(BadInput):
+        h.get(view="bogus")
+    with pytest.raises(BadInput):
+        h.search(view="bogus")
+    with pytest.raises(BadInput):
+        h.get(id="ma_alpha", view="daemons")
+
+
+def test_get_overlays_boot_version(h: MachineHandler, store: Store) -> None:
+    """The single-host read carries the same evidence: code_sha (the
+    serving boot version) beside the installed-unit snapshot."""
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    h.put(mode="sync")
+    body = h.get(id="ma_alpha").body
+    assert f"code_sha: {SHA}" in body
+    assert "precis-worker:active" in body
 
 
 # ── args= reaches the handler through the real put verb (MCP door) ──────

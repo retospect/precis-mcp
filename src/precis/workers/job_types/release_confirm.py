@@ -9,7 +9,7 @@ detached submit/poll pair under ``ssh_node``, the same launcher as
 After ``release_deploy`` the plan must confirm the pinned sha is what
 runs, without a session. :func:`gather_evidence` reads the mechanical
 evidence — every live worker host's ``host_heartbeat.meta->>'code_sha'``
-(the deploy-fleet query of :mod:`precis.workers.conditions`, store only,
+(the release daemon cohort of :mod:`precis.daemon_fleet`, store only,
 no network; a heartbeat inside the last 60 minutes on a non-ephemeral
 host that is not a 12-hex container id and that runs workers or is a
 known fleet member — a worker-less one-off checkout is a note, never
@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis import daemon_fleet as _df
 from precis.plans import red_waiver as _red_waiver
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
@@ -122,10 +123,6 @@ HEALTH_URL_KEY = "release.health_url"
 #: :data:`precis.plans.release.ROUND_KEY`).
 BOOT_SHA_HEADER = "X-Precis-Boot-Sha"
 
-#: A host heartbeating within this window counts as live (the value of
-#: ``conditions._DEPLOY_FLEET_FRESH_MIN``, restated).
-_FLEET_FRESH_MIN = 60
-
 #: The restart-race window: the probe re-reads heartbeats until this long
 #: after the deploy finished, then anything still not at the release sha
 #: fails the job. ``_REPROBE_EVERY`` paces the parked probe (the
@@ -137,28 +134,6 @@ _REPROBE_EVERY = timedelta(seconds=60)
 #: Timestamp shape ``release.round`` / ``release.prod_head`` and the
 #: parked handle carry (``precis.plans.release._stamp``'s, restated).
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
-
-#: The live-fleet query — the same rows ``conditions._DEPLOY_FLEET_SQL``
-#: selects for the deploy-fleet-coverage probe plus each row's ``ts``
-#: (the restart check needs the heartbeat's write time) and the meta the
-#: worker-membership call needs (gr623769): a heartbeat in the last
-#: ``fresh_min`` minutes, not ephemeral, host not a 12-hex container id.
-_LIVE_FLEET_SQL = """
-SELECT host, ts, meta->>'code_sha' AS code_sha,
-       meta->'worker_units' AS worker_units,
-       meta->'activity' AS activity
-  FROM host_heartbeat
- WHERE ts > now() - make_interval(mins => %(fresh_min)s)
-   AND (meta->>'ephemeral') IS DISTINCT FROM 'true'
-   AND host !~ '^[0-9a-f]{12}$'
- ORDER BY host
-"""
-
-#: ``app_settings`` key ``scripts/deploy`` refreshes after every green
-#: deploy with ``{"sha", "at", "covered": [<host>, …], "skipped"}`` —
-#: the deploy fleet's known membership (``conditions._DEPLOY_LEDGER_KEY``,
-#: restated).
-_DEPLOY_LEDGER_KEY = "deploy.fleet"
 
 #: The evidence line's and the failure reason's caps. The reason must
 #: fit the retry-cap ask's 600-character context
@@ -265,68 +240,20 @@ def _deployed_at(store: Store, rn: str) -> datetime | None:
     return _parse_ts(rec.get("deployed_at")) if rec is not None else None
 
 
-def _fleet_members(conn: Any) -> frozenset[str]:
-    """The deploy fleet's known members — the ``covered`` hosts of
-    ``app_settings.deploy.fleet`` (``_DEPLOY_LEDGER_KEY``). Empty when the
-    ledger is absent or unreadable: membership then falls to the
-    heartbeat's own worker evidence."""
-    import json
-
-    try:
-        row = conn.execute(
-            "SELECT value FROM app_settings WHERE key = %s", (_DEPLOY_LEDGER_KEY,)
-        ).fetchone()
-        ledger = json.loads(str(row[0])) if row is not None else {}
-        covered = ledger.get("covered") if isinstance(ledger, dict) else None
-    except Exception:
-        return frozenset()
-    if not isinstance(covered, list):
-        return frozenset()
-    return frozenset(str(h) for h in covered)
-
-
-def _counts_as_worker(
-    host: str, worker_units: Any, activity: Any, fleet: frozenset[str]
-) -> bool:
-    """Whether a live heartbeat row attests for the release (gr623769).
-
-    Counts when the host runs workers — its ``worker_units`` snapshot
-    observes installed precis-worker units — or is a known fleet member:
-    recorded worker ``activity`` (per-process, nested-merged on write so
-    it survives later beats) or a ``covered`` row in the deploy ledger.
-    A row with no ``worker_units`` key predates the snapshot and stays
-    eligible (gr625282's rule). A worker-less non-member — a one-off
-    checkout's lone heartbeat — is a note, never counted."""
-    if worker_units is None:
-        return True
-    units = worker_units.get("units") if isinstance(worker_units, dict) else None
-    if isinstance(units, dict) and units:
-        return True
-    return bool(activity) or host in fleet
-
-
 def _live_fleet(
     store: Store,
 ) -> tuple[list[tuple[str, datetime | None, str | None]], list[str]]:
     """``(workers, workerless)`` of the live heartbeat rows, store only.
 
-    ``workers`` is ``(host, heartbeat ts, code_sha|None)`` per host that
-    attests (:func:`_counts_as_worker`); ``ts`` is the heartbeat's write
-    time, the restart check's clock. ``workerless`` names the live hosts
-    that run no workers and are not known fleet members (gr623769):
-    reported as a note, never counted."""
-    with store.pool.connection() as conn:
-        rows = conn.execute(_LIVE_FLEET_SQL, {"fresh_min": _FLEET_FRESH_MIN}).fetchall()
-        fleet = _fleet_members(conn)
-    workers: list[tuple[str, datetime | None, str | None]] = []
-    workerless: list[str] = []
-    for host, ts, code_sha, worker_units, activity in rows:
-        if _counts_as_worker(str(host), worker_units, activity, fleet):
-            workers.append(
-                (str(host), _parse_ts(ts), None if code_sha is None else str(code_sha))
-            )
-        else:
-            workerless.append(str(host))
+    The cohort itself lives in :mod:`precis.daemon_fleet` (gr627361 —
+    shared with the machine kind's ``view='daemons'`` read so the MCP
+    view can't drift from the evidence this job counts). ``workers`` is
+    ``(host, heartbeat ts, code_sha|None)`` per host that attests;
+    ``ts`` is the heartbeat's write time, the restart check's clock.
+    ``workerless`` names the live hosts that run no workers and are not
+    known fleet members (gr623769): reported as a note, never counted."""
+    beats, workerless = _df.live_fleet(store)
+    workers = [(b.host, b.ts, b.code_sha) for b in beats]
     return workers, workerless
 
 
