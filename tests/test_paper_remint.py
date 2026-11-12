@@ -60,6 +60,20 @@ def _seed(
     ).id
 
 
+def _seed_legacy(store: Store, key: str) -> int:
+    """A paper whose live cite_key row was written directly — legacy
+    data that predates the alias reservation ``insert_ref`` enforces
+    (gr646156), so it may sit beside another ref's alias for ``key``."""
+    ref_id = _seed(store, f"{key}legacy")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_identifiers SET id_value = %s "
+            "WHERE id_kind = 'cite_key' AND ref_id = %s",
+            (key, ref_id),
+        )
+    return ref_id
+
+
 def _ident_rows(store: Store, ref_id: int) -> list[tuple[str, str]]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -132,7 +146,7 @@ def test_alias_never_shadows_another_papers_live_key(store: Store) -> None:
     handle = resolve_handle_ref(store, "smith2024")
     assert handle is not None and handle.id == ref_id
 
-    owner = _seed(store, "smith2024")
+    owner = _seed_legacy(store, "smith2024")
 
     assert store.find_ref_by_identifier("cite_key", "smith2024") == owner
     # Every slug door returns the live owner, never the alias holder.
@@ -392,7 +406,7 @@ def test_retired_cite_key_does_not_shadow_live_alias(store: Store) -> None:
     alias for the same value — the redirect should win."""
     live = _seed(store, "smith99")
     rekey_paper(store, live, "jones99", reason="test rekey", source="test")
-    dead = _seed(store, "smith99")  # direct insert: live cite_key over the alias
+    dead = _seed_legacy(store, "smith99")  # direct row: cite_key over the alias
     with store.pool.connection() as conn:
         conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (dead,))
 

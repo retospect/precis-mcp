@@ -705,9 +705,17 @@ def test_restore_skips_alias_shadowed_by_a_live_cite_key(
         (loser,),
     )
     _merge(store, loser, surv)
-    # A post-merge re-mint claimed the value as a live cite_key — the
-    # (id_kind, id_value) PK allows it beside the survivor's alias row.
-    squatter = _paper(store, "shadowkeysh")
+    # Legacy data holds the value as a live cite_key — the
+    # (id_kind, id_value) PK allows it beside the survivor's alias row,
+    # though insert_ref now refuses to mint it (gr646156), so the row
+    # is written directly.
+    squatter = _paper(store, "squattersh")
+    _sql(
+        store,
+        "UPDATE ref_identifiers SET id_value = 'shadowkeysh' "
+        "WHERE id_kind = 'cite_key' AND ref_id = %s",
+        (squatter,),
+    )
 
     _run(store, monkeypatch, f"pa{loser}", "--reason", "x")
     out = capsys.readouterr().out
