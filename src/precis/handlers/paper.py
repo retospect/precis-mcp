@@ -353,6 +353,9 @@ _SUPPORTED_VIEWS = (
     "comments",
     "retired",
     "tags",
+    # ``status`` delegates to the same fetch-state table the batch get
+    # and ``search(view='status', ids=[…])`` serve (gr635828).
+    "status",
 )
 
 #: Chunk kinds that always get a figure pointer on read (gr520326).
@@ -9221,6 +9224,13 @@ class PaperHandler(Handler):
             from precis.handlers._links_render import render_links_view
 
             return render_links_view(self.store, ref, sense=self.spec.kind)
+
+        if view == "status":
+            # "State of this paper" asked on the get verb — the same
+            # fetch-state table the batch get (``id=[…], view='status'``)
+            # and ``search(view='status', ids=[…])`` already serve
+            # (gr635828: callers kept guessing the door on a single id).
+            return self._fetch_status_view([_pa(ref)])
 
         # The MCP critic flagged ``view='figures'`` as a silent
         # failure — the agent had no signal that figure retrieval

@@ -502,6 +502,16 @@ class TestViews:
         assert "bibtex" in (exc.value.options or [])
         assert "toc" in (exc.value.options or [])
 
+    def test_status_view_single_id(self, store: Store, handler: PaperHandler) -> None:
+        """gr635828: callers kept guessing ``view='status'`` on a
+        single-id get — the batch get and ``search(view='status')``
+        doors already advertised the name. Serve the same one-row
+        fetch-state table instead of refusing 'unknown view'."""
+        a = _seed_paper(store, slug="paper-a", title="Alpha")
+        resp = handler.get(id=f"pa{a}", view="status")
+        assert "fetch status — 1 of 1 ids resolved" in resp.body
+        assert f"pa{a}" in resp.body
+
     def test_toc(self, store: Store, handler: PaperHandler) -> None:
         """F20 (superseded): view='toc' renders a flat
         per-chunk keyword table — one TOON row per chunk — off the

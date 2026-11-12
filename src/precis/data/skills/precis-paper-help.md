@@ -342,6 +342,7 @@ search(kind="paper", view="ingest", args={"days": 14})              # landings p
 
 ```python
 search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
+get(kind="paper", id="pa123", view="status")   # same table, one paper
 ```
 
 `view='status'` (up to 200 handles/slugs/DOIs): per paper
