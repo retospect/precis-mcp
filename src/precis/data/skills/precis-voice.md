@@ -229,5 +229,6 @@ profiles). For the **mechanism** — audio as a cross-cutting export layer, the
 pronunciation lexicon — see [[precis-audio-help]].
 
 - [[precis-audio-help]] — the mechanism: narrate a draft, lexicon, feed
+- [[precis-glossary-help]] — term lookup: synonyms, mishearings, say-as spellings
 - [[precis-cloze]] — authoring recall cards (the active complement)
 - [[precis-overview]] — kinds + skills index

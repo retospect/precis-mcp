@@ -89,6 +89,9 @@ it. Unlike an abbreviation's *expansion* (contextual, per-document), a
 *pronunciation* is stable across documents, which is why the personal
 cross-draft base exists alongside the per-draft one.
 
+Terms heard or spelled oddly outside a draft (transcripts, acronyms) belong in
+the glossary: `precis-glossary-help`.
+
 ## Consume
 
 Subscribe **on-device** over Tailscale — Apple Podcasts *Add a Show by URL*
