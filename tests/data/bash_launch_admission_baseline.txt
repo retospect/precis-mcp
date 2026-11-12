@@ -1,0 +1,37 @@
+# Bash launch sites outside precis.workers.admission (gr647996).
+# Shrink-only ratchet: tests/test_bash_launch_admission.py.
+# Format: <path>::<function|<top>> <count>. Regenerate:
+#   uv run python tests/test_bash_launch_admission.py --regen
+scripts/build-all::<top> 1
+scripts/build-image::<top> 3
+scripts/build-tblite-wheel::<top> 3
+scripts/claude-local::<top> 1
+scripts/cluster-ping::<top> 2
+scripts/db-own-cutover::su_psql 1
+scripts/db::run_in_dev 1
+scripts/dev::<top> 5
+scripts/hooks/memory-nudge.sh::<top> 1
+scripts/host-ops/nfs-keepalive::<top> 2
+scripts/host-ops/nfs-recover::s 1
+scripts/host-ops/os-update::<top> 1
+scripts/host-ops/vllm-stop::c 1
+scripts/inflight::<top> 2
+scripts/lib/docker-disk.sh::docker_free_gb 3
+scripts/mcp-loadtest::<top> 2
+scripts/mutate-diff::<top> 2
+scripts/pgb-pools::<top> 1
+scripts/precis-add::<top> 1
+scripts/precis-index::<top> 1
+scripts/precis-shell::<top> 3
+scripts/prod-psql::<top> 1
+scripts/rebase::<top> 1
+scripts/ship::<top> 3
+scripts/ship::coverage_from_container 2
+scripts/ship::gate_sh 2
+scripts/ship::sync_from_container 1
+scripts/ship::sync_to_container 2
+scripts/ship::testmon_from_container 5
+scripts/ship::testmon_into_container 2
+scripts/test::<top> 3
+scripts/test::hb_start 1
+scripts/test::run_pytest 3
