@@ -140,6 +140,9 @@ _BASE_VIEWS: tuple[str, ...] = (
     "tags",
 )
 
+#: Batch ``get`` views that mean the default summary block per id.
+_BATCH_SUMMARY_VIEWS = frozenset({"title", "index"})
+
 # Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
 # ``batch_ids = True``. Sized to the measured loops it replaces (runs of
 # 38-154 singleton calls, surface-review pass #1 2026-09-29) while
@@ -4391,6 +4394,11 @@ class NumericRefHandler(Handler):
         :meth:`_get_batch_view`.
         """
         ref_ids = self._coerce_ids(ids)
+        # ``title``/``index`` name what the summary form already is (one
+        # handle + first-line block per id); agents guess them on a batch
+        # (gr648736), so read them as the default instead of refusing.
+        if view in _BATCH_SUMMARY_VIEWS:
+            view = None
         if view is not None:
             return self._get_batch_view(ref_ids, view=view)
         refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)

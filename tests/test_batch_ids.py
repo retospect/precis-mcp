@@ -163,6 +163,16 @@ def test_get_batch_finding_summary_in_order(store: Store, hub: Hub) -> None:
     assert "batch finding 0" in body
 
 
+@pytest.mark.parametrize("view", ["title", "index"])
+def test_get_batch_finding_title_index_views_are_the_summary(
+    store: Store, hub: Hub, view: str
+) -> None:
+    # gr648736: agents guess view='title'/'index' on a batch read.
+    handler, ids = _findings(store, hub, 2)
+    plain = handler.get(id=_batch(*ids)).body
+    assert handler.get(id=_batch(*ids), view=view).body == plain
+
+
 def test_link_batch_finding_is_refused_with_the_single_door(
     store: Store, hub: Hub
 ) -> None:
