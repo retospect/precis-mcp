@@ -46,7 +46,6 @@ _KNOWN_ISOLATED: tuple[str, ...] = (
     "patent-image-part",
     "patent-prior-art",
     "precis-alias-help",
-    "precis-calc-help",
     "precis-chem-help",
     "precis-draft-reviewer",
     "precis-draft-section-insertion",

@@ -55,7 +55,7 @@ Closed prefixes are **kind-gated** — `PRIO:` applies to workflow kinds;
 `STATUS:` applies to workflow kinds and findings. `memory` and other
 free-form kinds reject both. `STATUS:` is one closed axis but each kind
 accepts only its own lifecycle subset (a `quest` is active / dormant /
-abandoned; a `todo` open / done / …); the union (34 values) is what
+abandoned; a `todo` open / done / …); the union (36 values) is what
 `get(kind='tag', id='STATUS:done')` lists as siblings. See the per-kind
 axis matrix below.
 
@@ -237,7 +237,7 @@ works; don't write them — the passes own those rows.
 `STATUS:` is the one axis that hosts multiple lifecycles on the same
 prefix. Kinds with their own lifecycle are enforced per-kind at write
 time (the error lists that kind's options); unlisted kinds accept
-the union (35 values). Pick the row that matches the ref you're tagging:
+the union (36 values). Pick the row that matches the ref you're tagging:
 
 | Lifecycle | Kinds | Values |
 |---|---|---|
@@ -250,7 +250,7 @@ the union (35 values). Pick the row that matches the ref you're tagging:
 | Quest (perpetual striving — no `done`; enforced) | `quest` | `active`, `dormant`, `abandoned` |
 
 The runtime rejects unknown values at write time with the options list
-for that kind (for `todo`/`gripe`/`quest`/`job`/`finding`) or the union (35 values)
+for that kind (for `todo`/`gripe`/`quest`/`job`/`finding`) or the union (36 values)
 for other kinds. To see the live set without triggering a write, `get(kind='tag',
 id='STATUS:open')` — the `sibling values` line surfaces the full closed
 vocabulary for the axis (`precis-status-help` is unrelated — build/DB

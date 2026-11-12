@@ -317,7 +317,7 @@ def test_title_boost_two_word_match_at_full_coverage_beats_one_word_match(
         "precis-anki-help",
     }, out.body
 
-    out = skill.search(q="anki extra words")
+    out = skill.search(q="anki extra banana")
     assert _pinned_slugs(out.body) == [], out.body
 
 
