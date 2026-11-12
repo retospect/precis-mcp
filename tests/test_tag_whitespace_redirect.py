@@ -236,3 +236,64 @@ def test_short_spacefree_yield_is_not_redirected(todo: TodoHandler) -> None:
     values = _tag_values(todo.store, ref_id)
     assert "halt:missing-credentials" in values
     assert not any("see-chunk" in v for v in values)
+
+
+# ── gr651179: a forged see-chunk handle must not land dangling ──────
+
+
+def test_tag_forged_see_chunk_handle_refused(todo: TodoHandler) -> None:
+    """``ask-user:see-chunk-N`` is a handle the yield redirect mints
+    itself. A caller-supplied one with no backing ``tag_overflow``
+    chunk used to sail through — short and space-free, it trips
+    neither redirect test — and landed as a pointer at nothing
+    (gr651179: ``ask-user:see-chunk-2`` on a todo whose chunk 2 did
+    not exist). Refuse it and name the inline-question retry."""
+    ref_id = id_of(todo.put(text="task").body)
+    with pytest.raises(BadInput) as exc:
+        todo.tag(id=ref_id, add=["ask-user:see-chunk-2"])
+    assert "dangling" in str(exc.value)
+    assert "ask-user:" in str(exc.value.next)
+    assert not any("see-chunk" in v for v in _tag_values(todo.store, ref_id))
+
+
+def test_put_forged_see_chunk_handle_refused(todo: TodoHandler) -> None:
+    """The same refusal covers the create-time tags= list — and the
+    ref insert rolls back with it."""
+    before = len(todo.store.list_refs(kind="todo", limit=1000))
+    with pytest.raises(BadInput, match="dangling"):
+        todo.put(text="task", tags=["ask-user:see-chunk-0"])
+    assert len(todo.store.list_refs(kind="todo", limit=1000)) == before
+
+
+def test_memory_forged_see_chunk_handle_refused(memory: MemoryHandler) -> None:
+    """The generic numeric-ref tag/put paths refuse the forged handle
+    too, for either redirectable namespace."""
+    ref_id = id_of(memory.put(text="a note").body)
+    with pytest.raises(BadInput, match="dangling"):
+        memory.tag(id=ref_id, add=["ask-user:see-chunk-3"])
+    with pytest.raises(BadInput, match="dangling"):
+        memory.put(text="b note", tags=["halt:see-chunk-0"])
+
+
+def test_genuine_see_chunk_handle_readds(todo: TodoHandler) -> None:
+    """A ``see-chunk-N`` handle backed by a real ``tag_overflow`` chunk
+    on the same ref is a genuine redirect — re-adding it is the
+    idempotent pass-through, not the forged-pointer refuse."""
+    ref_id = id_of(todo.put(text="task").body)
+    todo.tag(id=ref_id, add=[_PROSE])
+    handle = next(
+        v
+        for v in _tag_values(todo.store, ref_id)
+        if v.startswith("ask-user:see-chunk-")
+    )
+    todo.tag(id=ref_id, remove=[handle])
+    todo.tag(id=ref_id, add=[handle])
+    assert handle in _tag_values(todo.store, ref_id)
+
+
+def test_see_chunk_resolves_only_tag_overflow_chunks(todo: TodoHandler) -> None:
+    """resolve_ask_question must not read a non-overflow chunk that
+    merely sits at ord N — a dangling ``see-chunk-N`` used to echo the
+    ref's own body text back as the 'question' (gr651179)."""
+    ref_id = id_of(todo.put(text="title", body="the details body").body)
+    assert todo.store.drafts.resolve_ask_question(ref_id, "see-chunk-0") == ""

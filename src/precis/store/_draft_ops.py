@@ -2151,7 +2151,8 @@ class DraftStore(_AbbrevMixin):
             return value
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s",
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = %s "
+                "AND chunk_kind = 'tag_overflow'",
                 (ref_id, int(m.group(1))),
             ).fetchone()
         if not row or not row[0]:

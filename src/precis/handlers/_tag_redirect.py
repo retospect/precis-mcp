@@ -26,7 +26,10 @@ is shortened to a space-free handle first, and only genuinely-malformed
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
+
+from precis.errors import BadInput
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -38,6 +41,18 @@ if TYPE_CHECKING:
 #: into a ``chunk_kind='tag_overflow'`` chunk on the ref and the tag is
 #: rewritten to a short ``see-chunk-N`` handle.
 REDIRECTABLE_NAMESPACES: frozenset[str] = frozenset({"ask-user", "halt"})
+
+#: A value already in redirect-handle form. Only this module may mint
+#: one — a caller-supplied ``see-chunk-N`` is *forged* unless a
+#: ``tag_overflow`` chunk already backs it on the same ref (the
+#: idempotent re-add of a genuine handle). gr651179: an unbacked one
+#: used to sail straight through — short and space-free, it trips
+#: neither redirect test — and landed as a dangling pointer a human
+#: reads as "see chunk N" with nothing there (e.g. a planner-tick
+#: mimicking the handle form it saw on another todo, or a tag copied
+#: across refs). The reader-side mirror is
+#: :data:`precis.store._draft_ops._SEE_CHUNK_RE`.
+_SEE_CHUNK_HANDLE_RE = re.compile(r"^see-chunk-(\d+)$")
 
 
 #: Length threshold above which an ``ask-user:`` / ``halt:`` value gets
@@ -88,7 +103,11 @@ def redirect_long_tag_values(
     Returns ``(rewritten_tags, chunk_ids)``. ``chunk_ids`` is empty when
     nothing tripped the redirect. Idempotent: a value already rewritten
     to ``see-chunk-N`` trips neither the length nor whitespace test, so a
-    second pass is a no-op (no duplicate chunk).
+    second pass is a no-op (no duplicate chunk) — provided a
+    ``tag_overflow`` chunk still backs it on this ref. A ``see-chunk-N``
+    with no backing chunk is a forged/copied pointer (gr651179) and is
+    refused: the caller must write the question inline instead of a
+    pointer at nothing.
     """
     from precis.store.types import ChunkInsert
 
@@ -99,7 +118,27 @@ def redirect_long_tag_values(
             rewritten.append(raw)
             continue
         ns, _, value = raw.partition(":")
-        if ns not in REDIRECTABLE_NAMESPACES or not _value_needs_redirect(value):
+        if ns not in REDIRECTABLE_NAMESPACES:
+            rewritten.append(raw)
+            continue
+        handle = _SEE_CHUNK_HANDLE_RE.match(value)
+        if handle is not None:
+            if _see_chunk_backed(store, ref_id, int(handle.group(1)), conn):
+                rewritten.append(raw)
+                continue
+            raise BadInput(
+                f"tag {raw!r} is a dangling pointer: no tag_overflow "
+                f"chunk {handle.group(1)} exists on {ref_id} — "
+                "see-chunk-N handles are minted by the yield redirect "
+                "itself, never written by hand",
+                next=(
+                    f"pass the {ns} text itself in tags=/add= "
+                    f"(e.g. add=['{ns}:<the question or reason>']) — a "
+                    "long value lands in an overflow chunk the ask "
+                    "views resolve"
+                ),
+            )
+        if not _value_needs_redirect(value):
             rewritten.append(raw)
             continue
         text = f"{ns}: {value}"
@@ -132,3 +171,30 @@ def redirect_long_tag_values(
         chunk_ids.append(next_pos)
         rewritten.append(f"{ns}:see-chunk-{next_pos}")
     return rewritten, chunk_ids
+
+
+def _see_chunk_backed(
+    store: Store,
+    ref_id: int,
+    pos: int,
+    conn: Connection | None,
+) -> bool:
+    """A ``tag_overflow`` chunk backs ``see-chunk-{pos}`` on ``ref_id``.
+
+    Same kind filter :meth:`DraftStore.resolve_ask_question` resolves
+    by — an unrelated chunk merely sharing the ord is not a backing
+    chunk. Reads on the caller's ``conn`` when given (the create paths,
+    where the overflow chunk may be uncommitted in the same tx)."""
+
+    def _check(c: Connection) -> bool:
+        row = c.execute(
+            "SELECT 1 FROM chunks "
+            "WHERE ref_id = %s AND ord = %s AND chunk_kind = 'tag_overflow'",
+            (ref_id, pos),
+        ).fetchone()
+        return row is not None
+
+    if conn is not None:
+        return _check(conn)
+    with store.pool.connection() as c:
+        return _check(c)
