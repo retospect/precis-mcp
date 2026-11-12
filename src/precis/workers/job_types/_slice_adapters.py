@@ -541,7 +541,7 @@ class Adapter:
     ) -> list[str]:
         """Build argv; effort remains the worker's exported metadata.
         ``writable_roots`` are the sandbox's ``--add-dir`` grants (codex
-        only — the other vendors run unsandboxed). ``read_mcp_url`` is
+        only; Devin's ``--sandbox`` is opt-in). ``read_mcp_url`` is
         the checkout's precis MCP URL for a scoped-grant lane: codex
         takes it as ``-c`` dotted overrides (``codex exec -c
         mcp_servers.<name>.url=…``); devin's server entry lives in the
@@ -609,6 +609,10 @@ class Adapter:
                 "--verbosity",
                 "1",
             ]
+            # Cache/temp write scopes and Docker under Seatbelt are not yet
+            # validated for the live lane; keep confinement opt-in.
+            if os.environ.get("PRECIS_DEVIN_SANDBOX") == "1":
+                argv += ["--sandbox"]
             if model is not None:
                 argv += ["--model", model]
             if export_path is not None:

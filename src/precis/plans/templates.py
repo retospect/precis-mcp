@@ -529,8 +529,9 @@ def _direct_build_body(handle: str, report: str) -> str:
     return (
         f"Fix {handle} directly: no triage and no brief ran, and this lane may "
         "have no precis MCP, so the report is below verbatim as of mint. Find "
-        "the code it names, commit the fix with its test on this branch, and "
-        "touch nothing under the lane's deny paths. The land (land_slice, "
+        "the code it names and implement the fix on this branch, following "
+        "the adapter's finishing contract. "
+        "Touch nothing under the lane's deny paths. The land (land_slice, "
         "`scripts/ship --quick`) squash-merges onto main and writes "
         f"'resolved: <sha>' + verify on {handle}; " + DIRECT_HEAD_END + "\n\n" + report
     )
@@ -710,7 +711,13 @@ def mint_gripe_fix(
                 f"{handle}; it names each step in the summary-title house "
                 "style (`<object> · <behaviour> · <role>`, middot-separated, "
                 "telegraphic). Post it as a `brief:` comment on the build "
-                "node; a spec test may ride the branch. Nothing committed? "
+                "node. Write acceptance tests before the build, make their "
+                "files available via the build node's "
+                "`meta.op.params.acceptance_tests` mapping of test paths to "
+                "source text (the worker installs them after worktree cleanup), "
+                "and name the test paths "
+                "in that brief so the harness can run them after Devin exits. "
+                "Nothing committed? "
                 "End with `no-op: brief posted on td<build>` as the first "
                 "line of your final message (gr561132).\n\nWhen the fix adds "
                 "a migration the brief chunk also carries this paragraph "

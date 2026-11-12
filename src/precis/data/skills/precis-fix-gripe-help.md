@@ -49,6 +49,30 @@ promotes open gripes into dispatchable `fix_gripe` todos, and
 jobs (`fix_gripe`, `plan_tick`, the cast producers) — a stuck fix job
 means checking that drain, not the gripe row.
 
+## What is the Devin finishing contract?
+
+For a Devin `run_slice` build, write the acceptance tests first. Put new
+files in `meta.op.params.acceptance_tests` as `{test_path: source_text}`;
+the worker installs them after worktree cleanup. For checked-in tests,
+name their `tests/…py` paths in the body or latest brief.
+Devin edits only the slice worktree (cwd pinned) and writes
+`scratch/commit-msg.txt`. Sandbox is off by default; operators may opt in
+after validating write scopes. The finishing rule remains:
+no commit, push, land or PR. Available supplied tests gate the worker
+commit; red blocks land. No tests or a missing named path falls back to
+the normal checked land; non-code and no-commit nodes are exempt.
+Every worker commit delegates `scripts/ship --checked` to `land_slice`,
+subject to review. First-line `moot: gr<N> already fixed by <sha>`,
+`validated: <reason>` or `no-op: <reason>` records no change; bare moot
+is refused for code builds. Test-only changes must not become a worker
+commit hiding that verdict. A silent empty result fails.
+
+Cloud `devin_task` has no local worktree: Devin commits and pushes only
+`devin/job-<job id>` and reports its SHA. This branch handoff is **pending**:
+no fetch/landing consumer exists. An operator must fetch the branch,
+verify its tests and arrange landing. Never open a PR. This is separate
+from the legacy `fix_gripe` recipe below.
+
 ## How do I hand-submit a fix_gripe job (reference only)?
 
 **Slice-5 canonical pattern — write the intent as a todo; the

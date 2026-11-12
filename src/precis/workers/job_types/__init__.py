@@ -36,6 +36,19 @@ Devin hand off through their final output, and all three pass the same
 pre-land deny-path check. Persisting ``meta.adapter`` keeps an in-flight
 job's parser stable when lane configuration changes. Devin's explicit
 model must be in the selected lane's list to prevent paid overage.
+Devin builds leave edits uncommitted; workspace sandboxing is off by
+default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because cache/temp write
+scopes and Docker under Seatbelt remain unverified.
+The coordinator supplies acceptance tests before launch: new files ride
+``params.acceptance_tests`` as path-to-source artifacts installed after
+worktree cleanup; checked-in paths come from the body/latest brief.
+``run_slice`` gates code builds on the available supplied tests. Missing
+tests fall back to checked landing; non-code/no-commit nodes are exempt.
+Every worker commit still lands checked: ask-specific tests do not cover
+all impacted behavior. First-line verdicts survive test-only dirty trees.
+Cloud ``devin_task`` appends a pending named-branch handoff contract; no
+consumer fetches or lands that branch yet, and the API executor has no
+local checkout.
 
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
 to keep later releases from repeating the same fix. Legacy notes inherit

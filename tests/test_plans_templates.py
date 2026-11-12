@@ -160,6 +160,30 @@ def test_gripe_fix_lane_pins_the_build(handler: TodoHandler, store: Store) -> No
     assert TEMPLATES["gripe-fix"].optional == ("lane",)
 
 
+def test_direct_build_leaves_finishing_to_the_adapter() -> None:
+    """gr635349: task prose must not override Devin's worker-owned commit."""
+    from precis.plans.templates import _direct_build_body
+
+    body = _direct_build_body("gr42", "The widget leaks.")
+    assert "The widget leaks." in body
+    assert "commit the fix" not in body
+    assert "implement" in body.lower()
+    assert "supply acceptance tests" not in body.lower()
+
+
+def test_gripe_brief_prepares_acceptance_tests_before_build(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr635349: the brief author supplies the tests before Devin builds."""
+    mint = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=_gripe(handler))
+    body = _body(store, mint.ids["brief"]).lower()
+    assert "write" in body and "acceptance tests" in body
+    assert "before" in body and "build" in body
+    assert "test paths" in body
+    assert "spec test may ride" not in body
+    assert ("build", "brief") in _blocked_by(store, mint)
+
+
 def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     gripe = _gripe(handler)
     mint = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe)

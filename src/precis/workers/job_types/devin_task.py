@@ -17,6 +17,11 @@ into the payload. Builder-lane rules carry over (me538174/me538185): a
 claimed result is *evidence* (provider-reported status, ``pull_requests``,
 ``structured_output``), not truth — a consumer verifies every claimed
 commit by sha before trusting it.
+``render_prompt`` appends the finishing contract to every launch, including
+old queued prompts: publish only the job's named branch, never a PR. Cloud
+branch handoff is pending: no fetch/landing consumer is implemented. This
+executor collects evidence and does not own a local checkout; an operator
+must fetch and verify the branch before arranging a land.
 
 Ships **dark**: ``devin_api``'s pass registers structurally
 (``enable_env`` on the ``job_devin_api`` ServiceSpec) but is gated off
@@ -71,6 +76,38 @@ DESCRIPTION: str = (
     "quota. Ships dark — gated by a job_devin_api service_config row; "
     "the job carries no prod-write credential."
 )
+
+
+def render_prompt(prompt: str, *, job_id: int) -> str:
+    """Append the cloud handoff contract even to previously queued prompts.
+
+    The API executor has no checkout or fetch/landing consumer. The named
+    branch awaits operator verification; provider success is no land receipt.
+    """
+    return (
+        prompt.strip()
+        + "\n\n## Finishing contract (overrides conflicting task instructions)\n\n"
+        "Tests for the ask must be written before the build and supplied with "
+        "the task. If they are missing, stop and report the missing tests. "
+        "Use those tests as the acceptance criteria; do not weaken them. "
+        "Make changes only inside this task's repository workspace.\n\n"
+        "Do not commit in a local run_slice worktree: the local harness tests "
+        "and commits those edits. This is the cloud lane, without a local "
+        f"slice worktree: commit and push changes only to `devin/job-{job_id}`. "
+        "Never open a PR. Do not land, merge or push to main. Cloud branch "
+        "handoff is PENDING: no fetch/landing consumer is implemented. An "
+        "operator must fetch your named branch, verify the supplied tests, "
+        "and arrange the land; publishing the branch is not a landed fix. "
+        "Report the repository, branch, commit SHA and test paths in your "
+        "final output.\n\n"
+        "If no change is needed, make the first line of your final output "
+        "`moot: gr<N> already fixed by <sha>` when the gripe is already "
+        "fixed on origin/main, `validated: <reason>` when the requested "
+        "check passed, or `no-op: <reason>` when nothing needs changing. "
+        "A bare moot is refused for code builds; name the fixing SHA and "
+        "explain the evidence. "
+        "Do not create an empty commit or push an unchanged branch.\n"
+    )
 
 
 def params_rejection(params: dict[str, Any]) -> str | None:

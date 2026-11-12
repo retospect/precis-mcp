@@ -54,6 +54,29 @@ SHIPPING (mid-CI) or WAITING (a migration/safe_fetch commit held for
 /go). SHIPPING also drops dead rows and rows quiet over 24h (parked or
 landed long ago). Rows from a collector too old to check read SHIPPING, never READY.
 
+## How does a Devin build finish?
+
+Write acceptance tests before the build. Supply new files as
+`meta.op.params.acceptance_tests = {"tests/test_fix.py": "<source>"}`;
+the worker installs them after worktree cleanup. Name checked-in
+`tests/…py` paths in the task body or latest brief. Local `run_slice`
+pins cwd. Sandbox is off by default; operators may opt in after validating
+write scopes.
+Devin edits only that worktree, leaves changes uncommitted and writes
+`scratch/commit-msg.txt`: no commit, push, land or PR. Available supplied
+tests gate the worker commit; red blocks land. No supplied tests or a
+missing named path falls back to the normal checked land. Non-code and
+no-commit nodes are exempt. Every worker commit goes through
+`land_slice` with `scripts/ship --checked`, subject to review.
+
+No change: first output line `moot: gr<N> already fixed by <sha>`,
+`validated: <reason>` or `no-op: <reason>`. Bare moot is refused for code
+builds. Test-only changes must not hide the verdict in a worker commit;
+silence fails. Cloud `devin_task` publishes `devin/job-<job id>` and its
+SHA, never a PR. Cloud branch handoff is **pending**: no fetch/landing
+consumer exists; an operator must fetch, verify and arrange landing.
+See [[precis-fix-gripe-help]].
+
 ## Rows
 
 | type | key | fields |

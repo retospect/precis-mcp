@@ -198,6 +198,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "identity": None,
         "ps_identity": "Sat Oct 31 19:57:00 2026 slice-user",
         "process_alive": run_slice._process_alive,
+        "real_git": run_slice._git,
     }
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -371,6 +372,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     # Determinism for the codex writable roots: tests that want a Docker
     # socket set DOCKER_HOST themselves.
     monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("PRECIS_DEVIN_SANDBOX", raising=False)
     return calls
 
 
@@ -5832,7 +5834,7 @@ def test_submit_devin_model_guard(
     ]
     if model is not None:
         expected += ["--model", model]
-    expected += ["--export", str(run_slice.run_dir(42) / "devin.atif.json")]
+    expected += ["--export", str(tree / "scratch" / "devin.atif.json")]
     assert argv == expected
     assert kw["stdin"] is None and kw["cwd"] == tree
     assert ctx.meta_set["adapter"] == "devin_tree"
@@ -5865,6 +5867,472 @@ def _devin_lane_submit(
         lane,
     )
     return _submit(store, seams, lane="devin", **params)
+
+
+def test_devin_finishing_brief_uses_adapter_not_lane_name() -> None:
+    """gr635349: a renamed Devin lane must still leave edits for our lander."""
+    brief = run_slice.render_brief(
+        todo_id=42,
+        title="Fix the widget",
+        body="Pass the supplied tests/test_widget.py regression.",
+        latest=None,
+        lane="custom-devin-account",
+        adapter="devin_tree",
+        model="swe-2-high",
+        effort="high",
+        mcp=False,
+    )
+    assert "do not commit" in brief.lower()
+    assert "push" in brief.lower() and "PR" in brief
+    assert "scratch/commit-msg.txt" in brief
+    assert "moot: gr<N> already fixed by <sha>" in brief
+    assert "validated:" in brief and "no-op:" in brief
+    assert "bare" in brief and "moot:" in brief
+    assert "first line" in brief.lower()
+    assert "before" in brief.lower() and "supplied" in brief.lower()
+    assert "worktree" in brief and "land_slice" in brief
+    assert "pull request" not in brief.lower()
+    assert "commit first" not in brief.lower()
+    assert "git commit -F" not in brief
+    assert "Commit on" not in brief
+    assert "4000 chars" in brief and "tests/test_skill_ingest.py" in brief
+    assert "renumber" in brief.lower() and "migration" in brief.lower()
+    assert all(step in brief for step in run_slice._LAND_LINT_STEPS)
+
+
+def _devin_test_task(store: _Store) -> Path:
+    """The coordinator supplies a regression file before Devin launches."""
+    tree = run_slice.worktrees_dir(run_slice.slice_root()) / run_slice.slice_name(42)
+    tests = tree / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_widget.py").write_text("# supplied regression\n", encoding="utf-8")
+    store.add_todo(42, "Build", body="Pass the supplied tests/test_widget.py.")
+    return tree
+
+
+def test_devin_submit_snapshots_only_supplied_tests(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _Store()
+    tree = _devin_test_task(store)
+    (tree / "tests" / "test_latest.py").write_text(
+        "# handoff regression\n", encoding="utf-8"
+    )
+    store.add_todo(
+        42,
+        "Build",
+        body="Pass tests/test_widget.py.",
+        comments=("handoff: use tests/test_latest.py and tests/test_widget.py.",),
+    )
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    assert handle["acceptance_tests"] == [
+        "tests/test_latest.py",
+        "tests/test_widget.py",
+    ]
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "do not commit" in brief.lower()
+    [(argv, kw)] = seams["launch"]
+    assert "--sandbox" not in argv and kw["cwd"] == tree
+
+
+@pytest.mark.parametrize("setting,enabled", [(None, False), ("0", False), ("1", True)])
+def test_devin_sandbox_requires_opt_in(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    setting: str | None,
+    enabled: bool,
+) -> None:
+    if setting is not None:
+        monkeypatch.setenv("PRECIS_DEVIN_SANDBOX", setting)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None and ctx.failure is None
+    [(argv, kwargs)] = seams["launch"]
+    assert ("--sandbox" in argv) is enabled
+    assert kwargs["cwd"] == Path(handle["worktree"])
+
+
+@pytest.mark.parametrize("with_message", [False, True])
+def test_devin_harness_tests_then_commits_and_lands_checked(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, with_message: bool
+) -> None:
+    """gr635349: dirty Devin output is validated and committed by the worker."""
+    store = _Store()
+    tree = _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    if with_message:
+        (tree / "scratch" / "commit-msg.txt").write_text(
+            "fix(widget): satisfy supplied regression (td42)\n", encoding="utf-8"
+        )
+    seams["porcelain"] = " M widget.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(widget): satisfy regression (td42)\n"
+
+    def run_tests(
+        argv: list[str], cwd: Path, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        assert not any(args[:1] == ["commit"] for args, _cwd in seams["git"])
+        seams["run"].append((argv, cwd))
+        return _proc()
+
+    monkeypatch.setattr(run_slice, "_run", run_tests)
+    _finish(handle, 0, "Implemented the widget.\ntests: NOT RUN — harness owns tests\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert seams["run"] == [(["scripts/test", "tests/test_widget.py"], tree)]
+    assert len([a for a, _cwd in seams["git"] if a[:1] == ["commit"]]) == 1
+    assert seams["commit_text"].startswith("fix(")
+    assert "td42" in seams["commit_text"]
+    assert seams["lands"] == [(42, tree, "devin")]
+    assert seams["land_checked"] == [True]
+
+
+def test_devin_harness_refuses_unverified_changes(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _Store()
+    tree = _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    seams["probe_rc"] = 1
+    seams["porcelain"] = " M widget.py\n"
+    seams["staged"] = True
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(widget): satisfy regression (td42)\n", encoding="utf-8"
+    )
+    _finish(handle, 0, "Implemented the widget.\ntests: ran\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert "test" in pctx.failure.lower()
+    assert seams["lands"] == []
+    assert not any(a[:1] == ["commit"] for a, _cwd in seams["git"])
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_devin_without_usable_tests_falls_back_to_checked_land(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, named: bool
+) -> None:
+    store = _Store()
+    store.add_todo(
+        42, "Build", body="Use tests/test_nonexistent.py." if named else "Fix widget."
+    )
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    seams["porcelain"] = " M widget.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(widget): fixed (td42)\n"
+    _finish(handle, 0, "Implemented widget.\ntests: ran\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert seams["run"] == []
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "devin")]
+    assert seams["land_checked"] == [True]
+
+
+@pytest.mark.parametrize(
+    "meta", [{"task_class": "brief"}, {"generate": {"role": "reviewer", "from": "x"}}]
+)
+def test_devin_document_tasks_do_not_run_code_acceptance_tests(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, meta: dict[str, Any]
+) -> None:
+    store = _Store()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    store.refs[42].meta.update(meta)
+    seams["probe_rc"] = 1
+    _finish(handle, 0, "review: LAND\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["run"] == [] and seams["lands"] == []
+
+
+def test_devin_worker_test_failure_keeps_diagnostic_tail(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _Store()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    output = "\n".join(f"test-output-{i:03d}" for i in range(100))
+    monkeypatch.setattr(
+        run_slice,
+        "_run",
+        lambda *_a, **_kw: subprocess.CompletedProcess(
+            [], 1, stdout=output, stderr="AssertionError: widget was 3 instead of 42\n"
+        ),
+    )
+    _finish(handle, 0, "Implemented widget.\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert "test-output-099" in pctx.failure
+    assert "AssertionError: widget was 3 instead of 42" in pctx.failure
+    assert "test-output-000" not in pctx.failure
+
+
+def test_devin_fallback_commit_names_the_fixed_gripe(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class LinkedStore(_Store):
+        def links_for(self, ref_id: int, **_kwargs: Any) -> list[Any]:
+            assert ref_id == 42
+            return [types.SimpleNamespace(dst_ref_id=800)]
+
+        def get_ref(self, *, kind: str, id: int) -> Any:
+            if kind == "gripe":
+                return _Ref(800, "Widget defect") if id == 800 else None
+            return super().get_ref(kind=kind, id=id)
+
+    store = LinkedStore()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    seams["porcelain"] = " M widget.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(slice): complete (gr800, td42)\n"
+    _finish(handle, 0, "Implemented widget.\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert "(gr800, td42)" in seams["commit_text"].splitlines()[0]
+
+
+@pytest.mark.parametrize(
+    "verdict,code_change,status",
+    [
+        ("no-op: already satisfied", False, "succeeded"),
+        ("validated: regression passes", False, "succeeded"),
+        ("moot: already fixed", False, "failed"),
+        ("no-op: nevertheless changed code", True, "succeeded"),
+    ],
+)
+def test_devin_verdict_precedes_real_worker_staging(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+    code_change: bool,
+    status: str,
+) -> None:
+    """Untracked supplied tests must not hide a no-change verdict in a commit."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _devin_lane_submit(
+        store,
+        seams,
+        monkeypatch,
+        acceptance_tests={
+            "tests/test_widget.py": "def test_widget():\n    assert True\n"
+        },
+    )
+    assert handle is not None
+    tree = Path(handle["worktree"])
+    assert _git(tree, "init", "-q", "-b", "slice/42").returncode == 0
+    assert _git(tree, "config", "user.name", "Test Author").returncode == 0
+    assert _git(tree, "config", "user.email", "test@example.invalid").returncode == 0
+    assert _git(tree, "config", "commit.gpgsign", "false").returncode == 0
+    (tree / ".gitignore").write_text("scratch/\n.devin/\n.claude/\n", encoding="utf-8")
+    (tree / "widget.py").write_text("VALUE = 42\n", encoding="utf-8")
+    assert _git(tree, "add", ".gitignore", "widget.py").returncode == 0
+    assert _git(tree, "commit", "-qm", "test: base").returncode == 0
+    base = _git(tree, "rev-parse", "HEAD").stdout.strip()
+    assert _git(tree, "update-ref", "refs/remotes/origin/main", base).returncode == 0
+    if code_change:
+        (tree / "widget.py").write_text("VALUE = 43\n", encoding="utf-8")
+    # From here every status/add/commit is real Git in this isolated temp repo.
+    monkeypatch.setattr(run_slice, "_git", seams["real_git"])
+    _finish(handle, 0, verdict + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == status, pctx.failure
+    head = _git(tree, "rev-parse", "HEAD").stdout.strip()
+    if code_change:
+        assert head != base
+        assert seams["lands"] == [(42, tree, "devin")]
+        assert seams["land_checked"] == [True]
+    else:
+        assert head == base
+        assert _git(tree, "diff", "--cached", "--name-only").stdout == ""
+        assert seams["lands"] == []
+
+
+@pytest.mark.parametrize(
+    "verdict", ["validated: regression passes", "no-op: unchanged"]
+)
+def test_devin_harness_records_explicit_no_change(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    store = _Store()
+    tree = _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _finish(handle, 0, verdict + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert "STATUS:done" in store.tag_strings(42)
+    assert seams["run"] == [(["scripts/test", "tests/test_widget.py"], tree)]
+    assert seams["lands"] == []
+    assert not any(a[:1] == ["commit"] for a, _cwd in seams["git"])
+
+
+def test_devin_harness_silent_no_change_still_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _Store()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _finish(handle, 0, "Done.\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and seams["lands"] == []
+
+
+def test_devin_harness_rechecks_denied_paths_after_acceptance_tests(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A green test may generate a forbidden file; it must never be committed."""
+    store = _Store()
+    _devin_test_task(store)
+    ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    seams["porcelain"] = " M widget.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(widget): regression (td42)\n"
+
+    def run_tests(
+        argv: list[str], cwd: Path, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        seams["run"].append((argv, cwd))
+        seams["porcelain_z"] = "?? .github/workflows/generated.yml\0"
+        return _proc()
+
+    monkeypatch.setattr(run_slice, "_run", run_tests)
+    _finish(handle, 0, "Implemented widget.\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert "deny_write_paths" in pctx.failure
+    assert seams["run"]
+    assert not any(a[:1] == ["commit"] for a, _cwd in seams["git"])
+    assert seams["lands"] == []
+
+
+def test_devin_acceptance_artifacts_survive_worktree_reset(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh tests come from job params after cleanup, not untracked leftovers."""
+    store = _Store()
+    store.add_todo(42, "Build", body="Keep tests/test_existing.py green.")
+    tree = run_slice.worktrees_dir(run_slice.slice_root()) / run_slice.slice_name(42)
+    (tree / "tests").mkdir(parents=True)
+    (tree / "tests" / "test_widget.py").write_text(
+        "# stale untracked test\n", encoding="utf-8"
+    )
+    supplied = "def test_widget():\n    assert widget() == 42\n"
+
+    def reset_tree(root: Path, todo_id: int) -> Path:
+        # Model the real reset's clean -fd: untracked tests do not survive.
+        shutil.rmtree(tree / "tests")
+        (tree / "tests").mkdir()
+        (tree / "tests" / "test_existing.py").write_text(
+            "# checked-in regression survives reset\n", encoding="utf-8"
+        )
+        return tree
+
+    def launch(argv: list[str], **kwargs: Any) -> int:
+        assert kwargs["cwd"] == tree
+        assert (tree / "tests" / "test_widget.py").read_text(
+            encoding="utf-8"
+        ) == supplied
+        brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+        assert "tests/test_widget.py" in brief
+        seams["launch"].append((argv, kwargs))
+        return 4242
+
+    monkeypatch.setattr(run_slice, "_ensure_worktree", reset_tree)
+    monkeypatch.setattr(run_slice, "_launch", launch)
+    ctx, handle = _devin_lane_submit(
+        store,
+        seams,
+        monkeypatch,
+        acceptance_tests={"tests/test_widget.py": supplied},
+    )
+    assert handle is not None and ctx.failure is None
+    assert len(seams["launch"]) == 1
+    assert handle["acceptance_tests"] == [
+        "tests/test_existing.py",
+        "tests/test_widget.py",
+    ]
+    assert handle["acceptance_tests_missing"] == []
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        ["tests/test_widget.py"],
+        {"tests/test_widget.py": 123},
+        {7: "# test"},
+        {"src/test_widget.py": "# test"},
+        {"tests/../outside.py": "# test"},
+        {"/tests/test_widget.py": "# test"},
+    ],
+)
+@pytest.mark.parametrize("entry", ["validate", "runtime"])
+def test_devin_acceptance_artifacts_reject_invalid_payloads(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    artifacts: Any,
+    entry: str,
+) -> None:
+    store = _Store()
+    store.add_todo(42, "Build")
+    if entry == "validate":
+        reason = run_slice.validate_submit(
+            store, params={"todo_id": 42, "acceptance_tests": artifacts}
+        )
+        assert reason is not None and "acceptance_tests" in reason
+    else:
+        ctx, handle = _devin_lane_submit(
+            store, seams, monkeypatch, acceptance_tests=artifacts
+        )
+        assert handle is None and ctx.status == "failed"
+        assert ctx.failure is not None and "acceptance_tests" in ctx.failure
+        assert seams["launch"] == []
+
+
+def test_devin_acceptance_artifacts_refuse_symlink_parent(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = _Store()
+    store.add_todo(42, "Build")
+    tree = run_slice.worktrees_dir(run_slice.slice_root()) / run_slice.slice_name(42)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def reset_tree(root: Path, todo_id: int) -> Path:
+        (tree / "tests").mkdir(parents=True)
+        (tree / "tests" / "linked").symlink_to(outside, target_is_directory=True)
+        return tree
+
+    monkeypatch.setattr(run_slice, "_ensure_worktree", reset_tree)
+    ctx, handle = _devin_lane_submit(
+        store,
+        seams,
+        monkeypatch,
+        acceptance_tests={"tests/linked/test_widget.py": "# must stay inside tree\n"},
+    )
+    assert handle is None and ctx.status == "failed"
+    assert not (outside / "test_widget.py").exists()
+    assert seams["launch"] == []
 
 
 def test_devin_submit_seeds_trust_then_launches(
@@ -6452,7 +6920,7 @@ def test_poll_devin_legacy_lane_fallback_and_exit_failure(
         _vendor_lane("devin", "devin_tree"),
     )
     store = _Store()
-    store.add_todo(42, "Build")
+    _devin_test_task(store)
     ctx, handle = _submit(store, seams, lane="devin")
     assert handle is not None
     ctx.meta_set.pop("adapter")
@@ -7834,13 +8302,13 @@ def test_devin_est_cost_prices_unknown_models_at_the_bound(
 def test_devin_submit_exports_atif(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td601015: a devin launch carries ``--export`` to the ops dir and
+    """td601015 / gr635349: Devin exports within its sandboxed worktree and
     the handle records it for the poll's usage read."""
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _devin_lane_submit(store, seams, monkeypatch)
     assert handle is not None and ctx.failure is None
-    atif = run_slice.run_dir(42) / "devin.atif.json"
+    atif = Path(handle["worktree"]) / "scratch" / "devin.atif.json"
     assert handle["atif"] == str(atif)
     [(argv, _kw)] = seams["launch"]
     i = argv.index("--export")

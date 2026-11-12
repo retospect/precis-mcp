@@ -603,7 +603,9 @@ def _launch(
         _fail(store, ref_id, reason)
         return _FAILED
 
-    payload: dict[str, Any] = {"prompt": str(params["prompt"]).strip()}
+    payload: dict[str, Any] = {
+        "prompt": devin_task.render_prompt(str(params["prompt"]), job_id=ref_id)
+    }
     if params.get("title"):
         payload["title"] = str(params["title"])
     if params.get("repos"):

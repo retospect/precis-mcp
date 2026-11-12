@@ -11,7 +11,7 @@ Detached submit/poll pair under ``ssh_node`` (the protocol
 that holds the lane's credentials with ``params.target_node``):
 
 * :func:`submit` renders the brief (todo title + body + the newest
-  ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction —
+  ``brief:``/``handoff:`` comment + the adapter's finishing instruction —
   after a failed attempt the newest ``brief:`` wins over the dead
   session's builder ``handoff:`` but never over a lander handoff,
   gr571311),
@@ -434,6 +434,11 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # accounting, else the vendor/the poll kills the session once
         # its usage meets the bound (td601015, td601426).
         "budget_usd": {"type": "number"},
+        # Coordinator-authored test sources, installed after worktree reset.
+        "acceptance_tests": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
         # Shared job budget key; sizes the lease and the kill deadline.
         "resources": {
             "type": "object",
@@ -1442,6 +1447,7 @@ def render_brief(
     deny_paths: tuple[str, ...] | None = None,
     lane_models: tuple[str, ...] = (),
     target: str | None = None,
+    adapter: str | None = None,
 ) -> str:
     """The prompt a slice session starts from. Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
@@ -1451,6 +1457,8 @@ def render_brief(
     that role's instruction, worded for a lane with or without the MCP.
     ``target`` (:func:`_review_target`) is the reviewed todo inlined for a
     reviewer. Names the ``deny_paths`` the session may not write.
+    Devin's ``adapter`` instead leaves edits for worker-owned tests and
+    commit; missing supplied tests fall back to the checked land.
     ``read_mcp`` (:func:`_read_mcp_scope`) swaps the no-MCP paragraph for
     the scope's: ``reader`` reads only, ``triage`` also names its write
     set (gr574082)."""
@@ -1551,6 +1559,60 @@ def render_brief(
             lines += close(todo_id, mcp)
         else:
             lines += _generator_close(todo_id, lane_models)
+        return "\n".join(lines) + "\n"
+    if adapter == "devin_tree":
+        lines += [
+            "",
+            "## Finishing contract (overrides conflicting task instructions)",
+            "",
+            "Tests for the ask must be written before the build and supplied "
+            "by the coordinator. Supplied test artifacts are installed in "
+            "this worktree before launch; checked-in test paths must be "
+            "named in the task body or latest brief. "
+            "Use available supplied tests as acceptance criteria; do not "
+            "weaken them. When none are available, proceed with the task: "
+            "the land runs its normal --checked gate. Non-code and no-commit "
+            "nodes are exempt from the worker acceptance-test gate.",
+            "",
+            "Make the change only inside this slice worktree; cwd is pinned "
+            "and --sandbox is off by default (operator opt-in: "
+            "PRECIS_DEVIN_SANDBOX=1). Do not commit, push, land or "
+            "open a PR. Leave the edits in the working tree and write a "
+            f"conventional subject (`type(scope): what (td{todo_id})`) and "
+            "short body to `scratch/commit-msg.txt`. Our harness runs the "
+            "available supplied tests with `scripts/test <test paths>`, "
+            "commits the changes if that gate passes or is absent, and "
+            "hands the branch to the separate land_slice job with --checked, "
+            "subject to review. Worker-run tests do not replace the "
+            "lander's impacted-test rerun.",
+            "",
+            "If no change is needed, make the first line of your final "
+            "output `validated: <why>` when the requested check passed, "
+            "`no-op: <why>` when the plan should continue without a change, "
+            "or `moot: gr<N> already fixed by <sha>` when its reason is gone. "
+            "The SHA must name the fixing commit on origin/main; a bare "
+            "moot is refused for code builds. Supplied test files alone "
+            "must not hide that verdict in a worker commit. A silent exit "
+            "with no changes is a failed attempt. "
+            "Otherwise report what changed and what remains. End with "
+            "`tests: ran` or `tests: NOT RUN — <why>`; the harness still "
+            "runs the supplied tests itself before committing.",
+            "",
+            "Land lint steps (the last two inspect committed work and belong "
+            "to the lander after the worker commit; run the earlier checks "
+            "before handoff when available):",
+            *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
+            "",
+            "For skill changes also run `scripts/test tests/test_skill_ingest.py`: "
+            "a skill H2 section must not exceed 4000 chars. Leave a colliding "
+            "new migration number as minted. The land renumbers a migration "
+            "you added to origin/main's next free number (filename and its "
+            "own header); never renumber or edit an already-landed migration.",
+            "",
+            "Your final message is posted on the todo as the `handoff:` comment "
+            "the next session starts from: what changed, what is left, and "
+            "what you would do next.",
+        ]
         return "\n".join(lines) + "\n"
     n = len(_LAND_LINT_STEPS)
     lines += [
@@ -1706,6 +1768,9 @@ def validate_submit(
             "on the worker host to launch slices"
         )
     reason = _todo_rejection(store, params.get("todo_id"))
+    if reason is not None:
+        return reason
+    reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))
     if reason is not None:
         return reason
     cap = params.get("lane_capability")
@@ -2557,6 +2622,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     if reason is not None:
         ctx.record_failure(reason)
         return None
+    reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))
+    if reason is not None:
+        ctx.record_failure(reason)
+        return None
     assert isinstance(todo_id, int)
     todo = store.get_ref(kind="todo", id=todo_id)
 
@@ -2845,6 +2914,12 @@ def submit(ctx: Any, spec: Any) -> Any:
     _claim_todo(store, todo_id, lane.name)
 
     body, latest = _brief_parts(store, todo_id)
+    artifacts = params.get("acceptance_tests", {})
+    if artifacts:
+        body += (
+            "\n\nSupplied acceptance test files (installed before build):\n"
+            + "\n".join(f"- `{path}`" for path in sorted(artifacts))
+        )
     is_generator = node_kind(todo.meta) == "generator"
     # The scoped read grant is a code-class affordance of the read lanes
     # (codex_exec, devin_tree — gr574082): PRECIS_SLICE_READ_MCP names the
@@ -2868,6 +2943,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         deny_paths=lane.deny_write_paths,
         lane_models=lane.models,
         target=_review_target(store, todo.meta),
+        adapter=adapter.name,
     )
     brief = render_brief(**brief_kwargs, read_mcp=read_scope)
     grant: dict[str, Any] | None = None
@@ -2875,10 +2951,15 @@ def submit(ctx: Any, spec: Any) -> Any:
     read_url: str | None = None
     try:
         tree = _ensure_worktree(slice_root(), todo_id)
+        _install_acceptance_tests(tree, artifacts, lane.deny_write_paths)
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
         brief_path.write_text(brief, encoding="utf-8")
+        acceptance_tests = sorted(
+            set(_MOOT_TEST_RE.findall(body + "\n" + (latest or "")))
+        )
+        missing_tests = [p for p in acceptance_tests if not _slice_test_exists(tree, p)]
         ops = run_dir(todo_id)
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
@@ -2923,9 +3004,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             (scratch / "last-message.md").unlink(missing_ok=True)
         atif_path = None
         if adapter.name == "devin_tree":
-            # The run's ATIF export (its usage feed); a retry reuses the
-            # ops dir, so a previous run's export never reads back.
-            atif_path = ops / "devin.atif.json"
+            # Keep the usage feed inside the sandbox's writable workspace.
+            # A retry must not read the previous run's export.
+            atif_path = scratch / "devin.atif.json"
             atif_path.unlink(missing_ok=True)
         argv = adapter.argv(
             model=model,
@@ -3031,6 +3112,9 @@ def submit(ctx: Any, spec: Any) -> Any:
     }
     if atif_path is not None:
         handle["atif"] = str(atif_path)
+    if adapter.name == "devin_tree" and not is_generator:
+        handle["acceptance_tests"] = acceptance_tests
+        handle["acceptance_tests_missing"] = missing_tests
     if grant:
         handle["slice_token_dir"] = grant["dir"]
         handle["slice_token_name"] = grant["name"]
@@ -3138,10 +3222,13 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
     return "\n".join([subject, *body]).strip() + "\n"
 
 
-def _commit_for_session(tree: Path, todo_id: int) -> str | None:
+def _commit_for_session(
+    tree: Path, todo_id: int, *, fallback_message: str | None = None
+) -> str | None:
     """Commit the working tree a clean session left uncommitted, with its
     ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
-    when there was nothing to do (no message file, nothing staged).
+    when there was nothing to do (no message or fallback, nothing staged).
+    Devin supplies a fallback so a missing message cannot strand its edits.
 
     gr564261's first codex-direct run (jo565335): ``codex exec`` under
     ``--sandbox workspace-write`` keeps ``.git`` read-only, so the session
@@ -3151,6 +3238,8 @@ def _commit_for_session(tree: Path, todo_id: int) -> str | None:
     it commits in the session's stead. The deny check ran on the working
     tree before this, so a denied path never reaches the commit."""
     message = _commit_message(tree, todo_id)
+    source = COMMIT_MSG_REL.as_posix() if message else "a worker-generated subject"
+    message = message or fallback_message
     if message is None:
         return None
     # scratch/ is gitignored on main, so the message file never rides along.
@@ -3173,7 +3262,84 @@ def _commit_for_session(tree: Path, todo_id: int) -> str | None:
         msg_path.unlink(missing_ok=True)
     if commit.returncode != 0:
         return f"worker commit failed ({commit.stderr.strip()[:200]})"
-    return f"{WORKER_COMMITTED} the session's working tree with {COMMIT_MSG_REL.as_posix()}"
+    return f"{WORKER_COMMITTED} the session's working tree with {source}"
+
+
+def _acceptance_artifacts_rejection(value: Any) -> str | None:
+    """The test payload is a mapping of confined test paths to source text."""
+    if not isinstance(value, dict) or any(
+        not isinstance(path, str)
+        or _MOOT_TEST_RE.fullmatch(path) is None
+        or ".." in Path(path).parts
+        or not isinstance(source, str)
+        for path, source in value.items()
+    ):
+        return (
+            "run_slice: acceptance_tests must map relative tests/*.py paths "
+            "(no parent traversal) to source text"
+        )
+    return None
+
+
+def _install_acceptance_tests(
+    tree: Path, artifacts: dict[str, str], deny_paths: tuple[str, ...]
+) -> None:
+    """Restore coordinator-authored tests after cleanup, before the builder.
+
+    Loose files disappear on reset and new trees start from main. Carrying
+    source in job params also makes retries independent of another tree.
+    Validate every destination before writing, including symlink parents.
+    """
+    root = tree.resolve()
+    for path in artifacts:
+        dest = root / path
+        if dest.resolve() != dest or deny_violations([path], deny_paths):
+            raise ValueError(f"acceptance_tests path is symlinked or denied: {path}")
+    for path, source in artifacts.items():
+        dest = root / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(source, encoding="utf-8")
+
+
+def _slice_test_exists(tree: Path, path: str) -> bool:
+    """Acceptance paths must be existing files inside this slice, not escapes."""
+    return (
+        _MOOT_TEST_RE.fullmatch(path) is not None
+        and (tree / path).resolve().is_relative_to(tree.resolve())
+        and (tree / path).is_file()
+    )
+
+
+def _devin_acceptance_tests(
+    tree: Path, handle: dict[str, Any]
+) -> tuple[bool, str | None]:
+    """Return ``(ran, failure)`` for available tests supplied before the build.
+
+    Never discover tests from Devin's output or the generated lint footer:
+    those cannot establish that the ask had tests before implementation.
+    Missing paths are hints, not a reason to fail a completed session; the
+    lander's checked mode still runs impacted tests when no gate can run.
+    """
+    paths = handle.get("acceptance_tests")
+    if not isinstance(paths, list):
+        return False, None
+    paths = [
+        p
+        for p in paths
+        if isinstance(p, str)
+        and p not in handle.get("acceptance_tests_missing", [])
+        and _slice_test_exists(tree, p)
+    ]
+    if not paths:
+        return False, None
+    try:
+        proc = _run(["scripts/test", *paths], tree, timeout=_MOOT_TEST_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return True, f"Devin acceptance tests could not run: {exc}"
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-60:])
+        return True, f"Devin acceptance tests failed (exit {proc.returncode})\n{tail}"
+    return True, None
 
 
 def tests_ran(text: str | None) -> bool:
@@ -4406,6 +4572,10 @@ def poll(ctx: Any, handle: Any) -> bool:
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
 
     committed = None
+    test_failure = None
+    worker_tests_ran = False
+    verdict = generator_verdict(result)
+    no_commit = _no_commit_kind(ctx.store, todo_id)
     if (
         exit_code == 0
         and not is_error
@@ -4414,7 +4584,50 @@ def poll(ctx: Any, handle: Any) -> bool:
         and budget_note is None
     ):
         if not _is_generator(ctx.store, todo_id):
-            committed = _commit_for_session(tree, todo_id)
+            if adapter.name == "devin_tree" and no_commit is None:
+                worker_tests_ran, test_failure = _devin_acceptance_tests(tree, handle)
+                if worker_tests_ran and test_failure is None:
+                    after_denied, after_human_hits = _deny_reason(
+                        tree, _lanes.deny_paths_for(ctx.store)
+                    )
+                    if after_denied:
+                        test_failure = (
+                            "Devin acceptance tests left a failing deny_write_paths "
+                            "check; refusing worker commit"
+                        )
+                        if after_human_hits:
+                            ctx.set_meta(**{HUMAN_ONLY_KEY: after_human_hits})
+                paths = changed_paths(tree) if verdict is not None else None
+                preserve_verdict = paths is not None and all(
+                    p.startswith("tests/") for p in paths
+                )
+                if test_failure is None and not preserve_verdict:
+                    refs = _fixes_refs(ctx.store, todo_id)
+                    handles = ", ".join([*refs[1:], refs[0]])
+                    committed = _commit_for_session(
+                        tree,
+                        todo_id,
+                        fallback_message=f"fix(slice): complete ({handles})\n",
+                    )
+                ctx.set_meta(
+                    acceptance_tests={
+                        "paths": handle.get("acceptance_tests", []),
+                        "passed": test_failure is None if worker_tests_ran else None,
+                    }
+                )
+            else:
+                paths = (
+                    changed_paths(tree)
+                    if adapter.name == "devin_tree" and verdict is not None
+                    else None
+                )
+                if paths is None or any(not p.startswith("tests/") for p in paths):
+                    committed = _commit_for_session(tree, todo_id)
+    if test_failure:
+        if pairs:
+            test_failure = _redact(test_failure, pairs)
+        if unscrubbed:
+            test_failure = _drop_secret_lines(test_failure)
     if committed:
         if pairs:
             committed = _redact(committed, pairs)
@@ -4444,7 +4657,17 @@ def poll(ctx: Any, handle: Any) -> bool:
         summary.append(f"Budget: {budget_note}.")
     if committed:
         summary.append(f"Commit: {committed}.")
-    clean = exit_code == 0 and not is_error and not denied and budget_note is None
+    if test_failure:
+        summary.append(f"Tests: {test_failure}.")
+    elif worker_tests_ran:
+        summary.append("Tests: supplied acceptance tests passed on the worker.")
+    clean = (
+        exit_code == 0
+        and not is_error
+        and not denied
+        and budget_note is None
+        and test_failure is None
+    )
     if clean:
         # gr603945 (td603429 follow-up): a clean exit is the minter done
         # writing — finish the ``waiting-for:mint`` holds on the settled
@@ -4462,8 +4685,6 @@ def poll(ctx: Any, handle: Any) -> bool:
     land = clean and not _is_generator(ctx.store, todo_id)
     nothing = None
     if land and not commits:
-        verdict = generator_verdict(result)
-        no_commit = _no_commit_kind(ctx.store, todo_id)
         # A ``moot:`` claim on a CODE task must verify before it may
         # close the plan (td584381 S1d): first line or anywhere in the
         # result — the ``handoff:`` comment's source text, already
@@ -4521,6 +4742,16 @@ def poll(ctx: Any, handle: Any) -> bool:
             and _foreign_moot(ctx.store, todo_id, f"{found[0]}: {found[1]}")
         ):
             # A ``moot:`` pinned to another gripe is not this plan's.
+            found = None
+        if (
+            adapter.name == "devin_tree"
+            and no_commit is None
+            and found is not None
+            and found[0] == "moot"
+            and re.match(r"gr\d+ already fixed by [0-9a-f]{7,40}\b", found[1]) is None
+        ):
+            # A bare claim cannot bypass the SHA-bearing code-build grammar
+            # via the position-free fallback after _verified_moot refuses it.
             found = None
         # gr648125 (r288/r290): the fix node's declared ``moot:``/``no-op:``
         # close when ``_fix_moot``'s sha gates could not verify it — the
@@ -4732,11 +4963,14 @@ def poll(ctx: Any, handle: Any) -> bool:
         # gr573563 (Reto on gr573555): the quick lane wants the builder's
         # receipt — the last ``tests:`` marker saying ``ran``. Land
         # checked when the worker committed the tree the builder left
-        # (no git, so no tests either) or the hand-off carries no green
-        # marker. ``--checked`` re-runs the impacted tests before land.
+        # or the hand-off carries no green marker. Supplied acceptance tests
+        # cover the ask, not the impacted-test gate after a worker commit.
+        # ``--checked`` re-runs the impacted tests before land.
         checked = (
-            committed is not None and committed.startswith(WORKER_COMMITTED)
-        ) or not tests_ran(result)
+            (committed is not None and committed.startswith(WORKER_COMMITTED))
+            or not tests_ran(result)
+            or (adapter.name == "devin_tree" and not worker_tests_ran)
+        )
         preland = _preland_reviewer(ctx.store, todo_id)
         if preland is not None:
             # gr570506 (Reto 2026-11-12): the review gates the land — the
@@ -4788,7 +5022,14 @@ def poll(ctx: Any, handle: Any) -> bool:
         gone = f"worktree {tree} vanished while the session ran (reaped?)"
     else:
         gone = None
-    what = budget_note or denied or nothing or gone or f"failed (exit {exit_code})"
+    what = (
+        budget_note
+        or denied
+        or test_failure
+        or nothing
+        or gone
+        or f"failed (exit {exit_code})"
+    )
     reason = (
         f"run_slice: session for td{todo_id} {what}; todo back to open, "
         f"attempt:{attempt}"

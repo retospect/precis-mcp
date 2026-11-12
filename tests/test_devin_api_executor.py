@@ -173,7 +173,13 @@ def test_mints_session_and_records_id(store: Store, api: FakeAPI) -> None:
     meta = _meta(store, rid)
     assert meta["devin_session_id"] == "devin-abc123"
     assert _status(store, rid) == "running"
-    assert api.created[0]["prompt"] == "fix the thing"
+    prompt = api.created[0]["prompt"]
+    assert "fix the thing" in prompt
+    assert f"devin/job-{rid}" in prompt
+    assert "Never open a PR" in prompt
+    assert "moot: gr<N> already fixed by <sha>" in prompt
+    assert "validated:" in prompt
+    assert "no-op: <reason>" in prompt
     # No prod-write credential: the payload carries only prompt/tags.
     assert "secret_ids" not in api.created[0]
     assert "session_secrets" not in api.created[0]
