@@ -107,10 +107,17 @@ From here until step 4 finishes, connections through `:6432` fail. Expected.
 
     scripts/prod-psql "SELECT current_user, now()"
 
-Then confirm nothing is auth-looping:
+Then confirm nothing is auth-looping. The authoritative worker log is the
+`worker_logs` table — the `/var/log/precis-worker*.log` stdout files only
+carry bootstrap/fallback lines (migration 0015; `docs/runbooks/cluster-logs.md`):
 
     ssh caspar 'tail -50 /usr/local/var/log/pgbouncer.log' | grep -i "auth\|error"
-    ssh melchior 'tail -30 /var/log/precis-worker-agentlane.log'
+    scripts/prod-psql "SELECT to_char(ts,'HH24:MI'), host, process, left(message,110)
+      FROM worker_logs
+      WHERE ts > now() - interval '15 minutes'
+        AND level IN ('WARNING','ERROR')
+        AND message ~* 'auth|password|fe_sendauth|pgbouncer'
+      ORDER BY ts DESC LIMIT 40;"
 
 A `fe_sendauth: no password supplied` on a *sandboxed* job is a different,
 known defect (gr196677 — `PGPASSFILE` pinning), not a rotation failure.
