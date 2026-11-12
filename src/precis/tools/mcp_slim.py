@@ -59,7 +59,9 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 `page_size` ≤ 100 bounds the top-N set (`k=`/`limit=` read as it). Omit
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
 'lexical' / 'semantic' / 'verbatim'.
-`scope=` searches inside one ref (handle or slug); `status=` filters by
+`scope=` searches inside one ref (handle or slug) — the find-in-ref
+read; only kinds that implement it accept scope=, and their refusal
+names the ones that do. `status=` filters by
 `STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
 `remaining_words`, `links`, `tags` — the legend is in the skill.
 Some kinds are host-gated:

@@ -39,7 +39,7 @@ import time
 import urllib.error
 from collections import OrderedDict
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import psycopg
 
@@ -3938,6 +3938,20 @@ class DispatchMixin(RuntimeShape):
                     if "title" in unknown_top and "text" in accepted_top
                     else ""
                 )
+                if not hint and verb == "search" and "scope" in unknown_top:
+                    # gr632147: the slim schema advertises scope= on every
+                    # kind, but only some searches implement it (with
+                    # kind-specific meaning) — name the ones that do,
+                    # computed from the live registry so the hint cannot
+                    # drift from the handlers.
+                    scope_takers = sorted(
+                        k
+                        for k, h in self.hub.handlers.items()
+                        if "scope"
+                        in _handler_accepted_kwargs(cast(type[Handler], type(h)), verb)
+                    )
+                    if scope_takers:
+                        hint = " — kinds accepting scope=: " + ", ".join(scope_takers)
                 dropped = [k for k in unknown_top if k in _DROPPABLE_TOP_LEVEL_KWARGS]
                 raise BadInput(
                     f"{verb}(kind={kind!r}) does not accept {unknown_top!r}"

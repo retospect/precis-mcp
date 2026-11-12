@@ -154,6 +154,25 @@ def test_draft_edit_mode_insert_where_still_reach_the_handler(
     assert "A new sentence." in chunk.text
 
 
+def test_search_scope_refusal_names_accepting_kinds(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr632147: the slim search schema advertises ``scope=`` on every
+    kind, but it is the one-ref find-in-ref read and only some searches
+    implement it — a kind without it refuses and the refusal must name
+    the kinds that accept it, not just list the refusing kind's own
+    accepted kwargs."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "todo", "q": "x", "scope": "td1"},
+    )
+    assert "[error:BadInput]" in out
+    assert "does not accept ['scope']" in out
+    assert "kinds accepting scope=:" in out
+    assert "paper" in out
+    assert "skill" in out
+
+
 def test_tolerant_handler_ignores_unrecognized_extras(
     runtime_with_store: PrecisRuntime,
 ) -> None:

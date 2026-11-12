@@ -1275,8 +1275,10 @@ def search(
     `page_size` ≤ 100 selects the top-N hits (`k=`/`limit=` read as it).
     Omit `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips
     slugs; `reach=` ('local'|'remote'|'both'; patent/edgar); `folder=`
-    scopes. `scope=` searches inside one ref (handle or slug);
-    `status=` filters by `STATUS:` tag on kinds that carry that axis.
+    scopes. `scope=` searches inside one ref (handle or slug) — the
+    find-in-ref read; only kinds that implement it accept scope=, and
+    their refusal names the ones that do. `status=` filters by
+    `STATUS:` tag on kinds that carry that axis.
 
     `mode=` 'hybrid' (default) / 'lexical' (exact) / 'semantic' /
     'verbatim' (all query words as chunk keywords). `angle=`+`like=`
