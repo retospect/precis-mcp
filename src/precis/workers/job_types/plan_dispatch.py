@@ -3196,6 +3196,14 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
             # An informational ask (``blocks: "nothing"``) is a record, not
             # a gate: it stays open for the human and does not hold the
             # phase (gr589823).
+            # A build whose land is held (``meta.pending_land``, gr570506)
+            # is done but not landed: the plan stays open through the
+            # land and any recovery rebuild, until ``_record_land``
+            # clears the stamp.
+            if any(
+                isinstance(c.meta.get(_templates.PENDING_LAND_KEY), dict) for c in kids
+            ):
+                continue
             if kids and all(_closed(c) or _informational_ask(c) for c in kids):
                 w.set_status(n, "done")
                 res.phases_closed += 1

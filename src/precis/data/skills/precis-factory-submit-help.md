@@ -141,7 +141,7 @@ observable through the MCP, so the deploy close is mechanical. A spec
 section submits through `spec-build`: the same commit that implements
 the section retires it — a `~<Heading>` section becomes a redirect to
 `<module>::<symbol>` and its acceptance test, a whole-file spec is
-deleted — so spec and implementation cannot drift.
+rewritten to the same one-line redirect, never deleted — so spec and implementation cannot drift.
 
 ## See also
 

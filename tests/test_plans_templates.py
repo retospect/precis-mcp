@@ -16,6 +16,7 @@ from precis.handlers.todo import TodoHandler
 from precis.plans import lanes
 from precis.plans.nodes import node_kind, validate_plan_meta
 from precis.plans.templates import (
+    _PRELAND_REVIEWER_BRIEF_TAIL,
     BRIEF_TASK_CLASS,
     PCB_TASK_CLASS,
     TEMPLATES,
@@ -436,11 +437,12 @@ def test_spec_build_rejects_a_non_md_section(store: Store, section: str) -> None
 
 
 def test_spec_build_accepts_whole_file_and_section(store: Store) -> None:
-    """Both md spellings mint: a whole-file spec deletes the file, a
+    """Both md spellings mint: a whole-file spec redirects (never deleted), a
     ``~Heading`` section retires to a redirect line."""
     whole = TEMPLATES["spec-build"].mint(store, None, section="docs/backlog/x.md")
     part = TEMPLATES["spec-build"].mint(store, None, section="docs/backlog/y.md~Part")
-    assert "whole-file spec is deleted" in _body(store, whole.ids["build"])
+    assert "never deleted" in _body(store, whole.ids["build"])
+    assert "is deleted" not in _body(store, whole.ids["build"])
     assert "replaced by one line redirecting" in _body(store, part.ids["build"])
 
 
@@ -813,3 +815,10 @@ def test_parented_put_keeps_llm_tier_default_for_plain(
     handler: TodoHandler, store: Store
 ) -> None:
     assert _tier_after_parented_put(handler, store) == "opus"
+
+
+def test_preland_reviewer_brief_requires_docs_and_one_hop_review() -> None:
+    """Pre-land reviewers reject undocumented behavior/test changes."""
+    brief = _PRELAND_REVIEWER_BRIEF_TAIL
+    assert "without the matching documentation" in brief
+    assert "callers and callees" in brief

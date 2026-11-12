@@ -354,7 +354,12 @@ _PRELAND_REVIEWER_BRIEF_TAIL = (
     "no land, and do not tag this todo done. The plan tick reads the "
     "verdict: LAND mints the held land_slice (the squash onto main is "
     "the last step), FIX or REVERT sends the branch back to the builder "
-    "with your findings as its handoff — nothing is on main to revert."
+    "with your findings as its handoff — nothing is on main to revert.\n\n"
+    "Reject (FIX) a diff that changes behavior or tests without the "
+    "matching documentation (docstrings, comments, skills, docs) updated "
+    "in the same diff, and check one hop out: read the callers and "
+    "callees of every changed function and reject a change that leaves "
+    "them reading wrong or broken."
 )
 
 
@@ -755,7 +760,8 @@ def mint_spec_build(
     the living spec — docstrings and comments the why, so spec and
     implementation cannot drift). ``section`` is a repo-relative md
     address: ``'docs/backlog/<slug>.md~<Heading>'`` retires one section,
-    ``'<path>.md'`` retires the whole file (deleted by the same commit).
+    ``'<path>.md'`` retires the whole file to a redirect stub (the file
+    stays, its body one line naming the implementation).
     The reviewer gates the squash onto main (:data:`PRELAND_REVIEW_KEY`);
     ``lane`` pins the build (``meta.op.params.lane``), unset the class
     pick applies. The submitter waits on the outcome with
@@ -784,7 +790,8 @@ def mint_spec_build(
                 "SAME commit retire the spec: a `~<Heading>` section is "
                 "replaced by one line redirecting to the code that now "
                 "implements it (`<module>::<symbol>` and its acceptance "
-                "test); a whole-file spec is deleted. Acceptance tests carry "
+                "test); a whole-file spec is rewritten to that same one-line "
+                "redirect, never deleted. Acceptance tests carry "
                 "the what — the living spec — and docstrings and comments "
                 "the why; update them and one hop out (callers and callees) "
                 "so it all still reads right (Reto 2026-11-12). The land "

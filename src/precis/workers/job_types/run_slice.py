@@ -880,6 +880,52 @@ def _preland_reviewer(store: Any, todo_id: int) -> int | None:
     return None
 
 
+def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
+    """Re-arm the pre-land gate after a failed land reopened td<todo_id>
+    for a rebuild (gr570506): the reviewer already closed on its LAND
+    verdict, so without this ``_preland_reviewer`` finds none and the
+    rebuilt code would land unreviewed. Clears ``meta.pending_land``
+    (the rebuild stamps its own) and reopens each closed pre-land
+    reviewer with ``meta.rearmed_after_job`` at its newest job, so the
+    tick re-dispatches it once the rebuild defers again. Returns the
+    reopened reviewer ids."""
+    from precis.plans.templates import PENDING_LAND_KEY, PRELAND_REVIEW_KEY
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if ref is None or not (ref.meta or {}).get(PENDING_LAND_KEY):
+        return []
+    store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id FROM refs
+             WHERE kind = 'todo' AND retired_at IS NULL
+               AND meta->'generate'->>'role' = 'reviewer'
+               AND meta->'generate'->>'from' = %s
+               AND meta->%s = 'true'::jsonb
+            """,
+            (f"td{todo_id}", PRELAND_REVIEW_KEY),
+        ).fetchall()
+    reopened: list[int] = []
+    for (rid,) in rows:
+        rid = int(rid)
+        if _todo_status(store, rid) not in TERMINAL_TODO_STATUSES:
+            continue
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT max(ref_id) FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (rid,),
+            ).fetchone()
+        if row and row[0] is not None:
+            store.stamp_ref_meta(rid, {"rearmed_after_job": int(row[0])})
+        store.add_tag(
+            rid, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+        )
+        reopened.append(rid)
+    return reopened
+
+
 def _defer_land_for_review(
     ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool, reviewer: int
 ) -> str:

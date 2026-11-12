@@ -1557,6 +1557,11 @@ def _fail(
         suffix = (
             f"; todo td{todo_id} back to open, attempt:{attempt}" if attempt else ""
         )
+        try:
+            # The rebuild must clear the pre-land review again (gr570506).
+            _rs.rearm_preland_review(ctx.store, todo_id)
+        except Exception:  # pragma: no cover — defensive; the job still fails
+            log.warning("land_slice: pre-land re-arm on td%d failed", todo_id)
     ctx.record_failure(f"land_slice: {reason}{suffix}")
 
 

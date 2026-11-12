@@ -6224,6 +6224,45 @@ def test_preland_review_land_mints_the_held_land(store: Store) -> None:
     assert _children(store, mint.root_id) == [build, review]
 
 
+def test_preland_land_holds_a_phase_root_open(store: Store) -> None:
+    """Build done (land held) and reviewer done on LAND, land still
+    pending: the phase root must not close on "every child closed"."""
+    mint = T.mint_spec_build(store, None, section="docs/backlog/x.md~Part")
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    _mark_done(store, review)
+    pd.run_pass(store)
+    assert _status(store, mint.root_id) != "done"
+    store.stamp_ref_meta(build, {"pending_land": None})
+    pd.run_pass(store)
+    assert _status(store, mint.root_id) == "done"
+
+
+def test_failed_land_rearms_the_preland_reviewer(store: Store) -> None:
+    """A failed land reopens the build; the closed pre-land reviewer
+    reopens with it, so the rebuild cannot land unreviewed."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.stamp_ref_meta(review, {"preland_review": True})
+    _job(store, review, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    _mark_done(store, review)
+    assert run_slice._preland_reviewer(store, build) is None
+    assert run_slice.rearm_preland_review(store, build) == [review]
+    assert _meta(store, build).get("pending_land") is None
+    assert _status(store, review) == "open"
+    assert run_slice._preland_reviewer(store, build) == review
+
+
 def test_preland_review_land_keeps_the_chain_alive_while_land_runs(
     store: Store,
 ) -> None:
