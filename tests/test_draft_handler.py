@@ -3574,3 +3574,26 @@ def test_svg_figure_errors_carry_a_next(draft: DraftHandler, hub: Hub) -> None:
             mime="image/svg+xml",
         )
     assert "image=" in str(ei.value.next)
+
+
+def test_search_tags_filter_and_regex_refusal(draft: DraftHandler, hub: Hub) -> None:
+    """gr648738: ``tags=`` is a declared search param, not a BadInput."""
+    from precis.store.types import Tag
+
+    for slug in ("tagged", "plain"):
+        draft.put(id=slug, title=slug.title(), project=_proj(hub))
+        draft.put(
+            id=slug,
+            chunk_kind="paragraph",
+            text="zeolite selectivity",
+            at={"last": True},
+        )
+    ref = hub.live_store.get_ref(kind="draft", id="tagged")
+    assert ref is not None
+    hub.live_store.add_tag(ref.id, Tag.open("project:nox"), set_by="user")
+
+    out = draft.search(q="zeolite selectivity", mode="lexical", tags=["project:nox"])
+    assert "zeolite" in out.body
+    assert "Plain" not in out.body
+    with pytest.raises(BadInput):
+        draft.search(q="zeolite", mode="regex", tags=["project:nox"])

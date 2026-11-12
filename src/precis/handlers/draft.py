@@ -1177,6 +1177,7 @@ class DraftHandler(Handler):
         mode: str | None = None,
         flags: str | None = None,
         headings_only: bool = False,
+        tags: list[str] | None = None,
         page_size: int = 10,
         page: int = 1,
         **_kw: Any,
@@ -1189,7 +1190,8 @@ class DraftHandler(Handler):
         ``dc<id>`` chunk handle searches the subtree under that chunk (a
         section, or just the chunk if a leaf), a draft slug searches that
         whole draft, nothing searches every draft. ``headings_only=True``
-        restricts hits to section headings (a semantic TOC jump)."""
+        restricts hits to section headings (a semantic TOC jump).
+        ``tags=[...]`` keeps only drafts carrying every listed tag."""
         q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
@@ -1205,6 +1207,11 @@ class DraftHandler(Handler):
             None,
         )
         if (mode or "").strip() == "regex":
+            if tags:
+                raise BadInput(
+                    "search(kind='draft', mode='regex') does not take tags=",
+                    next="scope= a draft slug, or drop mode='regex' to filter by tags",
+                )
             return self._regex_find(
                 q, raw_scope, flags=flags or "", page_size=page_size, page=page
             )
@@ -1235,6 +1242,7 @@ class DraftHandler(Handler):
             query_vec=query_vec,
             mode=mode,
             kind="draft",
+            tags=tags,
             scope_ref_id=scope_ref_id,
             chunk_ids=chunk_ids,
             chunk_kinds=chunk_kinds,
@@ -1248,7 +1256,11 @@ class DraftHandler(Handler):
             []
             if offset > 0 or headings_only
             else self._title_lexical_pairs(
-                q, mode=mode, limit=page_size, scope_ref_id=scope_ref_id
+                q,
+                mode=mode,
+                limit=page_size,
+                scope_ref_id=scope_ref_id,
+                tags=tags,
             )
         )
         return self._render_search(
