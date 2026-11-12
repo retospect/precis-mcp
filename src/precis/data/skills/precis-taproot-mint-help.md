@@ -141,6 +141,14 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   - Salvage rule: when meta-prose wraps real content, extract the
     underlying fact (the specific properties or values being compared),
     not the practice. If the passage states only the practice, don't mint.
+- **Literature-state markers need an as-of date.** "only", "not yet",
+  "never been", "remains challenging" assert the literature's current
+  state — a universal negative one future experiment falsifies and
+  nothing verifies, so it rots silently. Pin the date the source
+  established it ("As of 2016, …"). Dropping the marker is the fallback
+  when no clean date exists, not the default: it erases information and
+  drifts toward timeless prose. `fi211523` (undated, fixed by dating) vs
+  `fi176536` (dated from the start).
 - **One atomic claim per hub — don't hand-bundle.** `conjunct-of` (atom →
   composite) is written only by the automated decomposition pass, run
   through `taproot_backfill` — not hand-authored. Hand-minting from a
