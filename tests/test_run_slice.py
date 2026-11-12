@@ -1328,6 +1328,58 @@ def test_submit_launches_and_claims(
     assert kw["env"]["PRECIS_SLICE_ID"] == "td42"
 
 
+def test_submit_stamps_the_shadow_decision(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572552 S4b: beside the pick, submit writes the decide() shadow
+    on ``meta.decision`` — read-only telemetry, never the launch's
+    input (the pick above it is still pick_lane's)."""
+    from precis.utils.llm import decide
+
+    monkeypatch.setattr(decide, "mode_for", lambda kind: "shadow")
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    stamp = ctx.meta_set["decision"]
+    assert stamp["site"] == "submit" and stamp["executed"] == "legacy"
+    assert stamp["chosen"]["lane"] == "claude-sub"
+    assert stamp["legacy"]["chosen"]["lane"] == "claude-sub"
+    assert stamp["agree"] is True and stamp["lane_match"] is True
+
+
+def test_submit_stamps_no_decision_under_legacy_mode(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default ``llm.decide`` mode computes nothing — absence keeps
+    ``meta.decision`` a presence-only signal and the legacy hot path
+    reads nothing it does not need."""
+    from precis.utils.llm import decide
+
+    monkeypatch.setattr(decide, "mode_for", lambda kind: "legacy")
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx, _handle = _submit(store, seams)
+    assert "decision" not in ctx.meta_set
+
+
+def test_submit_shadow_failure_never_blocks_the_launch(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken shadow is a miss, not a launch failure — the same
+    fail-open the router's ``_decision_probe`` keeps (td572552 S4b)."""
+    from precis.utils.llm import decide
+
+    monkeypatch.setattr(decide, "mode_for", lambda kind: "shadow")
+    monkeypatch.setattr(decide, "decide", lambda *a, **k: 1 / 0)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    assert "decision" not in ctx.meta_set
+
+
 def test_submit_retry_resets_the_reused_worktree(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:

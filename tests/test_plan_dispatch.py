@@ -3069,6 +3069,67 @@ def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
     assert params["lane"] == "devin" and params["model"] == "swe-2-max"
 
 
+def test_an_escalated_mint_carries_the_shadow_decision(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572552 S4b: ``_escalate``'s decide() shadow rides the minted
+    job on ``meta.decision`` — the ladder rung the retry climbed
+    beside decide()'s own ranking of the full table."""
+    from precis.utils.llm import decide
+
+    monkeypatch.setattr(decide, "mode_for", lambda kind: "shadow")
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store, task, "real failure on the foot rung", lane="devin", model="swe-2-high"
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    job = _jobs_under(store, task)[-1][1]
+    assert job["params"]["lane"] == "devin" and job["params"]["model"] == "swe-2-max"
+    stamp = job.get("decision")
+    assert stamp is not None and stamp["site"] == "escalate"
+    assert stamp["executed"] == "legacy"
+    assert stamp["legacy"]["keys"] == [
+        "swe-2-high@devin_tree/devin",
+        "swe-2-max@devin_tree/devin",
+        "claude-sonnet-5-5@claude_p/claude-sub",
+        "claude-opus-5-5@claude_p/claude-sub",
+    ]
+    assert stamp["legacy"]["chosen"]["lane"] == "devin"
+    # decide()'s free ranking lands on the rung the climb took.
+    assert stamp["agree"] is True
+
+
+def test_a_review_mint_carries_the_shadow_decision(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572552 S4b: the review-lane pick stamps its shadow too — the
+    builder's vendor shows in ``rejected`` under the request's own
+    vendor-exclusion constraint."""
+    from precis.utils.llm import decide
+
+    monkeypatch.setattr(decide, "mode_for", lambda kind: "shadow")
+    use_lanes(monkeypatch)
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, review)[-1][1]
+    assert job["params"]["lane"] == "devin"
+    stamp = job.get("decision")
+    assert stamp is not None and stamp["site"] == "review"
+    reasons = {r["offering_key"]: r["reason"] for r in stamp["rejected"]}
+    assert (
+        reasons["claude-sonnet-5-5@claude_p/claude-sub"]
+        == "vendor anthropic excluded by request"
+    )
+
+
 def test_escalate_never_drops_below_the_last_attempt(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

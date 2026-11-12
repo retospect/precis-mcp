@@ -64,12 +64,31 @@ class Offering:
 
 @dataclass(frozen=True)
 class SliceRequest:
+    """A lane-dispatch decision input (td572552 S4b): the ``run_slice``
+    pick's constraints mapped onto this surface — ``task_kind`` the task
+    class, ``needs_mcp`` a ``lane_capability``/generator write-MCP
+    requirement, ``code_only`` a class the code gate must run under,
+    ``exclude_vendor`` the review rule's builder-vendor exclusion (one
+    name or several), ``model`` a ``params.model`` pin the free ranking
+    still runs beside, ``work_class`` the class the pool-ahead gate reads
+    (unattended factory slices are ``background`` — a lane whose quota
+    window is over-burned reads as a real disagreement with the pick,
+    which never sees pacing)."""
+
     task_kind: str
     needs_mcp: bool = False
     code_only: bool = False
-    exclude_vendor: str | None = None
+    exclude_vendor: str | Sequence[str] | None = None
+    #: A ``params.lane_capability`` the offering's capability map must
+    #: carry — one of ``run_slice._LANE_CAPABILITIES``
+    #: (``mcp``/``read_mcp``/``budget_capable``/``budget_watch``). The
+    #: pick re-derives it per lane; the shadow rejects the lanes it
+    #: never saw.
+    required_capability: str | None = None
     consequence: str = "medium"
     privacy_class: str = "default"
+    model: str | None = None
+    work_class: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +209,7 @@ _OFFERING_LOG_FIELDS = (
     "model",
     "adapter",
     "account",
+    "lane",
     "billing",
     "price_in",
     "price_out",
@@ -292,6 +312,29 @@ def _rejection(
         model = account.entitlement.get("models", {}).get(o.model, {})
         if isinstance(model, dict) and model.get("allowed") is False:
             return "entitlement", "model not allowed by account"
+    if isinstance(req, SliceRequest):
+        # The lane pick's own constraints (td572552 S4b) — the review
+        # rule's vendor exclusion, the task-class fit, a write-MCP
+        # requirement, a code-gate class — reject the offerings the pick
+        # never saw, so ``rejected`` records why each lane was out.
+        excluded = req.exclude_vendor
+        if isinstance(excluded, str):
+            excluded = (excluded,) if excluded else ()
+        if excluded and o.provider in excluded:
+            return "capability", f"vendor {o.provider} excluded by request"
+        kind = req.task_kind or ""
+        if kind and not (
+            o.capability.get("task:*") or o.capability.get(f"task:{kind}")
+        ):
+            return "capability", f"lane takes no {kind} work"
+        if req.needs_mcp and not o.capability.get("mcp"):
+            return "capability", "lane offers no write MCP"
+        if req.required_capability and not o.capability.get(req.required_capability):
+            return "capability", f"lane offers no {req.required_capability}"
+        if req.code_only and not (
+            o.capability.get("task:*") or o.capability.get("task:code")
+        ):
+            return "capability", "lane runs no code gate"
     # ``live`` is the heartbeat view of the ``served_by`` host label — an
     # accounting key the heartbeat probe need not cover (the label may name
     # no heartbeat-writing machine). The acquirable ``llm:<model>`` pool in

@@ -21,7 +21,9 @@ that holds the lane's credentials with ``params.target_node``):
   ``params.lane_capability`` restricts the pick to lanes whose adapter
   declares it and re-picks a dead or incapable pin rather than failing —
   stamps ``meta.lane``/``meta.adapter``/``meta.model``/``meta.effort`` on
-  the job, takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
+  the job plus ``meta.decision`` — the :func:`decide() <precis.utils.llm.decide.decide>`
+  shadow beside the pick, read-only telemetry (:mod:`_lane_decide`,
+  td572552 S4b) — takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
   ``origin/main`` under the checkout root (:func:`slice_root`) — a reused
   tree is reset to a clean checkout of its branch tip first
@@ -223,6 +225,7 @@ from precis.utils.dispatch_score import (
 from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
 )
+from precis.workers.job_types import _lane_decide
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
@@ -2449,7 +2452,15 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"run_slice: pinned lane {params['lane']!r} is vendor {exclude!r}, "
             "whose window closed; picking another vendor's lane",
         )
+    # A triage-pinned model narrows the pick to lanes that run it
+    # (``Lane.accepts_model``): before this a build carrying a claude id
+    # (td543634) was codex-fit and would have launched with a model the
+    # codex CLI rejects.
+    pin = None if left_pin else params.get("model")
+    model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
     lane: _lanes.Lane | None = pinned if (params.get("lane") and not left_pin) else None
+    counts: dict[str, int] | None = None
+    backoffs: dict[str, datetime] | None = None
     if params.get("lane") and not left_pin:
         dead = lane is None or not lane.enabled or lane.parked
         if dead and cap is None:
@@ -2477,7 +2488,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         # retry ran a free lane over its cap of 1. A lane backed off by a
         # host refusal (gr571395) parks until the window ends — the next
         # launch on it is the probe.
-        until = _lanes.lane_backoffs(store).get(lane.name)
+        backoffs = _lanes.lane_backoffs(store)
+        until = backoffs.get(lane.name)
         if until is not None:
             # Per-todo jitter (≤5 min) so a fleet of jobs parked on the
             # same refusal does not probe the lane in one burst.
@@ -2490,7 +2502,8 @@ def submit(ctx: Any, spec: Any) -> Any:
                 until=wake,
             )
             return None
-        live = _lanes.live_lane_counts(store).get(lane.name, 0)
+        counts = _lanes.live_lane_counts(store)
+        live = counts.get(lane.name, 0)
         if live >= lane.cap:
             _park_lane_full(
                 ctx,
@@ -2507,12 +2520,6 @@ def submit(ctx: Any, spec: Any) -> Any:
             # ask. A live pin above bypasses class fit, so it is not gated.
             ctx.record_failure(f"run_slice: {gap}")
             return None
-        # A triage-pinned model narrows the pick to lanes that run it
-        # (``Lane.accepts_model``): before this a build carrying a claude id
-        # (td543634) was codex-fit and would have launched with a model the
-        # codex CLI rejects.
-        pin = None if left_pin else params.get("model")
-        model_pin = pin.strip() if isinstance(pin, str) and pin.strip() else None
         capable = (
             tuple(ln for ln in lane_table if _lane_offers(ln, cap))
             if cap is not None
@@ -2605,7 +2612,8 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"run_slice: lane {lane.name!r} has unknown adapter {lane.adapter!r}"
         )
         return None
-    if not adapter.mcp and _mints_children(store, todo_id):
+    mints = _mints_children(store, todo_id)
+    if not adapter.mcp and mints:
         # A child-minting generator works through the precis MCP; a lane
         # without one ends with nothing minted. The templates class such
         # nodes off ``code`` (plans/templates.py) so the pick never lands
@@ -2633,6 +2641,29 @@ def submit(ctx: Any, spec: Any) -> Any:
         lane_wait=None,
         lane_woken=False,
     )
+    # td572552 S4b: the decide() shadow beside the pick — read-only
+    # telemetry on ``meta.decision``, never an input to this launch. A
+    # dispatch-time record (``plan_dispatch``'s review/escalate pick)
+    # nests under ``dispatch`` so the job carries both choices.
+    stamp = _lane_decide.shadow_stamp(
+        store,
+        task_class=task_class,
+        table=lane_table,
+        site="submit",
+        picked=(lane.name, model),
+        counts=counts,
+        backoffs=backoffs,
+        needs_mcp=mints or cap == "mcp",
+        code_only=task_class == _DEFAULT_TASK_CLASS,
+        exclude_vendor=exclude or None,
+        required_capability=cap,
+        model_pin=model_pin,
+    )
+    if stamp is not None:
+        prior = (ctx.meta or {}).get("decision")
+        if isinstance(prior, dict):
+            stamp["dispatch"] = prior
+        ctx.set_meta(decision=stamp)
     budget = params.get("budget_usd")
     budget_usd = (
         float(budget)

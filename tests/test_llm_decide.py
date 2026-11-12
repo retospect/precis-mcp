@@ -301,6 +301,7 @@ def test_explanation_bounded_and_json_safe() -> None:
         "model",
         "adapter",
         "account",
+        "lane",
         "billing",
         "price_in",
         "price_out",

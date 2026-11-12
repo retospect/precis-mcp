@@ -350,7 +350,7 @@ from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta, release_claims
 from precis.todo.views import _fetch_subtree
 from precis.utils import dispatch_score as _dscore
-from precis.workers.job_types import JobTypeSpec, get_job_type
+from precis.workers.job_types import JobTypeSpec, _lane_decide, get_job_type
 
 log = logging.getLogger(__name__)
 
@@ -3824,7 +3824,7 @@ def _escalate(
     params: dict[str, Any],
     lane_table: tuple[_lanes.Lane, ...],
     rules: dict[str, dict[str, Any]] | None = None,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, dict[str, Any] | None]:
     """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
     Reto's ruling (td559457, 2026-11-03): when a slice fails, go up the
@@ -3850,11 +3850,14 @@ def _escalate(
     and mints the job with ``params.budget_usd`` = the remaining
     allowance — the bound ``run_slice`` enforces mid-run (td601015).
 
-    Returns ``(go, note)``: ``go=False`` parks the node this tick — no
-    job is minted — and ``note`` is the action line for the summary.
+    Returns ``(go, note, stamp)``: ``go=False`` parks the node this tick —
+    no job is minted — ``note`` is the action line for the summary, and
+    ``stamp`` is the decide() shadow record the minted job carries on
+    ``meta.decision`` (td572552 S4b — ``None`` under the default legacy
+    mode, and always ``None`` when the climb was skipped).
     """
     if "model" in params:
-        return True, None
+        return True, None, None
     # A reviewer whose newest job left no readable verdict retries on the
     # lane ``_review_lane`` picked: a format miss says nothing about the
     # lane's strength, and the climb pinned swe-2-max while the verdict
@@ -3869,14 +3872,14 @@ def _escalate(
         and jobs
         and seen.get("job") == jobs[-1].id
     ):
-        return True, None
+        return True, None, None
     attempts = _attempts(plan, n)
     floor = _chain_floor(n)
     if attempts <= 0 and floor <= 0:
-        return True, None
+        return True, None, None
     rungs = _task_rungs(lane_table, n, params)
     if not rungs:
-        return True, None
+        return True, None, None
     start = max(_climb_start(plan, n, rungs, attempts), min(floor, len(rungs) - 1))
     backed = set(_lanes.lane_backoffs(w.store))
     spend = _node_spend_usd(plan, n, rules) if rules else 0.0
@@ -3908,7 +3911,7 @@ def _escalate(
                 f"; rung(s) {', '.join(capped)} also sit over the node's "
                 f"${spend:.2f} recorded spend"
             )
-        return False, note
+        return False, note, None
     target = rungs[idx]
     cap_usd = _rung_cap_usd(target, rules) if rules else None
     if cap_usd is not None:
@@ -3938,7 +3941,19 @@ def _escalate(
         )
     else:
         head = f"td{n.id}: retry {attempts} climbs to lane {target.lane}"
-    return True, f"{head}{model_bit} (rung {idx + 1}/{len(rungs)})"
+    stamp = _lane_decide.shadow_stamp(
+        w.store,
+        task_class=str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS),
+        table=lane_table,
+        site="escalate",
+        picked=(target.lane, target.model),
+        rungs=rungs,
+        chosen_rung=idx,
+        required_capability=params.get("lane_capability"),
+        code_only=str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+        == _DEFAULT_TASK_CLASS,
+    )
+    return True, f"{head}{model_bit} (rung {idx + 1}/{len(rungs)})", stamp
 
 
 def _pick_executor(compatible: frozenset[str]) -> str:
@@ -4053,10 +4068,12 @@ def _review_lane(
     res: PassResult,
     n: _Node,
     lane_table: tuple[_lanes.Lane, ...],
-) -> tuple[bool, str | None]:
-    """``(go, lane name)`` for a reviewer's ``run_slice``: a lane of a vendor
-    that did not build what it reviews; ``go=False`` when every fit lane is
-    full.
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    """``(go, lane name, stamp)`` for a reviewer's ``run_slice``: a lane of
+    a vendor that did not build what it reviews; ``go=False`` when every
+    fit lane is full. ``stamp`` is the decide() shadow record for the
+    pick — ``meta.decision`` on the minted job (td572552 S4b; ``None``
+    under the default legacy mode).
 
     Three steps, each a pick over a table shrunk by hand (never
     ``exclude_vendor``, whose own fallback could hand back an excluded
@@ -4085,7 +4102,7 @@ def _review_lane(
                 f"td{n.id}: review not dispatched — every lane fit for {cls!r} "
                 f"outside {label or 'the table'} is at its cap"
             )
-            return False, None
+            return False, None, None
         if vendors and lane.vendor == vendors[0]:
             # Step three only: the original builder's own vendor reviews.
             res.notes.append(
@@ -4093,9 +4110,20 @@ def _review_lane(
                 f"{lane.vendor!r} (no other vendor's lane is enabled; the "
                 "cross-vendor rule holds once one is)"
             )
-        return True, lane.name
+        stamp = _lane_decide.shadow_stamp(
+            w.store,
+            task_class=cls,
+            table=lane_table,
+            site="review",
+            # The model submit resolves for an unpinned pick — the
+            # lane's default — so the executed side compares
+            # like-for-like with decide()'s model-level choice.
+            picked=(lane.name, lane.default_model),
+            exclude_vendor=sorted(excluded) or None,
+        )
+        return True, lane.name, stamp
     res.notes.append(f"td{n.id}: review not dispatched — no enabled lane fits {cls!r}")
-    return False, None
+    return False, None, None
 
 
 # ── (4a) the validated non-repro rerun (gr588028) ──────────────────
@@ -4725,8 +4753,9 @@ def _step_dispatch(
             # failed job's own params — no builder, no escalate, no review
             # lane (gr570187).
             job_type, params = "land_slice", reland
+        decision_stamp: dict[str, Any] | None = None
         if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
-            go, lane_name = _review_lane(plan, w, res, n, lane_table)
+            go, lane_name, decision_stamp = _review_lane(plan, w, res, n, lane_table)
             if not go:
                 continue
             params["lane"] = lane_name
@@ -4785,9 +4814,11 @@ def _step_dispatch(
                     )
                 )
         if job_type == DEFAULT_OP and not mech_pinned:
-            go, climbed = _escalate(w, plan, n, params, lane_table, rules)
+            go, climbed, esc_stamp = _escalate(w, plan, n, params, lane_table, rules)
             if climbed:
                 res.notes.append(climbed)
+            if esc_stamp is not None:
+                decision_stamp = esc_stamp
             if not go:
                 continue
         if (
@@ -4834,6 +4865,12 @@ def _step_dispatch(
                 # (``land_slice:td<id>``), not the tick's — one lander per
                 # slice, however it was minted.
                 idem_key=(f"land_slice:td{n.id}" if reland is not None else None),
+                # The decide() shadow beside the dispatch-time pick
+                # (td572552 S4b) — run_slice.submit nests it under its
+                # own submit record.
+                meta_extra={"decision": decision_stamp}
+                if decision_stamp is not None
+                else None,
             )
             if requeued_cancel is not None:
                 res.notes.append(
