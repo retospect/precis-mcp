@@ -240,7 +240,10 @@ hub (`fi<N>`) and its sentence, with three options:
 - **force** — re-put with `dedup='force'`: mints anyway and records
   `meta.dedup_override={neighbour, verdict, reason}` for the reviewer.
   Use only when the claim really is distinct. It also bypasses a
-  containment-judge outage, recording `verdict='unjudged'`.
+  dedup-judge outage in either stage, recording `verdict='unjudged'`
+  with the error; if the containment stage then names a neighbour in
+  the same put, its verdict rides under `dedup_override.containment`
+  and the `unjudged` marker is kept for the later re-judge.
 
 Same-passage neighbours (up to 3), and hubs of the same paper whose body
 has no embedding yet (up to 3 more; a restatement from another passage

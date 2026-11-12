@@ -51,7 +51,11 @@ and stamps ``meta.dedup_override``). ``containment_fn`` is injectable.
 ``force`` also bypasses a judge outage in EITHER stage (gr639349): a stage-one
 ``judge_candidates``/``place`` outage or a stage-two containment outage mints
 with ``dedup_override`` verdict ``'unjudged'`` carrying the error, so a later
-pass can re-judge what force minted blind.
+pass can re-judge what force minted blind. When a stage-one outage is followed
+by a stage-two containment hit in the same force-mint, the ``unjudged`` marker
+stays and the containment verdict rides under
+``dedup_override['containment']`` (td650548) — the re-judge marker is never
+overwritten.
 
 ``dedup=False`` skips the whole cascade (bulk re-puts, tests without a
 model/embedder) and mints unconditionally via ``seed_claim_hub``, same as
@@ -305,16 +309,20 @@ def _put_hub(
             cand, verdict = hit
             if mode != "force":
                 raise _near_duplicate_refusal(store, sentence, cand, verdict)
-            extra_meta = {
-                **(extra_meta or {}),
-                "dedup_override": {
-                    "neighbour": handle_registry.format_handle(
-                        "finding", cand.hub_ref_id
-                    ),
-                    "verdict": verdict["verdict"],
-                    "reason": verdict["rationale"],
-                },
+            containment = {
+                "neighbour": handle_registry.format_handle("finding", cand.hub_ref_id),
+                "verdict": verdict["verdict"],
+                "reason": verdict["rationale"],
             }
+            stamped = (extra_meta or {}).get("dedup_override")
+            if stamped is not None and stamped.get("verdict") == "unjudged":
+                # A stage-one outage already stamped the re-judge marker
+                # (gr639349): keep it — the containment verdict rides
+                # alongside it, never replaces it (td650548).
+                stamped = {**stamped, "containment": containment}
+            else:
+                stamped = containment
+            extra_meta = {**(extra_meta or {}), "dedup_override": stamped}
 
     if placement.action == "attach":
         return _attach_to_existing(

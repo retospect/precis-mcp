@@ -857,6 +857,36 @@ class TestNearDuplicateRefusal:
         meta = store.get_ref(kind="finding", id=new_hub).meta
         assert meta["dedup_override"]["verdict"] == "unjudged"
 
+    def test_force_stage_one_outage_then_containment_hit_keeps_marker(
+        self, store
+    ) -> None:
+        """td650548: a stage-one judge outage under force stamps the
+        'unjudged' re-judge marker; a stage-two containment hit in the same
+        put records its verdict alongside it, never overwrites it."""
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+
+        def _down(new: str, existing: str):
+            return {"verdict": "error", "confidence": 0.0, "rationale": "quota"}
+
+        resp = _put_atom(
+            store,
+            block_fn=_block_hit(compound, _COMPOUND, distance=0.2),
+            judge_fn=_down,
+            containment_fn=_containment("generalization"),
+            dedup="force",
+        )
+        new_hub = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+        assert new_hub != compound
+        override = store.get_ref(kind="finding", id=new_hub).meta["dedup_override"]
+        assert override["verdict"] == "unjudged"
+        assert "quota" in override["reason"]
+        assert override["containment"] == {
+            "neighbour": f"fi{compound}",
+            "verdict": "generalization",
+            "reason": "judged generalization",
+        }
+
     def test_bad_dedup_string_refused_with_options(self, store) -> None:
         _seed_paper(store, cite_key="miller23a")
         with pytest.raises(BadInput) as ei:
