@@ -4701,6 +4701,94 @@ def test_own_ship_stamp_is_adopted_not_relaunched(
     assert "adopted the already-running ship pid 5150" in _job_events(ctx)
 
 
+def test_second_submit_in_the_prelaunch_window_never_adopts_the_worker(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td652194: between taking the land flock and launching ship (fetch,
+    index.lock wait, stack sweep, drift preflight) no ship pid exists, so
+    the stamp names none — a second submit for the same slice in that
+    window defers attempt-free as an orphan instead of adopting the
+    worker's own pid, and a kill on a handle naming the worker never
+    signals the worker's process group."""
+    sent = _signals(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    second: dict[str, Any] = {}
+
+    def racing_preflight(tree: Path) -> dict[str, Any]:
+        seams["probed"].append(tree)
+        ctx2 = _Ctx(store, _params(seams))
+        second["ctx"], second["handle"] = ctx2, land_slice.submit(ctx2, None)
+        return dict(seams["preflight"])
+
+    monkeypatch.setattr(land_slice, "_drift_preflight", racing_preflight)
+
+    _ctx, handle = _submit(store, seams)
+
+    assert handle is not None and handle["pid"] == 5151
+    assert len(seams["launch"]) == 1
+    ctx2 = second["ctx"]
+    assert second["handle"] is None and ctx2.status == "failed"
+    assert "orphan" in (ctx2.failure or "")
+    assert ctx2.meta_set["attempt_free"] == "infra-land"
+    assert ctx2.meta_set["red_class"] == "ship-busy"
+    # Once ship is up the stamp names its pid, not the worker's.
+    stamp = (Path(seams["gitdir"]) / land_slice.LAND_LOCK_FILE).read_text(
+        encoding="utf-8"
+    )
+    assert f"pid={os.getpid()} " not in stamp and "pid=5151" in stamp
+    for own in (
+        {"pid": os.getpid(), "pgid": os.getpgrp()},
+        {"pid": os.getpid(), "pgid": os.getpid()},
+    ):
+        land_slice.kill(ctx2, {**own, "worktree": str(seams["tree"])})
+    assert sent == []
+
+
+def test_adopted_checked_ship_full_refusal_relaunches_quick(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td652194: the adopted handle keeps the flag the original submit
+    picked — it rides the lock stamp — so an adopted ``--checked`` ship
+    the selector refuses with FULL relaunches ``--quick`` like an owned
+    one, instead of a flagless handle's default reading ``--quick`` and
+    turning the lane refusal into a red land."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    gitdir = Path(seams["gitdir"])
+    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    assert not held and fd is not None
+    os.write(
+        fd,
+        f"pid=5150 td=42 branch=slice/42 flag=--checked subject={SUBJECT}\n".encode(),
+    )
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    params = {**_params(seams), "checked": True}
+    try:
+        handle = land_slice.submit(_Ctx(store, params), None)
+    finally:
+        os.close(fd)
+    assert handle is not None and handle["adopted"] is True
+    assert handle["flag"] == "--checked" and seams["launch"] == []
+    _finish(handle, 1, FULL_REFUSAL_LOG)
+    pctx = _Ctx(store, params)
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    [(argv, _kw)] = seams["launch"]
+    assert argv[1] == "--quick" and argv[2] == SUBJECT
+    assert handle["fell_back_full"] is True
+
+
+def test_lock_stamp_keys_are_read_ahead_of_the_subject() -> None:
+    """The subject runs to the line's end: a subject quoting ``flag=`` or
+    ``pid=`` never poses as the stamp's own field."""
+    stamp = land_slice._lock_holder_stamp(
+        "td=42 branch=slice/42 subject=fix(x): pid=7 flag=--checked (td42)"
+    )
+    assert "flag" not in stamp and "pid" not in stamp
+    assert stamp["subject"] == "fix(x): pid=7 flag=--checked (td42)"
+
+
 def test_dead_stamp_pid_with_live_holders_is_retryable_orphan(
     seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -215,8 +215,13 @@ adopted (this job polls its exit file and lands the record); held by a
 foreign stamp, a dead stamp's orphaned descendants, or ship's own
 ``precis-ship-worktree.lock.d`` (a hand-run ship names no slice), the
 land ends attempt-free — never ``succeeded`` without a land record.
-The fd is passed into the launched ship so the lock outlives a worker
-that dies mid-land (the window a retried ``land_slice`` used to launch
+The stamp names the ship's pid only once ship exists (td652194): the
+pre-launch window stamps none, so a second land there defers as an
+orphan rather than adopting — and later killing — the worker itself.
+It carries the launch flag, so an adopted handle relaunches on a
+FULL-selector refusal exactly as the owning job would. The fd is
+passed into the launched ship so the lock outlives a worker that dies
+mid-land (the window a retried ``land_slice`` used to launch
 a duplicate in — jo650396, td649847). Then the cheap outs: when the
 slice's work is already on ``origin/main`` — a tree-identical branch,
 or the squash subject already on main with the slice's changed paths
@@ -1893,23 +1898,28 @@ def _lock_holder_text(path: Path) -> str:
 
 def _stamp_lock_holder(
     fd: int | None,
-    pid: int,
+    pid: int | None,
     todo_id: int = 0,
     branch: str = "",
     subject: str = "",
+    flag: str = "",
 ) -> None:
     """Record the holder in the lock file — ``pid=N td=M branch=B
-    subject=S`` — so the next land can tell its own already-running
-    ship (adopt it) from a foreign or orphaned holder (retryable).
-    Best-effort: a failed write never wedges the lock — the flock
-    itself is the gate."""
+    flag=F subject=S`` — so the next land can tell its own
+    already-running ship (adopt it, keeping its flag) from a foreign or
+    orphaned holder (retryable). ``pid`` is the ship's, never the
+    worker's: ``None`` before ship exists stamps no pid, which a second
+    land reads as an orphan and defers (td652194). Best-effort: a failed
+    write never wedges the lock — the flock itself is the gate."""
     if fd is None:
         return
-    parts = [f"pid={pid}"]
+    parts = [f"pid={pid}"] if pid is not None else []
     if todo_id:
         parts.append(f"td={todo_id}")
     if branch:
         parts.append(f"branch={branch}")
+    if flag:
+        parts.append(f"flag={flag}")
     if subject:
         parts.append(f"subject={subject.splitlines()[0]}")
     try:
@@ -1923,15 +1933,19 @@ def _stamp_lock_holder(
 def _lock_holder_stamp(text: str) -> dict[str, str]:
     """Parse a ``_stamp_lock_holder`` line into a dict; absent fields
     are simply missing keys (an old ``pid=N``-only stamp reads as
-    ``{"pid": ...}``)."""
+    ``{"pid": ...}``). The subject runs to the line's end, so the other
+    keys are read only ahead of it — a subject quoting ``flag=`` never
+    poses as the stamp's."""
     stamp: dict[str, str] = {}
-    for key, pat in (
-        ("pid", r"\bpid=(\d+)\b"),
-        ("td", r"\btd=(\d+)\b"),
-        ("branch", r"\bbranch=(\S+)"),
-        ("subject", r"\bsubject=([^\n]*)"),
+    head = re.split(r"\bsubject=", text, maxsplit=1)[0]
+    for key, pat, where in (
+        ("pid", r"\bpid=(\d+)\b", head),
+        ("td", r"\btd=(\d+)\b", head),
+        ("branch", r"\bbranch=(\S+)", head),
+        ("flag", r"\bflag=(--\S+)", head),
+        ("subject", r"\bsubject=([^\n]*)", text),
     ):
-        m = re.search(pat, text)
+        m = re.search(pat, where)
         if m is not None:
             stamp[key] = m.group(1).strip()
     return stamp
@@ -1970,15 +1984,16 @@ def _classify_land_lock(
         }
     holders = _lock_holders(gitdir / LAND_LOCK_FILE) or []
     holding = ", ".join(holders) if holders else "no live holder listed"
+    state = (
+        f"stamped pid {pid} is dead"
+        if pid is not None
+        else "no ship pid stamped (a land still preparing its launch, or an orphan)"
+    )
     return {
         "kind": "orphan",
         "pid": pid,
         "stamp": stamp,
-        "why": (
-            "the land lock is held by orphan(s) — stamped pid "
-            f"{pid if pid is not None else 'unreadable'} is dead; "
-            f"holder pids: {holding}"
-        ),
+        "why": f"the land lock is held by orphan(s) — {state}; holder pids: {holding}",
     }
 
 
@@ -2049,6 +2064,7 @@ def _adopt_ship(
     todo_id: int,
     busy: dict[str, Any],
     subject: str | None = None,
+    flag: str | None = None,
 ) -> dict[str, Any]:
     """Adopt the ship this slice's earlier land already launched: the
     land lock's stamp names this same slice/branch and a live pid, so
@@ -2058,8 +2074,19 @@ def _adopt_ship(
     is gone (gr650484). The subject rides the stamp; a stamp without
     one (a pre-stamp land) falls back to the branch's squash subject —
     a ``git log`` read, never an index write the running ship could
-    collide with."""
+    collide with. The flag rides it too (td652194: poll's FULL-selector
+    relaunch compares it); a stamp without one takes the caller's, else
+    submit's engine/spot meta is stamped here and the flag planned from
+    it, so :func:`_planned_flag` agrees."""
     pid = int(busy["pid"])
+    flag = busy["stamp"].get("flag") or flag
+    if not flag:
+        params = dict((ctx.meta or {}).get("params") or {})
+        paths = _rs.changed_paths(tree)
+        hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
+        spot = spot_selection(tree) if hits or params.get("checked") is True else False
+        ctx.set_meta(engine_paths=hits[:50], spot_selection=spot)
+        flag = ship_flag(params, engine=bool(hits), spot=spot)
     subject = (
         subject
         or busy["stamp"].get("subject")
@@ -2079,7 +2106,7 @@ def _adopt_ship(
         "log": str(scratch / "land_slice.log"),
         "exit_file": str(scratch / "land_slice.exit"),
         "subject": subject,
-        "flag": "",
+        "flag": flag,
         "adopted": True,
         "started_at": launched.strftime(_TS_FMT),
         "deadline": launched.timestamp() + wall_seconds(),
@@ -2495,7 +2522,9 @@ def _launch_ship(
             if held:
                 busy = _classify_land_lock(gitdir, todo_id, branch, detail)
                 if busy["kind"] == "mine":
-                    return _adopt_ship(ctx, tree, todo_id, busy, subject=subject)
+                    return _adopt_ship(
+                        ctx, tree, todo_id, busy, subject=subject, flag=flag
+                    )
                 _land_busy(ctx, todo_id, lane, busy["why"])
                 return None
             if lock_fd is None:
@@ -2505,7 +2534,10 @@ def _launch_ship(
                     "proceeding; ship's own worktree lock still serialises",
                 )
             else:
-                _stamp_lock_holder(lock_fd, os.getpid(), todo_id, branch, subject)
+                # td652194: no pid until ship's exists — the worker's own
+                # would read as "mine" to a second land in this window,
+                # and its adopted handle's kill would signal the worker.
+                _stamp_lock_holder(lock_fd, None, todo_id, branch, subject, flag)
             holder = _ship_lock_holder(gitdir)
             if holder is not None:
                 _land_busy(
@@ -2637,7 +2669,7 @@ def _launch_ship(
                 handoff=f"land FAILED: scripts/ship did not start ({exc}).",
             )
             return None
-        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject)
+        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject, flag)
         # The deadline rides the handle (gr647913): ``started_at`` + the wall
         # — the clock stamps share the ``_now()`` seam so a worker restart's
         # re-adoption resumes the job's own count instead of restarting the
@@ -3955,12 +3987,17 @@ def kill(ctx: Any, handle: Any) -> None:
     land's commit must survive a worktree reap) and drop the main-probe
     worktree and stack the job meta recorded
     (:func:`_start_main_verify` writes them before the add), so a killed
-    land leaves neither behind."""
+    land leaves neither behind. A handle naming the worker's own pid or
+    process group is never signaled (td652194: a pre-launch stamp once
+    carried the worker's pid into an adopted handle)."""
     if isinstance(handle, dict):
         verify = handle.get("verify")
         live = verify if isinstance(verify, dict) else handle
         pgid = int(live.get("pgid") or live.get("pid") or 0)
-        if pgid > 1:
+        own = {os.getpid(), os.getpgrp()}
+        if pgid in own or int(live.get("pid") or 0) in own:
+            log.warning("land_slice: kill refused — handle names the worker (%d)", pgid)
+        elif pgid > 1:
             try:
                 _rs._signal_group(pgid, signal.SIGTERM)
             except ProcessLookupError:
