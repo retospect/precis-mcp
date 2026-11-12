@@ -427,7 +427,10 @@ With no `q=` this is a paged listing — handle, truncated stamp value,
 title — with the cohort total in the headline; with `q=` it restricts
 the hits to stamped papers. `edit(kind='paper', id=…,
 args={'clear_stamp': '<key>'})` (precis-paper-ref-help) removes the
-stamp to re-open the pass.
+stamp to re-open the pass. The per-paper state also reads off the card:
+`get(view='meta')` shows `context: <sentence>` when written, else the
+`context_sentence_no_abstract`/`context_sentence_failed` stamp with
+version + `at`.
 
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range

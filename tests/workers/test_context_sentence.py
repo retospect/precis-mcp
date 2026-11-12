@@ -29,6 +29,7 @@ from precis.workers.context_sentence import (
     TransientFailure,
     _claim,
     _generate_with_lint,
+    _stamp_at,
     _stamp_no_abstract,
     _stamped_ref_ids,
     backfill_candidate_ref_ids,
@@ -788,7 +789,11 @@ class TestRunPass:
         assert result == {"claimed": 1, "ok": 0, "failed": 1}
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert META_KEY not in (ref.meta or {})
-        assert ref.meta.get(META_FAILED_KEY) == {"v": _PASS_VERSION}
+        stamp = ref.meta.get(META_FAILED_KEY)
+        # ``{"v", "at"}`` — gr635810 stamped the failure time so the card
+        # (and the stamp cohort listing) can show when the verdict landed.
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
+        assert _stamp_at(stamp) is not None
 
     def test_transient_failure_leaves_the_paper_unstamped(self, store: Any) -> None:
         ref_id, _chunk = _seed_paper(store, title="A paper")
@@ -1176,7 +1181,9 @@ class TestVersionedFailedStamp:
 
         assert result == {"claimed": 1, "ok": 0, "failed": 1}
         meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
-        assert meta.get(META_FAILED_KEY) == {"v": _PASS_VERSION}
+        stamp = meta.get(META_FAILED_KEY)
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
+        assert _stamp_at(stamp) is not None
 
         client2 = _FakeClient([NO_CONTEXT])
         again = run_context_sentence_pass(store, client=client2, ref_ids=[ref_id])
@@ -1239,7 +1246,9 @@ class TestScheduledSweepCohort:
         assert result == {"claimed": 1, "ok": 0, "failed": 1}
         assert len(client.calls) == 1
         meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
-        assert meta.get(META_FAILED_KEY) == {"v": _PASS_VERSION}
+        stamp = meta.get(META_FAILED_KEY)
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
+        assert _stamp_at(stamp) is not None
 
         client2 = _FakeClient([NO_CONTEXT])
         again = run_context_sentence_pass(store, client=client2)

@@ -456,6 +456,54 @@ class TestOverview:
         resp = handler.get()
         assert "no papers ingested" in resp.body
 
+    def test_context_sentence_state_on_the_card(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr635810: the overview (and so its ``view='meta'`` alias)
+        shows the context_sentence pass state — the written sentence,
+        else the ``no_abstract``/``failed`` stamp with version + ``at``
+        — so a cleared stamp's re-do is verifiable without prod SQL."""
+        ref_id = _seed_paper(store, slug="ctxa")
+        store.update_ref(
+            ref_id, meta_patch={"context_sentence": "This paper measures nitrate."}
+        )
+        body = handler.get(id="ctxa").body
+        assert "context: This paper measures nitrate." in body
+        assert "context_sentence_failed" not in body
+        assert "context_sentence_no_abstract" not in body
+
+        ref_id = _seed_paper(store, slug="ctxb")
+        store.update_ref(
+            ref_id,
+            meta_patch={
+                "context_sentence_no_abstract": {
+                    "v": 1,
+                    "at": "2026-11-11T06:03:11.123456Z",
+                }
+            },
+        )
+        body = handler.get(id="ctxb").body
+        assert "context_sentence_no_abstract: v1 at 2026-11-11T06:03:11.123456Z" in body
+
+        store.update_ref(
+            ref_id,
+            meta_patch={
+                "context_sentence_failed": {"v": 1, "at": "2026-11-11T07:00:00Z"}
+            },
+        )
+        body = handler.get(id="ctxb").body
+        assert "context_sentence_failed: v1 at 2026-11-11T07:00:00.000000Z" in body
+        # A legacy bare ``true`` stamp reads as version 0 — the same
+        # downgrade ``_claim`` applies (gr514381).
+        store.update_ref(ref_id, meta_patch={"context_sentence_failed": True})
+        body = handler.get(id="ctxb").body
+        assert "context_sentence_failed: v0" in body
+
+        # The cohort query the card names: same key, verbatim, through
+        # the ``args={'stamp': …}`` door (gr517627).
+        body = handler.search(stamp="context_sentence_failed").body
+        assert "1 paper entry stamped 'context_sentence_failed'" in body
+
 
 # ---------------------------------------------------------------------------
 # Views: abstract / toc / bibtex / ris / endnote

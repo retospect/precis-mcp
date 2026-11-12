@@ -108,7 +108,9 @@ approved grounding payload (per-source, mirroring how
 ``contiguous_group`` is frozen); ``precis.nanopub.assemble`` emits it as
 ``precis:sourceContext`` when present at mint time; ``precis.export.latex``
 renders it under the paper-title line in a hub footnote. Never a search/
-card/UI feature — see the "explicitly NOT in scope" section of the spec.
+hit feature — see the "explicitly NOT in scope" section of the spec. The
+paper card does surface the sentence/stamp state, read-only, so an
+operator can verify a stamp's re-do without prod SQL (gr635810).
 """
 
 from __future__ import annotations
@@ -117,7 +119,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from precis.store import SEMANTIC_DISTANCE_FLOOR
@@ -151,7 +153,9 @@ META_KEY = "context_sentence"
 #: the original proposal and its one regenerate failed the lint, or the
 #: model declined with :data:`NO_CONTEXT`) — without this a
 #: permanently-failing paper would be re-claimed and re-billed on
-#: every backfill/scheduler sweep. Written as ``{"v": _PASS_VERSION}``:
+#: every backfill/scheduler sweep. Written as ``{"v": _PASS_VERSION,
+#: "at": <utc iso>}`` (``at`` added gr635810 — the card shows the stamp
+#: state with its timestamp; older stamps carry ``v`` alone):
 #: ``_claim`` re-claims a stamped paper once when the stamp's version is
 #: older than the pass's, so a pass fix self-retries the old cohort
 #: (gr514381). A legacy bare ``true`` reads as version 0.
@@ -214,6 +218,13 @@ def _stamp_at(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed
+
+
+def _utc_stamp() -> str:
+    """Wall-clock now in the same ISO-Z text :data:`_STAMP_TS_FMT`
+    renders SQL-side — the ``at`` member a Python-side stamp write
+    (:data:`META_FAILED_KEY`) can't ask ``to_char`` for."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def stamps_gate_claim(meta: dict[str, Any] | None, *, ref_updated_at: Any) -> bool:
@@ -1114,7 +1125,10 @@ def run_context_sentence_pass(
                 continue
             if sentence is None:
                 store.update_ref(
-                    ref_id, meta_patch={META_FAILED_KEY: {"v": _PASS_VERSION}}
+                    ref_id,
+                    meta_patch={
+                        META_FAILED_KEY: {"v": _PASS_VERSION, "at": _utc_stamp()}
+                    },
                 )
                 if was_no_abstract:
                     # The paper DID have usable context this sweep — the

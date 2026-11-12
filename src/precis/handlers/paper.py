@@ -8555,9 +8555,35 @@ class PaperHandler(Handler):
     def _overview_meta_lines(self, ref: Ref) -> list[str]:
         """Extra one-line ``meta`` fields shown on the default overview.
 
-        Papers have none; sibling kinds with typed meta fields (cfp's
-        ``deadline``/``opens_on``) override."""
-        return []
+        A paper shows its ``context_sentence`` pass state (gr635810):
+        the written sentence, else each ``context_sentence_*`` stamp
+        with its version + ``at`` — so the card answers "did the pass
+        run, what did it conclude" without prod SQL, and a cleared
+        stamp's re-do is verifiable. Sibling kinds with typed meta
+        fields (cfp's ``deadline``/``opens_on``) override."""
+        from precis.workers.context_sentence import (
+            META_FAILED_KEY,
+            META_KEY,
+            META_NO_ABSTRACT_KEY,
+            _stamp_at,
+            _stamp_version,
+        )
+
+        meta = ref.meta or {}
+        lines: list[str] = []
+        sentence = meta.get(META_KEY)
+        if isinstance(sentence, str) and sentence.strip():
+            lines.append(f"context: {sentence}")
+        for key in (META_NO_ABSTRACT_KEY, META_FAILED_KEY):
+            stamp = meta.get(key)
+            if stamp is None:
+                continue
+            detail = f"v{_stamp_version(stamp)}"
+            at = _stamp_at(stamp)
+            if at is not None:
+                detail += f" at {at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')}"
+            lines.append(f"{key}: {detail}")
+        return lines
 
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
