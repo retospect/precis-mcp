@@ -1,5 +1,7 @@
-"""gr633674: a ``Reto <date>:`` ruling that moves a gripe off ``needs_spec``
-sheds ``reto:ask`` in the same write."""
+"""gr633674 / gr633601: an answered ask sheds ``reto:ask`` in the same
+write — a ``Reto <date>:`` ruling comment (any status), or a gripe
+leaving ``needs_spec`` (put's tag leg and the bare ``tag`` verb alike).
+"""
 
 from __future__ import annotations
 
@@ -34,9 +36,63 @@ def test_ruling_off_needs_spec_drops_ask(runtime_with_store: Any) -> None:
     assert "STATUS:triaged" in got
 
 
-def test_plain_comment_keeps_ask(runtime_with_store: Any) -> None:
+def test_ruling_comment_alone_drops_ask(runtime_with_store: Any) -> None:
+    """gr633601: the ruling answers the ask wherever the gripe sits —
+    no STATUS move needed (gr562902's triaged + reto:ask)."""
+    store = runtime_with_store.hub.live_store
+    h = runtime_with_store.hub.handlers["gripe"]
+    gid = _gripe(store, "triaged")
+    h.put(id=gid, text="Reto 2026-11-12: ship the small fix")
+    got = _tags(store, gid)
+    assert "reto:ask" not in got
+    assert "STATUS:triaged" in got
+
+
+def test_leaving_needs_spec_drops_ask_without_ruling(
+    runtime_with_store: Any,
+) -> None:
+    """gr633601: the spec-wait is over — a move off needs_spec sheds
+    the pending ask even when the comment isn't a ruling."""
     store = runtime_with_store.hub.live_store
     h = runtime_with_store.hub.handlers["gripe"]
     gid = _gripe(store, "needs_spec")
-    h.put(id=gid, text="Reto asked about it", tags=["STATUS:triaged"])
+    h.put(
+        id=gid,
+        text="spec landed in docs/backlog/x.md",
+        tags=["STATUS:triaged"],
+    )
+    got = _tags(store, gid)
+    assert "reto:ask" not in got
+    assert "STATUS:triaged" in got
+
+
+def test_tag_move_off_needs_spec_drops_ask(runtime_with_store: Any) -> None:
+    """The bare ``tag`` verb drops too — the web detail control moves
+    ``needs_spec`` → ``triaged`` through it, not through ``put``."""
+    store = runtime_with_store.hub.live_store
+    h = runtime_with_store.hub.handlers["gripe"]
+    gid = _gripe(store, "needs_spec")
+    h.tag(id=gid, add=["STATUS:triaged"])
+    got = _tags(store, gid)
+    assert "reto:ask" not in got
+    assert "STATUS:triaged" in got
+
+
+def test_status_move_off_triaged_keeps_ask(runtime_with_store: Any) -> None:
+    """Only the needs_spec leave sheds the tag: a triaged gripe moving
+    on with its ask still pending keeps it for the ruling."""
+    store = runtime_with_store.hub.live_store
+    h = runtime_with_store.hub.handlers["gripe"]
+    gid = _gripe(store, "triaged")
+    h.tag(id=gid, add=["STATUS:fixing"])
     assert "reto:ask" in _tags(store, gid)
+
+
+def test_plain_comment_keeps_ask(runtime_with_store: Any) -> None:
+    """Neither a ruling nor a status move → the pending ask stays."""
+    store = runtime_with_store.hub.live_store
+    h = runtime_with_store.hub.handlers["gripe"]
+    gid = _gripe(store, "needs_spec")
+    h.put(id=gid, text="Reto asked about it")
+    assert "reto:ask" in _tags(store, gid)
+    assert "STATUS:needs_spec" in _tags(store, gid)

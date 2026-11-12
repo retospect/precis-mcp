@@ -190,6 +190,28 @@ def _comments(store: Store, ref_id: int) -> list[str]:
     return [str(r[0]) for r in rows]
 
 
+def _comment_on(store: Store, ref_id: int, text: str) -> None:
+    """Append one ``gripe_comment`` chunk — the recorded-ruling /
+    needs-spec markers the tick reads (gr633601)."""
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT coalesce(max(ord) + 1, 0) FROM chunks WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+        assert row is not None
+        store.chunks.insert_chunks(
+            ref_id,
+            [
+                ChunkInsert(
+                    ord=int(row[0]),
+                    text=text,
+                    meta={"chunk_kind": "gripe_comment"},
+                )
+            ],
+            conn=conn,
+        )
+
+
 def _prio(store: Store, ref_id: int) -> int | None:
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1659,6 +1681,113 @@ class TestRetoBatch:
         assert int(legacy.id) not in todos
         assert len(todos) == 1
         assert _blocked_by(store, gid) == todos
+
+
+class TestRuledGripes:
+    """gr633601: a ``Reto <date>:`` ruling comment is the recorded
+    answer — the recommender never re-parks a ruled gripe
+    ``needs_spec``, never re-asks it, and the per-tick sync sheds a
+    ``reto:ask`` that outlived its ruling (gr548906)."""
+
+    def test_ruled_gripe_goes_triaged_not_needs_spec(self, store: Store) -> None:
+        gid = _gripe(store, "ruled-on but vague")
+        _comment_on(store, gid, "Reto 2026-11-01: go once compute is free")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, fix="spec", recommend="decide the design")]}
+            ),
+        )
+        assert _status(store, gid) == "triaged"
+        comments = _comments(store, gid)
+        assert not any(c.startswith("needs-spec:") for c in comments)
+        assert any("Reto ruling on record" in c for c in comments)
+
+    def test_ruled_gripe_gets_no_reto_ask(self, store: Store) -> None:
+        gid = _gripe(store, "ruled-on design call")
+        _comment_on(store, gid, "Reto 2026-11-01: keep the old API")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="keep the old API",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 0
+        assert _status(store, gid) == "triaged"
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert _digest_todos(store) == []
+
+    def test_unruled_gripe_still_parks_and_asks(self, store: Store) -> None:
+        """The suppression is the ruling, not the topic — a
+        look-alike gripe without a ``Reto <date>:`` comment follows
+        the old path unchanged."""
+        gid = _gripe(store, "vague, never ruled")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="decide the design",
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        assert "reto:ask" in _open_tag_values(store, gid)
+        assert len(_digest_todos(store)) == 1
+
+    def test_ruled_gripe_sheds_stuck_reto_ask_and_ask_retires(
+        self, store: Store
+    ) -> None:
+        """The sweep: a ``reto:ask`` that outlived its ruling drops on
+        the next tick — and its live ask todo retires with it."""
+        gid = _gripe(store, "ruled then re-asked", status="needs_spec")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        tid = gripe_triage._write_ask(
+            store,
+            gid,
+            "ruled then re-asked",
+            gripe_triage._fallback_ask(gid, "ruled then re-asked", "go on A"),
+            "go on A",
+        )
+        assert tid is not None
+        _comment_on(store, gid, "Reto 2026-11-01: go once compute is free")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        assert tid not in _digest_todos(store)
+
+    def test_unruled_gripe_keeps_stuck_reto_ask(self, store: Store) -> None:
+        """A ``reto:ask`` with no ruling survives the sweep — the
+        stranded scan mints it a fallback ask instead of shedding."""
+        gid = _gripe(store, "still pending", status="needs_spec")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _comment_on(store, gid, "recommend: ship the small fix first")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert "reto:ask" in _open_tag_values(store, gid)
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        assert f"gr{gid}" in _body(store, todos[0])
 
 
 class TestParseAskStrict:

@@ -1328,21 +1328,27 @@ class GripeHandler(NumericRefHandler):
         untags: list[str] | None,
         readings: list[str],
     ) -> list[str] | None:
-        """A ``Reto <date>:`` ruling comment that moves the gripe off
-        ``needs_spec`` sheds ``reto:ask`` in the same write (gr633674):
-        the ask is answered, so it leaves the owner's decision queue."""
-        if not _RETO_RULING_RE.match(text):
-            return untags
+        """The write answers the pending ask → shed ``reto:ask`` in the
+        same write (gr633674, widened gr633601): a ``Reto <date>:``
+        ruling comment lands (the ruling holds wherever the gripe sits,
+        not only on ``needs_spec``), or STATUS tags move a
+        ``needs_spec`` gripe anywhere else — its spec-wait is over and
+        the ask leaves the owner's decision queue with it."""
+        ruling = _RETO_RULING_RE.match(text) is not None
         new = [t.strip() for t in tags or () if t.strip().startswith("STATUS:")]
-        if not new or "STATUS:needs_spec" in new:
+        if not ruling and (not new or "STATUS:needs_spec" in new):
             return untags
         ref_id = self._coerce_id(id)
         held = {str(t) for t in self.store.tags_for(ref_id)}
-        if "STATUS:needs_spec" not in held or "reto:ask" not in held:
+        if "reto:ask" not in held or "reto:ask" in (untags or ()):
             return untags
-        if "reto:ask" in (untags or ()):
+        if not ruling and "STATUS:needs_spec" not in held:
             return untags
-        readings.append("Reto ruling off needs_spec: also removed reto:ask")
+        readings.append(
+            "Reto ruling: also removed reto:ask"
+            if ruling
+            else "off needs_spec: also removed reto:ask"
+        )
         return [*(untags or []), "reto:ask"]
 
     def _validate_put_mode(self, *, id: str | int | None, mode: str) -> None:
@@ -1459,6 +1465,21 @@ class GripeHandler(NumericRefHandler):
                     Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
                     readings,
                 )
+        # gr633601: leaving ``needs_spec`` sheds ``reto:ask`` in the same
+        # write — the spec-wait is over, so the pending ask leaves the
+        # owner's decision queue with it. The tag-verb twin of the put
+        # path's :meth:`_drop_answered_ask`; batch ids skip the read (the
+        # same remove would apply to non-qualifying refs too).
+        adds = {t.strip() for t in add or ()}
+        if (
+            any(t.startswith("STATUS:") for t in adds)
+            and "STATUS:needs_spec" not in adds
+            and "reto:ask" not in adds
+            and "reto:ask" not in {t.strip() for t in remove or ()}
+        ):
+            held = {str(t) for t in self.store.tags_for(self._coerce_id(id))}
+            if {"STATUS:needs_spec", "reto:ask"} <= held:
+                remove = [*(remove or []), "reto:ask"]
         with _PARK_UNTIL.bind(park_until), _translate_status_check():
             return interpreted(
                 super().tag(id=id, add=add, remove=remove, reason=reason, **_kw),

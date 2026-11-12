@@ -419,8 +419,11 @@ Answering a `reto:ask`: when Reto's question is fully resolved, write
 the answer and drop the ask together —
 `put(kind='gripe', id=42, text='Reto 2026-11-11: do X')`, then
 `tag(kind='gripe', id=42, add=['STATUS:triaged'], remove=['reto:ask'])`.
-A stale `reto:ask` inflates his decision queue. A `Reto <date>:` comment
-that moves a gripe off `needs_spec` drops it automatically.
+A stale `reto:ask` inflates his decision queue. The tag drops
+automatically when a `Reto <date>:` ruling comment lands (any status —
+the ask is answered) or the gripe leaves `needs_spec`; the triage tick
+also sheds a stuck `reto:ask` wherever a ruling is already on record and
+never re-asks a ruled gripe (gr633601).
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made {write}
@@ -803,7 +806,9 @@ full vocabulary is in `precis-search-help`'s count/flow sections.
 | (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |
 
 An answered ask sheds its tag: once the question is ruled on and the
-gripe carries the answer, remove `reto:ask` in that same write.
+gripe carries the answer, remove `reto:ask` in that same write (a
+`Reto <date>:` ruling comment or a move off `needs_spec` drops it for
+you; a ruling on record also suppresses triage's own re-ask).
 
 ## See also
 
