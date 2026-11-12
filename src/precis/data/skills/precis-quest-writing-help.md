@@ -2,7 +2,7 @@
 id: precis-quest-writing-help
 family: work
 title: precis — writing a quest that stays a quest
-summary: judgment for authoring a striving — vision vs BHAG vs SMART, choosing the tick body (materials/weave/inquiry), one-sentence + plain-language + no-jargon checklist, why technique/paper content belongs in the dossier not the statement, and why quests must stay few
+summary: judgment for authoring a striving — vision vs BHAG vs SMART, choosing the tick body (materials/weave/inquiry), one-sentence + plain-language + no-jargon checklist, why technique/paper content belongs in the graph not the statement, and why quests must stay few
 answers:
   - how do I tell a vision apart from a BHAG or a SMART goal when writing a quest?
   - which quest_body should I set — materials, weave, or inquiry?
@@ -18,7 +18,7 @@ status: active
 # precis-quest-writing-help — writing a quest that stays a quest
 
 This is the **judgment** companion to [[precis-quest-help]] (the verb
-reference — put/tag/link/get, logbook, dossier mechanics). That doc
+reference — put/tag/link/get, logbook, the direction tree). That doc
 tells you *how* to call the API once you've decided what to write; this
 one is about **what makes a good striving statement**, and where the
 technical detail that inevitably wants to attach to it should actually
@@ -65,7 +65,7 @@ in later, `edit(kind='quest', id=N, meta={'quest_body': '...'})`):
   Pareto frontier. Pick this for a striving that has **no candidate
   materials to search over at all** — a literature-synthesis quest, a
   landscape survey, an open standing question the tick should keep
-  chewing on via lit-search and dossier revision rather than design
+  chewing on via lit-search and synthesis rather than design
   proposals it has nothing to build.
 - **`"roadmap"`** — grows a **pathway** (one bet) / **capability**
   (measurable axis spine) / **rung** (completable step, cited on
@@ -107,7 +107,7 @@ Run every draft striving through these checks before minting:
 2. **No acronyms, no benchmark names, no method names.** "DeepSciVerify",
    "Micro-F1", "ROLE3:own" — none of these belong in a striving
    statement. If a sentence needs one to make sense, that sentence is a
-   **dossier entry**, not the quest (see below).
+   **finding or logbook entry**, not the quest (see below).
 3. **Specific enough to exclude something.** "Make precis better" fails
    (it could describe any pursuit unchanged); "don't let precis get
    bamboozled by a bad paper" passes (it names a specific failure mode
@@ -124,27 +124,28 @@ The rubric that follows the blank line is **axes, not a paragraph**:
 stability`), never a sentence with citations or a specific paper's
 metric in it.
 
-## Where the technical detail goes: the dossier, not the quest
+## Where the technical detail goes: the graph, not the quest
 
 A quest and its literature are different documents for a reason. The
 **striving + rubric is the compass** — it should read the same in five
-years. The **dossier** (`view='dossier'`, [[precis-quest-help]]) is the
-living, disposable synthesis — this is where a specific technique, a
-specific paper, a specific benchmark number belongs, cited properly
-once the paper is in the corpus ([[precis-cite-paper-help]]):
+years. The living synthesis is the **graph** — findings, papers and
+direction todos linked `serves` ([[precis-quest-help]]) — and this is
+where a specific technique, a specific paper, a specific benchmark
+number belongs, cited properly once the paper is in the corpus
+([[precis-cite-paper-help]]):
 
 - Quest: *"Don't let precis get bamboozled by a bad paper."*
-- Dossier entry: *"Selective evidence escalation — verify a claim
-  against the cited paper's abstract first, escalate to full-text only
-  when the abstract-level verdict is uncertain [pc1234]. Reports 86.7
-  Micro-F1 on SCitance... Caveat: assumes the abstract itself is a
-  faithful summary — an inflated or vague abstract lets a bad claim
-  through unchecked."*
+- Finding `serves` the quest: *"Selective evidence escalation — verify
+  a claim against the cited paper's abstract first, escalate to
+  full-text only when the abstract-level verdict is uncertain
+  [pc1234]. Reports 86.7 Micro-F1 on SCitance... Caveat: assumes the
+  abstract itself is a faithful summary — an inflated or vague abstract
+  lets a bad claim through unchecked."*
 
 If the paper isn't ingested yet, log the technique as a **`hypothesis`**
 logbook entry (unproven, worth testing) rather than folding it into the
 founding text — or better, hold off until it's actually stubbed and
-grounded, so the dossier can cite it for real instead of describing it
+grounded, so the finding can cite it for real instead of describing it
 from memory.
 
 ## Quests must stay few
@@ -186,12 +187,13 @@ quest:
 — one sentence, no jargon, and it `serves` the existing grand quest
 ("a world that runs light on the planet") instead of standing alone,
 because a bogus paper wastes real time on the practical work already
-running there. The paper and its benchmark moved to the dossier, to be
-cited once actually ingested — not described from memory.
+running there. The paper and its benchmark moved to a finding
+`serves`-linked to the quest, to be cited once actually ingested — not
+described from memory.
 
 ## See also
 
-- [[precis-quest-help]] — verbs, lifecycle, logbook, dossier mechanics
+- [[precis-quest-help]] — verbs, lifecycle, logbook, the direction tree
 - [[precis-roadmap-help]] — the roadmap body's rung contract and roles
-- [[precis-cite-paper-help]] — citing a paper properly in the dossier
+- [[precis-cite-paper-help]] — citing a paper properly in the graph
 - [[precis-perplexity-help]] — research a technique before writing it up

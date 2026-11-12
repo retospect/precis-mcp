@@ -204,7 +204,7 @@ The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
 get(kind="quest", id=7)  # statement + tote + logbook TAIL (last 10 entries)
 get(kind="quest", id=7, view="tree")  # rollup: servers + deed ledger + health + gaps
 get(kind="quest", id=7, view="gaps")  # just this quest's exploration queue
-get(kind="quest", id=7, view="dossier")  # the living research synthesis
+get(kind="quest", id=7, view="dossier")  # deprecated — the retired synthesis draft
 get(kind="quest", id=7, view="frontier")  # Pareto frontier of candidate materials
 get(kind="quest", id=7, view="leaderboard")  # ranked servers by deeds contributed
 get(kind="quest", id=7, view="results")  # lineage-ordered results table (all bands)
@@ -232,7 +232,8 @@ get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-r
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
 leaderboard · results · series · measures · logbook · pourbaix · status ·
-rubric` (quest-specific) plus the generic
+rubric` (quest-specific — `dossier` is deprecated, kept only for
+quests not yet converted) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
 `view='fisheye+1hop'` shows the quests this one serves and the quests
@@ -278,8 +279,9 @@ body root it also renders the capability ledger table — see
 [[precis-roadmap-help]].
 
 All of this is on the web too: `/refs/quest/<id>` is a dedicated hub
-dashboard (header + momentum/tote, dossier + logbook tail, frontier/gaps
-panels, servers-lite) — readable without calling `get(view=…)`.
+dashboard (header + momentum/tote, the graph neighbourhood + logbook
+tail, frontier/gaps panels, servers-lite) — readable without calling
+`get(view=…)`.
 
 ## Read a quest's numbers — results, frontier, series, measures
 
@@ -408,77 +410,69 @@ fetches a live page through the `web` cache — vendor pricing, changelogs,
 announcements — serves-linked, rendered next tick), `proposals` /
 `reruns` (sim lanes), `dialectic_ops` + `ledger_ops` (structure).
 
-## The dossier + a research tick
+## Directions — where attempts and ideas live
 
 A quest keeps *two* records. The **logbook** is episodic (what happened,
-when — WORM). The **dossier** is semantic: a `draft` the quest owns
-(`dossier-of`), the *living synthesis* — supported insights evaluated by
-their support, falsifier, strongest opposing reading, conditions and
-downstream implications — **rewritten each cycle**. It
-doubles as the loop's rolling context.
+when — WORM). The **synthesis is the graph itself** — hypotheses,
+findings, papers and structures linked `serves`, plus the direction
+tree below, read through the fisheye / `tree` / `status` views.
+
+**Attempts and ideas are direction todos.** A *direction* is a `todo`
+`part-of` the quest (a root), or nested under a direction by
+`parent_id` (a *strand* is a direction with children) — the old pinned
+attempt ledger as real, linkable refs. State rides the ordinary todo
+`STATUS` axis ([[precis-tags]]); the `ATTEMPT:` vocabulary maps
+exactly — `open`→`open`, `active`→`doing`, `tried`→`done`,
+`ruled-out`→`won't-do` (`blocked`/`paused` still read as open).
+`done`/`won't-do` are the do-not-repropose set — a ruled-out branch
+reads as a subtree, and that is what stops a tick re-treading it.
+Directions are **not work**: the
+rotation fence keeps them out of `view='doable'`/`'queue'`, the nursery
+and the momentum counts, so minting one never queues a task.
 
 ```python
-get(kind="quest", id=7, view="dossier")  # read the synthesis
+put(kind="todo", text="Pd(111) subsurface-H co-doping")
+link(kind="todo", id=<td>, target="quest:7", rel="part-of")  # a root direction
+put(kind="todo", text="…", parent_id=<strand td>)            # refine under a strand
+tag(kind="todo", id=<td>, add=["STATUS:won't-do"])           # rule it out
 ```
 
-### The dossier is draft chunks — read it, don't edit it
+An *idea* is an `open` direction; a try that ran its course marks
+`done`; a never-again marks `won't-do`. Record the *why* as a
+`hypothesis` / `dead-end` logbook entry — that also feeds the
+`open-hypothesis` gap — and link evidence `serves` the narrowest
+direction or strand it answers (the quest itself only when none fits).
+When you search the tree (or the literature) for prior art, phrase the
+query as the thing you expect to find, not as a question — *"subsurface
+H co-doping on Pd(111) lowers NO dissociation barrier"*, not *"does H
+help?"*. Search matches statements; [[precis-search-help]]'s `answers=`
+legs are the same move for papers.
 
-A dossier is a real `draft`: a heading, a run of short narrative chunks
-(one thought each, rewritten wholesale every tick), and pinned ledger
-chunks the writer never overwrites. It is not markdown in
-a text field, and block markdown (`##` headings, `-` bullets, fences,
-tables) has **no renderer** — it shows up as literal characters. Only the
-inline subset renders: `**bold**`, `*italic*`, backticks, `<sub>`/`<sup>`,
-and `$…$` KaTeX for species (`$C_{60}$`). Cross-references use square
-brackets, which linkify — `[st164913]`, `[pc1234]`, `[pa88]`, `[fi189542]`.
-Parentheses do not linkify, so `(st164913)` is a dead reference.
+### The dossier is deprecated
 
-**The quest tick owns this document.** `put`/`edit`/`delete` on a draft
-linked `dossier-of` (or `paper-of`) is refused with `Unsupported` — a
-generic draft-hygiene pass once "normalised" a live dossier into 13 chunks
-and stranded 12 of them, feeding weeks-stale prose back to the loop under
-the banner "the living synthesis". Read it freely; to change it, run a
-tick.
-
-### The attempt ledger — why the proposer doesn't re-tread
-
-Pinned alongside the narrative is the **attempt ledger**: one chunk per
-attempt (`meta.pinned='ledger-node'`), nested through `parent_chunk_id` so
-a refinement sits under the attempt it refines. Each carries its state on
-the closed `ATTEMPT:` axis — `open` · `active` · `tried` · `ruled-out` ·
-`idea` ([[precis-tags]]).
-
-Because each attempt is its own chunk it is individually addressable,
-taggable, and linkable, and because the ledger is pinned it survives every
-narrative rewrite. That is what stops a tick from re-proposing something
-already ruled out. Older dossiers still holding a single markdown ledger
-blob convert on first read, so nothing needs a migration pass.
-
-The writer **upserts**: a new attempt is near-dup-matched against the
-whole ledger first — a rephrasing of an existing node transitions or
-refines that node instead of appending a twin. A refinement whose parent
-the writer cannot find is kept as a top-level node with
-`meta.parent_unresolved`, not dropped, and the next tick sees it marked
-unplaced. When you search the
-ledger (or the literature) for prior art, phrase the query as the thing
-you expect to find, not as a question — *"subsurface H co-doping on
-Pd(111) lowers NO dissociation barrier"*, not *"does H help?"*. Search
-matches statements; [[precis-search-help]]'s `answers=` legs are the
-same move for papers.
+The `dossier-of` `draft` — a narrative **rewritten each tick** plus
+pinned `ATTEMPT:`-tagged ledger chunks — is being retired (Reto
+2026-11-11): everything it held lives in the graph above.
+`view='dossier'` and `precis quest dossier` still render it, and a tick
+still rewrites it on quests not yet converted, but it is no longer
+where open questions or synthesis live — read it as history.
+`put`/`edit`/`delete` on a `dossier-of` (or `paper-of`) draft remains
+refused with `Unsupported`; the tick owns its writes while it lasts.
 
 ## A research tick
 
 A **research tick** is one bounded step of the (future) autonomous loop:
-it reads the quest's rolling context (statement + dossier + gaps +
+it reads the quest's rolling context (statement + synthesis + gaps +
 momentum + logbook tail), does one increment of reasoning, appends 1–4
-logbook entries, rewrites the dossier, and may **propose candidate
-materials**. Run one by hand:
+logbook entries, updates its synthesis state (still written to the
+deprecated dossier on quests not yet converted — see above), and may
+**propose candidate materials**. Run one by hand:
 
 ```
 precis quest tick 7            # one reasoning tick against quest 7
 precis quest tick 7 --dry-run  # print the assembled context, no LLM call
 precis quest tick 7 --compute  # ALSO simulate proposed candidates (GPU relax)
-precis quest dossier 7         # print the dossier
+precis quest dossier 7         # the deprecated dossier (see above)
 precis quest frontier 7        # the Pareto frontier of candidate materials
 precis quest redispatch 7      # re-score every candidate on the deployed engine
 precis quest backfill-network-basis 7          # dry run: count stampable measures
@@ -618,8 +612,9 @@ that's wedged.
   the catalyst/materials-discovery body above, unchanged. `"weave"` routes
   to the paper-writing body instead; see `mark_weave_quest`. `"inquiry"` is
   a third body for a striving that reads, reasons, and synthesises rather
-  than searching a materials space — same logbook/dossier/ledger/dialectic/
-  lit-search machinery, but **no proposal menu and no Pareto frontier**
+  than searching a materials space — same logbook/dialectic/lit-search
+  machinery (and the deprecated dossier until the quest converts), but
+  **no proposal menu and no Pareto frontier**
   (`view='frontier'` says so plainly). Never inferred from other meta (a
   live materials quest can carry no `reaction_config`/`compute_lane`/
   `rubric_objectives` at all) — set it explicitly for a striving with no
