@@ -297,3 +297,86 @@ def test_see_chunk_resolves_only_tag_overflow_chunks(todo: TodoHandler) -> None:
     ref's own body text back as the 'question' (gr651179)."""
     ref_id = id_of(todo.put(text="title", body="the details body").body)
     assert todo.store.drafts.resolve_ask_question(ref_id, "see-chunk-0") == ""
+
+
+# ── review td652026: the OPEN: sentinel must not bypass the checks ────
+#
+# ``Tag.parse_strict`` strips a leading ``OPEN:`` (the DB namespace
+# sentinel displays leak into copy-pasted tag strings, gr192827) — but it
+# runs *after* the redirect, so ``OPEN:ask-user:see-chunk-2`` used to skip
+# the forged-handle refuse and persist the same dangling pointer.
+
+
+def test_tag_open_prefix_forged_see_chunk_refused(todo: TodoHandler) -> None:
+    """``OPEN:ask-user:see-chunk-N`` is the same forged handle once
+    ``parse_strict`` strips the sentinel — the redirect's dangling-pointer
+    refuse must see through the prefix on the existing-ref tag path."""
+    ref_id = id_of(todo.put(text="task").body)
+    with pytest.raises(BadInput) as exc:
+        todo.tag(id=ref_id, add=["OPEN:ask-user:see-chunk-2"])
+    assert "dangling" in str(exc.value)
+    assert "ask-user:" in str(exc.value.next)
+    assert not any("see-chunk" in v for v in _tag_values(todo.store, ref_id))
+
+
+def test_put_open_prefix_forged_see_chunk_refused(todo: TodoHandler) -> None:
+    """Same refusal on the create-time tags= list — and the ref insert
+    rolls back with it."""
+    before = len(todo.store.list_refs(kind="todo", limit=1000))
+    with pytest.raises(BadInput, match="dangling"):
+        todo.put(text="task", tags=["OPEN:ask-user:see-chunk-0"])
+    assert len(todo.store.list_refs(kind="todo", limit=1000)) == before
+
+
+def test_memory_open_prefix_forged_see_chunk_refused(
+    memory: MemoryHandler,
+) -> None:
+    """The generic numeric-ref tag/put paths see through the sentinel too,
+    for either redirectable namespace."""
+    ref_id = id_of(memory.put(text="a note").body)
+    with pytest.raises(BadInput, match="dangling"):
+        memory.tag(id=ref_id, add=["OPEN:ask-user:see-chunk-3"])
+    with pytest.raises(BadInput, match="dangling"):
+        memory.put(text="b note", tags=["OPEN:halt:see-chunk-0"])
+
+
+def test_tag_open_prefix_yield_redirects(todo: TodoHandler) -> None:
+    """A sentinel-carried prose yield still redirects: the ``OPEN:`` form
+    of the #39254 shape becomes a ``see-chunk-N`` handle backed by a real
+    ``tag_overflow`` chunk, not a reject and not a verbatim prose tag."""
+    ref_id = id_of(todo.put(text="parent task").body)
+    todo.tag(id=ref_id, add=[f"OPEN:{_PROSE}"])
+    handles = [v for v in _tag_values(todo.store, ref_id) if v.startswith("ask-user:")]
+    assert handles and handles[0].startswith("ask-user:see-chunk-")
+    assert " " not in handles[0]
+    slug = handles[0].split(":", 1)[1]
+    assert "file writes are disabled" in todo.store.drafts.resolve_ask_question(
+        ref_id, slug
+    )
+
+
+def test_put_open_prefix_yield_redirects(todo: TodoHandler) -> None:
+    """The create-time tags= list redirects the sentinel-carried yield the
+    same way."""
+    ref_id = id_of(todo.put(text="do the thing", tags=[f"OPEN:{_PROSE}"]).body)
+    handles = [v for v in _tag_values(todo.store, ref_id) if v.startswith("ask-user:")]
+    assert handles and handles[0].startswith("ask-user:see-chunk-")
+    slug = handles[0].split(":", 1)[1]
+    assert "file writes are disabled" in todo.store.drafts.resolve_ask_question(
+        ref_id, slug
+    )
+
+
+def test_tag_open_prefix_genuine_handle_readds(todo: TodoHandler) -> None:
+    """A sentinel-carried handle *backed* by a real ``tag_overflow`` chunk
+    is the same idempotent re-add — not the forged-pointer refuse."""
+    ref_id = id_of(todo.put(text="task").body)
+    todo.tag(id=ref_id, add=[_PROSE])
+    handle = next(
+        v
+        for v in _tag_values(todo.store, ref_id)
+        if v.startswith("ask-user:see-chunk-")
+    )
+    todo.tag(id=ref_id, remove=[handle])
+    todo.tag(id=ref_id, add=[f"OPEN:{handle}"])
+    assert handle in _tag_values(todo.store, ref_id)

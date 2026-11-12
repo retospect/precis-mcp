@@ -114,10 +114,22 @@ def redirect_long_tag_values(
     rewritten: list[str] = []
     chunk_ids: list[int] = []
     for raw in tags:
-        if ":" not in raw:
+        # ``Tag.parse_strict`` (which runs *after* this redirect) strips a
+        # leading ``OPEN:`` sentinel — the DB namespace column displays
+        # leak into copy-pasted tag strings (gr192827). Mirror that strip
+        # *here*, before the namespace/handle checks, or a
+        # sentinel-carried yield (``OPEN:ask-user:see-chunk-2``) bypasses
+        # the forged-handle refuse and the prose redirect, persisting the
+        # same dangling pointer the checks exist to stop (review
+        # td652026 of td652025). Pass-through appends ``raw`` untouched —
+        # parse_strict strips the sentinel itself on the accepted forms.
+        checked = raw
+        if checked.startswith("OPEN:") and len(checked) > len("OPEN:"):
+            checked = checked[len("OPEN:") :]
+        if ":" not in checked:
             rewritten.append(raw)
             continue
-        ns, _, value = raw.partition(":")
+        ns, _, value = checked.partition(":")
         if ns not in REDIRECTABLE_NAMESPACES:
             rewritten.append(raw)
             continue
