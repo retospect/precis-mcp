@@ -6,7 +6,10 @@ Spec: ``docs/backlog/dark-factory.md`` § "Branches: who merges what, how"
 LLM. :mod:`precis.workers.job_types.run_slice` mints one of these (idem key
 ``land_slice:td<id>``, a child of the slice todo, pinned to the host that
 holds the worktree) once a build session exited clean and its branch passed
-the deny-path check.
+the deny-path check. The land re-checks the resolved deny set before
+launching ship — the last gate (gr645524): a denied diff is refused with
+the ``human_only_hit`` stamp, so the tick's ruling ask opens on the frozen
+branch rather than a rebuild that can never land.
 
 Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 
@@ -1528,6 +1531,32 @@ def submit(ctx: Any, spec: Any) -> Any:
     paths = _rs.changed_paths(tree)
     hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
     ctx.set_meta(engine_paths=hits[:50])
+    if paths is not None:
+        # gr645524: the land is the last deny gate — run_slice's poll
+        # check is the first (td574960: the brief's deny text, the
+        # post-check and this land check name the same resolved set in
+        # every mode). A denied diff never reaches ship. The
+        # human_only_hit stamp caps the node at once — no retry and no
+        # rescue can write a path no lane may — so the tick's ruling ask
+        # opens on the frozen branch instead of burning the ladder on
+        # rebuilds that can never land. The stamp's name undersells: at
+        # the land every resolved-deny hit is a "no lane may write" hit.
+        denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store))
+        if denied:
+            ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+            _fail(
+                ctx,
+                todo_id,
+                lane,
+                "branch touches deny path(s): " + ", ".join(denied[:50]),
+                handoff=(
+                    "land FAILED: the branch touches deny path(s): "
+                    + ", ".join(f"`{p}`" for p in denied[:50])
+                    + " — no lane may write them; a coordinator ruling "
+                    "lands the branch by hand or rewrites the work."
+                ),
+            )
+            return None
     if subject is None:
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(

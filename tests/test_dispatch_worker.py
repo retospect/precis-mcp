@@ -112,6 +112,23 @@ def test_skips_halted_parent(handler: TodoHandler, store: Store) -> None:
     assert _child_jobs_under(store, rid) == []
 
 
+def test_skips_hold_no_dispatch_parent(handler: TodoHandler, store: Store) -> None:
+    """gr645524: ``hold:no-dispatch`` rides the shared
+    ``_DOABLE_EXCLUSION_TAGS`` registry — the dispatch worker's
+    candidate query skips a held parent too, not just the plan tick."""
+    from precis.store.types import Tag
+
+    r = handler.put(
+        text="held dispatch target",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe"},
+    )
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("hold:no-dispatch"), set_by="user")
+    result = run_dispatch_pass(store)
+    assert result.claimed == 0
+    assert _child_jobs_under(store, rid) == []
+
+
 # ── happy path ───────────────────────────────────────────────────
 
 

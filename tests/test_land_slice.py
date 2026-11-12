@@ -23,6 +23,7 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: the launcher execs /bin/sh"
 )
 
+from precis.plans import lanes
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
@@ -282,6 +283,26 @@ def _params(seams: dict[str, Any]) -> dict[str, Any]:
 def _submit(store: _Store, seams: dict[str, Any]) -> tuple[_Ctx, Any]:
     ctx = _Ctx(store, _params(seams))
     return ctx, land_slice.submit(ctx, None)
+
+
+#: The engine path the engine-land tests stand once the land checks the
+#: resolved deny set (gr645524): ``scripts/ship`` is denied under every
+#: mode (``INTERIM_DENY``), so it can no longer be the fixture's engine
+#: example — ``run_slice.py`` is FACTORY-deny under strict and
+#: builder-writable when ``factory.deny_relaxed`` is on (td574937), and
+#: it was gr645524's own incident diff.
+_ENGINE_PATH = "src/precis/workers/job_types/run_slice.py"
+
+
+def _relaxed_deny(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand ``factory.deny_relaxed`` on (td574937): the resolved set is
+    ``HUMAN_ONLY_PATHS + INTERIM_DENY`` — the engine python relaxes out,
+    the ship/test/deploy harness and the human-only files stay denied."""
+    monkeypatch.setattr(
+        lanes,
+        "deny_paths_for",
+        lambda store: lanes.HUMAN_ONLY_PATHS + lanes.INTERIM_DENY,
+    )
 
 
 def _finish(handle: dict[str, Any], exit_code: int, log: str) -> None:
@@ -1360,8 +1381,11 @@ def test_poll_full_selector_refusal_on_quick_does_not_loop(
 # other land — never ``--full``.
 
 
-def test_engine_diff_lands_checked(seams: dict[str, Any]) -> None:
-    seams["changed_paths"] = ["scripts/ship", "src/precis/x.py"]
+def test_engine_diff_lands_checked(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _relaxed_deny(monkeypatch)
+    seams["changed_paths"] = [_ENGINE_PATH, "src/precis/x.py"]
     store = _Store()
     store.add_todo(42)
     # ``checked`` says quick; the engine diff asks for checked, and the
@@ -1371,7 +1395,7 @@ def test_engine_diff_lands_checked(seams: dict[str, Any]) -> None:
     assert handle is not None and ctx.failure is None
     [(argv, _kw)] = seams["launch"]
     assert argv[1] == "--checked"
-    assert ctx.meta_set["engine_paths"] == ["scripts/ship"]
+    assert ctx.meta_set["engine_paths"] == [_ENGINE_PATH]
 
 
 def test_non_engine_land_is_unchanged(seams: dict[str, Any]) -> None:
@@ -1397,6 +1421,65 @@ def test_unreadable_diff_lands_checked(seams: dict[str, Any]) -> None:
     assert ctx.meta_set["engine_paths"] == ["<unreadable>"]
 
 
+# ── deny gate (gr645524) ───────────────────────────────────────────
+# The land re-checks the resolved deny set before launching ship — the
+# run's poll check is the first gate, this is the last (td574960's
+# contract: brief text, post-check and land check name the same set in
+# every mode). A denied diff is refused, stamped ``human_only_hit`` so
+# the node caps at once and the tick's ruling ask opens on the frozen
+# branch. The fake store resolves ``deny_paths_for`` to ``STRICT_DENY``
+# (no ``app_settings`` row is readable), so ``run_slice.py`` — the
+# incident's own path — is the strict-deny case.
+
+
+def test_submit_refuses_a_deny_path_diff(seams: dict[str, Any]) -> None:
+    """gr645524: a branch reaching the land with a resolved-deny path
+    never launches ship — the gripe's 'refused by land_slice with a
+    coordinator ask': the stamp caps the node and ``_mint_ask``'s
+    ruling ask opens, its paths named."""
+    seams["changed_paths"] = [_ENGINE_PATH, "src/precis/x.py"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.status == "failed" and "deny path" in (ctx.failure or "")
+    assert seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [_ENGINE_PATH]
+    # The engine stamp still landed — a refused job is not a pre-E1 one.
+    assert ctx.meta_set["engine_paths"] == [_ENGINE_PATH]
+    assert any("land FAILED" in c and "run_slice.py" in c for c in store.comments(42))
+    # The lease released for the ruling — the todo is open, not closed.
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_submit_refuses_a_human_only_diff(seams: dict[str, Any]) -> None:
+    """The never-relaxable set bites under every mode — a diff on a
+    human-only path is refused even when the lane resolves relaxed."""
+    seams["changed_paths"] = ["deploy/inventory/prod.yml", "src/precis/x.py"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.status == "failed" and seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["deploy/inventory/prod.yml"]
+
+
+def test_submit_refuses_an_interim_deny_diff_under_relaxed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relaxed releases the engine python, not the harness: the slice's
+    own ``scripts/ship`` stays denied — a diff reaching the land with
+    it is refused under relaxed too."""
+    _relaxed_deny(monkeypatch)
+    seams["changed_paths"] = ["scripts/ship", "src/precis/x.py"]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.status == "failed" and seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["scripts/ship"]
+
+
 def test_full_refusal_on_an_engine_land_relaunches_quick(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1404,13 +1487,14 @@ def test_full_refusal_on_an_engine_land_relaunches_quick(
     relaunches ``--quick`` like every other land — no land runs the full
     local gate; the release gate's GitHub CI runs the suite."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
-    seams["changed_paths"] = ["scripts/ship"]
+    _relaxed_deny(monkeypatch)
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     ctx, handle = _submit(store, seams)
     _finish(handle, 1, FULL_REFUSAL_LOG)
     pctx = _Ctx(store, _params(seams))
-    pctx.meta["engine_paths"] = ["scripts/ship"]
+    pctx.meta["engine_paths"] = [_ENGINE_PATH]
     assert land_slice.poll(pctx, handle) is False
     assert pctx.status is None and pctx.failure is None
     [(first, _kw1), (second, _kw2)] = seams["launch"]
@@ -1429,13 +1513,14 @@ def test_engine_land_full_fallback_follows_the_env_flag(
     """gr599427: ``PRECIS_LAND_FULL_FALLBACK=off`` keeps a FULL refusal a
     red for an engine land too — the same fallback rule as every land."""
     monkeypatch.setenv("PRECIS_LAND_FULL_FALLBACK", "off")
-    seams["changed_paths"] = ["scripts/ship"]
+    _relaxed_deny(monkeypatch)
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42)
     ctx, handle = _submit(store, seams)
     _finish(handle, 1, FULL_REFUSAL_LOG)
     pctx = _Ctx(store, _params(seams))
-    pctx.meta["engine_paths"] = ["scripts/ship"]
+    pctx.meta["engine_paths"] = [_ENGINE_PATH]
     assert land_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert "selector answers FULL" in (pctx.failure or "")
@@ -1448,13 +1533,14 @@ def test_engine_full_refusal_does_not_loop(
     """A relaunched run that still draws the FULL refusal is the ordinary
     red — the relaunch happens once."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
-    seams["changed_paths"] = ["scripts/ship"]
+    _relaxed_deny(monkeypatch)
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42)
     ctx, handle = _submit(store, seams)
     _finish(handle, 1, FULL_REFUSAL_LOG)
     pctx = _Ctx(store, _params(seams))
-    pctx.meta["engine_paths"] = ["scripts/ship"]
+    pctx.meta["engine_paths"] = [_ENGINE_PATH]
     assert land_slice.poll(pctx, handle) is False
     _finish(handle, 1, FULL_REFUSAL_LOG)
     assert land_slice.poll(pctx, handle) is True
@@ -2089,11 +2175,14 @@ def test_checked_land_goes_quick_on_a_wide_selection(seams: dict[str, Any]) -> N
     assert ctx.meta_set["spot_selection"] is False
 
 
-def test_engine_land_goes_quick_on_a_wide_selection(seams: dict[str, Any]) -> None:
+def test_engine_land_goes_quick_on_a_wide_selection(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr599427: an engine diff follows the same spot rule — no more
     unconditional ``--checked``."""
+    _relaxed_deny(monkeypatch)
     seams["spot"] = False
-    seams["changed_paths"] = ["scripts/ship"]
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42)
     ctx = _Ctx(store, {**_params(seams), "checked": False})
@@ -2101,7 +2190,7 @@ def test_engine_land_goes_quick_on_a_wide_selection(seams: dict[str, Any]) -> No
     assert handle is not None and ctx.failure is None
     [(argv, _kw)] = seams["launch"]
     assert argv[1] == "--quick"
-    assert ctx.meta_set["engine_paths"] == ["scripts/ship"]
+    assert ctx.meta_set["engine_paths"] == [_ENGINE_PATH]
 
 
 def test_poll_main_refusal_keeps_checked_flag(
@@ -2777,14 +2866,15 @@ def test_poll_deselect_wait_re_arms_the_wall(
     the ordinary 1 h wall (td602151 — the 3 h full-gate budget is gone;
     a FULL selection never reaches this phase)."""
     monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
+    _relaxed_deny(monkeypatch)
     seams["diff_names"] = "src/precis/x.py\n"
-    seams["changed_paths"] = ["scripts/ship"]
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     handle = _checked_submit(store, seams)
     _finish(handle, 1, CHECKED_RED_LOG)
     pctx = _Ctx(store, _params(seams))
-    pctx.meta["engine_paths"] = ["scripts/ship"]
+    pctx.meta["engine_paths"] = [_ENGINE_PATH]
     assert land_slice.poll(pctx, handle) is False
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False
@@ -3060,14 +3150,15 @@ def test_poll_checked_red_main_red_on_an_engine_land_deselects_checked(
     detached ``scripts/test --selected --deselect`` — and lands
     ``--quick`` on its green. ``--full`` never launches."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    _relaxed_deny(monkeypatch)
     seams["diff_names"] = "src/precis/x.py\n"
-    seams["changed_paths"] = ["scripts/ship"]
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     handle = _checked_submit(store, seams)
     _finish(handle, 1, CHECKED_RED_LOG)
     pctx = _Ctx(store, _params(seams))
-    pctx.meta["engine_paths"] = ["scripts/ship"]
+    pctx.meta["engine_paths"] = [_ENGINE_PATH]
     assert land_slice.poll(pctx, handle) is False
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False
@@ -3102,14 +3193,15 @@ def test_poll_checked_red_main_red_full_selection_lands_quick(
     the 1 h wall, engine land or not."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
     monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: True)
+    _relaxed_deny(monkeypatch)
     seams["diff_names"] = "src/precis/x.py\n"
-    seams["changed_paths"] = ["scripts/ship"]
+    seams["changed_paths"] = [_ENGINE_PATH]
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     handle = _checked_submit(store, seams)
     _finish(handle, 1, CHECKED_RED_LOG)
     pctx = _Ctx(store, _params(seams))
-    pctx.meta["engine_paths"] = ["scripts/ship"]
+    pctx.meta["engine_paths"] = [_ENGINE_PATH]
     assert land_slice.poll(pctx, handle) is False
     _verify_finish(handle, 1)
     assert land_slice.poll(pctx, handle) is False

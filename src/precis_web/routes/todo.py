@@ -115,6 +115,8 @@ def _row_waits_on_tag(tags: list[str]) -> bool:
             return True
         if t.startswith("child-failed:"):
             return True
+        if t == "hold:no-dispatch":
+            return True
     return False
 
 

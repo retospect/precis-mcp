@@ -149,7 +149,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    than ``child-failed:`` on it or an ancestor, no paused ancestor, no live
    child job, no
    ``claimed-by:`` tag, no mint pass still in flight, under its retry cap)
-   gets one job parented to it:
+   gets one job parented to it — ``hold:no-dispatch`` rides the shared
+   registry, so the coordinator's hold parks a plan node here exactly as
+   it parks a gripe in ``gripe_dispatch`` (gr645524):
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
    A ``run_slice`` class with no enabled offering is blocked on one
@@ -280,8 +282,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (td645566), not retried on the same rung the count still affords. A
    failed job stamped
    ``human_only_hit=[paths]`` (``run_slice`` writes
-   it when the branch touches ``lanes.HUMAN_ONLY_PATHS`` — no lane may
-   write those paths) and a ``run_slice`` with no enabled fit lane still
+   it when the branch touches ``lanes.HUMAN_ONLY_PATHS``,
+   ``land_slice`` when the landed diff touches the resolved deny set —
+   gr645524; at the land every deny hit is a "no lane may write" hit)
+   and a ``run_slice`` with no enabled fit lane still
    get the old ask, at once and naming the paths or the gap; a
    mechanical op (``meta.op`` other than ``run_slice``) asks too. The
    ask is one ask-user todo under the plan root (``meta.ask`` kind
@@ -528,7 +532,9 @@ ATTEMPT_FREE_KEY = "attempt_free"
 
 #: ``run_slice.HUMAN_ONLY_KEY``, restated — the dependency stays
 #: one-way (a test pins the two spellings equal). The failed job lists
-#: the ``lanes.HUMAN_ONLY_PATHS`` globs its branch touched; a stamped
+#: the ``lanes.HUMAN_ONLY_PATHS`` globs its branch touched (``run_slice``)
+#: or the resolved deny set's globs (``land_slice``, gr645524 — a land
+#: refusal there is the same "no lane may write" call); a stamped
 #: failure is a human call — no lane may write those paths — so the
 #: tick asks at once instead of climbing the ladder (td584381 S1a).
 HUMAN_ONLY_KEY = "human_only_hit"

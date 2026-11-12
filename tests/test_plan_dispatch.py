@@ -6409,6 +6409,40 @@ def test_a_waiting_for_tag_on_an_ancestor_parks_the_subtree(store: Store) -> Non
     assert len(_jobs_under(store, task)) == 1
 
 
+def test_hold_no_dispatch_parks_a_plan_leaf(store: Store) -> None:
+    """gr645524: ``hold:no-dispatch`` is a doable exclusion — the
+    coordinator's hold parks a plan todo exactly as it parks a gripe in
+    ``gripe_dispatch``; no ``run_slice`` mints while it stands, and
+    removing it returns the node to dispatch."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.add_tag(task, Tag.open("hold:no-dispatch"), set_by="system")
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, task) == []
+    store.remove_tag(task, Tag.open("hold:no-dispatch"))
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, task)) == 1
+
+
+def test_hold_no_dispatch_on_an_ancestor_parks_the_subtree(store: Store) -> None:
+    """The hold rides the whole subtree like every doable exclusion —
+    ``_excluded`` walks the node's ancestors (``waiting-for:`` parity)."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        a = m.node("phase", "Phase A", {"auto_close": True})
+        m.node("task", "Task", {"op": "run_slice"}, parent=a, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    store.add_tag(mint.root_id, Tag.open("hold:no-dispatch"), set_by="system")
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, task) == []
+
+
 def test_chain_item_collects_the_complete_findings(store: Store) -> None:
     """td610546: the cap ask's chain items carried a one-line,
     120-char-capped head of each fix's findings — the coordinator's

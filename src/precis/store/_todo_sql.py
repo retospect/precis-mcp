@@ -42,6 +42,12 @@ _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
     "ask-user",
     "ask-user:",
     "child-failed:",
+    # gr645524: the coordinator's no-dispatch hold on a plan node.
+    # gripe_dispatch's own hold list already honours it on gripes; in
+    # the shared registry it parks the todo (and its subtree through the
+    # ancestor walk) for the plan tick, the parent gate and the doable
+    # view alike until the holder removes it.
+    "hold:no-dispatch",
 )
 
 

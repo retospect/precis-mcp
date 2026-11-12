@@ -95,6 +95,7 @@ _HARD_BLOCK_TAGS: tuple[str, ...] = (
     "halt",
     "halt:",
     "child-failed:",
+    "hold:no-dispatch",
 )
 
 
