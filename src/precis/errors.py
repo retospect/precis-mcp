@@ -121,6 +121,16 @@ class ResultBudgetExceeded(BadInput):
     """
 
 
+class DraftExportRefused(BadInput):
+    """The PDF is precis's own draft export, not an ingestable paper (gr634048).
+
+    Subclasses :class:`BadInput` (hence ``ValueError``) so the CLI
+    ``precis add`` error path and any ``except ValueError`` callers keep
+    catching it; the watcher catches it by name to route the file to
+    ``errors/`` without a stack-trace log.
+    """
+
+
 class Gone(PrecisError):
     """Ref existed and was soft-deleted.
 

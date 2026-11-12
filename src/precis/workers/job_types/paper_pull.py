@@ -15,8 +15,10 @@ find (author / institution hosts). Steps:
    download ``datasheet_pull`` uses.
 3. **Gate** the download (:func:`check_pdf`): the final post-redirect host
    must not be a shadow library, the PDF's first pages must name this stub
-   (its DOI, or most of its title words), and an article must not be a
-   1-2 page publisher preview. Nothing is written when a check fails.
+   (its DOI, or most of its title words), an article must not be a
+   1-2 page publisher preview, and the file must not fingerprint as
+   precis's own draft export (gr634048, ``draft_export``). Nothing is
+   written when a check fails.
 4. **Drop** the PDF into the watch inbox (``PRECIS_WATCH_INBOX``, the
    directory ``precis watch`` scans and the OA fetcher writes) with a fetch
    sidecar (``ref_id`` = the stub, ``source='agent_url'``, ``url``), sidecar
@@ -47,6 +49,7 @@ from urllib.parse import urlsplit
 
 from precis.errors import BadInput
 from precis.ingest import pdf_upload
+from precis.ingest.draft_export_guard import draft_export_refusal, read_pdf_info
 from precis.ingest.fetch_sidecar import sidecar_path, write_sidecar
 from precis.ingest.pdf_identity import identity_verdict, read_leading_pages
 from precis.store._body_predicate import has_body_sql
@@ -253,9 +256,16 @@ def check_pdf(
 
     Returns extra record fields (``identity``: ``doi`` / ``title`` /
     ``unchecked``). Raises ``_Failed`` (``unreadable_pdf``,
-    ``preview_suspected``, ``identity_mismatch``) when the file must not be
-    dropped.
+    ``draft_export``, ``preview_suspected``, ``identity_mismatch``)
+    when the file must not be dropped.
     """
+    # gr634048: precis's own draft export (author "precis" + TeX
+    # producer) is never the stub's paper — refuse before any other
+    # check so an agent-supplied URL or staged upload of an export
+    # PDF records ``draft_export`` instead of dropping into the inbox.
+    refusal = draft_export_refusal(read_pdf_info(path))
+    if refusal is not None:
+        raise _dl._Failed("draft_export", refusal)
     try:
         n_pages, texts = read_leading_pages(path)
     except Exception as exc:  # fitz raises its own FileDataError family

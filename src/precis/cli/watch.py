@@ -50,6 +50,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import notify_critical_alert, raise_alert
 from precis.cli._common import resolve_dsn
 from precis.corpus_layout import corpus_pdf_dest
+from precis.errors import DraftExportRefused
 from precis.ingest.add import (
     IngestResult,
     MarkupInput,
@@ -1066,6 +1067,16 @@ def process_pdf(
                 exc,
             )
             _handle_failure(pdf, exc, errors_dir=errors_dir)
+        clear_sidecar(pdf)
+        return None
+    except DraftExportRefused as exc:
+        # gr634048: precis's own draft export, not a paper — precis_add
+        # refused before any DB write. Park the file in errors/ (it
+        # leaves the inbox, nothing is minted) and consume the sidecar
+        # so the drop doesn't re-qualify; a routine refusal, not a
+        # traceback-worthy fault.
+        log.warning("precis ingest: %s — routing to errors/", exc)
+        _handle_failure(pdf, exc, errors_dir=errors_dir)
         clear_sidecar(pdf)
         return None
     except OperationalError as exc:

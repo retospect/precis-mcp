@@ -33,6 +33,7 @@ from typing import Any
 
 import psycopg
 
+from precis.errors import DraftExportRefused
 from precis.identity import is_placeholder_title, make_pdf_sha256, normalize_doi
 from precis.ingest.article_spread import mark_article_start
 from precis.ingest.claim import Claim
@@ -49,6 +50,7 @@ from precis.ingest.dedup import (
     _merge_dropped_markers,
     inherit_missing_identity,
 )
+from precis.ingest.draft_export_guard import draft_export_refusal, read_pdf_info
 from precis.ingest.pdf_writer import PatchInfo, patch_pdf_metadata
 from precis.ingest.pres import (
     PresWriteResult,
@@ -331,6 +333,11 @@ def precis_add(
     the caller should leave the file in place. Never ``None`` for
     metadata-only inputs (``DoiInput``/``ArxivInput``), which are cheap
     and need no cross-host claim coordination.
+
+    A :class:`PdfInput` that fingerprints as precis's own draft export
+    (Info Author ``precis`` + a TeX producer, gr634048) raises
+    :class:`~precis.errors.DraftExportRefused` before any DB write or
+    extraction: the draft owns that PDF, never the paper corpus.
     """
     result = _precis_add(
         input,
@@ -393,6 +400,19 @@ def _precis_add(
             # File disappeared between watcher enqueue and now;
             # treat as a no-op so the caller doesn't fail loudly.
             return None
+        # gr634048: precis's own draft export must never mint (or fold
+        # onto) a paper ref — its home is the draft. The fingerprint is
+        # one cheap fitz metadata read, done before the sha probe so a
+        # re-drop of an already-minted export refuses too.
+        refusal = draft_export_refusal(read_pdf_info(input.pdf_path))
+        if refusal is not None:
+            raise DraftExportRefused(
+                f"{input.pdf_path.name}: {refusal}",
+                next="this PDF is a precis draft export, not a paper — "
+                "read the draft instead (get kind='draft', id=<slug>, "
+                "view='pdf'); a paper already minted from it should be "
+                "deleted (delete kind='paper', id=<id>)",
+            )
         with store.pool.connection() as conn:
             existing_ref_id = probe_existing(pdf_sha256=pdf_sha256, conn=conn)
         if existing_ref_id is not None and input.supplement_of is not None:
