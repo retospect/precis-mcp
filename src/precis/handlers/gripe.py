@@ -151,6 +151,8 @@ _RESOLVED_PREFIX = "resolved:"
 _PROJECT_TAG_PREFIX = "project:"
 _DEFAULT_PROJECT = "precis"
 _PROJECT_SLUG_RE = re.compile(r"[^a-z0-9]+")
+#: A comment opening "Reto 2026-11-11:" records the owner's ruling (gr633674).
+_RETO_RULING_RE = re.compile(r"\s*Reto\s+\d{4}-\d{2}-\d{2}\s*:")
 #: The gripe lifecycle's terminal STATUS tags — derived from
 #: ``_BROWSE_TERMINALS`` so "still open" has one definition everywhere
 #: (the /open view, the status='open' live default, theme matching and
@@ -962,6 +964,9 @@ class GripeHandler(NumericRefHandler):
                     f"appending a comment to {self._sense()} id={id!r} requires text=",
                     next=(f"put(kind={self.kind!r}, id={id}, text='your comment')"),
                 )
+            untags = self._drop_answered_ask(
+                id, text=text, tags=tags, untags=untags, readings=readings
+            )
             # link=/unlink=/rel= and tags=/untags= ride along: comment +
             # edge/tag edit in one transaction (comment-then-close is one
             # put, not reject + re-put + tag(); gr484232). The tag edit is
@@ -1313,6 +1318,32 @@ class GripeHandler(NumericRefHandler):
             f"put(kind={self.kind!r}, id={id!r}) with no text= read as "
             + " + ".join(calls)
         )
+
+    def _drop_answered_ask(
+        self,
+        id: str | int,
+        *,
+        text: str,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        readings: list[str],
+    ) -> list[str] | None:
+        """A ``Reto <date>:`` ruling comment that moves the gripe off
+        ``needs_spec`` sheds ``reto:ask`` in the same write (gr633674):
+        the ask is answered, so it leaves the owner's decision queue."""
+        if not _RETO_RULING_RE.match(text):
+            return untags
+        new = [t.strip() for t in tags or () if t.strip().startswith("STATUS:")]
+        if not new or "STATUS:needs_spec" in new:
+            return untags
+        ref_id = self._coerce_id(id)
+        held = {str(t) for t in self.store.tags_for(ref_id)}
+        if "STATUS:needs_spec" not in held or "reto:ask" not in held:
+            return untags
+        if "reto:ask" in (untags or ()):
+            return untags
+        readings.append("Reto ruling off needs_spec: also removed reto:ask")
+        return [*(untags or []), "reto:ask"]
 
     def _validate_put_mode(self, *, id: str | int | None, mode: str) -> None:
         """Check an explicit ``put`` ``mode=`` against reality.

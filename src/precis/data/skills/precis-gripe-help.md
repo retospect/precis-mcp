@@ -415,6 +415,12 @@ also announced.
 A numeric `PRIO:3` is the same axis spelled as the column number —
 `PRIO:3` writes `prio=3`; `prio=3` on `tag()` is the kwarg form.
 
+Answering a `reto:ask`: when Reto's question is fully resolved, write
+the answer and drop the ask in the same call —
+`put(kind='gripe', id=42, text='Reto 2026-11-11: do X', tags=['STATUS:triaged'], untags=['reto:ask'])`.
+A stale `reto:ask` inflates his decision queue. A `Reto <date>:` comment
+that moves a gripe off `needs_spec` drops it automatically.
+
 ## Correct or refine an earlier comment
 ## Take back a comment I made {write}
 
@@ -773,6 +779,9 @@ citation audit emits findings and todos, not gripes.
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
 | (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |
+
+An answered ask sheds its tag: once the question is ruled on and the
+gripe carries the answer, remove `reto:ask` in that same write.
 
 ## See also
 

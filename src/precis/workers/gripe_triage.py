@@ -2966,7 +2966,7 @@ def _write_ask(
         f"\n\nSource: gr{gid} — {_one_line(gtitle)}. Its fix waits "
         "on this ruling; the gripe carries `reto:ask` until answered. "
         "Answer on this todo (`answer: …` + close) or comment on the "
-        "gripe itself.\n\n"
+        "gripe itself; once ruled, remove `reto:ask` in the same write.\n\n"
         + "\n".join(
             f"- {'(recommended) ' if o.recommended else ''}{o.option}"
             + (f" — {o.cost}" if o.cost else "")
