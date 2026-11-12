@@ -368,8 +368,13 @@ _LEGACY_PUT_MODES: tuple[str, ...] = (
 
 
 # Other legacy kwargs / verbs that have no place in the new surface.
+# ``untags=`` is NOT legacy — it is a declared parameter on the put verb
+# (advertised on the slim tool schema and accepted on todo/gripe comment
+# appends, gr484232/gr570088), so skills may teach it in that context.
+# ``unlink=`` stays banned in skill text: it is only valid on gripe
+# comment appends and refused everywhere else, so teaching it on put
+# misleads — edge removal lives on link(..., mode='remove').
 _LEGACY_LITERAL_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("untags=", "tag(remove=[...])"),
     ("unlink=", "link(target=..., mode='remove')"),
     ("move(", "edit(mode='reorder')"),
 )

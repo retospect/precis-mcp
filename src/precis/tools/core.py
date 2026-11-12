@@ -2114,14 +2114,16 @@ def put(
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
     put(kind='gripe'|'todo', id=N, text=...) appends a comment to an existing
-    one. Omit `id=` to mint a new ref — required fields are per kind
-    (precis-put-help). `mode=`: file kinds use 'create'; paid-import kinds
-    use 'import'; numeric-ref kinds omit it. `text=`/`body=` alias on a
-    kind with a single prose field (finding says `body=`; both at once
-    errors there); `todo` declares both — `text=` the title, `body=` the
-    details — and takes either or both. `tags=`/`untags=` add/remove;
-    `link=`/`unlink=`
-    use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
+    one. The todo append accepts only `text=`/`tags=`/`untags=` — link edits
+    on an existing todo stay on the `link` verb; the gripe append also takes
+    `link=`/`unlink=`/`rel=` in the same transaction. Omit `id=` to mint a
+    new ref — required fields are per kind (precis-put-help). `mode=`: file
+    kinds use 'create'; paid-import kinds use 'import'; numeric-ref kinds
+    omit it. `text=`/`body=` alias on a kind with a single prose field
+    (finding says `body=`; both at once errors there); `todo` declares
+    both — `text=` the title, `body=` the details — and takes either or
+    both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
+    `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
     `text={'$ref': '<handle>'}` = that handle's body (needs a same-session
     `get` of it).
 

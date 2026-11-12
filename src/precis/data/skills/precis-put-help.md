@@ -33,10 +33,13 @@ lists them. `mode=` picks the creation door: file kinds
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
 shows all. On memory, id= with link= adds the edge (a repeat says it was already linked); id= with text= refuses, use edit.
-On gripe the append takes `link=`/`rel=` and `tags=` (add) in the same
-transaction — comment-then-close is one call. On todo it takes `tags=` the
-same way (link edits stay on the `link` verb). To remove tags use
-`tag(remove=[...])`.
+On gripe the append takes `link=`/`rel=` and `tags=`/`untags=` in the
+same transaction — comment-then-close is one call. On todo it takes
+`tags=`/`untags=` the same way (link edits stay on the `link` verb):
+`put(kind='todo', id=42, text='done — shipped',
+tags=['STATUS:done'], untags=['waiting-for:reto'])` comments, closes
+and drops the waiting tag atomically. Tag-only changes stay on
+`tag(add=[...]/remove=[...])`.
 
 `text=` and `body=` are the same prose slot spelled two ways across
 kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
