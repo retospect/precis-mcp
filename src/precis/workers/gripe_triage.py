@@ -2920,6 +2920,7 @@ def _write_ask(
     A lint-refused ask retries once as :func:`_fallback_ask`; ``None``
     when nothing could be written."""
     from precis.errors import PrecisError
+    from precis.plans.nodes import finish_mint
     from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
     from precis.todo.guards import check_ask_meta
 
@@ -3031,6 +3032,7 @@ def _write_ask(
                 set_by="system",
                 conn=conn,
             )
+            finish_mint(store, tid, conn=conn)
         return tid
     except Exception:
         log.warning("gripe_triage: reto:ask write failed for gr%d", gid, exc_info=True)
