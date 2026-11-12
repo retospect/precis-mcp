@@ -463,7 +463,12 @@ class TestStampSearch:
         _paper(store, "unstamped2024", body=1)
         body = papers.search(stamp="s2_enriched_at", page_size=1).body
         assert " of 2" in body, body
-        assert "page=2" in body
+        # gr634204: the verb refuses ``page=`` — the trailer offers a
+        # page_size raise, never a "next page" call that errors. (The
+        # handler still paginates internally — the page-2 walk below
+        # pins the partition.)
+        assert "page=" not in body
+        assert "page_size=2" in body
         page2 = papers.search(stamp="s2_enriched_at", page_size=1, page=2).body
         handles = {handle_registry.format_handle("paper", i) for i in (a, b)}
         assert sum(h in body for h in handles) == 1

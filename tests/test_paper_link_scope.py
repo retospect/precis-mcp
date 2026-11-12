@@ -152,7 +152,11 @@ class TestCountAndPaging:
         for p in ids:
             _link(store, mem, p)
         body = papers.search(linked_from="memory", page_size=2).body
-        assert " of 3" in body and "page=2" in body, body
+        assert " of 3" in body, body
+        # gr634204: the verb refuses ``page=`` — the trailer offers a
+        # page_size raise instead of a "next page" call that errors.
+        assert "page=" not in body
+        assert "page_size=4" in body
 
 
 def test_args_dict_reaches_the_handler(

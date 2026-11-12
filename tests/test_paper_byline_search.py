@@ -182,6 +182,22 @@ def test_handler_empty_byline_falls_through_to_q_guard(store: Store) -> None:
         _handler(store).search(title="   ")
 
 
+def test_handler_title_has_more_offers_page_size_not_page(store: Store) -> None:
+    """gr634204: the verb refuses ``page=`` — a byline lookup with more
+    matches than the page holds offers a page_size raise, never a
+    "next page" call that errors."""
+    for i in range(11):
+        _seed_paper(
+            store,
+            slug=f"vol-{i}",
+            title=f"High throughput catalyst screening volume {i}",
+            authors=["A. Researcher"],
+        )
+    out = _handler(store).search(title="catalyst screening", page_size=10)
+    assert "page=" not in out.body
+    assert "page_size=20" in out.body
+
+
 # ── ranking: text first, not merely a held PDF (gr453860) ─────────
 
 

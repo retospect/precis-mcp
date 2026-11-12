@@ -3330,7 +3330,7 @@ class PaperHandler(Handler):
         # retrieval, title-introducer promotion, year-omitted notice — is
         # FusedBlockSearch's job; PaperSearchResultRenderer turns the
         # result into the agent-facing Response (empty-hits DOI-aware
-        # guidance, or headline + TOON table + pagination trailer).
+        # guidance, or headline + TOON table + steering trailer).
         result = FusedBlockSearch(
             store=self.store, embedder=self.embedder, kind=kind
         ).run(
@@ -3347,7 +3347,6 @@ class PaperHandler(Handler):
             answers=answers,
             per_paper=per_paper,
             unique_per=resolved_unique_per,
-            unique_per_arg=unique_per_norm,
             extra_exclude_ref_ids=exclude_ref_ids,
             extra_include_ref_ids=include_ref_ids,
             has_body=has_fulltext,
@@ -3611,11 +3610,16 @@ class PaperHandler(Handler):
             if v is not None
         )
         next_ops: list[tuple[str, str]] = []
-        if offset + len(rows) < total:
+        # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
+        # row would advertise a call that errors. Raising ``page_size``
+        # is the one honest continuation; at the 100-row search cap
+        # nothing is offered.
+        if offset + len(rows) < total and page_size < 100:
             next_ops.append(
                 (
-                    f"search(kind='{kind}', args={{{args_bit}}}, page={page + 1})",
-                    "next page",
+                    f"search(kind='{kind}', args={{{args_bit}}}, "
+                    f"page_size={page_size * 2})",
+                    "see more entries (raise page_size)",
                 )
             )
         next_ops.append(
@@ -3806,12 +3810,16 @@ class PaperHandler(Handler):
         )
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
-        if offset + len(rows) < total:
+        # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
+        # row would advertise a call that errors. Raising ``page_size``
+        # is the one honest continuation; at the 100-row search cap
+        # nothing is offered.
+        if offset + len(rows) < total and page_size < 100:
             next_ops.append(
                 (
                     f"search(kind='{kind}', args={{'stamp': {stamp!r}}}, "
-                    f"page={page + 1})",
-                    "next page",
+                    f"page_size={page_size * 2})",
+                    "see more entries (raise page_size)",
                 )
             )
         next_ops.append(
@@ -10140,11 +10148,16 @@ class PaperHandler(Handler):
         )
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
-        if offset + len(refs) < total:
+        # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
+        # row would advertise a call that errors. Raising ``page_size``
+        # is the one honest continuation; at the 100-row search cap
+        # nothing is offered.
+        if offset + len(refs) < total and page_size < 100:
             next_ops.append(
                 (
-                    f"search(kind='{kind}', tags={normalized_tags!r}, page={page + 1})",
-                    "next page",
+                    f"search(kind='{kind}', tags={normalized_tags!r}, "
+                    f"page_size={page_size * 2})",
+                    "see more entries (raise page_size)",
                 )
             )
         next_ops.append(

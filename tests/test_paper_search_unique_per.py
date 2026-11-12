@@ -180,14 +180,17 @@ def test_page_size_defaults_follow_the_row_shape(store: Store) -> None:
     assert len(_row_chunk_handles(paper.body)) == 12  # 25-row paper page
     chunk = h.search(q="gallium arsenide", unique_per="chunk")
     assert len(_row_chunk_handles(chunk.body)) == 10  # 10-row chunk page
-    assert "page=2" in chunk.body  # the chunk page has more to offer
+    # The verb refuses ``page=`` — the trailer must never advertise it.
+    assert "page=" not in chunk.body
     explicit = h.search(q="gallium arsenide", page_size=5)
     assert len(_row_chunk_handles(explicit.body)) == 5
 
 
 def test_paper_mode_pages_papers_not_chunks(store: Store) -> None:
     """Pagination walks *papers*: page 2 returns the papers page 1's
-    rows didn't cover — never the first page's second chunk."""
+    rows didn't cover — never the first page's second chunk. (The
+    handler still paginates internally; the verb boundary refuses
+    ``page=`` — the trailer must not advertise it, gr634204.)"""
     _seed(
         store,
         slug="pg-a",
@@ -198,8 +201,7 @@ def test_paper_mode_pages_papers_not_chunks(store: Store) -> None:
     h = _handler(store)
     first = h.search(q="copper nitrate ammonia", page_size=2)
     assert len(_row_chunk_handles(first.body)) == 2
-    assert "see the next 2 of 3 papers" in first.body
-    assert "page=2" in first.body
+    assert "page=" not in first.body
     second = h.search(q="copper nitrate ammonia", page_size=2, page=2)
     assert len(_row_chunk_handles(second.body)) == 1
     assert set(_row_chunk_handles(first.body)).isdisjoint(
@@ -207,14 +209,16 @@ def test_paper_mode_pages_papers_not_chunks(store: Store) -> None:
     )
 
 
-def test_singleton_paper_row_restarts_at_the_25_row_page(store: Store) -> None:
-    """The singleton-hit widen hint restarts at the *paper* page size —
-    ``page_size=25, page=1`` — not the chunk view's 10."""
+def test_singleton_paper_row_offers_no_continuation(store: Store) -> None:
+    """A singleton paper-row hit with more candidates behind it gets no
+    continuation row at all: the old "restart at page 1 with a bigger
+    page_size" hint advertised ``page=1``, which the verb refuses
+    (gr634204)."""
     for slug in ("sp-a", "sp-b", "sp-c"):
         _seed(store, slug=slug, blocks=[f"photocatalytic in {slug}"])
     out = _handler(store).search(q="photocatalytic", page_size=1)
-    assert "restart at page 1 with up to 25 of 3 papers" in out.body
-    assert "page_size=25, page=1" in out.body
+    assert "page=" not in out.body
+    assert "restart at page 1" not in out.body
 
 
 # ── headline counters ────────────────────────────────────────────────────
@@ -304,10 +308,11 @@ def test_body_hit_wins_over_a_stronger_card(store: Store) -> None:
 # ── hint echo ────────────────────────────────────────────────────────────
 
 
-def test_explicit_chunk_mode_echoes_into_continuations(store: Store) -> None:
-    """An explicit ``unique_per='chunk'`` must reappear in the next-page
-    hint — an omitted knob re-resolves to 'paper' on the replay and the
-    caller would silently land on the wrong shape mid-walk."""
+def test_explicit_chunk_mode_offers_no_page_continuation(store: Store) -> None:
+    """gr634204: the trailer never advertises ``page=`` — the verb
+    refuses it — and the removed continuation was the only row that
+    echoed ``unique_per``, so an explicit chunk-mode search pins its
+    absence too."""
     for i in range(3):
         _seed(
             store,
@@ -317,7 +322,8 @@ def test_explicit_chunk_mode_echoes_into_continuations(store: Store) -> None:
     out = _handler(store).search(
         q="copper nitrate ammonia", unique_per="chunk", page_size=1
     )
-    assert "unique_per='chunk'" in out.body
+    assert "page=" not in out.body
+    assert "unique_per='chunk'" not in out.body
 
 
 def test_paper_mode_offers_the_chunk_drill(store: Store) -> None:

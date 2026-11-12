@@ -249,6 +249,9 @@ def test_capped_search_prefers_body_before_paging(
         ]
         assert rows == [handle]
         assert card_handle not in out.body
-        assert ("restart at page 1" in out.body) == (page < len(expected))
+        # gr634204: no pageable continuation is advertised (the verb
+        # refuses ``page=``).
+        assert "restart at page 1" not in out.body
+        assert "page=" not in out.body
         if exact_title and page == 1:
             assert handle_registry.format_handle("paper", _rid) in out.body

@@ -1259,6 +1259,20 @@ class TestSearch:
         assert handle_registry.format_handle("paper", review_id) in resp.body
         assert "Not a review" not in resp.body
 
+    def test_search_tags_only_offers_no_page_continuation(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr634204: the tags-only listing's trailer raises page_size
+        when more entries exist — never a ``page=2`` call the verb
+        refuses."""
+        for i in range(3):
+            rid = _seed_paper(store, slug=f"tagged-{i}", blocks=["beta"])
+            store.add_tag(rid, Tag.open("studytype:review"), set_by="system")
+        body = handler.search(tags=["studytype:review"], page_size=2).body
+        assert " of 3" in body
+        assert "page=" not in body
+        assert "page_size=4" in body
+
     def test_search_tags_only_no_matches(
         self, store: Store, handler: PaperHandler
     ) -> None:
@@ -1469,10 +1483,11 @@ class TestSearch:
         no-op, and the salient-term hint is moot when the caller
         already has a tight match.
 
-        A single larger-page hint replaces both lines. It explicitly
-        restarts at ``page=1`` with ``page_size=10`` (gr469183), rather
-        than silently changing pagination. ``scope=`` with the hit's own
-        slug and the long-form salient-term suggestion must stay absent.
+        gr634204: the larger-page "restart" row that replaced them
+        advertised ``page=1``, which the verb refuses — so a singleton
+        hit now gets no continuation row at all. ``scope=`` with the
+        hit's own slug and the long-form salient-term suggestion stay
+        absent.
         """
         # Seed multiple papers all matching the same word so a
         # ``page_size=1`` query has many more matches than it returned.
@@ -1484,22 +1499,15 @@ class TestSearch:
                 blocks=[f"photocatalytic nitrogen reduction in {slug}"],
             )
         # ``unique_per='chunk'`` — the paper-default page sizes rows at
-        # 25; the per-hit view keeps the 10-row restart this test pins.
+        # 25; the per-hit view keeps the 10-row page this test pins.
         resp = handler.search(q="photocatalytic", page_size=1, unique_per="chunk")
         # Header still announces "1 of N" so the caller knows there
         # are more matches.
         assert " of " in resp.body
-        # The larger-page action advertises and requests a page-1 restart;
-        # an explicit unique_per echoes into the hint so the replayed call
-        # keeps the same row shape.
-        assert "restart at page 1 with up to 10 of 4 matches" in resp.body
-        assert (
-            "search(kind='paper', q='photocatalytic', unique_per='chunk', "
-            "page_size=10, page=1)" in resp.body
-        )
-        # Old: scope=<self> is no longer suggested.
-        # ``scope='paper-a'`` would only appear in the legacy two-
-        # line trailer; pin its absence.
+        # No continuation row advertises a call the verb refuses.
+        assert "page=" not in resp.body
+        # Old: scope=<self> is not suggested, and neither is the
+        # salient-term line — both were 100 % redundant on a singleton.
         assert "narrow to blocks inside" not in resp.body
         assert "tighten the query with a hit-specific token" not in resp.body
 
@@ -1891,27 +1899,28 @@ class TestSearch:
         assert "of 3" in headline
         assert "of 4" not in headline
 
-    def test_search_semantic_omits_total_and_probes_pagination(
+    def test_search_semantic_omits_total_and_gates_steering_rows(
         self, store: Store, handler: PaperHandler
     ) -> None:
         """gr311338: ``mode='semantic'`` has no honest denominator for
         ANN top-k, so the header must omit "of K" entirely rather than
-        fabricate one — and the pagination gate must still behave
-        correctly (offer / withhold a ``page=2`` continuation) via the
-        probe-based ``single_page_has_more`` signal instead."""
+        fabricate one — and the more-hint gate must still behave
+        correctly (open / withhold the steering block) via the probe-
+        based ``single_page_has_more`` signal instead. The rows it
+        gates never advertise ``page=`` (gr634204)."""
         text = "gr311338 semantic probe unique passage marker"
         _seed_paper(store, slug="sem-probe-a", blocks=[text, text])
 
-        # Exactly page_size matching chunks: no more to page to.
+        # Exactly page_size matching chunks: no more to offer.
         # (unique_per='chunk': the probe contract this test pins is the
         # per-hit one — paper rows collapse these into one row each.)
         exact = handler.search(q=text, mode="semantic", page_size=2, unique_per="chunk")
         headline = exact.body.split("\n", 1)[0]
         assert " of " not in headline
-        assert "page=2" not in exact.body
+        assert "page=" not in exact.body
 
         # One more matching chunk elsewhere pushes the true pool past
-        # page_size — the probe must now offer the next page, still
+        # page_size — the probe must now open the steering block, still
         # without ever claiming a "of K" total.
         _seed_paper(store, slug="sem-probe-b", blocks=[text])
         overflowing = handler.search(
@@ -1919,17 +1928,17 @@ class TestSearch:
         )
         headline2 = overflowing.body.split("\n", 1)[0]
         assert " of " not in headline2
-        assert "page=2" in overflowing.body
+        assert "page=" not in overflowing.body
+        assert "tighten the query with a hit-specific token" in overflowing.body
 
-    def test_search_next_trailer_offers_page_continuation(
+    def test_search_next_trailer_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """When ``total > len(hits)``, the multi-hit Next: block
-        offers a ``page=2`` continuation so the agent can paginate
-        without managing exclude lists by hand. (Pagination was
-        moved off ``exclude=[...]`` onto the canonical ``page=`` knob
-        — see the inline comment in
-        :meth:`PaperHandler.search`.)"""
+        """gr634204: when ``total > len(hits)`` the Next: block offers
+        only the steering rows — scope=, the per-chunk drill, a
+        tightened q=. A ``page=2`` continuation would be refused by the
+        verb (search no longer paginates), so it must never be
+        advertised."""
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d", "paper-e"):
             _seed_paper(
                 store,
@@ -1940,18 +1949,21 @@ class TestSearch:
             )
         resp = handler.search(q="photocatalytic", page_size=2)
         body = resp.body
-        # Trailer offers a page= continuation.
-        assert "page=2" in body
-        # And surfaces the total so the agent sees how many remain.
+        # No pageable continuation is advertised.
+        assert "page=" not in body
+        # And the total still surfaces so the agent sees how many remain.
         assert "5 hits" in body or "of 5" in body
+        # The steering rows are the offered moves.
+        assert "narrow to blocks inside" in body
+        assert "see every matching chunk" in body
 
     def test_search_with_prior_exclude_keeps_filter(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """``exclude=`` still works as a hand-skip filter — it's no
-        longer the recommended pagination knob, but a caller passing
-        ``exclude=['paper-a']`` still gets a result set without
-        paper-a in it."""
+        """``exclude=`` still works as a hand-skip filter for
+        known-irrelevant papers — it isn't advertised in the trailer,
+        but a caller passing ``exclude=['paper-a']`` still gets a
+        result set without paper-a in it."""
         for slug in ("paper-a", "paper-b", "paper-c", "paper-d"):
             _seed_paper(
                 store,
@@ -1972,13 +1984,14 @@ class TestSearch:
         # And at least one of the non-excluded papers' chunk handles is present.
         assert any(chunk_handle(store, f"paper-{ch}") in body for ch in "bcd")
 
-    def test_search_exclude_trailer_singleton_keeps_widen(
+    def test_search_exclude_trailer_singleton_offers_no_continuation(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """Singleton-hit branch (``len(hits) == 1``) keeps the
-        existing ``page_size=10`` widen hint and does NOT render an
-        exclude-continuation — widening is the right next step
-        when only one match was returned."""
+        """Singleton-hit branch (``len(hits) == 1``) renders no
+        continuation row at all (gr634204): the old page_size widen
+        hint advertised ``page=``, which the verb refuses, and the
+        singleton branch never rendered an exclude-continuation
+        either."""
         for slug in ("paper-a", "paper-b", "paper-c"):
             _seed_paper(
                 store,
@@ -1987,14 +2000,10 @@ class TestSearch:
                 blocks=[f"alpha topic in {slug}"],
                 doi=f"10.1/{slug}",
             )
-        # unique_per='chunk': the per-hit view keeps the 10-row restart
-        # this test pins (the paper default pages papers at 25).
         resp = handler.search(q="alpha", page_size=1, unique_per="chunk")
         body = resp.body
-        assert "page_size=10" in body
-        # Explicit mode echoes into the widen hint — replaying it must
-        # not jump to the paper default.
-        assert "unique_per='chunk'" in body
+        # No continuation row advertises a call the verb refuses.
+        assert "page=" not in body
         # Singleton branch must not render an exclude continuation.
         assert "exclude=[" not in body
 

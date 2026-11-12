@@ -11,7 +11,7 @@ method actually branches:
   producing a :class:`BlockSearchResult`.
 - :class:`PaperSearchResultRenderer` — renders a ``BlockSearchResult``
   into the final agent-facing :class:`~precis.response.Response`
-  (empty-hits DOI-aware guidance, headline + TOON table, pagination
+  (empty-hits DOI-aware guidance, headline + TOON table, steering
   trailer).
 
 The ``good=True`` deep-search campaign is its own module
@@ -391,13 +391,13 @@ def _broad_args_suffix(
 ) -> str:
     """Render the broad-retrieval knobs as a call-argument suffix.
 
-    Used by the pagination continuation in the ``Next:`` trailer: a
-    ``page=N+1`` follow-up that drops ``queries=``/``answers=``/
-    ``per_paper=`` would run the *single-leg* path — a different
-    ordering, so page 2 would carry duplicates of page 1 and gaps.
-    The lists are ≤8 short strings each (leg cap), so rendering them
-    verbatim stays compact. They are not core ``search`` params, so the
-    hint carries them inside ``args={...}`` (the slim MCP schema's form).
+    The same-search steering hints (``scope=``, ``unique_per='chunk'``)
+    must echo ``queries=``/``answers=``/``per_paper=``: a follow-up that
+    dropped them would run the *single-leg* path — a different ordering
+    with duplicates and gaps, not this search narrowed. The lists are ≤8
+    short strings each (leg cap), so rendering them verbatim stays
+    compact. They are not core ``search`` params, so the hint carries
+    them inside ``args={...}`` (the slim MCP schema's form).
     """
     extra: dict[str, Any] = {}
     if queries:
@@ -514,16 +514,22 @@ class BylineSearch:
             ),
         ]
         if has_more:
-            # Echo the cohort arg into the continuation — a page-2
-            # follow-up that dropped min_quartile would silently widen.
+            # The verb refuses ``page=`` (gr530420, gr634204), so "next
+            # page" is not offerable — raising ``page_size`` is the one
+            # honest continuation, re-running the same deterministic
+            # ranking with a wider window. Echo the cohort arg: a
+            # follow-up that dropped ``min_quartile`` would silently
+            # widen. Nothing is offered once the window is at the
+            # search cap (page_size=100).
             quartile_arg = f", 'min_quartile': {min_quartile!r}" if min_quartile else ""
-            nav.append(
-                (
-                    f"search(kind='paper', args={{{field!r}: {q!r}"
-                    f"{quartile_arg}}}, page={int(page) + 1})",
-                    "see more matching papers",
+            if page_size < 100:
+                nav.append(
+                    (
+                        f"search(kind='paper', args={{{field!r}: {q!r}"
+                        f"{quartile_arg}}}, page_size={page_size * 2})",
+                        "see more matching papers (raise page_size)",
+                    )
                 )
-            )
         return Response(body=body + render_next_section(nav))
 
 
@@ -546,7 +552,7 @@ class BlockSearchResult:
     broad: bool
     #: ``True`` when the fused candidate list extended past this page's
     #: slice (probed via limit+1). In chunk mode this is the broad-mode
-    #: pagination signal; in ``unique_per='paper'`` mode it is the
+    #: more-hint signal; in ``unique_per='paper'`` mode it is the
     #: paper-level "more beyond this page" signal (the probe runs on the
     #: per-paper-collapsed list, so it is exact at paper granularity).
     broad_has_more: bool
@@ -555,11 +561,6 @@ class BlockSearchResult:
     #: per-hit row shape. Resolved upstream (``PaperHandler.search``
     #: implies ``'chunk'`` when ``scope=`` is set or ``mode='verbatim'``).
     unique_per: str = "chunk"
-    #: The caller's *explicit* ``unique_per=`` value, echoed into
-    #: same-search continuations so a ``page=N+1`` hint doesn't silently
-    #: switch shapes (an explicit ``'chunk'`` would otherwise re-resolve
-    #: to the ``'paper'`` default on the follow-up call).
-    unique_per_arg: str | None = None
     #: Per-ref fused-pool hit counts (``unique_per='paper'`` only) — the
     #: row's ``more`` column: additional hits beyond the one shown.
     #: Pool-bounded, not corpus-exact — see
@@ -573,7 +574,7 @@ class BlockSearchResult:
     #: Preserve an explicit retrieval mode in same-search hints. None
     #: retains the caller's implicit hybrid default, not a new mode choice.
     mode: str | None = None
-    #: Non-broad-only pagination fallback (gr311338): ``True`` when a
+    #: Non-broad-only more-hint fallback (gr311338): ``True`` when a
     #: single-leg search over-fetched one row past ``page_size`` — the
     #: honest "more beyond this page" signal for a mode (``semantic``)
     #: whose ``total`` is ``None``. Ignored when ``total`` is set (the
@@ -749,7 +750,6 @@ class FusedBlockSearch:
         answers: list[str] | None,
         per_paper: int | None,
         unique_per: str = "chunk",
-        unique_per_arg: str | None = None,
         extra_exclude_ref_ids: list[int] | None = None,
         extra_include_ref_ids: list[int] | None = None,
         has_body: bool | None = None,
@@ -858,7 +858,6 @@ class FusedBlockSearch:
                     broad=False,
                     broad_has_more=False,
                     unique_per="paper" if paper_rows else "chunk",
-                    unique_per_arg=unique_per_arg,
                     single_page_has_more=False,
                     total=(1 if hits else None),
                     title_matches=(
@@ -1051,18 +1050,18 @@ class FusedBlockSearch:
             per_paper is not None and not paper_rows
         )
         # ``broad_has_more``: the fused candidate list extended past this
-        # page's slice (probed via limit+1 below). Broad mode's pagination
+        # page's slice (probed via limit+1 below). Broad mode's more-hint
         # signal — the lexical count of the primary q is the wrong
         # universe for fused results (it can be < len(hits), or 0 when
         # only a rephrasing/HyDE leg matched).
         broad_has_more = False
-        # Single-leg fallback pagination signal (gr311338): a probe-based
+        # Single-leg fallback more-hint signal (gr311338): a probe-based
         # "more beyond this page" flag, populated below for the non-broad
         # path. Exists because ``mode='semantic'`` has no honest lexical
         # "of K" total to gate on (see the ``total`` computation further
         # down) — ``search_chunks`` over-fetches one extra row so the
-        # renderer can offer/withhold a next-page hint without claiming a
-        # count it never searched for.
+        # renderer can offer/withhold its steering rows without claiming
+        # a count it never searched for.
         single_page_has_more = False
         # Paper rows ride the same fused path as broad retrieval: the
         # per_paper=1 collapse needs the whole candidate pool, not the
@@ -1092,7 +1091,7 @@ class FusedBlockSearch:
                     time.monotonic() - _stage_t0,
                 )
             # Probe one row past the page so ``broad_has_more`` is exact
-            # for the next-page trailer, then slice back to page_size.
+            # for the has-more gate, then slice back to page_size.
             _stage_t0 = time.monotonic()
             probe = self.store.chunks.search_chunks_multi(
                 q_texts=q_texts,
@@ -1262,23 +1261,23 @@ class FusedBlockSearch:
             # (gr311338 — this used to be ``count_chunks_lexical`` for
             # EVERY mode, so a ``mode='verbatim'`` search with e.g. zero
             # keyword-containment hits could still report "10 of 386"
-            # from the unrelated FTS universe; the "N of K" pagination
-            # gate below then invited a continuation that mode could
-            # never honor).
+            # from the unrelated FTS universe; the "N of K" more-hint
+            # gate below then invited steering rows that mode could
+            # never back with an honest count).
             #
             # ``exclude_ref_ids`` is forwarded so the K reported in the
             # header is the *remaining* universe — i.e. when the caller
             # already excluded 5 papers, "10 of 42" tells them how many
             # hits are still left after their skip-list. Without this,
             # the header would lie ("10 of 47") and a 7B model would
-            # think they had more to paginate through than actually
+            # think they had more results ahead than actually
             # exist.
             #
             # Broad mode has no honest K: the lexical count of the primary
             # ``q`` is the wrong universe for a *fused* result set — the
             # rephrasing / HyDE legs surface rows q's tsquery never matches,
             # so K can be < len(hits) or 0 (which used to silently drop the
-            # "of K" headline AND mis-gate the pagination trailer). Pass
+            # "of K" headline AND mis-gate the more-hint trailer). Pass
             # total=None (headline renders the plain count, no "of K") and
             # gate the nav on ``broad_has_more`` instead.
             #
@@ -1398,7 +1397,6 @@ class FusedBlockSearch:
             # not ``per_paper_cap``, which carries paper mode's internal 1.
             per_paper_cap=per_paper,
             unique_per="paper" if paper_rows else "chunk",
-            unique_per_arg=unique_per_arg,
             paper_ref_counts=ref_counts if paper_rows else {},
             paper_total=paper_total,
             total=(
@@ -1424,7 +1422,7 @@ class PaperSearchResultRenderer:
 
     Pure formatting — no store calls. The empty-hits branch (DOI-shaped
     query detection + fetch-pipeline guidance) and the non-empty branch
-    (headline + TOON table + pagination trailer) mirror the former
+    (headline + TOON table + steering trailer) mirror the former
     ``PaperHandler.search()`` tail exactly.
     """
 
@@ -1733,19 +1731,22 @@ class PaperSearchResultRenderer:
             + rendered_table
         )
 
-        # Pagination affordance — when the lexical total exceeds what
-        # we returned, surface the narrow-with-scope path explicitly.
-        # Without this trailer a 7B caller seeing ``# 100 of 101`` often
-        # reads the header as "this is everything" and stops short of
-        # hit #101. (MCP critic MAJOR — search has no pagination
-        # affordance when capped.)
+        # Steering affordance — when more hits exist than we returned,
+        # surface the narrowing paths explicitly. Without this trailer a
+        # 7B caller seeing ``# 100 of 101`` often reads the header as
+        # "this is everything" and stops short of hit #101. (MCP critic
+        # MAJOR — search has no continuation affordance when capped.)
+        # Paging is deliberately not offered: the verb refuses ``page=``
+        # (gr530420), and a "next page" of a ranked list is a random bag
+        # anyway — steering (scope= / tighter q= / the chunk drill) beats
+        # paging (gr634204).
         #
         # Single ``Next:`` trailer for the whole search response.
         # Order (most actionable first):
         #   1. Drill-into-chunk: ``get(kind='paper', id=<handle>)`` —
         #      teaches that every handle in the table is a valid id.
-        #   2. Pagination via ``exclude=`` (when more hits remain).
-        #   3. Narrow-to-paper via ``scope=`` (multi-paper case).
+        #   2. Narrow-to-paper via ``scope=`` (multi-paper case).
+        #   3. Drill to the per-chunk view (paper-row mode only).
         #   4. Salient-term refinement.
         # Round-2 picky 2026-05-30: previous code emitted two
         # separate ``Next:`` blocks back-to-back; merging keeps the
@@ -1800,16 +1801,18 @@ class PaperSearchResultRenderer:
                 )
 
         # Singleton-hit special case (MCP critic MINOR-$): when
-        # ``len(hits) == 1`` the original nav was 46 % of the response
-        # and 100 % redundant — the scope suggestion narrowed to the
-        # only hit's own paper (a no-op), and the salient-term
-        # suggestion is moot when the caller already has a tight
-        # match. Just bump ``page_size`` in that branch.
+        # ``len(hits) == 1`` the nav's steering rows are 100 % redundant —
+        # the scope suggestion narrows to the only hit's own paper (a
+        # no-op), and the salient-term suggestion is moot when the caller
+        # already has a tight match. No continuation row is offered at
+        # all: the old "restart at page 1 with a bigger page_size" row
+        # advertised ``page=1``, which the verb refuses like any other
+        # page (gr634204).
         # Broad mode: gate on the fused-aware signal (the candidate list
         # extended past this page's slice), not the lexical count — and
-        # echo queries=/answers=/per_paper= into every continuation, or
+        # echo queries=/answers=/per_paper= into every remaining hint, or
         # a caller following the trailer would land on the *single-leg*
-        # path's page 2: a different ordering with duplicates + gaps.
+        # path: a different ordering with duplicates + gaps.
         broad_suffix = (
             _broad_args_suffix(
                 result.extra_queries, result.hyde_answers, result.per_paper_cap
@@ -1817,21 +1820,17 @@ class PaperSearchResultRenderer:
             if broad
             else ""
         )
-        # A larger page or next page is still the same search (gr469183).
-        # Dropping scope/mode silently substitutes global hybrid retrieval.
-        # ``unique_per`` echoes only when the caller set it explicitly —
-        # an omitted knob re-resolves to the same shape on the next call,
-        # but an explicit ``'chunk'`` would otherwise jump to the
-        # ``'paper'`` default mid-walk.
-        context_suffix_no_up = broad_suffix
+        # The same-search hints must echo the caller's scope=/mode= —
+        # dropping them silently substitutes global hybrid retrieval.
+        # ``unique_per`` is NOT echoed here: the one hint that changes it
+        # (the chunk drill below) sets it explicitly, and an omitted knob
+        # re-resolves to the same shape on the next call.
+        context_suffix = broad_suffix
         if result.scope is not None:
-            context_suffix_no_up += f", scope={result.scope!r}"
+            context_suffix += f", scope={result.scope!r}"
         if result.mode is not None:
-            context_suffix_no_up += f", mode={result.mode!r}"
-        context_suffix = context_suffix_no_up
-        if result.unique_per_arg is not None:
-            context_suffix += f", unique_per={result.unique_per_arg!r}"
-        # Pagination gate (gr311338): prefer the exact ``total`` when the
+            context_suffix += f", mode={result.mode!r}"
+        # More-hint gate (gr311338): prefer the exact ``total`` when the
         # mode produced one; fall back to the probe-based ``*_has_more``
         # signal when it didn't (broad fusion, or mode='semantic' single-
         # leg) rather than defaulting to "no more" — see
@@ -1845,150 +1844,85 @@ class PaperSearchResultRenderer:
             more_available = total > len(hits)
         else:
             more_available = result.single_page_has_more
-        if more_available:
-            if len(hits) == 1:
-                if paper_rows:
-                    restart_n = 25
-                    more_desc = (
-                        f"restart at page 1 with up to 25 of "
-                        f"{result.paper_total} papers"
-                        if result.paper_total is not None
-                        else "restart at page 1 with up to 25 papers"
-                    )
-                elif broad:
-                    restart_n = 10
-                    more_desc = "restart at page 1 with up to 10 fused matches"
-                elif total is not None:
-                    restart_n = 10
-                    more_desc = f"restart at page 1 with up to 10 of {total} matches"
-                else:
-                    restart_n = 10
-                    more_desc = "restart at page 1 with up to 10 matches"
+        if more_available and len(hits) != 1:
+            # scope by the top hit's paper record handle.
+            top_handle = (
+                handle_registry.format_handle("paper", hits[0][1].id) if hits else None
+            )
+
+            if result.scope is None and top_handle is not None:
+                # ``top_handle`` (pa<id>) is a real, resolvable
+                # handle — but the results table above only ever
+                # prints chunk handles (``pc<id>``); nothing on the
+                # page lets the reader confirm what paper it names
+                # (same defect class as the fixed pc<id>+1..3 gripe
+                # — a correct-but-unverifiable hint). Name the paper
+                # by title in the description column so the hint is
+                # checkable at a glance without a follow-up call.
+                top_title = (
+                    title_md(hits[0][1].title) if hits[0][1].title else "(untitled)"
+                )
+                if len(top_title) > 60:
+                    top_title = top_title[:57] + "..."
                 nav.append(
                     (
-                        f"search(kind='{kind}', q={q!r}{context_suffix}, "
-                        f"page_size={restart_n}, page=1)",
-                        more_desc,
+                        f"search(kind='{kind}', q={q!r}, scope='{top_handle}')",
+                        f"narrow to blocks inside {top_handle} ({top_title})",
                     )
                 )
-            else:
-                # scope by the top hit's paper record handle.
-                top_handle = (
-                    handle_registry.format_handle("paper", hits[0][1].id)
-                    if hits
-                    else None
-                )
-
-                # Pagination continuation: bump page=N. page= is the
-                # canonical pagination knob; exclude= is a hand-skip
-                # filter for known-irrelevant refs (kept available via
-                # the arg but no longer the recommended next-step
-                # because it bloats the call with a slug list).
-                if paper_rows or broad:
-                    show_next_page = result.broad_has_more
-                elif total is not None:
-                    show_next_page = total > result.page_size * result.page
-                else:
-                    show_next_page = result.single_page_has_more
-                if show_next_page:
-                    if paper_rows:
-                        next_desc = (
-                            f"see the next {result.page_size} of "
-                            f"{result.paper_total} papers"
-                            if result.paper_total is not None
-                            else f"see the next {result.page_size} papers"
-                        )
-                    elif broad:
-                        next_desc = (
-                            "see the next fused page (keep the same "
-                            "queries=/answers= or the ordering shifts)"
-                        )
-                    elif total is not None:
-                        next_desc = f"see the next {result.page_size} of {total} hits"
-                    else:
-                        next_desc = f"see the next {result.page_size} hits"
-                    nav.append(
-                        (
-                            f"search(kind='{kind}', q={q!r}{context_suffix}, "
-                            f"page_size={result.page_size}, page={result.page + 1})",
-                            next_desc,
-                        )
-                    )
-
-                if result.scope is None and top_handle is not None:
-                    # ``top_handle`` (pa<id>) is a real, resolvable
-                    # handle — but the results table above only ever
-                    # prints chunk handles (``pc<id>``); nothing on the
-                    # page lets the reader confirm what paper it names
-                    # (same defect class as the fixed pc<id>+1..3 gripe
-                    # — a correct-but-unverifiable hint). Name the paper
-                    # by title in the description column so the hint is
-                    # checkable at a glance without a follow-up call.
-                    top_title = (
-                        title_md(hits[0][1].title) if hits[0][1].title else "(untitled)"
-                    )
-                    if len(top_title) > 60:
-                        top_title = top_title[:57] + "..."
-                    nav.append(
-                        (
-                            f"search(kind='{kind}', q={q!r}, scope='{top_handle}')",
-                            f"narrow to blocks inside {top_handle} ({top_title})",
-                        )
-                    )
-                if paper_rows:
-                    # The drill door: paper rows collapse every hit behind
-                    # a ``+N`` counter — offer the per-chunk view so a
-                    # caller who wanted per-passage granularity isn't
-                    # stuck on the summary shape. ``unique_per`` is echoed
-                    # last (it isn't part of ``context_suffix`` when the
-                    # caller never set it).
-                    nav.append(
-                        (
-                            f"search(kind='{kind}', q={q!r}"
-                            f"{context_suffix_no_up}, unique_per='chunk')",
-                            "see every matching chunk, one row per hit",
-                        )
-                    )
-                # Round-2 picky F-9, 2026-05-30: previous wording was
-                # ``q={q!r} + ' <salient term>'`` — Python-flavoured
-                # pseudo-code that a literal-paste agent would send as
-                # the verbatim string ``'cells' + ' <salient term>'``.
-                # Spell the placeholder in pure-string form instead.
+            if paper_rows:
+                # The drill door: paper rows collapse every hit behind
+                # a ``+N`` counter — offer the per-chunk view so a
+                # caller who wanted per-passage granularity isn't
+                # stuck on the summary shape. ``unique_per`` rides
+                # the hint itself, not ``context_suffix``.
                 nav.append(
                     (
-                        f"search(kind='{kind}', q='{q} <salient term>')",
-                        "tighten the query with a hit-specific token "
-                        "(replace <salient term> with one)",
+                        f"search(kind='{kind}', q={q!r}"
+                        f"{context_suffix}, unique_per='chunk')",
+                        "see every matching chunk, one row per hit",
                     )
                 )
-                # Discoverability: teach the broad / high-recall path
-                # from a plain search. Only when this *was* a simple
-                # call (no queries=/answers=/per_paper=), so broad-mode
-                # callers aren't nagged. Full mechanics in the skill.
-                if (
-                    not result.extra_queries
-                    and not result.hyde_answers
-                    and result.per_paper_cap is None
-                ):
-                    nav.append(
-                        (
-                            "get(kind='skill', id='precis-search-help')",
-                            "broaden recall: fuse rephrasings + "
-                            "hypothetical answers (queries=/answers=)"
-                            + (
-                                ""
-                                if paper_rows
-                                else " and spread across papers (per_paper=)"
-                            ),
-                        )
+            # Round-2 picky F-9, 2026-05-30: previous wording was
+            # ``q={q!r} + ' <salient term>'`` — Python-flavoured
+            # pseudo-code that a literal-paste agent would send as
+            # the verbatim string ``'cells' + ' <salient term>'``.
+            # Spell the placeholder in pure-string form instead.
+            nav.append(
+                (
+                    f"search(kind='{kind}', q='{q} <salient term>')",
+                    "tighten the query with a hit-specific token "
+                    "(replace <salient term> with one)",
+                )
+            )
+            # Discoverability: teach the broad / high-recall path
+            # from a plain search. Only when this *was* a simple
+            # call (no queries=/answers=/per_paper=), so broad-mode
+            # callers aren't nagged. Full mechanics in the skill.
+            if (
+                not result.extra_queries
+                and not result.hyde_answers
+                and result.per_paper_cap is None
+            ):
+                nav.append(
+                    (
+                        "get(kind='skill', id='precis-search-help')",
+                        "broaden recall: fuse rephrasings + "
+                        "hypothetical answers (queries=/answers=)"
+                        + (
+                            ""
+                            if paper_rows
+                            else " and spread across papers (per_paper=)"
+                        ),
                     )
+                )
 
         # Render the trailer whenever any nav item was collected. This
         # sits at function scope on purpose: it used to be nested inside
         # the ``len(hits) != 1`` branch, which silently dropped the
-        # singleton-hit widen hint (and the "read the full text" hint
-        # for fully-shown result sets) — a single ``Next:`` trailer for
-        # the whole response, per the ordering documented above.
+        # singleton-hit hint (and the "read the full text" hint for
+        # fully-shown result sets) — a single ``Next:`` trailer for the
+        # whole response, per the ordering documented above.
         if nav:
             body += render_next_section(nav)
 
