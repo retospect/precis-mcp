@@ -18,6 +18,7 @@ registration that resolved their gripe by up to 24 h).
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, NamedTuple
@@ -98,16 +99,30 @@ def _rows() -> dict[str, Recipe]:
     return rows
 
 
+def _covered_key(sources: Collection[str], source: str) -> str | None:
+    if source in sources:
+        return source
+    base = source.removesuffix(":local")
+    if base in sources:
+        return base
+    prefixes = [key for key in sources if key.endswith(":") and base.startswith(key)]
+    return max(prefixes, key=len) if prefixes else None
+
+
 def lookup(source: str) -> Recipe | None:
     """Exact, one trailing :local inheritance, then longest prefix family."""
     rows = _rows()
-    if source in rows:
-        return rows[source]
-    base = source.removesuffix(":local")
-    if base in rows:
-        return rows[base]
-    prefixes = [key for key in rows if key.endswith(":") and base.startswith(key)]
-    return rows[max(prefixes, key=len)] if prefixes else None
+    key = _covered_key(rows, source)
+    return rows[key] if key is not None else None
+
+
+def covers(recipe_sources: Collection[str], source: str) -> bool:
+    """True when ``recipe_sources`` — a ``task_recipes.source`` set — covers
+    ``source`` under :func:`lookup`'s rules (exact, ``:local`` base, longest
+    ``:``-terminated prefix family). Lets a pass that already holds a store
+    check coverage against the table it just read, instead of the ambient
+    process-bound cache :func:`_rows` serves the router's hot path."""
+    return _covered_key(recipe_sources, source) is not None
 
 
 def resolve(

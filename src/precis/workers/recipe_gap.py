@@ -18,6 +18,14 @@ def run_recipe_gap(store: Store) -> int:
     resolved the stale rows would refile it the next UTC day (gr572095 — the
     ``axis:`` family row covers ``axis:role``; rows logged before the
     registration still match the scan's filter).
+
+    Coverage reads ``task_recipes`` through ``store`` — the database under
+    audit — not through ``recipes.lookup``'s process-bound ``route_log``
+    store (gr627589): an unbound or differently-bound ambient store, or a
+    transient recipe-load failure that lands the empty-cache arm, made a
+    recipe-covered source look unregistered and refiled resolved gripes.
+    A coverage-read failure now fails the pass — retried on the next fire —
+    instead of minting false gaps.
     """
     from precis.store.types import ChunkInsert, Tag
     from precis.utils.dispatch_score import SCORE_META_KEY
@@ -30,9 +38,12 @@ def run_recipe_gap(store: Store) -> int:
             "WHERE ts > now() - interval '24 hours' "
             "AND starts_with(features->>'task_kind', 'unknown.')"
         ).fetchall()
+        covered = {
+            row[0] for row in conn.execute("SELECT source FROM task_recipes").fetchall()
+        }
     filed = 0
     for (source,) in sources:
-        if recipes.lookup(source) is not None:
+        if recipes.covers(covered, source):
             continue
         fingerprint = f"recipe-gap:{source or '(empty)'}"
         with store.tx() as conn:

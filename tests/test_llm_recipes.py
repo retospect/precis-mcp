@@ -249,9 +249,8 @@ def test_requirement_judge_listed(
 @pytest.mark.parametrize("existing,expected", [(None, 1), ((1,), 0)])
 def test_recipe_gap(existing: tuple[int] | None, expected: int) -> None:
     store = MagicMock()
-    store.pool.connection.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = [
-        ("missing",)
-    ]
+    conn = store.pool.connection.return_value.__enter__.return_value
+    conn.execute.return_value.fetchall.side_effect = [[("missing",)], []]
     conn = store.tx.return_value.__enter__.return_value
     conn.execute.return_value.fetchone.return_value = existing
     store.insert_ref.return_value.id = 42
@@ -264,17 +263,32 @@ def test_recipe_gap(existing: tuple[int] | None, expected: int) -> None:
         }
 
 
-def test_recipe_gap_skips_recipe_covered_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """gr572095: a live recipe covers the source — stale ``unknown.`` rows in
-    the 24 h window must not refile the gripe after it is resolved."""
+def test_covers_source_set() -> None:
+    """gr627589: the gap scan's coverage check resolves an explicit
+    ``task_recipes.source`` set — ``lookup``'s exact / ``:local`` /
+    prefix-family rules with no ambient store binding."""
+    sources = {"axis:", "review:", "review:deep:", "llm_summarize"}
+    assert recipes.covers(sources, "axis:dim")
+    assert recipes.covers(sources, "axis:dim:local")
+    assert recipes.covers(sources, "review:fable")
+    assert recipes.covers(sources, "review:deep:fable")
+    assert recipes.covers(sources, "llm_summarize")
+    assert recipes.covers(sources, "llm_summarize:local")
+    assert not recipes.covers(sources, "paper_glossary")
+    assert not recipes.covers(sources, "")
+
+
+def test_recipe_gap_skips_recipe_covered_source() -> None:
+    """gr572095 + gr627589: a live recipe covers the source — stale
+    ``unknown.`` rows in the 24 h window must not refile the gripe after it
+    is resolved, and the coverage check reads the audited ``store`` (its
+    ``task_recipes`` table), not the process-bound ``route_log`` store."""
     store = MagicMock()
-    store.pool.connection.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = [
-        ("axis:role",)
+    conn = store.pool.connection.return_value.__enter__.return_value
+    conn.execute.return_value.fetchall.side_effect = [
+        [("axis:role",)],
+        [("axis:",)],
     ]
-    rows = {"axis:": Recipe("axis:", "chunk.classify", consequence="low")}
-    monkeypatch.setattr(recipes, "_rows", lambda: rows)
     assert run_recipe_gap(cast(Store, store)) == 0
     store.insert_ref.assert_not_called()
 
@@ -477,11 +491,11 @@ def test_gap_daily_and_open_dedupe(store: Store) -> None:
 
 
 @pytest.mark.db
-def test_gap_skips_recipe_covered_source(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gr572095: with the ``axis:`` family row live, ``axis:role`` resolves —
-    the stale ``unknown.axis:role`` row must not file a gripe."""
+def test_gap_skips_recipe_covered_source(store: Store) -> None:
+    """gr572095 + gr627589: with the ``axis:`` family row live, ``axis:role``
+    resolves — the stale ``unknown.axis:role`` row must not file a gripe,
+    and the coverage check needs no ``route_log`` binding: it reads
+    ``task_recipes`` through the audited ``store`` itself."""
     with store.pool.connection() as conn:
         conn.execute("DELETE FROM llm_call_log")
         conn.execute(
@@ -494,7 +508,6 @@ def test_gap_skips_recipe_covered_source(
             "ON CONFLICT (source) DO NOTHING"
         )
         conn.commit()
-    monkeypatch.setattr(route_log, "bound_store", lambda: store)
     assert run_recipe_gap(store) == 0
 
 
