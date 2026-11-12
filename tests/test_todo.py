@@ -325,6 +325,99 @@ def test_edit_meta_rejects_shapes_other_than_llm_tier_none(
         handler.edit(id=tid, meta={"rotation_root": True})
 
 
+def test_dispatch_edit_meta_llm_tier_none_parks(
+    handler: TodoHandler, runtime_with_store: PrecisRuntime
+) -> None:
+    """gr639083: the create-ack's advertised park call works over the
+    dispatch door — ``edit(kind='todo', id=N, meta={'llm_tier': None})``
+    must reach ``TodoHandler.edit`` through the extras flatten and the
+    mode gate, not bounce off either."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+    assert root.ref_id == root_id
+    leaf = handler.put(text="Write the first paper.", parent_id=root_id)
+    leaf_id = leaf.ref_id
+    assert leaf_id is not None
+
+    out = runtime_with_store.dispatch(
+        "edit", {"kind": "todo", "id": leaf_id, "meta": {"llm_tier": None}}
+    )
+
+    assert "[error:" not in out
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None and "llm_tier" not in ref.meta
+
+
+# ── tag: meta={'llm_tier': None} clears the tier (gr639083) ──────────
+
+
+def test_tag_meta_llm_tier_none_unsets_it(handler: TodoHandler) -> None:
+    """gr639083: ``tag(meta={'llm_tier': None})`` is the same park the
+    put-side opt-out spells — it must DELETE the key (a merged JSON
+    ``null`` still satisfies dispatch's ``meta ? 'llm_tier'`` existence
+    check), not refuse ``None`` as an unknown tier."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+    assert root.ref_id == root_id
+    leaf = handler.put(text="Write the first paper.", parent_id=root_id)
+    leaf_id = leaf.ref_id
+    assert leaf_id is not None
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None and ref.meta.get("llm_tier") == "opus"
+
+    r = handler.tag(id=leaf_id, meta={"llm_tier": None})
+
+    assert "llm_tier" in r.body
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None and "llm_tier" not in ref.meta
+
+
+def test_tag_meta_llm_tier_none_clears_alongside_other_keys(
+    handler: TodoHandler,
+) -> None:
+    """The None-clear composes with other promotable keys in one call:
+    ``llm_tier`` is deleted, the rest still merge via stamp_ref_meta."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+    assert root.ref_id == root_id
+    leaf = handler.put(text="Write the first paper.", parent_id=root_id)
+    leaf_id = leaf.ref_id
+    assert leaf_id is not None
+
+    handler.tag(id=leaf_id, meta={"llm_tier": None, "budget_usd": 2.0})
+
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None
+    assert "llm_tier" not in ref.meta
+    assert ref.meta.get("budget_usd") == 2.0
+
+
+def test_tag_meta_llm_tier_none_noop_on_unstamped(handler: TodoHandler) -> None:
+    """Parking a leaf that never carried the key is a no-op, not an
+    error — same idempotent contract as the edit-side park."""
+    handler.put(text="a plain leaf")
+    tid = _latest_todo_id(handler)
+    r = handler.tag(id=tid, meta={"llm_tier": None})
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None and "llm_tier" not in ref.meta
+    assert "llm_tier" in r.body
+
+
+def test_tag_meta_llm_tier_still_validates_values(
+    handler: TodoHandler,
+) -> None:
+    """None is the only non-vocab value tag() takes — a typo'd tier
+    still refuses at write time."""
+    handler.put(text="a leaf")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="unknown tier"):
+        handler.tag(id=tid, meta={"llm_tier": "opos"})
+    r = handler.tag(id=tid, meta={"llm_tier": "sonnet"})
+    ref = handler.store.get_ref(kind="todo", id=tid)
+    assert ref is not None and ref.meta.get("llm_tier") == "sonnet"
+    assert "llm_tier" in r.body or "meta=" in r.body
+
+
 # ── edit: meta={'params': ...} retunes a recurring in place (gr504853) ──
 
 

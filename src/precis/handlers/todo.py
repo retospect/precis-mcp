@@ -2450,6 +2450,17 @@ class TodoHandler(NumericRefHandler):
         meta = guards.normalize_tier_meta(meta)
         guards.check_meta_keys_promotable(meta)
         guards.check_facets_on_tag(meta)
+        # ``meta={'llm_tier': None}`` parks the leaf — the same opt-out
+        # convention ``put()``'s create and ``edit()``'s meta door
+        # already honour (gr639083). It must DELETE the key below, not
+        # merge a JSON ``null`` through ``stamp_ref_meta``: dispatch's
+        # ``meta ? 'llm_tier'`` existence check reads presence only, so
+        # a stored null would still mint plan_ticks.
+        clear_llm_tier = (
+            isinstance(meta, dict) and "llm_tier" in meta and meta["llm_tier"] is None
+        )
+        if clear_llm_tier and meta is not None:
+            meta = {k: v for k, v in meta.items() if k != "llm_tier"}
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
@@ -2507,7 +2518,21 @@ class TodoHandler(NumericRefHandler):
                             "backfill_missed": parsed.backfill_missed,
                         }
             self.store.stamp_ref_meta(ref_id, meta_out)
-        if not add and not remove and (prio is not None or clear_prio or meta):
+        if clear_llm_tier:
+            # A real JSONB key deletion — ``stamp_ref_meta``'s
+            # ``meta ||`` merge cannot express it (the edit-side park
+            # runs the same statement, gr439934).
+            with self.store.tx() as conn:
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'llm_tier', "
+                    "updated_at = now() WHERE ref_id = %s",
+                    (ref_id,),
+                )
+        if (
+            not add
+            and not remove
+            and (prio is not None or clear_prio or meta or clear_llm_tier)
+        ):
             # Only a PRIO / meta write happened; the base handler would
             # reject an empty ``tag`` call. A bare clear renders as
             # "cleared", not the misreadable "prio=None".
@@ -2515,8 +2540,12 @@ class TodoHandler(NumericRefHandler):
                 suffix = f"prio={prio_display(prio)}"
             elif clear_prio:
                 suffix = "prio=cleared (back to the default)"
-            else:
+            elif meta:
                 suffix = f"meta={meta}"
+            else:
+                suffix = ""
+            if clear_llm_tier:
+                suffix += ("; " if suffix else "") + ("meta.llm_tier=cleared (parked)")
             # The prio/meta writes above committed on their own
             # connections; the gr504803 audit row lands right after them.
             self._record_tag_reason(ref_id, reason)
