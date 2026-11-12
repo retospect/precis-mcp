@@ -37,7 +37,7 @@ brief, who builds it, where the builder stopped, the review verdict, the
 landed sha — lives on one **code todo** per accepted gripe under the
 `Code work from gripes` root (`td559473`), linked `fixes` to the gripe.
 A second coordinator (or the same one after a crash) resumes from the
-todo tree alone — phase 1 of `docs/backlog/gripe-todo-unify.md`.
+todo tree alone — phase 1 of the gripe-todo-unify backlog spec.
 
 Loop state the old wave kept on the gripe (`batch:` tags, the
 `gripe_brief`/`gripe_handoff`/`gripe_review` chunks, `meta.fix.*`) is

@@ -36,7 +36,7 @@ in one call. The hand recipe below is for work that fits neither.
 ```python
 put(kind="todo", mode="plan", args={"template": "gripe-fix", "gripe_id": 570506})
 put(kind="todo", mode="plan",
-    args={"template": "spec-build", "section": "docs/backlog/<slug>.md~<Heading>"})
+    args={"template": "spec-build", "section": "<spec path>.md~<Heading>"})
 ```
 
 ## The plan shape — the hand recipe
