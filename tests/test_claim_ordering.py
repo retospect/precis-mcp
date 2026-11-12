@@ -38,7 +38,10 @@ from typing import Any
 
 from precis.store import Store
 from precis.store.types import Tag
-from precis.workers.executors._common import claim_executor_jobs
+from precis.workers.executors._common import (
+    _MAX_RUNNING_DEFAULTS,
+    claim_executor_jobs,
+)
 
 
 def _queue_job(
@@ -193,10 +196,11 @@ def test_release_leg_claims_ahead_of_background_backlog(store: Store) -> None:
     )
     order = _claim_order(store, ex, reserve_host_id="h1")
     assert order[0] == poll
-    # ``derived_drain``'s code-shipped running cap (default 2) lets only
-    # two drains claim per call — the backlog's internal order is
-    # unchanged (queued_since FIFO).
-    assert order[1:] == drains[:2]
+    # ``derived_drain``'s code-shipped running cap bounds how many drains
+    # claim per call — the backlog's internal order is unchanged
+    # (queued_since FIFO).
+    cap = _MAX_RUNNING_DEFAULTS["derived_drain"]
+    assert order[1:] == drains[:cap]
 
 
 def test_release_leg_never_outranks_recurring(store: Store) -> None:

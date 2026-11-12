@@ -555,7 +555,7 @@ def test_drain_cap_leaves_a_lane_free_of_the_deployed_drain_lanes() -> None:
     )
     match = re.search(
         r"^\s*precis_worker_drain_lanes:\s*(\d+)\s*$",
-        playbook.read_text(),
+        playbook.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
     assert match, "precis_worker_drain_lanes default not found in 20d playbook"
