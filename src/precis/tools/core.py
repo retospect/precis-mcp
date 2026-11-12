@@ -2150,19 +2150,17 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    put(kind='gripe'|'todo', id=N, text=...) appends a comment to an existing
-    one. The todo append accepts only `text=`/`tags=`/`untags=` — link edits
-    on an existing todo stay on the `link` verb; the gripe append also takes
-    `link=`/`unlink=`/`rel=` in the same transaction. Omit `id=` to mint a
-    new ref — required fields are per kind (precis-put-help). `mode=`: file
-    kinds use 'create'; paid-import kinds use 'import'; numeric-ref kinds
-    omit it. `text=`/`body=` alias on a kind with a single prose field
-    (finding says `body=`; both at once errors there); `todo` declares
-    both — `text=` the title, `body=` the details — and takes either or
+    put(kind='gripe'|'todo', id=N, text=...) appends a comment — todo takes
+    only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
+    takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
+    fields are per kind (precis-put-help). `mode=`: file kinds 'create';
+    paid-import kinds 'import'; numeric-ref kinds omit it. `text=`/`body=`
+    alias a kind's single prose field (finding says `body=`; both at once
+    errors); `todo` declares both — `text=` title, `body=` details, either or
     both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
     `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
     `text={'$ref': '<handle>'}` = that handle's body (needs a same-session
-    `get` of it).
+    `get`).
 
     Full reference: get(kind='skill', id='precis-put-help').
     """

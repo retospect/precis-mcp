@@ -49,6 +49,9 @@ _EXEMPT: set[str] = {
     "tests/test_boundary_probe.py",
     # Names "scripts/ship" as a hard-stop path operand; the real exec is git.
     "tests/test_red_waiver.py",
+    # Names "scripts/ship" only in text (deny paths, brief bodies); its
+    # subprocess import is a fake _git returning CompletedProcess — no exec.
+    "tests/test_plan_dispatch.py",
 }
 
 #: Stdlib modules that do not exist on Windows — importing one at module
