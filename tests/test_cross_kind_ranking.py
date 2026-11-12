@@ -64,7 +64,7 @@ def test_exact_title_hit_ranks_first_in_cross_kind_search(
     monkeypatch.setattr(
         type(rt),
         "_cross_kind_fan_out",
-        lambda self, kinds, kw, *_o: {big: semantic, small: lexical},
+        lambda self, kinds, kw, *_o, **_kw: {big: semantic, small: lexical},
     )
     monkeypatch.setattr(
         type(rt), "_resolve_cross_kind_request", lambda self, kind: [big, small]

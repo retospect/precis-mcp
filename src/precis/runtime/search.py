@@ -230,12 +230,16 @@ CROSS_KIND_MIN_START_MS = 1_500
 #: Kinds whose source-search hits are addressed by the parent ref handle (gr),
 #: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
 _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
-#: Wall-clock budget for the whole fan-out, not per kind. Sized so the
-#: whole ``search/-`` call stays inside the 15 s tool-call latency
-#: budget (``health_checks.TOOL_LATENCY_BUDGET_MS``) with headroom for
-#: the once-per-call query embed and the merge/render tail — the old
-#: 30 s deadline could never fit it (gr628278: search/- p50 measured
-#: 17.5 s on 2026-11-10, kinds still cancelling past the budget).
+#: Wall-clock budget for the ANN route probe plus the whole fan-out,
+#: not per kind. Sized so the whole ``search/-`` call stays inside the
+#: 15 s tool-call latency budget (``health_checks.TOOL_LATENCY_BUDGET_MS``)
+#: with headroom for the once-per-call query embed and the merge/render
+#: tail — the old 30 s deadline could never fit it (gr628278: search/-
+#: p50 measured 17.5 s on 2026-11-10, kinds still cancelling past the
+#: budget). td649559: the probe draws from this same deadline — its
+#: pool checkout and gate read used to run before the fan-out's clock
+#: started, so pool contention or a stalled probe could spend the
+#: budget before the first kind was even submitted.
 CROSS_KIND_DEADLINE_S = 12.0
 #: Per-kind server-side statement cap inside the fan-out (gr519679).
 #: Without it one kind's runaway query (a global-route ANN scan over the
@@ -2744,7 +2748,12 @@ class SearchMixin(RuntimeShape):
         # errored footer anyway. Skip that leg up front: the kind still
         # contributes its lexical hits, the footer below names the skip,
         # and an explicit kind list keeps the full legs (caller intent).
+        # td649559: the probe and the fan-out share one call deadline —
+        # the probe's pool checkout and gate read draw from the same
+        # budget (its statement timeout is the remaining budget) instead
+        # of running unbounded before the fan-out's clock starts.
         route_skipped: list[str] = []
+        deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
         if (
             not mock_leg_skipped
             and "query_vec" in base_kwargs
@@ -2752,7 +2761,7 @@ class SearchMixin(RuntimeShape):
             and default_expansion
             and self.hub.store is not None
         ):
-            route_skipped = self._cross_kind_slow_semantic_kinds(kinds)
+            route_skipped = self._cross_kind_slow_semantic_kinds(kinds, deadline_at)
         kind_overrides = (
             {k: {"mode": "lexical"} for k in route_skipped} if route_skipped else None
         )
@@ -2760,7 +2769,9 @@ class SearchMixin(RuntimeShape):
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
         errored: dict[str, Exception] = {}
-        fanned = self._cross_kind_fan_out(kinds, base_kwargs, kind_overrides)
+        fanned = self._cross_kind_fan_out(
+            kinds, base_kwargs, kind_overrides, deadline_at=deadline_at
+        )
         for k in kinds:
             if k not in fanned:
                 per_kind_counts.append((k, 0))
@@ -3205,7 +3216,9 @@ class SearchMixin(RuntimeShape):
         label = f"{ref.title!r} (folder:{ref.id})"
         return store.folder_subtree_ids(ref.id), label
 
-    def _cross_kind_slow_semantic_kinds(self, kinds: list[str]) -> list[str]:
+    def _cross_kind_slow_semantic_kinds(
+        self, kinds: list[str], deadline_at: float
+    ) -> list[str]:
         """Fanned kinds whose semantic leg cannot fit the per-kind budget.
 
         A kind in ``_ANN_PARTIAL_KINDS`` whose partial index is missing,
@@ -3217,7 +3230,14 @@ class SearchMixin(RuntimeShape):
         kind's lexical hits in the merge instead of paying a worker for
         a guaranteed cancel. One probe covers every kind:
         :func:`ann_route_plan`'s gate read is cached per database.
-        Fails open to ``[]`` — a probe error keeps the old
+
+        td649559: the probe shares ``deadline_at`` with the fan-out.
+        The pool checkout waits at most the remaining budget and the
+        probe's statements run under a transaction-local
+        ``statement_timeout`` of the remaining budget, so pool
+        contention or a stalled gate read cannot push the call past the
+        tool latency budget before the fan-out begins. Fails open to
+        ``[]`` — an exhausted budget or probe error keeps the old
         cancel-at-the-cap path rather than refusing a whole search.
         """
         from precis.store._chunks_ops import _ANN_GLOBAL_KINDS, ann_route_plan
@@ -3225,15 +3245,25 @@ class SearchMixin(RuntimeShape):
         store = self.hub.store
         if store is None:
             return []
+        remaining_s = deadline_at - time.monotonic()
+        if remaining_s <= 0:
+            return []
         try:
-            with store.pool.connection() as conn:
-                return [
-                    k
-                    for k in kinds
-                    if (plan := ann_route_plan(conn, k, None))["route"] == "global"
-                    and plan["kind"] is not None
-                    and plan["kind"] not in _ANN_GLOBAL_KINDS
-                ]
+            with store.pool.connection(timeout=remaining_s) as conn:
+                with conn.transaction():
+                    # Transaction-local, so the capped setting cannot
+                    # leak to the next checkout of this pooled connection.
+                    conn.execute(
+                        "SELECT set_config('statement_timeout', %s, true)",
+                        (str(int(remaining_s * 1000)),),
+                    )
+                    return [
+                        k
+                        for k in kinds
+                        if (plan := ann_route_plan(conn, k, None))["route"] == "global"
+                        and plan["kind"] is not None
+                        and plan["kind"] not in _ANN_GLOBAL_KINDS
+                    ]
         except Exception:
             log.exception("cross-kind ANN route probe failed; full fan-out kept")
             return []
@@ -3243,6 +3273,8 @@ class SearchMixin(RuntimeShape):
         kinds: list[str],
         base_kwargs: dict[str, Any],
         kind_overrides: dict[str, dict[str, Any]] | None = None,
+        *,
+        deadline_at: float | None = None,
     ) -> dict[str, list[SearchHit] | Exception]:
         """Run every kind's ``search_hits`` on at most
         :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
@@ -3261,6 +3293,11 @@ class SearchMixin(RuntimeShape):
         ``kind_overrides`` maps a kind to ``search_hits`` kwargs merged
         over ``base_kwargs`` — the wildcard fan-out uses it to run a
         predictably-slow kind lexical-only (gr628278).
+
+        ``deadline_at`` defaults to ``now + CROSS_KIND_DEADLINE_S``;
+        :meth:`_dispatch_cross_kind` passes the deadline its ANN route
+        probe already drew from, so probe and fan-out together fit the
+        one budget (td649559).
         """
         from concurrent.futures import wait
 
@@ -3270,6 +3307,8 @@ class SearchMixin(RuntimeShape):
         out: dict[str, list[SearchHit] | Exception] = {}
         if not jobs:
             return out
+        if deadline_at is None:
+            deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
 
         def run(handler: Handler, k: str) -> list[SearchHit] | Exception:
             # A worker must not share a pinned (atomic-scope) connection.
@@ -3294,12 +3333,11 @@ class SearchMixin(RuntimeShape):
             )
             return self._cross_kind_invoke_search_hits(handler, k, kw)
 
-        deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
         pool = _cross_kind_executor()
         futures = {
             k: pool.submit(contextvars.copy_context().run, run, h, k) for k, h in jobs
         }
-        wait(futures.values(), timeout=CROSS_KIND_DEADLINE_S)
+        wait(futures.values(), timeout=max(0.0, deadline_at - time.monotonic()))
         for k, fut in futures.items():
             if fut.done():
                 try:

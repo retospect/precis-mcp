@@ -187,7 +187,7 @@ def test_pin_does_not_mask_total_fanout_failure(
     monkeypatch.setattr(
         runtime_with_store,
         "_cross_kind_fan_out",
-        lambda kinds, kw, *_o: {k: Internal("boom") for k in kinds},
+        lambda kinds, kw, *_o, **_kw: {k: Internal("boom") for k in kinds},
     )
     body = runtime_with_store.dispatch("search", {"q": f"me{rid}"})
     assert "[error" in body
