@@ -918,6 +918,34 @@ def _seed_acquiring_finding(
     return fid, awaits[0].dst_ref_id
 
 
+def _resume_dead_acquiring(store, fid: int) -> None:
+    """Simulate the documented manual resume of an ``unacquirable``
+    finding — ``tag(kind='finding', …, add=['STATUS:acquiring'])``
+    (precis-user-queue-help) — and re-age the chase history so the next
+    pass's grace check can fire again. A ``dead_chain`` finding is never
+    re-claimed on its own (the claim's dead-revive branch covers only
+    ``abandoned_waiting``), so re-reaching the give-up takes this path.
+    The previous give-up wrote a non-``waiting`` ``dead`` event ~now,
+    and the next give-up needs a waiting run that is *newer* than that
+    boundary yet already older than the grace window — backdating the
+    whole history leaves room for the fresh run."""
+    with store.pool.connection() as conn:
+        store.add_tag(
+            fid,
+            Tag.closed("STATUS", "acquiring"),
+            set_by="agent",
+            replace_prefix=True,
+            conn=conn,
+        )
+        conn.execute(
+            "UPDATE ref_events SET ts = ts - INTERVAL '30 days' "
+            "WHERE ref_id = %s AND source = 'chase'",
+            (fid,),
+        )
+        conn.commit()
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+
+
 def test_acquiring_finding_claimed_but_stays_acquiring_while_stub_bare(store) -> None:
     """AC #3 (part 1): an acquiring finding IS claimed by
     run_finding_chase_pass (the widened claim query), but with a
@@ -1081,16 +1109,96 @@ def test_acquiring_give_up_files_want_paper_todo(store) -> None:
     assert fid in linked
     assert stub_id in linked
 
-    # A later pass claims nothing (dead_chain findings leave the pool),
-    # and the defensive guard keeps the ask a singleton even if the
-    # finding were ever re-advanced into a second give-up.
+    # A dead_chain finding leaves the claim pool on its own — the next
+    # pass claims nothing.
     result2 = run_finding_chase_pass(store, limit=10)
     assert result2 == {"claimed": 0, "ok": 0, "failed": 0}
+
+    # Re-reaching the give-up takes the manual resume
+    # (precis-user-queue-help). When the finding dead-chains a second
+    # time the still-OPEN ask suppresses the mint — the guard keeps the
+    # ask a singleton.
+    _resume_dead_acquiring(store, fid)
+    result3 = run_finding_chase_pass(store, limit=10)
+    assert result3 == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
     with store.pool.connection() as conn:
         count = conn.execute(
             "SELECT count(*) FROM refs WHERE kind = 'todo' AND retired_at IS NULL"
         ).fetchone()[0]
     assert count == 1
+
+
+def test_acquiring_regive_up_refiles_want_paper_once_prior_ask_closed(
+    store,
+) -> None:
+    """The duplicate guard counts only OPEN asks. A want-paper todo the
+    owner answered (``STATUS:done`` — it keeps the ``want-paper`` tag as
+    history, per the queue convention) must not suppress the renewed
+    ask when the manually-resumed finding gives up again."""
+    fid, stub_id = _seed_acquiring_finding(store, wants=[{"doi": "10.1/acq-wp2"}])
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.commit()
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+
+    run_finding_chase_pass(store, limit=10)
+    assert _status_tag(store, fid) == "dead_chain"
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'want-paper'
+            """
+        ).fetchall()
+    assert len(rows) == 1
+    first_todo_id = rows[0][0]
+
+    # The owner fetched the paper and closed the ask; the want-paper
+    # tag stays as history.
+    store.add_tag(
+        first_todo_id,
+        Tag.closed("STATUS", "done"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert _status_tag(store, first_todo_id) == "done"
+
+    # Manual resume → second give-up: the closed ask is history, not a
+    # live ask, so a fresh todo is minted.
+    _resume_dead_acquiring(store, fid)
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'want-paper'
+            """
+        ).fetchall()
+    assert len(rows) == 2
+    open_ids = [
+        rid
+        for rid, _meta in rows
+        if _status_tag(store, rid) == "open" and rid != first_todo_id
+    ]
+    assert len(open_ids) == 1
+    new_meta = next(m for rid, m in rows if rid == open_ids[0])
+    assert (new_meta or {}).get("finding_ref_id") == fid
 
 
 def test_acquiring_waits_within_grace_window_even_when_exhausted(store) -> None:

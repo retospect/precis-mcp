@@ -2285,10 +2285,15 @@ def _file_want_paper_todo(
     hand-fetch class) and ``waiting-for:<owner>`` (the park that keeps
     it out of factory dispatch; owner from
     :func:`precis.config.load_config`) — the convention documented in
-    ``precis-user-queue-help``. A defensive guard skips the mint when a
-    live ``want-paper`` todo for this finding already exists, so a
+    ``precis-user-queue-help``. A defensive guard skips the mint when an
+    OPEN ``want-paper`` todo for this finding already exists, so a
     finding re-advanced past a recorded death and dead-chained again
-    never doubles the ask.
+    never doubles the ask. The guard must filter on ``STATUS:open``:
+    a closed ask keeps its ``want-paper`` tag as history (the queue
+    convention drops only ``waiting-for:``/the status, never the class
+    tag), so counting every tagged todo would let an answered ask
+    suppress the renewed one after the finding is manually resumed
+    and gives up a second time.
     """
     existing = conn.execute(
         """
@@ -2298,8 +2303,14 @@ def _file_want_paper_todo(
          WHERE r.kind = 'todo' AND r.retired_at IS NULL
            AND t.namespace = 'OPEN' AND t.value = %s
            AND (r.meta->>'finding_ref_id')::int = %s
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags srt
+                   JOIN tags st ON st.tag_id = srt.tag_id
+                  WHERE srt.ref_id = r.ref_id
+                    AND st.namespace = %s AND st.value = 'open'
+               )
         """,
-        (_WANT_PAPER_TAG, finding.ref_id),
+        (_WANT_PAPER_TAG, finding.ref_id, _STATUS_NAMESPACE),
     ).fetchone()
     if existing is not None:
         return

@@ -97,8 +97,23 @@ linked to the finding and its unacquired stubs (see
 `precis-finding-help`, acquisition mode). A session that spots a paper
 the owner wants by hand files the same shape: verb-first title naming
 the paper's best identifier (DOI / arXiv), the `want-paper` tag, the
-`waiting-for:<login>` park. Close it like any queue item once the PDF
-is ingested — the grounded finding resumes on its own.
+`waiting-for:<login>` park.
+
+Close it like any queue item once the PDF is ingested — then resume
+the finding by hand. A `dead_chain(reason=unacquirable)` is NOT
+revived by ingestion: the chase's auto-revive covers only
+`abandoned_waiting`, so an unacquirable finding stays dead until you
+flip it back to `acquiring` — it re-polls its `awaits-evidence`
+stubs and the now-ingested one grounds the claim on the next chase
+pass:
+
+```python
+tag(kind="finding", id=<finding_id>, add=["STATUS:acquiring"])
+```
+
+If the finding gives up a second time, the chase files a fresh
+`Fetch by hand:` ask — a closed want-paper todo keeps its tag as
+history but does not suppress the renewed one.
 
 ## Close an item once the person answered
 
