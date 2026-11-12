@@ -37,7 +37,12 @@ class Rig:
         shutil.copy2(_LIB, scripts / "lib" / "lock-holder.sh")
         gitcfg = tmp_path / "gitconfig"
         gitcfg.write_text(
-            "[user]\n\tname = T\n\temail = t@example.invalid\n",
+            "[user]\n\tname = T\n\temail = t@example.invalid\n"
+            # `git commit`/`stash` detach `git maintenance run --auto`,
+            # which reaps a gitdir-less `.git/worktrees/<n>` record and can
+            # hold gc.pid across tidy's own `git gc` — a background race
+            # inside the rig (gr647530). The rig opts out globally.
+            "[maintenance]\n\tauto = false\n",
             encoding="utf-8",
         )
         self.global_cfg = gitcfg
@@ -165,6 +170,10 @@ def test_apply_refuses_while_ship_lock_held(rig: Rig) -> None:
 def test_apply_refuses_per_worktree_ship_lock(rig: Rig) -> None:
     """The lock a ship holds for its whole run is the per-worktree one —
     a live holder in any worktree's gitdir refuses too."""
+    # A real linked worktree: the lock lives in a real worktree's gitdir
+    # anyway, and a fabricated `.git/worktrees/<n>` dir is a stale-looking
+    # record any `git worktree prune`/`gc` deletes on sight.
+    rig.g("worktree", "add", "-q", "--detach", "../wt1")
     rig.set_lock(
         rig.common() / "worktrees" / "wt1" / "precis-ship-worktree.lock.d",
         os.getpid(),
