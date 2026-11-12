@@ -10059,7 +10059,8 @@ def test_claude_p_quota_refusal_parks_notice_pool(
     monkeypatch.setattr("precis.budget.meter.active_store", Mock())
     monkeypatch.setattr(accounts, "record_pool_report", Mock())
     monkeypatch.setattr(accounts, "record_pool_failure", failure)
-    reset = datetime(2026, 11, 12, 11, 0, tzinfo=UTC)
+    # Relative to now: a past retry_at falls back to the two-hour estimate.
+    reset = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=3)
     router._harvest_pool_signals(
         _claude_p_refusal(f"account quota exhausted: {notice}", retry_at=reset),
         transport=Transport.CLAUDE_P,
