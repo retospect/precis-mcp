@@ -791,6 +791,10 @@ class MemoryHandler(NumericRefHandler):
     #: ``view='ids'``/``'list'`` are refused by ``_search_inner``, so the
     #: weak-match fold hint must name 'index' (gr538076).
     search_ids_view: ClassVar[str] = "index"
+    #: An overflowing queryless list names its ``section:`` groups
+    #: (threads/gotchas/runbooks/workflow/reference — gr639965): the one
+    #: axis every graph-memory node carries.
+    facet_axis: ClassVar[str | None] = "section"
     # get/tag/link take id=[...]; get is overridden below to render each memory in
     # full (memories are short — the point of batching them is to read them).
     batch_ids: ClassVar[bool] = True

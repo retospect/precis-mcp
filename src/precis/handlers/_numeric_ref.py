@@ -751,8 +751,18 @@ class NumericRefHandler(Handler):
     #: Open-tag axis (``'cluster'`` → ``cluster:*``) a queryless list that
     #: overflows its page summarises under the header — group counts over
     #: the whole filtered set plus a pasteable narrowing call
-    #: (:meth:`_facet_line`). ``None`` = no line.
+    #: (:meth:`_facet_line`). ``None`` = no line. Kinds whose natural
+    #: grouping lives in ``meta`` rather than a tag (job's ``job_type``)
+    #: set :attr:`facet_meta_key` instead; the two are mutually exclusive.
     facet_axis: ClassVar[str | None] = None
+
+    #: ``meta`` key a queryless overflowing list groups by instead of an
+    #: open-tag axis (:attr:`facet_axis`) — the facet line counts
+    #: ``meta ->> key`` values and its narrowing call rides
+    #: ``args={key: <value>}`` (gr639965: job's ``job_type`` never appears
+    #: as a tag, so a tag axis can't name its groups). ``None`` = the
+    #: meta axis is not used.
+    facet_meta_key: ClassVar[str | None] = None
 
     #: The single-id view that reads one ref completely — named on the
     #: batch footer's read-one hint (gr572710: gripe's bare get is the
@@ -2525,7 +2535,8 @@ class NumericRefHandler(Handler):
     ) -> str:
         """``clusters: a 12 · b 7 · … +3 groups (5) · (none) 40 — narrow: tags=[…, 'a']``.
 
-        Names the :attr:`facet_axis` groups of the *whole* filtered set,
+        Names the :attr:`facet_axis` groups (or the
+        :attr:`facet_meta_key` meta values) of the *whole* filtered set,
         biggest first, until they cover :data:`FACET_LINE_COVERAGE` of it
         or :data:`FACET_LINE_MAX_GROUPS` groups — the next narrowing call
         is one paste instead of a ``view='count'`` round trip. Empty when
@@ -2535,8 +2546,15 @@ class NumericRefHandler(Handler):
         count with the same WHERE as ``view='count'``, so the groups
         describe the ranked set rather than the tag set."""
         axis = self.facet_axis
-        if axis is None:
-            return ""
+        meta_key = self.facet_meta_key
+        if meta_key is not None:
+            facet: tuple[str, str] = ("meta", meta_key)
+            axis_label = meta_key
+        else:
+            if axis is None:
+                return ""
+            facet = ("open_axis", axis)
+            axis_label = axis
         total, groups = self.store.count_refs_facets(
             kind=self.kind,
             tags=tags,
@@ -2544,7 +2562,7 @@ class NumericRefHandler(Handler):
             q=q,
             q_in_chunks=self.search_body_chunks,
             q_card_kinds=self.search_card_kinds,
-            facets=[("open_axis", axis)],
+            facets=[facet],
             group_limit=_COUNT_GROUP_LIMIT,
             id_min=id_min,
             id_max=id_max,
@@ -2567,8 +2585,18 @@ class NumericRefHandler(Handler):
         if hidden:
             cells.append(f"… +{len(hidden)} groups ({sum(n for _name, n in hidden)})")
         if loose := sum(n for v, n, _span in groups if v[0] is None):
-            cells.append(f"(no {axis}) {loose}")
-        return f"{axis}s: {' · '.join(cells)} — narrow: tags={[*tags, named[0][0]]!r}"
+            cells.append(f"(no {axis_label}) {loose}")
+        if meta_key is not None:
+            # The narrowing door is args={key: value} (meta facets never
+            # ride tags=); a live tags= filter is carried so the pasted
+            # call reproduces this list's scope.
+            narrow = f"search(kind={self.kind!r}"
+            if tags:
+                narrow += f", tags={tags!r}"
+            narrow += f", args={{{meta_key!r}: {named[0][0]!r}}})"
+        else:
+            narrow = f"tags={[*tags, named[0][0]]!r}"
+        return f"{axis_label}s: {' · '.join(cells)} — narrow: {narrow}"
 
     def _list_row_marks(self, refs: list[Ref]) -> dict[int, str]:
         """Optional per-kind warning mark for a list/search row.

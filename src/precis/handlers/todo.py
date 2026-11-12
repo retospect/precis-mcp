@@ -562,6 +562,11 @@ class TodoHandler(NumericRefHandler):
     edit_id_list: ClassVar[str] = "native"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
+    #: An overflowing queryless list names its ``project:`` groups
+    #: (gr639965) — the cross-cutting workspace tag every ref minted
+    #: under a project carries (auto-injected in ``_create`` below).
+    facet_axis: ClassVar[str | None] = "project"
+
     # Mentions in the title/body (incl. bare C-numbers → part refs,
     # gr520243) materialise as ``related-to`` links on write — same
     # autolinker memory uses. ``_create``/``edit``/``_edit_anchored``

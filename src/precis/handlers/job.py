@@ -1055,6 +1055,11 @@ class JobHandler(NumericRefHandler):
     # — the generic part-of under= does not fit because jobs attach via
     # ``refs.parent_id`` and subject links, not part-of.
     owns_under: ClassVar[bool] = True
+    # An overflowing queryless list names its ``meta.job_type`` groups
+    # (gr639965). The type never appears as a tag, so the meta-axis facet
+    # names ``args={'job_type': '<type>'}`` as the narrowing door (job_type
+    # rides args= on the wire).
+    facet_meta_key: ClassVar[str | None] = "job_type"
 
     def _plugin_owner_kinds(self) -> frozenset[str]:
         """Kinds that opted into owning compute-lane jobs via
