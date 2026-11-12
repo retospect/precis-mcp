@@ -3547,8 +3547,11 @@ def _park_notice_pool(store: Any, result: LlmResult) -> None:
     names (:func:`~precis.budget.quota.window_for_notice`), so the pool
     reads exhausted until the reset instead of admissible on its last
     report (gr645188). The horizon is ``retry_at`` — the notice's parsed
-    reset — else the quota class's two-hour fallback; ``notice='provider'``
-    only when the text carried a parseable reset instant. Never raises."""
+    reset — else the quota class's two-hour fallback; a horizon already
+    past also falls back, since a park to a past instant writes nothing
+    (the ledger's ``GREATEST`` only ever extends) and would leave the pool
+    admissible off a live refusal. ``notice='provider'`` only when the
+    text carried a parseable reset instant. Never raises."""
     from precis.budget import quota as _quota
     from precis.utils.llm import accounts
     from precis.utils.llm.quota import (
