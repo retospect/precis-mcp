@@ -22,8 +22,10 @@ Two signals:
   the td643078 shape. Case folds like the lane's own write check
   (``human_only_hits``: the slice hosts' filesystems fold case).
 - ``graph-only`` — every non-empty token is a well-formed graph handle
-  (``td<id>``/``gr<id>``/``me<id>``/…) or bare punctuation, and at least
-  one handle appears. A report reduced to handles alone names no repo
+  (``td<id>``/``gr<id>``/``me<id>``/…), bare punctuation, graph
+  vocabulary or grammar glue, and at least one handle appears. A
+  report reduced to handles — or to a graph edit phrased as a sentence
+  (``remove the stale edge from me123456``, td645566) — names no repo
   target: the fix lives in the prod graph, which a builder's dev
   worktree cannot reach (gr630346/gr630611's class of no-commit runs).
 
@@ -76,6 +78,112 @@ _HANDLE_WRAP = ".,;:()[]{}`'\"*_#<>|"
 
 _LETTER = re.compile(r"[a-zA-Z]")
 
+#: Grammar glue (td645566): articles, pronouns, auxiliaries and
+#: connectives that carry no target — a graph edit phrased as a
+#: sentence stays graph-only when the glue is all that joins the
+#: handles and graph words.
+_GLUE_VOCAB = """
+a an the and or of to from in on at by for with without into onto
+under over between among through per via as is are was were be been
+being it its it's this that these those there their they them he she
+his her i you we me my your our us who whose whom which what when
+where why how not no do does did done doing don't doesn't didn't has
+have had having can could will would shall should may might must
+need needs all any each every some none one two three both either
+neither other others another same own such only just also still now
+then than so too very more most less least much many few out off up
+down back again once first last next after before while if else but
+yet because since until unless though although please let's i'm i've
+you're we're they're isn't aren't wasn't weren't can't couldn't
+won't wouldn't shouldn't
+"""
+_GLUE_WORDS = frozenset(_GLUE_VOCAB.split())
+
+#: The prod graph's own vocabulary (td645566): nouns naming graph rows
+#: and the verbs and states that mutate them. A letter-carrying token
+#: outside this set is a repo target or ambiguous work and the text does
+#: not classify — generic verbs like ``fix``/``check`` stay out on
+#: purpose: ``fix gr1's stale edge`` can mean the code that wrote the
+#: edge, so it still builds. Repo notions (file, code, test, docs,
+#: branch, commit, diff, …) are simply absent — their absence, not a
+#: deny list, is what keeps a repo brief out.
+# the rows
+_GRAPH_VOCAB_ROWS = """
+graph node nodes edge edges link links rel rels relation
+relations handle handles memory memories chunk chunks gripe
+gripes todo todos ask asks question questions job jobs tag tags
+comment comments thread threads taxon taxa skill skills draft
+drafts plan plans quest quests alert alerts message messages
+snapshot snapshots handoff handoffs index hub hubs parent
+parents child children subtree title titles gloss glosses body
+bodies meta claim claims section sections finding findings
+citation citations review reviews verdict verdicts ref refs row
+rows record records card cards alias aliases checklist checklists
+measure measures entry entries orphan orphans duplicate
+duplicates mirror mirrors resume resumes
+"""
+# the rel names
+_GRAPH_VOCAB_RELS = """
+part-of derived-from related-to blocked-by supersedes qualifies
+cites
+"""
+# the mutations
+_GRAPH_VOCAB_MUTATIONS = """
+remove removes removed removing delete deletes deleted deleting
+retire retires retired retiring unretire restore restores
+restored linked linking unlink unlinks unlinked relink relinks
+rewire attach attaches attached detach detaches detached
+reattach reparent reparents supersede superseded tagged tagging
+untag retag mark marks marked unmark rename renames renamed
+close closes closed closing reopen reopens reopened edit edits
+edited editing update updates updated updating add adds added
+adding merge merges merged merging split splits prune prunes
+pruned sweep sweeps groom grooms consolidate consolidates
+reconsolidate reconsolidates archive archives archived correct
+corrects corrected revise revises revised redirect redirects
+point points pointed repoint move moves moved moving drop drops
+dropped clear clears cleared clean cleans cleaned cleanup
+replace replaces replaced rewrite rewrites rewritten rewriting
+annotate annotates label labels labeled labelled relabel expire
+expires expired cite cited uncite qualify derive derives derived
+create creates created mint mints minted set sets setting unset
+change changes changed connect connects disconnect disconnects
+answer answers answered acknowledge acknowledges acknowledged
+pin pins pinned unpin repin insert inserts inserted append
+appends appended prepend prepends make makes made retry retries
+retried rerun swap swaps swapped toggle toggles
+"""
+# the states
+_GRAPH_VOCAB_STATES = """
+stale orphaned dangling duplicated wrong dead live missing
+broken stray spurious leftover redundant empty outdated wonky
+bad old new open current incorrect inconsistent unused unneeded
+obsolete irrelevant related unresolved unanswered blocked
+unblocked stuck parked held
+"""
+_GRAPH_WORDS = frozenset(
+    _GRAPH_VOCAB_ROWS.split()
+    + _GRAPH_VOCAB_RELS.split()
+    + _GRAPH_VOCAB_MUTATIONS.split()
+    + _GRAPH_VOCAB_STATES.split()
+)
+
+
+def _handle_token(t: str) -> bool:
+    """A well-formed handle, a trailing ``'s`` possessive allowed —
+    ``gr630346's`` still names the gripe."""
+    base = t[:-2] if t.endswith("'s") else t
+    return handle_registry.is_well_formed(base)
+
+
+def _graph_word(t: str) -> bool:
+    """A letter-carrying token that names no repo target: graph
+    vocabulary or grammar glue (a trailing ``'s`` folds first)."""
+    w = t.lower()
+    if w.endswith("'s"):
+        w = w[:-2]
+    return w in _GRAPH_WORDS or w in _GLUE_WORDS
+
 
 def strip_direct_head(text: str) -> str:
     """The text minus the ``gripe-fix-direct`` instruction head (everything
@@ -124,16 +232,19 @@ def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | Non
 
 
 def graph_only(text: str) -> bool:
-    """True when every non-empty token is a well-formed graph handle or
-    carries no letter, and at least one handle appears — the report names
-    graph rows, never a repo path (gr630346's shape)."""
+    """True when every non-empty token is a well-formed graph handle,
+    carries no letter, or is graph vocabulary or grammar glue, and at
+    least one handle appears — the report names graph rows to mutate,
+    never a repo path. Bare handles classify (``gr630346 me123456``) and
+    so does a graph edit phrased as a sentence (``remove the stale edge
+    from me123456``, td645566); a token outside the vocabulary — a file,
+    a symbol, a generic verb like ``fix`` — keeps the text a build."""
     real = [t.strip(_HANDLE_WRAP) for line in text.splitlines() for t in line.split()]
     real = [t for t in real if t]
     if not real:
         return False
-    handles = [t for t in real if handle_registry.is_well_formed(t)]
-    return bool(handles) and all(
-        handle_registry.is_well_formed(t) or not _LETTER.search(t) for t in real
+    return any(_handle_token(t) for t in real) and all(
+        _handle_token(t) or not _LETTER.search(t) or _graph_word(t) for t in real
     )
 
 

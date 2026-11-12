@@ -69,8 +69,44 @@ def test_handle_only_report_is_graph_only() -> None:
     assert why is not None and "graph" in why
 
 
-def test_handles_inside_prose_are_not_graph_only() -> None:
-    assert route.coordinator_route("fix gr630346's stale edge", _DENY) is None
+@pytest.mark.parametrize(
+    "text",
+    [
+        # the review td645206 example: a graph edit phrased as a sentence
+        "remove the stale edge from me123456",
+        "retire the duplicate node me123456",
+        "relink me123456 part-of me654321",
+        "close td123 and mark gr456 answered",
+        "update the title on me123456",
+        "the edge between me1 and me2 is stale — delete it",
+        # a handle's possessive still names the row
+        "remove gr630346's stale edge",
+    ],
+)
+def test_graph_edit_in_prose_is_graph_only(text: str) -> None:
+    """td645566: the classifier read handles-only reports; a graph edit
+    in plain prose still named no repo target and burned a builder run."""
+    why = route.coordinator_route(text, _DENY)
+    assert why is not None and "graph" in why
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # generic verbs stay ambiguous — a fix can mean the code that
+        # wrote the edge, so it still builds
+        "fix gr630346's stale edge",
+        # repo words anywhere in the sentence keep it a build
+        "remove the stale guard from plan_dispatch",
+        "update the edge handling in src/precis/todo/guards.py",
+        "delete the flaky test for gr630346",
+        "close the issue by editing the retry cap",
+        # no handle at all is never graph-only
+        "remove the stale edge",
+    ],
+)
+def test_non_graph_prose_is_not_graph_only(text: str) -> None:
+    assert route.coordinator_route(text, _DENY) is None
 
 
 @pytest.mark.parametrize("text", [None, "", "   \n  "])

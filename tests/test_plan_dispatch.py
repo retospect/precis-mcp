@@ -2747,6 +2747,105 @@ def test_brief_boilerplate_never_routes(
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+@pytest.mark.parametrize(
+    "brief",
+    [
+        # a handle-only brief: the ``brief:`` label itself kept the
+        # text from classifying (td645566)
+        "brief: gr630346 me123456 td999",
+        # a graph edit phrased as a sentence
+        "brief: remove the stale edge from me123456",
+    ],
+)
+def test_graph_only_brief_comment_routes_to_the_coordinator(
+    store: Store, monkeypatch: pytest.MonkeyPatch, brief: str
+) -> None:
+    """td645566: the newest coordinator ``brief:`` comment is judged
+    with its label stripped — a brief reduced to handles or to a graph
+    edit in prose routes at mint instead of burning a builder run."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _todo_comment(store, task, brief)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    assert _jobs_under(store, task) == []
+    (ask,) = _blocked_by_ids(store, task)
+    assert "ask-coordinator" in _open_tags(store, ask)
+
+
+def test_no_commit_on_the_top_rung_asks_the_coordinator(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td645566: a fix born model-pinned to the ladder's top rung
+    (``FIX_ESCALATE_DEPTH``) has no climb left — its first no-commit
+    failure IS the cap: one ask-coordinator ask, not a same-rung retry
+    on the attempts the count still afforded."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Fix review findings for td1",
+            {"op": {"type": "run_slice", "params": {"model": "claude-opus-5-5"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session left no commit on slice/td0 ahead of "
+        "origin/main (nothing to land)\n--- log tail ---\nexit 0\n",
+        lane="claude-sub",
+        model="claude-opus-5-5",
+        meta={"no_commit": True},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    (ask,) = _blocked_by_ids(store, task)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    # A second pass files no second ask while the first is open.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+
+
+def test_top_rung_red_without_no_commit_still_retries(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td645566: the ladder-exhaustion cap is the can't-finish arm's —
+    an ordinary red on the top rung keeps ``DEFAULT_RETRIES`` and
+    retries on the pinned model as before."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Fix review findings for td1",
+            {"op": {"type": "run_slice", "params": {"model": "claude-opus-5-5"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: gate red\n--- log tail ---\nruff failed\n",
+        lane="claude-sub",
+        model="claude-opus-5-5",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    jobs = _jobs_under(store, task)
+    assert len(jobs) == 2
+    assert jobs[-1][1]["params"]["model"] == "claude-opus-5-5"
+
+
 def test_no_commit_noop_log_tail_closes_the_node(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

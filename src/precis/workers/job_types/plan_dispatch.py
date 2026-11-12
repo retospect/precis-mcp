@@ -273,8 +273,12 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    like any red and climbs the ladder instead of capping at once
    (gr645163, the same ruling); the node the cap finally parks files
    the ``ask-coordinator`` ask, never rescue — the ladder is spent and
-   td643078's hand-land was the coordinator's job all along. A failed
-   job stamped
+   td643078's hand-land was the coordinator's job all along. The cap
+   reads ladder exhaustion, not just the count: a can't-finish whose
+   newest attempt already ran the top rung — a fix born model-pinned
+   at :data:`FIX_ESCALATE_DEPTH` starts there — is capped on the spot
+   (td645566), not retried on the same rung the count still affords. A
+   failed job stamped
    ``human_only_hit=[paths]`` (``run_slice`` writes
    it when the branch touches ``lanes.HUMAN_ONLY_PATHS`` — no lane may
    write those paths) and a ``run_slice`` with no enabled fit lane still
@@ -3785,7 +3789,34 @@ def _retry_cap(n: _Node, rungs: tuple[_lanes.Rung, ...]) -> int:
     return len(rungs) or DEFAULT_RETRIES
 
 
-def _capped(plan: _Plan, n: _Node, cap: int, *, spend_capped: bool = False) -> bool:
+def _ladder_spent(plan: _Plan, n: _Node, rungs: tuple[_lanes.Rung, ...]) -> bool:
+    """The newest real attempt already ran the ladder's top rung — no
+    climb is left, so the ladder is spent whatever the attempt count
+    says (td645566): a fix born model-pinned at
+    :data:`FIX_ESCALATE_DEPTH` starts there and its ``cap`` is
+    :data:`DEFAULT_RETRIES`, so the first failure retries the same top
+    rung the count still affords. ``False`` when there is no ladder or
+    the rung cannot be read — the attempt count decides as before."""
+    if not rungs:
+        return False
+    ended = _attempt_jobs(plan, n)
+    if not ended:
+        return False
+    last = ended[-1]
+    return (
+        _lanes.rung_index(rungs, last.meta.get("lane"), last.meta.get("model"))
+        == len(rungs) - 1
+    )
+
+
+def _capped(
+    plan: _Plan,
+    n: _Node,
+    cap: int,
+    *,
+    rungs: tuple[_lanes.Rung, ...] = (),
+    spend_capped: bool = False,
+) -> bool:
     jobs = plan.jobs(n)
     # The newest job need only be TERMINAL: a cancelled job burns no
     # attempt itself (:func:`_attempt_jobs` skips it), but the attempts
@@ -3809,9 +3840,17 @@ def _capped(plan: _Plan, n: _Node, cap: int, *, spend_capped: bool = False) -> b
     if spend_capped:
         return True
     attempts = _attempts(plan, n)
-    # ``attempts > 0``: with ``meta.retries: 0`` a no-attempt job (a host
-    # refusal) must not mint the cap ask — nothing was tried (gr571395).
-    return attempts > 0 and attempts >= cap
+    if attempts <= 0:
+        # With ``meta.retries: 0`` a no-attempt job (a host refusal)
+        # must not mint the cap ask — nothing was tried (gr571395).
+        return False
+    if attempts >= cap:
+        return True
+    # A can't-finish whose newest attempt already ran the top rung has
+    # no climb left — it IS the cap (gr645163's "only the top rung's
+    # failure files the coordinator ask"), even when the count still
+    # affords a same-rung retry (td645566).
+    return _no_commit(plan, n) and _ladder_spent(plan, n, rungs)
 
 
 def _resolve_op(n: _Node) -> tuple[str, dict[str, Any]]:
@@ -4700,7 +4739,11 @@ def _route_text(store: Any, n: _Node) -> str:
         None,
     )
     if brief is not None:
-        parts.append(brief)
+        # The ``brief:`` label is the comment's type, not instruction
+        # text: judged with the label still on it, a handle-only brief
+        # carries one letter token too many and never classifies
+        # (td645566).
+        parts.append(brief[len("brief:") :].lstrip())
     return "\n\n".join(parts)
 
 
@@ -4833,7 +4876,7 @@ def _step_dispatch(
                     }
                 },
             )
-        if _capped(plan, n, cap, spend_capped=spend_hit is not None):
+        if _capped(plan, n, cap, rungs=rungs, spend_capped=spend_hit is not None):
             continue
         jobs = plan.jobs(n)
         newest = jobs[-1] if jobs else None
@@ -5871,7 +5914,7 @@ def _step_hygiene(
                     }
                 },
             )
-        if not _capped(plan, n, cap, spend_capped=spend_hit is not None):
+        if not _capped(plan, n, cap, rungs=rungs, spend_capped=spend_hit is not None):
             continue
         if plan.open_asks(n):
             continue
@@ -5970,7 +6013,8 @@ def _step_hygiene(
                 body=(
                     f"The plan tick stopped dispatching td{n.id} "
                     f"({n.title.splitlines()[0] if n.title else ''}): "
-                    f"{attempts} attempts climbed the lane ladder and the "
+                    f"{attempts} attempt{'s' if attempts != 1 else ''} spent "
+                    f"the lane ladder and the "
                     f"newest (jo{last}) still ended with no commit and no "
                     "verdict — a builder that can't finish (gr645163, "
                     'Reto 2026-11-12, "escalate to next model"). The '
