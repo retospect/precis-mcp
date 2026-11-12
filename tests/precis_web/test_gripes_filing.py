@@ -126,3 +126,36 @@ def test_filing_needs_credentials(runtime, client) -> None:
     resp = client.post("/gripes", data={"text": "friction"}, follow_redirects=False)
     assert resp.status_code == 401
     assert runtime.calls == []
+
+
+def test_prio_post_dispatches_tag(runtime, client) -> None:
+    resp = client.post(
+        "/gripes/96/prio",
+        data={"value": "high"},
+        headers={**_auth(), "Origin": "http://testserver"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/gripes/96"
+    assert runtime.calls[-1] == (
+        "tag",
+        {"kind": "gripe", "id": 96, "add": ["PRIO:high"]},
+    )
+
+
+def test_prio_post_rejects_unknown_value(runtime, client) -> None:
+    before = len(runtime.calls)
+    resp = client.post(
+        "/gripes/96/prio",
+        data={"value": "medium"},
+        headers={**_auth(), "Origin": "http://testserver"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert len(runtime.calls) == before
+
+
+def test_detail_offers_prio_controls(client) -> None:
+    resp = client.get("/gripes/96", headers=_auth())
+    assert resp.status_code == 200
+    assert "/gripes/96/prio" in resp.text

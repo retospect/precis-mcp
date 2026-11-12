@@ -53,6 +53,10 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 * ``POST /gripes/{id}/status`` — ``tag`` verb, closed ``STATUS:`` axis
   (replace-on-add, no explicit remove — see ``precis.handlers.gripe``).
   htmx re-renders just the status fragment; no-JS redirects back.
+* ``POST /gripes/{id}/prio`` — ``tag`` verb, closed ``PRIO:`` axis
+  (the human rung: urgent/high/normal/low). The detail page's
+  ``score:`` is the machine dispatch score; a set PRIO multiplies it,
+  so this is the human's lever on the queue order. No-JS redirect back.
 * ``POST /gripes/{id}/comment`` — ``put`` verb append (the id-present
   path appends a ``gripe_comment`` chunk; the body chunk itself is
   immutable by design, an audit trail).
@@ -115,6 +119,11 @@ STATUS_VALUES: tuple[str, ...] = (
     "needs_spec",
     "wontfix",
 )
+
+#: PRIO rungs the detail page offers, hottest first — the closed
+#: ``PRIO:`` axis (``store/types.py``) the human sets to steer the
+#: dispatch score.
+PRIO_VALUES: tuple[str, ...] = ("urgent", "high", "normal", "low")
 
 #: The list's default filter: the triaged pick list. "attention",
 #: "live" and "all" stay reachable by ``?status=``.
@@ -850,6 +859,7 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "status_badge": _status_badge(status),
             "retired": getattr(ref, "retired_at", None) is not None,
             "prio": _prio_of(tags),
+            "prio_values": PRIO_VALUES,
             "score": score,
             "project": _project_of(tags),
         },
@@ -921,6 +931,23 @@ async def set_status(request: Request, id: int, value: str = Form(...)) -> Respo
             "status_values": STATUS_VALUES,
             "status_badge": _status_badge(value),
         },
+    )
+
+
+@router.post("/{id}/prio", response_model=None)
+async def set_prio(request: Request, id: int, value: str = Form(...)) -> Response:
+    """Set the human ``PRIO:`` rung via the closed-axis ``tag`` verb
+    (replace-on-add). It multiplies the dispatch score, so this is how a
+    human alters a gripe's queue standing. Off-vocabulary values are a
+    no-op redirect, like :func:`set_status`."""
+    if value not in PRIO_VALUES:
+        return RedirectResponse(url=f"/gripes/{id}", status_code=303)
+    return await redirect_or_error(
+        request,
+        "tag",
+        {"kind": "gripe", "id": id, "add": [f"PRIO:{value}"]},
+        redirect=f"/gripes/{id}",
+        error_title="Priority error",
     )
 
 

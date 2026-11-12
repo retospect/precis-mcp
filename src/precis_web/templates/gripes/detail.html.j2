@@ -13,7 +13,7 @@
       {% if updated %}· updated {{ updated | ago }}{% endif %}
       {% if filing_origin.actor or set_by %}· by <span class="font-mono">{{ filing_origin.actor or set_by }}</span>{% endif %}
       {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
-      {% if score is not none %}· <span class="font-mono" title="dispatch score — the machine queue order">score:{{ score }}</span>{% endif %}
+      {% if score is not none %}· <span class="font-mono" title="dispatch score — the machine's queue order, computed from age, size and source; a set PRIO multiplies it. Change PRIO below to steer it.">score:{{ score }}</span>{% endif %}
       {% if project and project != 'project:precis' %}· <span class="font-mono">{{ project }}</span>{% endif %}
     </p>
     <p class="text-xs text-fg-faint break-words" data-filing-origin>
@@ -27,6 +27,21 @@
   </div>
   {% if not retired %}{% include "gripes/_gripe_status.html.j2" %}{% endif %}
 </div>
+
+{% if not retired %}
+<div class="mb-4 flex flex-wrap items-center gap-1.5 text-xs" data-prio-controls>
+  <span class="text-fg-faint" title="Human priority rung (PRIO:) — multiplies the machine dispatch score">priority</span>
+  {% for v in prio_values %}
+  <form method="post" action="/gripes/{{ id }}/prio" class="shrink-0">
+    <input type="hidden" name="value" value="{{ v }}" />
+    <button type="submit"
+            class="px-2 py-1 rounded border {% if (prio or 'normal') == v %}border-line-strong bg-surface-muted font-medium text-fg{% else %}border-line text-fg-subtle hover:bg-surface-subtle hover:text-fg-secondary{% endif %}">
+      {{ v }}
+    </button>
+  </form>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if retired %}
 <div class="mb-4 rounded-md border border-line bg-surface-subtle px-4 py-3 text-sm text-fg-muted">
