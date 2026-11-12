@@ -101,6 +101,32 @@ class TestProseFileId:
         assert "[error" not in out
         assert "Catalyst landscape body." in out
 
+    def test_explicit_extension_not_rerouted_to_other_kind(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        """Only meeting.md exists: an explicit .tex path must not return it."""
+        ws = tmp_path / "ws"
+        (ws / "notes").mkdir(parents=True)
+        (ws / "notes" / "meeting.md").write_text("# M\n\nmd body\n", encoding="utf-8")
+        hub = boot(store=store, precis_root=str(ws))
+        rt = PrecisRuntime(config=PrecisConfig(), hub=hub)
+        out = rt.dispatch("get", {"id": "notes/meeting.tex"})
+        assert "md body" not in out
+        assert "missing kind" in out
+
+    def test_explicit_extension_disambiguates_both_present(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        ws = tmp_path / "ws"
+        (ws / "notes").mkdir(parents=True)
+        (ws / "notes" / "meeting.md").write_text("# M\n\nmd body\n", encoding="utf-8")
+        (ws / "notes" / "meeting.tex").write_text("tex body\n", encoding="utf-8")
+        hub = boot(store=store, precis_root=str(ws))
+        rt = PrecisRuntime(config=PrecisConfig(), hub=hub)
+        tex = rt.dispatch("get", {"id": "notes/meeting.tex"})
+        assert "tex body" in tex
+        assert "missing kind" not in tex
+
     def test_explicit_kind_wins(self, rooted_runtime: PrecisRuntime) -> None:
         out = rooted_runtime.dispatch(
             "get", {"kind": "tex", "id": "tex--catalyst_landscape"}

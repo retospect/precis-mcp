@@ -263,6 +263,11 @@ def _listing_truncation_notice(kind: str, count: int, budget_s: float) -> str:
     )
 
 
+_EXPLICIT_EXT_RE = re.compile(
+    r"\.(?:md|markdown|txt|log|bib|tex)(?=$|[/~])", re.IGNORECASE
+)
+
+
 class PlaintextHandler(Handler):
     """Slug-addressed read/write handler for ``.txt`` / ``.log`` / ``.bib`` files."""
 
@@ -2162,6 +2167,13 @@ class PlaintextHandler(Handler):
         stem present under two extensions stays a refusal, never a
         guess.
         """
+        # An explicit extension names its owner: ``notes/meeting.tex``
+        # is never the markdown file ``notes/meeting.md``, even though
+        # canonicalisation accepts every common prose extension.
+        explicit = _EXPLICIT_EXT_RE.search(str(raw_id))
+        want_ext = explicit.group(0).lower() if explicit else None
+        if want_ext is not None and want_ext not in self._EXTENSIONS:
+            return False
         try:
             slug, _sel, _view = _parse_file_id(
                 str(raw_id),
@@ -2169,8 +2181,10 @@ class PlaintextHandler(Handler):
                 views=self._SUPPORTED_VIEWS,
                 aliases=self._aliases,
             )
-            path = self._resolve_path(slug, must_exist=False)
+            path = self._resolve_path(slug, must_exist=False, preferred_ext=want_ext)
         except BadInput:
+            return False
+        if want_ext is not None and path.suffix.lower() != want_ext:
             return False
         return path.is_file()
 
