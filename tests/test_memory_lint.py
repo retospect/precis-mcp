@@ -1779,3 +1779,27 @@ def test_taxon_pointers_resolve_in_current_worktree_not_main(
     assert "missing path → tn6 (Main): docs/main-only.md" in res.stdout
     assert "missing path → tn5" not in res.stdout
     assert "taxon pointers: 1 missing path(s), 0 unresolvable form(s)" in res.stdout
+
+
+def test_help_exits_before_any_scan(
+    lint_repo: Path, home_and_mem: tuple[Path, Path]
+) -> None:
+    """gr634321: --help prints usage and does no lint work."""
+    home, _mem = home_and_mem
+    for flag in ("--help", "-h"):
+        res = _run(lint_repo, home, args=(flag,))
+        assert res.returncode == 0, res.stderr
+        assert "usage: scripts/memory-lint" in res.stdout
+        assert "WHOLE cached snapshot" in res.stdout
+        assert "hygiene findings" not in res.stdout
+        assert "reconsolidation:" not in res.stdout
+
+
+def test_unknown_option_fails_before_work(
+    lint_repo: Path, home_and_mem: tuple[Path, Path]
+) -> None:
+    home, _mem = home_and_mem
+    res = _run(lint_repo, home, args=("--ref", "me1"))
+    assert res.returncode == 2
+    assert "unknown argument: --ref" in res.stderr
+    assert res.stdout == ""

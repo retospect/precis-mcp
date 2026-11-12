@@ -125,8 +125,30 @@ cd "$(dirname "$0")/.."
 CURRENCY=0
 BANDS=0
 for _a in "$@"; do
-    [[ "$_a" == "--currency" ]] && CURRENCY=1
-    [[ "$_a" == "--bands" ]] && BANDS=1
+    case "$_a" in
+        -h | --help)
+            cat <<'USAGE'
+usage: scripts/memory-lint [--currency] [--bands]
+
+Advisory hygiene + reconsolidation-cadence check; always exits 0 on a run.
+Scope is the WHOLE cached snapshot (memory dir + node export); there is no
+per-ref, hub or limit filter. A run may stamp the weekly sibling-repo check.
+
+  --currency   add the per-claim currency ledger (check 5)
+  --bands      add the recency-band report (graph mode)
+  -h, --help   show this help and exit without scanning
+
+Unknown options exit 2 before any work.
+USAGE
+            exit 0
+            ;;
+        --currency) CURRENCY=1 ;;
+        --bands) BANDS=1 ;;
+        *)
+            echo "memory-lint: unknown argument: $_a (try --help)" >&2
+            exit 2
+            ;;
+    esac
 done
 
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
