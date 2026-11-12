@@ -391,6 +391,15 @@ def test_get_symbol_keeps_full_giant_signature(tmp_path: Path) -> None:
     assert "… +" not in out.body
 
 
+def test_get_symbol_dunder_init_resolves_to_package(
+    handler: PythonHandler,
+) -> None:
+    """gr635831: `r::pkg.__init__` names the package's `__init__.py`,
+    which indexes under the bare `pkg` qualname."""
+    out = handler.get(id="r::pkg.__init__", view="source")
+    assert "pkg root." in out.body
+
+
 def test_get_unknown_symbol_raises(handler: PythonHandler) -> None:
     with pytest.raises(NotFound, match="symbol .* not found"):
         handler.get(id="r::pkg.m.NoSuchSymbol")

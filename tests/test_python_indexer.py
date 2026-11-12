@@ -145,6 +145,53 @@ def test_qualnames_handle_init_and_nested_packages(tmp_path: Path) -> None:
     assert idx.module("alpha.beta.__init__") is None
 
 
+def test_symbol_dunder_init_resolves_to_package_module(tmp_path: Path) -> None:
+    """gr635831: `pkg.__init__` is how callers name a package's
+    `__init__.py` — it indexes under the bare package qualname, so the
+    symbol lookup maps it back to the package module symbol."""
+    _write(tmp_path, "alpha/__init__.py", '"""alpha package."""\n')
+    _write(tmp_path, "alpha/beta/__init__.py", "")
+    _write(tmp_path, "alpha/mod.py", "x = 1\n")
+
+    idx = index_repo(tmp_path)
+
+    top = idx.symbol("alpha.__init__")
+    assert top is not None
+    assert top.kind == "module"
+    assert top.qualname == "alpha"
+
+    nested = idx.symbol("alpha.beta.__init__")
+    assert nested is not None
+    assert nested.qualname == "alpha.beta"
+
+    # A plain module is not a package — 'mod.__init__' stays a miss.
+    assert idx.symbol("alpha.mod.__init__") is None
+
+    # A missing middle segment doesn't graft onto the package.
+    assert idx.symbol("alpha.nosuch.__init__") is None
+
+
+def test_symbol_dunder_init_prefers_a_real_method(tmp_path: Path) -> None:
+    """A class `__init__` defined in `__init__.py` keeps its own symbol —
+    the package-module fallback only fires on a miss."""
+    _write(
+        tmp_path,
+        "pkg/__init__.py",
+        """
+        class Greeter:
+            def __init__(self) -> None:
+                pass
+        """,
+    )
+
+    idx = index_repo(tmp_path)
+
+    method = idx.symbol("pkg.Greeter.__init__")
+    assert method is not None
+    assert method.kind == "method"
+    assert method.qualname == "pkg.Greeter.__init__"
+
+
 def test_nested_classes_have_correct_parent_chain(tmp_path: Path) -> None:
     """`Outer.Inner.method` parent chain walks through every enclosing class."""
     _write(tmp_path, "pkg/__init__.py", "")

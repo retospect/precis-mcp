@@ -215,7 +215,8 @@ Every symbol view shows parent, callers, callees, raises — one call,
 many edges traversable.
 
 `::` resolves indexable symbols only — modules, classes, functions,
-methods. A module-level constant or an import-bound name is not one; a
+methods. `pkg.__init__` resolves to the package's `__init__.py`
+module. A module-level constant or an import-bound name is not one; a
 miss there names what the leaf actually is and the file/lines read
 (`<alias>/<file>.py~L<a>-L<b>`, `view='source'`) that shows it.
 

@@ -231,6 +231,10 @@ class RepoIndex:
         Tries the module index first (covers `module.thing`), then walks
         every parent prefix to find the enclosing module — handles
         nested classes (`pkg.mod.Outer.Inner.method`).
+
+        `pkg.__init__` resolves to the package's `__init__.py` module
+        symbol (indexed under the bare package qualname); `mod.__init__`
+        on a plain `.py` module does not.
         """
         # Direct module-level hit.
         if (mod := self.modules.get(qualname)) is not None:
@@ -244,6 +248,12 @@ class RepoIndex:
             if (mod := self.modules.get(mod_qn)) is not None:
                 if (sym := mod.by_qualname(qualname)) is not None:
                     return sym
+                # 'pkg.__init__' is how callers name a package's
+                # __init__.py; that file indexes under the bare package
+                # qualname (gr635831). A 'mod.__init__' miss on a plain
+                # .py module stays a miss — it meant a class method.
+                if parts[i:] == ["__init__"] and mod.file.endswith("__init__.py"):
+                    return mod.module_symbol
                 # Module exists but symbol doesn't — keep walking only
                 # if we still have a chance to find a parent module
                 # (e.g. for nested-package qualnames). In practice once
