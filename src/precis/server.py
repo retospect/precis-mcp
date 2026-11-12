@@ -339,6 +339,42 @@ def _install_protocol_payload_filters() -> None:
 _install_protocol_payload_filters()
 
 
+def _install_once_per_connection_instructions() -> None:
+    """Send ``serverInfo.instructions`` only on a session's first ``initialize``.
+
+    gr632443: the SDK's ``ServerSession._received_request`` answers EVERY
+    ``initialize`` on a live session from ``_init_options`` — including a
+    mid-session re-initialize on the same connection, which the client
+    renders as the ~250-token banner riding the next ordinary tool result.
+    The block is bootstrap metadata, not a per-call trailer: once the
+    first response is answered we drop it from that session's options, so
+    a re-initialize replies ``instructions=None`` (spec ``str | None``).
+    A failed response leaves it in place so a retry still gets it.
+    ``create_initialization_options()`` rebuilds the options per
+    ``Server.run`` — per connection on every transport — so a genuinely
+    new connection still gets the banner once.
+    """
+    from mcp.server.session import ServerSession
+    from mcp.types import InitializeRequest
+
+    if getattr(ServerSession._received_request, "_precis_instructions_once", False):
+        return
+    original = ServerSession._received_request
+
+    async def _received_request(self: Any, responder: Any) -> None:
+        await original(self, responder)
+        if isinstance(responder.request.root, InitializeRequest):
+            self._init_options.instructions = None
+
+    # ``setattr`` sidesteps method-assign/attr-defined without a
+    # ``type: ignore`` — the ratchet counts those (test_type_ignore_ratchet).
+    setattr(_received_request, "_precis_instructions_once", True)
+    setattr(ServerSession, "_received_request", _received_request)
+
+
+_install_once_per_connection_instructions()
+
+
 # ---------------------------------------------------------------------------
 # Off-loading sync tool dispatch to worker threads (gr330541)
 # ---------------------------------------------------------------------------
