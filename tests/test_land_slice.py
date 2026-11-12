@@ -2712,6 +2712,42 @@ def test_poll_ship_waiting_on_a_gate_slot_eats_no_wall(
     assert "gate_wait" not in handle
 
 
+def test_readopted_ship_keeps_its_started_at_deadline(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """gr647913: the wall-clock deadline rides the job handle —
+    ``handle.deadline`` = ``started_at`` + wall + the waits already
+    observed — so a worker restart's re-adoption resumes the job's own
+    count. ``now + wall`` at the re-adopt poll reset the run's elapsed
+    time and moved the kill bound out by the whole run."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    assert handle["deadline"] == T0.timestamp() + land_slice.wall_seconds()
+    # ship seen working at T0+10 — the wait that follows counts from
+    # that last-seen instant, not from the launch all over.
+    Path(handle["log"]).write_text("gate env → synced offline\n", encoding="utf-8")
+    clock["t"] = T0 + timedelta(seconds=10)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    Path(handle["log"]).write_text(
+        "gate slot: waiting at position 2 of 6 (2 slots ahead are busy)\n",
+        encoding="utf-8",
+    )
+    clock["t"] = T0 + timedelta(seconds=30)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["deadline"] == T0.timestamp() + land_slice.wall_seconds() + 20
+    # A worker restart re-adopts the running job at T0+50: the deadline
+    # resumes the handle's count — T0 + wall + the observed wait —
+    # never T0+50 + wall.
+    clock["t"] = T0 + timedelta(seconds=50)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.meta_set["deadline"] == T0.timestamp() + land_slice.wall_seconds() + 40
+    assert handle["deadline"] == T0.timestamp() + land_slice.wall_seconds() + 40
+
+
 def test_gate_slot_waiting_reads_the_indented_holder_dump() -> None:
     """td599058: a real queue log's newest lines are the per-slot holder
     dump — INDENTED ``  gate slot N: …``. Stripping the line before

@@ -84,7 +84,11 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   :func:`refusal_backoff_s` (``handle.not_before``, default 30 min), then
   relaunches ship; the todo is untouched. Each step renews ``meta.deadline``
   (park: backoff + wall; relaunch: wall), so a parked land is not killed at
-  the 1 h wall while a running ship still is; past
+  the 1 h wall while a running ship still is; the running phase's deadline
+  rides the handle (``handle.deadline`` — ``started_at`` + wall + the gate
+  waits already observed), so a worker restart's re-adoption resumes the
+  job's own count instead of restarting the wall at the re-adopt poll
+  (gr647913); past
   :data:`MAX_MAIN_REFUSALS` the job fails with a "land BLOCKED" handoff.
   Before every launch the lander runs the drift helper itself under its own
   identity (:func:`_drift_preflight`); when that cannot say how old main's
@@ -1045,6 +1049,49 @@ def gate_slot_waiting(log_text: str) -> str | None:
     return last.strip() if _GATE_SLOT_CHATTER_RE.match(last) else None
 
 
+def _phase_started(phase: dict[str, Any]) -> float:
+    """Epoch seconds of the phase's ``started_at`` — the deadline's
+    anchor; this poll when the stamp is unreadable."""
+    try:
+        return (
+            datetime.strptime(str(phase.get("started_at") or ""), _TS_FMT)
+            .replace(tzinfo=UTC)
+            .timestamp()
+        )
+    except ValueError:
+        return _now().timestamp()
+
+
+def _phase_seen(phase: dict[str, Any], now_ts: float) -> float:
+    """Stamp ``polled_at`` for this live poll and return the instant the
+    phase was last observed — the previous live poll, else its launch.
+    The gap since is the current gate-slot wait's floor: nothing in it
+    was seen working, so it counts as queue time, not wall."""
+    seen = phase.get("polled_at")
+    phase["polled_at"] = now_ts
+    if isinstance(seen, (int, float)) and not isinstance(seen, bool):
+        return float(seen)
+    return _phase_started(phase)
+
+
+def _wait_deadline(phase: dict[str, Any], seen: float, now_ts: float) -> float:
+    """The phase's wall-clock deadline during a gate-slot wait, folded
+    onto the handle: the stored ``deadline`` — ``started_at`` + wall +
+    the waits already observed — grown by the gap since ``seen``.
+    Anchoring the count in the handle keeps a re-adopted job on its own
+    deadline instead of restarting the wall at the re-adopt poll
+    (gr647913). A pre-fix handle carries no ``deadline``: anchored at
+    its launch it folds to the old ``now + wall``."""
+    deadline = phase.get("deadline")
+    base = (
+        float(deadline)
+        if isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
+        else _phase_started(phase) + wall_seconds()
+    )
+    phase["deadline"] = base + max(now_ts - seen, 0.0)
+    return float(phase["deadline"])
+
+
 def infra_red(log_text: str, exit_code: int | None) -> str | None:
     """The red's class — ``"gate infrastructure"`` — when ship died on the
     gate's own machinery: a gate-kill line (:func:`gate_kill_line`'s
@@ -1716,6 +1763,11 @@ def _launch_ship(
             handoff=f"land FAILED: scripts/ship did not start ({exc}).",
         )
         return None
+    # The deadline rides the handle (gr647913): ``started_at`` + the wall
+    # — the clock stamps share the ``_now()`` seam so a worker restart's
+    # re-adoption resumes the job's own count instead of restarting the
+    # wall at the re-adopt poll.
+    launched = _now()
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
@@ -1724,7 +1776,8 @@ def _launch_ship(
         "exit_file": str(exit_path),
         "subject": subject,
         "flag": flag,
-        "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "started_at": launched.strftime(_TS_FMT),
+        "deadline": launched.timestamp() + wall_seconds(),
     }
     for key in ("main_refusals", "last_refusal", "gate_kills", "fell_back_full"):
         if carry is not None and key in carry:
@@ -1943,7 +1996,15 @@ def _defer_to_main(
     read differently (gr550941); a host-side one has nothing to probe."""
     delay = refusal_backoff_s() if backoff_s is None else backoff_s
     due = _now() + timedelta(seconds=delay)
-    for key in ("pid", "pgid", "boot_id", "start_time", "ps_identity"):
+    for key in (
+        "pid",
+        "pgid",
+        "boot_id",
+        "start_time",
+        "ps_identity",
+        "gate_wait",
+        "polled_at",
+    ):
         handle.pop(key, None)
     Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
     handle.update(last_refusal=cross, not_before=due.strftime(_TS_FMT))
@@ -1957,8 +2018,10 @@ def _defer_to_main(
         + (f"\ndrift probe (lander identity): {probe}" if probe else ""),
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the
-    # wait plus one fresh ship run (the 1 h wall).
-    deadline = _now().timestamp() + delay + wall_seconds()
+    # wait plus one fresh ship run (the 1 h wall), and rides the handle
+    # the same way (gr647913).
+    deadline = due.timestamp() + wall_seconds()
+    handle["deadline"] = deadline
     ctx.set_meta(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
     )
@@ -1992,7 +2055,7 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     ctx.set_meta(
         compute_handle=fresh,
         compute_handle_released=False,
-        deadline=_now().timestamp() + wall_seconds(),
+        deadline=fresh["deadline"],
     )
     return False
 
@@ -2034,6 +2097,7 @@ def _launch_verify(
             "land_slice: verify launch (%s) failed: %s", phase, exc, exc_info=True
         )
         return None
+    launched = _now()
     verify: dict[str, Any] = {
         "phase": phase,
         "ids": list(ids),
@@ -2042,7 +2106,10 @@ def _launch_verify(
         "log": str(log_path),
         "exit_file": str(exit_path),
         "run_tree": str(run_tree),
-        "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "started_at": launched.strftime(_TS_FMT),
+        # The phase's own deadline rides the handle the same way
+        # (gr647913) — its wall counts from its own launch.
+        "deadline": launched.timestamp() + wall_seconds(),
     }
     identity = _rs._process_identity(pid)
     if identity is not None:
@@ -2146,7 +2213,7 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
     ctx.set_meta(
         compute_handle=handle,
         compute_handle_released=False,
-        deadline=_now().timestamp() + wall_seconds(),
+        deadline=verify["deadline"],
     )
     return True
 
@@ -2267,8 +2334,12 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # The ship rule applies to a live probe too (td599058): every
         # phase runs ``scripts/test``, which queues inside
         # ``gate_slot_acquire`` — and the deselect phase IS a gate — so
-        # a queued probe waits on the host, not on gate time. Re-arm the
-        # deadline (the phase's own budget) and heartbeat the position.
+        # a queued probe waits on the host, not on gate time. Fold the
+        # new wait time into the phase's deadline — it rides the handle
+        # (gr647913), counted from the probe's own launch — and
+        # heartbeat the position.
+        now_ts = _now().timestamp()
+        seen = _phase_seen(v, now_ts)
         waiting = gate_slot_waiting(_rs._read_log(v))
         if waiting is not None:
             if v.get("gate_wait") != waiting:
@@ -2277,9 +2348,10 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
             ctx.set_meta(
                 compute_handle=handle,
                 compute_handle_released=False,
-                deadline=_now().timestamp() + wall_seconds(),
+                deadline=_wait_deadline(v, seen, now_ts),
             )
-        elif v.pop("gate_wait", None) is not None:
+        else:
+            v.pop("gate_wait", None)
             ctx.set_meta(compute_handle=handle, compute_handle_released=False)
         return False
     params = (ctx.meta or {}).get("params") or {}
@@ -2396,7 +2468,7 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
     ctx.set_meta(
         compute_handle=handle,
         compute_handle_released=False,
-        deadline=_now().timestamp() + wall_seconds(),
+        deadline=verify["deadline"],
     )
     return False
 
@@ -2452,7 +2524,7 @@ def _land_without_main_reds(
     ctx.set_meta(
         compute_handle=fresh,
         compute_handle_released=False,
-        deadline=_now().timestamp() + wall_seconds(),
+        deadline=fresh["deadline"],
     )
     return False
 
@@ -2472,7 +2544,13 @@ def poll(ctx: Any, handle: Any) -> bool:
         # gr598110 item 4: while ship queues inside gate_slot_acquire the
         # wait is real queueing on the host, not gate time — the wall
         # clock starts when the gate starts, so each poll that finds the
-        # wait re-arms the deadline and heartbeats the position line.
+        # wait folds the new wait time into the deadline and heartbeats
+        # the position line. The deadline rides the handle (gr647913):
+        # a re-adopted job resumes its own count — started_at + wall +
+        # the waits observed — instead of restarting the wall at the
+        # re-adopt poll.
+        now_ts = _now().timestamp()
+        seen = _phase_seen(handle, now_ts)
         waiting = gate_slot_waiting(_rs._read_log(handle))
         if waiting is not None:
             if handle.get("gate_wait") != waiting:
@@ -2481,9 +2559,13 @@ def poll(ctx: Any, handle: Any) -> bool:
             ctx.set_meta(
                 compute_handle=handle,
                 compute_handle_released=False,
-                deadline=_now().timestamp() + wall_seconds(),
+                deadline=_wait_deadline(handle, seen, now_ts),
             )
-        elif handle.pop("gate_wait", None) is not None:
+        else:
+            handle.pop("gate_wait", None)
+            # polled_at rides the handle on every live poll, so the
+            # wait's start is bounded by the last seen instant, never by
+            # a worker restart's re-adoption.
             ctx.set_meta(compute_handle=handle, compute_handle_released=False)
         return False
     ctx.set_meta(compute_handle_released=True)
@@ -2565,7 +2647,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             ctx.set_meta(
                 compute_handle=fresh,
                 compute_handle_released=False,
-                deadline=_now().timestamp() + wall_seconds(),
+                deadline=fresh["deadline"],
             )
             return False
         note = handle.pop("verify_note", None)
@@ -2595,7 +2677,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                 ctx.set_meta(
                     compute_handle=handle,
                     compute_handle_released=False,
-                    deadline=_now().timestamp() + wall_seconds(),
+                    deadline=verify["deadline"],
                 )
                 return False
         side = refusal_side(cross)
