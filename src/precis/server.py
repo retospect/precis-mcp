@@ -86,6 +86,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -369,6 +370,14 @@ _DEFAULT_TOOL_CONCURRENCY = 4
 #: dropped on cancel). A refusal before the body starts is unambiguous:
 #: nothing was written, and the text says how to check health. ``0``
 #: disables the bound.
+#:
+#: Post-land forensics on the incident itself (td649481): gr648196's two
+#: timed-out calls never reached dispatch — neither left a ``tool_calls``
+#: row, the put committed nothing, and co-server sessions kept dispatching
+#: at ordinary latency through the whole window — so the stall sat in the
+#: request path *before* the semaphore, not in a saturated queue. This
+#: bound still covers the failure class; ``_DetachedCall`` below covers
+#: the post-dispatch half.
 _QUEUE_WAIT_ENV = "PRECIS_MCP_QUEUE_WAIT_S"
 _DEFAULT_QUEUE_WAIT_S = 45.0
 
@@ -492,6 +501,89 @@ def _calling_session() -> object:
     return None if ctx is None else ctx.session
 
 
+#: Verbs that can never write. Abandoning one is noise; every other tool
+#: name (the write verbs, ``precis`` under the command profile, anything
+#: registered later) is treated as write-capable — a "may have written"
+#: line that turns out false costs nothing next to a silently dropped
+#: write (gr648196).
+_READ_ONLY_VERBS = frozenset({"get", "search"})
+
+
+class _DetachedCall:
+    """Track one dispatched body that can outlive its cancelled caller.
+
+    ``abandon_on_cancel=True`` returns the awaiting task while the OS
+    thread keeps running the real body. The queue bound
+    (``PRECIS_MCP_QUEUE_WAIT_S``) covers only the wait *for* a slot; once
+    a body has one, nothing else observes its thread — a cancelled write
+    used to land or fail with no record of either (gr648196's put left
+    neither a commit nor a ledger row, and "did it land?" was
+    unanswerable). The awaiting task calls :meth:`abandon` when its await
+    is dropped; the worker runs the body through :meth:`track`, which
+    reports the terminal outcome when the call was marked abandoned.
+    """
+
+    __slots__ = ("_kind", "_verb", "cancelled")
+
+    def __init__(self, verb: str, kind: object) -> None:
+        self._verb = verb
+        self._kind = kind if isinstance(kind, str) and kind else "-"
+        # Written on the event-loop thread, read on the worker thread:
+        # an Event, not a bare flag, for a real happens-before edge.
+        self.cancelled = threading.Event()
+
+    def track(self, call: Callable[[], Any]) -> Callable[[], Any]:
+        """Return the worker-thread body that reports an abandoned exit."""
+
+        def body() -> Any:
+            try:
+                result = call()
+            except BaseException as exc:
+                self._finish(f"raised {type(exc).__name__}")
+                raise
+            if isinstance(result, str) and result.startswith("[error"):
+                self._finish("returned an error result")
+            else:
+                self._finish("ok")
+            return result
+
+        return body
+
+    def _finish(self, outcome: str) -> None:
+        """Log how a body that outlived its caller ended (once, at exit)."""
+        if not self.cancelled.is_set():
+            return
+        log.warning(
+            "detached %s kind=%s finished after its caller cancelled: %s",
+            self._verb,
+            self._kind,
+            outcome,
+        )
+
+    def abandon(self, exc: BaseException) -> None:
+        """Mark the caller dropped; no-op unless ``exc`` is cancellation."""
+        if not isinstance(exc, anyio.get_cancelled_exc_class()):
+            return
+        self.cancelled.set()
+        if self._verb in _READ_ONLY_VERBS:
+            log.info(
+                "%s kind=%s cancelled after dispatch; its worker-thread "
+                "body may still run and its outcome is logged when it exits",
+                self._verb,
+                self._kind,
+            )
+        else:
+            log.warning(
+                "%s kind=%s cancelled after dispatch; its worker-thread "
+                "body may still run to completion and a write may commit "
+                "— the outcome is logged when it exits, the tool_calls "
+                "ledger records a commit, and "
+                "get(kind='skill', id='precis-status-help') shows server health",
+                self._verb,
+                self._kind,
+            )
+
+
 def _offload_sync(
     fn: Callable[..., Any], *, semaphore: anyio.Semaphore | None = None
 ) -> Callable[..., Any]:
@@ -549,6 +641,7 @@ def _offload_sync(
         # every session mid-call — precis.inflight, and see its docstring
         # for why this is a threading counter and not the semaphore.
         ticket = inflight.enter()
+        detached = _DetachedCall(verb, kwargs.get("kind"))
         try:
             # abandon_on_cancel=True: a cancelled/dropped MCP request must
             # not pin its awaiting task (and the whole session's recovery)
@@ -558,15 +651,25 @@ def _offload_sync(
             # The OS thread still runs to completion in the background
             # (anyio can't kill it), releasing the semaphore early — the
             # residual thread count stays bounded by anyio's default
-            # thread limiter.
+            # thread limiter. ``detached`` makes that background run
+            # observable: once the caller is gone the worker is the only
+            # place the body's outcome exists, so the tracked body
+            # reports it (gr648196).
             # A session tool call has a person (or agent) waiting on it:
             # its LLM calls are ``interactive`` for the quota taper
             # (gr347551). to_thread copies the context, so the scope rides
             # into the worker thread.
             with work_class_scope(WorkClass.INTERACTIVE):
                 return await anyio.to_thread.run_sync(
-                    functools.partial(fn, **kwargs), abandon_on_cancel=True
+                    detached.track(functools.partial(fn, **kwargs)),
+                    abandon_on_cancel=True,
                 )
+        except BaseException as exc:
+            # A dropped request: mark it so the still-running body's exit
+            # gets reported instead of vanishing. No-op for any other
+            # failure — a handler fault is reported to the caller.
+            detached.abandon(exc)
+            raise
         finally:
             # abandon_on_cancel means a cancelled request returns here
             # while the OS thread keeps running. Releasing the count with
@@ -583,8 +686,15 @@ def _offload_sync(
         outcome, size = "ok", None
         try:
             result = await run(kwargs)
-        except BaseException:
-            outcome = "exception"
+        except BaseException as exc:
+            # A dropped caller is not a handler fault: "abandoned" keeps
+            # the two apart in the calllat log, which is what makes the
+            # next gr648196-style incident diagnosable from it alone.
+            outcome = (
+                "abandoned"
+                if isinstance(exc, anyio.get_cancelled_exc_class())
+                else "exception"
+            )
             raise
         else:
             if isinstance(result, str):
@@ -631,6 +741,23 @@ def _offload_sync(
                 size=None,
             )
             return _queue_timeout_message(verb, waited)
+        except BaseException as exc:
+            # A caller that gives up *while queued* is the other half of
+            # the same incident shape: it never dispatched, so it leaves
+            # no tool_calls row — the calllat line is the only record
+            # that the wait itself killed it.
+            if isinstance(exc, anyio.get_cancelled_exc_class()):
+                waited = time.monotonic() - t0
+                calllat.record(
+                    verb,
+                    kwargs.get("kind"),
+                    kwargs.get("view") or kwargs.get("mode"),
+                    outcome="abandoned",
+                    duration_ms=waited * 1000,
+                    wait_ms=waited * 1000,
+                    size=None,
+                )
+            raise
         try:
             return await timed(kwargs, t0, (time.monotonic() - t0) * 1000)
         finally:

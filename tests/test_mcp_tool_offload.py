@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import threading
 import time
 from typing import Any
@@ -333,3 +334,157 @@ def test_offload_sync_queue_wait_refuses_unrun_with_health_hint(
     assert out.startswith("[error:Upstream]"), out
     assert "NOT run" in out and "precis-status-help" in out
     assert ran == []
+
+
+# ── cancelled-after-dispatch reporting (gr648196) ────────────────────
+
+
+def _wait_for_log(caplog: Any, needle: str) -> str | None:
+    """Poll ``caplog`` for a line the detached worker thread emits.
+
+    The abandon report and the calllat record land synchronously on the
+    event loop, but the detached body's exit line is written on the OS
+    thread whenever it finally unwinds — poll rather than read once."""
+    deadline = time.monotonic() + budget(10.0)
+    while time.monotonic() < deadline:
+        for record in caplog.records:
+            if needle in record.getMessage():
+                return record.getMessage()
+        time.sleep(0.05)
+    return None
+
+
+def test_offload_sync_abandoned_write_reports_outcome_and_health_hint(
+    caplog: Any,
+) -> None:
+    """gr648196's post-dispatch half: the queue bound refuses an unrun
+    call, but a caller can still give up *after* its write took a slot —
+    ``abandon_on_cancel`` returns the task while the OS thread keeps the
+    body running. Pin the reporting contract that makes that visible: the
+    abandonment logs a warning naming where to check, calllat marks the
+    call ``abandoned`` (not ``exception`` — a dropped caller is not a
+    handler fault), and the detached body's own exit is reported, so
+    "did the write land?" is answerable from the log alone."""
+    release = threading.Event()
+    written: list[str] = []
+
+    def put() -> str:
+        release.wait(10)
+        written.append("wrote")
+        return "ok"
+
+    wrapped = server._offload_sync(put, semaphore=anyio.Semaphore(1))
+
+    async def _run() -> bool:
+        with anyio.move_on_after(0.3) as scope:
+            await wrapped()
+        return scope.cancelled_caught
+
+    caplog.set_level(logging.INFO)
+    try:
+        cancelled = asyncio.run(_run())
+        assert cancelled
+
+        # Reported at cancel time, while the body is still held on
+        # ``release`` — the write-in-doubt warning plus a health hint.
+        abandon = _wait_for_log(caplog, "cancelled after dispatch")
+        assert abandon is not None
+        assert "put kind=-" in abandon and "write may commit" in abandon
+        assert "precis-status-help" in abandon
+        assert any(
+            r.name == "precis.calllat" and "outcome=abandoned" in r.getMessage()
+            for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+        # The abandoned write still lands — and its landing is reported.
+        release.set()
+        detached = _wait_for_log(caplog, "detached put")
+        assert detached is not None
+        assert "finished after its caller cancelled: ok" in detached
+        assert written == ["wrote"]
+    finally:
+        release.set()
+
+
+def test_offload_sync_abandoned_body_reports_its_failure(caplog: Any) -> None:
+    """The detached report names a failed exit too — a write that did
+    NOT land must be as visible as one that did."""
+    release = threading.Event()
+
+    def edit() -> str:
+        release.wait(10)
+        raise RuntimeError("boom")
+
+    wrapped = server._offload_sync(edit, semaphore=anyio.Semaphore(1))
+
+    async def _run() -> None:
+        with anyio.move_on_after(0.3):
+            await wrapped()
+
+    caplog.set_level(logging.INFO)
+    try:
+        asyncio.run(_run())
+        release.set()
+        detached = _wait_for_log(caplog, "detached edit")
+        assert detached is not None
+        assert "raised RuntimeError" in detached
+    finally:
+        release.set()
+
+
+def test_offload_sync_abandoned_read_stays_info_level(caplog: Any) -> None:
+    """A cancelled ``get`` cannot leave a write in doubt — the same
+    abandonment is reported at INFO and carries no write warning."""
+    release = threading.Event()
+
+    def get() -> str:
+        release.wait(10)
+        return "ok"
+
+    wrapped = server._offload_sync(get, semaphore=anyio.Semaphore(1))
+
+    async def _run() -> None:
+        with anyio.move_on_after(0.3):
+            await wrapped()
+
+    caplog.set_level(logging.INFO)
+    try:
+        asyncio.run(_run())
+        abandon = _wait_for_log(caplog, "cancelled after dispatch")
+        assert abandon is not None and "get kind=-" in abandon
+        assert not any("write may commit" in r.getMessage() for r in caplog.records)
+    finally:
+        release.set()
+
+
+def test_offload_sync_queue_abandon_records_calllat(
+    caplog: Any, monkeypatch: Any
+) -> None:
+    """A caller that gives up *while still queued* never dispatches, so
+    it leaves no ``tool_calls`` row — the calllat ``abandoned`` record is
+    the only trace. Pinned because gr648196's calls left exactly this
+    shape of absence."""
+    monkeypatch.setattr(server, "_tool_semaphore", server._FairSemaphore(0))
+
+    def put() -> str:
+        return "ok"
+
+    wrapped = server._offload_sync(put)
+
+    async def _run() -> bool:
+        with anyio.move_on_after(0.3) as scope:
+            await wrapped()
+        return scope.cancelled_caught
+
+    caplog.set_level(logging.INFO)
+    try:
+        cancelled = asyncio.run(_run())
+    finally:
+        monkeypatch.setattr(server, "_tool_semaphore", None)
+    assert cancelled
+    assert any(
+        r.name == "precis.calllat"
+        and "outcome=abandoned" in r.getMessage()
+        and "wait_ms" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
