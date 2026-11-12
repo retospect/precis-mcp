@@ -16,7 +16,7 @@ import importlib.util
 import json
 import time
 from pathlib import Path
-from types import ModuleType
+from types import FrameType, ModuleType
 
 import pytest
 
@@ -592,6 +592,30 @@ def test_overhead_budget() -> None:
         f"trace CPU overhead {overhead_us:.0f}µs/call "
         f"(fixture build CPU {cold * 1e3:.2f}ms cold / {warm * 1e3:.2f}ms warm)"
     )
+
+
+def test_sync_stops_at_the_deepest_live_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr647746 — ``_sync`` used to walk the whole ``f_back`` chain per
+    traced call (O(stack depth); pytest's ~25-frame stack alone cost
+    ~500 µs/call on the CI shard). Entries mint monotonically deeper, so
+    staleness is a suffix: the walk now stops at the deepest live entry,
+    and repeat calls inside it never re-classify an outer frame."""
+    checked: list[str] = []
+    orig = trace.Tracer._is_user_frame
+
+    def counting(self: trace.Tracer, f: FrameType) -> bool:
+        checked.append(f.f_code.co_name)
+        return orig(self, f)
+
+    out._reset()
+    with trace.run(work_root=_WORK_ROOT):
+        out.note("warmup")  # mints this test's user frame — one full walk
+        monkeypatch.setattr(trace.Tracer, "_is_user_frame", counting)
+        for _ in range(20):
+            out.note("n")
+    assert checked == []
 
 
 def test_out_run_diffs_against_the_previous_trace(tmp_path: Path) -> None:

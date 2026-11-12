@@ -170,6 +170,11 @@ class Tracer:
         #: a rewrite between calls re-reads (``linecache``'s coarser
         #: staleness check misses a same-size edit).
         self._src_cache: dict[str, tuple[tuple[int, int], list[str]]] = {}
+        #: filename → work_root membership; ``(filename, __name__)`` →
+        #: rendered file label. Path-derived, so stable for the run's
+        #: lifetime — an uncached ``relpath`` is a ``getcwd`` syscall.
+        self._in_work_cache: dict[str, bool] = {}
+        self._file_of_cache: dict[tuple[str, str | None], str] = {}
 
     # -- frame minting -----------------------------------------------------
 
@@ -181,22 +186,35 @@ class Tracer:
         whose script sits outside ``work_root`` still cites ``main.py``,
         as the sandbox's ``/work/main.py`` does."""
         name = f.f_code.co_filename
+        key = (name, f.f_globals.get("__name__"))
+        hit = self._file_of_cache.get(key)
+        if hit is not None:
+            return hit
         rel = os.path.relpath(name, self.work_root)
         if not rel.startswith("..") and not os.path.isabs(rel):
-            return rel.replace(os.sep, "/")
-        mod = f.f_globals.get("__name__")
-        if mod and mod != "__main__":
-            return str(mod)
-        return os.path.basename(name)
+            hit = rel.replace(os.sep, "/")
+        elif key[1] and key[1] != "__main__":
+            hit = str(key[1])
+        else:
+            hit = os.path.basename(name)
+        self._file_of_cache[key] = hit
+        return hit
 
     def _in_work(self, f: types.FrameType) -> bool:
         """The frame's file lives under ``work_root`` and is not staged
         infra — unlike ``_is_user_frame`` a ``<module>`` top level counts
         (a script's own toplevel call site is a legal citation)."""
-        if os.path.basename(f.f_code.co_filename) in _INFRA_FILES:
-            return False
-        rel = os.path.relpath(f.f_code.co_filename, self.work_root)
-        return not rel.startswith("..") and not os.path.isabs(rel)
+        name = f.f_code.co_filename
+        hit = self._in_work_cache.get(name)
+        if hit is None:
+            rel = os.path.relpath(name, self.work_root)
+            hit = (
+                os.path.basename(name) not in _INFRA_FILES
+                and not rel.startswith("..")
+                and not os.path.isabs(rel)
+            )
+            self._in_work_cache[name] = hit
+        return hit
 
     def _is_user_frame(self, f: types.FrameType) -> bool:
         return f.f_code.co_name != "<module>" and self._in_work(f)
@@ -295,39 +313,33 @@ class Tracer:
         return fr
 
     def _sync(self, callsite: types.FrameType) -> None:
-        """Re-align ``self.stack`` with the live Python stack: drop entries
-        whose frames returned, then mint a ``user`` frame for every
-        ``/work`` function frame between the deepest live entry and this
-        call."""
-        live: list[types.FrameType] = []
-        f: types.FrameType | None = callsite
-        while f is not None:
-            live.append(f)
-            f = f.f_back
-        live_ids = {id(fr) for fr in live}
+        """Re-align ``self.stack`` with the live Python stack: close the
+        stale suffix, then mint a ``user`` frame for every ``/work``
+        function frame between the deepest live entry and this call.
+
+        Entries mint monotonically deeper along one call chain, so
+        staleness is always a suffix and the walk can stop at the first
+        live entry it meets — a traced call made directly inside the
+        innermost live frame is O(1). The old shape walked the whole
+        ``f_back`` chain per call: O(total stack depth), and under
+        pytest's ~25-frame stack that alone cost ~500 µs/call, past the
+        overhead budget (gr647746)."""
         stack = self.stack
-        prefix = 1  # the synthetic root is always live
-        while (
-            prefix < len(stack)
-            and stack[prefix].py is not None
-            and id(stack[prefix].py) in live_ids
-        ):
-            prefix += 1
-        for stale in stack[prefix:]:
-            self._finish(stale)
-        del stack[prefix:]
-        # Consume the surviving prefix in stack order, then mint /work
-        # frames deeper than it. Pushes grow ``stack`` but ``matched`` is
-        # counted against the frozen ``prefix``, so new frames mint freely.
-        matched = 1
-        for f in reversed(live):
-            if matched < prefix:
-                # Consecutive stack entries can share one Python frame
-                # (``with trace()`` inside a function minted as a user
-                # frame) — consume all of them for this live frame.
-                while matched < prefix and f is stack[matched].py:
-                    matched += 1
-                continue
+        deeper: list[types.FrameType] = []
+        while True:
+            target = stack[-1].py
+            deeper.clear()
+            f: types.FrameType | None = callsite
+            while f is not None and f is not target:
+                deeper.append(f)
+                f = f.f_back
+            if f is not None or len(stack) == 1:
+                break  # top is live — or only the synthetic root is left
+            self._finish(stack.pop())
+        # ``deeper`` holds the live frames below the surviving prefix top,
+        # innermost first — mint user frames outermost-first so each push
+        # lands under its real parent.
+        for f in reversed(deeper):
             if self._is_user_frame(f):
                 caller = f.f_back
                 if caller is not None and self._in_work(caller):
