@@ -30,7 +30,9 @@ from precis.store.types import Tag
 from precis.workers.sweeper import (
     _KIND_PROVIDER_GC_LOCK,
     _REOPEN_MAX_ATTEMPTS,
+    _WORKER_LOG_GC_BATCH,
     _WORKER_LOG_GC_LOCK,
+    _WORKER_LOG_GC_SQL,
     UNPARK_CAP,
     _gc_kind_providers,
     _gc_transcripts,
@@ -179,6 +181,26 @@ def test_gc_worker_logs_prunes_aged_and_is_single_flight(store: Store) -> None:
     # Lock free: aged rows pruned, the 2 fresh rows survive.
     _gc_worker_logs(store)
     assert _count() == 2
+
+
+def test_gc_worker_logs_plan_uses_ts_index(store: Store) -> None:
+    # gr573439: the GC's `ts < cutoff LIMIT n` subquery is a bare-ts read.
+    # Once the backlog drained, retention deletes freed heap space that new
+    # inserts reuse, so aged rows no longer sit at the heap head and the
+    # unordered LIMIT seq-scanned most of the table every pass. 0315's
+    # (ts) b-tree turns it into a range scan. Seq and bitmap scans are off
+    # so the tiny test table can't hide a missing index behind a cheap
+    # seq scan.
+    with store.pool.connection() as conn:
+        conn.execute("SET LOCAL enable_seqscan = off")
+        conn.execute("SET LOCAL enable_bitmapscan = off")
+        plan = "\n".join(
+            str(r[0])
+            for r in conn.execute(
+                "EXPLAIN " + _WORKER_LOG_GC_SQL, ("30 days", _WORKER_LOG_GC_BATCH)
+            ).fetchall()
+        )
+    assert "worker_logs_ts_idx" in plan, plan
 
 
 def test_gc_kind_providers_prunes_aged_and_is_single_flight(store: Store) -> None:

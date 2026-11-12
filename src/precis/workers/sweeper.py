@@ -597,6 +597,13 @@ _WORKER_LOG_GC_BATCH = 50_000
 #: The sweeper runs on every host, so an unguarded retention DELETE would pile up
 #: — the exact failure ``route_log.gc`` had. Xact-scoped, auto-released at commit.
 _WORKER_LOG_GC_LOCK = 0x776C6763
+#: One bounded retention batch; params ``(interval text, limit)``. The
+#: subquery's bare ``ts`` range is served by ``worker_logs_ts_idx`` (0315).
+_WORKER_LOG_GC_SQL = (
+    "DELETE FROM worker_logs WHERE log_id IN ("
+    "  SELECT log_id FROM worker_logs"
+    "   WHERE ts < now() - %s::interval LIMIT %s)"
+)
 
 
 def _worker_logs_retention_days() -> int:
@@ -621,8 +628,10 @@ def _gc_worker_logs(store: Store) -> int:
       the sweeper runs on every host, so an unguarded DELETE would pile up.
     * **Batched** — ``LIMIT`` per pass so the first drain of a long-unpruned
       table (millions of aged rows) can't become one multi-second DELETE
-      holding a lock. Old rows sit at the head of the append-only heap, so the
-      unordered ``LIMIT`` subquery finds a batch without a dedicated ts index.
+      holding a lock. The ``ts`` range walks ``worker_logs_ts_idx`` (0315,
+      gr573439): pruned heap space is reused by new inserts, so aged rows do
+      not stay at the heap head and an unindexed ``LIMIT`` scan read most of
+      the table on every pass.
     """
     days = _worker_logs_retention_days()
     with store.pool.connection() as conn:
@@ -631,12 +640,7 @@ def _gc_worker_logs(store: Store) -> int:
         ).fetchone()
         if not got or not got[0]:
             return 0  # another host is already pruning — don't pile on
-        cur = conn.execute(
-            "DELETE FROM worker_logs WHERE log_id IN ("
-            "  SELECT log_id FROM worker_logs"
-            "   WHERE ts < now() - %s::interval LIMIT %s)",
-            (f"{days} days", _WORKER_LOG_GC_BATCH),
-        )
+        cur = conn.execute(_WORKER_LOG_GC_SQL, (f"{days} days", _WORKER_LOG_GC_BATCH))
         conn.commit()
         return cur.rowcount or 0
 

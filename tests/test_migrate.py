@@ -140,6 +140,24 @@ def test_refs_title_tsv_gin_index(fresh_db: str) -> None:
     assert "refs_title_tsv_gin_idx" in plan
 
 
+def test_worker_logs_ts_index(fresh_db: str) -> None:
+    # gr573439: every worker_logs index led with host/pass/level or was
+    # partial on `payload ? 'handler'`, so the bare-ts reads (retention GC,
+    # nursery host_alive, status host rollup, /logs) seq-scanned the table.
+    # 0315 adds a plain, valid, non-partial b-tree on (ts).
+    Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
+    rows = _fetch(
+        fresh_db,
+        "SELECT i.indisvalid, i.indpred IS NULL AS whole, "
+        "pg_get_indexdef(i.indexrelid) AS def FROM pg_index i "
+        "JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE c.relname = 'worker_logs_ts_idx'",
+    )
+    assert rows, "worker_logs_ts_idx missing"
+    assert rows[0]["indisvalid"] and rows[0]["whole"]
+    assert rows[0]["def"].endswith("USING btree (ts)")
+
+
 def test_seeds_populated(fresh_db: str) -> None:
     Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
     actors = {r["slug"] for r in _fetch(fresh_db, "SELECT slug FROM actors")}
