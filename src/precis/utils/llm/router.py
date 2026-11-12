@@ -3426,19 +3426,66 @@ def _run_with_retry(
     return result
 
 
+def _subscription_quota_trusted() -> bool:
+    """Whether a quota-worded claude refusal can be the subscription's own
+    window: the OAuth token resolves on this host, so the run that produced
+    it presented the subscription credential. ``False`` is the
+    key-management failure shape (gr635459) — the spawn could not carry the
+    token, so the CLI answered off fallback (keychain) credentials and any
+    "quota" it reports belongs to another principal."""
+    from precis.utils import claude_oauth as _oauth
+
+    return _oauth.token_resolvable()
+
+
+def _alert_auth_not_quota(store: Any, result: LlmResult) -> None:
+    """Page the claude-auth condition for a quota-worded refusal that no
+    OAuth token could have produced (gr635459): the page must name the
+    key-management failure, never a phantom "[budget] … quota reached"
+    window. Best-effort side channel — the refusal's own classification
+    stands; never raises."""
+    log.warning(
+        "route: quota-worded refusal but no OAuth token resolves on this "
+        "host — a key-management failure, not the subscription's window; "
+        "alerting as auth (refusal=%s)",
+        (result.error or "")[:200],
+    )
+    if store is None:
+        return
+    try:
+        from precis.utils.claude_quota import raise_auth_alert
+        from precis.utils.db_log_handler import _resolve_host_name
+
+        raise_auth_alert(store, host=_resolve_host_name())
+    except Exception:
+        log.debug(
+            "route: auth alert for a tokenless quota refusal failed", exc_info=True
+        )
+
+
 def _react_to_quota(result: LlmResult, *, transport: Transport, bare: bool) -> None:
     """Write a live ``quota``-class failure back to the claude quota
     snapshot (:func:`precis.budget.quota.stamp_exhausted`) so the gate
     pauses the next claude call on this store instead of every surface
     rediscovering exhaustion until the probe cadence catches up. Only the
     OAuth transports draw subscription quota (a ``bare`` rung spends
-    dollars); dark when no store is bound. Never raises."""
+    dollars); dark when no store is bound. Never raises.
+
+    gr635459: a quota-worded refusal from a run that could not present the
+    OAuth token is NOT stamped — it is the key-management failure (the CLI
+    answered off fallback credentials), and the stamp is what pages
+    "[budget] claude subscription quota reached" on a phantom window. The
+    auth alert fires instead.
+    """
     if result.reason_class != "quota":
         return
     from precis.budget import meter as _meter
     from precis.budget import quota as _quota
 
     if transport.value not in _meter.OAUTH_TRANSPORTS or bare:
+        return
+    if not _subscription_quota_trusted():
+        _alert_auth_not_quota(_meter.active_store(), result)
         return
     try:
         _quota.stamp_exhausted(
@@ -3457,7 +3504,10 @@ def _harvest_pool_signals(
     the stream marks refused, or the one the notice wording names when
     there is no stream to read (:func:`_park_notice_pool`; ``claude_p``
     emits no ``rate_limit_event``, so its quota failures used to never
-    reach the ledger, gr645188). Writes the pool ledger only — never the
+    reach the ledger, gr645188). The wording-named park only fires when
+    the OAuth token resolves on this host — tokenless, the wording is a
+    fallback credential's window, not the subscription pool's (gr635459).
+    Writes the pool ledger only — never the
     claude quota snapshot, which :func:`_react_to_quota` alone stamps from
     the final result — so it runs per rung, each rung's evidence harvested
     once. Same OAuth / non-``bare`` guard as there (a ``bare`` rung spends
@@ -3481,7 +3531,11 @@ def _harvest_pool_signals(
             else None
         )
         if snapshot is None:
-            if result.reason_class == "quota":
+            # gr635459: a stream-less quota refusal parks the pool its
+            # wording names — but only when the run could have presented
+            # the OAuth token. Tokenless, the wording is a fallback
+            # credential's window, not the subscription pool's.
+            if result.reason_class == "quota" and _subscription_quota_trusted():
                 _park_notice_pool(store, result)
             return
         # Only a window the stream itself marks refused is parked: the parser

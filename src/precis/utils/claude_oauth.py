@@ -33,6 +33,7 @@ we only fill the gap.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import MutableMapping
 
 log = logging.getLogger(__name__)
@@ -83,6 +84,31 @@ def ensure_oauth_token(env: MutableMapping[str, str]) -> None:
     if token:
         env[ENV_VAR] = token
         log.debug("claude_oauth: loaded %s from the vault", ENV_VAR)
+
+
+def token_resolvable() -> bool:
+    """True when a ``claude`` spawn from THIS process would carry the OAuth
+    token — the same env → ``vault.reveal`` → bootstrap-file resolution
+    :func:`ensure_oauth_token` applies, asked without touching an env.
+
+    The quota detector's key-management axis (gr635459): a quota-worded
+    reply from a run that could not present the token is a key-management
+    failure, not the subscription's window — the CLI answered off its
+    fallback (keychain) credentials, so any "quota" it reports belongs to
+    another principal. Never raises: an unresolvable store reads as
+    ``False``.
+    """
+    if os.environ.get(ENV_VAR):
+        return True
+    try:
+        from precis import secrets as _secrets
+
+        return bool(_secrets.get_secret(ENV_VAR) or _secrets.reveal_unbound(ENV_VAR))
+    except Exception:
+        # Same defensive posture as ensure_oauth_token: this sits on the
+        # detection path, it must never take the caller down.
+        log.warning("claude_oauth: resolvability check for %s raised", ENV_VAR)
+        return False
 
 
 def prefer_oauth_over_api_key(env: MutableMapping[str, str]) -> str:
@@ -143,4 +169,5 @@ __all__ = [
     "ensure_oauth_token",
     "logged_out_banner_present",
     "prefer_oauth_over_api_key",
+    "token_resolvable",
 ]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -194,3 +195,102 @@ def test_quota_check_refreshes_early_when_probe_is_due(
     store.data["probe_due"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     qc.run_quota_check_pass(cast("Any", store))
     assert probes == [1]
+
+
+# ── gr635459: a quota-worded refusal with no resolvable OAuth token is a ──
+# ── key-management failure — alert as auth, never stamp the snapshot. ─────
+
+
+def test_react_to_quota_without_a_token_alerts_auth_not_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-11-11 incident: workers spawned claude without the vault
+    token, the CLI answered off fallback credentials with quota wording,
+    and the reactive stamp paged "[budget] claude subscription quota
+    reached (seven_day)" — a phantom window. Tokenless, the refusal must
+    NOT stamp (the breaker pages off that stamp); the claude-auth alert
+    fires instead."""
+    store = SnapshotStore()
+    stamps: list[Any] = []
+    alerts: list[tuple[Any, str]] = []
+    monkeypatch.setattr(quota, "stamp_exhausted", lambda *a, **k: stamps.append(k))
+    monkeypatch.setattr("precis.utils.claude_oauth.token_resolvable", lambda: False)
+    monkeypatch.setattr(
+        "precis.utils.claude_quota.raise_auth_alert",
+        lambda s, *, host: alerts.append((s, host)),
+    )
+    monkeypatch.setattr(
+        "precis.utils.db_log_handler._resolve_host_name", lambda: "testhost"
+    )
+    meter.bind_store(cast("Any", store))
+    try:
+        router._react_to_quota(
+            _QuotaProv().run(LlmRequest(tier=Tier.BIG, prompt="x"), model="m"),
+            transport=Transport.CLAUDE_AGENT,
+            bare=False,
+        )
+    finally:
+        meter.bind_store(None)
+    assert stamps == []
+    assert store.writes == 0  # no snapshot row for the gate to pause on
+    assert [(s is store, host) for s, host in alerts] == [(True, "testhost")]
+
+
+def test_react_to_quota_with_a_token_stamps_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard's other side: a token on the host means the quota wording
+    IS the subscription's window — the stamp lands and no auth alert
+    fires."""
+    store = SnapshotStore()
+    stamps: list[Any] = []
+    alerts: list[Any] = []
+    monkeypatch.setattr(quota, "stamp_exhausted", lambda *a, **k: stamps.append(k))
+    monkeypatch.setattr("precis.utils.claude_oauth.token_resolvable", lambda: True)
+    monkeypatch.setattr(
+        "precis.utils.claude_quota.raise_auth_alert",
+        lambda *a, **k: alerts.append(k),
+    )
+    meter.bind_store(cast("Any", store))
+    try:
+        router._react_to_quota(
+            _QuotaProv().run(LlmRequest(tier=Tier.BIG, prompt="x"), model="m"),
+            transport=Transport.CLAUDE_AGENT,
+            bare=False,
+        )
+    finally:
+        meter.bind_store(None)
+    assert len(stamps) == 1 and stamps[0]["resets_at"] == RESET
+    assert alerts == []
+
+
+def test_pool_park_skipped_when_no_token_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pool ledger reads the same guard: a stream-less quota refusal
+    parks the claude-sub pool its wording names — unless no OAuth token
+    resolves here, in which case the wording is a fallback credential's
+    window, not the pool's."""
+    from precis.utils.llm import accounts
+
+    parks: list[Any] = []
+    store = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
+    monkeypatch.setattr(
+        accounts, "record_pool_failure", lambda *a, **k: parks.append(k)
+    )
+    monkeypatch.setattr("precis.utils.claude_oauth.token_resolvable", lambda: False)
+    refusal = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.BIG,
+        error="account quota exhausted: You've hit your weekly limit · resets 9am",
+        paused=True,
+        quota_exhausted=True,
+        reason_class="quota",
+        retry_at=RESET,
+    )
+    router._harvest_pool_signals(refusal, transport=Transport.CLAUDE_P, bare=False)
+    assert parks == []

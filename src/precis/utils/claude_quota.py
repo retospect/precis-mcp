@@ -91,6 +91,54 @@ _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
 )
 
 
+def raise_auth_alert(store: Any, *, host: str) -> None:
+    """Raise (once) the critical claude-auth alert and page on first sight.
+
+    Shared by the two detectors that can prove an auth/token failure:
+    :mod:`precis.workers.quota_check` (the probe's ``AUTH_FAILED`` outcome)
+    and the router's reactive-quota guard (gr635459 — a quota-worded
+    refusal from a run that could not present the token). One fingerprint
+    per host, so either detector pages once and either one's healthy read
+    resolves the same alert. Keep only THIS host's fingerprint live so a
+    stale alert from a recovered host resolves; single-runner today, but
+    correct if either caller ever runs on more than one agent node.
+    """
+    from precis.alert_ids import RULES_BY_ID
+    from precis.alerts import (
+        notify_critical_alert,
+        raise_alert,
+        resolve_stale_alerts,
+    )
+
+    source = RULES_BY_ID["quota_check:auth/{host}:claude-oauth"].rule
+    fingerprint = f"{host}:claude-oauth"
+    title = f"[claude-auth] claude -p can't authenticate on {host} (401)"
+    detail = (
+        "The Claude OAuth token is stale/revoked — or was never loaded "
+        "from the secret store, so claude answered off fallback "
+        "credentials and any quota wording it produced is NOT the "
+        "subscription's window (gr635459). plan_tick, quest_tick, "
+        "doctor_tick, the reviewers, dream, and the /figure editor all "
+        "fail. Rotate CLAUDE_CODE_OAUTH_TOKEN in the secrets VAULT (the "
+        "per-user ~/.claude_oauth_token file is retired — see "
+        "utils/claude_oauth — so re-dropping a file fixes nothing and "
+        "silently shadows a rotation), then restart the agent worker: "
+        "launchctl bootout + bootstrap, NOT kickstart -k, which keeps the "
+        "old env."
+    )
+    _ref, is_new = raise_alert(
+        store,
+        source=source,
+        fingerprint=fingerprint,
+        title=title,
+        detail=detail,
+        severity="critical",
+    )
+    resolve_stale_alerts(store, source=source, live_fingerprints={fingerprint})
+    if is_new:
+        notify_critical_alert(store, title, detail, fingerprint=fingerprint)
+
+
 def _looks_like_auth_failure(*texts: str) -> bool:
     """True if any text carries a ``claude -p`` authentication-failure mark.
 
@@ -452,5 +500,6 @@ __all__ = [
     "QuotaSnapshot",
     "RefreshOutcome",
     "parse_rate_limits",
+    "raise_auth_alert",
     "refresh_snapshot",
 ]

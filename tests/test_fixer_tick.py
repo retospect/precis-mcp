@@ -117,6 +117,33 @@ def test_fixer_config_from_env_respects_explicit_override(
     assert cfg.default_model == "claude-pinned"
 
 
+# ── spawn env: the launchd tick bootstraps the vault OAuth token ──────
+
+
+def test_spawn_claude_bootstraps_the_oauth_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr635459: the fixer tick is a launchd daemon, so it runs no shell
+    hook — its ``claude -p`` must carry the long-lived OAuth token loaded
+    from the secret store, never fall back to the keychain."""
+    from precis.utils.claude_oauth import ENV_VAR
+
+    seen: dict[str, Any] = {}
+
+    def _run(argv: list[str], **kw: Any) -> types.SimpleNamespace:
+        seen.update(kw)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(tick_mod.subprocess, "run", _run)
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        "precis.secrets.get_secret", lambda name, **kw: "sk-a" + "nt-oat01-VAULT"
+    )
+    cfg = _cfg(tmp_path, tmp_path, Autonomy.REPORT)
+    tick_mod._spawn_claude(cfg, tmp_path, "the prompt", _item())
+    assert seen["env"][ENV_VAR] == ("sk-a" + "nt-oat01-VAULT")
+
+
 # ── run_tick: local branch cleanup after a real ship ────────────────
 
 

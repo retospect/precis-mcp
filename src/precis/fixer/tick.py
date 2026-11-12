@@ -23,8 +23,10 @@ landing this module does nothing dangerous:
 * ``full`` — additionally ``scripts/deploy`` + the agentic prod-look +
   fix-forward. This is the keyless dark-factory rung.
 
-Set ``PRECIS_FIXER_AUTONOMY`` to opt in. Auth is the host's ``claude``
-OAuth (``~/.claude``) — *not* ``--bare``/API-key like the container
+Set ``PRECIS_FIXER_AUTONOMY`` to opt in. Auth is the long-lived Claude
+OAuth token loaded from the secret store into the spawn env (gr635459 —
+a launchd tick runs no shell hook, so the keychain alone is not a
+reliable source) — *not* ``--bare``/API-key like the container
 ``fix_gripe`` — so the builder sees CLAUDE.md + skills.
 """
 
@@ -232,7 +234,16 @@ def _spawn_claude(
     The laptop runs claude on the host, so ``~/.claude`` OAuth is
     reachable and the builder sees CLAUDE.md + skills. The gate — the
     only thing that needs the container — runs separately.
+
+    gr635459: the tick is a launchd daemon, so it runs no shell hook —
+    the long-lived OAuth token is loaded from the secret store into the
+    spawn env explicitly (``utils/claude_oauth``), never left to the
+    keychain fallback.
     """
+    from precis.utils.claude_oauth import ensure_oauth_token
+
+    env = dict(os.environ)
+    ensure_oauth_token(env)
     model = _resolve_model(cfg, item)
     return subprocess.run(
         [
@@ -254,6 +265,7 @@ def _spawn_claude(
         encoding="utf-8",
         timeout=cfg.build_timeout_s,
         check=False,
+        env=env,
     )
 
 

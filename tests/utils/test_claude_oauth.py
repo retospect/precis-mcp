@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from precis.utils.claude_oauth import ENV_VAR, ensure_oauth_token
+from precis.utils.claude_oauth import ENV_VAR, ensure_oauth_token, token_resolvable
 
 
 def _vault(monkeypatch: Any, value: str | None, *, unbound: str | None = None) -> None:
@@ -112,3 +112,35 @@ def test_bound_store_answer_skips_the_one_shot(monkeypatch):
     ensure_oauth_token(env)
     assert env[ENV_VAR] == "sk-bound"
     assert calls == []
+
+
+# ── token_resolvable: the quota detector's key-management axis (gr635459) ──
+
+
+def test_token_resolvable_from_env(monkeypatch):
+    monkeypatch.setenv(ENV_VAR, "sk-a" + "nt-oat01-ENV")
+    assert token_resolvable() is True
+
+
+def test_token_resolvable_from_vault(monkeypatch):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    _vault(monkeypatch, ("sk-a" + "nt-oat01-VAULT"))
+    assert token_resolvable() is True
+
+
+def test_token_unresolvable_reads_false(monkeypatch):
+    """No env, no vault, no bootstrap file → a spawn would carry no token,
+    so a quota-worded reply cannot be the subscription's window."""
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    _vault(monkeypatch, None)
+    assert token_resolvable() is False
+
+
+def test_token_resolvable_never_raises(monkeypatch):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+
+    def _boom(name: str, **kw: Any) -> str:
+        raise RuntimeError("pool exhausted")
+
+    monkeypatch.setattr("precis.secrets.get_secret", _boom, raising=True)
+    assert token_resolvable() is False

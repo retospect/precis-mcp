@@ -19,12 +19,13 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from precis.alert_ids import RULES_BY_ID
-from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
+from precis.alerts import resolve_stale_alerts
 from precis.store import Store
 from precis.utils.claude_quota import (
     DEFAULT_SCOPE,
     REFRESH_INTERVAL_S,
     RefreshOutcome,
+    raise_auth_alert,
     refresh_snapshot,
 )
 from precis.utils.db_log_handler import _resolve_host_name
@@ -36,39 +37,11 @@ log = logging.getLogger(__name__)
 #: revoked/stale OAuth token 401s every agentic call cluster-wide
 #: (plan_tick, reviewers, dream, figure) and was invisible for a whole day
 #: behind an unrelated outage — this makes it page the moment it recurs.
+#: The raise itself lives in ``utils/claude_quota.raise_auth_alert`` — the
+#: router's tokenless-quota guard (gr635459) raises the SAME alert, one
+#: fingerprint per host, so either detector pages once and either one's
+#: healthy read resolves it.
 _AUTH_ALERT_SOURCE = RULES_BY_ID["quota_check:auth/{host}:claude-oauth"].rule
-
-
-def _raise_auth_alert(store: Store, host: str) -> None:
-    """Raise (once) the critical claude-auth alert and page on first sight."""
-    fingerprint = f"{host}:claude-oauth"
-    title = f"[claude-auth] claude -p can't authenticate on {host} (401)"
-    detail = (
-        "The Claude OAuth token is stale/revoked — plan_tick, quest_tick, "
-        "doctor_tick, the reviewers, dream, and the /figure editor all fail. "
-        "Rotate CLAUDE_CODE_OAUTH_TOKEN in the secrets VAULT (the per-user "
-        "~/.claude_oauth_token file is retired — see utils/claude_oauth — so "
-        "re-dropping a file fixes nothing and silently shadows a rotation), "
-        "then restart the agent worker: launchctl bootout + bootstrap, NOT "
-        "kickstart -k, which keeps the old env."
-    )
-    _ref, is_new = raise_alert(
-        store,
-        source=_AUTH_ALERT_SOURCE,
-        fingerprint=fingerprint,
-        title=title,
-        detail=detail,
-        severity="critical",
-    )
-    # Page exactly once per condition (mirrors the nursery worker-health
-    # detectors). Keep only THIS host's fingerprint live so a stale alert
-    # from a recovered host resolves; single-runner today, but correct if
-    # quota_check ever runs on more than one agent node.
-    resolve_stale_alerts(
-        store, source=_AUTH_ALERT_SOURCE, live_fingerprints={fingerprint}
-    )
-    if is_new:
-        notify_critical_alert(store, title, detail, fingerprint=fingerprint)
 
 
 def run_quota_check_pass(store: Store, *, limit: int = 1) -> BatchResult:
@@ -107,7 +80,7 @@ def run_quota_check_pass(store: Store, *, limit: int = 1) -> BatchResult:
     # auth is healthy again, leave untouched on a transient/unknown blip.
     host = _resolve_host_name()
     if outcome is RefreshOutcome.AUTH_FAILED:
-        _raise_auth_alert(store, host)
+        raise_auth_alert(store, host=host)
     elif outcome in (RefreshOutcome.OK, RefreshOutcome.NO_LIMITS):
         # claude -p authenticated — resolve any open auth alert for this host.
         resolve_stale_alerts(store, source=_AUTH_ALERT_SOURCE, live_fingerprints=set())
