@@ -118,6 +118,13 @@ _TAPROOT_CASCADE_NS = f"{TAPROOT_NAMESPACE}CASCADE"
 # fetch-exhausted (see :func:`_stub_exhausted`) past the grace window.
 _UNACQUIRABLE = "unacquirable"
 
+#: Tag value marking a hand-fetch ask on the owner's queue (gr635726).
+#: The give-up below files a 'Fetch by hand: …' todo per dead acquiring
+#: finding, tagged ``want-paper`` + ``waiting-for:<owner>`` so the whole
+#: class lists with one tag search — the convention documented in
+#: ``precis-user-queue-help``.
+_WANT_PAPER_TAG = "want-paper"
+
 # Env override for the acquisition-mode grace window — how long an
 # `acquiring` finding may sit on fetch-exhausted stubs before the chase
 # gives up on it (flips to `dead_chain(reason=unacquirable)`). Decided
@@ -962,7 +969,9 @@ def _advance_acquiring(
     which case it's an honest ``dead_chain(reason=unacquirable)`` give-up
     (the acquisition-mode give-up rule) — never the tracing arm's
     empty-chain instant-dead (an acquiring finding is MINTED with an
-    empty ``meta.chain`` by design).
+    empty ``meta.chain`` by design). The give-up also files a
+    'Fetch by hand: …' ``want-paper`` todo on the owner's queue for the
+    still-unacquired stubs (see :func:`_file_want_paper_todo`, gr635726).
     """
     stub_links = store.links_for(
         finding.ref_id, direction="out", relation=_AWAITS_EVIDENCE
@@ -977,6 +986,7 @@ def _advance_acquiring(
         return "dead", ev
 
     all_exhausted = True
+    hand_fetch: list[tuple[int, str]] = []
     for stub_link in stub_links:
         stub_ref_id = stub_link.dst_ref_id
         if stub_ref_id in set(finding.meta.get("rejected_stubs") or []):
@@ -1018,12 +1028,18 @@ def _advance_acquiring(
             continue
         if not _stub_exhausted(conn, stub_ref_id):
             all_exhausted = False
+        else:
+            # Live, chunk-less, fetch-exhausted: the human is the only
+            # remaining fetcher — name it in the want-paper ask.
+            hand_fetch.append((stub_ref_id, _stub_label(stub)))
 
     if all_exhausted:
         waits, run_age_days = _waiting_run_stats(conn, finding.ref_id)
         grace_days = _acquire_grace_days()
         if run_age_days >= grace_days:
             _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason=_UNACQUIRABLE)
+            if hand_fetch:
+                _file_want_paper_todo(conn, store, finding, hand_fetch)
             ev.reason = _UNACQUIRABLE
             ev.frontier["waited_days"] = round(run_age_days, 1)
             ev.frontier["waits"] = waits
@@ -2236,6 +2252,103 @@ def _file_taproot_review_todo(
             set_by="chase",
             replace_prefix=True,
             conn=c,
+        )
+
+
+def _stub_label(stub: dict[str, Any]) -> str:
+    """Short human-usable name for a stub: best external id, else cite key."""
+    identifiers = stub.get("identifiers") or {}
+    for id_kind in ("doi", "arxiv", "s2"):
+        if identifiers.get(id_kind):
+            return str(identifiers[id_kind])
+    return str(stub.get("slug") or f"ref:{stub['ref_id']}")
+
+
+def _file_want_paper_todo(
+    conn: Connection,
+    store: Store,
+    finding: FindingRow,
+    hand_fetch: list[tuple[int, str]],
+) -> None:
+    """File the ``want-paper`` hand-fetch todo on the owner's queue
+    (gr635726).
+
+    Called from :func:`_advance_acquiring` on the
+    ``dead_chain(reason=unacquirable)`` transition — the moment
+    auto-fetch honestly gives up on every ``wants=`` stub, the only
+    remaining way to ground the claim is a human fetching a PDF by
+    hand. Riding the SAME ``conn`` as the status flip keeps the two
+    atomic: either both land or neither, so the give-up can never
+    commit without the ask being visible.
+
+    The todo is tagged ``want-paper`` (one tag search lists the whole
+    hand-fetch class) and ``waiting-for:<owner>`` (the park that keeps
+    it out of factory dispatch; owner from
+    :func:`precis.config.load_config`) — the convention documented in
+    ``precis-user-queue-help``. A defensive guard skips the mint when a
+    live ``want-paper`` todo for this finding already exists, so a
+    finding re-advanced past a recorded death and dead-chained again
+    never doubles the ask.
+    """
+    existing = conn.execute(
+        """
+        SELECT r.ref_id FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL
+           AND t.namespace = 'OPEN' AND t.value = %s
+           AND (r.meta->>'finding_ref_id')::int = %s
+        """,
+        (_WANT_PAPER_TAG, finding.ref_id),
+    ).fetchone()
+    if existing is not None:
+        return
+
+    from precis.config import load_config
+
+    owner = load_config().owner
+    claim = (finding.title or "(untitled claim)").strip()
+    papers = "; ".join(label for _rid, label in hand_fetch)
+    title = (
+        f"Fetch by hand: {claim} — auto-fetch gave up on "
+        f"{len(hand_fetch)} paper(s): {papers}"
+    )
+    todo = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=title[:200],
+        meta={
+            "source": "chase:acquire",
+            "finding_ref_id": finding.ref_id,
+            "stub_ref_ids": [rid for rid, _label in hand_fetch],
+        },
+        conn=conn,
+    )
+    for tag_value in (_WANT_PAPER_TAG, f"waiting-for:{owner}"):
+        conn.execute(
+            "INSERT INTO ref_tags (ref_id, tag_id, set_by) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (todo.id, _upsert_tag(conn, "OPEN", tag_value), "chase"),
+        )
+    conn.execute(
+        "INSERT INTO ref_tags (ref_id, tag_id, set_by) "
+        "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+        (todo.id, _upsert_tag(conn, _STATUS_NAMESPACE, "open"), "chase"),
+    )
+    store.add_link(
+        src_ref_id=todo.id,
+        dst_ref_id=finding.ref_id,
+        relation="related-to",
+        set_by="chase",
+        conn=conn,
+    )
+    for stub_ref_id, _label in hand_fetch:
+        store.add_link(
+            src_ref_id=todo.id,
+            dst_ref_id=stub_ref_id,
+            relation="related-to",
+            set_by="chase",
+            conn=conn,
         )
 
 

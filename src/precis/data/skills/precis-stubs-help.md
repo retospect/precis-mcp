@@ -79,6 +79,24 @@ balance drops below the low-water mark it raises
 `fetch_oa:openalex_balance/openalex-content-credits-low` (warn) — the
 cascade stalls on credits, not on backlog shape.
 
+## Papers the owner wants fetched by hand
+
+When auto-fetch honestly gives up on a stub — an acquisition-mode
+finding (`wants=`) goes `STATUS:dead_chain(reason=unacquirable)` after
+every linked stub stays fetch-exhausted past the grace window — the
+chase worker files a `Fetch by hand: …` todo on the owner's queue,
+tagged `want-paper` + `waiting-for:<owner>` and linked to the finding
+and its unacquired stubs. List the whole hand-fetch class with one
+search (convention: `precis-user-queue-help`):
+
+```python
+search(kind="todo", tags=["want-paper"], status="open")
+```
+
+The stub itself is untouched by the give-up — it stays in this backlog
+(`fetch_oa` keeps a monthly retry forever); the todo is the human's
+reminder that the claim is waiting on a manual download.
+
 ## See just the papers a dream decided to chase
 
 ```python

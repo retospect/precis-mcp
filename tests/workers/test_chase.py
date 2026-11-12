@@ -1032,6 +1032,67 @@ def test_acquiring_give_up_after_grace_window_when_stubs_exhausted(store) -> Non
     assert stub_id in backlog_ids
 
 
+def test_acquiring_give_up_files_want_paper_todo(store) -> None:
+    """gr635726: the unacquirable give-up files exactly one
+    'Fetch by hand' todo on the owner's queue — tagged ``want-paper``
+    and ``waiting-for:<owner>``, linked to the finding and the dead
+    stub — so the human lists the whole hand-fetch class with one tag
+    search. A second pass doesn't duplicate it."""
+    from precis.config import load_config
+
+    owner = load_config().owner
+    fid, stub_id = _seed_acquiring_finding(store, wants=[{"doi": "10.1/acq-wp"}])
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.commit()
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.meta FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'want-paper'
+            """
+        ).fetchall()
+    assert len(rows) == 1
+    todo_id, todo_title, todo_meta = rows[0]
+    assert todo_title.startswith("Fetch by hand:")
+    assert "10.1/acq-wp" in todo_title
+    assert (todo_meta or {}).get("finding_ref_id") == fid
+
+    tag_values = {t.value for t in store.tags_for(todo_id)}
+    assert "want-paper" in tag_values
+    assert f"waiting-for:{owner}" in tag_values
+    assert _status_tag(store, todo_id) == "open"
+
+    linked = {link.dst_ref_id for link in store.links_for(todo_id, direction="out")}
+    assert fid in linked
+    assert stub_id in linked
+
+    # A later pass claims nothing (dead_chain findings leave the pool),
+    # and the defensive guard keeps the ask a singleton even if the
+    # finding were ever re-advanced into a second give-up.
+    result2 = run_finding_chase_pass(store, limit=10)
+    assert result2 == {"claimed": 0, "ok": 0, "failed": 0}
+    with store.pool.connection() as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'todo' AND retired_at IS NULL"
+        ).fetchone()[0]
+    assert count == 1
+
+
 def test_acquiring_waits_within_grace_window_even_when_exhausted(store) -> None:
     """A stub that's already fetch-exhausted does NOT trigger give-up
     before the grace window has elapsed -- age is required, not just

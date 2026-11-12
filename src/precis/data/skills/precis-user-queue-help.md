@@ -78,6 +78,28 @@ answered items too. `q=` filters inside the queue. A session
 that starts a triage pass lists this first, before mining memory or
 chat for "things the owner still has to do".
 
+## Mark a paper the person must fetch by hand (want-paper)
+
+A queue item asking a person to physically obtain a paper — paywalled,
+no OA copy, auto-fetch gave up — carries the **`want-paper`** tag
+alongside `waiting-for:<login>`. The tag is the convention that makes
+the whole class listable with one search:
+
+```python
+search(kind="todo", tags=["want-paper"], status="open")
+```
+
+The chase worker files these itself: an acquisition-mode finding
+(`wants=`) whose stubs all go fetch-exhausted flips to
+`STATUS:dead_chain(reason=unacquirable)` and lands a `Fetch by hand: …`
+todo on the owner's queue — tagged `want-paper` + `waiting-for:<owner>`,
+linked to the finding and its unacquired stubs (see
+`precis-finding-help`, acquisition mode). A session that spots a paper
+the owner wants by hand files the same shape: verb-first title naming
+the paper's best identifier (DOI / arXiv), the `want-paper` tag, the
+`waiting-for:<login>` park. Close it like any queue item once the PDF
+is ingested — the grounded finding resumes on its own.
+
 ## Close an item once the person answered
 
 Record the answer as a comment, then release it — `put` with `id=` +

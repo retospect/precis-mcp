@@ -230,7 +230,11 @@ proceeds exactly as an ordinary finding's. If every linked stub is
 still unfetched after `PRECIS_ACQUIRE_GRACE_DAYS` (default 7) with no
 live fetch attempt still in flight, the finding gives up honestly:
 `STATUS:dead_chain(reason=unacquirable)`, and its stub(s) surface in
-the `/drive` hand-download queue.
+the `/drive` hand-download queue. The give-up also files a
+`Fetch by hand: …` todo on the owner's queue — tagged `want-paper` +
+`waiting-for:<owner>`, linked to the finding and its unacquired stubs —
+so the human sees the claim is waiting on a manual download
+(gr635726, `precis-user-queue-help`).
 
 Omitting `provenance=`, or passing an empty `wants=`, is a `BadInput`
 naming the missing piece — acquisition mode never mints a thin-air
