@@ -801,6 +801,37 @@ class TestNearDuplicateRefusal:
         assert "converged onto" in resp.body and f"fi{hub_id}" in resp.body
         assert store.count_refs(kind="finding") == before
 
+    def test_force_survives_stage_one_judge_outage(self, store) -> None:
+        """gr639349: dedup='force' bypasses a first-stage dedup-judge
+        outage too, not only the stage-two containment one."""
+        compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
+        _seed_paper(store, cite_key="miller23a")
+
+        def _down(new: str, existing: str):
+            return {"verdict": "error", "confidence": 0.0, "rationale": "quota"}
+
+        with pytest.raises(Upstream) as ei:
+            _put_atom(
+                store,
+                block_fn=_block_hit(compound, _COMPOUND, distance=0.2),
+                judge_fn=_down,
+                containment_fn=_containment("different"),
+            )
+        assert ei.value.next and "dedup='force'" in str(ei.value.next)
+
+        resp = _put_atom(
+            store,
+            block_fn=_block_hit(compound, _COMPOUND, distance=0.2),
+            judge_fn=_down,
+            containment_fn=_containment("different"),
+            dedup="force",
+        )
+        new_hub = int(_search(r"claim hub fi(\d+)", resp.body).group(1))
+        assert new_hub != compound
+        meta = store.get_ref(kind="finding", id=new_hub).meta
+        assert meta["dedup_override"]["verdict"] == "unjudged"
+        assert "quota" in meta["dedup_override"]["reason"]
+
     def test_force_survives_containment_judge_outage(self, store) -> None:
         compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
         _seed_paper(store, cite_key="miller23a")

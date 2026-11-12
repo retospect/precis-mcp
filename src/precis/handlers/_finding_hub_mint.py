@@ -48,6 +48,10 @@ raises :class:`BadInput` naming the neighbour, with options ``attach``
 (``dedup='attach:fi<N>'``), ``refine`` (reword the neighbour; not offered once
 its publish row is past ``candidate``) and ``force`` (``dedup='force'`` mints
 and stamps ``meta.dedup_override``). ``containment_fn`` is injectable.
+``force`` also bypasses a judge outage in EITHER stage (gr639349): a stage-one
+``judge_candidates``/``place`` outage or a stage-two containment outage mints
+with ``dedup_override`` verdict ``'unjudged'`` carrying the error, so a later
+pass can re-judge what force minted blind.
 
 ``dedup=False`` skips the whole cascade (bulk re-puts, tests without a
 model/embedder) and mints unconditionally via ``seed_claim_hub``, same as
@@ -246,8 +250,35 @@ def _put_hub(
     passage_hubs = _same_passage_neighbours(store, supporters)
     by_id = {c.hub_ref_id: c for c in candidates}
     merged = list(candidates) + [c for c in passage_hubs if c.hub_ref_id not in by_id]
-    judged = judge_candidates(sentence, merged, judge_fn)
-    placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
+    try:
+        judged = judge_candidates(sentence, merged, judge_fn)
+        placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
+    except Upstream as exc:
+        # dedup='force' is the documented escape from a judge outage (the
+        # stage-two handler's precedent, gr639349): the candidates are
+        # unjudged, so treat the placement as 'new', mint, and record that
+        # it went unjudged — the marker lets a later pass re-judge. A long
+        # outage force-mints blind, which is exactly why the non-force
+        # re-raise below names the escape instead of taking it silently.
+        if mode != "force":
+            raise Upstream(
+                str(exc.cause),
+                next="retry the same put() once the dedup judge is back "
+                "(nothing was written). If the outage persists, dedup='force' "
+                "mints without the duplicate check and records "
+                "meta.dedup_override verdict 'unjudged' for a later re-judge "
+                "— mind that force-minting through a long outage can create "
+                "duplicates",
+            ) from exc
+        judged = []
+        placement = Placement(
+            action="new",
+            reason=f"dedup judge outage, force-minted unjudged: {exc.cause[:200]}",
+        )
+        extra_meta = {
+            **(extra_meta or {}),
+            "dedup_override": {"verdict": "unjudged", "reason": str(exc.cause)[:300]},
+        }
 
     if placement.action == "new":
         try:
@@ -257,13 +288,19 @@ def _put_hub(
         except Upstream as exc:
             # dedup='force' is the documented escape from a judge outage
             # (the Upstream's next=): mint, and record that it went unjudged.
+            # A stage-one outage already stamped the marker — keep its
+            # reason; the verdict is the same 'unjudged'.
             if mode != "force":
                 raise
             hit = None
-            extra_meta = {
-                **(extra_meta or {}),
-                "dedup_override": {"verdict": "unjudged", "reason": str(exc)[:300]},
-            }
+            if not (extra_meta or {}).get("dedup_override"):
+                extra_meta = {
+                    **(extra_meta or {}),
+                    "dedup_override": {
+                        "verdict": "unjudged",
+                        "reason": str(exc.cause)[:300],
+                    },
+                }
         if hit is not None:
             cand, verdict = hit
             if mode != "force":
