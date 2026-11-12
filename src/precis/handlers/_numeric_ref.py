@@ -2591,12 +2591,32 @@ class NumericRefHandler(Handler):
             cells.append(f"(no {axis_label}) {loose}")
         if meta_key is not None:
             # The narrowing door is args={key: value} (meta facets never
-            # ride tags=); a live tags= filter is carried so the pasted
-            # call reproduces this list's scope.
+            # ride tags=); every live constraint of this list's count
+            # replays so the pasted call narrows the same result set:
+            # q=, tags= (resolved exclusions folded in as ``!`` entries,
+            # as the count view's next: call does), the id range and
+            # the ref-id include/exclude channels.
             narrow = f"search(kind={self.kind!r}"
-            if tags:
-                narrow += f", tags={tags!r}"
-            narrow += f", args={{{meta_key!r}: {named[0][0]!r}}})"
+            if q and q.strip():
+                narrow += f", q={q!r}"
+            replay_tags = [*tags, *(f"!{t}" for t in exclude_tags or [])]
+            if replay_tags:
+                narrow += f", tags={replay_tags!r}"
+            narrow_args: dict[str, Any] = {}
+            if id_min is not None:
+                narrow_args["id_min"] = id_min
+            if id_max is not None:
+                narrow_args["id_max"] = id_max
+            if include_ref_ids:
+                narrow_args["include_ref_ids"] = sorted(
+                    {int(i) for i in include_ref_ids}
+                )
+            if exclude_ref_ids:
+                narrow_args["exclude_ref_ids"] = sorted(
+                    {int(i) for i in exclude_ref_ids}
+                )
+            narrow_args[meta_key] = named[0][0]
+            narrow += f", args={narrow_args!r})"
         else:
             narrow = f"tags={[*tags, named[0][0]]!r}"
         return f"{axis_label}s: {' · '.join(cells)} — narrow: {narrow}"

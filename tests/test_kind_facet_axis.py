@@ -149,3 +149,67 @@ def test_page_that_fits_has_no_facet_line(store: Store, kind, handler, label) ->
     _insert(store, kind, "only", meta=meta)
     body = h.search(tags=[_FILTER[kind][0]], page_size=10).body
     assert label not in body
+
+
+# ── job narrowing call keeps every constraint the counts used ────────
+
+
+def _paste_narrow(h: JobHandler, body: str) -> Any:
+    """Run the ``narrow: search(...)`` hint the way an agent pastes it."""
+    call = body.split("narrow: ", 1)[1].splitlines()[0]
+    assert call.startswith("search(")
+
+    def search(*, kind: str, **kw: Any) -> Any:
+        assert kind == "job"
+        args = kw.pop("args", {})
+        return h.search(**kw, **args)
+
+    return eval(call, {"search": search})
+
+
+def _seed_jobs(store: Store) -> list[Any]:
+    refs = []
+    for i in range(3):
+        refs.append(
+            _insert(store, "job", f"garden {i}", meta={"job_type": "graph_garden"})
+        )
+    refs.append(_insert(store, "job", "fix 0", meta={"job_type": "fix_gripe"}))
+    return refs
+
+
+def test_job_narrow_keeps_id_bounds_and_ref_scope(store: Store) -> None:
+    h = JobHandler(hub=Hub(store=store))
+    refs = _seed_jobs(store)
+    ids = [int(r.id) for r in refs]
+    body = h.search(
+        tags=["STATUS:queued"],
+        page_size=1,
+        id_min=ids[1],
+        exclude_ref_ids=[ids[3]],
+    ).body
+    assert f"'id_min': {ids[1]}" in body
+    assert f"'exclude_ref_ids': [{ids[3]}]" in body
+    narrowed = _paste_narrow(h, body)
+    # Bound drops garden 0, exclusion drops the fix job: two garden
+    # rows remain (unconstrained, the hint would match three).
+    assert narrowed.result_count == 2
+
+
+def test_job_narrow_keeps_q(store: Store) -> None:
+    h = JobHandler(hub=Hub(store=store))
+    _insert(store, "job", "zebra stripe one", meta={"job_type": "graph_garden"})
+    _insert(store, "job", "zebra stripe two", meta={"job_type": "graph_garden"})
+    other = _insert(store, "job", "unrelated garden", meta={"job_type": "graph_garden"})
+    body = h.search(q="zebra", tags=["STATUS:queued"], page_size=1).body
+    if "narrow: search(" not in body:  # q matched fewer rows than a page
+        pytest.skip("q search did not overflow the page in this backend")
+    assert "q='zebra'" in body
+    narrowed = _paste_narrow(h, body)
+    assert "unrelated garden" not in narrowed.body
+
+
+def test_job_narrow_keeps_status_exclusions(store: Store) -> None:
+    h = JobHandler(hub=Hub(store=store))
+    _seed_jobs(store)
+    body = h.search(tags=["STATUS:queued", "!STATUS:running"], page_size=1).body
+    assert "'!STATUS:running'" in body
