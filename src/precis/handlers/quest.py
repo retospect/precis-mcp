@@ -3295,7 +3295,18 @@ class QuestHandler(NumericRefHandler):
         promotes its members to fallback roots so bad data stays
         visible rather than vanishing from the page.
         """
-        refs = self.store.list_refs(kind="quest", limit=500)
+        # The forest is the whole live serves DAG — page through every
+        # live quest by id (a bare limit=500 silently dropped quest 501+
+        # and misread children whose live parents fell outside the
+        # fetched page as roots).
+        refs: list[Ref] = []
+        id_floor = 0
+        while True:
+            page = self.store.list_refs(kind="quest", id_min=id_floor, limit=500)
+            if not page:
+                break
+            refs.extend(page)
+            id_floor = max(r.id for r in page) + 1
         if not refs:
             body = "no live quests"
             body += render_next_section(
@@ -3351,6 +3362,11 @@ class QuestHandler(NumericRefHandler):
             )
             if depth + 1 >= _MAX_TREE_DEPTH:
                 for kid in kids:
+                    # The "…" row still renders the quest — mark it, or
+                    # the orphan pass below promotes a merely deep
+                    # acyclic chain to fallback roots and reports a
+                    # serves cycle that does not exist.
+                    rendered.add(kid)
                     kh = handle_registry.try_format("quest", kid) or f"quest:{kid}"
                     ktitle = (ref_by_id[kid].title or "").splitlines()[0]
                     lines.append(f"{indent}  ◆ {kh} {ktitle} …")

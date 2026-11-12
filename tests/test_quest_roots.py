@@ -95,6 +95,47 @@ class TestRootsForest:
         assert len(rows) == 2
         assert all(ln.startswith("  ◆ ") for ln in rows)
 
+    def test_deep_acyclic_chain_is_not_reported_as_a_cycle(self, store: Any) -> None:
+        """A rung past the depth cap renders as a "…" row and stays
+        marked rendered — the orphan pass must not promote it to a
+        fallback root or claim a serves cycle that does not exist."""
+        h = _handler(store)
+        top = _created_id(h.put(text="Top striving"))
+        rungs = [top]
+        for i in range(4):
+            rung = _created_id(h.put(text=f"Rung {i}"))
+            store.add_link(src_ref_id=rung, dst_ref_id=rungs[-1], relation="serves")
+            rungs.append(rung)
+        body = h.search(view="roots").body
+        assert "unreachable from any root" not in body
+        assert body.startswith("# 1 quest root · 5 live quests")
+        rows = [ln for ln in body.splitlines() if f"qu{rungs[-1]}" in ln]
+        assert len(rows) == 1
+        # The capped row sits one level below its depth-3 parent.
+        assert rows[0].startswith("        ◆ ")
+        assert rows[0].rstrip().endswith("…")
+
+    def test_forest_pages_past_the_fetch_cap(self, store: Any) -> None:
+        """The fetch pages by id_min: a child whose parent lands on an
+        earlier page still renders under it, and nothing is dropped. A
+        capped list_refs stands in for a corpus past 500 live quests."""
+        from unittest import mock
+
+        h = _handler(store)
+        real_list = store.list_refs
+
+        def capped_list(*args: Any, **kwargs: Any) -> Any:
+            kwargs["limit"] = min(int(kwargs.get("limit", 500)), 2)
+            return real_list(*args, **kwargs)
+
+        parent = _created_id(h.put(text="Paged parent"))
+        child = _created_id(h.put(text="Paged child"))
+        store.add_link(src_ref_id=child, dst_ref_id=parent, relation="serves")
+        with mock.patch.object(store, "list_refs", capped_list):
+            body = h.search(view="roots").body
+        assert body.startswith("# 1 quest root · 2 live quests")
+        assert _line_of(body, child).startswith("  ◆ ")
+
     def test_cycle_with_no_root_stays_visible(self, store: Any) -> None:
         """A serves-cycle reachable from no root is promoted to fallback
         roots rather than vanishing (same rule as the web index)."""
