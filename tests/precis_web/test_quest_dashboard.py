@@ -714,7 +714,7 @@ def test_frontier_visual_filters_dim_and_annotate(client, runtime, monkeypatch) 
     assert "filtered: barrier 2 eV &gt; 1 eV" in resp.text
     assert 'name="fbar"' in resp.text and 'name="ftof"' in resp.text
     # barrier is the plotted x axis → its threshold draws a dashed guide
-    assert 'stroke="#d9534f"' in resp.text
+    assert 'class="stroke-danger"' in resp.text
     assert "1 of 2 points dimmed" in resp.text
 
 
@@ -739,7 +739,7 @@ def test_frontier_visual_filters_bad_params_ignored(
     resp = client.get("/refs/quest/97?fbar=abc&ftof=&fbar=-1")
     assert resp.status_code == 200
     assert 'opacity="0.25"' not in resp.text
-    assert 'stroke="#d9534f"' not in resp.text
+    assert 'class="stroke-danger"' not in resp.text
     assert "dimmed" not in resp.text
 
 

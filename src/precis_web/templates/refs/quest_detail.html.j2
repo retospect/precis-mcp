@@ -181,10 +181,10 @@
     {# visual-filter thresholds as indicators (gr636179): a dashed guide
        where the barrier/turnover bound lands — present only when the
        filtered measure is itself a plotted axis and inside the range;
-       same red the explorer's ⊣ cut glyph uses #}
+       the danger red of the explorer's ⊣ cut glyph #}
     {% for fl in fs.filter_lines %}
     <line x1="{{ fl.x1 }}" y1="{{ fl.y1 }}" x2="{{ fl.x2 }}" y2="{{ fl.y2 }}"
-          stroke="#d9534f" stroke-width="1" stroke-dasharray="4,3" pointer-events="none">
+          class="stroke-danger" stroke-width="1" stroke-dasharray="4,3" pointer-events="none">
       <title>{{ fl.label }}</title>
     </line>
     {% endfor %}

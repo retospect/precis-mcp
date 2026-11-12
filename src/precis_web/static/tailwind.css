@@ -2233,6 +2233,10 @@ video {
   fill: rgb(var(--bg-surface) / 1);
 }
 
+.stroke-danger {
+  stroke: rgb(var(--text-danger) / 1);
+}
+
 .stroke-fg-faint {
   stroke: rgb(var(--text-fg-faint) / 1);
 }
