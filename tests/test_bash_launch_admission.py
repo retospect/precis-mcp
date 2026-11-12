@@ -402,6 +402,7 @@ def render_baseline(now: dict[str, int]) -> str:
         "# Shrink-only ratchet: tests/test_bash_launch_admission.py.\n"
         "# Format: <path>::<function|<top>> <count>. Regenerate:\n"
         "#   uv run python tests/test_bash_launch_admission.py --regen\n"
+        "# paper-text-gate: allow — generated list of code identifiers, not paper text\n"
     )
     return head + "".join(f"{k} {n}\n" for k, n in sorted(now.items()))
 

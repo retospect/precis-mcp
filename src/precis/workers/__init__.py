@@ -84,11 +84,7 @@ seeds remain for ``axis:<id>``/``topic:<slug>``. Same table controls in-pass
 checked inside heavy-executor claims.
 
 Admission (gr647996): :func:`.admission.admit` reserves a whole footprint
-(``mem_mb``/``cpu_milli``/``vram_mb`` units plus ``gpu``/``llm:``/``account:``
-tokens) on one host or nothing, over the existing ``resource_slots`` rows and
-TTL holds rather than a second store. The heartbeat publishes measured
-capacity minus reserves (``capability_probe.probe_host_capacity``). Inert in
-S1: S3 moves the claim path and the LLM holds onto it, S4 adds ``spawn()``.
+on one host or nothing, over ``resource_slots``; see :mod:`.admission`.
 
 Scheduler cadences
 ------------------

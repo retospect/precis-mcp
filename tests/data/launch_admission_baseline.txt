@@ -2,6 +2,7 @@
 # Shrink-only ratchet: tests/test_launch_admission_ratchet.py.
 # Format: <path>::<qualname> <count>. Regenerate:
 #   uv run python tests/test_launch_admission_ratchet.py --regen
+# paper-text-gate: allow — generated list of code identifiers, not paper text
 scripts/_doilist.py::_psql_doi_to_slug_map 1
 scripts/_doilist.py::_psql_known_identifiers 1
 scripts/_gist_cleanup.py::_psql 1

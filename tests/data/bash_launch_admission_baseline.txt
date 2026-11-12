@@ -2,6 +2,7 @@
 # Shrink-only ratchet: tests/test_bash_launch_admission.py.
 # Format: <path>::<function|<top>> <count>. Regenerate:
 #   uv run python tests/test_bash_launch_admission.py --regen
+# paper-text-gate: allow — generated list of code identifiers, not paper text
 scripts/build-all::<top> 1
 scripts/build-image::<top> 3
 scripts/build-tblite-wheel::<top> 3

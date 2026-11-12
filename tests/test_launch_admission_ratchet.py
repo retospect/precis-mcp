@@ -75,6 +75,7 @@ PROBES: dict[str, str] = {
     "git": "version-control plumbing; seconds, no compute footprint",
     "gh": "GitHub API client; network-bound, no host load",
     "ps": "process-table read",
+    "lsof": "open-file read (lock holders, process cwd)",
     "kill": "signal delivery",
     "sysctl": "kernel parameter read",
     "memory_pressure": "macOS memory-pressure read",
@@ -574,6 +575,7 @@ def render_baseline(now: dict[str, int]) -> str:
         "# Shrink-only ratchet: tests/test_launch_admission_ratchet.py.\n"
         "# Format: <path>::<qualname> <count>. Regenerate:\n"
         "#   uv run python tests/test_launch_admission_ratchet.py --regen\n"
+        "# paper-text-gate: allow — generated list of code identifiers, not paper text\n"
     )
     return head + "".join(f"{k} {n}\n" for k, n in sorted(now.items()))
 
