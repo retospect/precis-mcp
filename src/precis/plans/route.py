@@ -24,7 +24,16 @@ Two signals:
   narrowings (td647606): a brief with a ``File set:`` line is judged on
   that write set alone, and a harness path run as a command
   (``scripts/test tests/x.py``, ``scripts/test --typecheck``) is not a
-  write target.
+  write target. For structured reports, only explicit ``Goal:``, ``Fix:``,
+  ``Missing:``, ``Want:`` or ``Expected:`` paragraphs (also Markdown
+  headings) name change intent. They end at a blank line after content,
+  an evidence label (``Symptom``, ``Route``, ``Evidence``, ``Seen``), or
+  another heading; quoted lines and fences labelled ``log``, ``console``
+  or ``output`` do not count. Other code fences retain possible edit
+  targets. Without
+  an intent marker the whole report is judged as before. A declared
+  write set still takes precedence. This avoids treating a deny path
+  in symptom evidence as the requested edit (gr645561).
 - ``graph-only`` — every non-empty token is a well-formed graph handle
   (``td<id>``/``gr<id>``/``me<id>``/…), bare punctuation, graph
   vocabulary or grammar glue, and at least one handle appears. A
@@ -89,6 +98,19 @@ _RUN_INVOCATION = re.compile(
 #: next blank line). When present it is the builder's whole write
 #: target, so only it is judged for deny paths (td647606).
 _FILE_SET = re.compile(r"^\s*File set:(.*?)(?:\n\s*\n|\Z)", re.MULTILINE | re.DOTALL)
+
+#: Explicit report labels, optionally formatted as Markdown headings/bold.
+_INTENT_START = re.compile(
+    r"^(?:#{1,6}\s+)?\*{0,2}(?:Goal|Fix|Missing|Want|Expected)\b"
+    r"\*{0,2}[ \t]*(?::\*{0,2}[ \t]*|$)",
+    re.IGNORECASE,
+)
+_EVIDENCE_START = re.compile(
+    r"^(?:#{1,6}\s+)?\*{0,2}(?:Symptom|Route|Evidence|Seen)\b"
+    r"(?:[ \t]*\([^)]*\))?\*{0,2}[ \t]*(?::|$)",
+    re.IGNORECASE,
+)
+_FENCE = re.compile(r"^(`{3,}|~{3,})")
 
 #: Characters a handle may be wrapped in inside prose.
 _HANDLE_WRAP = ".,;:()[]{}`'\"*_#<>|"
@@ -265,6 +287,51 @@ def graph_only(text: str) -> bool:
     )
 
 
+def _change_intent(text: str) -> str:
+    """Select labelled intent paragraphs, or retain unstructured text.
+
+    Only deny-path matching uses this selection; graph-only classification
+    must still account for every word in the report.
+    """
+    out: list[str] = []
+    found = active = awaiting_content = False
+    fence = ""
+    log_fence = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if fence:
+            if line.startswith(fence) and not line[len(fence) :].strip(fence[0]):
+                fence = ""
+            elif active and not log_fence:
+                out.append(line)
+                awaiting_content = False
+            continue
+        if line.startswith(">"):
+            continue
+        if match := _FENCE.match(line):
+            fence = match.group(1)
+            log_fence = line[match.end() :].strip().lower() in {
+                "log",
+                "console",
+                "output",
+            }
+            continue
+        if match := _INTENT_START.match(line):
+            found = active = True
+            content = line[match.end() :]
+            awaiting_content = not content.strip()
+            out.append(content)
+        elif _EVIDENCE_START.match(line) or line.startswith("#"):
+            active = awaiting_content = False
+        elif not line:
+            if not awaiting_content:
+                active = False
+        elif active:
+            out.append(line)
+            awaiting_content = False
+    return "\n".join(out) if found else text
+
+
 def coordinator_route(text: str | None, deny_paths: Iterable[str]) -> str | None:
     """The short reason the work routes straight to the coordinator, or
     ``None`` when a builder lane may take it. The reason is written into
@@ -273,7 +340,13 @@ def coordinator_route(text: str | None, deny_paths: Iterable[str]) -> str | None
         return None
     body = strip_direct_head(text)
     file_set = _FILE_SET.search(body)
-    judged = file_set.group(1) if file_set else _RUN_INVOCATION.sub(" ", body)
+    # Strip invocations before selecting paragraphs: selection must not make
+    # a target path and a later test path look like one command invocation.
+    judged = (
+        file_set.group(1)
+        if file_set
+        else _change_intent(_RUN_INVOCATION.sub(" ", body))
+    )
     hit = deny_path_hit(judged, deny_paths)
     if hit is not None:
         token, glob = hit

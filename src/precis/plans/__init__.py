@@ -33,7 +33,9 @@ Modules (each lands as its own slice under td540836):
   (gr645163): the shared classifier naming work no builder lane may
   write (a deny-path brief or prod-graph-only work), run by
   ``gripe_dispatch`` on the gripe report and by ``plan_dispatch`` on
-  each run_slice-bound todo's brief.
+  each run_slice-bound todo's brief. Deny paths in structured reports
+  are judged on explicit change-intent paragraphs so symptom evidence
+  does not divert builder work; graph-only checks retain the full report.
 
 The dispatcher tick lives with the other job types
 (``precis.workers.job_types``), not here: this package holds the plan

@@ -180,3 +180,135 @@ def test_brief_boilerplate_sections_never_route() -> None:
 )
 def test_factory_land_mechanics_never_route(text: str) -> None:
     assert route.coordinator_route(text, _DENY) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_path"),
+    [
+        pytest.param(
+            "Symptom (2026-11-12 UTC): a CLAUDE.md docs commit deployed, "
+            "but release confirmation still reported a stale release.\n\n"
+            "Fix: repair release_confirm in src/precis/workers/release_confirm.py.",
+            None,
+            id="gr645561-evidence-only",
+        ),
+        pytest.param(
+            "The devin brief describes quick land / scripts/ship --quick. "
+            "The land_slice job runs scripts/ship --quick in the worktree; "
+            "repair the devin brief text so it describes that handoff.",
+            None,
+            id="gr635349-command-invocation",
+        ),
+        pytest.param(
+            "`scripts/round open` refuses the next cut. "
+            "Round open has no step that reruns failed soak legs.",
+            "scripts/round",
+            id="gr639737-round-target",
+        ),
+        pytest.param(
+            "Goal: enumerate every code path through scripts/ship and its gate "
+            "paths; ensure home-made caps are retired.",
+            "scripts/ship",
+            id="gr647996-harness-target",
+        ),
+    ],
+)
+def test_report_change_intent_routes(text: str, expected_path: str | None) -> None:
+    why = route.coordinator_route(text, (*_DENY, "scripts/round"))
+    if expected_path is None:
+        assert why is None
+    else:
+        assert why is not None and f"`{expected_path}`" in why
+
+
+@pytest.mark.parametrize("label", ["Goal", "Fix", "Missing", "Want", "Expected"])
+def test_intent_paragraph_ignores_surrounding_evidence(label: str) -> None:
+    text = (
+        "Symptom: CLAUDE.md was the only file in the deployed commit.\n\n"
+        f"{label}: repair the release confirmation worker.\n\n"
+        "Evidence: scripts/ship reported success."
+    )
+    assert route.coordinator_route(text, _DENY) is None
+
+
+@pytest.mark.parametrize(
+    "target", ["src/precis/workers/release_confirm.py", "scripts/ship"]
+)
+def test_markdown_intent_heading_keeps_following_paragraph(target: str) -> None:
+    text = (
+        "## Symptom\n\nCLAUDE.md was deployed.\n\n"
+        f"## Fix\n\nRepair `{target}`.\n"
+        "## Evidence\nThe command scripts/test failed."
+    )
+    why = route.coordinator_route(text, _DENY)
+    if target == "scripts/ship":
+        assert why is not None and "`scripts/ship`" in why
+    else:
+        assert why is None
+
+
+@pytest.mark.parametrize(
+    "label", ["Symptom (2026-11-12 UTC)", "Route", "Evidence", "Seen"]
+)
+def test_evidence_label_ends_intent_without_blank_line(label: str) -> None:
+    text = f"Fix: repair the worker.\n{label}: scripts/ship reported success."
+    assert route.coordinator_route(text, _DENY) is None
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "> scripts/ship reported success.",
+        "```log\nscripts/ship reported success.\n```",
+        "~~~console\nscripts/ship reported success.\n~~~",
+    ],
+)
+def test_quoted_log_inside_intent_does_not_route(evidence: str) -> None:
+    assert (
+        route.coordinator_route(f"Fix: repair the worker.\n{evidence}", _DENY) is None
+    )
+
+
+def test_multiline_and_multiple_intent_paragraphs_keep_deny_targets() -> None:
+    text = (
+        "Goal: repair the worker.\n\n"
+        "Evidence: CLAUDE.md was deployed.\n\n"
+        "Fix: adjust the release gate in\n"
+        "scripts/ship to verify the worker's confirmation."
+    )
+    why = route.coordinator_route(text, _DENY)
+    assert why is not None and "`scripts/ship`" in why
+
+
+def test_evidence_without_intent_keeps_whole_text_fallback() -> None:
+    why = route.coordinator_route("Symptom: scripts/ship cannot land a branch.", _DENY)
+    assert why is not None and "`scripts/ship`" in why
+
+
+def test_file_set_takes_precedence_over_intent() -> None:
+    text = "Goal: repair scripts/ship.\n\nFile set: src/precis/workers/release_confirm.py\n"
+    assert route.coordinator_route(text, _DENY) is None
+
+
+def test_intent_selection_does_not_loosen_graph_only_rule() -> None:
+    text = "Symptom: the worker writes stale edges.\n\nGoal: remove the stale edge from me123456."
+    assert route.coordinator_route(text, _DENY) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Goal: repair scripts/ship\n\nExpected: tests/test_ship.py passes",
+        "Fix: repair scripts/ship\n> previous failure log\ntests/test_ship.py covers it",
+    ],
+)
+def test_intent_selection_does_not_create_command_invocations(text: str) -> None:
+    why = route.coordinator_route(text, _DENY)
+    assert why is not None and "`scripts/ship`" in why
+
+
+@pytest.mark.parametrize("language", ["", "text", "sh"])
+def test_fenced_intent_target_still_routes(language: str) -> None:
+    text = f"Fix: update these files:\n```{language}\nscripts/ship\n```"
+    why = route.coordinator_route(text, _DENY)
+    assert why is not None and "`scripts/ship`" in why
