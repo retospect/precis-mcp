@@ -487,15 +487,15 @@ for tf in "$SCAN_DIR"/*.md; do
 done
 fi  # SCAN_DIR (check 3b)
 
-# 3c. CLAUDE.md resident budget (context-memory-hierarchy S4, 2026-11-01):
-# the brief sits in every turn's context, so it is one line per rule with
-# the long form in docs/conventions/shipping.md and AGENTS.md. Advisory.
-CLAUDE_BUDGET=${CLAUDE_BUDGET:-6000}
+# 3c. CLAUDE.md resident budget (Reto 2026-11-12): the brief sits in every
+# turn's context, so it keeps only the hard rules + pointers, with the long
+# form in docs/conventions/shipping.md and AGENTS.md. Advisory.
+CLAUDE_BUDGET=${CLAUDE_BUDGET:-1500}
 claude_md="$(git rev-parse --show-toplevel 2>/dev/null)/CLAUDE.md"
 if [[ -f "$claude_md" ]]; then
     cb=$(wc -c < "$claude_md" | tr -d ' ')
     if (( cb > CLAUDE_BUDGET )); then
-        echo "  CLAUDE.md over budget → ${cb} bytes (budget ${CLAUDE_BUDGET}) — keep one line + pointer per rule; move detail to docs/conventions/shipping.md or AGENTS.md §Long form"
+        echo "  CLAUDE.md over budget → ${cb} bytes (budget ${CLAUDE_BUDGET}) — hard rules + pointers only; move detail to docs/conventions/shipping.md or AGENTS.md §Long form"
         problems=$((problems+1))
     fi
 fi

@@ -9,7 +9,7 @@ release whose `prod` publication failed can use `scripts/round deploy
 --finish-pointer` to recover from its receipt without another rollout; runtime
 confirmation remains required.
 
-CLAUDE.md carries the one-line version of each path and the rules that bite;
+CLAUDE.md carries the short form of the ship path and the hard rules;
 this file is the mechanics. The skills (`/land`, `/go`, `/qland`, `/qgo`,
 `/round`) carry the step-by-step.
 
@@ -610,9 +610,8 @@ Two fleet-coordination rules (Reto 2026-09-30):
 
 ## Long form — ship workflow and commit messages (moved from CLAUDE.md, 2026-11-01)
 
-The resident brief (`CLAUDE.md`) keeps one line per rule; the detail that
-used to sit there lives here (context-memory-hierarchy S4). Nothing below
-is new.
+The resident brief (`CLAUDE.md`) keeps only the hard rules and a short ship
+paragraph (Reto 2026-11-12); the detail that used to sit there lives here.
 
 Work always happens on a task branch in a separate worktree (`claude -w
 <name>`). Never edit or commit in the primary `main` checkout; integrate

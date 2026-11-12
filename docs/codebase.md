@@ -230,4 +230,4 @@ Most work lands at one of these. Each has a convention that bites:
 - Why a decision is the way it is → the owning package docstring's "why" lines (history: `git log`)
 - Schema → `docs/reference/schema.md` (generated from the live DB by
   `scripts/gen-schema`; conceptual sketch: `docs/reference/schema-v2.svg`)
-- Conventions / workflow / DoD → `AGENTS.md`; ship workflow → `CLAUDE.md`
+- Conventions / workflow / DoD → `AGENTS.md`; ship workflow → `docs/conventions/shipping.md` (short form in `CLAUDE.md`)

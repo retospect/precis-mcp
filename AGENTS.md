@@ -18,7 +18,7 @@ run `scripts/docs-index` if absent). Runtime kinds and verbs:
 ## Rules by pointer
 
 - **Ship workflow** (worktree per task, `/land`, `/go`, `/qland`, gate,
-  refs): `CLAUDE.md` §Ship workflow (one line per path) and
+  refs): `CLAUDE.md` §Ship (the short form) and
   `docs/conventions/shipping.md` §Long form. Do not hand-roll a ship; use
   `scripts/ship`.
 - **Invariants** (forward-only migrations, append-only body chunks,
@@ -178,8 +178,8 @@ session integrates then empties it. No other memory writes, no replay tooling.
 - Schema change: a new numbered migration, old ones untouched.
 - No secrets and no cluster addresses in the tree (the repo is public).
 - Commit message: `type(scope): what changed`, aim ≤72 chars, hard limit 120, optional short why
-  as body (rules in `CLAUDE.md` §Conventions that bite; `scripts/ship` enforces
-  them). No CHANGELOG; `git log` is the record.
+  as body (rules in `docs/conventions/shipping.md` §Long form; `scripts/ship`
+  enforces them). No CHANGELOG; `git log` is the record.
 
 ## Agent sizing
 
@@ -201,9 +201,9 @@ Never copy its diff: ship reaps only agent branches take-agent recorded
 
 ## Long form — orientation, conventions and traps (moved from CLAUDE.md, 2026-11-01)
 
-The resident brief (`CLAUDE.md`) keeps one line per rule; the rationale and
-pointers that used to sit there live here (context-memory-hierarchy S4).
-Nothing below is new.
+The resident brief (`CLAUDE.md`) keeps only the hard rules and pointers
+(Reto 2026-11-12); the rationale, orientation and traps that used to sit
+there live here.
 
 ### Orientation
 

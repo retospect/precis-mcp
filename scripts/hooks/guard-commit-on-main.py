@@ -423,7 +423,7 @@ def evaluate(command: str, cwd: str) -> str | None:
             return (
                 "Refusing `git commit` — the message carries no "
                 "`Co-Authored-By:` trailer, which this repo requires on "
-                "every commit (CLAUDE.md §Conventions that bite; ship "
+                "every commit (docs/conventions/shipping.md; ship "
                 "strips it back into the squash footer). Add it to the -m "
                 "text or the -F message file, e.g. "
                 "`Co-Authored-By: <agent> <noreply@…>`."
