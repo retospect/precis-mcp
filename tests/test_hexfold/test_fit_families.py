@@ -4,13 +4,25 @@ remainder as ``fit.alternatives``, without changing the 0.1 winner."""
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from hexfold.build import Net, _fit_alternatives_finding, _rank_fit, build
-from hexfold.report import Report
+from hexfold.build import (
+    Net,
+    _apply_hole,
+    _fit_alternatives_finding,
+    _rank_fit,
+    _sheet_sites,
+    _solve_collar,
+    build,
+)
+from hexfold.defects import Defect, Patch, Vid
+from hexfold.lattice import Lattice, Site
+from hexfold.report import Finding, Report
 
 _ROOT = Path(__file__).resolve().parents[2] / "hexfold"
 
@@ -120,6 +132,124 @@ t.out --fuse{7x5 @fit} k=0--> h.hole
     assert len(data["alternatives"]) == 1
     assert data["alternatives"][0]["cost"] == [0.0, 0.0, 1]
     assert "fit.unsolvable" not in [f.code for f in net.report.findings]
+
+
+# ---------- collar solver copies + preserved results (gr647531) ----------
+
+
+def _holed_sheet_patch() -> tuple[
+    Patch, frozenset[Vid], frozenset[Site], list[Finding]
+]:
+    """A 10x10 sheet minus one hexagon ring — the smallest patch whose 7x3
+    collar family stays cheap enough to solve in a unit test."""
+    patch = Patch(Lattice(), _sheet_sites(10, 10))
+    findings: list[Finding] = []
+    got = _apply_hole(patch, 6, Site(5, 5, 0), 0, "s", findings)
+    assert got is not None
+    rim_fs, disk = got
+    return patch, rim_fs, disk, findings
+
+
+def test_collar_solve_leaves_the_input_patch_untouched() -> None:
+    """Every candidate orbit is tried on a deepcopy of the patch being
+    built: a mutable container ``Patch.__deepcopy__`` forgot to copy would
+    leak trial surgery into the real net."""
+    patch, rim_fs, disk, findings = _holed_sheet_patch()
+    flat0 = dict(patch.flatpos)
+    edges0 = set(patch.edges)
+    dirs0 = dict(patch.dirs)
+    hole_b0 = dict(patch.hole_b)
+    hole_bexp0 = dict(patch.hole_bexp)
+    solved = _solve_collar(patch, rim_fs, disk, 7, 3, "s", findings)
+    assert len(solved) == 3
+    assert patch.flatpos.keys() == flat0.keys()
+    assert all(np.array_equal(patch.flatpos[v], p0) for v, p0 in flat0.items())
+    assert patch.edges == edges0
+    assert patch.dirs.keys() == dirs0.keys()
+    assert all(np.array_equal(patch.dirs[e], d0) for e, d0 in dirs0.items())
+    assert patch.hole_b == hole_b0
+    assert patch.hole_bexp == hole_bexp0
+    assert patch.discl == []
+
+
+def test_patch_deepcopy_surgery_does_not_leak_into_source() -> None:
+    """``__deepcopy__`` copies every mutable container and shares only the
+    frozen leaves: inserting on the copy grows its flatpos *and* back-fills
+    phi on the copy's own version of the earlier defect's chart — neither
+    write may reach the original."""
+    patch = Patch(Lattice(), _sheet_sites(10, 10))
+    patch.insert(Defect(7, Site(3, 3, 0), 0), 0)
+    flat0 = set(patch.flatpos)
+    edges0 = set(patch.edges)
+    dirs0 = set(patch.dirs)
+    phi0 = set(patch.discl[0].phi)
+    work = copy.deepcopy(patch)
+    # the frozen lattice is the one leaf the copy shares on purpose
+    assert work.lat is patch.lat
+    work.insert(Defect(7, Site(7, 7, 0), 0), 1)
+    # sanity: the surgery really ran on the copy
+    assert len(work.flatpos) > len(flat0)
+    assert len(work.discl) == 2
+    assert set(work.discl[0].phi) > phi0
+    assert set(patch.flatpos) == flat0
+    assert patch.edges == edges0
+    assert set(patch.dirs) == dirs0
+    assert len(patch.discl) == 1
+    assert set(patch.discl[0].phi) == phi0
+
+
+def test_collar_sheet_fit_preserves_winner_and_alternatives() -> None:
+    """The vectorized sheet-orbit enumeration (gr647531) must report the
+    same family the per-site scan did: this pins the 0.1 winner, the full
+    ranked remainder, and that the winner — not an alternative — is what
+    the fuse records."""
+    net = _net(
+        """hexfold 0.1
+s: sheet(10,10) - hexagon@(5,5,A):0
+t: tube(6,0, len=4)
+t.out --fuse{7x3 @fit} k=0--> s.hole
+"""
+    )
+    fs = _alt_findings(net)
+    assert len(fs) == 1
+    data = dict(fs[0].data)
+    assert data["param"] == "collar"
+    # the 0.1 winner: the first admissible orbit in enumeration order.
+    assert data["applied"] == ["(1,8,B)", "(6,0,B)", "(9,5,B)"]
+    assert [a["value"] for a in data["alternatives"]] == [
+        ["(1,9,A)", "(6,0,A)", "(9,5,B)"],
+        ["(1,9,B)", "(5,0,B)", "(9,5,B)"],
+        ["(1,9,B)", "(5,0,B)", "(9,4,B)"],
+        ["(0,9,B)", "(6,0,A)", "(9,6,B)"],
+        ["(1,9,B)", "(5,0,A)", "(9,4,B)"],
+        ["(0,9,A)", "(7,0,A)", "(9,6,B)"],
+        ["(0,8,A)", "(7,0,A)", "(9,7,B)"],
+        ["(0,5,A)", "(6,9,B)", "(9,0,B)"],
+        ["(0,6,A)", "(7,9,B)", "(9,0,A)"],
+        ["(2,9,B)", "(4,0,A)", "(9,4,B)"],
+        ["(0,4,A)", "(6,9,B)", "(9,0,B)"],
+        ["(0,8,A)", "(8,0,A)", "(9,8,B)"],
+        ["(0,7,A)", "(8,9,B)", "(9,0,A)"],
+        ["(2,9,B)", "(3,0,A)", "(9,3,B)"],
+        ["(0,3,A)", "(5,9,B)", "(9,0,B)"],
+        ["(0,7,A)", "(8,0,A)", "(9,9,B)"],
+        ["(2,0,A)", "(3,9,B)", "(9,3,B)"],
+        ["(0,2,A)", "(5,9,B)", "(9,1,B)"],
+        ["(1,0,A)", "(3,9,B)", "(9,2,B)"],
+        ["(0,1,A)", "(4,9,B)", "(9,1,B)"],
+        ["(0,0,A)", "(4,9,B)", "(9,2,B)"],
+    ]
+    costs = [a["cost"] for a in data["alternatives"]]
+    assert costs == [[0.0, 0.0, i] for i in range(1, 22)]
+    assert "fit.unsolvable" not in [f.code for f in net.report.findings]
+    # the applied winner lands on the connect's expansion record.
+    [conn] = [c for c in net.spec.connects if (c.expanded or {}).get("defects")]
+    defects = (conn.expanded or {})["defects"]
+    assert [(d["site"], d["dir"]) for d in defects] == [
+        ("(9,5,B)", 0),
+        ("(1,8,B)", 1),
+        ("(6,0,B)", 5),
+    ]
 
 
 # ---------- one-member family ----------
