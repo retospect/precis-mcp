@@ -362,6 +362,16 @@ _install_protocol_payload_filters()
 _TOOL_CONCURRENCY_ENV = "PRECIS_MCP_TOOL_CONCURRENCY"
 _DEFAULT_TOOL_CONCURRENCY = 4
 
+#: ``PRECIS_MCP_QUEUE_WAIT_S`` — the longest a call waits for a dispatch
+#: slot before it is refused unrun (gr648196). With every slot held by slow
+#: calls, a queued call used to wait silently until the client gave up with
+#: "server isn't responding", leaving a write in doubt (it later ran or was
+#: dropped on cancel). A refusal before the body starts is unambiguous:
+#: nothing was written, and the text says how to check health. ``0``
+#: disables the bound.
+_QUEUE_WAIT_ENV = "PRECIS_MCP_QUEUE_WAIT_S"
+_DEFAULT_QUEUE_WAIT_S = 45.0
+
 
 class _FairSemaphore:
     """A counting semaphore that hands freed permits out round-robin by key.
@@ -436,6 +446,30 @@ def _tool_concurrency_limit() -> int:
     except ValueError:
         return _DEFAULT_TOOL_CONCURRENCY
     return value if value > 0 else _DEFAULT_TOOL_CONCURRENCY
+
+
+def _queue_wait_limit_s() -> float | None:
+    """Resolve ``PRECIS_MCP_QUEUE_WAIT_S``; ``None`` means unbounded."""
+    raw = os.environ.get(_QUEUE_WAIT_ENV)
+    if not raw:
+        return _DEFAULT_QUEUE_WAIT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_QUEUE_WAIT_S
+    return value if value > 0 else None
+
+
+def _queue_timeout_message(verb: str, waited_s: float) -> str:
+    """The refusal for a call that never got a dispatch slot."""
+    return (
+        f"[error:Upstream] the server is busy: this {verb} waited "
+        f"{waited_s:.0f}s for a free worker slot and was NOT run — "
+        "nothing was written\n"
+        "  next: retry the call in a minute; "
+        "get(kind='skill', id='precis-status-help') shows server health; "
+        "if it keeps failing, file a gripe naming it"
+    )
 
 
 def _get_tool_semaphore() -> _FairSemaphore:
@@ -577,7 +611,26 @@ def _offload_sync(
                 return await timed(kwargs, t0, (time.monotonic() - t0) * 1000)
         fair = _get_tool_semaphore()
         session = _calling_session()
-        await fair.acquire(session)
+        limit = _queue_wait_limit_s()
+        try:
+            if limit is None:
+                await fair.acquire(session)
+            else:
+                with anyio.fail_after(limit):
+                    await fair.acquire(session)
+        except TimeoutError:
+            # Never reached the worker thread: the call did not run.
+            waited = time.monotonic() - t0
+            calllat.record(
+                verb,
+                kwargs.get("kind"),
+                kwargs.get("view") or kwargs.get("mode"),
+                outcome="error",
+                duration_ms=waited * 1000,
+                wait_ms=waited * 1000,
+                size=None,
+            )
+            return _queue_timeout_message(verb, waited)
         try:
             return await timed(kwargs, t0, (time.monotonic() - t0) * 1000)
         finally:
