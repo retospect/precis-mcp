@@ -165,11 +165,13 @@ def test_sync_skips_retired_hosts(h: MachineHandler, store: Store) -> None:
 # ── view='daemons' — the release daemon cohort (gr627361) ────────────
 
 SHA = "d5e4f3a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"
+SHA2 = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 
 
 def _daemon_meta(**over: Any) -> dict[str, Any]:
     """A live worker host's heartbeat meta: the served boot sha, an
-    installed-unit snapshot and per-process activity."""
+    installed-unit snapshot, per-process activity and this process's
+    own ``code_sha_by_process`` advertisement."""
     meta: dict[str, Any] = {
         "code_sha": SHA,
         "worker_units": {
@@ -177,6 +179,9 @@ def _daemon_meta(**over: Any) -> dict[str, Any]:
             "units": {"precis-worker": {"active_state": "active"}},
         },
         "activity": {"precis-worker": {"idle": True}},
+        "code_sha_by_process": {
+            "precis-worker": {"sha": SHA, "at": datetime.now(UTC).isoformat()},
+        },
     }
     meta.update(over)
     return meta
@@ -254,6 +259,84 @@ def test_daemons_view_deploy_ledger_member_counts(
     body = h.get(view="daemons").body
     assert "1 live host(s)" in body
     assert f"deployed {SHA[:12]}" in body
+
+
+def test_daemons_view_uncovered_host_never_attests(
+    h: MachineHandler, store: Store
+) -> None:
+    """td649547: a published deploy.fleet covered list gates the cohort —
+    installed units and recorded activity cannot admit a host the
+    deploy never reaches (conditions' deploy-uncovered shape, not a
+    release attestor)."""
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    store.record_heartbeat("stray", meta=_daemon_meta())
+    _deploy_ledger(store, ["alpha"])
+    body = h.get(view="daemons").body
+    assert "1 live host(s)" in body
+    assert "stray (not in deploy.fleet)" in body
+    assert "not counted" in body
+
+
+def test_daemons_view_uncovered_pre_snapshot_beat_never_attests(
+    h: MachineHandler, store: Store
+) -> None:
+    """An absent worker_units key (the pre-snapshot shape) and
+    historical activity keys are no admission either once membership
+    is configured."""
+    store.record_heartbeat("alpha", meta=_daemon_meta())
+    store.record_heartbeat(
+        "stray",
+        meta={
+            "code_sha": SHA,
+            "activity": {"precis-worker": {"idle": True}},
+        },
+    )
+    _deploy_ledger(store, ["alpha"])
+    body = h.get(view="daemons").body
+    assert "1 live host(s)" in body
+    assert "stray (not in deploy.fleet)" in body
+
+
+def test_daemons_view_shows_per_process_shas(h: MachineHandler, store: Store) -> None:
+    """td649547: the processes column carries each named process's own
+    advertised sha + beat age (meta.code_sha_by_process) — a
+    mixed-version host stays visible where the host-wide, last-writer
+    code_sha would hide it."""
+    store.record_heartbeat(
+        "alpha",
+        meta=_daemon_meta(
+            code_sha=SHA2,  # the agent's beat overwrote the host stamp
+            code_sha_by_process={
+                "precis-worker": {
+                    "sha": SHA,
+                    "at": datetime.now(UTC).isoformat(),
+                },
+                "precis-worker-agent": {
+                    "sha": SHA2,
+                    "at": datetime.now(UTC).isoformat(),
+                },
+            },
+        ),
+    )
+    body = h.get(view="daemons").body
+    assert f"precis-worker@{SHA[:12]}" in body
+    assert f"precis-worker-agent@{SHA2[:12]}" in body
+
+
+def test_daemons_view_persistent_keys_are_marked(
+    h: MachineHandler, store: Store
+) -> None:
+    """A beat without the per-process advertisement shows the surviving
+    activity/boot_ids keys honestly marked — never listed as live
+    processes beside one host-wide sha."""
+    meta = _daemon_meta()
+    del meta["code_sha_by_process"]
+    meta["boot_ids"] = {"precis-worker-agent": "b" * 32}
+    store.record_heartbeat("alpha", meta=meta)
+    body = h.get(view="daemons").body
+    assert "persistent keys" in body
+    assert "precis-worker" in body and "precis-worker-agent" in body
+    assert "precis-worker@" not in body
 
 
 def test_daemons_view_empty(h: MachineHandler) -> None:

@@ -57,15 +57,21 @@ get(kind='machine', view='daemons')      # the live release daemon cohort
 search(kind='machine', view='daemons')   # same read via search
 ```
 
-One row per live host that runs workers or is a `deploy.fleet` member —
-the cohort `release_confirm` attests. Each row carries the heartbeat
-`code_sha` (**actual process boot version**) and beat time beside the
-installed `worker_units` snapshot (**installed metadata**, not the
-running version — never read one as the other) plus the live process
-names. Ephemeral, container-id and >60-min-stale beats are excluded;
-live hosts running no workers show as a note, never counted. A single
-host's `get` overlays the same `code_sha` / units lines. The header
-shows the ledger's deployed sha when published.
+One row per live host that attests for a deploy — the cohort
+`release_confirm` counts. With a published `deploy.fleet` `covered`
+list only those configured members attest; without one, worker
+evidence (installed units, recorded activity, or a pre-snapshot beat)
+decides. Each row carries the heartbeat `code_sha` (**the last-beating
+process's boot version** — host-wide, last writer wins) and beat time
+beside the installed `worker_units` snapshot (**installed metadata**,
+not the running version — never read one as the other). The
+`processes` column shows each named process's own `@<sha>` and beat
+age from `meta.code_sha_by_process`; names marked 'persistent keys'
+have no per-process evidence — a stopped process's merge key survives,
+so key presence is never liveness. Ephemeral, container-id and
+>60-min-stale beats are excluded; live non-attestors show as a note,
+never counted. A single host's `get` overlays the same `code_sha` /
+units lines. The header shows the ledger's deployed sha when published.
 
 ## Create or refresh refs — run by hand
 

@@ -86,26 +86,31 @@ class HeartbeatMixin:
 
         Re-running for the same ``host`` overwrites the previous row
         (latest-snapshot semantics) and bumps ``ts`` so staleness is
-        always measured from the most recent report — EXCEPT three keys
-        that are nested-merged instead of replaced, because a host can run
-        more than one worker process (melchior runs both ``system`` and
-        ``agent``), each advertising its own per-process entry under the
-        SAME ``host_heartbeat`` row (PK is ``host``, not ``(host,
-        process)``), so a full ``meta`` replace by process A's beat would
-        silently wipe process B's entry:
+        always measured from the most recent report — EXCEPT the
+        per-process keys that are nested-merged instead of replaced,
+        because a host can run more than one worker process (melchior
+        runs both ``system`` and ``agent``), each advertising its own
+        per-process entry under the SAME ``host_heartbeat`` row (PK is
+        ``host``, not ``(host, process)``), so a full ``meta`` replace
+        by process A's beat would silently wipe process B's entry:
 
         - ``meta.boot_ids`` (§H boot epoch, compute-lane-lease-epoch.md) —
           each process's minted boot_id.
         - ``meta.activity`` (:mod:`precis.workers.activity`) — each
           process's live pass/idle snapshot, published by the ``Now``
           Status sub-tab.
-
         - ``meta.nas_ok_by_process`` (gr248866) — each process's own NAS
           readability attestation.
+        - ``meta.code_sha_by_process`` (td649547) — each process's own
+          ``{"sha", "at"}`` served-commit advertisement; the host-wide
+          ``meta.code_sha`` is last-writer-wins and would hide a
+          mixed-version host.
 
         All merge new-wins-per-process-key (old ∪ new, new overrides on a
         shared key), keeping every live process's own entry visible
-        regardless of write order.
+        regardless of write order. A stopped process's key persists —
+        consumers must read each entry's own timestamp, never the key's
+        presence, as liveness.
         """
         sql = (
             "INSERT INTO host_heartbeat "
@@ -123,7 +128,10 @@ class HeartbeatMixin:
             "    || COALESCE(EXCLUDED.meta->'activity', '{}'::jsonb),"
             "  'nas_ok_by_process',"
             "  COALESCE(host_heartbeat.meta->'nas_ok_by_process', '{}'::jsonb)"
-            "    || COALESCE(EXCLUDED.meta->'nas_ok_by_process', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'nas_ok_by_process', '{}'::jsonb),"
+            "  'code_sha_by_process',"
+            "  COALESCE(host_heartbeat.meta->'code_sha_by_process', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'code_sha_by_process', '{}'::jsonb)"
             ")"
         )
         params = (
@@ -248,8 +256,8 @@ class HeartbeatMixin:
         answers the only question anyone asks of a retired row later.
 
         Not merge-protected in :meth:`record_heartbeat`'s UPSERT, deliberately:
-        that UPSERT replaces ``meta`` wholesale apart from ``boot_ids`` and
-        ``activity``, so a retired host that comes BACK clears its own marker
+        that UPSERT replaces ``meta`` wholesale apart from the nested-merged
+        per-process keys, so a retired host that comes BACK clears its own marker
         on its first beat and resumes being monitored. Retiring a host that is
         still beating would therefore not stick — which is why
         ``precis heartbeat --retire`` refuses a host whose heartbeat is fresh

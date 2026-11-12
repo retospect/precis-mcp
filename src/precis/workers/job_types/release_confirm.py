@@ -11,9 +11,11 @@ runs, without a session. :func:`gather_evidence` reads the mechanical
 evidence — every live worker host's ``host_heartbeat.meta->>'code_sha'``
 (the release daemon cohort of :mod:`precis.daemon_fleet`, store only,
 no network; a heartbeat inside the last 60 minutes on a non-ephemeral
-host that is not a 12-hex container id and that runs workers or is a
-known fleet member — a worker-less one-off checkout is a note, never
-counted, gr623769) — plus the live web's
+host that is not a 12-hex container id — with a published
+``deploy.fleet`` ``covered`` list the configured members alone attest,
+td649547; without one a host running workers or carrying a pre-snapshot
+beat does, and a worker-less one-off checkout is a note, never counted,
+gr623769) — plus the live web's
 ``X-Precis-Boot-Sha`` header when the ``release.health_url`` operator
 setting names its ``/healthz`` (one plain bounded ``httpx`` GET — the
 URL is operator-set, not agent-supplied, so the SSRF guard is the wrong
@@ -35,8 +37,9 @@ and keeps the probe parked (phase ``probe``, ``not_before``-paced like
 another sha fails at once; past the deadline anything still not at the
 release sha fails, naming each host, its last heartbeat time and its
 sha. Hosts with no heartbeat inside the liveness window stay ignored,
-as do live hosts that run no workers and are not known fleet members
-(gr623769).
+as do live hosts outside the cohort — worker-less under unconfigured
+membership, or uncovered by a published ``deploy.fleet`` (gr623769,
+td649547).
 
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
@@ -158,9 +161,11 @@ class Evidence:
     the web probe's is the ONLY problem — every live worker already
     attests and none is still waiting on a restart — and the job files
     the ruling ask itself (gr607271) instead of dying into the tick's
-    retry-cap showstopper. ``workerless`` names the live hosts that run
-    no workers and are not known fleet members (gr623769): reported as
-    a note in ``text``, never a problem and never ``waiting``."""
+    retry-cap showstopper. ``noncohort`` names the live hosts that
+    attest nothing — no worker evidence under unconfigured membership
+    (gr623769), or uncovered by a published ``deploy.fleet`` (td649547):
+    reported as a note in ``text``, never a problem and never
+    ``waiting``."""
 
     ok: bool
     sha: str | None
@@ -169,7 +174,7 @@ class Evidence:
     waiting: tuple[str, ...] = ()
     deadline: datetime | None = None
     web_only: bool = False
-    workerless: tuple[str, ...] = ()
+    noncohort: tuple[str, ...] = ()
 
 
 def _http_get(url: str) -> Any:
@@ -242,19 +247,19 @@ def _deployed_at(store: Store, rn: str) -> datetime | None:
 
 def _live_fleet(
     store: Store,
-) -> tuple[list[tuple[str, datetime | None, str | None]], list[str]]:
-    """``(workers, workerless)`` of the live heartbeat rows, store only.
+) -> tuple[list[tuple[str, datetime | None, str | None]], list[tuple[str, str]]]:
+    """``(workers, noncohort)`` of the live heartbeat rows, store only.
 
     The cohort itself lives in :mod:`precis.daemon_fleet` (gr627361 —
     shared with the machine kind's ``view='daemons'`` read so the MCP
     view can't drift from the evidence this job counts). ``workers`` is
     ``(host, heartbeat ts, code_sha|None)`` per host that attests;
     ``ts`` is the heartbeat's write time, the restart check's clock.
-    ``workerless`` names the live hosts that run no workers and are not
-    known fleet members (gr623769): reported as a note, never counted."""
-    beats, workerless = _df.live_fleet(store)
+    ``noncohort`` is ``(host, reason)`` per live host that attests
+    nothing (gr623769, td649547): reported as a note, never counted."""
+    beats, noncohort = _df.live_fleet(store)
     workers = [(b.host, b.ts, b.code_sha) for b in beats]
-    return workers, workerless
+    return workers, noncohort
 
 
 def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
@@ -285,9 +290,11 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     Required evidence is the workers — the pinned sha
     (:func:`precis.plans.release.pinned_deploy_sha`) must equal every
     live host's heartbeat ``code_sha`` exactly, and it must be the plan's
-    own release sha. Only a host that runs workers or is a known fleet
-    member attests (gr623769): a live worker-less non-member is reported
-    in ``text`` as a note, never a problem and never ``waiting``. The
+    own release sha. Only a cohort member attests — with a published
+    ``deploy.fleet`` ``covered`` list, the configured members alone
+    (td649547); without one, a host running workers or carrying a
+    pre-snapshot beat (gr623769): a live non-attestor is reported in
+    ``text`` as a note, never a problem and never ``waiting``. The
     restart race: a host whose newest heartbeat
     predates the deploy finish (:func:`_deployed_at`) has not restarted
     yet — it joins ``waiting`` until ``deadline`` (the confirm window's
@@ -298,7 +305,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     rn = str(rel.get("rN") or "")
     sha = _release.pinned_deploy_sha(store, rn)
     rel_sha = str(rel.get("sha") or "")
-    live, workerless = _live_fleet(store)
+    live, noncohort = _live_fleet(store)
     hosts = ", ".join(host for host, _, _ in live)
     deployed_at = _deployed_at(store, rn) if sha is not None else None
     deadline = deployed_at + _CONFIRM_WINDOW if deployed_at is not None else None
@@ -362,8 +369,8 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         workers = f"workers: {len(live)} live ({hosts})"
     short = sha[:12] if sha else "unset"
     note = ""
-    if workerless:
-        note = "; note: " + ", ".join(f"{h} (no workers)" for h in workerless)
+    if noncohort:
+        note = "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
     text = mask_secrets(
         f"{rn or 'r?'} pinned {short}; {workers}{note}; web: {web_clause}"
     )[:_TEXT_CAP]
@@ -375,7 +382,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         waiting=tuple(waiting),
         deadline=deadline,
         web_only=(web_problem is not None and len(problems) == 1 and not waiting),
-        workerless=tuple(workerless),
+        noncohort=tuple(h for h, _why in noncohort),
     )
 
 

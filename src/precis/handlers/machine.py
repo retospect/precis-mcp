@@ -23,11 +23,17 @@ Slice 1 shape (the ruling's spec):
 * ``view='daemons'`` (gr627361) — the read-only release daemon cohort:
   every live host that attests for a deploy (the shared
   :mod:`precis.daemon_fleet` read ``release_confirm`` counts), with
-  each host's heartbeat ``code_sha`` — the actual process boot version —
-  and beat time beside the installed ``worker_units`` snapshot, so
-  installed metadata is never read as the running version. Ephemeral,
-  container-id and stale (>60 min) beats are excluded; live
-  worker-less non-members show as a note, never counted (gr623769).
+  each host's heartbeat ``code_sha`` — the last-beating process's boot
+  version — and beat time beside the installed ``worker_units``
+  snapshot, so installed metadata is never read as the running version.
+  The ``processes`` column carries the per-process evidence
+  (``meta.code_sha_by_process``: each named process's own sha and beat
+  age); persistent ``activity``/``boot_ids`` merge keys are marked as
+  such, never listed as live processes (td649547). A published
+  ``deploy.fleet`` ``covered`` list gates membership — an uncovered
+  host's worker evidence does not admit it; ephemeral, container-id
+  and stale (>60 min) beats are excluded; live non-attestors show as
+  a note, never counted (gr623769).
   The same ``code_sha`` / units facts overlay the single-host ``get``.
 * ``put(kind='machine', mode='sync')`` upserts one ref per host in
   ``host_heartbeat`` (plus any extra ``hosts=[...]`` named in args — a
@@ -134,6 +140,33 @@ def _beat_age(ts: datetime, *, now: datetime) -> str:
     return f"{age / 86400:.0f}d ago"
 
 
+def _processes_label(b: daemon_fleet.DaemonBeat, *, now: datetime) -> str:
+    """The per-process evidence column (td649547).
+
+    Entries from ``meta.code_sha_by_process`` — each named process's own
+    advertised ``{sha, at}`` — render as ``<proc>@<sha12> (<beat age>)``:
+    that is per-process boot version AND freshness (a stopped process's
+    entry keeps its old ``at``, visibly stale). Keys that only exist in
+    the persistent ``activity``/``boot_ids`` merge maps — a stopped
+    process's key survives forever, so key presence is never liveness —
+    are named but marked as having no per-process evidence.
+    """
+    parts: list[str] = []
+    for proc, ent in sorted(b.process_shas.items()):
+        sha = ent.get("sha")
+        label = f"{proc}@{str(sha)[:12]}" if sha else f"{proc}@?"
+        at = ent.get("at")
+        if isinstance(at, datetime):
+            label += f" ({_beat_age(at, now=now)})"
+        else:
+            label += " (no stamp)"
+        parts.append(label)
+    keys = sorted((set(b.activity) | set(b.boot_ids)) - set(b.process_shas))
+    if keys:
+        parts.append(", ".join(keys) + " — persistent keys, no per-process evidence")
+    return "; ".join(parts) or "—"
+
+
 def _units_label(worker_units: dict[str, Any] | None) -> str:
     """The installed-metadata column: the ``worker_units`` systemctl
     snapshot — installed unit files and their states, never the running
@@ -199,9 +232,9 @@ class MachineHandler(Handler):
             "put(kind='machine', id='<host>', args={'platform':…,"
             "'role':…,'gpu':…}) for one. "
             "get(kind='machine', view='daemons') reads the release daemon "
-            "cohort — each live worker host's heartbeat code_sha (the "
-            "actual process boot version) and beat time beside its "
-            "installed worker_units, the same cohort release_confirm "
+            "cohort — each attestor's heartbeat code_sha (last-beating "
+            "process's boot version) plus per-process sha/beat evidence "
+            "where advertised, the same cohort release_confirm "
             "attests. Linkable — "
             "link(target='machine:ma_<host>'). See precis-machine-help."
         ),
@@ -413,13 +446,18 @@ class MachineHandler(Handler):
     def _daemons_view(self) -> Response:
         """Read-only release-attestation evidence: the same live-fleet
         read :mod:`precis.workers.job_types.release_confirm` counts —
-        every configured daemon host's heartbeat ``code_sha`` (the actual
-        process boot version) and beat time beside the installed
-        ``worker_units`` snapshot, so installed metadata is never read as
-        the running version. Ephemeral, container-id and >60-min-stale
-        beats are out; live worker-less non-members show as a note
-        (gr623769), never counted."""
-        beats, workerless = daemon_fleet.live_fleet(self.store)
+        every configured daemon host's heartbeat ``code_sha`` (the
+        host row's last-beating process's boot version) and beat time
+        beside the installed ``worker_units`` snapshot, so installed
+        metadata is never read as the running version. The processes
+        column shows per-process sha/freshness
+        (``meta.code_sha_by_process``); surviving ``activity``/
+        ``boot_ids`` keys are marked persistent, never read as live
+        processes (td649547). Ephemeral, container-id and >60-min-stale
+        beats are out; live non-attestors (worker-less, or uncovered by
+        a published deploy.fleet) show as a note, never counted
+        (gr623769)."""
+        beats, noncohort = daemon_fleet.live_fleet(self.store)
         ledger = daemon_fleet.deploy_ledger(self.store)
         now = datetime.now(UTC)
         deployed = ledger.get("sha")
@@ -448,8 +486,7 @@ class MachineHandler(Handler):
                         else "—"
                     ),
                     "installed_units": _units_label(b.worker_units),
-                    "processes": ", ".join(sorted(set(b.activity) | set(b.boot_ids)))
-                    or "—",
+                    "processes": _processes_label(b, now=now),
                 }
                 for b in beats
             ]
@@ -466,6 +503,12 @@ class MachineHandler(Handler):
                     ],
                 )
             )
+            lines.append(
+                "code_sha / last_beat are the host row's last-beating "
+                "process — per-process boot versions and beat ages are in "
+                "the processes column (meta.code_sha_by_process); names "
+                "marked 'persistent keys' have no per-process evidence"
+            )
         else:
             lines.append(
                 "none — no live daemon heartbeat in the last "
@@ -473,12 +516,11 @@ class MachineHandler(Handler):
                 "non-container host running workers or on the "
                 "deploy.fleet ledger"
             )
-        if workerless:
+        if noncohort:
             lines.append(
                 "note: "
-                + ", ".join(workerless)
-                + " — live but runs no workers and is not a deploy.fleet "
-                "member; not counted (gr623769)"
+                + ", ".join(f"{h} ({why})" for h, why in noncohort)
+                + " — live but not counted (gr623769, td649547)"
             )
         return Response(body="\n".join(lines))
 

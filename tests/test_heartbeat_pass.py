@@ -264,3 +264,39 @@ def test_settings_env_present_omitted_when_nothing_set(store, monkeypatch) -> No
 
     rows = {row.host: row for row in store.recent_heartbeats()}
     assert "settings_env_present" not in rows["test-host-settings-2"].meta
+
+
+# ── Per-process boot version (meta.code_sha_by_process, td649547) ────────
+
+
+def test_beat_advertises_own_process_sha(store, monkeypatch) -> None:
+    """A named process stamps ``meta.code_sha_by_process`` with its own
+    ``{"sha","at"}`` — the per-process complement of the host-wide,
+    last-writer ``meta.code_sha``."""
+    _reset_throttle(monkeypatch)
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+    monkeypatch.setattr(hb, "_served_code_sha", lambda: "f" * 40)
+
+    hb.run_heartbeat_pass(store, host="test-host-sha-1")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    meta = rows["test-host-sha-1"].meta
+    assert meta["code_sha"] == "f" * 40
+    entry = meta["code_sha_by_process"]["precis-worker"]
+    assert entry["sha"] == "f" * 40 and entry["at"]
+
+
+def test_beat_without_process_name_omits_per_process_sha(store, monkeypatch) -> None:
+    """A nameless beater (the bare ``precis heartbeat`` CLI) has no
+    process key to write under — the map stays absent rather than keyed
+    by a guess; the host-wide stamp still lands."""
+    _reset_throttle(monkeypatch)
+    monkeypatch.delenv("PRECIS_PROCESS", raising=False)
+    monkeypatch.setattr(hb, "_served_code_sha", lambda: "e" * 40)
+
+    hb.run_heartbeat_pass(store, host="test-host-sha-2")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    meta = rows["test-host-sha-2"].meta
+    assert meta["code_sha"] == "e" * 40
+    assert "code_sha_by_process" not in meta

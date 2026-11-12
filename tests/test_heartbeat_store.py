@@ -119,6 +119,58 @@ def test_boot_ids_survive_a_beat_that_omits_them(store: Store) -> None:
     assert hb.meta["platform"] == "Darwin"
 
 
+# ── Per-process boot version: meta.code_sha_by_process nested-merge ──────
+
+
+def test_code_sha_by_process_merges_across_processes_on_one_host(
+    store: Store,
+) -> None:
+    """td649547: each process's own ``{"sha","at"}`` advertisement
+    survives the other process's beat — the mixed-version host the
+    host-wide, last-writer ``meta.code_sha`` would hide."""
+    store.record_heartbeat(
+        "melchior-sha-1",
+        meta={
+            "code_sha": "a" * 40,
+            "code_sha_by_process": {
+                "precis-worker": {"sha": "a" * 40, "at": "t1"},
+            },
+        },
+    )
+    store.record_heartbeat(
+        "melchior-sha-1",
+        meta={
+            "code_sha": "b" * 40,
+            "code_sha_by_process": {
+                "precis-worker-agent": {"sha": "b" * 40, "at": "t2"},
+            },
+        },
+    )
+    hb = _by_host(store.recent_heartbeats(), "melchior-sha-1")[0]
+    assert hb.meta["code_sha"] == "b" * 40  # last writer wins, host-wide
+    assert hb.meta["code_sha_by_process"] == {
+        "precis-worker": {"sha": "a" * 40, "at": "t1"},
+        "precis-worker-agent": {"sha": "b" * 40, "at": "t2"},
+    }
+
+
+def test_code_sha_by_process_survives_a_beat_that_omits_it(
+    store: Store,
+) -> None:
+    """A beat carrying no ``code_sha_by_process`` key (a bare CLI, a
+    nameless process) must not erase what a named process advertised —
+    same merge contract as boot_ids."""
+    store.record_heartbeat(
+        "melchior-sha-2",
+        meta={"code_sha_by_process": {"precis-worker": {"sha": "c" * 40, "at": "t1"}}},
+    )
+    store.record_heartbeat("melchior-sha-2", meta={"platform": "Darwin"})
+    hb = _by_host(store.recent_heartbeats(), "melchior-sha-2")[0]
+    assert hb.meta["code_sha_by_process"] == {
+        "precis-worker": {"sha": "c" * 40, "at": "t1"}
+    }
+
+
 # ── host_heartbeat_log time-series (migration 0113) ──────────────────────
 
 

@@ -176,7 +176,7 @@ def test_a_workerless_checkout_is_a_note_not_a_failure(store: Store) -> None:
     _beat(store, "node-a", SHA, worker_units=_units())
     _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert ev.ok and ev.problems == [] and ev.workerless == ("hephaestus",)
+    assert ev.ok and ev.problems == [] and ev.noncohort == ("hephaestus",)
     assert "hephaestus (no workers)" in ev.text
 
 
@@ -204,7 +204,7 @@ def test_empty_worker_units_with_activity_is_a_fleet_member(store: Store) -> Non
         activity={"precis-worker": {"idle": True}},
     )
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert not ev.ok and ev.workerless == ()
+    assert not ev.ok and ev.noncohort == ()
     assert ev.problems == [
         f"worker node-mac reports {SHA2[:12]}, release is {SHA[:12]}"
     ]
@@ -219,7 +219,7 @@ def test_a_workerless_host_in_the_deploy_ledger_is_a_member(store: Store) -> Non
     _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
     _ledger(store, ["node-a", "hephaestus"])
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert not ev.ok and ev.workerless == ()
+    assert not ev.ok and ev.noncohort == ()
     assert ev.problems == [
         f"worker hephaestus reports {SHA2[:12]}, release is {SHA[:12]}"
     ]
@@ -240,7 +240,7 @@ def test_a_workerless_host_never_parks_the_probe(store: Store) -> None:
     _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
     _stale(store, "hephaestus", minutes=10)  # predates the deploy finish
     ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
-    assert ev.ok and ev.waiting == () and ev.workerless == ("hephaestus",)
+    assert ev.ok and ev.waiting == () and ev.noncohort == ("hephaestus",)
 
 
 def test_only_workerless_hosts_is_still_no_live_worker(store: Store) -> None:
@@ -249,9 +249,43 @@ def test_only_workerless_hosts_is_still_no_live_worker(store: Store) -> None:
     R.record_prod_head(store, SHA, [])
     _beat(store, "hephaestus", SHA, worker_units={}, activity={})
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert not ev.ok and ev.workerless == ("hephaestus",)
+    assert not ev.ok and ev.noncohort == ("hephaestus",)
     assert ev.problems == ["no live worker host (no heartbeat in the last 60 min)"]
     assert "hephaestus (no workers)" in ev.text
+
+
+def test_an_uncovered_host_running_workers_never_attests(store: Store) -> None:
+    """td649547: once ``deploy.fleet`` publishes its ``covered`` list,
+    only those configured members attest — installed units and recorded
+    activity on an uncovered host are conditions' ``deploy-uncovered``
+    finding, not release evidence."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(store, "node-b", SHA2, worker_units=_units())
+    _ledger(store, ["node-a"])
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert ev.ok and ev.problems == []
+    assert ev.noncohort == ("node-b",)
+    assert "node-b (not in deploy.fleet)" in ev.text
+
+
+def test_an_uncovered_host_with_no_snapshot_never_attests(store: Store) -> None:
+    """The absent ``worker_units`` key (pre-snapshot shape) and
+    historical ``activity`` keys admit nothing either once membership
+    is configured."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA, worker_units=_units())
+    _beat(
+        store,
+        "node-b",
+        SHA2,
+        activity={"precis-worker": {"idle": True}},
+    )
+    _ledger(store, ["node-a"])
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert ev.ok and ev.problems == []
+    assert ev.noncohort == ("node-b",)
+    assert "node-b (not in deploy.fleet)" in ev.text
 
 
 # ── the web clause ──────────────────────────────────────────────────

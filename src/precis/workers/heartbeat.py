@@ -1034,6 +1034,17 @@ def _collect_and_upsert(
     # running the old release).
     if code_sha := _served_code_sha():
         meta["code_sha"] = code_sha
+    # Per-process boot version (td649547): meta.code_sha is host-wide and
+    # last-writer-wins — a second worker or the bare heartbeat CLI on the
+    # same host overwrites it and hides a mixed-version host. Each named
+    # process also advertises its own {"sha", "at"} under a merge-
+    # protected key (record_heartbeat's UPSERT, same as boot_ids), so a
+    # reader sees every process's boot version and own last-beat stamp —
+    # the freshness the surviving keys alone can't carry.
+    if process:
+        meta["code_sha_by_process"] = {
+            process: {"sha": code_sha or None, "at": datetime.now(UTC).isoformat()}
+        }
     # Host memory utilisation (gr592932): the latest-snapshot view of the
     # series host_heartbeat_log.mem_used_pct keeps per beat.
     if mem_used_pct is not None:
