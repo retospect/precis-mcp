@@ -42,7 +42,10 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
   ``_attribute``): a gripe's stored text *is* its whole record, and
   the human who hit friction is the one worth going back to.
 * ``GET /gripes/{id}`` — title + body + append-only comment timeline, a
-  comment box, and the status controls. Legacy titles can contain the
+  comment box, and the status controls. The priority buttons highlight
+  the rung saved on the ``refs.prio`` column — the handler strips the
+  ``PRIO:`` tag at write time, so a tag-only read would always fall
+  back to ``normal``. Legacy titles can contain the
   whole complaint, so the heading takes their first non-blank line;
   an identical first body line is omitted from display only.
   Filing origin comes from server-stamped ``meta.filed_by``; read-only
@@ -78,6 +81,7 @@ from starlette.responses import Response
 from precis.errors import NotFound
 from precis.filing_origin import agentlog_model
 from precis.handlers._gripe_title import first_line
+from precis.handlers._prio_tag import PRIO_INT_TO_NAME
 from precis.runtime.trust_verb import trust_footer
 from precis.utils import dispatch_score as _dscore
 from precis.utils.gripe_order import (
@@ -312,6 +316,24 @@ def _prio_of(tags: Any) -> str | None:
         ):
             return str(getattr(t, "value", ""))
     return None
+
+
+def _prio_rung(ref: Any, tags: Any) -> str | None:
+    """The saved priority rung — the canonical ``refs.prio`` column first.
+
+    ``GripeHandler.tag`` strips ``PRIO:`` tags and stores the column
+    (``_prio_tag.split_prio``), so a tag-only read misses every
+    post-split gripe and the detail page would highlight ``normal`` no
+    matter what the human set. Same precedence as the list query's
+    ``COALESCE(r.prio, PRIO subquery)``: the column wins; the legacy
+    tag read remains for pre-split gripes whose column is NULL. An
+    off-rung column value has no rung name and reads as unset here —
+    the buttons offer the named rungs only.
+    """
+    col = getattr(ref, "prio", None)
+    if isinstance(col, int) and not isinstance(col, bool):
+        return PRIO_INT_TO_NAME.get(col) or _prio_of(tags)
+    return _prio_of(tags)
 
 
 def _project_of(tags: Any) -> str | None:
@@ -858,7 +880,7 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "status_values": STATUS_VALUES,
             "status_badge": _status_badge(status),
             "retired": getattr(ref, "retired_at", None) is not None,
-            "prio": _prio_of(tags),
+            "prio": _prio_rung(ref, tags),
             "prio_values": PRIO_VALUES,
             "score": score,
             "project": _project_of(tags),

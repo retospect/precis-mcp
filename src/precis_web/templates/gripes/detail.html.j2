@@ -13,7 +13,7 @@
       {% if updated %}· updated {{ updated | ago }}{% endif %}
       {% if filing_origin.actor or set_by %}· by <span class="font-mono">{{ filing_origin.actor or set_by }}</span>{% endif %}
       {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
-      {% if score is not none %}· <span class="font-mono" title="dispatch score — the machine's queue order, computed from age, size and source; a set PRIO multiplies it. Change PRIO below to steer it.">score:{{ score }}</span>{% endif %}
+      {% if score is not none %}· <span class="font-mono" title="dispatch score — the machine's queue order (higher = hotter): triage severity × supersedes-linked dups × capped age, or a machine-stamped score; a set PRIO multiplies it (as do showstopper and factory tags). Change PRIO below to steer it.">score:{{ score }}</span>{% endif %}
       {% if project and project != 'project:precis' %}· <span class="font-mono">{{ project }}</span>{% endif %}
     </p>
     <p class="text-xs text-fg-faint break-words" data-filing-origin>

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 
 import pytest
 
@@ -159,3 +160,40 @@ def test_detail_offers_prio_controls(client) -> None:
     resp = client.get("/gripes/96", headers=_auth())
     assert resp.status_code == 200
     assert "/gripes/96/prio" in resp.text
+
+
+def _selected_rung_button(text: str, rung: str) -> bool:
+    """Whether the detail page's rung button for ``rung`` carries the
+    selected highlight — the button right after that rung's hidden input
+    has the ``bg-surface-muted font-medium`` class."""
+    return (
+        re.search(
+            r'name="value" value="'
+            + rung
+            + r'"\s*/>\s*<button[^>]*bg-surface-muted font-medium',
+            text,
+        )
+        is not None
+    )
+
+
+def test_detail_highlights_the_saved_prio_rung(runtime, client) -> None:
+    """``GripeHandler.tag`` strips the PRIO: tag into the ``refs.prio``
+    column, so the saved rung must be read back off the column — a
+    tag-only read always falls back to ``normal``."""
+    runtime.store.gripes[0].prio = 3  # PRIO:high on the column
+    resp = client.get("/gripes/96", headers=_auth())
+    assert resp.status_code == 200
+    assert "PRIO:high" in resp.text
+    assert _selected_rung_button(resp.text, "high")
+    assert not _selected_rung_button(resp.text, "normal")
+
+
+def test_detail_defaults_the_prio_rung_to_normal(runtime, client) -> None:
+    """No prio set anywhere: the rung row highlights ``normal`` (the
+    documented unset reading) and the header shows no PRIO line."""
+    resp = client.get("/gripes/96", headers=_auth())
+    assert resp.status_code == 200
+    assert "PRIO:high" not in resp.text
+    assert _selected_rung_button(resp.text, "normal")
+    assert not _selected_rung_button(resp.text, "high")
