@@ -135,6 +135,19 @@ class TestParseNeeds:
         assert needs_mod.tool_key("XRD Scanner (v2)") == "xrd-scanner-v2"
         assert needs_mod.tool_key("  autocatpath  batch  ") == "autocatpath-batch"
 
+    def test_tool_key_drops_handle_citations(self) -> None:
+        """gr646881 — a need that cites its own earlier gripe is the SAME
+        need: ``raw-benchmark-log-reader (gr618517/gr624301, gripe
+        gr646528)`` decorated its tool name with handles, slugged to a
+        fresh key, and escaped the open marker gripe's dedup."""
+        assert (
+            needs_mod.tool_key(
+                "raw-benchmark-log-reader (gr618517/gr624301, gripe gr646528)"
+            )
+            == "raw-benchmark-log-reader"
+        )
+        assert needs_mod.tool_key("xrd scanner gr1") == "xrd-scanner"
+
 
 # ── the tick prompts carry the contract ───────────────────────────────
 
@@ -307,6 +320,27 @@ class TestNeedGripeFiling:
         assert len(comments) == 1 and "still needed" in comments[0]
         assert any("bumped gripe" in t for t in _log_texts(store, qid))
 
+    def test_repeat_need_citing_its_gripe_bumps_not_duplicates(
+        self, store: Any
+    ) -> None:
+        """gr646881 — the repeat sighting cited the earlier filings inside
+        the tool name (``… (gr618517/gr624301, gripe gr646528)``); the
+        citation is decoration, so it must bump the open marker gripe, not
+        mint a sibling."""
+        qid = _mk_quest(store)
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch({"needs": [_need()]}))
+        run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                {"needs": [_need("xrd scanner (gr123, gripe gr456)")]}
+            ),
+        )
+        gripes = _gripes(store)
+        assert len(gripes) == 1
+        comments = _gripe_comments(store, gripes[0].id)
+        assert len(comments) == 1 and "still needed" in comments[0]
+
     def test_different_tool_files_a_second(self, store: Any) -> None:
         qid = _mk_quest(store)
         run_quest_tick(store, qid, dispatch_fn=_fake_dispatch({"needs": [_need()]}))
@@ -416,6 +450,75 @@ class TestNeedGripeFiling:
         )
         assert result["ok"]
         assert _gripes(store) == []
+
+
+# ── a need the tick already has answers in-band, never a gripe ────────
+
+
+class TestNeedAlreadyHave:
+    """gr646881 — qu604835 kept declaring ``raw-benchmark-log-reader``
+    missing while the ``bench:<stem>`` read (gr618517/gr624301) sat in its
+    own ``read`` vocabulary. A need naming a capability the tick already
+    has gets a logbook pointer to the affordance — filing a gripe only
+    re-files the same request next tick."""
+
+    def test_have_capability_files_no_gripe(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch({"needs": [_need("raw-benchmark-log-reader")]}),
+        )
+        assert out.status == "succeeded"
+        assert _gripes(store) == []
+        texts = _log_texts(store, qid)
+        assert any("already exists" in t and "bench:<run-stem>" in t for t in texts)
+
+    def test_have_capability_hits_through_decoration(self, store: Any) -> None:
+        """The observed repeat sighting carried its citations in the tool
+        name — the suppression matches the decorated form too."""
+        qid = _mk_quest(store)
+        run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                {
+                    "needs": [
+                        _need(
+                            "raw-benchmark-log-reader "
+                            "(gr618517/gr624301, gripe gr646528)"
+                        )
+                    ]
+                }
+            ),
+        )
+        assert _gripes(store) == []
+        assert any(
+            "already exists" in t and "bench:" in t for t in _log_texts(store, qid)
+        )
+
+    def test_have_capability_spends_no_filing_budget(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A suppressed need is not a filing — it must not eat the daily
+        cap, and a genuinely new need in the same batch still files."""
+        monkeypatch.setenv("PRECIS_QUEST_NEEDS_MAX_PER_DAY", "1")
+        qid = _mk_quest(store)
+        run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                {
+                    "needs": [
+                        _need("raw-benchmark-log-reader"),
+                        _need("p4est mesh lane"),
+                    ]
+                }
+            ),
+        )
+        gripes = _gripes(store)
+        assert len(gripes) == 1
+        assert "p4est mesh lane" in _gripe_body(store, gripes[0].id)
 
 
 # ── visibility: the gap, the tree view, the dry-rest alert ────────────

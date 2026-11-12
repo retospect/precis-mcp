@@ -24,7 +24,21 @@ Dedup is a **marker protocol**, same shape as the health_digest router's
 ``watchdog-condition:`` gripes (:mod:`precis.workers.health_digest`): the
 gripe's first body line is ``quest-need: qu<N> <tool-key>``, and the live
 scan of open marker gripes is the single source of truth — survives
-restarts, no in-memory state. Two pieces:
+restarts, no in-memory state.
+
+Two guards keep the channel honest (gr646881):
+
+* A declared need that names a capability the tick ALREADY has under
+  another name is not a missing tool — ``apply_needs`` answers it with a
+  logbook observation pointing at the affordance
+  (:data:`_HAVE_CAPABILITIES`), never a gripe the quest will re-file next
+  tick.
+* A need that cites its own earlier gripe (``… (gr<N>, gripe gr<N>)``)
+  is the same need — :func:`tool_key` drops handle citations before
+  slugging, so the decoration lands on the open marker gripe's key
+  instead of minting a duplicate.
+
+Two pieces:
 
 * :func:`parse_needs` — the lenient reader. A malformed ``needs`` value
   (wrong top-level type, a non-dict entry, an entry with no usable
@@ -86,12 +100,42 @@ _LIVE_GRIPE_STATUSES: tuple[str, ...] = (
     "parked",
 )
 
+#: Capabilities a tick already HAS under another name than the model
+#: declares — ``(needle, affordance-hint)`` pairs. The needle is matched
+#: lowercase against the declared ``tool`` text AND its ``tool_key``, so
+#: it hits however the model decorates the name. A hit is not a missing
+#: tool: :func:`apply_needs` answers with a logbook observation carrying
+#: the hint instead of filing a gripe the quest would re-file next tick
+#: (gr646881 — qu604835 kept declaring ``raw-benchmark-log-reader`` while
+#: the ``bench:<stem>`` read built for it under gr618517/gr624301 sat in
+#: its own ``read`` vocabulary).
+_HAVE_CAPABILITIES: tuple[tuple[str, str], ...] = (
+    (
+        "raw-benchmark-log-reader",
+        "the `bench:<run-stem>` `read` opens a run's raw results log — "
+        'per-arm rows with the per-call token log; `"section"` names an '
+        "arm, a task id, or `calls` (the run's tool_calls ledger) — and a "
+        "refused `bench:` read lists the held stems",
+    ),
+)
+
+
+def _have_capability(need: Need) -> str | None:
+    """The affordance hint when ``need`` names a capability the tick
+    already has under another name (:data:`_HAVE_CAPABILITIES`), else
+    ``None``."""
+    for needle, hint in _HAVE_CAPABILITIES:
+        if needle in need.tool_key or needle in need.tool.lower():
+            return hint
+    return None
+
 
 @dataclass(frozen=True)
 class Need:
     """One validated ``needs`` entry. ``tool_key`` is the normalised form of
-    ``tool`` — lowercased, whitespace/punctuation collapsed to ``-`` — used
-    for dedup and as the ``needs-tool:`` tag value."""
+    ``tool`` — lowercased, handle citations dropped, whitespace/punctuation
+    collapsed to ``-`` — used for dedup and as the ``needs-tool:`` tag
+    value."""
 
     tool: str
     tool_key: str
@@ -99,10 +143,19 @@ class Need:
     would_unblock: str
 
 
+#: Ref handles and handle-words a model appends when it cites the earlier
+#: gripe its need repeats — decoration, not part of the capability name
+#: (gr646881 filed ``raw-benchmark-log-reader (gr618517/gr624301, gripe
+#: gr646528)``, whose decorated key escaped the open marker gripe's dedup).
+_HANDLE_CITATION = re.compile(r"\b(?:gripe|gr\d+|qu\d+|td\d+)\b")
+
+
 def tool_key(tool: str) -> str:
-    """Normalise a tool name for dedup/tagging: lowercase, every run of
-    non-alphanumerics becomes one ``-``, capped to a tag-safe length."""
-    return re.sub(r"[^a-z0-9]+", "-", tool.lower()).strip("-")[:60]
+    """Normalise a tool name for dedup/tagging: lowercase, drop handle
+    citations (:data:`_HANDLE_CITATION`), every run of non-alphanumerics
+    becomes one ``-``, capped to a tag-safe length."""
+    cleaned = _HANDLE_CITATION.sub(" ", tool.lower())
+    return re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")[:60]
 
 
 def parse_needs(raw: Any) -> tuple[list[Need], int]:
@@ -294,9 +347,11 @@ def apply_needs(
 ) -> NeedsOutcome:
     """Parse + apply a tick payload's ``needs`` — the executor half of the
     contract (gr485483): malformed entries drop with a logbook note (never
-    a tick failure); each valid need dedups onto the quest's open marker
-    gripe for that tool (a comment bump), files a fresh gripe when none is
-    open, or is skipped when the quest's daily filing budget is spent.
+    a tick failure); each valid need naming a capability the tick already
+    has (:func:`_have_capability`, gr646881) answers with a logbook pointer
+    instead of filing; the rest dedup onto the quest's open marker gripe
+    for that tool (a comment bump), file a fresh gripe when none is
+    open, or are skipped when the quest's daily filing budget is spent.
     Per-need failures are logged and skipped, never raised — a gripe-write
     bug must not sink the tick's other writes.
     """
@@ -326,8 +381,11 @@ def apply_needs(
         cap = _max_new_per_day()
         for need in needs:
             try:
+                hint = _have_capability(need)
                 gid = open_map.get(need.tool_key)
-                if gid is not None:
+                if hint is not None:
+                    text = f"needs: `{need.tool}` already exists — {hint}"
+                elif gid is not None:
                     _bump_one(store, gid, need)
                     gripes.append(gid)
                     text = f"needs: bumped gripe gr{gid} — still need `{need.tool}`"
