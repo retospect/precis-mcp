@@ -55,9 +55,18 @@ def test_fan_out_shares_the_dispatch_query_embedding(
     query = "zebra quoll sensor"
 
     class _CountingEmbedder(MockEmbedder):
+        """Flagged production: a mock backend now skips the semantic leg
+        up front (gr628278), which is exactly what this test is not
+        about — it pins the once-per-call shared embed for a real
+        embedder."""
+
         def __init__(self, dim: int) -> None:
             super().__init__(dim=dim)
             self.calls = 0
+
+        @property
+        def is_production(self) -> bool:
+            return True
 
         def embed_one(self, text: str) -> list[float]:
             # Only the query string counts: the skill index (in the fan-out

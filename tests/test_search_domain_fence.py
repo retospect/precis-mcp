@@ -42,7 +42,12 @@ def _record_fan_out(
     """Stub the per-kind dispatch; record the kind list it was handed."""
     seen: dict[str, list[str]] = {}
 
-    def fake(self: PrecisRuntime, kinds: list[str], kw: dict) -> dict[str, object]:
+    def fake(
+        self: PrecisRuntime,
+        kinds: list[str],
+        kw: dict,
+        kind_overrides: dict | None = None,
+    ) -> dict[str, object]:
         seen["kinds"] = list(kinds)
         return {k: [_hit(k, f"{k} hit", i + 1)] for i, k in enumerate(kinds)}
 

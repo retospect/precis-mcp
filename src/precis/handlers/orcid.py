@@ -434,18 +434,22 @@ class OrcidHandler(Handler):
         q: str | None = None,
         page_size: int = 10,
         query_vec: list[float] | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ):
         """Cross-kind merge entry point (``kind='*'`` fan-out).
 
         ``query_vec=`` is the dispatcher's shared query embedding —
         without it this kind paid its own remote ``embed_one`` inside
-        the deadline-bounded fan-out worker (gr519679)."""
+        the deadline-bounded fan-out worker (gr519679). ``mode=`` used
+        to fall into ``**_kw``: the fan-out's lexical-only override for
+        a predictably-slow kind (gr628278) never reached this kind, so
+        it embedded and ran the semantic leg anyway."""
         from precis.utils.search_merge import block_hits_to_search_hits
 
         if not (q and q.strip()):
             return []
-        hits = self._card_hits(q, limit=page_size, mode=None, query_vec=query_vec)
+        hits = self._card_hits(q, limit=page_size, mode=mode, query_vec=query_vec)
         return block_hits_to_search_hits(hits, kind="orcid")
 
     def _card_hits(
@@ -456,7 +460,11 @@ class OrcidHandler(Handler):
         mode: str | None,
         query_vec: list[float] | None = None,
     ):
-        if query_vec is None:
+        if query_vec is None and (mode or "").strip().lower() not in (
+            "lexical",
+            "verbatim",
+            "literal",
+        ):
             query_vec = embed_query(self.embedder, q)
         return self.store.chunks.search_chunks(
             q=q,

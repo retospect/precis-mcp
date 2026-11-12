@@ -33,7 +33,9 @@ def _patch_fan_out(
     kinds: list[str],
     results: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(type(rt), "_cross_kind_fan_out", lambda self, ks, kw: results)
+    monkeypatch.setattr(
+        type(rt), "_cross_kind_fan_out", lambda self, ks, kw, *_o: results
+    )
     monkeypatch.setattr(
         type(rt), "_resolve_cross_kind_request", lambda self, kind: list(kinds)
     )

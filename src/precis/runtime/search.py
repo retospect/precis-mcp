@@ -230,8 +230,13 @@ CROSS_KIND_MIN_START_MS = 1_500
 #: Kinds whose source-search hits are addressed by the parent ref handle (gr),
 #: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
 _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
-#: Wall-clock budget for the whole fan-out, not per kind.
-CROSS_KIND_DEADLINE_S = 30.0
+#: Wall-clock budget for the whole fan-out, not per kind. Sized so the
+#: whole ``search/-`` call stays inside the 15 s tool-call latency
+#: budget (``health_checks.TOOL_LATENCY_BUDGET_MS``) with headroom for
+#: the once-per-call query embed and the merge/render tail — the old
+#: 30 s deadline could never fit it (gr628278: search/- p50 measured
+#: 17.5 s on 2026-11-10, kinds still cancelling past the budget).
+CROSS_KIND_DEADLINE_S = 12.0
 #: Per-kind server-side statement cap inside the fan-out (gr519679).
 #: Without it one kind's runaway query (a global-route ANN scan over the
 #: paper-dominated index measures 10-30 s on prod) can hold a pooled
@@ -240,7 +245,7 @@ CROSS_KIND_DEADLINE_S = 30.0
 #: errored footer by name, and the worker moves on. Sized well above any
 #: healthy kind's latency (a ready partial-index kind answers in <1 s)
 #: and well below the whole-fan-out deadline.
-CROSS_KIND_PER_KIND_S = 8.0
+CROSS_KIND_PER_KIND_S = 4.0
 
 _cross_kind_pool: ThreadPoolExecutor | None = None
 _cross_kind_pool_lock = threading.Lock()
@@ -275,24 +280,42 @@ _NON_PRODUCTION_EMBEDDER_MARKER = (
     "get(kind='skill', id='precis-status') for the active backend.)_"
 )
 
+#: Variant for the cross-kind fan-out's up-front leg skip (gr628278):
+#: under a non-production embedder the fan-out never runs the semantic
+#: leg at all, so "ran against a mock vector" would claim a noise
+#: ranking that isn't there.
+_NON_PRODUCTION_EMBEDDER_SKIPPED_MARKER = (
+    "_(⚠ embedder={backend!r} is non-production — the semantic leg was "
+    "skipped up front (a mock vector can only rank hash noise); results "
+    "are lexical-only. See get(kind='skill', id='precis-status') for "
+    "the active backend.)_"
+)
+
 
 def _stamp_non_production_embedder(
-    response: Response, embedder: Any | None
+    response: Response, embedder: Any | None, *, leg_skipped: bool = False
 ) -> Response:
     """Insert the non-production-embedder marker into ``response.body``.
 
     A no-op when ``embedder`` is ``None`` (mode='lexical' skipped the
     semantic leg entirely — nothing to warn about) or when the
     embedder doesn't carry ``is_production`` (an ad-hoc test double;
-    default True keeps this silent rather than guessing). Matches the
-    existing "insert a bracketed one-liner after the headline" visual
-    convention used for the errored/omitted-kinds trailers in
+    default True keeps this silent rather than guessing). ``leg_skipped``
+    picks the variant naming the up-front skip the cross-kind fan-out
+    applies under a non-production embedder (gr628278), rather than the
+    ran-anyway warning. Matches the existing "insert a bracketed
+    one-liner after the headline" visual convention used for the
+    errored/omitted-kinds trailers in
     :meth:`SearchMixin._dispatch_cross_kind`.
     """
     if embedder is None or getattr(embedder, "is_production", True):
         return response
     backend = getattr(embedder, "backend", type(embedder).__name__)
-    marker = _NON_PRODUCTION_EMBEDDER_MARKER.format(backend=backend)
+    marker = (
+        _NON_PRODUCTION_EMBEDDER_SKIPPED_MARKER
+        if leg_skipped
+        else _NON_PRODUCTION_EMBEDDER_MARKER
+    ).format(backend=backend)
     lines = response.body.splitlines()
     if lines:
         lines.insert(1, marker)
@@ -2629,9 +2652,35 @@ class SearchMixin(RuntimeShape):
         # ``mode='lexical'`` skips the embed entirely — the deterministic
         # keyword fan-out (and the right move when the embedder is down).
         embedder = None if mode_lexical else getattr(self.hub, "embedder", None)
-        if embedder is not None:
+        # The default expansion — omitted kind or a wildcard alias — is
+        # where up-front leg skips apply (gr628278, same gate the domain
+        # fence and the uncited= drop use); an explicit kind=/comma
+        # list is caller intent and keeps every leg.
+        default_expansion = kind.strip().lower() in _CROSS_KIND_ALIASES
+        # gr628278: a non-production embedder's vector is deterministic
+        # hash noise — its semantic leg can only mislead (the marker at
+        # the end of this method already tells the caller so), yet every
+        # kind still pays the ANN scan the 15 s tool budget can't absorb
+        # (the anki/paper QueryCanceled stragglers that blew it). Skip
+        # the leg up front: force lexical for the whole fan-out and
+        # don't embed at all. An explicit ``mode='semantic'`` still
+        # runs it — the caller asked for the noise knowingly.
+        mock_leg_skipped = False
+        _hybridish = mode is None or str(mode).strip().lower() == "hybrid"
+        if (
+            default_expansion
+            and _hybridish
+            and embedder is not None
+            and not getattr(embedder, "is_production", True)
+        ):
+            base_kwargs["mode"] = "lexical"
+            mock_leg_skipped = True
+            query_embedder = None
+        else:
+            query_embedder = embedder
+        if query_embedder is not None:
             try:
-                base_kwargs["query_vec"] = embedder.embed_one(q)
+                base_kwargs["query_vec"] = query_embedder.embed_one(q)
             except Upstream as exc:
                 # Embedder is warming (or upstream is unavailable).
                 # Falling back to lexical-only is the right runtime
@@ -2687,10 +2736,31 @@ class SearchMixin(RuntimeShape):
             # like an empty ``exclude_ref_ids`` correctly would.
             base_kwargs["include_ref_ids"] = include_ref_ids
 
+        # gr628278 (cont.): on the default wildcard expansion, a kind
+        # whose ANN leg can only route over the paper-dominated global
+        # index — its partial index missing, invalid or fill-incomplete —
+        # faces the 10-30 s post-filter scan, so inside the deadline it
+        # can only die at the per-kind statement cap and land in the
+        # errored footer anyway. Skip that leg up front: the kind still
+        # contributes its lexical hits, the footer below names the skip,
+        # and an explicit kind list keeps the full legs (caller intent).
+        route_skipped: list[str] = []
+        if (
+            not mock_leg_skipped
+            and "query_vec" in base_kwargs
+            and _hybridish
+            and default_expansion
+            and self.hub.store is not None
+        ):
+            route_skipped = self._cross_kind_slow_semantic_kinds(kinds)
+        kind_overrides = (
+            {k: {"mode": "lexical"} for k in route_skipped} if route_skipped else None
+        )
+
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
         errored: dict[str, Exception] = {}
-        fanned = self._cross_kind_fan_out(kinds, base_kwargs)
+        fanned = self._cross_kind_fan_out(kinds, base_kwargs, kind_overrides)
         for k in kinds:
             if k not in fanned:
                 per_kind_counts.append((k, 0))
@@ -2862,6 +2932,32 @@ class SearchMixin(RuntimeShape):
                 result_ids=response.result_ids,
             )
 
+        # gr628278: kinds whose semantic leg was skipped up front (their
+        # ANN route falls back to the global index — a scan that cannot
+        # fit the per-kind budget) keep their lexical hits but must not
+        # read as fully searched — name them, with the door back to the
+        # full hybrid leg.
+        if route_skipped:
+            tip = (
+                "_(semantic leg skipped for "
+                + ", ".join(sorted(route_skipped))
+                + " — their ANN leg falls back to the global index "
+                "(partial index missing or not ready), a scan that "
+                "cannot fit the fan-out's per-kind budget; search each "
+                "kind explicitly for the full hybrid leg)_"
+            )
+            lines = response.body.splitlines()
+            if lines:
+                lines.insert(1, tip)
+            else:
+                lines.append(tip)
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+                result_ids=response.result_ids,
+            )
+
         # The domain fence's skipped-kinds footer (gr572720) — the same
         # ``_(…)_`` convention as the errored/excluded trailers, naming
         # what was fenced and the door back to the full surface.
@@ -2970,7 +3066,9 @@ class SearchMixin(RuntimeShape):
                 result_ids=response.result_ids,
             )
 
-        return _stamp_non_production_embedder(response, embedder)
+        return _stamp_non_production_embedder(
+            response, embedder, leg_skipped=mock_leg_skipped
+        )
 
     def _dispatch_cross_kind_tags_only(
         self, kind: Any, args: dict[str, Any]
@@ -3107,8 +3205,44 @@ class SearchMixin(RuntimeShape):
         label = f"{ref.title!r} (folder:{ref.id})"
         return store.folder_subtree_ids(ref.id), label
 
+    def _cross_kind_slow_semantic_kinds(self, kinds: list[str]) -> list[str]:
+        """Fanned kinds whose semantic leg cannot fit the per-kind budget.
+
+        A kind in ``_ANN_PARTIAL_KINDS`` whose partial index is missing,
+        invalid/unready or fill-incomplete routes its ANN leg over the
+        paper-dominated global index — the filtered post-filter scan that
+        measures 10-30 s on prod (gr519679), so inside the deadline it
+        can only die at the per-kind statement cap and land in the
+        errored footer (gr628278). Skipping the leg up front keeps the
+        kind's lexical hits in the merge instead of paying a worker for
+        a guaranteed cancel. One probe covers every kind:
+        :func:`ann_route_plan`'s gate read is cached per database.
+        Fails open to ``[]`` — a probe error keeps the old
+        cancel-at-the-cap path rather than refusing a whole search.
+        """
+        from precis.store._chunks_ops import _ANN_GLOBAL_KINDS, ann_route_plan
+
+        store = self.hub.store
+        if store is None:
+            return []
+        try:
+            with store.pool.connection() as conn:
+                return [
+                    k
+                    for k in kinds
+                    if (plan := ann_route_plan(conn, k, None))["route"] == "global"
+                    and plan["kind"] is not None
+                    and plan["kind"] not in _ANN_GLOBAL_KINDS
+                ]
+        except Exception:
+            log.exception("cross-kind ANN route probe failed; full fan-out kept")
+            return []
+
     def _cross_kind_fan_out(
-        self, kinds: list[str], base_kwargs: dict[str, Any]
+        self,
+        kinds: list[str],
+        base_kwargs: dict[str, Any],
+        kind_overrides: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, list[SearchHit] | Exception]:
         """Run every kind's ``search_hits`` on at most
         :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
@@ -3123,6 +3257,10 @@ class SearchMixin(RuntimeShape):
         from the result. Threads cannot be killed: a straggler finishes in
         the background, but the process-wide executor caps how many can
         exist across all searches.
+
+        ``kind_overrides`` maps a kind to ``search_hits`` kwargs merged
+        over ``base_kwargs`` — the wildcard fan-out uses it to run a
+        predictably-slow kind lexical-only (gr628278).
         """
         from concurrent.futures import wait
 
@@ -3149,7 +3287,12 @@ class SearchMixin(RuntimeShape):
             ANN_STATEMENT_TIMEOUT_MS.set(
                 min(remaining_ms, int(CROSS_KIND_PER_KIND_S * 1000))
             )
-            return self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
+            kw = (
+                {**base_kwargs, **kind_overrides[k]}
+                if kind_overrides is not None and k in kind_overrides
+                else base_kwargs
+            )
+            return self._cross_kind_invoke_search_hits(handler, k, kw)
 
         deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
         pool = _cross_kind_executor()
