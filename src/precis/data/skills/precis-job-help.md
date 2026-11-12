@@ -464,6 +464,10 @@ proposal JSON) shows as a capped head on the card;
 `view='transcript'` is the compact forensic read (one line per tool
 call + the final report); a paged full-transcript view is not
 implemented — `view='raw'` is the only uncapped transcript read today.
+A guessed spelling with one obvious reading is accepted with an
+`interpreted:` line rather than refused (gr635827): `view='compute'`
+is the card itself — its compute lines (`footprint:`, `node:`,
+`wall_s:`, `executor:`, `wall_seconds:`) are the read callers wanted.
 
 ## A finished topo pcb job's run files — view='run-files'
 

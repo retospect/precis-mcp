@@ -843,6 +843,35 @@ def test_job_view_aliases_announce_the_reading(jobs: JobHandler, store: Store) -
         jobs.get(id=ref.id, view="attention")
 
 
+def test_job_view_compute_reads_as_the_card(jobs: JobHandler, store: Store) -> None:
+    """view='compute' was guessed by three sessions on compute-lane jobs
+    (gr635827) — the card carries the compute lines (footprint, node,
+    wall_s, executor), so read it and announce the reading instead of
+    refusing."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="t",
+        meta={
+            "job_type": "struct_relax",
+            "finished_at": "2026-11-11T14:00:00Z",
+            "wall_s": 612.5,
+            "node": "gpu1",
+            "footprint": {
+                "ru_maxrss_mb": 3456.0,
+                "cpu_s": 600.0,
+                "wall_s": 612.5,
+            },
+        },
+    )
+    resp = jobs.get(id=ref.id, view="compute")
+    assert resp.body.startswith(
+        "interpreted: view='compute' read as the default status card"
+    )
+    assert "footprint: rss 3456 MiB" in resp.body
+    assert "node: gpu1" in resp.body
+
+
 # ── failed job's card: the error line rides under status: (gr536316) ──
 
 

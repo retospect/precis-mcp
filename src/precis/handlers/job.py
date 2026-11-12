@@ -858,8 +858,11 @@ _LOGS_ARG_KEYS = (
 
 #: ``get`` view spellings with one reading on a single job (gr508686's
 #: 7d prod ledger: view='meta'/'full'/'tail'/'events'/'status' refusals
-#: while the obvious read existed). ``None`` maps to the default status
-#: card, which already carries status + summary + event chunks.
+#: while the obvious read existed; gr635827 added 'compute' — three
+#: sessions guessed it for compute-lane jobs, and the card's compute
+#: lines (footprint, node, wall_s, executor) are that read). ``None``
+#: maps to the default status card, which already carries status +
+#: summary + event chunks.
 _JOB_VIEW_ALIASES: dict[str, str | None] = {
     "meta": "raw",
     "params": "raw",
@@ -867,6 +870,7 @@ _JOB_VIEW_ALIASES: dict[str, str | None] = {
     "tail": "transcript",
     "events": "log",
     "status": None,
+    "compute": None,
 }
 
 
