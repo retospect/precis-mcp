@@ -1527,36 +1527,55 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
     # Stamp the engine-diff verdict on the job — always, so a land with
     # no stamp is a pre-E1 one the release gate reads as non-engine. A
-    # diff git cannot read is treated as engine (fail closed).
+    # diff git cannot read stamps ``<unreadable>`` (fail closed) and is
+    # refused below, before the deny check it cannot feed.
     paths = _rs.changed_paths(tree)
     hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
     ctx.set_meta(engine_paths=hits[:50])
-    if paths is not None:
-        # gr645524: the land is the last deny gate — run_slice's poll
-        # check is the first (td574960: the brief's deny text, the
-        # post-check and this land check name the same resolved set in
-        # every mode). A denied diff never reaches ship. The
-        # human_only_hit stamp caps the node at once — no retry and no
-        # rescue can write a path no lane may — so the tick's ruling ask
-        # opens on the frozen branch instead of burning the ladder on
-        # rebuilds that can never land. The stamp's name undersells: at
-        # the land every resolved-deny hit is a "no lane may write" hit.
-        denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store))
-        if denied:
-            ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
-            _fail(
-                ctx,
-                todo_id,
-                lane,
-                "branch touches deny path(s): " + ", ".join(denied[:50]),
-                handoff=(
-                    "land FAILED: the branch touches deny path(s): "
-                    + ", ".join(f"`{p}`" for p in denied[:50])
-                    + " — no lane may write them; a coordinator ruling "
-                    "lands the branch by hand or rewrites the work."
-                ),
-            )
-            return None
+    if paths is None:
+        # td645833: a diff git cannot enumerate cannot be deny-checked —
+        # refuse rather than let an unverified branch past the last gate
+        # (run_slice's ``_deny_reason`` fails closed the same way at the
+        # first gate). An ordinary failed attempt, no human_only_hit
+        # cap: a fresh worktree may read.
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            f"changed-path enumeration failed in {tree} (git failed); failing closed",
+            handoff=(
+                "land FAILED: git could not enumerate the branch's "
+                f"changed paths in {tree}, so the deny gate cannot run "
+                "— the land refuses to ship blind. Check the worktree's "
+                "git state; a coordinator ruling lands the branch by hand."
+            ),
+        )
+        return None
+    # gr645524: the land is the last deny gate — run_slice's poll
+    # check is the first (td574960: the brief's deny text, the
+    # post-check and this land check name the same resolved set in
+    # every mode). A denied diff never reaches ship. The
+    # human_only_hit stamp caps the node at once — no retry and no
+    # rescue can write a path no lane may — so the tick's ruling ask
+    # opens on the frozen branch instead of burning the ladder on
+    # rebuilds that can never land. The stamp's name undersells: at
+    # the land every resolved-deny hit is a "no lane may write" hit.
+    denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store))
+    if denied:
+        ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            "branch touches deny path(s): " + ", ".join(denied[:50]),
+            handoff=(
+                "land FAILED: the branch touches deny path(s): "
+                + ", ".join(f"`{p}`" for p in denied[:50])
+                + " — no lane may write them; a coordinator ruling "
+                "lands the branch by hand or rewrites the work."
+            ),
+        )
+        return None
     if subject is None:
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(

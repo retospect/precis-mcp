@@ -1409,18 +1409,6 @@ def test_non_engine_land_is_unchanged(seams: dict[str, Any]) -> None:
     assert ctx.meta_set["engine_paths"] == []
 
 
-def test_unreadable_diff_lands_checked(seams: dict[str, Any]) -> None:
-    """A diff git cannot read is treated as engine — and an engine diff
-    with a spot verdict earns ``--checked`` (gr599427)."""
-    seams["changed_paths"] = None
-    store = _Store()
-    store.add_todo(42)
-    ctx, _handle = _submit(store, seams)
-    [(argv, _kw)] = seams["launch"]
-    assert argv[1] == "--checked"
-    assert ctx.meta_set["engine_paths"] == ["<unreadable>"]
-
-
 # ── deny gate (gr645524) ───────────────────────────────────────────
 # The land re-checks the resolved deny set before launching ship — the
 # run's poll check is the first gate, this is the last (td574960's
@@ -1430,6 +1418,26 @@ def test_unreadable_diff_lands_checked(seams: dict[str, Any]) -> None:
 # branch. The fake store resolves ``deny_paths_for`` to ``STRICT_DENY``
 # (no ``app_settings`` row is readable), so ``run_slice.py`` — the
 # incident's own path — is the strict-deny case.
+
+
+def test_unreadable_diff_is_refused(seams: dict[str, Any]) -> None:
+    """td645833: the deny gate fails closed — a diff git cannot
+    enumerate cannot be checked, so the land refuses and ship never
+    launches (the same fail-closed ``run_slice._deny_reason`` takes at
+    the first gate). The ``<unreadable>`` stamp still lands — a refused
+    job is not a pre-E1 one — but no ``human_only_hit`` cap: an
+    ordinary failed attempt, so a fresh worktree may retry."""
+    seams["changed_paths"] = None
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.status == "failed" and seams["launch"] == []
+    assert "failing closed" in (ctx.failure or "")
+    assert ctx.meta_set["engine_paths"] == ["<unreadable>"]
+    assert run_slice.HUMAN_ONLY_KEY not in ctx.meta_set
+    assert any("land FAILED" in c for c in store.comments(42))
+    assert "STATUS:open" in store.tag_strings(42)
 
 
 def test_submit_refuses_a_deny_path_diff(seams: dict[str, Any]) -> None:
