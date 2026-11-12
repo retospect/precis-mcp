@@ -1565,7 +1565,9 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     (gr542156). Budget pairs under
     :data:`~precis.health_checks.TOOL_LATENCY_MIN_CALLS` calls are not
     judged, and a pair needs its second-slowest call over the line too:
-    one cold call after a restart is not a slow MCP.
+    one cold call after a restart is not a slow MCP. The hour's median
+    must also sit above the week's p95 — two stragglers in a
+    heavy-tailed pair are not a regression (gr646231).
     """
     try:
         rows = health_checks.tool_latency(conn, baseline_s=_TOOL_LATENCY_BASELINE_S)
@@ -1597,6 +1599,10 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
         and t.baseline_calls >= _TOOL_LATENCY_REGRESSION_MIN_BASELINE_CALLS
         and t.baseline_p95_ms is not None
         and _two_over(t, _regression_line_ms(t.baseline_p95_ms))
+        # A shifted pair moves its typical call, not just its tail: at
+        # n~20 the p95 is the 2nd-slowest call, so two stragglers in a
+        # heavy-tailed pair (get/job, gr646231) cleared every other bar.
+        and t.p50_ms > t.baseline_p95_ms
     ]
     budget = (
         CheckResult(

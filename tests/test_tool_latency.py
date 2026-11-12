@@ -93,7 +93,7 @@ def test_under_budget_or_too_few_calls_is_green(store) -> None:
 
 def test_p95_doubled_against_the_week_flags_regression(store) -> None:
     _seed(store, "get", "todo", [500] * 35, age_s=86400)
-    _seed(store, "get", "todo", [2000] * 12)
+    _seed(store, "get", "todo", [2000] * 12)  # whole hour shifted
     _seed(store, "get", "memory", [20] * 35, age_s=86400)
     _seed(store, "get", "memory", [80] * 12)  # doubled, under the 1 s floor
     c = _checks(store)["tool_latency_regressed"]
@@ -115,6 +115,14 @@ def test_one_slow_call_over_a_dense_zero_baseline_is_green(store) -> None:
     slowish call: the second-slowest call must clear the line too."""
     _seed(store, "put", "fleet", [10] * 40, age_s=86400)
     _seed(store, "put", "fleet", [10] * 9 + [6000])
+    assert _checks(store)["tool_latency_regressed"].status == "ok"
+
+
+def test_straggler_tail_over_a_normal_median_is_green(store) -> None:
+    """gr646231: get/job n=22, week p95 0.5 s, two 6 s stragglers. The p95
+    and second-slowest both clear the line but the median is normal."""
+    _seed(store, "get", "job", [100] * 38 + [500] * 2, age_s=86400)
+    _seed(store, "get", "job", [100] * 20 + [6000] * 2)
     assert _checks(store)["tool_latency_regressed"].status == "ok"
 
 
