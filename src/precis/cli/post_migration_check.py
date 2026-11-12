@@ -4,8 +4,8 @@ Read-only assert for the steps a migration cannot run inside its own
 transaction (backfills, ``VALIDATE CONSTRAINT``, ``CREATE INDEX
 CONCURRENTLY``): unvalidated ``pg_constraint`` rows plus the expected
 per-kind partial HNSW indexes derived from
-:data:`precis.store._chunks_ops._ANN_PARTIAL_KINDS`, each named with the
-command that clears it (:mod:`precis.migration_postchecks`).
+:data:`precis.store._chunks_ops._ANN_PARTIAL_INDEX_KINDS`, each named with
+the command that clears it (:mod:`precis.migration_postchecks`).
 
 ``scripts/release`` runs this against prod after the deploy's migrate play
 (gr514955); the health-digest ``post_migration_steps`` row reports the

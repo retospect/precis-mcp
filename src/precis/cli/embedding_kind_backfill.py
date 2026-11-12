@@ -30,8 +30,8 @@ NULL and builds no index. This command does the rest, in order:
    inserts keep flowing). Only runs when NO row is unfilled; the per-kind
    markers from step 2 do not wait for it.
 4. **indexes** — ``CREATE INDEX CONCURRENTLY`` one partial HNSW per
-   fill-complete kind in ``_ANN_PARTIAL_KINDS`` (the btree is re-ensured
-   first, a no-op after step 1), each built once from filled data; an
+   fill-complete kind in ``_ANN_PARTIAL_INDEX_KINDS`` (the btree is
+   re-ensured first, a no-op after step 1), each built once from filled data; an
    INVALID leftover is dropped CONCURRENTLY and rebuilt; every index is
    checked ``indisvalid`` after. The router uses a kind's index once it is
    valid+ready and the kind's fill is marked — or, for every kind at once,
@@ -77,7 +77,11 @@ import psycopg
 from psycopg import Connection
 
 from precis.cli._common import resolve_dsn
-from precis.store._chunks_ops import _ANN_PARTIAL_KINDS, ann_partial_index_name
+from precis.store._chunks_ops import (
+    _ANN_PARTIAL_INDEX_KINDS,
+    _ANN_PARTIAL_KINDS,
+    ann_partial_index_name,
+)
 
 _CONSTRAINTS = (
     "chunk_embeddings_chunk_ref_fkey",
@@ -242,10 +246,13 @@ def _kind_index_ddl(
 ) -> list[tuple[str, str]]:
     """``(name, CREATE INDEX CONCURRENTLY ...)`` for the per-kind partials.
 
-    ``kinds`` restricts the set (default: all of ``_ANN_PARTIAL_KINDS``).
+    ``kinds`` restricts the set (default: all of
+    ``_ANN_PARTIAL_INDEX_KINDS`` — the kinds whose index should exist;
+    a dropped ``_ANN_DROPPED_PARTIAL_KINDS`` member only builds when
+    named explicitly).
     """
     out: list[tuple[str, str]] = []
-    for kind in _ANN_PARTIAL_KINDS if kinds is None else kinds:
+    for kind in _ANN_PARTIAL_INDEX_KINDS if kinds is None else kinds:
         name = ann_partial_index_name(kind)
         lit = kind.replace("'", "''")
         out.append(
@@ -271,7 +278,7 @@ def build_kind_indexes(
     An index left INVALID by an earlier failed build is dropped CONCURRENTLY
     and rebuilt once; ``IF NOT EXISTS`` alone would skip it. ``kinds``
     restricts which partial indexes are built (default: all of
-    ``_ANN_PARTIAL_KINDS``); the btree is always re-ensured.
+    ``_ANN_PARTIAL_INDEX_KINDS``); the btree is always re-ensured.
     """
     if not conn.autocommit:
         raise ValueError("build_kind_indexes needs an autocommit connection")
@@ -662,15 +669,17 @@ def run(args: argparse.Namespace) -> None:
             )
             # The index phase needs every indexed kind fill-complete — a
             # per-kind gate (0242 markers), not the table-wide CHECK, so a
-            # straggler paper pass does not hold back 14 usable indexes.
+            # straggler paper pass does not hold back the usable indexes.
             ready = (
-                set(_ANN_PARTIAL_KINDS) if _check_validated(conn) else set(res.marked)
+                set(_ANN_PARTIAL_INDEX_KINDS)
+                if _check_validated(conn)
+                else set(res.marked) & set(_ANN_PARTIAL_INDEX_KINDS)
             )
-            unready = [k for k in _ANN_PARTIAL_KINDS if k not in ready]
+            unready = [k for k in _ANN_PARTIAL_INDEX_KINDS if k not in ready]
             if unready and not args.skip_fill:
                 by_kind = res.unfilled_by_kind
                 print(
-                    f"{len(unready)} of {len(_ANN_PARTIAL_KINDS)} partial "
+                    f"{len(unready)} of {len(_ANN_PARTIAL_INDEX_KINDS)} partial "
                     "kinds still have unfilled rows "
                     + ", ".join(
                         f"{k} ({by_kind[k]} unfilled)" if k in by_kind else k

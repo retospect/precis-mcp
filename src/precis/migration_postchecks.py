@@ -16,8 +16,8 @@ when a migration needs an out-of-transaction follow-up; ``constraints``
 names the NOT VALID constraint(s) the step settles (for attribution),
 ``ann_indexes`` marks the one step that also builds the per-kind partial
 HNSW set derived from
-:data:`precis.store._chunks_ops._ANN_PARTIAL_KINDS` — expected indexes are
-never listed by hand, so code and prod cannot drift apart.
+:data:`precis.store._chunks_ops._ANN_PARTIAL_INDEX_KINDS` — expected
+indexes are never listed by hand, so code and prod cannot drift apart.
 
 Consumers:
 
@@ -35,7 +35,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from precis.store._chunks_ops import _ANN_PARTIAL_KINDS, ann_partial_index_name
+from precis.store._chunks_ops import (
+    _ANN_PARTIAL_INDEX_KINDS,
+    ann_partial_index_name,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,12 +155,12 @@ def _ann_step() -> PostMigrationStep | None:
 def _pending_ann_indexes(conn: Any) -> list[PendingStep]:
     """Per-kind partial HNSW indexes the 0226 post-step has not built yet.
 
-    Expected names come from :data:`_ANN_PARTIAL_KINDS` via
-    :func:`ann_partial_index_name` — the router's own source — so the check
-    can't drift from the code that routes. While the gate CHECK is
-    unvalidated the whole set is reported as one line (the indexes could
-    not serve even if built); once it validates, each missing or INVALID
-    index is named on its own.
+    Expected names come from :data:`_ANN_PARTIAL_INDEX_KINDS` via
+    :func:`ann_partial_index_name` — the same set the backfill builds —
+    so the check can't drift from the code that creates them. While the
+    gate CHECK is unvalidated the whole set is reported as one line (the
+    indexes could not serve even if built); once it validates, each
+    missing or INVALID index is named on its own.
     """
     step = _ann_step()
     if step is None:
@@ -168,7 +171,7 @@ def _pending_ann_indexes(conn: Any) -> list[PendingStep]:
         # predates it). `precis migrate` reports the pending migration
         # itself; the index names would only echo it.
         return []
-    expected = {ann_partial_index_name(k): k for k in _ANN_PARTIAL_KINDS}
+    expected = {ann_partial_index_name(k): k for k in _ANN_PARTIAL_INDEX_KINDS}
     present = {
         name: bool(valid)
         for name, valid in conn.execute(_ANN_INDEX_SQL, (sorted(expected),))

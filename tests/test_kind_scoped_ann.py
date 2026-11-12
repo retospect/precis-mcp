@@ -33,6 +33,7 @@ from precis.cli.embedding_kind_backfill import (
 )
 from precis.store import Store, _chunks_ops
 from precis.store._chunks_ops import (
+    _ANN_PARTIAL_INDEX_KINDS,
     _ANN_PARTIAL_KINDS,
     _ann_kind_state,
     _ann_route,
@@ -97,7 +98,7 @@ def kind_indexes(store: Store) -> Iterator[dict[str, bool]]:
     _reset_ann_state_cache()
     yield built
     with _autocommit(store) as conn:
-        for kind in _ANN_PARTIAL_KINDS:
+        for kind in _ANN_PARTIAL_INDEX_KINDS:
             conn.execute(f"DROP INDEX IF EXISTS {ann_partial_index_name(kind)}")
     _reset_ann_state_cache()
 
@@ -445,7 +446,7 @@ def test_build_kind_indexes_builds_every_kind_valid(
     kind_indexes: dict[str, bool],
 ) -> None:
     assert set(kind_indexes) == {"chunk_embeddings_ref_id_kind_idx"} | {
-        ann_partial_index_name(k) for k in _ANN_PARTIAL_KINDS
+        ann_partial_index_name(k) for k in _ANN_PARTIAL_INDEX_KINDS
     }
     assert all(kind_indexes.values())
 
@@ -454,11 +455,13 @@ def test_route_per_kind(store: Store, kind_indexes: dict[str, bool]) -> None:
     with store.pool.connection() as conn:
         state = _ann_kind_state(conn)
         assert state.filled
-        assert set(_ANN_PARTIAL_KINDS) <= state.indexed
+        assert set(_ANN_PARTIAL_INDEX_KINDS) <= state.indexed
         assert "paper" not in state.indexed and "finding" not in state.indexed
         # The validated CHECK routes every indexed kind partial, markers or not.
         assert _ann_route(conn, "memory", None) == ("partial", "memory")
         assert _ann_route(conn, None, ["memory"]) == ("partial", "memory")
+        # A gr575086-dropped kind has no index built — global fallback.
+        assert _ann_route(conn, "draft", None) == ("global", "draft")
         assert _ann_route(conn, "finding", None) == ("exact", "finding")
         assert _ann_route(conn, "paper", None) == ("global", "paper")
         assert _ann_route(conn, None, ["memory", "finding"]) == ("global", None)

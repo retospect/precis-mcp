@@ -24,7 +24,12 @@ from precis.migration_postchecks import (
     pending_post_steps,
 )
 from precis.store import Store
-from precis.store._chunks_ops import _ANN_PARTIAL_KINDS, ann_partial_index_name
+from precis.store._chunks_ops import (
+    _ANN_DROPPED_PARTIAL_KINDS,
+    _ANN_PARTIAL_INDEX_KINDS,
+    _ANN_PARTIAL_KINDS,
+    ann_partial_index_name,
+)
 from tests.test_kind_scoped_ann import _autocommit, _legacy_nulls
 
 _BACKFILL = "precis backfill-embedding-kinds --apply"
@@ -47,12 +52,16 @@ def test_pending_names_each_missing_partial_index(store: Store) -> None:
     every expected partial index must be named with the backfill command."""
     items = _pending(store)
     by_name = {i.name: i for i in items}
-    for kind in _ANN_PARTIAL_KINDS:
+    for kind in _ANN_PARTIAL_INDEX_KINDS:
         name = ann_partial_index_name(kind)
         assert name in by_name, f"{name} not reported pending: {by_name}"
         assert by_name[name].table == "chunk_embeddings"
         assert by_name[name].migration == "precis/0226_chunk_embeddings_kind_ann"
         assert by_name[name].fix == _BACKFILL
+    # gr575086-dropped kinds are not expected — the check must not ask
+    # for indexes the drop removed on purpose.
+    for kind in _ANN_DROPPED_PARTIAL_KINDS:
+        assert ann_partial_index_name(kind) not in by_name
 
 
 def test_pending_constraint_under_unvalidated_gate(store: Store) -> None:

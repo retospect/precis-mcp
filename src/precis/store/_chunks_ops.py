@@ -216,6 +216,23 @@ _ANN_PARTIAL_KINDS: tuple[str, ...] = (
     "conv",
 )
 
+#: Per-kind partial HNSW indexes dropped as dead weight (gr575086,
+#: migration 0312): idx_scan=0 for weeks while their siblings served —
+#: these kinds' semantic legs already take the global fallback. They
+#: stay in ``_ANN_PARTIAL_KINDS``: the router treats a missing partial
+#: exactly like an unready one (global + post-filter), and a rebuilt
+#: index serves again with no code change. The set only narrows what
+#: the index pipeline builds and expects.
+_ANN_DROPPED_PARTIAL_KINDS: frozenset[str] = frozenset({"draft", "quest", "tex"})
+
+#: The per-kind partials that should exist: ``precis
+#: backfill-embedding-kinds`` builds one per kind here, and
+#: ``precis post-migration-check`` names any that are missing or
+#: INVALID (``migration_postchecks._pending_ann_indexes``).
+_ANN_PARTIAL_INDEX_KINDS: tuple[str, ...] = tuple(
+    k for k in _ANN_PARTIAL_KINDS if k not in _ANN_DROPPED_PARTIAL_KINDS
+)
+
 
 def ann_partial_index_name(kind: str) -> str:
     """Name of ``kind``'s partial HNSW index on ``chunk_embeddings``."""
