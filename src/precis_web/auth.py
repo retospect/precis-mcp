@@ -82,7 +82,14 @@ log = logging.getLogger(__name__)
 #: systemd probe and the ansible post-deploy check hit it, and a probe
 #: that needs a password is a probe that reports the service down when
 #: the password rotates.
-_OPEN_PATHS = frozenset({"/healthz"})
+#:
+#: ``/.well-known/security.txt`` (gr627864) joins it deliberately: the
+#: RFC 9116 file exists for external security researchers, who by
+#: definition have no credentials here. It names only the public
+#: reporting contact — nothing the gate protects — and it must answer
+#: unauthenticated on the public funnel or scanners keep flagging it
+#: missing (a 401 looks like "not served").
+_OPEN_PATHS = frozenset({"/healthz", "/.well-known/security.txt"})
 
 #: Path prefixes that authenticate themselves. ``/podcast`` accepts a
 #: per-user ``?t=`` feed token because phone podcast clients handle Basic

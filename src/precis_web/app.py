@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Response
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from precis.budget.work_class import WorkClass, work_class_scope
@@ -25,6 +26,7 @@ from precis_web.access_log import install_access_token_redaction
 from precis_web.bootsha import BOOT_SHA, BOOT_SHA_HEADER
 from precis_web.config import WebConfig
 from precis_web.errors import register_error_handlers
+from precis_web.security_txt import render_security_txt
 
 
 class InteractiveWorkClassMiddleware:
@@ -290,5 +292,19 @@ def create_app(
     async def _healthz(response: Response) -> dict[str, str]:
         response.headers[BOOT_SHA_HEADER] = BOOT_SHA
         return {"status": "ok"}
+
+    # RFC 9116 security.txt (gr627864) — served unauthenticated (see
+    # auth._OPEN_PATHS) so external researchers can use it, with Expires
+    # recomputed per request so it can never lapse.
+    @app.get("/.well-known/security.txt", include_in_schema=False)
+    async def _security_txt(request: Request) -> PlainTextResponse:
+        return PlainTextResponse(
+            render_security_txt(
+                contacts=cfg.security_contacts,
+                languages=cfg.security_languages,
+                now=datetime.now(UTC),
+                canonical_url=str(request.url),
+            )
+        )
 
     return app

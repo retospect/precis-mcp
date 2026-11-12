@@ -37,10 +37,30 @@ DEFAULT_SOURCE = "web:owner"
 #: (``PRECIS_WEB_AUTH=flase``) leaves the door locked, not open.
 _AUTH_OFF = frozenset({"0", "off", "no", "false", "none", "disabled"})
 
+#: Default RFC 9116 contact — the owner's documented address
+#: (``docs/backlog/identity-and-access.md``). Overridable with
+#: ``PRECIS_SECURITY_CONTACT``.
+_DEFAULT_SECURITY_CONTACTS = ("mailto:reto@retostamm.com",)
+
 
 def _auth_required_from_env() -> bool:
     """True unless ``PRECIS_WEB_AUTH`` explicitly names an off value."""
     return os.environ.get("PRECIS_WEB_AUTH", "on").strip().lower() not in _AUTH_OFF
+
+
+def _security_contacts_from_env() -> tuple[str, ...]:
+    """Comma-separated ``PRECIS_SECURITY_CONTACT`` entries, or the default.
+
+    An empty/whitespace-only entry is dropped, and an unset (or fully
+    blank) variable falls back to :data:`_DEFAULT_SECURITY_CONTACTS` — a
+    security.txt with no ``Contact:`` line is invalid per RFC 9116 §2.5.2,
+    so "configured to nothing" must not mean "serves an invalid file".
+    """
+    raw = os.environ.get("PRECIS_SECURITY_CONTACT")
+    if raw is None:
+        return _DEFAULT_SECURITY_CONTACTS
+    entries = tuple(c.strip() for c in raw.split(",") if c.strip())
+    return entries or _DEFAULT_SECURITY_CONTACTS
 
 
 @dataclass(frozen=True)
@@ -86,6 +106,13 @@ class WebConfig:
     #: feed falls back to the request origin (fine for same-host testing).
     #: Set via ``PRECIS_PODCAST_BASE_URL``.
     podcast_base_url: str | None = None
+    #: RFC 9116 ``Contact:`` lines for ``/.well-known/security.txt`` —
+    #: comma-separated in ``PRECIS_SECURITY_CONTACT`` (one line per
+    #: entry). The route serves the file unauthenticated behind the
+    #: funnel, so this is the public vulnerability-reporting address.
+    security_contacts: tuple[str, ...] = _DEFAULT_SECURITY_CONTACTS
+    #: RFC 9116 ``Preferred-Languages:`` value (``PRECIS_SECURITY_LANGUAGES``).
+    security_languages: str = "en"
 
     @property
     def corpus_dirs(self) -> tuple[Path, ...]:
@@ -143,4 +170,6 @@ class WebConfig:
                 else None
             ),
             podcast_base_url=os.environ.get("PRECIS_PODCAST_BASE_URL") or None,
+            security_contacts=_security_contacts_from_env(),
+            security_languages=os.environ.get("PRECIS_SECURITY_LANGUAGES", "en"),
         )
