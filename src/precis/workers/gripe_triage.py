@@ -1522,9 +1522,9 @@ def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
     strings and 2-4 ``options`` of ``{option, cost, recommended}`` with
     at least one recommended — several marked keeps the first. An
     optional ``kind`` inside the ``meta.ask`` vocabulary wins over the
-    ``ruling`` default. Lenient on the prose (question/context fall
-    back to the gripe's title/reason), strict on the options — a
-    decision without priced options is the gr595189 failure shape.
+    ``ruling`` default. Strict throughout: a missing question or
+    context, or an option without a cost, voids the ask — a decision
+    without priced options is the gr595189 failure shape.
     """
     from precis.todo.guards import ASK_KINDS
 
@@ -1539,8 +1539,10 @@ def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
             continue
         option = _one_line(o.get("option") or "")
         cost = _one_line(o.get("cost") or o.get("impact") or "")
-        if not option:
-            continue
+        if not option or not cost:
+            # An uncosted option is not a priced choice — the whole
+            # ask fails (the bounded-ask contract, td648466).
+            return None
         options.append(
             AskOption(option=option, cost=cost, recommended=bool(o.get("recommended")))
         )
@@ -1554,9 +1556,13 @@ def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
         for i, o in enumerate(options)
     ]
     kind = str(raw.get("kind") or "ruling").strip()
+    question = _one_line(raw.get("question") or "")
+    context = _one_line(raw.get("context") or "")
+    if not question or not context:
+        return None
     return RetoAsk(
-        question=_one_line(raw.get("question") or ""),
-        context=_one_line(raw.get("context") or ""),
+        question=question,
+        context=context,
         options=tuple(options),
         kind=kind if kind in ASK_KINDS else "ruling",
     )
@@ -2846,6 +2852,191 @@ def _gripe_still_reto(conn: Any, gid: int) -> bool:
     return row is not None
 
 
+def _fallback_ask(gid: int, title: str, rec: str | None) -> RetoAsk:
+    """A bounded, lint-safe ask for a ``reto:ask`` gripe whose own ask
+    is missing or was refused: frame triage's recommendation as the
+    choice (the same shape as :func:`_reto_ask`'s defensive tail)."""
+    text = _one_line(rec or title)[:150] or f"see gr{gid}"
+    return RetoAsk(
+        question=f"Apply triage's recommendation on gr{gid}?",
+        context=(
+            f"Triage needs a ruling on gr{gid} ({_one_line(title)[:200]}). "
+            f"Its recommendation: {text}. Source: gr{gid}."
+        ),
+        options=(
+            AskOption(option=text, cost="triage's recommendation", recommended=True),
+            AskOption(
+                option="leave as filed",
+                cost="nothing changes — the gripe stays triaged",
+            ),
+        ),
+    )
+
+
+def _stranded_reto_gripes(
+    store: Store, skip: set[int]
+) -> list[tuple[int, str, str | None]]:
+    """``(gripe id, title, last recommend text)`` for live gripes
+    carrying the OPEN ``reto:ask`` tag with no live ask todo, capped at
+    :data:`_RETO_CAP`; ``skip`` are the ids this tick already handled."""
+    try:
+        with store.tx() as conn:
+            live = {k for k in _live_reto_asks(conn) if k is not None}
+            rows = conn.execute(
+                """
+                SELECT r.ref_id, r.title,
+                       (SELECT c.text FROM chunks c
+                         WHERE c.ref_id = r.ref_id AND c.chunk_kind = %s
+                           AND c.text LIKE %s
+                         ORDER BY c.ord DESC LIMIT 1)
+                  FROM refs r
+                 WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+                   AND EXISTS (SELECT 1 FROM ref_tags rt
+                                 JOIN tags t ON t.tag_id = rt.tag_id
+                                WHERE rt.ref_id = r.ref_id
+                                  AND t.namespace = 'OPEN'
+                                  AND t.value = 'reto:ask')
+                 ORDER BY r.ref_id
+                """,
+                (_COMMENT_KIND, f"{_RECOMMEND_PREFIX}%"),
+            ).fetchall()
+    except Exception:
+        log.warning("gripe_triage: stranded reto:ask scan failed", exc_info=True)
+        return []
+    out: list[tuple[int, str, str | None]] = []
+    for rid, title, text in rows:
+        if int(rid) in live or int(rid) in skip:
+            continue
+        rec = str(text)[len(_RECOMMEND_PREFIX) :].strip() if text else None
+        out.append((int(rid), str(title or ""), rec or None))
+    return out[:_RETO_CAP]
+
+
+def _write_ask(
+    store: Store, gid: int, gtitle: str, ask: RetoAsk, reason: str | None
+) -> int | None:
+    """Mint or refresh gripe ``gid``'s one ask-user todo and link the
+    gripe ``blocked-by`` it (so the asks view counts the waiting work).
+    A lint-refused ask retries once as :func:`_fallback_ask`; ``None``
+    when nothing could be written."""
+    from precis.errors import PrecisError
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+    from precis.todo.guards import check_ask_meta
+
+    def build(a: RetoAsk) -> tuple[str, dict[str, Any]]:
+        title = _one_line(a.question or gtitle)[:_ASK_TITLE_CAP]
+        options = [
+            o.option + (f" — {o.cost}" if o.cost else "")
+            for o in sorted(a.options, key=lambda o: not o.recommended)
+        ]
+        meta_ask = {
+            "kind": a.kind,
+            "options": options,
+            # The waiting work is a gripe, not a todo: ``blocks`` only
+            # names todos, so the dependency rides a ``blocked-by`` link.
+            "blocks": "nothing",
+            "context": _one_line(a.context or reason or gtitle)[:600],
+        }
+        check_ask_meta({"ask": meta_ask}, question=title)
+        return title, meta_ask
+
+    try:
+        title, meta_ask = build(ask)
+    except PrecisError:
+        # The model's own ask failed the lint (gr595189 — a delegation
+        # question, an oversized option): fall back to the recommendation
+        # framing rather than strand the gripe without an ask.
+        log.warning(
+            "gripe_triage: gr%d reto ask refused by the ask lint — fallback",
+            gid,
+            exc_info=True,
+        )
+        ask = _fallback_ask(gid, gtitle, reason)
+        try:
+            title, meta_ask = build(ask)
+        except PrecisError:
+            log.warning(
+                "gripe_triage: gr%d fallback ask refused — no todo minted",
+                gid,
+                exc_info=True,
+            )
+            return None
+    body = (
+        f"{_one_line(ask.context) or 'Triage flagged this gripe for a ruling.'}"
+        f"\n\nSource: gr{gid} — {_one_line(gtitle)}. Its fix waits "
+        "on this ruling; the gripe carries `reto:ask` until answered. "
+        "Answer on this todo (`answer: …` + close) or comment on the "
+        "gripe itself.\n\n"
+        + "\n".join(
+            f"- {'(recommended) ' if o.recommended else ''}{o.option}"
+            + (f" — {o.cost}" if o.cost else "")
+            for o in ask.options
+        )
+        + "\n"
+    )
+    try:
+        with store.tx() as conn:
+            same_gripe = _live_reto_asks(conn).get(gid) or []
+            if same_gripe:
+                tid = same_gripe[0]
+                store.chunks.set_ref_title(tid, title, source="system", conn=conn)
+                store.stamp_ref_meta(tid, {"ask": meta_ask}, conn=conn)
+                store.chunks.replace_body_chunk(
+                    tid,
+                    body,
+                    chunk_kind=TODO_BODY_KIND,
+                    source="system",
+                    conn=conn,
+                )
+                store.add_tag(tid, Tag.open("ask-user"), set_by="system", conn=conn)
+                for dup in same_gripe[1:]:
+                    store.stamp_ref_meta(dup, {"superseded_by": tid}, conn=conn)
+                    store.retire_ref(dup, conn=conn)
+            else:
+                ref = store.insert_ref(
+                    kind="todo",
+                    slug=None,
+                    title=title,
+                    meta={
+                        "digest": _DIGEST_META,
+                        _ASK_OF_META: gid,
+                        "ask": meta_ask,
+                    },
+                    conn=conn,
+                )
+                tid = int(ref.id)
+                store.add_tag(
+                    ref.id,
+                    Tag.closed("STATUS", "open"),
+                    set_by="system",
+                    replace_prefix=True,
+                    conn=conn,
+                )
+                store.add_tag(ref.id, Tag.open("ask-user"), set_by="system", conn=conn)
+                store.chunks.insert_chunks(
+                    ref.id,
+                    [
+                        ChunkInsert(
+                            ord=0,
+                            text=body,
+                            meta={"chunk_kind": TODO_BODY_KIND},
+                        )
+                    ],
+                    conn=conn,
+                )
+            store.add_link(
+                src_ref_id=gid,
+                dst_ref_id=tid,
+                relation="blocked-by",
+                set_by="system",
+                conn=conn,
+            )
+        return tid
+    except Exception:
+        log.warning("gripe_triage: reto:ask write failed for gr%d", gid, exc_info=True)
+        return None
+
+
 def _sync_reto_asks(
     store: Store,
     items: list[tuple[ClaimedGripe, Verdict]],
@@ -2856,7 +3047,7 @@ def _sync_reto_asks(
     """Each ``reto:ask`` gripe goes out as ITS OWN ask-user todo (one
     question, its own priced options — gr595189) plus one board line.
     The todo is the td541979 mechanism — ``meta.ask`` a ``ruling``
-    that ``blocks`` nothing, tagged ``ask-user`` so
+    whose gripe is linked ``blocked-by`` it, tagged ``ask-user`` so
     ``search(kind='todo', view='asks')`` and the web ``/asks`` see it.
     The mint shape is ``plan_dispatch``'s ``_mint_ask`` —
     ``insert_ref`` + STATUS + tags + a ``todo_body`` chunk, all inside
@@ -2873,113 +3064,27 @@ def _sync_reto_asks(
     store fault logs and moves on. ``overflow`` notes ``fix:reto``
     verdicts dropped by the :data:`_RETO_CAP` per-tick cap. Returns
     the first todo id (``None`` when every write failed)."""
-    from precis.errors import PrecisError
-    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
-    from precis.todo.guards import check_ask_meta
-
     todo_id: int | None = None
     written = 0
     for g, v in items:
-        ask = _reto_ask(g, v)
-        title = _one_line(ask.question or g.title)[:_ASK_TITLE_CAP]
-        options = [
-            o.option + (f" — {o.cost}" if o.cost else "")
-            for o in sorted(ask.options, key=lambda o: not o.recommended)
-        ]
-        meta_ask = {
-            "kind": ask.kind,
-            "options": options,
-            "blocks": "nothing",
-            "context": _one_line(ask.context or v.reason or g.title)[:600],
-        }
-        try:
-            check_ask_meta({"ask": meta_ask}, question=title)
-        except PrecisError:
-            # The model's own ask failed the lint (gr595189 — a
-            # delegation question, an oversized option): skip this
-            # item's todo rather than mint a malformed ask; the gripe
-            # keeps its reto:ask tag for a later tick.
-            log.warning(
-                "gripe_triage: gr%d reto ask refused by the ask lint — no todo minted",
-                g.ref_id,
-                exc_info=True,
-            )
+        tid = _write_ask(store, g.ref_id, g.title, _reto_ask(g, v), v.reason)
+        if tid is None:
             continue
-        body = (
-            f"{_one_line(ask.context) or 'Triage flagged this gripe for a ruling.'}"
-            f"\n\nSource: gr{g.ref_id} — {_one_line(g.title)}. Its fix waits "
-            "on this ruling; the gripe carries `reto:ask` until answered. "
-            "Answer on this todo (`answer: …` + close) or comment on the "
-            "gripe itself.\n\n"
-            + "\n".join(
-                f"- {'(recommended) ' if o.recommended else ''}{o.option}"
-                + (f" — {o.cost}" if o.cost else "")
-                for o in ask.options
-            )
-            + "\n"
-        )
-        try:
-            with store.tx() as conn:
-                live = _live_reto_asks(conn)
-                same_gripe = live.get(g.ref_id) or []
-                if same_gripe:
-                    tid = same_gripe[0]
-                    store.chunks.set_ref_title(tid, title, source="system", conn=conn)
-                    store.stamp_ref_meta(tid, {"ask": meta_ask}, conn=conn)
-                    store.chunks.replace_body_chunk(
-                        tid,
-                        body,
-                        chunk_kind=TODO_BODY_KIND,
-                        source="system",
-                        conn=conn,
-                    )
-                    store.add_tag(tid, Tag.open("ask-user"), set_by="system", conn=conn)
-                    for dup in same_gripe[1:]:
-                        store.stamp_ref_meta(dup, {"superseded_by": tid}, conn=conn)
-                        store.retire_ref(dup, conn=conn)
-                else:
-                    ref = store.insert_ref(
-                        kind="todo",
-                        slug=None,
-                        title=title,
-                        meta={
-                            "digest": _DIGEST_META,
-                            _ASK_OF_META: g.ref_id,
-                            "ask": meta_ask,
-                        },
-                        conn=conn,
-                    )
-                    tid = int(ref.id)
-                    store.add_tag(
-                        ref.id,
-                        Tag.closed("STATUS", "open"),
-                        set_by="system",
-                        replace_prefix=True,
-                        conn=conn,
-                    )
-                    store.add_tag(
-                        ref.id, Tag.open("ask-user"), set_by="system", conn=conn
-                    )
-                    store.chunks.insert_chunks(
-                        ref.id,
-                        [
-                            ChunkInsert(
-                                ord=0,
-                                text=body,
-                                meta={"chunk_kind": TODO_BODY_KIND},
-                            )
-                        ],
-                        conn=conn,
-                    )
-            written += 1
-            if todo_id is None:
-                todo_id = tid
-        except Exception:
-            log.warning(
-                "gripe_triage: reto:ask write failed for gr%d",
-                g.ref_id,
-                exc_info=True,
-            )
+        written += 1
+        if todo_id is None:
+            todo_id = tid
+    # Stranded gripes (td649623): a ``reto:ask`` gripe with no live ask
+    # — its legacy batch digest is about to retire below, or its ask was
+    # refused / failed to write on an earlier tick (the claim excludes
+    # triaged gripes, so triage never revisits them) — gets a fallback
+    # ask now rather than waiting forever.
+    for sid, stitle, rec in _stranded_reto_gripes(store, {g.ref_id for g, _ in items}):
+        tid = _write_ask(store, sid, stitle, _fallback_ask(sid, stitle, rec), rec)
+        if tid is None:
+            continue
+        written += 1
+        if todo_id is None:
+            todo_id = tid
     # Sweep (gr595189 — asks must not rot silently, and must not linger
     # answered): an ask whose gripe shed ``reto:ask`` — ruled on the
     # gripe, re-triaged, closed — retires; an ask whose gripe still
@@ -2990,13 +3095,13 @@ def _sync_reto_asks(
             for gid, tids in _live_reto_asks(conn).items():
                 if gid is not None and _gripe_still_reto(conn, gid):
                     continue
-                for tid in tids:
+                for old in tids:
                     store.stamp_ref_meta(
-                        tid,
+                        old,
                         {"superseded_by": f"gr{gid}" if gid is not None else "sweep"},
                         conn=conn,
                     )
-                    store.retire_ref(tid, conn=conn)
+                    store.retire_ref(old, conn=conn)
     except Exception:
         log.warning("gripe_triage: reto:ask sweep failed", exc_info=True)
     if items or overflow:

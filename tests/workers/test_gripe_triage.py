@@ -215,6 +215,16 @@ def _digest_todos(store: Store) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def _blocked_by(store: Store, ref_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'blocked-by' ORDER BY dst_ref_id DESC",
+            (ref_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _body(store: Store, ref_id: int) -> str:
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1587,8 +1597,8 @@ class TestRetoBatch:
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """gr595189: an ask whose question delegates the deciding
-        upward fails ``check_ask_meta`` — the tick skips the mint
-        rather than file a scope-dump (the gripe keeps reto:ask)."""
+        upward fails ``check_ask_meta`` — the tick mints the bounded
+        fallback ask instead of a scope-dump or a stranded gripe."""
         monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
         gid = _gripe(store, "insight loop proposal")
         _light(store)
@@ -1613,7 +1623,58 @@ class TestRetoBatch:
         )
         assert r.extra["reto"] == 1
         assert "reto:ask" in _open_tag_values(store, gid)
-        assert _digest_todos(store) == []
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        assert "scope" not in _body(store, todos[0]).lower().split("\n")[0]
+        assert _blocked_by(store, gid) == todos
+
+    def test_ask_links_the_gripe_blocked_by(self, store: Store) -> None:
+        gid = _gripe(store, "needs a ruling")
+        _light(store)
+        _run(
+            store,
+            _llm({"verdicts": [_verdict(gid, fix="reto", ask=_ask())]}),
+            notify=True,
+        )
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        assert _blocked_by(store, gid) == todos
+
+    def test_stranded_gripe_gets_an_ask_and_legacy_digest_retires(
+        self, store: Store
+    ) -> None:
+        gid = _gripe(store, "already triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        with store.tx() as conn:
+            legacy = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="legacy batch digest",
+                meta={"digest": gripe_triage._DIGEST_META},
+                conn=conn,
+            )
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        todos = _digest_todos(store)
+        assert int(legacy.id) not in todos
+        assert len(todos) == 1
+        assert _blocked_by(store, gid) == todos
+
+
+class TestParseAskStrict:
+    def test_empty_cost_voids_the_ask(self) -> None:
+        ask = _ask()
+        ask["options"][1]["cost"] = ""
+        assert gripe_triage._parse_ask({"ask": ask}) is None
+
+    @pytest.mark.parametrize("field", ["question", "context"])
+    def test_missing_prose_voids_the_ask(self, field: str) -> None:
+        ask = _ask()
+        ask[field] = ""
+        assert gripe_triage._parse_ask({"ask": ask}) is None
+
+    def test_complete_ask_parses(self) -> None:
+        assert gripe_triage._parse_ask({"ask": _ask()}) is not None
 
 
 # ── dispatch score (gr604593) ────────────────────────────────────────────
