@@ -26,13 +26,14 @@ gripe's first body line is ``quest-need: qu<N> <tool-key>``, and the live
 scan of open marker gripes is the single source of truth — survives
 restarts, no in-memory state.
 
-Two guards keep the channel honest (gr646881):
+Two guards keep the channel honest (gr646881, gr646528):
 
 * A declared need that names a capability the tick ALREADY has under
   another name is not a missing tool — ``apply_needs`` answers it with a
-  logbook observation pointing at the affordance
-  (:data:`_HAVE_CAPABILITIES`), never a gripe the quest will re-file next
-  tick.
+  logbook observation carrying the affordance and, where the capability
+  is addressed by a live handle, the address book itself
+  (:data:`_HAVE_CAPABILITIES`), never a gripe the quest will re-file
+  next tick.
 * A need that cites its own earlier gripe (``… (gr<N>, gripe gr<N>)``)
   is the same need — :func:`tool_key` drops handle citations before
   slugging, so the decoration lands on the open marker gripe's key
@@ -45,14 +46,20 @@ Two pieces:
   ``tool``) is dropped and counted, never a failure — mirroring the tick's
   own degrade-don't-crash convention for ``ledger_ops``/``dialectic_ops``.
 * :func:`apply_needs` — the apply path: parses, writes one ``observation``
-  logbook entry when entries were dropped, then files/bumps the per-
-  ``(quest, tool)`` gripe and records the handle in the logbook.
+  logbook entry when entries were dropped, answers each need naming a
+  held capability, then files/bumps the per-``(quest, tool)`` gripe for
+  the rest and records the handle in the logbook — a ``needs-tool``
+  gripe against a capability that exists blocks the quest on nothing
+  (gr646528 — qu604835 re-declared the ``raw-benchmark-log-reader``
+  after gr618517/gr624301 shipped it, because the model could not find
+  its address).
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -100,23 +107,60 @@ _LIVE_GRIPE_STATUSES: tuple[str, ...] = (
     "parked",
 )
 
-#: Capabilities a tick already HAS under another name than the model
-#: declares — ``(needle, affordance-hint)`` pairs. The needle is matched
-#: lowercase against the declared ``tool`` text AND its ``tool_key``, so
-#: it hits however the model decorates the name. A hit is not a missing
-#: tool: :func:`apply_needs` answers with a logbook observation carrying
-#: the hint instead of filing a gripe the quest would re-file next tick
-#: (gr646881 — qu604835 kept declaring ``raw-benchmark-log-reader`` while
-#: the ``bench:<stem>`` read built for it under gr618517/gr624301 sat in
-#: its own ``read`` vocabulary).
-_HAVE_CAPABILITIES: tuple[tuple[str, str], ...] = (
-    (
-        "raw-benchmark-log-reader",
+
+def _held_bench_stems() -> list[str]:
+    """The results-file stems a ``bench:`` read can name right now —
+    embedded in the known-capability answer so the next tick can aim
+    without spending a refused read on the address book. Any lookup
+    fault is an empty list, never a needs-apply failure."""
+    try:
+        from precis.bench import raw as bench_raw
+        from precis.bench import runner as bench_runner
+
+        return bench_raw.list_results_stems(bench_runner.default_results_dir())
+    except Exception:
+        return []
+
+
+def _bench_reader_hint() -> str:
+    """The ``bench:<stem>`` affordance plus the live address book — the
+    stems are unguessable, and the prompt's ``read`` docs now list them
+    inline (``held: …``, gr647524), so the answer embeds the same
+    listing directly (gr646528)."""
+    stems = _held_bench_stems()
+    listing = ", ".join(stems[:12]) or (
+        "(none held — this host's results dir has no run files)"
+    )
+    if len(stems) > 12:
+        listing += f", +{len(stems) - 12} more"
+    return (
         "the `bench:<run-stem>` `read` opens a run's raw results log — "
         'per-arm rows with the per-call token log; `"section"` names an '
-        "arm, a task id, or `calls` (the run's tool_calls ledger) — and a "
-        "refused `bench:` read lists the held stems",
-    ),
+        "arm, a task id, or `calls` (the run's tool_calls ledger). Held "
+        "runs are also listed inline in the `read` docs (held: …) — "
+        f"currently: {listing}"
+    )
+
+
+#: Capabilities a tick already HAS under another name than the model
+#: declares — ``(needle, hint-builder)`` pairs. The needle is matched
+#: lowercase as a substring of the declared ``tool`` text AND its
+#: ``tool_key``, so it hits however the model decorates or shortens the
+#: name. A hit is not a missing tool: :func:`apply_needs` answers with a
+#: logbook observation carrying the built hint instead of filing a gripe
+#: the quest would re-file next tick (gr646881 — qu604835 kept declaring
+#: ``raw-benchmark-log-reader`` while the ``bench:<stem>`` read built
+#: for it under gr618517/gr624301 sat in its own ``read`` vocabulary).
+#: The hint is a zero-arg builder, not a string, so the answer can carry
+#: live state — the bench reader's held stems (gr646528). The bench
+#: needles keep a ``-reader`` tail on purpose: ``bench-reader`` alone
+#: would substring-hit ``workbench-reader``.
+_HAVE_CAPABILITIES: tuple[tuple[str, Callable[[], str]], ...] = (
+    ("benchmark-log-reader", _bench_reader_hint),
+    ("benchmark-results-reader", _bench_reader_hint),
+    ("bench-log-reader", _bench_reader_hint),
+    ("bench-results-reader", _bench_reader_hint),
+    ("raw-results-reader", _bench_reader_hint),
 )
 
 
@@ -126,7 +170,7 @@ def _have_capability(need: Need) -> str | None:
     ``None``."""
     for needle, hint in _HAVE_CAPABILITIES:
         if needle in need.tool_key or needle in need.tool.lower():
-            return hint
+            return hint()
     return None
 
 
@@ -231,6 +275,9 @@ class NeedsOutcome:
     dropped: int
     #: gripe ids filed or bumped this call.
     gripes: tuple[int, ...]
+    #: ``tool_key``s answered with the existing affordance instead of a
+    #: filing (:func:`_have_capability`).
+    answered: tuple[str, ...]
     #: quest-log entries this call wrote (the caller's ``added`` counter
     #: counts them toward engagement).
     logbook_entries: int
@@ -381,17 +428,20 @@ def apply_needs(
     """Parse + apply a tick payload's ``needs`` — the executor half of the
     contract (gr485483): malformed entries drop with a logbook note (never
     a tick failure); each valid need naming a capability the tick already
-    has (:func:`_have_capability`, gr646881) answers with a logbook pointer
-    instead of filing; the rest dedup onto the quest's open marker gripe
-    for that tool (a comment bump), file a fresh gripe when none is
-    open, or are skipped when the quest's daily filing budget is spent.
-    Per-need failures are logged and skipped, never raised — a gripe-write
-    bug must not sink the tick's other writes.
+    has (:func:`_have_capability`, gr646881/gr646528) answers with a
+    logbook pointer — the exact affordance plus, for the bench reader,
+    the live held stems — instead of filing; the rest dedup onto the
+    quest's open marker gripe for that tool (a comment bump), file a
+    fresh gripe when none is open, or are skipped when the quest's daily
+    filing budget is spent. Per-need failures are logged and skipped,
+    never raised — a gripe-write bug must not sink the tick's other
+    writes.
     """
     from precis.quest.logbook import append_entry
 
     needs, dropped = parse_needs(raw)
     gripes: list[int] = []
+    answered: list[str] = []
     entries = 0
     if dropped:
         append_entry(
@@ -417,6 +467,7 @@ def apply_needs(
                 hint = _have_capability(need)
                 gid = open_map.get(need.tool_key)
                 if hint is not None:
+                    answered.append(need.tool_key)
                     text = f"needs: `{need.tool}` already exists — {hint}"
                 elif gid is not None:
                     _bump_one(store, gid, need)
@@ -446,6 +497,7 @@ def apply_needs(
         needs=tuple(needs),
         dropped=dropped,
         gripes=tuple(gripes),
+        answered=tuple(answered),
         logbook_entries=entries,
     )
 

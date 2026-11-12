@@ -641,3 +641,85 @@ class TestNeedGripeVisibility:
         alerts = store.list_refs(kind="alert")
         assert alerts
         assert not any("needs-gripe" in str(a.meta or {}) for a in alerts)
+
+
+# ── known capabilities are answered, not filed (gr646528) ─────────────
+
+
+class TestKnownCapabilityNeeds:
+    """gr646528 — qu604835 re-declared ``raw-benchmark-log-reader``
+    missing after gr618517/gr624301 shipped the ``bench:<stem>`` read:
+    the model knew the tool existed (it cited the building gripes) but
+    could not find its address. A need naming a capability the tick
+    already has is ANSWERED in the logbook with the exact affordance and
+    the live stems — never filed as a blocking ``needs-tool`` gripe."""
+
+    def _hold_run(self, tmp_path: Any, stem: str) -> None:
+        (tmp_path / f"{stem}.json").write_text(
+            json.dumps({"header": {"set": "quick"}, "rows": []}),
+            encoding="utf-8",
+        )
+
+    def test_bench_reader_need_is_answered_not_filed(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        self._hold_run(tmp_path, "20261110Z-abc1234-quick-triage")
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store)
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                {"needs": [_need("raw-benchmark-log-reader (gr618517/gr624301)")]}
+            ),
+        )
+        assert out.status == "succeeded"
+        assert _gripes(store) == []
+        texts = _log_texts(store, qid)
+        assert any(
+            "already exists" in t
+            and "bench:<run-stem>" in t
+            and "20261110Z-abc1234-quick-triage" in t
+            for t in texts
+        )
+
+    def test_known_answer_reports_none_held(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """No results files on this host — the answer still names the
+        affordance and says the dir holds nothing (a data-placement
+        gap, which the model can re-declare under its own tool key)."""
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store)
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch({"needs": [_need("benchmark-log-reader")]}),
+        )
+        assert out.status == "succeeded"
+        assert _gripes(store) == []
+        assert any(
+            "already exists" in t and "(none held" in t for t in _log_texts(store, qid)
+        )
+
+    def test_an_unrelated_tool_still_files(self, store: Any) -> None:
+        """A genuinely new tool matches no held-capability needle — it
+        is untouched by the redirect and files as before."""
+        qid = _mk_quest(store)
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch({"needs": [_need("fib-sem")]})
+        )
+        assert out.status == "succeeded"
+        gripes = _gripes(store)
+        assert len(gripes) == 1
+        assert _gripe_body(store, gripes[0].id).splitlines()[0] == (
+            f"quest-need: qu{qid} fib-sem"
+        )
+
+    def test_answered_need_counts_in_the_outcome(self, store: Any) -> None:
+        out = needs_mod.apply_needs(
+            store, _mk_quest(store), [_need("bench-results-reader")]
+        )
+        assert out.gripes == ()
+        assert out.answered == ("bench-results-reader",)
+        assert out.logbook_entries == 1
