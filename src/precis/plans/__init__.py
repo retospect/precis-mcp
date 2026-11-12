@@ -36,6 +36,8 @@ Modules (each lands as its own slice under td540836):
   each run_slice-bound todo's brief. Deny paths in structured reports
   are judged on explicit change-intent paragraphs so symptom evidence
   does not divert builder work; graph-only checks retain the full report.
+  A todo's body and newest brief keep separate deny-path scopes: body
+  labels must not hide the brief's requested edit.
 
 The dispatcher tick lives with the other job types
 (``precis.workers.job_types``), not here: this package holds the plan

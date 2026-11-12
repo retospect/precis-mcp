@@ -168,7 +168,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    run's own deny-path line is the event, not the target. The
    ``gripe-fix-direct`` instruction head and a pasted brief's
    deny-path/land-lint sections are stripped before the text is
-   judged (:func:`precis.plans.route`).
+   judged (:func:`precis.plans.route`). The newest brief and body are
+   judged separately for deny paths, so body labels cannot hide an
+   unlabelled brief's target (td651223); graph-only checks use both.
    Capacity and
    temporary lane holds still wait in ``run_slice``; answering the ask
    after enabling a lane or retargeting the class releases the node.
@@ -4837,10 +4839,11 @@ def _block_lane_gap(
     res.asks += 1
 
 
-def _route_text(store: Any, n: _Node) -> str:
-    """The text the mint-time coordinator route judges (gr645163): the
-    todo's body plus its newest coordinator ``brief:`` comment — the
-    brief is the instruction. Worker-stamped comments (``principal:
+def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
+    """The body and newest coordinator ``brief:`` comment (gr645163).
+    Keep them separate: the brief is an instruction in its own right,
+    outside the body's labelled paragraphs and write set (td651223).
+    Worker-stamped comments (``principal:
     worker:*`` — the mechanical-red briefs, ``handoff:`` reports and
     lander notes plan_dispatch/run_slice post) never classify: they
     report what happened, and a denied attempt's own deny-path line or
@@ -4866,8 +4869,8 @@ def _route_text(store: Any, n: _Node) -> str:
         # text: judged with the label still on it, a handle-only brief
         # carries one letter token too many and never classifies
         # (td645566).
-        parts.append(brief[len("brief:") :].lstrip())
-    return "\n\n".join(parts)
+        brief = brief[len("brief:") :].lstrip()
+    return "\n\n".join(parts), brief
 
 
 def _block_route(
@@ -4979,9 +4982,10 @@ def _step_dispatch(
             # classify: they read source text, and a gripe or diff may
             # name deny paths legitimately.
             if node_kind(n.meta) != "generator":
-                text = _route_text(w.store, n)
-                routed = _route.coordinator_route(text, deny)
+                body, brief = _route_text(w.store, n)
+                routed = _route.coordinator_route(body, deny, brief=brief)
                 if routed is not None:
+                    text = "\n\n".join(part for part in (body, brief) if part)
                     _block_route(plan, w, res, n, routed, text)
                     continue
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()

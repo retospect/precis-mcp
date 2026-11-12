@@ -312,3 +312,30 @@ def test_fenced_intent_target_still_routes(language: str) -> None:
     text = f"Fix: update these files:\n```{language}\nscripts/ship\n```"
     why = route.coordinator_route(text, _DENY)
     assert why is not None and "`scripts/ship`" in why
+
+
+@pytest.mark.parametrize(
+    ("body", "brief", "routes"),
+    [
+        ("Goal: repair release confirmation", "Update scripts/ship", True),
+        (
+            "Goal: repair release confirmation\n\nEvidence: scripts/ship reported success",
+            "Update the release confirmation worker",
+            False,
+        ),
+        ("Goal: update scripts/ship", "Repair release confirmation", True),
+        # One document's write set cannot hide the other's requested target.
+        ("File set: worker.py", "Update scripts/ship", True),
+        ("Goal: update scripts/ship", "File set: worker.py", True),
+        # Graph-only still means the whole task names no repo work.
+        ("remove the stale edge from me123456", "Update worker.py", False),
+        ("Update worker.py", "remove the stale edge from me123456", False),
+        ("remove the stale edge from me123456", "retire me654321", True),
+    ],
+)
+def test_body_and_brief_keep_separate_deny_path_scopes(
+    body: str, brief: str, routes: bool
+) -> None:
+    # An iterable deny set must remain available for both documents.
+    why = route.coordinator_route(body, iter(_DENY), brief=brief)
+    assert (why is not None) is routes

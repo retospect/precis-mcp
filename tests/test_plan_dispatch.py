@@ -2816,6 +2816,70 @@ def test_graph_only_brief_comment_routes_to_the_coordinator(
     assert "ask-coordinator" in _open_tags(store, ask)
 
 
+@pytest.mark.parametrize(
+    ("body", "briefs", "routes"),
+    [
+        pytest.param(
+            "Goal: repair release confirmation",
+            ("brief: Update scripts/ship",),
+            True,
+            id="unlabelled-brief-deny-target",
+        ),
+        pytest.param(
+            "Goal: repair release confirmation\n\nEvidence: scripts/ship reported success",
+            ("brief: Update release confirmation worker",),
+            False,
+            id="body-evidence-only",
+        ),
+        pytest.param(
+            "Goal: update scripts/ship",
+            ("brief: Update release confirmation worker",),
+            True,
+            id="body-deny-target",
+        ),
+        pytest.param(
+            "Goal: repair release confirmation",
+            ("brief: Update scripts/ship", "brief: Update release confirmation worker"),
+            False,
+            id="newest-brief-supersedes-denied-brief",
+        ),
+    ],
+)
+def test_body_and_newest_brief_route_independently(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    briefs: tuple[str, ...],
+    routes: bool,
+) -> None:
+    """td651223: labelled body intent must not hide an unlabelled brief;
+    evidence stays non-authoritative and superseded briefs stay out."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "Repair release confirmation", {"op": "run_slice"}, body=body)
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    for brief in briefs:
+        _todo_comment(store, task, brief)
+    res = pd.run_pass(store)
+    if routes:
+        assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+        assert _jobs_under(store, task) == []
+        (ask,) = _blocked_by_ids(store, task)
+        assert "ask-coordinator" in _open_tags(store, ask)
+        assert "scripts/ship" in _meta(store, ask)["ask"]["context"]
+        attached = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+        assert body in attached
+        assert briefs[-1].removeprefix("brief: ") in attached
+    else:
+        assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+        assert len(_jobs_under(store, task)) == 1
+        assert _blocked_by_ids(store, task) == []
+
+
 def test_no_commit_on_the_top_rung_asks_the_coordinator(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

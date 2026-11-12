@@ -8,7 +8,10 @@ until the coordinator lands it by hand (td643078/gr626879, td638980).
 This module is the shared classifier: ``gripe_dispatch`` asks it of each
 candidate gripe's report before minting a fix chain, and
 ``plan_dispatch._step_dispatch`` asks it of each run_slice-bound todo's
-body and newest brief/handoff before minting a job. A builder's ordinary
+body and newest brief before minting a job. Deny paths are judged in
+the newest brief first, then independently in the body: labels in one
+must not hide the other's requested targets (td651223). Graph-only
+classification still considers both texts together. A builder's ordinary
 can't-finish (a ``no_commit`` run with no verdict) is NOT here — that
 climbs the model ladder in ``_step_dispatch`` and only the top rung's
 failure files the coordinator ask.
@@ -332,25 +335,29 @@ def _change_intent(text: str) -> str:
     return "\n".join(out) if found else text
 
 
-def coordinator_route(text: str | None, deny_paths: Iterable[str]) -> str | None:
+def coordinator_route(
+    text: str | None, deny_paths: Iterable[str], *, brief: str | None = None
+) -> str | None:
     """The short reason the work routes straight to the coordinator, or
     ``None`` when a builder lane may take it. The reason is written into
-    the ask body and context, so it names the signal, not advice."""
-    if not text or not text.strip():
-        return None
-    body = strip_direct_head(text)
-    file_set = _FILE_SET.search(body)
-    # Strip invocations before selecting paragraphs: selection must not make
-    # a target path and a later test path look like one command invocation.
-    judged = (
-        file_set.group(1)
-        if file_set
-        else _change_intent(_RUN_INVOCATION.sub(" ", body))
-    )
-    hit = deny_path_hit(judged, deny_paths)
-    if hit is not None:
-        token, glob = hit
-        return f"names deny path `{token}` (matched `{glob}`)"
-    if graph_only(body):
+    the ask body and context, so it names the signal, not advice.
+    An optional newest brief has its own intent and declared write set;
+    neither it nor the body can mask the other's deny paths."""
+    parts = [strip_direct_head(part) for part in (brief, text) if part and part.strip()]
+    deny = tuple(deny_paths)
+    for body in parts:
+        file_set = _FILE_SET.search(body)
+        # Strip invocations before selecting paragraphs: selection must not make
+        # a target path and a later test path look like one command invocation.
+        judged = (
+            file_set.group(1)
+            if file_set
+            else _change_intent(_RUN_INVOCATION.sub(" ", body))
+        )
+        hit = deny_path_hit(judged, deny)
+        if hit is not None:
+            token, glob = hit
+            return f"names deny path `{token}` (matched `{glob}`)"
+    if graph_only("\n\n".join(parts)):
         return "prod-graph only — no repo diff exists for a builder to write"
     return None
