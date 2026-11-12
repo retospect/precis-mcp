@@ -2475,6 +2475,30 @@ class PythonHandler(Handler):
             next="get(kind='python') to list configured repos",
         )
 
+    def owns_alias(self, alias: str) -> bool:
+        """True when ``alias`` names one of this index's roots — a static
+        configured root, a live worktree, or a workspace (``ws-…``).
+
+        Pure predicate, never raises: unlike :meth:`_resolve_alias`, a
+        registered-but-gone worktree answers False here instead of
+        raising, so the dispatcher can use this to self-identify
+        ``<alias>::<qualname>`` ids without ``kind=`` (gr648740) and
+        still let the handler itself produce the precise NotFound when
+        the id is otherwise bad.
+        """
+        if not alias or "/" in alias or "::" in alias or "~" in alias:
+            return False
+        if alias in self.roots:
+            return True
+        try:
+            if alias in self._worktree_listing():
+                return True
+        except Exception:  # pragma: no cover — registry outage etc.
+            log.debug("worktree listing probe failed", exc_info=True)
+        if self.workspaces is not None and self.workspaces.owns(alias):
+            return True
+        return self.worktrees is not None and self.worktrees.owns(alias)
+
     def _resolve_writable(self, alias: str) -> Path:
         root = self._resolve_alias(alias)
         if alias not in self.roots:

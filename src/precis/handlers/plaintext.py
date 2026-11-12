@@ -2149,6 +2149,31 @@ class PlaintextHandler(Handler):
         # ``id='projects/x/tex/intro.tex'`` directly.
         return f"{ws_path}/{workspace_relpath}"
 
+    def owns_existing_file(self, raw_id: str) -> bool:
+        """True when ``raw_id`` addresses a file this kind owns that
+        exists on disk right now — slug-form (``tex--graphene``) or
+        path-form (``notes/meeting.md``, mirrored ``alias/…``).
+
+        Pure probe: no ingest, no ref writes, no error on a malformed
+        id. The dispatcher asks every live plaintext-family handler and
+        pins the kind only when exactly one answers True (gr648740:
+        ``get(id='tex--catalyst_landscape')`` bounced on "missing kind="
+        although the slug named exactly one existing .tex file) — so a
+        stem present under two extensions stays a refusal, never a
+        guess.
+        """
+        try:
+            slug, _sel, _view = _parse_file_id(
+                str(raw_id),
+                extensions=self._EXTENSIONS,
+                views=self._SUPPORTED_VIEWS,
+                aliases=self._aliases,
+            )
+            path = self._resolve_path(slug, must_exist=False)
+        except BadInput:
+            return False
+        return path.is_file()
+
     def _resolve_path(
         self, slug: str, *, must_exist: bool, preferred_ext: str | None = None
     ) -> Path:

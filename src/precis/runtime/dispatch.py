@@ -4512,6 +4512,55 @@ class DispatchMixin(RuntimeShape):
         if kind is not None and kind in live_kinds:
             args["kind"] = kind
 
+    def _maybe_infer_python_kind(self, args: dict[str, Any], ident: str) -> bool:
+        """Pin ``kind='python'`` on a ``<alias>::<qualname>`` id whose
+        alias names a configured python root, so
+        ``get(id='main::pkg.mod.sym', view='source')`` needs no
+        ``kind=`` (gr648740 — a week of prod sessions burned on the
+        "missing kind=" bounce for exactly this call shape). The id is
+        left intact; the python handler's own errors (unknown symbol,
+        gone worktree) stay reachable. No-op when ``kind=`` was already
+        given, python is not live, or the alias is unknown."""
+        if args.get("kind") is not None or self.hub is None:
+            return False
+        handler = self.hub.handler_for("python")
+        owns_alias = getattr(handler, "owns_alias", None)
+        if owns_alias is None:
+            return False
+        alias = ident.split("::", 1)[0].strip()
+        try:
+            if not owns_alias(alias):
+                return False
+        except Exception:  # pragma: no cover — registry probe outage etc.
+            log.debug("python owns_alias probe failed", exc_info=True)
+            return False
+        args["kind"] = "python"
+        return True
+
+    def _maybe_infer_file_kind(self, args: dict[str, Any], ident: str) -> None:
+        """Pin the owning file kind on a prose-file id (slug-form
+        ``tex--graphene`` or path-form ``notes/meeting.md``) when
+        exactly one live plaintext-family handler owns the addressed
+        file on disk (gr648740 — ``get(id='tex--catalyst_landscape')``
+        bounced on "missing kind=" although the slug named exactly one
+        existing .tex file). Zero owners (unknown id) or 2+ owners (same
+        stem under two extensions) fall through to the normal refusal:
+        an ambiguous stem is never guessed."""
+        if args.get("kind") is not None or self.hub is None:
+            return
+        owners: list[str] = []
+        for kind in sorted(self.hub.kinds):
+            probe = getattr(self.hub.handler_for(kind), "owns_existing_file", None)
+            if probe is None:
+                continue
+            try:
+                if probe(ident):
+                    owners.append(kind)
+            except Exception:  # pragma: no cover — disk/store outage etc.
+                log.debug("file-kind probe failed for %s", kind, exc_info=True)
+        if len(owners) == 1:
+            args["kind"] = owners[0]
+
     def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
         """Universal handles: route a draft chunk handle ``dc<id>`` (optionally with a
         relative operator ``^`` / ``+N`` / ``-lo..hi``) to the draft handler,
@@ -5301,6 +5350,10 @@ class DispatchMixin(RuntimeShape):
             # owning kind, so ``get(id='wu22c~312')`` self-identifies as
             # the paper that owns ``wu22c``.
             self._infer_slug_kind(args, ident)
+            # A prose-file id (``tex--graphene``, ``notes/meeting.md``)
+            # names its kind via the extension of the file it addresses
+            # (gr648740).
+            self._maybe_infer_file_kind(args, ident)
             return
         # Only honour a colon that comes before any selector / view
         # path separator. ``markdown:notes/a.md`` is fine; ``foo/bar:x``
@@ -5314,9 +5367,16 @@ class DispatchMixin(RuntimeShape):
             return
         live_kinds = set(self.hub.kinds) if self.hub is not None else set()
         if prefix not in live_kinds:
-            # Not a recognised kind prefix — leave the value alone.
-            # Better to surface a "no such kind" error downstream than
-            # eat a legitimate identifier that happens to contain ":".
+            # Not a recognised kind prefix — but ``<alias>::<qualname>``
+            # is the python kind's address grammar and no other live
+            # kind uses ``::``, so when the alias names a configured
+            # python root the id self-identifies (gr648740: prod
+            # get(id='main::pkg.mod.sym', view='source') calls bounced
+            # on "missing kind=" for a week). Anything else passes
+            # through unchanged — better to surface a "no such kind"
+            # error downstream than eat a legitimate identifier that
+            # happens to contain ":".
+            self._maybe_infer_python_kind(args, ident)
             return
 
         existing_kind = args.get("kind")
