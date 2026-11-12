@@ -2,7 +2,7 @@
 id: precis-taproot-backfill-help
 family: evidence
 title: precis-taproot-backfill-help — convert a draft's [pc]/[pa] cites into hub cites
-summary: batch-convert a draft's legacy [pc<id>]/[pa<id>] cites into hub [fi<id>] cites via the taproot_backfill job — scope, chunk-grounding, and the whole-paper [pa] re-ground arm
+summary: batch-convert a draft's legacy [pc<id>]/[pa<id>] cites into hub [fi<id>] cites via the taproot_backfill job — scope, chunk-grounding, the whole-paper [pa] re-ground arm, and outcome/retry guidance
 answers:
   - how do I convert a draft's legacy [pc<id>] cites into hub [fi<id>] cites?
 applies-to: put(kind='job', job_type='taproot_backfill') for draft backfill; precis taproot backfill (CLI equivalent)
@@ -138,6 +138,41 @@ put(
 ```
 
 CLI equivalent: `precis taproot backfill --chunk dc1652005 --apply [--ref-level]`.
+
+## Outcomes — verdicts versus retryable failures
+
+The plan's per-group `action` splits into **final semantic verdicts** and
+**retryable infra failures** — read them differently:
+
+- **Final (do not retry).** `no-claim` — the extractor *ran* and the span
+  asserts nothing groundable (a pointer-only span, or a figure caption's
+  provenance pointer). That is a verdict; a re-run reproduces it. When it
+  looks wrong the fix is editorial (re-cite onto a real passage, or drop
+  the cite), not a rerun. `ungroundable` / `reground-nomatch` /
+  `stub-fetch-first` / `unresolved` / `bad-claim` are the same class:
+  follow the note's next step, never a blind retry.
+- **Retryable (infra, not a verdict).** `extract-unavailable` — the
+  extraction LLM dispatch raised `ExtractionUnavailable` (dispatch failed
+  or the reply cut off), so nothing was decided about the span; the prose
+  is left as-is and the group re-runs cleanly. The plan records the
+  router's failure class and `retry_at` horizon — a quota window is not a
+  dead endpoint. `verify-unavailable` (the atom-verification dispatch
+  failed) is the same posture. **Never read an unavailable action as "the
+  span has no claim"** — an LLM outage is not a scientific verdict — and
+  never read `no-claim` as a reason to retry.
+- **Retry path.** Re-enqueue the same job / re-run the same command once
+  the LLM is back: the job is checkpointed and idempotent, so a re-claim
+  resumes where it stopped. Do not work around an outage by rerunning
+  through a historical host or DSN — the `unavailable_class`/`retry_at`
+  metadata on the plan is the source of truth on *why* and *when*.
+
+The corpus-migration sibling (`precis taproot migrate --dry-run`) holds
+the same line: a per-hub extraction error lands as an `error` verdict in
+the report — visible and counted, never silently reclassified as
+`no-claim` — while a run of consecutive primary-extractor failures aborts
+the whole dry-run (the error breaker): a dead LLM must not produce a
+full-size garbage report. Escalation-tier failures are caught per-hub and
+never trip that breaker.
 
 ## See also
 
