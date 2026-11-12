@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis import health_checks
+from precis import backlog_cache, health_checks
 from precis.store import Store
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -29,14 +29,16 @@ def test_embed_pending_mirrors_handler_skip_kinds(store: Store) -> None:
     seed_chunk(store, ref_id=ref_id, ord=1, chunk_kind="references", text="[1] a bib")
 
     with store.pool.connection() as conn:
-        counts = health_checks.compute_backlog_counts(conn)
+        counts = health_checks.compute_backlog_counts(conn, store.pool)
     assert counts["embed"]["pending"] == 0
     assert counts["summarize"]["pending"] == 0  # 'field' had drifted here too
 
     # Control: an eligible paragraph chunk IS pending — the zero above
-    # isn't a blind query.
+    # isn't a blind query. The counts are parked hourly (gr573440), so drop
+    # them first.
     seed_chunk(store, ref_id=ref_id, ord=2, chunk_kind="paragraph", text="body")
     with store.pool.connection() as conn:
-        counts = health_checks.compute_backlog_counts(conn)
+        backlog_cache.invalidate(store.pool)
+        counts = health_checks.compute_backlog_counts(conn, store.pool)
     assert counts["embed"]["pending"] == 1
     assert counts["summarize"]["pending"] == 1

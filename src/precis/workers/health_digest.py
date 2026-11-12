@@ -452,15 +452,16 @@ _BACKLOG_DRAIN_VERBS: dict[str, str] = {
 }
 
 
-def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
+def _idle_aware_backlog_checks(conn: Any, pool: Any) -> list[CheckResult]:
     """Idle-vs-stuck: an empty backlog is healthy no matter how stale the
     last batch is; a non-empty, non-draining one past budget is not.
 
     Reuses :func:`precis.health_checks.compute_backlog_counts` — the exact
     ``/status`` panel computation, so this is the same "one liveness truth"
     the web UI shows, not a second implementation that could drift.
+    ``pool`` is where its hourly recount writes (:mod:`precis.backlog_cache`).
     """
-    backlog = health_checks.compute_backlog_counts(conn)
+    backlog = health_checks.compute_backlog_counts(conn, pool)
     out: list[CheckResult] = []
     for key, group, budget_hours, severity, what in _BACKLOG_CHECKS:
         row = backlog.get(key)
@@ -1893,7 +1894,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out = _freshness_layer1(conn)
         out.append(_check_chunks_extracted(conn))
         out.append(_check_taproot_edges(conn))
-        out += _idle_aware_backlog_checks(conn)
+        out += _idle_aware_backlog_checks(conn, store.pool)
         out.append(_check_card_forge(conn))
         out.append(_check_claim_hub_dedup_index(conn))
         out.append(_check_nanopub_candidates_fresh(conn))

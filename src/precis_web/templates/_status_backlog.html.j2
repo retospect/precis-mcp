@@ -2,7 +2,9 @@
    ``GET /status/backlog``. The counts here are full-table aggregate
    scans over ``chunks`` (three per-pass claim-mirroring queries), so
    they're the slowest part of the Status page; deferring them keeps the
-   initial page render snappy and streams this panel in when ready.
+   initial page render snappy and streams this panel in when ready. Each
+   count is recounted at most hourly (``precis.backlog_cache``, gr573440);
+   ``counted …`` shows its age.
 
    ``pending = 0`` means the worker is caught up; a growing number means
    the embedder / keyword extractor / summarizer can't keep up with
@@ -52,6 +54,10 @@
     <span class="w-24 text-right text-fg-faint shrink-0 tabular-nums"
           title="last productive batch{% if row.last_ts %} — {{ row.last_ts | abs_ts }}{% endif %}">
       {% if row.last_ts %}{{ row.last_ts | ago }}{% else %}—{% endif %}
+    </span>
+    <span class="w-28 text-right text-fg-faint shrink-0 tabular-nums"
+          title="counts recounted at most hourly{% if row.counted_at %} — counted {{ row.counted_at | abs_ts }}{% endif %}">
+      {% if row.counted_at %}counted {{ row.counted_at | ago }}{% else %}—{% endif %}
     </span>
     {% endif %}
   </div>

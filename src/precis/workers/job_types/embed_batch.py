@@ -32,13 +32,18 @@ targeted jobs never fall back to draining unrelated chunks.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 
 from precis.embedder import EmbedderUnavailable
 from precis.utils.db_retry import retry_locked
-from precis.workers.embed import EmbedHandler, resolve_embedder, unembedded_chunk_count
+from precis.workers.embed import (
+    EmbedHandler,
+    cached_unembedded_backlog,
+    resolve_embedder,
+)
 from precis.workers.executors.job_inproc import renew_own_lease
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.memory_embed import (
@@ -286,12 +291,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
         )
         return {"embedded": ok_total, "failed": failed_total}
 
-    with ctx.store.pool.connection() as conn:
-        remaining = unembedded_chunk_count(conn)
+    remaining = cached_unembedded_backlog(ctx.store.pool)
+    age_min = max(
+        0, int((datetime.now(UTC) - remaining.counted_at).total_seconds()) // 60
+    )
     ctx.append_chunk(
         "job_summary",
         f"embedded {ok_total} chunk(s) ({failed_total} failed) — "
-        f"queue_remaining≈{remaining}",
+        f"queue_remaining≈{remaining.count} (counted {age_min}m ago)",
     )
     # Read by job_inproc's per-job log line (``embedded=N``); nothing persists it.
     return {"embedded": ok_total, "failed": failed_total}

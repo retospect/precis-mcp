@@ -35,7 +35,7 @@ convenience wrapper, a ``store`` (opens its own).
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -67,136 +67,134 @@ _EMBED_ARTIFACT = "bge-m3"
 _SUMMARIZE_ARTIFACT = "rake-lemma"
 
 
-def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
+def _terminal_pass_counts(
+    conn: Any,
+    output_table: str,
+    artifact_col: str,
+    artifact: str,
+    skip_kinds: tuple[str, ...],
+) -> dict[str, int]:
+    """pending/done/failed for a pass that writes one artifact row per chunk
+    (embed, summarize). A full ``chunks`` scan: read it through
+    :func:`compute_backlog_counts`, which parks it hourly."""
+    sql = f"""
+        SELECT count(*) FILTER (WHERE elig)                   AS total,
+               count(*) FILTER (WHERE elig AND st = 'ok')     AS done,
+               count(*) FILTER (WHERE elig AND st = 'failed') AS failed
+          FROM (
+            SELECT
+                (c.chunk_kind <> ALL(%(skip)s)
+                 AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
+                (SELECT o.status
+                   FROM {output_table} o
+                  WHERE o.chunk_id = c.chunk_id
+                    AND o.{artifact_col} = %(artifact)s
+                    AND (o.status = 'failed'
+                         OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
+                  LIMIT 1) AS st
+              FROM chunks c
+          ) t
+    """
+    r = conn.execute(sql, {"skip": list(skip_kinds), "artifact": artifact}).fetchone()
+    total, done, failed = int(r[0]), int(r[1]), int(r[2])
+    return {"pending": total - done - failed, "done": done, "failed": failed}
+
+
+def _keywords_counts(conn: Any) -> dict[str, int]:
+    """pending/blocked/done for ``chunk_keywords``. A full ``chunks`` scan,
+    parked hourly like :func:`_terminal_pass_counts`."""
+    from precis.workers.chunk_keywords import (
+        KEYWORDS_VERSION,
+        MIN_CHUNK_CHARS,
+        SKIP_KINDS,
+    )
+
+    r = conn.execute(
+        """
+        SELECT
+            count(*) FILTER (WHERE elig)                            AS total,
+            count(*) FILTER (WHERE elig AND NOT pend)               AS done,
+            count(*) FILTER (WHERE elig AND pend AND emb_ready)     AS pending,
+            count(*) FILTER (WHERE elig AND pend AND NOT emb_ready) AS blocked
+          FROM (
+            SELECT
+                (c.chunk_kind <> ALL(%(skip)s)
+                 AND length(c.text) >= %(minlen)s
+                 AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
+                EXISTS (
+                       SELECT 1 FROM chunk_embeddings ce
+                        WHERE ce.chunk_id = c.chunk_id
+                          AND ce.embedder = %(emb)s
+                          AND ce.status = 'ok'
+                          AND ce.content_sha
+                              IS NOT DISTINCT FROM c.content_sha) AS emb_ready,
+                (c.keywords IS NULL
+                 OR (c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
+                 OR (c.keywords_meta->>'content_sha')
+                     IS DISTINCT FROM c.content_sha) AS pend
+              FROM chunks c
+          ) t
+        """,
+        {
+            "skip": list(SKIP_KINDS),
+            "minlen": MIN_CHUNK_CHARS,
+            "emb": _EMBED_ARTIFACT,
+            "kv": KEYWORDS_VERSION,
+        },
+    ).fetchone()
+    done, pending, blocked = int(r[1]), int(r[2]), int(r[3])
+    return {"pending": pending, "blocked": blocked, "done": done, "failed": 0}
+
+
+def compute_backlog_counts(conn: Any, pool: Any) -> dict[str, dict[str, Any]]:
     """Per-pass backlog counts on an already-open ``conn``.
 
     Same three-way (pending/done/failed) plus ``chunk_keywords``' extra
     ``blocked`` split as the original ``/status`` panel query — see the
-    module docstring. On any query error the affected pass reads
-    ``pending=-1`` (so the caller sees the panel/check didn't lie) and the
-    connection is rolled back so later sections on it still run.
+    module docstring. The counts are full ``chunks`` scans, so each is
+    served from :mod:`precis.backlog_cache` (recounted at most hourly, on
+    its own connection from ``pool``) and its row carries ``counted_at``;
+    ``last_ts`` stays live on ``conn``. A failed count reads
+    ``pending=-1`` (so the caller sees the panel/check didn't lie); a
+    failed ``last_ts`` probe rolls ``conn`` back so later sections on it
+    still run.
     """
     # Backlog eligibility mirrors the worker *claim* predicates — import
     # them from the handlers themselves (the ONE truth) rather than
     # restating them: the module-top copies this replaced had drifted
     # (gr483036). Import here, not at module top — same dependency-light
     # discipline as ``registry_title_mismatch``'s ingest import below.
-    from precis.workers.chunk_keywords import (
-        KEYWORDS_VERSION,
-        MIN_CHUNK_CHARS,
-        SKIP_KINDS,
-    )
+    from precis import backlog_cache
     from precis.workers.embed import EmbedHandler
     from precis.workers.summarize import RakeLemmaHandler
 
+    counters: dict[str, Callable[[Any], dict[str, int]]] = {
+        "embed": lambda c: _terminal_pass_counts(
+            c,
+            "chunk_embeddings",
+            "embedder",
+            _EMBED_ARTIFACT,
+            EmbedHandler.skip_chunk_kinds,
+        ),
+        "summarize": lambda c: _terminal_pass_counts(
+            c,
+            "chunk_summaries",
+            "summarizer",
+            _SUMMARIZE_ARTIFACT,
+            RakeLemmaHandler.skip_chunk_kinds,
+        ),
+        "chunk_keywords": _keywords_counts,
+    }
     rows: dict[str, dict[str, Any]] = {}
-
-    def _terminal_pass(
-        label: str,
-        output_table: str,
-        artifact_col: str,
-        artifact: str,
-        skip_kinds: tuple[str, ...],
-    ) -> None:
-        sql = f"""
-            SELECT count(*) FILTER (WHERE elig)                   AS total,
-                   count(*) FILTER (WHERE elig AND st = 'ok')     AS done,
-                   count(*) FILTER (WHERE elig AND st = 'failed') AS failed
-              FROM (
-                SELECT
-                    (c.chunk_kind <> ALL(%(skip)s)
-                     AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
-                    (SELECT o.status
-                       FROM {output_table} o
-                      WHERE o.chunk_id = c.chunk_id
-                        AND o.{artifact_col} = %(artifact)s
-                        AND (o.status = 'failed'
-                             OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
-                      LIMIT 1) AS st
-                  FROM chunks c
-              ) t
-        """
+    for label, compute in counters.items():
         try:
-            r = conn.execute(
-                sql, {"skip": list(skip_kinds), "artifact": artifact}
-            ).fetchone()
-            total, done, failed = int(r[0]), int(r[1]), int(r[2])
-            rows[label] = {
-                "pending": total - done - failed,
-                "done": done,
-                "failed": failed,
-            }
+            hit = backlog_cache.cached_count(
+                pool, f"status:{label}", compute, conn=conn
+            )
+            rows[label] = {**hit.value, "counted_at": hit.counted_at}
         except Exception:
             log.exception("health_checks: backlog query for %s failed", label)
-            try:
-                conn.rollback()
-            except Exception:
-                log.exception("health_checks: rollback after backlog query failed")
             rows[label] = {"pending": -1, "done": 0, "failed": 0}
-
-    _terminal_pass(
-        "embed",
-        "chunk_embeddings",
-        "embedder",
-        _EMBED_ARTIFACT,
-        EmbedHandler.skip_chunk_kinds,
-    )
-    _terminal_pass(
-        "summarize",
-        "chunk_summaries",
-        "summarizer",
-        _SUMMARIZE_ARTIFACT,
-        RakeLemmaHandler.skip_chunk_kinds,
-    )
-
-    try:
-        r = conn.execute(
-            """
-            SELECT
-                count(*) FILTER (WHERE elig)                            AS total,
-                count(*) FILTER (WHERE elig AND NOT pend)               AS done,
-                count(*) FILTER (WHERE elig AND pend AND emb_ready)     AS pending,
-                count(*) FILTER (WHERE elig AND pend AND NOT emb_ready) AS blocked
-              FROM (
-                SELECT
-                    (c.chunk_kind <> ALL(%(skip)s)
-                     AND length(c.text) >= %(minlen)s
-                     AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
-                    EXISTS (
-                           SELECT 1 FROM chunk_embeddings ce
-                            WHERE ce.chunk_id = c.chunk_id
-                              AND ce.embedder = %(emb)s
-                              AND ce.status = 'ok'
-                              AND ce.content_sha
-                                  IS NOT DISTINCT FROM c.content_sha) AS emb_ready,
-                    (c.keywords IS NULL
-                     OR (c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
-                     OR (c.keywords_meta->>'content_sha')
-                         IS DISTINCT FROM c.content_sha) AS pend
-                  FROM chunks c
-              ) t
-            """,
-            {
-                "skip": list(SKIP_KINDS),
-                "minlen": MIN_CHUNK_CHARS,
-                "emb": _EMBED_ARTIFACT,
-                "kv": KEYWORDS_VERSION,
-            },
-        ).fetchone()
-        done, pending, blocked = int(r[1]), int(r[2]), int(r[3])
-        rows["chunk_keywords"] = {
-            "pending": pending,
-            "blocked": blocked,
-            "done": done,
-            "failed": 0,
-        }
-    except Exception:
-        log.exception("health_checks: backlog query for chunk_keywords failed")
-        try:
-            conn.rollback()
-        except Exception:
-            log.exception("health_checks: rollback after chunk_keywords query failed")
-        rows["chunk_keywords"] = {"pending": -1, "done": 0, "failed": 0}
 
     for pass_name in rows:
         try:
@@ -242,7 +240,7 @@ def compute_backlog_counts(conn: Any) -> dict[str, dict[str, Any]]:
 def backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
     """:func:`compute_backlog_counts` over a fresh connection of its own."""
     with store.pool.connection() as conn:
-        return compute_backlog_counts(conn)
+        return compute_backlog_counts(conn, store.pool)
 
 
 def embed_backlog_rates(conn: Any, *, window_hours: float) -> dict[str, int] | None:

@@ -39,7 +39,11 @@ In production it fires once an hour, wherever the cadence lease lands.
    **idle-aware**: they read `precis.health_checks.compute_backlog_counts`
    — the same computation `/status` renders — so an empty backlog is `ok`
    no matter how long ago the last batch ran, and only a *non-draining*
-   backlog past budget is `stale`. `chunks_extracted` is body-row-only
+   backlog past budget is `stale`. The pending counts are full `chunks`
+   scans parked at most hourly in `app_state` (`backlog_count:*` keys,
+   `precis.backlog_cache`); the panel shows each count's age, and
+   deleting those keys forces a recount on the next read.
+   `chunks_extracted` is body-row-only
    (`ord >= 0`, so a card_forge rewrite or a concept/glossary chunk write
    can't mask a stalled extraction pipeline) and input-aware: stale only
    when a paper landed past budget *newer* than the newest body chunk;

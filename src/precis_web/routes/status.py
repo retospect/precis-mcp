@@ -314,7 +314,7 @@ def _backlog_counts(store: Store) -> dict[str, dict[str, Any]]:
     docstring for the pending/done/failed/blocked shape.
     """
     with _connect(store) as conn:
-        return health_checks.compute_backlog_counts(conn)
+        return health_checks.compute_backlog_counts(conn, store.pool)
 
 
 def _recent_agent_activity(store: Store, limit: int = 10) -> list[dict[str, Any]]:
@@ -2166,7 +2166,9 @@ async def backlog_fragment(request: Request) -> HTMLResponse:
 
     :func:`_backlog_counts` is the heaviest work on the Status page —
     three full-table aggregate scans over ``chunks`` that mirror each
-    worker's claim SQL. The main ``index`` route deliberately omits it
+    worker's claim SQL, each parked hourly in ``app_state``
+    (:mod:`precis.backlog_cache`), so only the first load in an hour pays
+    for them. The main ``index`` route deliberately omits it
     so the page paints immediately; the template then fetches this
     fragment via ``hx-get="/status/backlog"`` on load and swaps it in.
     """

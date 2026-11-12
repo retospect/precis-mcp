@@ -12,6 +12,13 @@ for the backlog not already covered by in-flight jobs — the old
 batches). Churn still coalesces: each job is bounded at
 ``params.limit`` chunks.
 
+Every backlog count here is a full ``chunks`` scan, so each source reads
+it through :mod:`precis.backlog_cache`, recounted at most hourly
+(gr573440). A tick therefore decides on a count up to an hour old: it can
+mint jobs that find nothing after a drain, or wait up to an hour to mint
+for a backlog that appeared just after a count. Both stay inside the embed
+watchdog's 2 h budget; :mod:`precis.backlog_cache` explains the trade-off.
+
 Targeted memory embed jobs cover only their pinned revision. The shared
 ``_embed_jobs.targeted_embed_job_sql`` predicate excludes them from bulk
 live counts (capacity, age triggers and warnings) and failure cooldowns.
@@ -176,17 +183,29 @@ def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
 
 
 def _summarize_backlog_count(store: Store) -> int:
+    """``unsummarized_chunk_count``, parked hourly (gr573440 — a full
+    ``chunks`` anti-join; :mod:`precis.backlog_cache`)."""
+    from precis import backlog_cache
     from precis.workers.llm_summarize import unsummarized_chunk_count
 
-    with store.pool.connection() as conn:
-        return unsummarized_chunk_count(conn)
+    return int(
+        backlog_cache.cached_count(
+            store.pool, "summarize:unsummarized", unsummarized_chunk_count
+        ).value
+    )
 
 
 def _classify_backlog_count(store: Store) -> int:
+    """``unclassified_chunk_count``, parked hourly like
+    :func:`_summarize_backlog_count`."""
+    from precis import backlog_cache
     from precis.workers.classify import unclassified_chunk_count
 
-    with store.pool.connection() as conn:
-        return unclassified_chunk_count(conn)
+    return int(
+        backlog_cache.cached_count(
+            store.pool, "classify:unclassified", unclassified_chunk_count
+        ).value
+    )
 
 
 def materialize_embed_enabled() -> bool:
@@ -251,22 +270,24 @@ def _max_jobs() -> int:
 
 
 def _embed_backlog_count(store: Store) -> int:
-    from precis.workers.embed import unembedded_chunk_count
+    """The unscoped embed backlog, parked hourly
+    (:func:`precis.workers.embed.cached_unembedded_backlog`, gr573440)."""
+    from precis.workers.embed import cached_unembedded_backlog
 
-    with store.pool.connection() as conn:
-        return unembedded_chunk_count(conn)
+    return cached_unembedded_backlog(store.pool).count
 
 
 def _embed_oldest_pending_at(store: Store) -> datetime | None:
     """``created_at`` of the OLDEST eligible unembedded chunk — the
     :func:`_embed_backlog_count` predicate with a ``min()`` projection
-    (:func:`precis.workers.embed.oldest_unembedded_chunk_at`). Runs only
-    while the age trigger is live (``0 < backlog <= HIGH``, nothing
-    queued/running): one extra count-shape scan per tick at most."""
-    from precis.workers.embed import oldest_unembedded_chunk_at
+    (:func:`precis.workers.embed.oldest_unembedded_chunk_at`), counted in
+    the same parked scan as the backlog count, so the age trigger costs an
+    ``app_state`` read, not a second scan. The value can be up to an hour
+    old: a backlog that drained since can mint one no-op job per tick
+    until the next recount."""
+    from precis.workers.embed import cached_unembedded_backlog
 
-    with store.pool.connection() as conn:
-        return oldest_unembedded_chunk_at(conn)
+    return cached_unembedded_backlog(store.pool).oldest
 
 
 @dataclass(frozen=True, slots=True)

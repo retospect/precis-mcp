@@ -549,12 +549,12 @@ def test_empty_backlog_quiet_producer_is_ok(store, monkeypatch) -> None:
     monkeypatch.setattr(
         health_digest.health_checks,
         "compute_backlog_counts",
-        lambda conn: {
+        lambda conn, pool: {
             "embed": {"pending": 0, "done": 10, "failed": 0},
             "chunk_keywords": {"pending": 0, "done": 10, "failed": 0, "blocked": 0},
         },
     )
-    results = _idle_aware_backlog_checks(conn=None)
+    results = _idle_aware_backlog_checks(conn=None, pool=None)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "ok"
 
@@ -564,12 +564,12 @@ def test_non_draining_backlog_past_budget_is_stale(store, monkeypatch) -> None:
     monkeypatch.setattr(
         health_digest.health_checks,
         "compute_backlog_counts",
-        lambda conn: {
+        lambda conn, pool: {
             "embed": {"pending": 42, "done": 10, "failed": 0, "last_ts": stale_ts},
             "chunk_keywords": {"pending": 0, "done": 10, "failed": 0, "blocked": 0},
         },
     )
-    results = _idle_aware_backlog_checks(conn=None)
+    results = _idle_aware_backlog_checks(conn=None, pool=None)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "stale"
     assert "NOT draining" in embed.detail
@@ -581,12 +581,12 @@ def test_backlog_pending_but_last_batch_recent_is_ok(store, monkeypatch) -> None
     monkeypatch.setattr(
         health_digest.health_checks,
         "compute_backlog_counts",
-        lambda conn: {
+        lambda conn, pool: {
             "embed": {"pending": 500, "done": 10, "failed": 0, "last_ts": fresh_ts},
             "chunk_keywords": {"pending": 0, "done": 10, "failed": 0, "blocked": 0},
         },
     )
-    results = _idle_aware_backlog_checks(conn=None)
+    results = _idle_aware_backlog_checks(conn=None, pool=None)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "ok"
     assert "draining" in embed.detail
@@ -626,7 +626,7 @@ def test_growing_embed_backlog_with_fresh_writes_is_stale(store) -> None:
     the stall alert never fired. The net-rate gate must now fire it."""
     _seed_embed_rows(store, old_pending=40, fresh_pending=60, embedded_now=10)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "stale"
     assert "growing" in embed.detail
@@ -637,7 +637,7 @@ def test_embed_backlog_draining_too_slowly_is_stale(store) -> None:
     the 2h budget is 'not draining within 2h' too."""
     _seed_embed_rows(store, old_pending=30, fresh_pending=0, embedded_now=4)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "stale"
     assert "too slowly" in embed.detail
@@ -648,7 +648,7 @@ def test_embed_backlog_draining_within_budget_is_ok(store) -> None:
     stays ok — the rate gate must not cry wolf on a draining queue."""
     _seed_embed_rows(store, old_pending=5, fresh_pending=0, embedded_now=25)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "ok"
     assert "draining" in embed.detail
@@ -717,7 +717,7 @@ def test_growing_keywords_backlog_with_fresh_writes_is_stale(store) -> None:
     does."""
     _seed_keywords_rows(store, old_pending=40, fresh_inflow=60, drained_ok=10)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     kw = next(r for r in results if r.name == "chunk_keywords")
     assert kw.status == "stale"
     assert "growing" in kw.detail
@@ -729,7 +729,7 @@ def test_keywords_backlog_draining_too_slowly_is_stale_eta_in_days(store) -> Non
     and the keywords queue's honest ETA is named in days, not hours."""
     _seed_keywords_rows(store, old_pending=200, fresh_inflow=5, drained_ok=20)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     kw = next(r for r in results if r.name == "chunk_keywords")
     assert kw.status == "stale"
     assert "too slowly" in kw.detail
@@ -741,7 +741,7 @@ def test_keywords_backlog_draining_within_budget_is_ok(store) -> None:
     budget stays ok — the gate must not cry wolf on a draining queue."""
     _seed_keywords_rows(store, old_pending=5, fresh_inflow=0, drained_ok=25)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     kw = next(r for r in results if r.name == "chunk_keywords")
     assert kw.status == "ok"
     assert "draining" in kw.detail
@@ -757,7 +757,7 @@ def test_keywords_backlog_rates_probe_failure_is_recency_ok(store, monkeypatch) 
     )
     _seed_keywords_rows(store, old_pending=10, fresh_inflow=0, drained_ok=5)
     with store.pool.connection() as conn:
-        results = _idle_aware_backlog_checks(conn)
+        results = _idle_aware_backlog_checks(conn, store.pool)
     kw = next(r for r in results if r.name == "chunk_keywords")
     assert kw.status == "ok"
     assert "draining" in kw.detail
@@ -3105,13 +3105,13 @@ def test_embedder_health_is_answered_by_throughput_not_process_presence(
     monkeypatch.setattr(
         health_digest.health_checks,
         "compute_backlog_counts",
-        lambda conn: {
+        lambda conn, pool: {
             "embed": {"pending": 0, "done": 595, "failed": 0, "last_ts": None},
             "chunk_keywords": {"pending": 0, "done": 10, "failed": 0, "blocked": 0},
         },
     )
     with store.pool.connection() as conn:
-        checks = _idle_aware_backlog_checks(conn)
+        checks = _idle_aware_backlog_checks(conn, store.pool)
     health_digest._store_checks_snapshot(store, checks)
 
     body = AlertHandler(hub=hub).get(id="watchdog:discovery/embed").body

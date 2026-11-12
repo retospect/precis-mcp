@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -515,9 +516,11 @@ def unembedded_chunk_count(conn: Connection, *, ref_id: int | None = None) -> in
 
     Shared by the ``materialize`` cadence (backlog high-water threshold)
     and ``embed_batch`` (the "queue_remaining" summary figure) so the two
-    can never disagree about what "backlog" means (§F cycle a). Both call
-    this **unscoped** (``ref_id=None``) — that path's SQL and result are
-    byte-identical to before ``ref_id=`` existed; never change it.
+    can never disagree about what "backlog" means (§F cycle a). Both read
+    the **unscoped** (``ref_id=None``) predicate through
+    :func:`cached_unembedded_backlog`, an hourly-parked copy (gr573440) —
+    that path's predicate and result are byte-identical to before
+    ``ref_id=`` existed; never change it.
 
     ``ref_id=`` (read-for-question loop, slice 4 / docs/backlog/
     embed-status-hint-three-state.md) scopes the count to one ref's body
@@ -624,6 +627,50 @@ def oldest_unembedded_chunk_at(conn: Connection) -> datetime | None:
         f"SELECT min(c.created_at) FROM chunks c WHERE {where}", params
     ).fetchone()
     return row[0] if row else None
+
+
+@dataclass(frozen=True, slots=True)
+class EmbedBacklog:
+    """The unscoped embed backlog as parked by
+    :func:`cached_unembedded_backlog`: :func:`unembedded_chunk_count`,
+    :func:`oldest_unembedded_chunk_at` and when they were counted."""
+
+    count: int
+    oldest: datetime | None
+    counted_at: datetime
+
+
+def cached_unembedded_backlog(pool: Any) -> EmbedBacklog:
+    """:func:`unembedded_chunk_count` and :func:`oldest_unembedded_chunk_at`
+    (both unscoped) from one ``chunks`` scan, recounted at most hourly
+    through :mod:`precis.backlog_cache` (gr573440) on its own connection
+    from ``pool``. The materializer's mint gate and age trigger and
+    ``embed_batch``'s ``queue_remaining`` read this instead of scanning on
+    every tick and every job."""
+    from precis import backlog_cache
+
+    def _compute(conn: Connection) -> dict[str, Any]:
+        model_name = _default_embedder_name(conn)
+        if model_name is None:
+            return {"count": 0, "oldest": None}
+        where, params = _unembedded_where(model_name, ref_id=None)
+        row = conn.execute(
+            f"SELECT count(*), min(c.created_at) FROM chunks c WHERE {where}",
+            params,
+        ).fetchone()
+        oldest = row[1] if row else None
+        return {
+            "count": int(row[0]) if row else 0,
+            "oldest": oldest.isoformat() if oldest is not None else None,
+        }
+
+    hit = backlog_cache.cached_count(pool, "embed:unembedded", _compute)
+    oldest_s = hit.value.get("oldest")
+    return EmbedBacklog(
+        count=int(hit.value["count"]),
+        oldest=datetime.fromisoformat(oldest_s) if oldest_s else None,
+        counted_at=hit.counted_at,
+    )
 
 
 def eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
@@ -779,7 +826,9 @@ def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | N
 __all__ = [
     "NUDGE_LIMIT",
     "NUDGE_PRIO",
+    "EmbedBacklog",
     "EmbedHandler",
+    "cached_unembedded_backlog",
     "eligible_chunk_count",
     "failed_embedding_count",
     "nudge_fresh_embed",
