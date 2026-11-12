@@ -153,7 +153,7 @@ tag(kind="patent", id="pt40", add=["cpc:B01J27/24"])
 tag(kind="patent", id="pt40", remove=["topic:photocatalysis"])
 
 link(kind="patent", id="pt40", target="pa57", rel="cited-by")  # target handle
-link(kind="patent", id="pt40", target="me88", rel="annotates")  # memory handle
+link(kind="patent", id="pt40", target="me88", rel="related-to")  # memory handle
 ```
 
 Closed-prefix axes for patent: `SRC:`, `CACHE:`, `cpc:`, `ipc:`,
@@ -186,7 +186,7 @@ Patents are read-only — `put(kind='patent', ...)` raises
 `Unsupported`. Park notes on a `memory` and link it to the patent:
 
 ```python
-put(kind="memory", text="<note>", link="pt40", rel="annotates")
+put(kind="memory", text="<note>", link="pt40", rel="cites")
 ```
 
 ## See also

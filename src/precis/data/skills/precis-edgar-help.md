@@ -144,7 +144,7 @@ Filings are read-only — `put(kind='edgar', ...)` raises `Unsupported`.
 Park notes on a `memory` and link it:
 
 ```python
-put(kind="memory", text="<note>", link="ed40", rel="annotates")
+put(kind="memory", text="<note>", link="ed40", rel="cites")
 ```
 
 ## See also

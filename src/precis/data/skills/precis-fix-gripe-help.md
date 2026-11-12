@@ -232,7 +232,7 @@ put(
     kind="todo",
     text="Manual fix needed for gripe:42 — agent can't reach upstream",
     link="gripe:42",
-    rel="resolves",
+    rel="fixes",
 )
 ```
 

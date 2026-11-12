@@ -242,7 +242,7 @@ put(
     kind="memory",
     text="Touches the same idea.",
     link="pc38",
-    rel="discusses",
+    rel="related-to",
 )
 ```
 
@@ -262,7 +262,7 @@ put(
     kind="memory",
     text="Verification batch — see patent.",
     link="patent:ep4123456a1",
-    rel="annotates",
+    rel="cites",
 )
 ```
 

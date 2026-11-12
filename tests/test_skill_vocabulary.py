@@ -56,6 +56,19 @@ prefixes (``fi``/``pa``/``me`` — documented in
 shown to agents — each entry carries a one-line reason. It is *not* a
 make-the-test-pass valve: a name agents can see gets a doc line (or an
 H2) in the skill that owns it instead.
+
+**Reverse sweep — ``rel=`` in skill examples** (gr635127). The same
+files are also read the other way: every ``rel='...'`` / ``rel="..."``
+literal a skill prints must name a slug the ``relations`` seed actually
+carries — ``precis-link-help`` showed ``rel="annotates"`` until
+5ec86635c, and an agent copying it got a plain refusal nothing had
+guarded against. The allowed set is DB-free: every ``INSERT INTO
+relations`` / ``COPY public.relations`` slug across the core and
+``precis.migrations`` plugin dirs, the ``Relation`` literal (the seed
+is the authority — ``misattributes`` is seeded but not in the literal),
+and ``parent``, the reserved virtual relation
+(:mod:`precis.handlers._placement` intercepts it as a façade over
+``refs.parent_id`` before vocabulary validation).
 """
 
 from __future__ import annotations
@@ -281,3 +294,98 @@ def test_allowlist_entries_are_real_and_reasoned() -> None:
         assert reason and reason.strip(), (
             f"_ALLOWLIST entry {name!r} must carry a one-line reason"
         )
+
+
+#: ``rel='...'`` / ``rel="..."`` as a call kwarg — quoted only, so prose
+#: mentions (``rel=``, ``rel=…``) and unquoted spellings never match.
+_REL_KWARG_RE = re.compile(r"\brel\s*=\s*[\"']([^\"']+)[\"']")
+
+#: ``INSERT INTO relations (cols) VALUES (…), (…);`` — every seeding
+#: statement across the core and plugin migration dirs.
+_RELATIONS_INSERT_RE = re.compile(
+    r"INSERT\s+INTO\s+(?:public\.)?relations\s*\([^)]*\)\s*VALUES(.*?);",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: ``COPY public.relations (cols) FROM stdin;`` data block — the 0001
+#: pg_dump-shaped seed (``\.`` terminates it).
+_RELATIONS_COPY_RE = re.compile(
+    r"COPY\s+(?:public\.)?relations\s*\([^)]*\)\s*FROM\s+stdin\s*;\s*\n(.*?)\n\\\.",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: First field of a VALUES tuple — always the slug (every relations
+#: INSERT lists ``slug`` first, so the tuple's first quoted literal is
+#: it; ``ON CONFLICT (slug)`` carries no quote and cannot match).
+_TUPLE_SLUG_RE = re.compile(r"\(\s*'([^']+)'")
+
+
+def _plugin_migration_dirs() -> list[Path]:
+    """Dirs of every package declared under
+    ``[project.entry-points."precis.migrations"]`` — resolved
+    filesystem-side like :func:`tests._skill_roots.plugin_skill_dirs`
+    (values are module paths by convention: ``precis_se.migrations``)."""
+    pyproj = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dirs: list[Path] = []
+    for name, target in sorted(
+        pyproj["project"]["entry-points"].get("precis.migrations", {}).items()
+    ):
+        d = ROOT / "src" / Path(*target.split(":")[0].split("."))
+        assert d.is_dir(), (
+            f"precis.migrations entry {name!r} -> {target!r}: {d} missing"
+        )
+        dirs.append(d)
+    return dirs
+
+
+def _seeded_relation_slugs() -> set[str]:
+    """The ``rel=`` vocabulary a skill example may name: every slug any
+    migration seeds into ``relations``, the ``Relation`` literal (the
+    seed is the authority — ``misattributes`` is seeded but missing from
+    the literal), and ``parent`` — the reserved virtual relation, never
+    a ``relations`` row (:mod:`precis.handlers._placement`).
+
+    Top-level ``*.sql`` per dir mirrors ``_load_migrations``'s glob:
+    ``archive/`` is never applied, ``baseline/`` is generated from these
+    same files. ``slug`` is column 1 of every relations INSERT/COPY, so
+    the parse is first-field-of-tuple / first-tab-field-of-row.
+    """
+    from typing import get_args
+
+    from precis.handlers._placement import RESERVED_PARENT_REL
+    from precis.store.types import Relation
+
+    slugs = set(get_args(Relation)) | {RESERVED_PARENT_REL}
+    for d in [ROOT / "src" / "precis" / "migrations", *_plugin_migration_dirs()]:
+        for path in sorted(d.glob("*.sql")):
+            sql = path.read_text(encoding="utf-8")
+            for values in _RELATIONS_INSERT_RE.findall(sql):
+                slugs.update(_TUPLE_SLUG_RE.findall(values))
+            for block in _RELATIONS_COPY_RE.findall(sql):
+                slugs.update(
+                    line.split("\t", 1)[0] for line in block.splitlines() if line
+                )
+    return slugs
+
+
+def test_skill_rel_examples_use_seeded_relation_slugs() -> None:
+    """gr635127 — every ``rel='...'`` a skill prints must resolve to a
+    seeded relation (or the reserved virtual ``parent``); an agent
+    copying an unseeded slug gets a refusal the docs promised would
+    work. Whole-file scan, not just fenced code: inline examples and
+    ``applies-to:`` front matter carry the same kwarg spelling."""
+    allowed = _seeded_relation_slugs()
+    bad: list[str] = []
+    for path in skill_files():
+        text = path.read_text(encoding="utf-8")
+        for m in _REL_KWARG_RE.finditer(text):
+            slug = m.group(1)
+            if slug not in allowed:
+                line = text.count("\n", 0, m.start()) + 1
+                bad.append(f"  {path.relative_to(ROOT)}:{line}: rel={slug!r}")
+    assert not bad, (
+        f"{len(bad)} skill example(s) pass rel= values no migration seeds "
+        "— an agent copying one gets a refusal. Pick a seeded slug "
+        "(precis-relations lists the vocabulary; the reserved virtual "
+        "'parent' is legal for folder placement):\n" + "\n".join(bad)
+    )
