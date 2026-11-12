@@ -3191,7 +3191,7 @@ def _fake_lsof(
     tmp_path: Path,
     cwds: list[Path],
     *,
-    fail: bool = False,
+    fail: bool | str = False,
     held: dict[Path, int] | None = None,
 ) -> dict[str, str]:
     """Env with a fake `lsof` first on PATH printing `-Fn` cwd records.
@@ -3201,11 +3201,17 @@ def _fake_lsof(
     the probe's own ``kill -0`` still decides live vs stale. Each path is
     emitted both as given and realpath'd: git may record either form for a
     worktree (``/var`` -> ``/private/var`` on macOS).
+
+    ``fail=True`` exits 1 silently — an lsof that can't answer at all;
+    ``fail="<msg>"`` exits 1 after printing it on stderr — an lsof that ran
+    but failed THIS query.
     """
     fakebin = tmp_path / "fakebin-lsof"
     fakebin.mkdir(exist_ok=True)
     if fail:
-        body = "exit 1\n"
+        body = (
+            f'printf "%s\\n" "{fail}" >&2\n' if isinstance(fail, str) else ""
+        ) + "exit 1\n"
     else:
         held_cases = "".join(
             f'            "{form}") printf "%s\\n" {pid} ;;\n'
@@ -3448,6 +3454,106 @@ def test_reap_worktrees_keeps_a_live_launch_dir(
     primary, b = guard_repo["primary"], guard_repo["b"]
     marker = _launch_marker(b)
     env = _fake_lsof(tmp_path, [], held={marker: alive_pid})
+    env["PRECIS_REAP_GRACE_SECONDS"] = "0"
+    env["PRECIS_REAPED_SCRATCH_DIR"] = str(tmp_path / "reaped-scratch")
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    assert b.exists()
+
+
+def _no_lsof_env(tmp_path: Path) -> dict[str, str]:
+    """PATH holding every tool ``scripts/inflight`` needs EXCEPT lsof —
+    symlinks into a private bin dir, so ``command -v lsof`` really fails.
+    (A fake `lsof` script can't fake absence: `command -v` skips a
+    non-executable and finds the real binary further down a normal PATH.)
+    """
+    bindir = tmp_path / "nolsof-bin"
+    bindir.mkdir(exist_ok=True)
+    for tool in (
+        "bash",
+        "sh",
+        "git",
+        "awk",
+        "dirname",
+        "getconf",
+        "sysctl",
+        "stat",
+        "date",
+        "sed",
+        "head",
+        "mktemp",
+        "rm",
+        "grep",
+        "python3",
+        "env",
+    ):
+        real = shutil.which(tool)
+        if real is not None:
+            (bindir / tool).symlink_to(real)
+    env = _test_env()
+    env["PATH"] = str(bindir)
+    return env
+
+
+def test_inflight_marker_with_no_lsof_buckets_needs_judgment(
+    guard_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """td645150: the marker exists but lsof is absent — 'cannot check' must
+    never read as 'checked: nobody holds it'. Before the fix this exact
+    state reached safe_remove."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _launch_marker(b)
+
+    bucket = _bucket_for(_inflight(primary, _no_lsof_env(tmp_path), "--json"), b)
+    assert bucket["session"] == "launch-lock#?", bucket
+    assert bucket["bucket"] == "needs_judgment", bucket
+
+
+def test_inflight_marker_with_silent_lsof_failure_buckets_needs_judgment(
+    guard_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """td645150: lsof present but silently exiting nonzero — indistinguishable
+    from a clean 'no holders' by output alone, so the probe's self-check
+    (`lsof -p $$` must always answer) is what catches it."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _launch_marker(b)
+    env = _fake_lsof(tmp_path, [], fail=True)
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == "launch-lock#?", bucket
+    assert bucket["bucket"] == "needs_judgment", bucket
+
+
+def test_inflight_marker_with_lsof_error_output_buckets_needs_judgment(
+    guard_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """An lsof that ran but reported an error (output on a nonzero exit) is
+    'unknown', not 'no holder'."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _launch_marker(b)
+    env = _fake_lsof(tmp_path, [], fail="lsof: can't stat the file")
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == "launch-lock#?", bucket
+    assert bucket["bucket"] == "needs_judgment", bucket
+
+
+def test_reap_worktrees_keeps_a_launch_dir_when_lsof_fails(
+    guard_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """End to end: a marker tree whose holder can't be verified is never a
+    reap candidate (td645150)."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _launch_marker(b)
+    env = _fake_lsof(tmp_path, [], fail=True)
     env["PRECIS_REAP_GRACE_SECONDS"] = "0"
     env["PRECIS_REAPED_SCRATCH_DIR"] = str(tmp_path / "reaped-scratch")
 

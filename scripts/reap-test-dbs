@@ -310,7 +310,7 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
 
         # session_for <path> — the exact `session` field scripts/inflight
         # --json computed for <path> (live#<pid> / dead-lock#<pid> / locked /
-        # —), empty if the worktree isn't in the blob at all.
+        # launch-lock#? / —), empty if the worktree isn't in the blob at all.
         session_for() {
             [ -z "$INFLIGHT_JSON" ] && return 0
             printf '%s' "$INFLIGHT_JSON" | TARGET="$1" python3 -c '
@@ -389,9 +389,11 @@ PY
                 continue
             fi
 
-            # (2) no live session lock on the worktree.
+            # (2) no live session lock on the worktree. launch-lock#? — a
+            # launch-dir marker whose holder can't be verified — counts as
+            # possibly-held too (td645150).
             sess="$(session_for "$wt_path")"
-            case "$sess" in live#*) continue ;; esac
+            case "$sess" in live#*|launch-lock#*) continue ;; esac
 
             # (3) .claude/purpose absent or stale.
             stale_or_absent_purpose "$wt_path" || continue

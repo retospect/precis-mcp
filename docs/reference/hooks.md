@@ -48,7 +48,7 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 
 | Script | Event | What it does | Payload fields read |
 |---|---|---|---|
-| `session-start-lock.sh` | SessionStart | Acquires the `git worktree lock` (`pid <N>`) that marks this tree held by a live session — the liveness signal `scripts/inflight` reads (plus a live holder of the tree's `.claude/scheduled_tasks.lock`, the launch-dir/CLAUDE_PROJECT_DIR marker, gr644716) | — |
+| `session-start-lock.sh` | SessionStart | Acquires the `git worktree lock` (`pid <N>`) that marks this tree held by a live session — the liveness signal `scripts/inflight` reads (plus a live holder of the tree's `.claude/scheduled_tasks.lock`, the launch-dir/CLAUDE_PROJECT_DIR marker, gr644716 — an unverifiable holder reads `launch-lock#?` / needs_judgment, td645150) | — |
 | `heal-primary-branch.sh` | SessionStart | Heals the PRIMARY checkout back onto `main` when it sits on a fully-merged, clean, unheld branch. `PRECIS_NO_HEAL_PRIMARY=1` | — |
 | `session-start-memory.sh` | SessionStart | Prints the one-line memory summary (`precis memory index --for-hook`) once MEMORY.md carries the graph marker; writes the per-node body cache and a last-good copy | — |
 | `memory-nudge.sh` | SessionStart | Runs `scripts/memory-lint` in the background (`~/.cache/precis/memory-lint.log`), at most once per `MEMORY_NUDGE_SECS` (600); prints nothing | — |

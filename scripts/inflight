@@ -23,6 +23,10 @@
 #                            alive, or a live pid holds the tree's
 #                            .claude/scheduled_tasks.lock — a session's launch
 #                            dir / CLAUDE_PROJECT_DIR (gr644716)
+#              launch-lock#? — the launch-dir marker exists but its holder set
+#                            can't be verified (lsof missing or failed):
+#                            liveness UNKNOWN — judged needs_judgment, never
+#                            safe_remove (td645150)
 #              live-task#<id> — a Claude subagent task is active in this worktree
 #              dead-lock#<pid> — locked by a pid that is gone (safe to reap)
 #              idle-lock#<pid> — the locking pid is alive but no process has its cwd
@@ -63,7 +67,9 @@
 #                               #   live_session    a claude session still holds the lock
 #                               #   live_subagent   a subagent task is active in this worktree
 #                               #   needs_judgment  dirty tree (capped diffstat), or a lock with no
-#                               #                   parseable `pid <N>`, or an untracked agent tree
+#                               #                   parseable `pid <N>`, or an untracked agent tree,
+#                               #                   or a launch-dir marker whose holder can't be
+#                               #                   verified (lsof missing/failed)
 #                               #   safe_remove     clean + fully merged (ancestor or squash-absorbed)
 #                               #   has_unmerged_work  real commits ahead of base, informational
 #                               # plus a repo-wide stashCount (stash is one ref shared by every
@@ -284,17 +290,32 @@ session_field() { # session_field <locked-reason>
 # <CLAUDE_PROJECT_DIR>/.claude/scheduled_tasks.lock open for a session's
 # whole life, so a live holder on that file is proof the tree is a
 # session's project dir — which no cwd scan or worktree lock can see.
-# Prints the first live pid holding the file; returns 1 when the file is
-# absent, lsof can't be run, or no live process holds it — a stale file a
-# dead session left behind never protects the tree.
+# Prints the first live pid holding the file. Return values:
+#   0 — a live pid (printed) holds the marker
+#   1 — no marker file at all, or a working lsof found no live holder: a
+#       stale file a dead session left behind never protects the tree
+#   2 — the marker exists but its holder set could not be verified (lsof
+#       absent, lsof itself broken, or it reported an error): liveness is
+#       UNKNOWN, which the caller must not read as "no holder" — an
+#       unchecked marker outranks every lock-derived reapability verdict
+#       exactly like a held one does (td645150).
 launch_dir_pid() {
-  local lf=$1/.claude/scheduled_tasks.lock pid
+  local lf=$1/.claude/scheduled_tasks.lock out pid
   [ -f "$lf" ] || return 1
-  command -v lsof >/dev/null 2>&1 || return 1
+  command -v lsof >/dev/null 2>&1 || return 2
+  out=$(lsof -t -- "$lf" 2>&1) || {
+    # Nonzero: any output is an lsof diagnostic (couldn't stat the file,
+    # exec failure, …) → unknown. Silence is the clean "no holders" — but
+    # only if lsof itself provably works, which a cheap self-query settles
+    # (a running process always has open fds, so `-p $$` must answer).
+    [ -n "$out" ] && return 2
+    lsof -t -p $$ >/dev/null 2>&1 || return 2
+    return 1
+  }
   while IFS= read -r pid; do
     case $pid in ''|*[!0-9]*) continue ;; esac
     pid_alive "$pid" && { printf '%s' "$pid"; return 0; }
-  done < <(lsof -t -- "$lf" 2>/dev/null)
+  done <<< "$out"
   return 1
 }
 
@@ -540,8 +561,16 @@ probe_worktree() {
   # lock-derived verdict above — including the idle-lock demotion and a
   # dead/absent lock — because hooks keep resolving there while it lives.
   if [[ "$sess" != live#* && "$sess" != live-task#* ]]; then
-    local _ld_pid
-    _ld_pid=$(launch_dir_pid "$path") && sess="live#${_ld_pid}"
+    local _ld_pid _ld_rc
+    _ld_pid=$(launch_dir_pid "$path"); _ld_rc=$?
+    if [ "$_ld_rc" = 0 ]; then
+      sess="live#${_ld_pid}"
+    elif [ "$_ld_rc" = 2 ]; then
+      # Marker present but holder unverifiable (no lsof / lsof failed): an
+      # UNKNOWN liveness, never "no session" — buckets needs_judgment so the
+      # tree can't become safe_remove while a session may hold it (td645150).
+      sess="launch-lock#?"
+    fi
   fi
   agent_tree=0
   case "$name:$branch" in
@@ -593,8 +622,9 @@ probe_worktree() {
     fi
   fi
 
-  # overlap-relevant: current tree, live session/task, dirty, or ahead of main
-  if [ "$mark" = '*' ] || [[ "$sess" == live#* || "$sess" == live-task#* ]] \
+  # overlap-relevant: current tree, live session/task (or a launch-dir marker
+  # whose holder can't be verified), dirty, or ahead of main
+  if [ "$mark" = '*' ] || [[ "$sess" == live#* || "$sess" == live-task#* || "$sess" == launch-lock#* ]] \
      || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
   then show=1; fi
 
@@ -603,7 +633,7 @@ probe_worktree() {
   # or by older code; reap must not guess it dead (incident 2026-08-15,
   # defect 2 — a recovery lock "live session 22516 …" was reaped as unlocked).
   if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
-     && [[ "$sess" != live#* && "$sess" != live-task#* ]] \
+     && [[ "$sess" != live#* && "$sess" != live-task#* && "$sess" != launch-lock#* ]] \
      && [ "$sess" != 'locked' ] && { [ "$agent_tree" = 0 ] || [[ "$sess" == idle-lock#* ]]; } \
      && [ "$path" != "$SELF_PATH" ] && [ "$path" != "$PRIMARY" ]; then
     rem=$name
@@ -615,6 +645,7 @@ probe_worktree() {
     elif [[ "$sess" == live-task#* ]]; then bucket='live_subagent'
     elif [[ "$sess" == live#* ]]; then bucket='live_session'
     elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'
+    elif [[ "$sess" == launch-lock#* ]]; then bucket='needs_judgment'
     elif [ "$agent_tree" = 1 ] && [[ "$sess" != idle-lock#* ]]; then bucket='needs_judgment'
     elif [ "$dirtyf" != 'clean' ]; then
       bucket='needs_judgment'
