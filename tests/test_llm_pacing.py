@@ -119,6 +119,39 @@ def test_exhausted_retries_at_reset_or_park_end() -> None:
     assert ended.state == "behind"
 
 
+def test_stale_near_limit_reads_exhausted_until_reset() -> None:
+    """gr645188: an exhausted subscription stops reporting — no calls run,
+    so no rate-limit windows arrive — and its last reading goes stale at
+    the limit. A stale reading at/over ``PACE_TARGET`` is ``exhausted``
+    until the horizon, not on-pace on old data."""
+    reset = NOW + timedelta(hours=2)
+    stale = _pool(used_reported=99.0, stale=True, resets_at=reset)
+    pace = pacing(stale, NOW)
+    assert (pace.state, pace.retry_at) == ("exhausted", reset)
+    # The same reading fresh, inside the drain window, stays on-pace.
+    assert pacing(_pool(used_reported=99.0, resets_at=reset), NOW).state == "on-pace"
+    # Stale at/over target outside the drain window is exhausted too
+    # (fresh it would read ``ahead``).
+    far = _pool(used_reported=96.0, stale=True, resets_at=NOW + timedelta(days=3))
+    assert pacing(far, NOW).state == "exhausted"
+    # A stale reading under the target is only a lower bound — its
+    # ordinary state stands; with no horizon it cannot date a recovery
+    # and stays unknown.
+    low = _pool(used_reported=50.0, stale=True, resets_at=reset)
+    assert pacing(low, NOW).state == "behind"
+    horizonless = _pool(used_reported=99.0, stale=True, resets_at=None)
+    assert pacing(horizonless, NOW).state == "unknown"
+    # Caller-metered pools are exempt: a stale ``estimate`` reading is
+    # exact (the meter did not run), so ``ahead`` stays ``ahead``.
+    estimate = _pool(
+        used_reported=96.0,
+        stale=True,
+        source="estimate",
+        resets_at=NOW + timedelta(days=3),
+    )
+    assert pacing(estimate, NOW).state == "ahead"
+
+
 @pytest.mark.parametrize(
     "over",
     [

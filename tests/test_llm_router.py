@@ -10007,3 +10007,134 @@ def test_pool_stream_op_chain_escape_rung_stamps_once_and_harvests_once(
     assert [call.args[1] for call in probes.failure.call_args_list] == [
         "llm:claude-sub:5h"
     ]
+
+
+# ── stream-less quota refusals park the notice's pool (gr645188) ────────
+
+
+def _claude_p_refusal(notice: str, *, retry_at: datetime | None = None) -> LlmResult:
+    """A ``claude_p`` quota refusal: a ``quota`` error result carrying no
+    rate-limit stream — ``claude_p`` emits no ``rate_limit_event``, so the
+    notice's own wording is the only window evidence there is."""
+    return LlmResult(
+        text="",
+        error=notice,
+        reason_class="quota",
+        retry_at=retry_at,
+        cost_usd=None,
+        turns_used=None,
+        model="test",
+        tier=Tier.BIG,
+    )
+
+
+@pytest.mark.parametrize(
+    ("notice", "pool"),
+    [
+        (
+            "You've hit your weekly limit · resets 11:00am (UTC)",
+            "llm:claude-sub:7d",
+        ),
+        (
+            "You've hit your session limit · resets 3:00pm (UTC)",
+            "llm:claude-sub:5h",
+        ),
+        # The legacy epoch shape and the pay-as-you-go wording name no
+        # pooled window — the shorter pool parks, clearing soonest.
+        ("Claude AI usage limit reached|1791915000", "llm:claude-sub:5h"),
+        ("You're out of extra usage · resets 11:00am (UTC)", "llm:claude-sub:5h"),
+    ],
+    ids=["weekly", "session", "legacy-epoch", "extra-usage"],
+)
+def test_claude_p_quota_refusal_parks_notice_pool(
+    monkeypatch: pytest.MonkeyPatch, notice: str, pool: str
+) -> None:
+    """gr645188: a ``claude_p`` quota refusal has no stream to harvest, so
+    the pool ledger used to learn nothing and the near-limit pool stayed
+    admissible. The refusal's own wording now parks the window's pool to
+    ``retry_at`` — the parsed reset."""
+    from precis.utils.llm import accounts
+
+    failure = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr(accounts, "record_pool_report", Mock())
+    monkeypatch.setattr(accounts, "record_pool_failure", failure)
+    reset = datetime(2026, 11, 12, 11, 0, tzinfo=UTC)
+    router._harvest_pool_signals(
+        _claude_p_refusal(f"account quota exhausted: {notice}", retry_at=reset),
+        transport=Transport.CLAUDE_P,
+        bare=False,
+    )
+    assert [call.args[1] for call in failure.call_args_list] == [pool]
+    call = failure.call_args_list[0]
+    assert (call.kwargs["reason_class"], call.kwargs["retry_at"]) == ("quota", reset)
+
+
+def test_claude_p_quota_refusal_notice_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parseable reset clause is provider evidence; a bare notice parks
+    to the two-hour estimate. A non-quota ``claude_p`` failure writes
+    nothing — a wire error is not a window reading."""
+    from precis.utils.llm import accounts
+
+    failure = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", Mock())
+    monkeypatch.setattr(accounts, "record_pool_report", Mock())
+    monkeypatch.setattr(accounts, "record_pool_failure", failure)
+    router._harvest_pool_signals(
+        _claude_p_refusal(
+            "account quota exhausted: You've hit your weekly limit · "
+            "resets 11:00am (UTC)"
+        ),
+        transport=Transport.CLAUDE_P,
+        bare=False,
+    )
+    call = failure.call_args_list[0]
+    assert call.kwargs["notice"] == "provider"
+    assert call.kwargs["retry_at"] > datetime.now(UTC)
+
+    failure.reset_mock()
+    router._harvest_pool_signals(
+        _claude_p_refusal("account quota exhausted: usage limit"),
+        transport=Transport.CLAUDE_P,
+        bare=False,
+    )
+    call = failure.call_args_list[0]
+    assert call.kwargs["notice"] is None
+    horizon = call.kwargs["retry_at"]
+    assert timedelta(0) < horizon - datetime.now(UTC) <= timedelta(hours=2)
+
+    failure.reset_mock()
+    router._harvest_pool_signals(
+        LlmResult(
+            text="",
+            error="HTTP Error 429",
+            reason_class="rate",
+            cost_usd=None,
+            turns_used=None,
+            model="test",
+            tier=Tier.BIG,
+        ),
+        transport=Transport.CLAUDE_P,
+        bare=False,
+    )
+    failure.assert_not_called()
+
+
+def test_route_claude_p_quota_refusal_parks_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end per the gripe: a route() ``claude_p`` quota failure
+    stamps ``parked_until`` = the parsed reset on the pool it names."""
+    reset = datetime.now(UTC) + timedelta(hours=2)
+    refusal = _claude_p_refusal(
+        "account quota exhausted: You've hit your weekly limit · resets 11:00am (UTC)",
+        retry_at=reset,
+    )
+    out, probes = _route_pool(monkeypatch, [Rung(Transport.CLAUDE_P)], [refusal])
+    assert out.reason_class == "quota"
+    assert [call.args[1] for call in probes.failure.call_args_list] == [
+        "llm:claude-sub:7d"
+    ]
+    assert probes.failure.call_args_list[0].kwargs["retry_at"] == reset

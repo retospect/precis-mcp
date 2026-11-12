@@ -3451,18 +3451,21 @@ def _react_to_quota(result: LlmResult, *, transport: Transport, bare: bool) -> N
 def _harvest_pool_signals(
     result: LlmResult, *, transport: Transport, bare: bool
 ) -> None:
-    """Copy a claude agent stream's rate-limit windows into the pool ledger:
-    a utilisation report per window, and on a ``quota`` refusal a park of the
-    window the stream marks refused. Writes the pool ledger only — never the
-    claude quota snapshot, which :func:`_react_to_quota` alone stamps from the
-    final result — so it runs per rung, each rung's stream harvested once.
-    Same OAuth / non-``bare`` guard as there (a ``bare`` rung spends dollars,
-    not subscription quota); dark when no store is bound. Never raises."""
+    """Copy a claude OAuth rung's rate-limit evidence into the pool ledger:
+    a utilisation report per window a ``claude_agent`` stream carries, and
+    on a ``quota`` refusal a park of the window the refusal binds — the one
+    the stream marks refused, or the one the notice wording names when
+    there is no stream to read (:func:`_park_notice_pool`; ``claude_p``
+    emits no ``rate_limit_event``, so its quota failures used to never
+    reach the ledger, gr645188). Writes the pool ledger only — never the
+    claude quota snapshot, which :func:`_react_to_quota` alone stamps from
+    the final result — so it runs per rung, each rung's evidence harvested
+    once. Same OAuth / non-``bare`` guard as there (a ``bare`` rung spends
+    dollars, not subscription quota); dark when no store is bound. Never
+    raises."""
     from precis.budget import meter as _meter
 
     if transport.value not in _meter.OAUTH_TRANSPORTS or bare:
-        return
-    if transport is not Transport.CLAUDE_AGENT or not result.raw_text:
         return
     try:
         from precis.budget import quota as _quota
@@ -3470,8 +3473,16 @@ def _harvest_pool_signals(
         from precis.utils.llm.accounts import record_pool_failure, record_pool_report
 
         store = _meter.active_store()
-        snapshot = parse_rate_limits(result.raw_text)
-        if store is None or snapshot is None:
+        if store is None:
+            return
+        snapshot = (
+            parse_rate_limits(result.raw_text)
+            if transport is Transport.CLAUDE_AGENT and result.raw_text
+            else None
+        )
+        if snapshot is None:
+            if result.reason_class == "quota":
+                _park_notice_pool(store, result)
             return
         # Only a window the stream itself marks refused is parked: the parser
         # sets ``status`` solely on the window a ``rateLimitType`` names, and
@@ -3519,6 +3530,50 @@ def _harvest_pool_signals(
                 )
     except Exception:
         log.debug("route: stream pool report failed", exc_info=True)
+
+
+#: The claude-sub pool each quota-snapshot window maps to on a stream-less
+#: refusal; an unnamed or unpoolable one (``overage`` — extra usage has no
+#: pool row, and it only spends once the subscription windows are shut)
+#: parks the shorter pool so the mark clears soonest.
+_NOTICE_POOL = {
+    "five_hour": "llm:claude-sub:5h",
+    "seven_day": "llm:claude-sub:7d",
+}
+
+
+def _park_notice_pool(store: Any, result: LlmResult) -> None:
+    """Park the claude-sub pool a stream-less ``quota`` refusal's wording
+    names (:func:`~precis.budget.quota.window_for_notice`), so the pool
+    reads exhausted until the reset instead of admissible on its last
+    report (gr645188). The horizon is ``retry_at`` — the notice's parsed
+    reset — else the quota class's two-hour fallback; ``notice='provider'``
+    only when the text carried a parseable reset instant. Never raises."""
+    from precis.budget import quota as _quota
+    from precis.utils.llm import accounts
+    from precis.utils.llm.quota import (
+        QUOTA_RESET_PATTERN,
+        parse_api_usage_reset_at,
+        parse_quota_reset_at,
+    )
+
+    text = result.error or ""
+    now = datetime.now(UTC)
+    match = QUOTA_RESET_PATTERN.search(text)
+    parsed = (
+        parse_quota_reset_at(match, now) if match is not None else None
+    ) or parse_api_usage_reset_at(text)
+    horizon = result.retry_at or parsed or now + _failure.DEFAULT_HORIZON["quota"]
+    if horizon <= now:
+        horizon = now + _failure.DEFAULT_HORIZON["quota"]
+    key = _NOTICE_POOL.get(_quota.window_for_notice(text), "llm:claude-sub:5h")
+    accounts.record_pool_failure(
+        store,
+        key,
+        reason_class="quota",
+        retry_at=horizon,
+        notice="provider" if parsed is not None else None,
+    )
 
 
 def _trip_class(transport: Transport, *, bare: bool) -> _failure.FailureClass:

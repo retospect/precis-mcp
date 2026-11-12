@@ -491,8 +491,15 @@ def pacing(pool: Pool, now: datetime) -> Pacing:
     1.0. A fraction at 1 or more is ``exhausted`` until the horizon; at or
     over the target ``ahead`` until the drain window opens; within
     :data:`PACE_BAND` under it ``on-pace``; below that ``behind``.
-    Staleness leaves the state alone: usage only grows inside a window, so
-    a stale report is a lower bound and an ``ahead`` reading stays true.
+    A stale provider report is a lower bound — externally-measured usage
+    only grows inside a window — so an ``ahead`` reading stays true, and a
+    *stale* provider reading at or over :data:`PACE_TARGET` reads
+    ``exhausted`` until the horizon: a pool that stops reporting near its
+    limit is usually the one that can no longer serve (a quota-exhausted
+    subscription emits no fresh usage signals, gr645188), and reading it
+    on-pace kept it admissible. Caller-metered (``estimate``) pools are
+    exempt: their staleness means the meter did not run, so the reading
+    is exact, not a lower bound.
     """
     upcoming = [
         t for t in (pool.resets_at, pool.expires_at) if t is not None and t > now
@@ -506,7 +513,9 @@ def pacing(pool: Pool, now: datetime) -> Pacing:
         return Pacing("exhausted", fraction, target, horizon, pool.parked_until)
     if horizon is None or fraction is None:
         return Pacing("unknown", fraction, target, horizon, None)
-    if fraction >= 1:
+    if fraction >= 1 or (
+        pool.stale and pool.source == "provider" and fraction >= PACE_TARGET
+    ):
         return Pacing("exhausted", fraction, target, horizon, horizon)
     if fraction >= target:
         return Pacing("ahead", fraction, target, horizon, horizon - DRAIN_WINDOW)

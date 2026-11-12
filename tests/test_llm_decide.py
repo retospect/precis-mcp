@@ -202,6 +202,31 @@ def test_availability(state: str, work_class: str, admitted: bool) -> None:
     )
 
 
+def test_exhausted_subscription_pool_fails_over() -> None:
+    """gr645188: an exhausted claude-sub pool rejects the subscription
+    offering on availability, so decide's pick is the next admissible
+    offering — the failover happens before the call, not after a
+    refusal."""
+    sub = offering(
+        "claude-x@claude_p/claude-sub",
+        model="claude-x",
+        adapter="claude_p",
+        account="sub",
+        billing="subscription",
+        pool_keys=("llm:claude-sub:7d",),
+    )
+    metered = offering("oss@api/none", model="oss", price_in=0.5)
+    pools = {"llm:claude-sub:7d": Pacing("exhausted", 0.99, 0.95, None, None)}
+    decision = d.decide(
+        LlmRequest(Tier.SMALL, work_class="interactive"),
+        Requirement(Tier.SMALL),
+        ledger(sub, metered, accounts={"sub": account()}, pools=pools),
+        "on",
+    )
+    assert decision.chosen == metered
+    assert decision.rejected[0].filter == "availability"
+
+
 def test_capacity_ranking_and_deficit() -> None:
     sub = account()
     items = [
