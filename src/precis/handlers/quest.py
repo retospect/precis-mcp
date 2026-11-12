@@ -1045,7 +1045,9 @@ class QuestHandler(NumericRefHandler):
             "put(id=N, text=…, entry='hypothesis'); rewrite the founding "
             "statement in place with edit(id=N, mode='replace', text=…) "
             "(logbook/links/tags untouched); mark serving work with "
-            "link(target='quest:N', rel='serves'). view='tree' rolls up the "
+            "link(target='quest:N', rel='serves'). search(view='roots') (or "
+            "id='/roots') draws the serves DAG from its roots — the top-level "
+            "strivings; view='tree' rolls up the "
             "servers + deed ledger + health + gaps; view='gaps' (per quest) or "
             "id='/gaps' (all active quests) surfaces the exploration queue; "
             "view='dossier' shows the living research synthesis; view='frontier' "
@@ -1132,16 +1134,26 @@ class QuestHandler(NumericRefHandler):
 
     def _supported_list_views(self) -> tuple[str, ...]:
         # /recent (base) + the lifecycle shorthands + /gaps (the corpus-wide
-        # exploration queue). `active` is the daily reach ("what are we striving
-        # toward?"); dormant/abandoned surface the set-aside + renounced
-        # strivings; /gaps rolls up what is thin across every active quest.
-        return ("recent", "active", "dormant", "abandoned", "gaps")
+        # exploration queue) + /roots (the serves DAG drawn from its roots —
+        # gr634363; same render as search(view='roots')). `active` is the
+        # daily reach ("what are we striving toward?"); dormant/abandoned
+        # surface the set-aside + renounced strivings; /gaps rolls up what
+        # is thin across every active quest.
+        return ("recent", "active", "dormant", "abandoned", "gaps", "roots")
+
+    def _search_view_names(self) -> frozenset[str]:
+        # view='roots' (gr634363) lives on search(); get(view='roots') with
+        # no id redirects to the search spelling instead of dying on the
+        # generic "requires id=".
+        return frozenset({"roots"})
 
     def _list_view(self, view: str) -> Response | None:
         if view in ("active", "dormant", "abandoned"):
             return self._list_by_tags([f"STATUS:{view}"], page_size=20)
         if view == "gaps":
             return self._render_gaps_dashboard()
+        if view == "roots":
+            return self._render_roots_forest()
         return super()._list_view(view)
 
     # ── tag: guard the perpetual lifecycle ──────────────────────────
@@ -1346,6 +1358,10 @@ class QuestHandler(NumericRefHandler):
         page: int = 1,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        # ``args={'roots': true}`` — the ``view='roots'`` forest spelled as
+        # a flag (gr634363); declared so it survives the accepted-kwargs
+        # gate. Both spellings given must agree.
+        roots: bool | None = None,
         **kw: Any,
     ) -> Response:
         """``scope='qu<N>'`` — ranked hits inside ONE quest's logbook
@@ -1358,6 +1374,11 @@ class QuestHandler(NumericRefHandler):
         ``args={'within': 'qu<N>'}`` is the same door in args= spelling,
         and a ``chunk_scope`` value naming a quest resolves to it too
         (the shape agents reached for first).
+
+        ``view='roots'`` (gr634363) is the corpus-wide read instead: the
+        live ``serves`` DAG drawn from its roots — the quests that serve
+        no other live quest — so the top-level strivings list in one
+        call, each with its sub-quest ladder indented beneath.
         """
         q = fold_match_all_q(q)
         if within is not None:
@@ -1376,7 +1397,37 @@ class QuestHandler(NumericRefHandler):
                 # names; 'title'/'body' still fold away below.
                 scope = chunk_scope
                 chunk_scope = None
+        if roots:
+            if view not in (None, "roots"):
+                raise BadInput(
+                    f"view={view!r} and args={{'roots': true}} disagree",
+                    next="pass one — search(kind='quest', view='roots')",
+                )
+            view = "roots"
         if scope is None:
+            if view == "roots":
+                # The corpus-wide read the flat listing can't give
+                # (gr634363): which live quests serve no other quest.
+                return self._roots_forest(
+                    q=q,
+                    sort=sort,
+                    page=page,
+                    mode=mode,
+                    chunk_scope=chunk_scope,
+                    exclude_ref_ids=exclude_ref_ids,
+                    include_ref_ids=include_ref_ids,
+                    extras=kw,
+                )
+            if view not in (None, "ids", "list", "index", "count"):
+                raise BadInput(
+                    f"unknown view {view!r} for search(kind={self.kind!r})",
+                    options=["roots", "count"],
+                    next=(
+                        f"search(kind={self.kind!r}, view='roots') — the "
+                        "serves DAG drawn from its roots · view='count' "
+                        "(args={'group_by': 'state'}) for filtered totals"
+                    ),
+                )
             return super().search(
                 q=q,
                 chunk_scope=chunk_scope,
@@ -3176,6 +3227,170 @@ class QuestHandler(NumericRefHandler):
         gn = "" if total == 1 else "s"
         lines.insert(1, f"{len(ids)} active quest{qn} · {total} gap{gn} total")
         return Response(body="\n".join(lines))
+
+    def _roots_forest(
+        self,
+        *,
+        q: str | None = None,
+        sort: str | None = None,
+        page: int = 1,
+        mode: str | None = None,
+        chunk_scope: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        extras: dict[str, Any] | None = None,
+    ) -> Response:
+        """``view='roots'`` argument gate (gr634363).
+
+        The forest is the whole live ``serves`` DAG — a fixed shape.
+        Every narrowing knob (q=/tags=/status=/link=/sort=, the ref-id
+        channels, a page past 1) would silently no-op here, so each is
+        refused with the working call rather than dropped — the same
+        rule the scoped logbook search applies above.
+        """
+        unapplied = sorted(
+            k
+            for k, v in {
+                "q": q,
+                "sort": sort,
+                "mode": mode,
+                "chunk_scope": chunk_scope,
+                "exclude_ref_ids": exclude_ref_ids,
+                "include_ref_ids": include_ref_ids,
+                **(extras or {}),
+            }.items()
+            if v not in (None, "", [], {})
+        )
+        if unapplied:
+            verb = "is" if len(unapplied) == 1 else "are"
+            raise BadInput(
+                f"{unapplied} {verb} not applied by view='roots' — "
+                "the forest is the whole live serves DAG",
+                next="search(kind='quest', view='roots')",
+            )
+        try:
+            page_n = int(page)
+        except (TypeError, ValueError):
+            page_n = 0
+        if page_n != 1:
+            raise BadInput(
+                f"page={page!r} is not applied by view='roots' — "
+                "the forest renders whole",
+                next="search(kind='quest', view='roots')",
+            )
+        return self._render_roots_forest()
+
+    def _render_roots_forest(self) -> Response:
+        """The forest behind ``view='roots'`` / ``id='/roots'`` (gr634363).
+
+        A quest is a *root* iff it serves no other LIVE quest (no
+        outbound ``serves`` edge landing on one) — the rule the web
+        ``/refs/quest`` index already applies
+        (:func:`precis_web.routes.refs._quest_index`). One row per live
+        quest, indented under each live quest it serves, so a single
+        call lists the top-level strivings AND the ladder beneath them;
+        a sub-quest serving two parents renders under both (a DAG, not
+        a tree). A visited-set threaded down each root-to-node path
+        keeps a ``serves`` cycle finite; a cycle reachable from no root
+        promotes its members to fallback roots so bad data stays
+        visible rather than vanishing from the page.
+        """
+        refs = self.store.list_refs(kind="quest", limit=500)
+        if not refs:
+            body = "no live quests"
+            body += render_next_section(
+                [
+                    (
+                        f"put(kind={self.kind!r}, text='a striving worth a career')",
+                        "mint the first quest",
+                    ),
+                ]
+            )
+            return Response(body=body, result_count=0)
+        live_ids = {r.id for r in refs}
+        ref_by_id = {r.id: r for r in refs}
+        statuses = {
+            r.id: _status_of(self.store.tags_for(r.id)) or "active" for r in refs
+        }
+        # children[parent] = the live quests serving it. A quest that is
+        # nobody's child has no outbound serves edge into a live quest —
+        # it is a root. Inbound-first (same map the web index builds):
+        # outbound is derived as the inverse instead of a second
+        # per-quest query.
+        children: dict[int, list[int]] = {}
+        has_parent: set[int] = set()
+        for r in refs:
+            links = self.store.links_for(r.id, direction="in", relation="serves")
+            kids = sorted({ln.src_ref_id for ln in links} & live_ids)
+            if kids:
+                children[r.id] = kids
+                has_parent.update(kids)
+
+        def sort_key(qid: int) -> tuple[int, float, int]:
+            prio = ref_by_id[qid].prio
+            return (
+                0 if statuses[qid] == "active" else 1,
+                float(prio) if prio is not None else float("inf"),
+                qid,
+            )
+
+        rendered: set[int] = set()
+        lines: list[str] = []
+
+        def render_node(qid: int, path: frozenset[int], depth: int) -> None:
+            r = ref_by_id[qid]
+            rendered.add(qid)
+            handle = handle_registry.try_format("quest", qid) or f"quest:{qid}"
+            prio = f" prio={prio_display(r.prio)}" if r.prio is not None else ""
+            title = (r.title or "").splitlines()[0]
+            indent = "  " * depth
+            lines.append(f"{indent}◆ {handle} [{statuses[qid]}]{prio} {title}")
+            here = path | {qid}
+            kids = sorted(
+                (k for k in children.get(qid, []) if k not in here), key=sort_key
+            )
+            if depth + 1 >= _MAX_TREE_DEPTH:
+                for kid in kids:
+                    kh = handle_registry.try_format("quest", kid) or f"quest:{kid}"
+                    ktitle = (ref_by_id[kid].title or "").splitlines()[0]
+                    lines.append(f"{indent}  ◆ {kh} {ktitle} …")
+                return
+            for kid in kids:
+                render_node(kid, here, depth + 1)
+
+        root_ids = sorted((r.id for r in refs if r.id not in has_parent), key=sort_key)
+        for rid in root_ids:
+            render_node(rid, frozenset(), 0)
+        # A serves-cycle with no outside parent is reachable from no
+        # root — promote its members so the bad data stays visible.
+        orphans = sorted(live_ids - rendered, key=sort_key)
+        for oid in orphans:
+            render_node(oid, frozenset(), 0)
+
+        rn = "" if len(root_ids) == 1 else "s"
+        qn = "" if len(refs) == 1 else "s"
+        header = f"# {len(root_ids)} quest root{rn} · {len(refs)} live quest{qn}"
+        if orphans:
+            on = "" if len(orphans) == 1 else "s"
+            header += (
+                f" · {len(orphans)} quest{on} unreachable from any root (serves cycle)"
+            )
+        body = "\n".join([header, "", *lines])
+        body += render_next_section(
+            [
+                (
+                    "get(kind='quest', id='qu<id>', view='tree')",
+                    "roll up one root's servers + deed ledger",
+                ),
+                (
+                    "get(kind='quest', id='/gaps')",
+                    "the exploration queue across active quests",
+                ),
+            ]
+        )
+        return Response(
+            body=body, result_count=len(rendered), result_ids=sorted(rendered)
+        )
 
     def _render_create_ack(self, ref_id: int) -> Response:
         # Capture the id so the ``_create`` override can apply a create-time

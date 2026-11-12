@@ -227,6 +227,7 @@ get(
 )  # raw ref-events audit trail (generic, not logbook-specific)
 get(kind="quest", id="/active")  # every active striving
 get(kind="quest", id="/gaps")  # gaps across ALL active quests
+search(kind="quest", view="roots")  # top-level strivings + serves DAG (id="/roots" too)
 get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-ref)
 ```
 
