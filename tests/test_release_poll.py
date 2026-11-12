@@ -3746,3 +3746,268 @@ def test_a_recut_hold_past_an_hour_files_one_ask(
     rp.note_cut_hold(store, mint.ids["cut"], None)
     ref = store.get_ref(kind="todo", id=mint.root_id)
     assert ref is not None and not (ref.meta or {}).get("cut_hold")
+
+
+# ── gr651885: the hold keeps its holders; lands freeze behind it ────
+
+
+def _cut_hold(store: Store, root: int) -> dict[str, Any]:
+    ref = store.get_ref(kind="todo", id=root)
+    assert ref is not None
+    return dict((ref.meta or {}).get("cut_hold") or {})
+
+
+def test_the_hold_keeps_a_holder_behind_six_carry_notes(store: Store) -> None:
+    """r290 → r291: five "cleared on a corrective commit" notes filled
+    the five kept lines and hid the land that actually held the cut. The
+    holders come first, the carry-notes after them."""
+    mint = T.mint_release_pass(store)
+    carry = [
+        f"engine land td{40 + i} cleared on a corrective commit "
+        f"({str(i) * 12}) the cut must carry, so it holds from its own "
+        "commit up to that one"
+        for i in range(6)
+    ]
+    holder = "engine land td99 has no reviewer; the release waits — next: let td100 run"
+    rp.note_cut_hold(store, mint.ids["cut"], [*carry, holder], now=NOW)
+    assert _cut_hold(store, mint.root_id)["lines"] == [holder, *carry]
+
+
+def test_the_hold_caps_at_twenty_lines_plus_a_count(store: Store) -> None:
+    mint = T.mint_release_pass(store)
+    lines = [f"engine land td{i} has no reviewer; the release waits" for i in range(25)]
+    rp.note_cut_hold(store, mint.ids["cut"], lines, now=NOW)
+    assert _cut_hold(store, mint.root_id)["lines"] == [*lines[:20], "+5 more"]
+
+
+_HOLD_LINE = "engine land td43 has no reviewer; the release waits"
+#: ``rp.CUT_HOLD_TIP`` / ``rp.CUT_FREEZE_AFTER_S``, spelled out so the
+#: module collects against a tree without them.
+_TIP = "tip"
+_FREEZE_S = 900
+
+
+def _held_recut(
+    store: Store,
+    *,
+    held_for: timedelta,
+    kind: str | None = _TIP,
+    cut: bool = True,
+) -> T.PlanMint:
+    """An open pass whose re-cut (``cut``: r291 recorded) is held on
+    the tip's reviews since ``NOW - held_for``."""
+    mint = T.mint_release_pass(store)
+    if cut:
+        R.record_cut(store, mint.ids["cut"], "r291", "c" * 40, "p..c", repo=REPO)
+    rp.note_cut_hold(
+        store, mint.ids["cut"], [_HOLD_LINE], now=NOW - held_for, kind=kind
+    )
+    return mint
+
+
+def test_a_recut_held_on_the_tip_past_the_threshold_freezes_lands(
+    store: Store,
+) -> None:
+    assert (rp.CUT_HOLD_TIP, rp.CUT_FREEZE_AFTER_S) == (_TIP, _FREEZE_S)
+    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
+    assert _cut_hold(store, mint.root_id)["kind"] == _TIP
+    # The release machinery is never frozen: a land of the pass's own
+    # plan (its fix loop) goes on, and trips nothing.
+    assert rp.land_freeze(store, todo_id=mint.ids["cut"], now=NOW) is None
+    assert "land_freeze" not in _meta_of(store, mint.root_id)
+    # The first land past the threshold trips the latch; ``since`` is the trip.
+    assert rp.land_freeze(store, now=NOW) == _FROZEN_AT_NOW
+    assert _meta_of(store, mint.root_id)["land_freeze"] == {
+        "since": _zulu(NOW),
+        "rN": "r291",
+    }
+
+
+#: The freeze line a latch tripped at ``NOW`` reads.
+_FROZEN_AT_NOW = (
+    "land frozen: release re-cut r291 waits for the tip's reviews "
+    "(since 2026-11-03T12:00:00Z)"
+)
+
+
+def _zulu(t: datetime) -> str:
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _meta_of(store: Store, root: int) -> dict[str, Any]:
+    ref = store.get_ref(kind="todo", id=root)
+    assert ref is not None
+    return dict(ref.meta or {})
+
+
+def test_the_freeze_outlives_its_hold_until_a_cut(store: Store) -> None:
+    """The latch (review of gr651885): lifting on the hold clearing let
+    every parked land unpark before the cut was minted and run — they
+    moved the tip, the hold restarted, the 15 min began again. Only a
+    successful cut lifts it."""
+    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
+    assert rp.land_freeze(store, now=NOW) == _FROZEN_AT_NOW
+    rp.note_cut_hold(store, mint.ids["cut"], None)  # the tip got its reviews
+    later = NOW + timedelta(minutes=5)
+    assert rp.land_freeze(store, now=later) == _FROZEN_AT_NOW
+    # A fresh hold under the threshold changes nothing either.
+    rp.note_cut_hold(store, mint.ids["cut"], [_HOLD_LINE], now=later, kind=_TIP)
+    assert rp.land_freeze(store, now=later) == _FROZEN_AT_NOW
+    # The cut's success path (release_cut._clear_retarget) lifts it.
+    rp.clear_land_freeze(store, mint.ids["cut"])
+    assert not _meta_of(store, mint.root_id).get("land_freeze")
+    assert rp.land_freeze(store, now=later) is None
+
+
+def test_the_freeze_lifts_when_the_pass_closes(store: Store) -> None:
+    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
+    assert rp.land_freeze(store, now=NOW) is not None
+    store.add_tag(
+        mint.root_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert rp.land_freeze(store, now=NOW) is None
+
+
+def test_the_freeze_expires_once_with_a_warning(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The safety valve: a cut that never comes cannot freeze lands
+    forever. Past ``CUT_FREEZE_MAX_S`` the latch expires — one warning
+    naming the plan root — and the same pass does not re-trip, though
+    its hold still stands past the threshold."""
+    assert rp.CUT_FREEZE_MAX_S == 3 * 3600
+    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
+    assert rp.land_freeze(store, now=NOW) == _FROZEN_AT_NOW
+    just_under = NOW + timedelta(seconds=rp.CUT_FREEZE_MAX_S - 1)
+    assert rp.land_freeze(store, now=just_under) == _FROZEN_AT_NOW
+    expiry = NOW + timedelta(seconds=rp.CUT_FREEZE_MAX_S)
+    with caplog.at_level("WARNING", logger=rp.__name__):
+        assert rp.land_freeze(store, now=expiry) is None
+        assert rp.land_freeze(store, now=expiry + timedelta(minutes=10)) is None
+    warnings = [r for r in caplog.records if "land freeze" in r.getMessage()]
+    assert len(warnings) == 1
+    assert f"td{mint.root_id}" in warnings[0].getMessage()
+    assert _meta_of(store, mint.root_id)["land_freeze"]["expired_at"] == _zulu(expiry)
+
+
+def test_the_freeze_expiry_follows_the_env(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_CUT_FREEZE_MAX_S", "600")
+    _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
+    assert rp.land_freeze(store, now=NOW) is not None
+    assert rp.land_freeze(store, now=NOW + timedelta(seconds=600)) is None
+
+
+def test_a_frozen_land_gives_its_ssh_node_slot_back(store: Store) -> None:
+    """A parked-but-running land counts toward the host's ssh_node cap,
+    and the re-cut claims on the same host: the frozen land leaves
+    ``running`` for ``waiting_time`` and the wake_runner re-queues it at
+    the recheck instant."""
+    from precis.workers import wake_runner
+    from precis.workers._mint import mint_background_job
+    from precis.workers.job_types import land_slice
+
+    with store.tx() as conn:
+        job = mint_background_job(
+            store,
+            conn=conn,
+            job_type="land_slice",
+            executor="ssh_node",
+            title="land_slice td1",
+            params={"todo_id": 1},
+            status="running",
+        )
+    job_id = int(job.id)
+    due = datetime.now(UTC) - timedelta(seconds=1)
+    land_slice._release_slot(
+        SimpleNamespace(store=store, ref_id=job_id), due, "land frozen: x"
+    )
+    status = {str(t.value) for t in store.tags_for(job_id) if t.prefix == "STATUS"}
+    assert status == {"waiting_time"}
+    ref = store.get_ref(kind="job", id=job_id)
+    assert ref is not None and (ref.meta or {})["wake_when"] == {
+        "kind": "at_time",
+        "payload": {"ts": int(due.timestamp()), "why": "land frozen: x"},
+    }
+    wake_runner.run_wake_pass(store)
+    status = {str(t.value) for t in store.tags_for(job_id) if t.prefix == "STATUS"}
+    assert status == {"queued"}
+
+
+@pytest.mark.parametrize("verdict", ["FIX", "REVERT"])
+def test_a_corrective_land_passes_the_freeze(store: Store, verdict: str) -> None:
+    """gr651885 review: a FIX/REVERT verdict mints the corrective todo
+    the cut holds on (``review.task``, :func:`rp._review_outcome`); it
+    must land through the freeze — also once the hold cleared under a
+    standing latch — while any other land waits."""
+    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
+    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
+    other = store.insert_ref(kind="todo", slug=None, title="unrelated", meta=None)
+    store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="review td43",
+        meta={
+            "generate": {"role": "reviewer", "from": "td43"},
+            "review": {"verdict": verdict, "task": int(fix.id)},
+        },
+    )
+    assert rp.land_freeze(store, todo_id=int(other.id), now=NOW) == _FROZEN_AT_NOW
+    assert rp.land_freeze(store, todo_id=int(fix.id), now=NOW) is None
+    rp.note_cut_hold(store, mint.ids["cut"], None)
+    assert rp.land_freeze(store, todo_id=int(fix.id), now=NOW) is None
+    assert rp.land_freeze(store, todo_id=int(other.id), now=NOW) == _FROZEN_AT_NOW
+
+
+def test_a_land_the_hold_names_passes_the_freeze(store: Store) -> None:
+    """The general case: any todo a current hold line names is a land the
+    cut waits on, so it passes; ``td<N>0`` does not name ``td<N>``."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r291", "c" * 40, "p..c", repo=REPO)
+    named = int(store.insert_ref(kind="todo", slug=None, title="a", meta=None).id)
+    near = int(store.insert_ref(kind="todo", slug=None, title="b", meta=None).id)
+    lines = [
+        f"engine review td{near}0 on the td{named} land was FIX; its fix "
+        f"td{named} is not landed yet — next: let td{named} land",
+    ]
+    rp.note_cut_hold(
+        store, mint.ids["cut"], lines, now=NOW - timedelta(hours=1), kind=_TIP
+    )
+    assert rp.land_freeze(store, todo_id=named, now=NOW) is None
+    assert rp.land_freeze(store, todo_id=near, now=NOW) == _FROZEN_AT_NOW
+
+
+def test_review_hold_reads_only_gate_unit_lines() -> None:
+    assert rp.review_hold(
+        [
+            "engine land td43 has no reviewer; the release waits",
+            "engine review td12 on the td43 land is open; the release waits",
+            "engine land 0e5fde093000 (jo7) has no reviewer",
+        ]
+    )
+    assert not rp.review_hold([])
+    assert not rp.review_hold(["engine review gate unreadable (KeyError); next: x"])
+    assert not rp.review_hold(["main is not ahead of prod (identical)"])
+    assert not rp.review_hold(
+        ["engine land td43 has no reviewer", "prod has commits main lacks (diverged)"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("held_s", "kind", "cut"),
+    [
+        (_FREEZE_S - 1, _TIP, True),  # under the threshold
+        (3600, None, True),  # a script refusal's hold, not the tip's reviews
+        (3600, _TIP, False),  # a first cut: no release open
+    ],
+)
+def test_no_freeze_under_the_threshold_on_another_hold_or_without_a_release(
+    store: Store, held_s: int, kind: str | None, cut: bool
+) -> None:
+    _held_recut(store, held_for=timedelta(seconds=held_s), kind=kind, cut=cut)
+    assert rp.land_freeze(store, now=NOW) is None
+
+
+def test_no_freeze_without_an_open_pass(store: Store) -> None:
+    assert rp.land_freeze(store, now=NOW) is None

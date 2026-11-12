@@ -7779,3 +7779,107 @@ def test_rearm_releases_dead_claim_and_stamps_rescue_answered(store: Store) -> N
     assert "claimed-by:lane-devin" not in _open_tags(store, task)
     meta = _meta(store, task)
     assert meta["rescue_answered"] == {"cls": "stalled", "ask": ask, "job": job}
+
+
+# ── gr651885: the land freeze leaves reviews alone; a held cut is logged ──
+
+
+def _held_release_pass(store: Store) -> int:
+    """A bare open release-pass todo whose re-cut r291 has been held on
+    the tip's reviews for half an hour: ``rp.land_freeze`` holds."""
+    since = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    meta = {
+        "release": {"rN": "r291", "sha": "c" * 40},
+        "cut_hold": {
+            "since": since,
+            "lines": ["engine land td43 pending"],
+            "kind": "tip",
+        },
+    }
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo", slug=None, title="release pass", meta=meta, conn=conn
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.open("release-pass"), set_by="system", conn=conn)
+    return int(ref.id)
+
+
+def test_a_post_land_review_dispatches_while_lands_are_frozen(store: Store) -> None:
+    """The freeze sits in the lander only: the reviews are what drains
+    the hold, so a landed build's review still dispatches."""
+    _held_release_pass(store)
+    assert rp.land_freeze(store) is not None
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["job_type"] == "run_slice"
+
+
+def test_a_release_cut_refusal_is_logged_once_per_reason(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r291's re-cut hold was a pass note nobody saw: each change of the
+    refusal is one ``job_result`` line on the tick's job (and the log);
+    the same refusal on the next pass is not repeated."""
+    from precis.workers.job_types import release_cut as rc
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("cut", "Cut the release", {"op": "release_cut"})
+
+    mint = T._run(store, None, build)
+    cut = mint.ids["cut"]
+    why = [
+        "holding: cut aaaaaaaaaaaa sits below origin/main: td43 pending; "
+        "next tick retries"
+    ]
+    monkeypatch.setattr(rc, "_cut_target", lambda store, todo_id: (None, why[0]))
+    chunks: list[tuple[str, str]] = []
+    ctx = SimpleNamespace(
+        store=store,
+        meta={"params": {}},
+        set_meta=lambda **kw: None,
+        append_chunk=lambda kind, text: chunks.append((kind, text)),
+    )
+
+    def results() -> list[str]:
+        return [text for kind, text in chunks if kind == "job_result"]
+
+    note = f"td{cut}: release_cut not dispatched — release_cut: {why[0]}"
+    pd._dispatch(ctx, pd.SPEC)
+    assert results() == [note]
+    chunks.clear()
+    pd._dispatch(ctx, pd.SPEC)
+    assert results() == []
+    assert note in chunks[0][1]  # still a pass note in the summary
+    why[0] = why[0].replace("td43", "td44")
+    chunks.clear()
+    pd._dispatch(ctx, pd.SPEC)
+    assert results() == [note.replace("td43", "td44")]
+    assert _jobs_under(store, cut) == []
+
+
+def test_a_dry_run_logs_no_cut_refusal(store: Store) -> None:
+    """A read-only pass neither queues the ``job_result`` line nor
+    stamps the node."""
+    ref = store.insert_ref(kind="todo", slug=None, title="cut", meta=None)
+    res = pd.PassResult(dry_run=True)
+    node: Any = SimpleNamespace(id=int(ref.id), meta={})
+    pd._log_cut_refusal(pd._Writer(store, True), res, node, "td1: refused")
+    assert res.logged == [] and node.meta == {}
+    assert pd.CUT_REFUSAL_LOGGED_KEY not in _meta(store, int(ref.id))
+    pd._log_cut_refusal(pd._Writer(store, False), res, node, "td1: refused")
+    assert res.logged == ["td1: refused"]
+    assert _meta(store, int(ref.id))[pd.CUT_REFUSAL_LOGGED_KEY] == "td1: refused"

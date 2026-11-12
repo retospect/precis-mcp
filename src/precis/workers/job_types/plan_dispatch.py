@@ -332,7 +332,10 @@ in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
 dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N``; the
-actions follow it.
+actions follow it. A ``release_cut`` node's dispatch refusal (a re-cut
+held on the tip's reviews) is also one ``job_result`` line and a log
+line, once per change of its text (``meta.cut_refusal_logged`` on the
+node; gr651885) — the summary's notes are capped and nobody saw r291's.
 
 **Arming** (an operator write, not done by any deploy) — the recurring todo
 the minter turns into a job every 5 minutes, like ``graph_garden``::
@@ -1206,6 +1209,9 @@ class PassResult:
     #: Why the pass did nothing (another tick held the lock); ``None`` = ran.
     skipped: str | None = None
     notes: list[str] = field(default_factory=list)
+    #: Notes the tick job also records as ``job_result`` lines — a
+    #: ``release_cut`` refusal, once per change (gr651885).
+    logged: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -4919,6 +4925,27 @@ def _block_route(
     res.asks += 1
 
 
+#: The release_cut node's last logged refusal (:func:`_log_cut_refusal`).
+CUT_REFUSAL_LOGGED_KEY = "cut_refusal_logged"
+
+
+def _log_cut_refusal(w: _Writer, res: PassResult, n: _Node, note: str | None) -> None:
+    """Log a ``release_cut`` node's dispatch refusal once per change
+    (gr651885): r291's re-cut hold sat two hours as a pass note under
+    the summary cap that no one read. A changed ``note`` is stamped on the
+    node (``meta.cut_refusal_logged``), logged and queued for the tick
+    job's ``job_result`` line (:attr:`PassResult.logged`); the same note
+    on a later pass is not repeated, and a dispatch (``note`` ``None``)
+    drops the stamp so the next refusal logs again. A dry run logs and
+    stamps nothing."""
+    if w.dry_run or note == n.meta.get(CUT_REFUSAL_LOGGED_KEY):
+        return
+    w.stamp_meta(n, {CUT_REFUSAL_LOGGED_KEY: note})
+    if note is not None:
+        res.logged.append(note)
+        log.info("plan_dispatch: %s", note)
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -5133,8 +5160,11 @@ def _step_dispatch(
         problem = _params_problem(spec.params_schema, params)
         if problem is None and not w.dry_run and spec.validate_submit is not None:
             problem = spec.validate_submit(w.store, gripe_id=None, params=params)
-        if problem:
-            res.notes.append(f"td{n.id}: {job_type} not dispatched — {problem}")
+        note = f"td{n.id}: {job_type} not dispatched — {problem}" if problem else None
+        if job_type == "release_cut":
+            _log_cut_refusal(w, res, n, note)
+        if note:
+            res.notes.append(note)
             continue
         executor = _pick_executor(spec.compatible_executors)
         if w.dry_run:
@@ -6294,6 +6324,8 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     res = run_pass(ctx.store, dry_run=reason is not None, reason=reason)
     ctx.set_meta(plan_dispatch=res.counts())
     ctx.append_chunk("job_summary", res.render())
+    for line in res.logged:
+        ctx.append_chunk("job_result", line)
     log.info("%s", res.summary())
 
 

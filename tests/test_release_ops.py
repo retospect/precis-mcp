@@ -4509,11 +4509,55 @@ def test_a_recut_below_the_head_holds_and_names_the_unit(
     # The poll's liveness clock: the hold sits on the plan root.
     hold = _meta(store, mint.root_id)["cut_hold"]
     assert hold["since"] and any("td43" in ln for ln in hold["lines"])
+    # gr651885: the tip-not-cleared hold is the one that freezes lands.
+    assert hold.get("kind") == "tip"
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     assert rc.submit(ctx, None) is None
     assert checkout["argv"] == []
     assert ctx.failures and rc.HOLD_PREFIX in ctx.failures[0]
     assert ctx.stamped.get("attempt_free") == "cut-hold"
+
+
+def test_a_recut_with_nothing_cleared_still_ages_the_tip_hold(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr651885 review: the oldest land's review is the slow one, so no
+    commit clears at all — the re-cut is held on the tip's reviews just
+    the same and must record the ``kind: tip`` hold that ages the land
+    freeze, not return before it."""
+    mint = _cut(store)
+    c = "c" * 40
+    _fake_gh_api(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "commits": [{"sha": c}],
+        },
+    )
+    _engine_land(store, 43, ["scripts/ship"], sha=c)
+    rid = _reviewer(store, 43)
+    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
+    assert refusal is not None and f"td{rid}" in refusal
+    hold = _meta(store, mint.root_id)["cut_hold"]
+    assert hold.get("kind") == "tip" and hold["since"]
+    assert any("td43" in ln for ln in hold["lines"])
+
+
+def test_a_recut_whose_gate_is_unreadable_records_no_tip_hold(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate's own fatal line is not a review wait: no hold, no freeze."""
+    mint = _cut(store)
+    monkeypatch.setattr(
+        rc._rp,
+        "cleared_head",
+        lambda store, *, repo: (None, ["engine review gate unreadable (X)"], []),
+    )
+    monkeypatch.setattr(rc.pr_class, "resolve_repo", lambda *a, **k: "o/r")
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is not None
+    assert "cut_hold" not in _meta(store, mint.root_id)
 
 
 # ── cut refusals are classified, not retried into an ask ─────────────
@@ -4676,6 +4720,26 @@ def test_a_tip_only_refusal_holds_the_next_tick_until_the_tip_is_reviewed(
     assert rc.poll(ctx2, handle2) is True
     meta = _meta(store, mint.root_id)
     assert not meta.get("cut_hold") and not meta.get("cut_retarget")
+
+
+def test_a_successful_cut_lifts_the_land_freeze_latch(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """gr651885: the land freeze latches on the plan root and only a cut
+    lifts it — the hold clearing alone would let the parked lands move
+    the tip before the cut ran."""
+    mint = T.mint_release_pass(store)
+    store.stamp_ref_meta(
+        mint.root_id,
+        {"land_freeze": {"since": "2026-11-12T10:00:00Z", "rN": "r7"}},
+    )
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert handle is not None
+    assert _meta(store, mint.root_id)["land_freeze"]  # a running cut keeps it
+    _exit(checkout, 0, _cut_log())
+    assert rc.poll(ctx, handle) is True
+    assert not _meta(store, mint.root_id).get("land_freeze")
 
 
 def _two_lands(store: Store, a: str, b: str, *, b_reviewed: bool) -> int:

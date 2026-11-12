@@ -2480,6 +2480,62 @@ def test_parked_handle_survives_repeated_restart_reclaims(
     assert any("found parked detached job" in t for t in events)
 
 
+def test_a_requeued_parked_handle_is_re_adopted_by_a_fresh_claim(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr651885: a frozen land gives its slot back (``waiting_time``) and
+    the wake_runner re-queues it with its parked handle still on the row.
+    The fresh claim re-adopts the handle — never a second ``submit``, no
+    attempt bump — and the next pass polls it, which re-reads the freeze."""
+    submitted: list[int] = []
+    polled: list[Any] = []
+
+    def _submit(ctx: Any, _spec: Any) -> Any:  # pragma: no cover — must not fire
+        submitted.append(ctx.ref_id)
+        return None
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _spec(submit=_submit, poll=_poll)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    handle = {**_parked_handle(), "not_before": "2020-01-01T00:00:00Z"}
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="frozen land, re-queued",
+        meta={
+            "executor": "ssh_node",
+            "job_type": "fake_relax",
+            "params": {"target_node": "spark"},
+            "compute_handle": handle,
+            "compute_handle_released": False,
+            "deadline": time.time() + 7200,
+        },
+    )
+    rid = int(ref.id)
+    store.add_tag(rid, Tag.parse_strict("STATUS:queued"), set_by="agent")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result["claimed"] == 1 and submitted == []
+    assert _status(store, rid) == "running"
+    meta = _meta(store, rid)
+    assert meta["compute_handle"] == handle
+    assert int(meta.get("attempts") or 0) == 0
+    events = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(rid)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+    assert any("re-adopted" in t for t in events)
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert polled == [handle] and submitted == []
+
+
 def test_parked_handle_past_its_deadline_fails_without_an_orphan_skip(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

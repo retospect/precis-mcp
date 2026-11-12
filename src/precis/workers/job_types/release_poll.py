@@ -47,7 +47,16 @@ the unauthenticated api.github.com budget (60/h) is shared with
    (``meta.cut_hold``) for :data:`CUT_HOLD_ASK_AFTER_MIN` files one
    ``release-stuck:r<N>:recut-hold`` ask naming the holding units; a
    first cut a refusal held (``meta.cut_retarget``) files
-   ``release-stuck:td<root>:recut-hold``, quoting the refusal.
+   ``release-stuck:td<root>:recut-hold``, quoting the refusal. The hold
+   keeps every holder ahead of the "cleared on a corrective commit"
+   carry-notes, up to 20 lines plus ``+N more`` (gr651885: a first-five
+   cut hid r291's real holders). A re-cut held on the tip's reviews
+   (``kind: tip``) for :data:`CUT_FREEZE_AFTER_S` also freezes new lands
+   (:func:`land_freeze`, read by ``land_slice`` before every ship): the
+   factory landed faster than the reviews drained and the re-cut, which
+   cuts only a fully-reviewed origin/main, never fired. The freeze
+   latches on the plan root (``meta.land_freeze``) until a cut succeeds
+   or the pass closes, and expires after :data:`CUT_FREEZE_MAX_S`.
 3. The repo: ``params.repo``, else ``release.repo``, else the checkout's
    ``origin`` (:func:`precis.plans.pr_class.resolve_repo`).
 4. ``GET /repos/<repo>/compare/prod...<pin>``: ``behind_by > 0`` or
@@ -114,6 +123,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
@@ -219,6 +229,31 @@ CUT_HOLD_ASK_AFTER_MIN = 60
 
 #: The re-cut hold's stage name on that ask's ``release-stuck:`` tag.
 _CUT_HOLD_STAGE = "recut-hold"
+
+#: ``meta.cut_hold.kind`` of a re-cut held because the tip is not fully
+#: reviewed (``release_cut``'s "sits below origin/main" refusal) — the
+#: hold :func:`land_freeze` reads (gr651885).
+CUT_HOLD_TIP = "tip"
+
+#: A :data:`CUT_HOLD_TIP` hold this old freezes new lands
+#: (:func:`land_freeze`); ``PRECIS_CUT_FREEZE_AFTER_S`` overrides it.
+CUT_FREEZE_AFTER_S = 900
+
+#: A land-freeze latch this old expires (:func:`land_freeze`'s safety
+#: valve); ``PRECIS_CUT_FREEZE_MAX_S`` overrides it.
+CUT_FREEZE_MAX_S = 3 * 3600
+
+#: The plan root's land-freeze latch, ``{since, rN[, expired_at]}``.
+LAND_FREEZE_KEY = "land_freeze"
+
+_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+#: Lines a recorded hold keeps (:func:`_kept_hold_lines`), plus a count.
+CUT_HOLD_LINES_CAP = 20
+
+#: The carry-note shape of a hold line: a cleared land whose corrective
+#: commit the cut must carry — context, not a holder (gr651885).
+_CARRY_MARK = "cleared on a corrective commit"
 
 #: Bounds on what one ``matching-refs`` read may claim. The endpoint
 #: answers the whole prefix in one unpaginated payload (GitHub lists
@@ -2628,15 +2663,37 @@ def cleared_head(
     return cut, held, notes
 
 
+def _kept_hold_lines(lines: list[str]) -> list[str]:
+    """The hold's lines as recorded (gr651885): every holder — "not
+    landed", "doing", review-wait — ahead of the "cleared on a corrective
+    commit" carry-notes, at most :data:`CUT_HOLD_LINES_CAP` of them plus a
+    ``+N more`` count. A first-five cut once hid r291's real holders
+    behind five carry-notes."""
+    carry = [ln for ln in lines if _CARRY_MARK in ln]
+    ordered = [ln for ln in lines if _CARRY_MARK not in ln] + carry
+    kept = [ln[:300] for ln in ordered[:CUT_HOLD_LINES_CAP]]
+    if len(ordered) > CUT_HOLD_LINES_CAP:
+        kept.append(f"+{len(ordered) - CUT_HOLD_LINES_CAP} more")
+    return kept
+
+
 def note_cut_hold(
-    store: Any, todo_id: int, lines: list[str] | None, *, now: datetime | None = None
+    store: Any,
+    todo_id: int,
+    lines: list[str] | None,
+    *,
+    now: datetime | None = None,
+    kind: str | None = None,
 ) -> None:
     """Record (``lines``) or clear (``None``/empty) the re-cut hold on
-    the plan root's ``meta.cut_hold = {since, lines}`` (gr611217) —
+    the plan root's ``meta.cut_hold = {since, lines[, kind]}`` (gr611217) —
     ``release_cut``'s re-cut calls it on every recompute. ``since`` is
     kept while the hold persists, so :func:`_cut_hold_ask` measures the
-    whole hold; a cleared hold resets it. A write failure is a log line,
-    never the cut's verdict."""
+    whole hold; a cleared hold resets it. ``kind`` names the hold —
+    :data:`CUT_HOLD_TIP` for the re-cut waiting on the tip's reviews, the
+    one :func:`land_freeze` reads; each write restates it. The lines are
+    :func:`_kept_hold_lines`. A write failure is a log line, never the
+    cut's verdict."""
     try:
         root = _release.plan_root(store, todo_id)
         ref = store.get_ref(kind="todo", id=root)
@@ -2648,10 +2705,10 @@ def note_cut_hold(
         since = prior.get("since") if isinstance(prior, dict) else None
         if not since:
             since = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        store.stamp_ref_meta(
-            root,
-            {"cut_hold": {"since": since, "lines": [ln[:300] for ln in lines[:5]]}},
-        )
+        hold: dict[str, Any] = {"since": since, "lines": _kept_hold_lines(lines)}
+        if kind:
+            hold["kind"] = kind
+        store.stamp_ref_meta(root, {"cut_hold": hold})
     except Exception:
         log.warning(
             "release_poll: cut-hold stamp for td%s failed", todo_id, exc_info=True
@@ -2714,6 +2771,168 @@ def _cut_hold_ask(
         label=label,
         verbs=verbs,
     )
+
+
+def _env_seconds(name: str, default: int) -> int:
+    """``name`` from the environment when it is a non-negative int, else
+    ``default``."""
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw.isdigit() else default
+
+
+def cut_freeze_after_s() -> int:
+    """:data:`CUT_FREEZE_AFTER_S`, or ``PRECIS_CUT_FREEZE_AFTER_S``."""
+    return _env_seconds("PRECIS_CUT_FREEZE_AFTER_S", CUT_FREEZE_AFTER_S)
+
+
+def cut_freeze_max_s() -> int:
+    """:data:`CUT_FREEZE_MAX_S`, or ``PRECIS_CUT_FREEZE_MAX_S``."""
+    return _env_seconds("PRECIS_CUT_FREEZE_MAX_S", CUT_FREEZE_MAX_S)
+
+
+def _freeze_line(latch: dict[str, Any]) -> str:
+    return (
+        f"land frozen: release re-cut {latch.get('rN')} waits for the tip's "
+        f"reviews (since {latch.get('since')})"
+    )
+
+
+def clear_land_freeze(store: Any, todo_id: int) -> None:
+    """Drop the plan root's land-freeze latch (``meta.land_freeze``) — the
+    re-cut succeeded (``release_cut._clear_retarget``). A write only when
+    one is there."""
+    root = _release.plan_root(store, todo_id)
+    ref = store.get_ref(kind="todo", id=root)
+    if ref is not None and (ref.meta or {}).get(LAND_FREEZE_KEY):
+        store.stamp_ref_meta(root, {LAND_FREEZE_KEY: None})
+
+
+def land_freeze(
+    store: Any, *, todo_id: int | None = None, now: datetime | None = None
+) -> str | None:
+    """The reason a new land waits, else ``None`` (gr651885).
+
+    A re-cut only cuts a fully-reviewed origin/main (gr611217), so a
+    factory that lands faster than the reviews drain holds it forever
+    (r290 → r291: over two hours). Once the open pass's re-cut has been
+    held on the tip's reviews (``meta.cut_hold.kind`` :data:`CUT_HOLD_TIP`
+    beside a recorded ``meta.release``) for :func:`cut_freeze_after_s` —
+    the hold's ``since`` is that clock — the freeze trips and LATCHES:
+    ``meta.land_freeze = {since, rN}`` on the plan root, ``since`` the
+    trip. The hold clearing does not lift it — the parked lands would
+    unpark before plan_dispatch minted and ran the cut, move the tip and
+    restart the hold, the same livelock one level up. Only a successful
+    cut lifts it (:func:`clear_land_freeze` from
+    ``release_cut._clear_retarget``), or the pass closing (the latch on a
+    closed root is never read). The safety valve: a latch older than
+    :func:`cut_freeze_max_s` expires — one warning naming the plan root,
+    ``expired_at`` stamped so the same pass never re-trips — so a stuck
+    cut cannot freeze lands forever. A land of the pass's own plan
+    (``todo_id`` under its root: the fix loop) is release machinery and
+    never waits, nor does a land the hold waits on
+    (:func:`_hold_waits_on`: a FIX/REVERT corrective, or any todo a hold
+    line names); reviews are not lands and never ask."""
+    now = now or datetime.now(UTC)
+    root = _open_pass_id(store)
+    if root is None:
+        return None
+    if todo_id is not None and _release.plan_root(store, todo_id) == root:
+        return None
+    ref = store.get_ref(kind="todo", id=root)
+    meta = (ref.meta or {}) if ref is not None else {}
+    latch = meta.get(LAND_FREEZE_KEY)
+    if isinstance(latch, dict):
+        if latch.get("expired_at"):
+            return None
+        age = _minutes_since(now, latch.get("since"))
+        if age is not None and age * 60 >= cut_freeze_max_s():
+            store.stamp_ref_meta(
+                root,
+                {LAND_FREEZE_KEY: {**latch, "expired_at": now.strftime(_TS_FMT)}},
+            )
+            log.warning(
+                "release_poll: land freeze on td%s (re-cut %s, since %s) "
+                "expired after %ss without a cut — lands resume; the re-cut "
+                "is stuck (gr651885)",
+                root,
+                latch.get("rN"),
+                latch.get("since"),
+                cut_freeze_max_s(),
+            )
+            return None
+    else:
+        hold = meta.get("cut_hold")
+        rel = _release.release_of(store, root)
+        if (
+            rel is None
+            or not isinstance(hold, dict)
+            or hold.get("kind") != CUT_HOLD_TIP
+        ):
+            return None
+        held = _minutes_since(now, hold.get("since"))
+        if held is None or held * 60 < cut_freeze_after_s():
+            return None
+        latch = {"since": now.strftime(_TS_FMT), "rN": str(rel["rN"])}
+        store.stamp_ref_meta(root, {LAND_FREEZE_KEY: latch})
+    if todo_id is not None and _hold_waits_on(store, todo_id, meta.get("cut_hold")):
+        return None
+    return _freeze_line(latch)
+
+
+#: A ``td<N>`` handle inside a hold line.
+_HOLD_TD_RE = re.compile(r"\btd(\d+)\b")
+
+
+def _hold_waits_on(store: Any, todo_id: int, hold: Any) -> bool:
+    """``True`` when the cut hold waits on ``todo_id``'s own land, so the
+    freeze must let it pass (gr651885 review): a post-land review's FIX
+    or REVERT mints a corrective todo (``meta.review.task`` on the
+    reviewer, :func:`_review_outcome` holds the cut on it until it
+    lands) — freezing it would freeze the one land that unblocks the
+    cut. Two reads: the current hold's lines naming ``td<todo_id>``
+    (the general case — any unit the hold names), and any reviewer
+    whose ``review.task`` is ``todo_id`` (the corrective case, which
+    also survives the hold's line cap and a hold already cleared under
+    a standing latch)."""
+    lines = hold.get("lines") if isinstance(hold, dict) else None
+    for line in lines or ():
+        if any(int(m) == todo_id for m in _HOLD_TD_RE.findall(str(line))):
+            return True
+    return _corrective_land(store, todo_id)
+
+
+def _corrective_land(store: Any, todo_id: int) -> bool:
+    """``True`` when a live reviewer names ``todo_id`` as its
+    ``review.task`` — the fix or revert its FIX/REVERT verdict minted
+    (``plan_dispatch._review_fix`` / ``_review_revert``). The same index
+    :func:`_engine_verdicts` builds as ``by_task``, read for one todo."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM refs
+             WHERE kind = 'todo' AND retired_at IS NULL
+               AND meta->'generate'->>'role' = 'reviewer'
+               AND meta->'review'->>'task' = %s
+             LIMIT 1
+            """,
+            (str(todo_id),),
+        ).fetchone()
+    return row is not None
+
+
+#: A gate-unit blocker line — ``engine land <td|sha12> …`` or ``engine
+#: review td<N> …`` — as opposed to the gate's own fatal or prod/main
+#: compare lines (``engine review gate unreadable``, ``prod has commits
+#: main lacks``, ``main is not ahead of prod``).
+_UNIT_LINE_RE = re.compile(r"^engine (?:land|review) (?:td\d+|[0-9a-f]{7,40})\b")
+
+
+def review_hold(lines: list[str]) -> bool:
+    """``True`` when every blocker line is a gate unit waiting on its
+    review (:data:`_UNIT_LINE_RE`): the "nothing cleared" re-cut hold
+    ``release_cut`` records as :data:`CUT_HOLD_TIP` — its oldest unit's
+    slow review holds the tip as surely as a newer one does."""
+    return bool(lines) and all(_UNIT_LINE_RE.match(str(ln)) for ln in lines)
 
 
 def _mint_reviewers_only(
@@ -2988,6 +3207,10 @@ def load() -> JobTypeSpec:
 
 
 __all__ = [
+    "CUT_FREEZE_AFTER_S",
+    "CUT_FREEZE_MAX_S",
+    "CUT_HOLD_TIP",
+    "LAND_FREEZE_KEY",
     "NAME",
     "PARAMS_SCHEMA",
     "REPO_CHECKOUT_RESOURCE",
@@ -2995,11 +3218,16 @@ __all__ = [
     "WINDOWS_SETTING",
     "PollResult",
     "branch_in_flight",
+    "clear_land_freeze",
     "cleared_head",
     "conditional_requires",
+    "cut_freeze_after_s",
+    "cut_freeze_max_s",
     "engine_review_blockers",
     "in_window",
+    "land_freeze",
     "load",
     "parse_windows",
+    "review_hold",
     "run_pass",
 ]

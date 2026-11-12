@@ -18,7 +18,9 @@ detached submit/poll pair under ``ssh_node``:
   launches at origin/main (``scripts/round``'s pipelined-cut rule):
   a cleared head below it refuses ``holding: <why>`` and the next tick
   retries (gr611217); the hold is recorded on the plan root
-  (``release_poll.note_cut_hold``) so the poll asks after an hour.
+  (``release_poll.note_cut_hold``, ``kind: tip``) so the poll asks after
+  an hour, and past ``release_poll.CUT_FREEZE_AFTER_S`` new lands wait
+  for it (``release_poll.land_freeze``, gr651885).
 * :func:`poll` waits for the exit file; on exit 0 with a
   ``RELEASE_CUT: r<N> <sha>`` line it records the cut on the plan
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
@@ -836,14 +838,16 @@ def _paced(mark: dict[str, Any]) -> str | None:
 
 
 def _clear_retarget(store: Any, todo_id: Any) -> None:
-    """A cut succeeded: drop the first cut's hold and re-target marker (a
-    write only when one is there). A failure is a log line."""
+    """A cut succeeded: drop the first cut's hold and re-target marker and
+    the land-freeze latch (gr651885: only a cut lifts it), each a write
+    only when one is there. A failure is a log line."""
     try:
         if _retarget_marker(store, todo_id) is not None:
             store.stamp_ref_meta(
                 _release.plan_root(store, todo_id), {"cut_retarget": None}
             )
         _rp.note_cut_hold(store, todo_id, None)
+        _rp.clear_land_freeze(store, todo_id)
     except Exception:
         log.warning("%s: retarget clear failed", NAME, exc_info=True)
 
@@ -988,12 +992,26 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
         except pr_class.GitHubUnreadable as exc:
             return None, f"GitHub unreadable ({exc}); next: the next tick retries"
         if sha is None:
+            # gr651885 review: nothing cleared at all — the oldest unit's
+            # review is the slow one — holds the open re-cut on the tip's
+            # reviews just the same, so it ages the tip hold (and the land
+            # freeze) too. The gate's own fatal and prod/main compare lines
+            # are not a review wait and record nothing.
+            if rel is not None and _rp.review_hold(blockers):
+                _rp.note_cut_hold(store, todo_id, blockers, kind=_rp.CUT_HOLD_TIP)
             return None, "; ".join(blockers)
         # The poll's liveness clock: a hold past an hour files one ask. A
         # held first cut keeps its clock until a cut succeeds
         # (:func:`_clear_retarget`): in-flight retries would restart it.
+        # A re-cut held on the tip's reviews is the hold that freezes
+        # new lands past ``CUT_FREEZE_AFTER_S`` (gr651885).
         if rel is not None or blockers:
-            _rp.note_cut_hold(store, todo_id, blockers)
+            _rp.note_cut_hold(
+                store,
+                todo_id,
+                blockers,
+                kind=_rp.CUT_HOLD_TIP if rel is not None else None,
+            )
         if blockers:
             # gr611217: a re-cut runs while r<N> is open, and
             # ``scripts/round`` cuts that pipelined release only at

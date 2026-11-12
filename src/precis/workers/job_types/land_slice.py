@@ -154,6 +154,32 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   gate failure or auto re-landing a ship that may already have merged
   (gr647914).
 
+**Release freeze** (gr651885). A re-cut only cuts a fully-reviewed
+origin/main, and r290 → r291 showed the factory landing faster than the
+reviews drain, so the re-cut never fired. Every ship launch — the first,
+each deferral relaunch, the FULL and deselect relaunches — first reads
+``release_poll.land_freeze``: while the open pass's re-cut has been held
+on the tip's reviews past ``release_poll.CUT_FREEZE_AFTER_S`` the freeze
+latches on the plan root and the land parks before ship
+(:func:`_park_frozen`) — no failure, no attempt, no deferral counter,
+one ``land frozen: release re-cut r<N> waits for the tip's reviews
+(since <ts>)`` event — and re-reads every :data:`FREEZE_RECHECK_S` until
+a cut lifts the latch (or it expires). The parked job leaves
+``STATUS:running`` for ``waiting_time`` (:func:`_release_slot`): every
+running ssh_node row counts toward the host's executor cap and the
+re-cut claims on the same host, so frozen lands holding slots could
+starve the very cut they wait for. The choke point is the
+launch, not ``validate_submit``: lands are minted on four paths
+(``run_slice``'s mint, the reviewer's LAND verdict, the re-land tick, a
+pr-intake node) and only the launch is common to all of them, and a job
+already minted would otherwise still ship. The check comes before the
+land flock, so a parked land never holds the lock or stamps it. Reviews
+never pass here; exempt are the pass's own plan (its fix loop) and any
+land the hold waits on — a todo a hold line names, or a FIX/REVERT
+verdict's corrective (a reviewer's ``review.task``), the land that
+unblocks the cut. An unreadable freeze lets the land go on. A hand
+``scripts/ship`` is untouched.
+
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
 plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
 ``params.worktree`` when ``dep_check`` pinned one (it must exist: it holds
@@ -458,6 +484,11 @@ MAX_GATE_KILL_RETRIES = 2
 GATE_KILL_BACKOFF_S = 120
 #: The cause a gate-kill deferral or blocked handoff names on the job.
 GATE_KILL_CROSS = "gate killed (exit 137, VM memory) - infrastructure, not the branch"
+#: Seconds between a frozen land's re-reads of the freeze (gr651885:
+#: ``release_poll.land_freeze``) — ship runs about one of them after the
+#: latch lifts. Each recheck is a wake re-queue plus a re-adopt, two
+#: runner event lines, so it is not tighter.
+FREEZE_RECHECK_S = 120
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 #: The flock file in the worktree's gitdir. One land holds it for the
@@ -2418,7 +2449,9 @@ def _launch_ship(
     :func:`poll` then drives its exit file like a relaunch's. ``None`` after
     driving the job terminal: the launch itself failed, a foreign or
     orphaned holder owns the worktree (retryable), the branch's work is
-    already on origin/main, or an ``index.lock`` never freed."""
+    already on origin/main, or an ``index.lock`` never freed. A land the
+    release freeze holds parks first (:func:`_park_frozen`), before the
+    land lock: a parked land never holds the flock or writes its stamp."""
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = params.get("lane")
@@ -2430,6 +2463,11 @@ def _launch_ship(
     scratch = tree / "scratch"
     log_path = scratch / "land_slice.log"
     exit_path = scratch / "land_slice.exit"
+    # gr651885 — the release freeze comes before the land lock: a parked
+    # land must not hold the flock (or stamp it) through its wait.
+    frozen = _land_freeze(ctx.store, todo_id)
+    if frozen is not None:
+        return _park_frozen(ctx, tree, flag, subject, frozen, carry=carry)
     # gr650484 — serialize ships before anything else touches the tree.
     # Our flock comes first because its stamp carries the slice's
     # identity: held by a live pid behind our own stamp means this
@@ -2648,6 +2686,96 @@ def _launch_ship(
                 os.close(fd)
             except OSError:
                 pass
+
+
+def _land_freeze(store: Any, todo_id: int) -> str | None:
+    """:func:`precis.workers.job_types.release_poll.land_freeze` for this
+    land on the :func:`_now` clock. An unreadable freeze lets the land go
+    on: the freeze only paces lands, it never guards one."""
+    from precis.workers.job_types import release_poll as _rp
+
+    if store is None:
+        return None
+    try:
+        return _rp.land_freeze(store, todo_id=todo_id or None, now=_now())
+    except Exception:
+        log.warning(
+            "land_slice: land-freeze read for td%d failed", todo_id, exc_info=True
+        )
+        return None
+
+
+def _release_slot(ctx: Any, due: datetime, why: str) -> None:
+    """Give the job's ssh_node slot back while it is frozen (gr651885):
+    ``STATUS:waiting_time`` until ``due`` with its reservation refunded —
+    :func:`precis.workers.executors._common.park_job_until`'s write minus
+    its six-park cap (the freeze has its own valve,
+    ``release_poll.CUT_FREEZE_MAX_S``). A parked-but-running land counts
+    toward the host's executor cap like any running job, and the re-cut
+    it waits for claims a slot on the same host — enough frozen lands
+    would starve the cut. The wake_runner's ``at_time`` selector
+    re-queues the row at ``due``; the claim re-adopts its parked
+    ``compute_handle`` (no attempt bump) and the next poll re-reads the
+    freeze through :func:`_relaunch_when_due`."""
+    from precis.workers.executors import _common as _ex
+
+    store, ref_id = ctx.store, getattr(ctx, "ref_id", None)
+    if store is None or not isinstance(ref_id, int):
+        return
+    with store.pool.connection() as conn:
+        _ex.set_meta(
+            conn,
+            ref_id,
+            wake_when={
+                "kind": "at_time",
+                "payload": {"ts": int(due.timestamp()), "why": why[:200]},
+            },
+        )
+        _ex.release_job_reservation(conn, ref_id)
+        _ex.set_status(store, ref_id, _ex.WAITING_TIME, conn=conn)
+        conn.commit()
+
+
+def _park_frozen(
+    ctx: Any,
+    tree: Path,
+    flag: str,
+    subject: str,
+    reason: str,
+    *,
+    carry: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Park a land the release freeze holds (gr651885): a wait, not a
+    refusal — no counter moves, no attempt is spent, the todo is
+    untouched, and the ssh_node slot is released (:func:`_release_slot`)
+    so the frozen lands can never starve the cut they wait for. The
+    parked handle re-reads the freeze every :data:`FREEZE_RECHECK_S`
+    through :func:`_relaunch_when_due`, so ship runs within about one
+    recheck of the latch lifting. ``reason`` is one job event per freeze
+    (``handle.frozen`` holds it across the rechecks); parked time does
+    not eat the wall deadline."""
+    due = _now() + timedelta(seconds=FREEZE_RECHECK_S)
+    parked: dict[str, Any] = {
+        "worktree": str(tree),
+        "log": str(tree / "scratch" / "land_slice.log"),
+        "exit_file": str(tree / "scratch" / "land_slice.exit"),
+        "subject": subject,
+        "flag": flag,
+        "frozen": reason,
+        "not_before": due.strftime(_TS_FMT),
+    }
+    for key in ("main_refusals", "last_refusal", "gate_kills", "fell_back_full"):
+        if carry is not None and key in carry:
+            parked[key] = carry[key]
+    if (carry or {}).get("frozen") != reason:
+        ctx.append_chunk("job_event", f"land_slice: {reason}")
+    deadline = due.timestamp() + wall_seconds()
+    parked["deadline"] = deadline
+    ctx.set_meta(
+        compute_handle=parked, compute_handle_released=False, deadline=deadline
+    )
+    _release_slot(ctx, due, reason)
+    return parked
 
 
 #: Seconds the drift preflight may take before it counts as unanswered.
