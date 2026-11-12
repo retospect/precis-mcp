@@ -608,6 +608,24 @@ def test_child_failed_parked_detector_dedups_multiple_bubbles(
     assert "child-failed:111" in findings[0].detail
 
 
+def test_child_failed_parked_detail_names_real_reads(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr635338: the alert text pointed at ``view='attention'``, a view
+    ``kind='job'`` doesn't have — it names the real chunk reads
+    (``view='result'`` / ``view='log'``) and the retry verb instead."""
+    r = handler.put(text="Parked leaf")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("child-failed:999"), set_by="system")
+    _backdate_tag(store, rid, "child-failed:999", CHILD_FAILED_PARKED_HOURS + 1)
+
+    (finding,) = [f for f in _detect_child_failed_parked(store) if f.ref_id == rid]
+    assert "view='attention'" not in finding.detail
+    assert "view='result'" in finding.detail
+    assert "view='log'" in finding.detail
+    assert "mode='retry'" in finding.detail
+
+
 def test_child_failed_parked_detector_excludes_child_failed_final(
     handler: TodoHandler, store: Store
 ) -> None:

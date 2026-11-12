@@ -970,8 +970,9 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                     f"streak-exhaustion past its one auto-decompose attempt, "
                     f"or a decompose tick still "
                     f"queued/running behind a busy dispatch backlog; check "
-                    f"the job's job_result / job_event chunks or "
-                    f"view='attention' for the recovery options"
+                    f"the job's job_result / job_event chunks "
+                    f"(view='result' / view='log') — the recovery verb "
+                    f"is put(kind='job', id=<job>, mode='retry')"
                 ),
                 total=int(r[-1]),
             )
