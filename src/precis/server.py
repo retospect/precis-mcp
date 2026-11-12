@@ -2230,10 +2230,8 @@ def _install_token_auth(
             if scope.get("method") in {"GET", "HEAD"} and scope.get("path") == (
                 security_txt.PATH
             ):
-                body = security_txt.render()
-                if body is not None:
-                    await PlainTextResponse(body)(scope, receive, send)
-                    return
+                await PlainTextResponse(security_txt.render())(scope, receive, send)
+                return
             if (
                 oauth_config is not None
                 and personal_path is not None

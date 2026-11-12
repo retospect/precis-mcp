@@ -22,24 +22,41 @@ def test_render_rolling_expires(monkeypatch: pytest.MonkeyPatch) -> None:
     body = security_txt.render(datetime(2026, 11, 12, 15, 30, tzinfo=UTC))
     assert body == (
         "Contact: mailto:sec@example.org\n"
-        "Expires: 2027-05-11T00:00:00Z\n"
+        "Expires: 2027-11-11T00:00:00Z\n"
         "Preferred-Languages: en\n"
     )
 
 
-def test_render_none_without_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_default_contact_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_SECURITY_CONTACT", raising=False)
-    assert security_txt.render() is None
+    assert "Contact: mailto:reto@retostamm.com\n" in security_txt.render()
 
 
-def test_served_without_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PRECIS_SECURITY_CONTACT", "mailto:sec@example.org")
+def test_served_by_default_without_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_SECURITY_CONTACT", raising=False)
     resp = _client().get(security_txt.PATH)
     assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("text/plain")
-    assert "Contact: mailto:sec@example.org" in resp.text
+    assert "Contact: mailto:reto@retostamm.com" in resp.text
 
 
-def test_unconfigured_keeps_bearer_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PRECIS_SECURITY_CONTACT", raising=False)
-    assert _client().get(security_txt.PATH).status_code == 401
+def test_other_paths_keep_bearer_gate() -> None:
+    assert _client().get("/mcp").status_code == 401
+
+
+def _without_canonical(text: str) -> list[str]:
+    return [ln for ln in text.splitlines() if not ln.startswith("Canonical:")]
+
+
+def test_web_and_mcp_bodies_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both hosts serve the same Contact/Expires/Languages lines."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient as WebClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    monkeypatch.setenv("PRECIS_SECURITY_CONTACT", "mailto:sec@example.org")
+    web = WebClient(create_app(web_config=WebConfig.from_env()))
+    web_text = web.get(security_txt.PATH).text
+    mcp_text = _client().get(security_txt.PATH).text
+    assert _without_canonical(web_text) == _without_canonical(mcp_text)

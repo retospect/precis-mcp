@@ -47,9 +47,7 @@ def test_expires_within_one_year() -> None:
     r = _client().get("/.well-known/security.txt")
     m = _EXPIRES_RE.search(r.text)
     assert m is not None
-    expires = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S.000Z").replace(
-        tzinfo=UTC
-    )
+    expires = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     now = datetime.now(UTC)
     assert expires > now
     assert (expires - now).days <= 365
