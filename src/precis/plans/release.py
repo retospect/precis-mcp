@@ -277,7 +277,9 @@ def approval_body(rn: str) -> str:
     """The approval ask's body — ``"r<N>"`` at mint, the cut's release
     once :func:`record_cut` fills it."""
     return (
-        "The release this plan cut is green. Answer with "
+        "Deploy this plan's release only if its CI verdict is green; this "
+        "ask is blocked until the verdict gate passes, so do not answer "
+        "while it is open. Then answer with "
         f"put(kind='todo', id=<this>, text='answer: deploy {rn}') and close "
         "this todo; 'hold' (or any other answer) deploys nothing."
     )
