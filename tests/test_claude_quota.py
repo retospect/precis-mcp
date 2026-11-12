@@ -426,6 +426,37 @@ def test_refresh_snapshot_pages_on_logged_out_clean_exit(monkeypatch) -> None:
     assert snap is None and outcome is RefreshOutcome.AUTH_FAILED
 
 
+def test_refresh_snapshot_tokenless_clean_exit_is_auth_failed(monkeypatch) -> None:
+    """gr635459: a clean ``claude -p`` that ran WITHOUT the OAuth token
+    authenticated a fallback credential — its windows, or a quiet
+    no-limits reply, belong to another principal. Both the OK and
+    NO_LIMITS reads require the subscription token; tokenless, the probe
+    is AUTH_FAILED — nothing persists, and ``quota_check`` pages instead
+    of clearing the shared auth alert."""
+    from unittest.mock import Mock
+
+    from precis.utils import claude_quota as cq
+    from precis.utils.claude_quota import RefreshOutcome, refresh_snapshot
+
+    monkeypatch.setattr(cq, "token_resolvable", lambda: False)
+
+    # Tokenless + a parseable payload: the foreign window must not persist.
+    store = Mock()
+    payload = json.dumps(
+        {"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1791915000}}}
+    )
+    monkeypatch.setattr(cq, "run_claude", lambda *a, **k: _FakeRes(0, payload))
+    snap, outcome = refresh_snapshot(store)
+    assert snap is None and outcome is RefreshOutcome.AUTH_FAILED
+    store.record_claude_quota.assert_not_called()
+
+    # Tokenless + a quiet no-limits reply: same — not NO_LIMITS.
+    monkeypatch.setattr(cq, "run_claude", lambda *a, **k: _FakeRes(0, "{}"))
+    snap, outcome = refresh_snapshot(store)
+    assert snap is None and outcome is RefreshOutcome.AUTH_FAILED
+    store.record_claude_quota.assert_not_called()
+
+
 def test_refresh_snapshot_clean_payload_containing_401_is_not_auth_failure(
     monkeypatch,
 ) -> None:

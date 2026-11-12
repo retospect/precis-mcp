@@ -7,6 +7,7 @@ scheduled per exhausted window; a reset in the past clears the pause.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import Mock
@@ -294,3 +295,54 @@ def test_pool_park_skipped_when_no_token_resolves(
     )
     router._harvest_pool_signals(refusal, transport=Transport.CLAUDE_P, bare=False)
     assert parks == []
+
+
+def test_pool_stream_writes_skipped_when_no_token_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same guard covers the stream path: a ``claude_agent`` refusal's
+    stream reports windows, and the harvest used to write them
+    (``record_pool_report``) and park the stream-marked pool
+    (``record_pool_failure``) even when no OAuth token could have produced
+    them. Tokenless, the stream is the fallback credential's account — no
+    report, no park."""
+    from precis.utils.llm import accounts
+
+    reports: list[Any] = []
+    parks: list[Any] = []
+    store = Mock()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: store)
+    monkeypatch.setattr(
+        accounts, "record_pool_report", lambda *a, **k: reports.append(k)
+    )
+    monkeypatch.setattr(
+        accounts, "record_pool_failure", lambda *a, **k: parks.append(k)
+    )
+    monkeypatch.setattr("precis.utils.claude_oauth.token_resolvable", lambda: False)
+    stream = json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "rejected",
+                "resetsAt": 1791915000,
+                "rateLimitType": "five_hour",
+                "unifiedWindows": {
+                    "five_hour": {"utilization": 0.55, "resetsAt": 1791915000},
+                    "seven_day": {"utilization": 0.5, "resetsAt": 1792126800},
+                },
+            },
+        }
+    )
+    refusal = LlmResult(
+        text="",
+        raw_text=stream,
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.BIG,
+        error="account quota exhausted: You've hit your limit",
+        reason_class="quota",
+        retry_at=RESET,
+    )
+    router._harvest_pool_signals(refusal, transport=Transport.CLAUDE_AGENT, bare=False)
+    assert reports == [] and parks == []

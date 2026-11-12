@@ -3504,9 +3504,10 @@ def _harvest_pool_signals(
     the stream marks refused, or the one the notice wording names when
     there is no stream to read (:func:`_park_notice_pool`; ``claude_p``
     emits no ``rate_limit_event``, so its quota failures used to never
-    reach the ledger, gr645188). The wording-named park only fires when
-    the OAuth token resolves on this host — tokenless, the wording is a
-    fallback credential's window, not the subscription pool's (gr635459).
+    reach the ledger, gr645188). Every write is gated on the OAuth token
+    resolving on this host — tokenless, the run answered off fallback
+    credentials, so both the stream's windows and a refusal's wording
+    belong to another principal, not the subscription pool (gr635459).
     Writes the pool ledger only — never the
     claude quota snapshot, which :func:`_react_to_quota` alone stamps from
     the final result — so it runs per rung, each rung's evidence harvested
@@ -3525,17 +3526,21 @@ def _harvest_pool_signals(
         store = _meter.active_store()
         if store is None:
             return
+        # gr635459: the ledger is the subscription pool's — guard before
+        # either path writes. Tokenless, both a stream's reported windows
+        # and a refusal's wording are a fallback credential's, so nothing
+        # this run produced may update or park a claude-sub pool.
+        if not _subscription_quota_trusted():
+            return
         snapshot = (
             parse_rate_limits(result.raw_text)
             if transport is Transport.CLAUDE_AGENT and result.raw_text
             else None
         )
         if snapshot is None:
-            # gr635459: a stream-less quota refusal parks the pool its
-            # wording names — but only when the run could have presented
-            # the OAuth token. Tokenless, the wording is a fallback
-            # credential's window, not the subscription pool's.
-            if result.reason_class == "quota" and _subscription_quota_trusted():
+            # A stream-less quota refusal parks the pool its wording
+            # names — the only window evidence a ``claude_p`` run emits.
+            if result.reason_class == "quota":
                 _park_notice_pool(store, result)
             return
         # Only a window the stream itself marks refused is parked: the parser

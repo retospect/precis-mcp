@@ -48,6 +48,7 @@ from precis.utils._claude_subprocess import ClaudeProcessError, run_claude
 from precis.utils.claude_oauth import (
     LOGGED_OUT_MARKERS,
     logged_out_banner_present,
+    token_resolvable,
 )
 
 log = logging.getLogger(__name__)
@@ -472,8 +473,25 @@ def refresh_snapshot(
         )
         return None, RefreshOutcome.AUTH_FAILED
 
-    # Authenticated from here on, regardless of whether rate_limits parse or
-    # the DB persist succeeds.
+    # A clean exit with no logged-out banner still proves only that SOME
+    # credential authenticated — not that it was the subscription's. When
+    # no OAuth token resolves on this host the probe ran on fallback
+    # credentials (the gr635459 key-management failure), so the windows it
+    # reports — or a quiet no-limits reply — belong to another principal:
+    # persisting them would write foreign quota, and OK/NO_LIMITS would
+    # clear the shared auth alert (``workers.quota_check`` resolves the
+    # alert on either). Classify the run as AUTH_FAILED before accepting
+    # those outcomes.
+    if not token_resolvable():
+        log.warning(
+            "claude_quota: claude -p exited 0 but no OAuth token resolves on "
+            "this host — the reply is a fallback credential's, not the "
+            "subscription's (gr635459) — treating as AUTH_FAILED"
+        )
+        return None, RefreshOutcome.AUTH_FAILED
+
+    # Subscription-token authenticated from here on, regardless of whether
+    # rate_limits parse or the DB persist succeeds.
     snapshot = parse_rate_limits(res.stdout)
     if snapshot is None:
         log.info("claude_quota: response had no rate_limits payload")
