@@ -26,10 +26,13 @@ import pytest
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import materialize as m
+from precis.workers.executors._common import _MAX_RUNNING_DEFAULTS
 from tests.workers._helpers import seed_chunk, seed_ref
 from tests.workers.test_memory_embed import _memory
 
 pytestmark = pytest.mark.db
+
+_DRAIN_CAP = _MAX_RUNNING_DEFAULTS["derived_drain"]
 
 
 def _fake_clock(monkeypatch: pytest.MonkeyPatch, *, start: float = 1_000_000.0) -> dict:
@@ -784,11 +787,11 @@ def test_band_full_behind_saturated_lane_is_silent(
     # genuinely-stuck tick — the saturated lane must revert it.
     _seed_derived(store, "llm_summarize", 5, status="queued", prio=m._STARVED_PRIO)
     # The sibling band holds the whole capped lane on the pinned node
-    # (derived_drain max_running=2, lease_host = the band's target node).
+    # (derived_drain max_running default, lease_host = the band's target node).
     _seed_derived(
         store,
         "classify",
-        2,
+        _DRAIN_CAP,
         status="running",
         lease_host=m._DEFAULT_SMALL_TARGET_NODE,
     )
@@ -815,13 +818,14 @@ def test_band_warns_when_lane_has_free_capacity(
     of this band would not be cap-blocked yet 0 of it runs."""
     backlog = {"n": 999_999}
     _seed_derived(store, "llm_summarize", 5, status="queued")
-    _seed_derived(
-        store,
-        "classify",
-        1,
-        status="running",
-        lease_host=m._DEFAULT_SMALL_TARGET_NODE,
-    )
+    if _DRAIN_CAP > 1:
+        _seed_derived(
+            store,
+            "classify",
+            _DRAIN_CAP - 1,
+            status="running",
+            lease_host=m._DEFAULT_SMALL_TARGET_NODE,
+        )
     monkeypatch.setattr(
         m,
         "_BACKLOG_SOURCES",

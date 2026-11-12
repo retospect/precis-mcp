@@ -12,14 +12,19 @@ band cannot starve rows queued behind it.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any, cast
 
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
+    _MAX_RUNNING_DEFAULTS,
     CLAIM_CLASS_RANK_ENV,
     claim_executor_jobs,
 )
+
+_DRAIN_CAP = _MAX_RUNNING_DEFAULTS["derived_drain"]
 
 _AGE_STEP_S = 600
 _CLASS_AGE_S = 1800
@@ -143,9 +148,9 @@ def test_max_running_refuses_cap_plus_one(store: Store) -> None:
 
 
 def test_default_cap_applies_to_derived_drain(store: Store) -> None:
-    """The code-shipped default caps ``derived_drain`` at 2 running per
-    host even with no ``app_state`` row — the band can't fill the lane."""
-    for _ in range(2):
+    """The code-shipped default caps ``derived_drain`` running per host
+    even with no ``app_state`` row — the band can't fill the lane."""
+    for _ in range(_DRAIN_CAP):
         _job(
             store,
             origin="background",
@@ -163,7 +168,7 @@ def test_capped_band_does_not_starve_later_rows(store: Store) -> None:
     """With derived_drain at its cap and many drains queued ahead, an
     embed_batch behind them is still claimed (SQL exclusion, not a
     skipped fetch window)."""
-    for _ in range(2):
+    for _ in range(_DRAIN_CAP):
         _job(
             store,
             origin="background",
@@ -323,12 +328,27 @@ def test_in_call_cap_counts_claims(store: Store) -> None:
 # ── D4 share half: round-robin by (job_type, params.pass) share ────────
 
 
+def _set_drain_cap(store: Store, cap: int) -> None:
+    """Override the ``derived_drain`` running cap so a share test has room
+    for two bands — the code default (1) deliberately leaves one slot free
+    for control jobs (gr646119), leaving no second drain slot to share."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES "
+            "('claim.max_running.derived_drain', %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (str(cap),),
+        )
+        conn.commit()
+
+
 def test_share_prefers_band_with_fewest_running(store: Store) -> None:
     """gr506754: a full summarize band sat 0-running for hours behind the
     classify band's rows — both bands share job_type ``derived_drain``, so
     FIFO-by-age let one band hold the capped lane. The share term
     (fewest running per ``job_type``+``params.pass`` on this host) lets
     the starved band claim the next free slot."""
+    _set_drain_cap(store, 4)
     _job(
         store,
         origin="background",
@@ -362,6 +382,7 @@ def test_share_round_robins_within_one_claim(store: Store) -> None:
     """One multi-claim call interleaves the shares rather than draining
     the oldest band's prefix: pick order goes oldest → other share →
     oldest — not oldest, second-oldest, third-oldest."""
+    _set_drain_cap(store, 4)
     cls1 = _job(
         store,
         origin="background",
@@ -408,6 +429,7 @@ def test_share_term_off_under_kill_switch(store: Store, monkeypatch: Any) -> Non
     """``PRECIS_CLAIM_CLASS_RANK=0`` drops the share term with the class
     order — the aged order claims the oldest row regardless of which
     band holds the running slots."""
+    _set_drain_cap(store, 4)
     _job(
         store,
         origin="background",
@@ -464,10 +486,10 @@ def test_yielded_keeps_class_human_first(store: Store) -> None:
 
 
 def test_control_job_claims_next_pass_at_drain_cap(store: Store) -> None:
-    """gr592211: with the derived_drain cap full (2 running) and a
+    """gr592211: with the derived_drain cap full and a
     50-deep drain backlog queued, a recurring ``release_poll`` claims on
     the very next pass — the last slot never fills with drains."""
-    for _ in range(2):
+    for _ in range(_DRAIN_CAP):
         _job(
             store,
             origin="background",
@@ -488,7 +510,7 @@ def test_cap_binds_by_lease_host_not_claim_node(store: Store) -> None:
     ``meta.lease_host`` (the ``reserve_host()`` stamp), NOT ``node``
     (PRECIS_NODE — a lane name, not a machine). Where the two diverge a
     node-keyed count reads 0 running rows and the cap never binds."""
-    for _ in range(2):
+    for _ in range(_DRAIN_CAP):
         _job(
             store,
             origin="background",
@@ -507,7 +529,7 @@ def test_uncapped_jobs_claim_through_starved_lane(store: Store) -> None:
     """The cap excludes only the capped type: embed_batch (no cap) still
     claims while derived_drain sits at its cap — the free slot goes to
     whatever ranks first, drains wait."""
-    for _ in range(2):
+    for _ in range(_DRAIN_CAP):
         _job(
             store,
             origin="background",
@@ -519,3 +541,24 @@ def test_uncapped_jobs_claim_through_starved_lane(store: Store) -> None:
         _job(store, origin="background", prio=8, job_type="derived_drain")
     embed = _job(store, origin="background", prio=8, job_type="embed_batch")
     assert _claim(store, limit=10) == [embed]
+
+
+def test_drain_cap_leaves_a_lane_free_of_the_deployed_drain_lanes() -> None:
+    """gr646119: the ``derived_drain`` cap must stay strictly below the
+    dedicated drain-lane count the playbook deploys by default — a cap
+    equal to the lane count (it was 2 of 2) lets drains hold every
+    ``job_inproc`` slot and release-class jobs queue behind them for
+    tens of minutes, which class ranking cannot fix."""
+    playbook = (
+        Path(__file__).resolve().parents[2]
+        / "deploy/playbooks/20d-precis-worker-drain.yml"
+    )
+    match = re.search(
+        r"^\s*precis_worker_drain_lanes:\s*(\d+)\s*$",
+        playbook.read_text(),
+        re.MULTILINE,
+    )
+    assert match, "precis_worker_drain_lanes default not found in 20d playbook"
+    lanes = int(match.group(1))
+    assert lanes >= 2
+    assert 1 <= _DRAIN_CAP < lanes

@@ -192,7 +192,19 @@ _BASE_CLASS_RANK = {"human": 0, "agent": 1, "recurring": 2, "background": 3}
 #: the derived_drain band can never occupy every ``job_inproc`` process.
 #: An operator overrides per setting ``claim.max_running.<job_type>``
 #: in ``app_state`` (an int; ``0`` suspends the type entirely).
-_MAX_RUNNING_DEFAULTS: dict[str, int] = {"derived_drain": 2}
+#:
+#: ``derived_drain`` is 1, deliberately below the dedicated drain-lane
+#: count (``precis_worker_drain_lanes``, default 2 in
+#: ``deploy/playbooks/20d-precis-worker-drain.yml``): the collapsed and
+#: agent-lane ``job_inproc`` passes are serial and busy for tens of
+#: minutes to hours with other work, so the drain lanes are the free
+#: ``job_inproc`` slots, and a cap equal to their count let two drains
+#: hold every slot while release_poll / ci_verdict_poll / release_cut sat
+#: queued 15-35 min per stall (gr646119, prod 2026-11-12; ranking orders
+#: the queue but cannot free a slot). Keep this strictly below the lane
+#: count; ``tests/workers/test_claim_fairness.py`` pins the relation
+#: against the playbook default.
+_MAX_RUNNING_DEFAULTS: dict[str, int] = {"derived_drain": 1}
 _MAX_RUNNING_KEY_PREFIX = "claim.max_running."
 
 # ── Executor lane cap + per-class slot reservation (gr603792) ──────────

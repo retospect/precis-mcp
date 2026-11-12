@@ -74,7 +74,10 @@
   become: true
   vars:
     # Lane count — the throughput knob. Each lane is its own
-    # `com.precis.worker-drain-<N>` LaunchDaemon.
+    # `com.precis.worker-drain-<N>` LaunchDaemon. Keep this above the
+    # `derived_drain` per-host running cap (`_MAX_RUNNING_DEFAULTS` in
+    # workers/executors/_common.py, 1): a cap equal to the lane count lets
+    # drains hold every lane and starve release-class jobs (gr646119).
     precis_worker_drain_lanes: 2
     # Local constants — role defaults aren't in scope (see header's SCOPE /
     # DEPENDENCIES). Cluster-stable, same values roles/precis_worker/defaults/
