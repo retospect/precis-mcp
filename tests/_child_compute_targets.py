@@ -44,6 +44,16 @@ def ignore_sigterm_and_sleep() -> None:
     _sleep()
 
 
+def rlimit_data_soft() -> int:
+    """The child's ``RLIMIT_DATA`` soft cap (-1 where the platform lacks
+    the constant) — proof ``_child_main`` applied the memory rlimit."""
+    import resource
+
+    if not hasattr(resource, "RLIMIT_DATA"):
+        return -1
+    return int(resource.getrlimit(resource.RLIMIT_DATA)[0])
+
+
 def spawn_grandchild_and_sleep() -> None:
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     emit("grandchild", proc.pid)

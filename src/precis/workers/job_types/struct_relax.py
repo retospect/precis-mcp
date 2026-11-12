@@ -334,7 +334,10 @@ def _relax_timeout_s() -> float:
 #: an uncapped slab relax could push a compute host past its per-host budget
 #: beside the 48G compute lane (host-lanes, 932364d0a). roles/dft renders
 #: ``PRECIS_DFT_MEM_LIMIT`` (default 40g — the compute lane's
-#: ``container_reserve``); empty ⇒ no cap.
+#: ``container_reserve``); empty ⇒ no cap. Fed to
+#: ``container_limit_flags(job_limit=…)`` so it merges into one effective
+#: cap with the fleet ceiling — it can tighten, never raise, the
+#: ``PRECIS_JOB_MEM_LIMIT`` ceiling (gr595537).
 _DFT_MEM_LIMIT_ENV = "PRECIS_DFT_MEM_LIMIT"
 
 
@@ -365,7 +368,9 @@ def build_run_argv(
     wraps the command in ``mpirun -np <n>``, which requires the MPI-enabled
     image (precis-dft) — hence off by default."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
-    limits = container_limit_flags()
+    limits = container_limit_flags(
+        job_limit=os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip() or None
+    )
     dft_cpuset = os.environ.get("PRECIS_DFT_CPUSET", "").strip()
     if dft_cpuset:
         # A DFT-only pin (e.g. the GB10's fast cores) replaces the fleet-wide
@@ -378,11 +383,6 @@ def build_run_argv(
         limits += ["--cpuset-cpus", dft_cpuset]
     argv += limits
     argv += container_user_flags()
-    mem_limit = os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip()
-    if mem_limit:
-        # --memory + an equal --memory-swap: the cap is hard, no swap
-        # thrashing on top of it (same shape as precis_bio/alphafold.py).
-        argv += ["--memory", mem_limit, "--memory-swap", mem_limit]
     threads = _omp_threads()
     if threads:
         argv += ["-e", f"OMP_NUM_THREADS={threads}"]

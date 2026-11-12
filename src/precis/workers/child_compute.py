@@ -23,7 +23,11 @@ duplicates driver and allocator state (the same reason
 start its own children (``IsolatedTBLite`` spawns an xtb child), and those
 must die with it. Why the orphan watch: if the worker itself is killed,
 the child notices its parent changed and SIGKILLs its own group, so no
-compute outlives the worker that owns its job.
+compute outlives the worker that owns its job. The child also applies the
+per-task memory cap (:func:`precis.utils.container_limits.mem_limit_preexec`,
+gr595537): a spawn-started child has no ``preexec_fn`` door, so it sets the
+same rlimits in-process before ``fn`` runs — a runaway relax dies over the
+operator ceiling instead of swapping the host.
 
 ``fn`` and every argument must pickle by reference (a module-level
 function, plain data). Exceptions raised in the child are re-raised in the
@@ -48,6 +52,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from multiprocessing.connection import Connection
 from typing import Any
+
+from precis.utils.container_limits import mem_limit_preexec
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +132,12 @@ def _child_main(
         format=f"%(asctime)s %(levelname)s [child {os.getpid()}] %(name)s: %(message)s",
     )
     _EVENT_CONN = conn
+    # gr595537: the per-task memory cap as rlimits, applied in-process —
+    # a spawn-started child has no preexec_fn door. Resolves to None when
+    # no cap is configured, so an unconfigured host is byte-identical.
+    apply = mem_limit_preexec()
+    if apply is not None:
+        apply()
     try:
         result = fn(*args)
     except BaseException as exc:

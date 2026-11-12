@@ -206,7 +206,7 @@ def build_aizynth_argv(
         "--name",
         f"precis-route-{ref_id}",
         *container_user_flags(),
-        *container_limit_flags(job_type="retrosynth"),
+        *container_limit_flags(),
         "-v",
         f"{in_dir}:{CONTAINER_IN}:ro",
         "-v",

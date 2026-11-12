@@ -143,7 +143,7 @@ def _build_normalizer_argv(
         "--name",
         f"precis-normalize-{ref_id}",
         *container_user_flags(),
-        *container_limit_flags(job_type="retrosynth"),
+        *container_limit_flags(),
         "-v",
         f"{in_dir}:/work/in:ro",
         "-v",

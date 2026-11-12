@@ -225,6 +225,7 @@ from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
 from precis.principal import worker_comment_meta
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.utils.container_limits import mem_limit_preexec
 from precis.utils.dispatch_score import (
     CLAIM_BAND_META_KEY as _CLAIM_BAND_KEY,
 )
@@ -700,7 +701,10 @@ def _launch(
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
     wrapping shell (a restarted worker, no longer the parent, still reads
     it). ``stdin=None`` feeds ``/dev/null``. ``pass_fds`` are fds the child
-    inherits (an flock held for the run's life — gr650484). Returns the
+    inherits (an flock held for the run's life — gr650484). The child also
+    gets the per-task memory cap as an rlimit (gr595537 — the slice's
+    agent, builds and tests die over the ceiling instead of wedging the
+    host into swap; no cap configured ⇒ ``preexec_fn=None``). Returns the
     process group pid."""
     script = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
     full_env = {
@@ -719,6 +723,7 @@ def _launch(
         stderr=subprocess.DEVNULL,
         start_new_session=True,
         pass_fds=pass_fds,
+        preexec_fn=mem_limit_preexec(),
     )
     return int(proc.pid)
 

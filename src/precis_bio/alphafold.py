@@ -99,10 +99,14 @@ def build_fold_argv(
     ``mem_limit`` (a docker size string like ``"100g"``, from
     ``PRECIS_FOLD_MEM_LIMIT``) caps the container's memory so an AF3 XLA-compile
     spike can't exhaust the node — the GB10 is a DGX Spark with **unified**
-    CPU+GPU LPDDR5X, so an uncapped fold can starve the resident worker. Sets
-    ``--memory`` + an equal ``--memory-swap`` (no swap thrashing on top of the
-    cap). ``None`` ⇒ no cap (unchanged default). Cheap insurance; a fold on a
-    21-mer stays well under any sane cap, and the operator sizes it in the role.
+    CPU+GPU LPDDR5X, so an uncapped fold can starve the resident worker. It
+    feeds ``container_limit_flags(job_limit=…)``, which emits ONE
+    ``--memory`` + equal ``--memory-swap`` pair at the minimum of this knob
+    and the fleet-wide ``PRECIS_JOB_MEM_LIMIT`` ceiling — a job cap
+    tightens, never raises, the operator ceiling (gr595537). ``None`` ⇒
+    the shared resolution decides (usually no cap, unchanged default).
+    Cheap insurance; a fold on a 21-mer stays well under any sane cap, and
+    the operator sizes it in the role.
     """
     argv = [
         container_cmd,
@@ -113,10 +117,8 @@ def build_fold_argv(
         "--name",
         f"precis-fold-{ref_id}",
     ]
-    argv += container_limit_flags()
+    argv += container_limit_flags(job_limit=mem_limit)
     argv += container_user_flags()
-    if mem_limit:
-        argv += ["--memory", mem_limit, "--memory-swap", mem_limit]
     argv += [
         "-v",
         f"{Path(in_dir) / INPUT_FILE}:{CONTAINER_INPUT}:ro",

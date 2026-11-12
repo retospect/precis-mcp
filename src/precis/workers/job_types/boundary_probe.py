@@ -361,7 +361,7 @@ def _container_argv(
         name,
         "--label",
         f"{_CONTAINER_LABEL}={tag}",
-        *container_limit_flags(job_type="boundary_probe"),
+        *container_limit_flags(),
         "--network",
         "none",
         "-v",

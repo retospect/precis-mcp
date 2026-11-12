@@ -24,7 +24,7 @@ from precis.utils.container_limits import (
     mem_limit_preexec,
     memory_cap_killed,
 )
-from precis.workers.job_types import struct_relax
+from precis.workers.job_types import run_slice, struct_relax
 from precis_bio.alphafold import build_fold_argv
 from precis_chem.aizynth import build_aizynth_argv
 from precis_chem.jobs import _build_normalizer_argv
@@ -32,9 +32,14 @@ from precis_chem.jobs import _build_normalizer_argv
 
 @pytest.fixture(autouse=True)
 def _clean_limit_env(monkeypatch):
-    # The memory knob must not leak in from a dev/daemon env — the
-    # no-env-no-flag assertions above and below assume it unset.
-    monkeypatch.delenv("PRECIS_JOB_MEM_LIMIT", raising=False)
+    # The memory knobs must not leak in from a dev/daemon env — the
+    # no-env-no-flag assertions above and below assume them unset.
+    for var in (
+        "PRECIS_JOB_MEM_LIMIT",
+        "PRECIS_DFT_MEM_LIMIT",
+        "PRECIS_FOLD_MEM_LIMIT",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_no_env_no_flags(monkeypatch):
@@ -172,9 +177,8 @@ def test_science_builders_unset_pass_no_user(monkeypatch):
 
 
 def test_mem_no_source_no_flags():
-    """Bare call, no env, unknown job_type ⇒ uncapped, byte-identical."""
+    """Bare call, no env ⇒ uncapped, byte-identical (no-env-no-flag)."""
     assert job_mem_limit_mb() is None
-    assert job_mem_limit_mb("unlisted_type") is None
     assert container_memory_flags() == []
     assert container_limit_flags() == []
 
@@ -197,85 +201,86 @@ def test_mem_env_size_spellings(monkeypatch):
         ("1.5g", 1536.0),
         ("1073741824", 1024.0),  # a bare number is bytes (docker's rule)
         ("4GB", 4e9 / (1024 * 1024)),  # the *b spellings are powers of ten
+        ("8192k", 8.0),  # k = KiB = 1024 BYTES, not 1024 MiB
     ]:
         monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", raw)
         assert job_mem_limit_mb() == want
 
 
 def test_mem_env_disable_wins_over_everything(monkeypatch):
-    """The operator escape hatch: uncapped even with an estimate + default."""
+    """The operator escape hatch: uncapped even with an estimate + a job
+    knob."""
     for raw in ("0", "none", "off"):
         monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", raw)
-        assert job_mem_limit_mb("tts_render", 4096) is None
-        assert container_memory_flags("tts_render", 4096) == []
+        assert job_mem_limit_mb(4096) is None
+        assert container_memory_flags(4096) == []
+        assert container_memory_flags(job_limit="40g") == []
 
 
-def test_mem_job_type_default():
-    """Static per-job_type defaults — the cold-start layer (gr595537)."""
-    assert job_mem_limit_mb("tts_render") == 8192.0
-    assert job_mem_limit_mb("agent_container") == 8192.0
-    assert job_mem_limit_mb("retrosynth") == 8192.0
-    assert container_limit_flags(job_type="tts_render") == [
-        "--memory",
-        "8192m",
-        "--memory-swap",
-        "8192m",
-    ]
-
-
-def test_mem_estimate_beats_default():
+def test_mem_estimate_is_the_per_task_cap():
     """The footprint estimate (predicted peak + margin) is the per-task cap."""
-    assert job_mem_limit_mb("tts_render", 2048) == 2048.0
-    assert job_mem_limit_mb("unlisted_type", 2048.5) == 2048.5
+    assert job_mem_limit_mb(2048) == 2048.0
+    assert job_mem_limit_mb(2048.5) == 2048.5
 
 
 def test_mem_env_is_a_ceiling(monkeypatch):
-    """PRECIS_JOB_MEM_LIMIT clamps the estimate/default down and supplies
-    the cap when neither exists — never raises them."""
+    """PRECIS_JOB_MEM_LIMIT clamps the estimate down and supplies the cap
+    when none exists — never raises it."""
     monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "4g")
     assert job_mem_limit_mb() == 4096.0
-    assert job_mem_limit_mb("tts_render") == 4096.0
-    assert job_mem_limit_mb("tts_render", 8192) == 4096.0
+    assert job_mem_limit_mb(8192) == 4096.0
     monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "16g")
-    assert job_mem_limit_mb("tts_render") == 8192.0
-    assert job_mem_limit_mb("tts_render", 2048) == 2048.0
+    assert job_mem_limit_mb(2048) == 2048.0
 
 
 def test_mem_env_unreadable_falls_back(monkeypatch):
-    """A junk env value doesn't silently uncap — the estimate/default apply."""
+    """A junk env value doesn't silently uncap — the estimate still applies."""
     monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "bogus")
-    assert job_mem_limit_mb("tts_render") == 8192.0
+    assert job_mem_limit_mb(8192) == 8192.0
     assert job_mem_limit_mb() is None
 
 
-def test_aizynth_and_normalizer_carry_the_default_cap():
-    """The retrosynth containers the gripe names get --memory/--memory-swap."""
-    argv = build_aizynth_argv(
-        ref_id=7, in_dir="/i", out_dir="/o", smiles="CCO", image="az:sha"
-    )
-    i = argv.index("--memory")
-    assert argv[i + 1 : i + 4] == ["8192m", "--memory-swap", "8192m"]
-    assert i < argv.index("az:sha")
-    nargv = _build_normalizer_argv(
-        ref_id=7,
-        in_dir="/i",
-        out_dir="/o",
-        input_format="az",
-        engine="aizynth",
-        engine_version="4",
-        image="norm:sha",
-        container_cmd="docker",
-    )
-    i = nargv.index("--memory")
-    assert nargv[i + 1 : i + 4] == ["8192m", "--memory-swap", "8192m"]
+def test_science_builders_uncapped_without_env():
+    """No-env-no-flag: the retrosynth/fold/dft containers emit no --memory
+    when no operator knob is set (gr595537's opt-in contract)."""
+    for argv in (
+        build_aizynth_argv(
+            ref_id=7, in_dir="/i", out_dir="/o", smiles="CCO", image="az:sha"
+        ),
+        _build_normalizer_argv(
+            ref_id=7,
+            in_dir="/i",
+            out_dir="/o",
+            input_format="az",
+            engine="aizynth",
+            engine_version="4",
+            image="norm:sha",
+            container_cmd="docker",
+        ),
+        build_fold_argv(
+            ref_id=7, in_dir="/i", out_dir="/o", image="af3:sha", models_dir="/m"
+        ),
+        struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o"),
+    ):
+        assert "--memory" not in argv
 
 
-def test_env_overrides_builder_default(monkeypatch):
+def test_env_ceiling_reaches_the_builders(monkeypatch):
+    """The operator ceiling lands as ONE --memory pair on every science
+    builder."""
     monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "4g")
-    argv = build_aizynth_argv(
-        ref_id=7, in_dir="/i", out_dir="/o", smiles="CCO", image="az:sha"
-    )
-    assert "4096m" in argv
+    for argv in (
+        build_aizynth_argv(
+            ref_id=7, in_dir="/i", out_dir="/o", smiles="CCO", image="az:sha"
+        ),
+        build_fold_argv(
+            ref_id=7, in_dir="/i", out_dir="/o", image="af3:sha", models_dir="/m"
+        ),
+        struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o"),
+    ):
+        assert argv.count("--memory") == 1
+        i = argv.index("--memory")
+        assert argv[i + 1 : i + 4] == ["4096m", "--memory-swap", "4096m"]
 
 
 def test_disable_removes_builder_cap(monkeypatch):
@@ -286,11 +291,114 @@ def test_disable_removes_builder_cap(monkeypatch):
     assert "--memory" not in argv
 
 
-def test_mem_limit_preexec_resolves():
+def _mem_pair(argv: list[str]) -> list[str]:
+    """The ``--memory <m> --memory-swap <m>`` pair in an argv, or ``[]``."""
+    if "--memory" not in argv:
+        return []
+    i = argv.index("--memory")
+    return argv[i : i + 4]
+
+
+def _fold_argv() -> list[str]:
+    import os
+
+    return build_fold_argv(
+        ref_id=7,
+        in_dir="/i",
+        out_dir="/o",
+        image="af3:sha",
+        models_dir="/m",
+        mem_limit=os.environ.get("PRECIS_FOLD_MEM_LIMIT"),
+    )
+
+
+def _dft_argv() -> list[str]:
+    return struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+
+
+def test_job_limit_alone_emits_its_cap(monkeypatch):
+    """A job knob with no fleet ceiling behaves exactly as before — its
+    spelling verbatim, so the argv is byte-identical."""
+    monkeypatch.setenv("PRECIS_DFT_MEM_LIMIT", "40g")
+    monkeypatch.setenv("PRECIS_FOLD_MEM_LIMIT", "100g")
+    assert _mem_pair(_dft_argv()) == ["--memory", "40g", "--memory-swap", "40g"]
+    assert _mem_pair(_fold_argv()) == [
+        "--memory",
+        "100g",
+        "--memory-swap",
+        "100g",
+    ]
+
+
+def test_job_limit_merges_into_one_cap(monkeypatch):
+    """gr595537 review: a job knob (PRECIS_DFT/FOLD_MEM_LIMIT) resolves
+    WITH the shared ceiling — one --memory pair at the minimum, never a
+    second flag appended later that would override the operator ceiling."""
+    monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "8g")
+    monkeypatch.setenv("PRECIS_DFT_MEM_LIMIT", "40g")
+    monkeypatch.setenv("PRECIS_FOLD_MEM_LIMIT", "100g")
+    for argv in (_dft_argv(), _fold_argv()):
+        assert argv.count("--memory") == 1
+        assert _mem_pair(argv) == ["--memory", "8192m", "--memory-swap", "8192m"]
+    # A job knob tighter than the fleet ceiling still stands (verbatim).
+    monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "200g")
+    assert _mem_pair(_dft_argv())[1] == "40g"
+    assert _mem_pair(_fold_argv())[1] == "100g"
+
+
+def test_disable_beats_the_job_knob(monkeypatch):
+    """Nothing overrides an explicit disable — not even a job knob."""
+    monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "0")
+    monkeypatch.setenv("PRECIS_DFT_MEM_LIMIT", "40g")
+    assert "--memory" not in struct_relax.build_run_argv(
+        ref_id=7, in_dir="/i", out_dir="/o"
+    )
+
+
+def test_unreadable_job_limit_passes_through_raw(monkeypatch):
+    """A mis-set job knob stays loud: passed to docker verbatim (which
+    rejects it at run time), not silently dropped."""
+    monkeypatch.setenv("PRECIS_DFT_MEM_LIMIT", "bogus")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    i = argv.index("--memory")
+    assert argv[i + 1 : i + 4] == ["bogus", "--memory-swap", "bogus"]
+
+
+def test_mem_limit_preexec_resolves(monkeypatch):
     """No cap source ⇒ None (Popen takes preexec_fn=None); a cap ⇒ callable."""
     assert mem_limit_preexec() is None
     assert callable(mem_limit_preexec(64))
-    assert callable(mem_limit_preexec(job_type="tts_render"))
+    monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "1g")
+    assert callable(mem_limit_preexec())
+
+
+def test_run_slice_launch_passes_the_mem_preexec(monkeypatch, tmp_path):
+    """gr595537 wiring: the bare slice child gets the cap as ``preexec_fn``
+    — ``None`` when no cap resolves (the finding: the helper had no
+    production caller)."""
+    seen: dict = {}
+
+    class _Proc:
+        pid = 4242
+
+    def fake_popen(_argv, **kw):
+        seen.update(kw)
+        return _Proc()
+
+    monkeypatch.setattr(run_slice.subprocess, "Popen", fake_popen)
+    kw = dict(
+        cwd=tmp_path,
+        stdin=None,
+        log=tmp_path / "log",
+        exit_file=tmp_path / "exit",
+        env={},
+    )
+    monkeypatch.setenv("PRECIS_JOB_MEM_LIMIT", "1g")
+    assert run_slice._launch(["echo", "hi"], **kw) == 4242
+    assert callable(seen["preexec_fn"])
+    monkeypatch.delenv("PRECIS_JOB_MEM_LIMIT")
+    run_slice._launch(["echo", "hi"], **kw)
+    assert seen["preexec_fn"] is None
 
 
 @pytest.mark.skipif(os.name != "posix", reason="rlimits are POSIX-only")

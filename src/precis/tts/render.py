@@ -123,7 +123,7 @@ def render_via_container(
     (indir / "segments.json").write_text(json.dumps(payload), encoding="utf-8")
     try:
         argv = [container_cmd, "run", "--rm"]
-        argv += container_limit_flags(job_type="tts_render")
+        argv += container_limit_flags()
         argv += [
             "-v",
             f"{indir}:/work/in:ro",

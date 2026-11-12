@@ -15,20 +15,27 @@ kills the whole worker. Now every ``docker``/``podman run`` argv built here
 can carry ``--memory <m> --memory-swap <m>`` (equal — no swap on top of the
 cap; swap is exactly the host-wedging path this fence exists to close), and
 a bare ``subprocess.Popen`` child gets the same cap as an rlimit through
-:func:`mem_limit_preexec`.
+:func:`mem_limit_preexec` (wired into ``run_slice._launch`` and
+``child_compute._child_main``).
 
-The cap resolves per call from three layers (weakest → strongest):
+The cap resolves per call from two layers — strictly opt-in, so a host
+with no knob set spawns byte-identical argv to before (no-env-no-flag):
 
 * the footprint estimate the caller passes as ``mem_mb`` (predicted peak +
   margin — ``meta.footprint_req`` once gr595539 stamps it, sized off the
   ``meta.footprint`` rows gr595536 measures);
-* ``_JOB_MEM_DEFAULT_MB[job_type]`` — a static per-job_type default for
-  when no estimate exists yet;
 * ``PRECIS_JOB_MEM_LIMIT`` — the host-level operator ceiling, a docker size
-  string (``"8g"``, ``"40960m"``, bytes). It *clamps* either source down
-  and supplies the cap when neither exists; ``0``/``none``/``off`` disables
+  string (``"8g"``, ``"40960m"``, bytes). It *clamps* an estimate down and
+  supplies the cap when none exists; ``0``/``none``/``off`` disables
   capping outright (the escape hatch — nothing overrides an explicit
-  disable, and an operator ceiling can never be raised by an estimate).
+  disable, including a job knob below, and an operator ceiling can never
+  be raised by an estimate).
+
+A job-type-specific ceiling (``PRECIS_DFT_MEM_LIMIT``,
+``PRECIS_FOLD_MEM_LIMIT`` — gr489395) enters as ``job_limit`` and resolves
+*with* the shared layers, never after them: one effective cap, the minimum
+of every ceiling present — a job knob can tighten, never raise, the
+operator ceiling.
 
 A capped container dies by SIGKILL from the cgroup OOM-killer — exit 137 /
 ``-9`` / ``.State.OOMKilled`` — which :func:`memory_cap_killed` turns into
@@ -63,28 +70,6 @@ KILLED_FOR_MEMORY = "killed-for-memory"
 #: -9 = ``subprocess``'s raw signal encoding.
 MEMORY_KILL_RETURNCODES = frozenset({137, -9})
 
-#: Static per-job_type memory defaults (MiB) — the cold-start layer for the
-#: cap when the caller carries no footprint estimate. Only job types the
-#: gripe named gain an entry, and every value is GENEROUS (fences a
-#: runaway, doesn't constrain normal work) until
-#: ``Store.job_footprint_summary``'s p95s size them for real. struct_relax
-#: and fold are deliberately absent: their caps are operator-sized opt-in
-#: knobs already (``PRECIS_DFT_MEM_LIMIT`` / ``PRECIS_FOLD_MEM_LIMIT``,
-#: gr489395).
-_JOB_MEM_DEFAULT_MB: dict[str, int] = {
-    # A `claude -p` agent container — the sandbox lane books 8 GiB per
-    # container for the same class of work (roles/hardening
-    # precis_lane_memory.sandbox.container_reserve).
-    "agent_container": 8192,
-    # precis-tts render (kokoro + ffmpeg): a few GiB in normal work; 8 GiB
-    # fences a runaway without touching a healthy episode.
-    "tts_render": 8192,
-    # retrosynth containers (the aizynth planner and the LinChemIn
-    # normalizer share the job_type) — no measured budget yet; the same
-    # generous 8 GiB class.
-    "retrosynth": 8192,
-}
-
 #: Docker size-string suffixes → MiB multiplier, longest first so ``"8mb"``
 #: doesn't parse as ``"8m" + "b"``. Docker's own convention: single letters
 #: are powers of two, the ``*b`` spellings powers of ten, a bare number is
@@ -95,7 +80,7 @@ _SIZE_UNITS: tuple[tuple[str, float], ...] = (
     ("gb", 1e9 / _MIB),
     ("tb", 1e12 / _MIB),
     ("b", 1.0 / _MIB),
-    ("k", 1024.0),
+    ("k", 1024.0 / _MIB),
     ("m", 1.0),
     ("g", 1024.0),
     ("t", 1024.0 * 1024.0),
@@ -118,23 +103,23 @@ def _size_to_mb(raw: str) -> float | None:
         return None
 
 
-def job_mem_limit_mb(
-    job_type: str | None = None, mem_mb: float | None = None
-) -> float | None:
+def _mem_limit_disabled() -> bool:
+    """Whether ``PRECIS_JOB_MEM_LIMIT`` spells an explicit disable — the
+    strongest signal in the resolution: it uncaps even a job knob."""
+    return os.environ.get(_MEM_LIMIT_ENV, "").strip().lower() in _DISABLE_VALUES
+
+
+def job_mem_limit_mb(mem_mb: float | None = None) -> float | None:
     """The effective per-task memory cap in MiB, or ``None`` (uncapped).
 
     ``mem_mb`` is the footprint estimate (predicted peak + margin) — the
-    per-task source. The static ``_JOB_MEM_DEFAULT_MB[job_type]`` fills in
-    when no estimate exists. ``PRECIS_JOB_MEM_LIMIT`` is the host ceiling:
-    it clamps either source down, supplies the cap when neither exists, and
-    a disable spelling wins over both. An unreadable env value falls back
-    to the estimate/default rather than silently uncapping.
+    per-task source. ``PRECIS_JOB_MEM_LIMIT`` is the host ceiling: it
+    clamps the estimate down, supplies the cap when no estimate exists,
+    and a disable spelling wins over both. An unreadable env value falls
+    back to the estimate rather than silently uncapping. ``None`` with no
+    source — a host with no knob set runs uncapped, as before.
     """
-    if mem_mb is not None and mem_mb > 0:
-        base: float | None = float(mem_mb)
-    else:
-        default = _JOB_MEM_DEFAULT_MB.get(job_type or "", 0)
-        base = float(default) if default > 0 else None
+    base = float(mem_mb) if mem_mb is not None and mem_mb > 0 else None
     raw = os.environ.get(_MEM_LIMIT_ENV, "").strip()
     if not raw:
         return base
@@ -143,7 +128,7 @@ def job_mem_limit_mb(
     ceiling = _size_to_mb(raw)
     if ceiling is None or ceiling <= 0:
         log.warning(
-            "%s=%r unreadable — falling back to the estimate/default",
+            "%s=%r unreadable — falling back to the estimate",
             _MEM_LIMIT_ENV,
             raw,
         )
@@ -152,27 +137,56 @@ def job_mem_limit_mb(
 
 
 def container_memory_flags(
-    job_type: str | None = None, mem_mb: float | None = None
+    mem_mb: float | None = None, *, job_limit: str | None = None
 ) -> list[str]:
-    """``--memory <m> --memory-swap <m>`` for the resolved cap (gr595537).
+    """``--memory <m> --memory-swap <m>`` for ONE effective cap (gr595537).
 
     ``--memory-swap`` equal to ``--memory`` means no swap on top of the
     cap — a runaway child hits its own ceiling instead of pushing the host
     into swap (docker sizes ``--memory-swap`` as memory+swap combined, so
-    equal values give zero swap). Empty list when no cap resolves so
-    callers splice it unconditionally and keep no-env-no-flag behaviour.
+    equal values give zero swap).
+
+    ``job_limit`` is a job-type-specific operator ceiling as a docker size
+    string (``PRECIS_DFT_MEM_LIMIT`` / ``PRECIS_FOLD_MEM_LIMIT``). It
+    resolves *against* the shared cap, never after it — the emitted pair
+    is the minimum of every ceiling present, so a job knob can tighten but
+    never raise the fleet-wide ``PRECIS_JOB_MEM_LIMIT`` ceiling (a second
+    ``--memory`` appended later would override the earlier one — the
+    override hole this merge exists to close). A winning or unparseable
+    ``job_limit`` is emitted verbatim — the argv stays byte-identical on
+    a host without the fleet knob, and docker still fails loudly on a
+    mis-set value. Empty list when no cap resolves (no-env-no-flag), and
+    an explicit ``PRECIS_JOB_MEM_LIMIT`` disable empties it even with
+    ``job_limit`` — nothing overrides a disable.
     """
-    mb = job_mem_limit_mb(job_type, mem_mb)
-    if mb is None:
+    if _mem_limit_disabled():
         return []
-    size = f"{math.ceil(mb)}m"
+    job_mb = _size_to_mb(job_limit) if job_limit else None
+    if job_limit and job_mb is None:
+        log.warning(
+            "job memory limit %r unreadable — passing it through raw", job_limit
+        )
+        return ["--memory", job_limit, "--memory-swap", job_limit]
+    shared = job_mem_limit_mb(mem_mb)
+    if (
+        job_limit is not None
+        and job_mb is not None
+        and (shared is None or job_mb <= shared)
+    ):
+        # The job knob is the effective cap — emit its spelling verbatim
+        # so a host without the fleet knob gets byte-identical argv.
+        raw = job_limit.strip()
+        return ["--memory", raw, "--memory-swap", raw]
+    if shared is None:
+        return []
+    size = f"{math.ceil(shared)}m"
     return ["--memory", size, "--memory-swap", size]
 
 
 def container_limit_flags(
     *,
-    job_type: str | None = None,
     mem_mb: float | None = None,
+    job_limit: str | None = None,
 ) -> list[str]:
     """CPU + memory ``run`` flags for a spawned job container.
 
@@ -183,9 +197,10 @@ def container_limit_flags(
     among siblings, meaningful only under contention. Both are operator
     knobs, rendered per host.
 
-    Memory side: ``job_type``/``mem_mb`` feed
-    :func:`job_mem_limit_mb`; both default to nothing so a bare call is
-    byte-identical to before (CPU-only flags, no ``--memory``).
+    Memory side: ``mem_mb`` is the footprint estimate and ``job_limit`` a
+    job-type-specific ceiling; both feed :func:`container_memory_flags`
+    and default to nothing so a bare call is byte-identical to before
+    (CPU-only flags, no ``--memory``).
     """
     flags: list[str] = []
     cpuset = os.environ.get("PRECIS_JOB_CPUSET", "").strip()
@@ -194,20 +209,19 @@ def container_limit_flags(
     shares = os.environ.get("PRECIS_JOB_CPU_SHARES", "").strip()
     if shares:
         flags += ["--cpu-shares", shares]
-    flags += container_memory_flags(job_type, mem_mb)
+    flags += container_memory_flags(mem_mb, job_limit=job_limit)
     return flags
 
 
 def mem_limit_preexec(
     mem_mb: float | None = None,
     *,
-    job_type: str | None = None,
     address_space: bool = False,
 ) -> Callable[[], None] | None:
     """A ``preexec_fn`` capping a bare subprocess's memory (gr595537).
 
     Resolves the same cap as the container flags (estimate →
-    ``PRECIS_JOB_MEM_LIMIT`` → per-job_type default) and applies it as
+    ``PRECIS_JOB_MEM_LIMIT``) and applies it as
     ``RLIMIT_DATA`` — on Linux ≥ 4.7 it counts a task's writable private
     mappings plus brk, which is the footprint that wedges a host.
     ``RLIMIT_AS`` is opt-in (``address_space=True``): CUDA/torch reserve
@@ -223,9 +237,11 @@ def mem_limit_preexec(
     requeue policy reads (:func:`memory_cap_killed`, exit 137).
 
     ``None`` when no cap resolves or the platform lacks POSIX rlimits —
-    pass the return straight to ``subprocess.Popen(preexec_fn=...)``.
+    pass the return straight to ``subprocess.Popen(preexec_fn=...)``;
+    ``child_compute._child_main`` calls it in-process for the same cap on
+    a spawn-started child (multiprocessing has no ``preexec_fn``).
     """
-    mb = job_mem_limit_mb(job_type, mem_mb)
+    mb = job_mem_limit_mb(mem_mb)
     if mb is None or os.name != "posix":
         return None
     import resource
