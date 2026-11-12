@@ -17,6 +17,16 @@ in the meta marks a recurring row, everything else through this door is
 background. ``origin=`` exists for exactly one caller — a bounded retry
 re-minting under its failed parent's class
 (``job_types/graph_garden._on_failed``) — not for picking a lane.
+
+gr595539 adds the rest of the mint-time stamps — ``meta.lane`` (the
+fair-share axis: the chain job's ``task_recipes`` ``lane_class``, else
+``<job_type>[:<params.pass>]``), ``meta.task_kind``/``meta.consequence``
+(run_slice's recipe row), ``meta.size`` (the type's named size
+parameter, the ``(job_type, meta.size)`` footprint-table key of
+``docs/backlog/cluster-scheduling.md`` Pillar 3b) and
+``meta.submitter`` (the bound MCP session + client). Both doors call
+:func:`job_mint_marks` so the row carries the same matrix whichever way
+it was minted.
 """
 
 from __future__ import annotations
@@ -44,6 +54,32 @@ JOB_TERMINAL_STATUSES: tuple[str, ...] = (
     "cancelled",
     "timed-out",
 )
+
+#: ``job_type`` → the ``params`` key carrying its work-size driver —
+#: stamped as ``meta.size = {name, value}`` at mint (gr595539) so the
+#: ``(job_type, meta.size)`` footprint rollup buckets like work together
+#: (``cluster-scheduling.md`` Pillar 3b). A list-valued parameter folds
+#: to its length — ``cite_resolve``'s ``ref_ids`` size is how many refs,
+#: not which ones. A type with no single driver stamps nothing and the
+#: rollup groups it under ``(none)``.
+_SIZE_PARAMS: dict[str, str] = {
+    "embed_batch": "limit",
+    "derived_drain": "limit",
+    "graph_garden": "limit",
+    "pcb_argue": "limit",
+    "pcb_place": "iters",
+    "cite_resolve": "ref_ids",
+    "youtube_bulk": "ids",
+    "elsevier_abstract_backfill": "ref_ids",
+    "ci_watch": "lookback_runs",
+    "good_search": "max_children",
+    "run_slice": "effort",
+}
+
+#: ``run_slice``'s task_class fallback when the parent todo carries none —
+#: mirrors ``job_types/run_slice._DEFAULT_TASK_CLASS`` (kept as a literal
+#: here so this door never imports the job-type registry).
+_DEFAULT_TASK_CLASS = "code"
 
 
 def idem_lock_key(idem: str) -> int:
@@ -149,6 +185,99 @@ def meta_marked_mints_24h(
     return int(row[0]) if row else 0
 
 
+def _submitter_mark() -> dict[str, Any] | None:
+    """``{session_id, client}`` for a mint running inside a bound MCP
+    session — ``None`` outside one (worker ticks, CLI, tests), in which
+    case ``meta.submitter`` stays off the row entirely."""
+    from precis.tool_ledger import _session_id, current_client
+
+    sid = _session_id()
+    client = current_client()
+    if sid is None and client is None:
+        return None
+    return {"session_id": sid, "client": client}
+
+
+def _task_class_of(conn: Any, parent_id: int | None) -> str:
+    """The parent todo's ``meta.task_class`` (``code`` default) — a
+    chain job's lane-class selector. A non-todo parent (coordinator
+    job, build artifact) carries no task_class and reads as the
+    default, same as ``run_slice``'s own submit path."""
+    if parent_id is None:
+        return _DEFAULT_TASK_CLASS
+    row = conn.execute(
+        "SELECT meta->>'task_class' FROM refs WHERE ref_id = %s",
+        (parent_id,),
+    ).fetchone()
+    if row and row[0]:
+        return str(row[0])
+    return _DEFAULT_TASK_CLASS
+
+
+def job_mint_marks(
+    conn: Any,
+    *,
+    job_type: str,
+    params: dict[str, Any] | None,
+    parent_id: int | None = None,
+) -> dict[str, Any]:
+    """The derived mint stamps every job row carries (gr595539) — merge
+    the result into the job's ``meta`` before insert.
+
+    * ``lane`` — the fair-share axis the claim order keys on next
+      (``job-scheduling-fairness.md``): a ``run_slice`` chain job's
+      ``task_recipes`` ``lane_class`` for its parent todo's
+      ``task_class`` (the class itself when the recipe has none or
+      reads ``'none'``), else ``<job_type>[:<params.pass>]`` mirroring
+      ``executors._common._share_key_of`` so the stamped lane is the
+      key the claim already shares capacity on.
+    * ``task_kind`` / ``consequence`` — ``run_slice`` only, off the same
+      recipe row; ``unknown.<class>`` / ``medium`` when the class has
+      no recipe (the ``route_log`` unknown-source convention).
+    * ``size`` — ``{name, value}`` off :data:`_SIZE_PARAMS` when the
+      type declares a size parameter and the put supplied it; a
+      list-valued parameter stamps its length.
+    * ``submitter`` — ``{session_id, client}`` when the mint runs
+      inside a bound MCP session; absent otherwise.
+
+    Reads run on the caller's ``conn`` so the stamps join the mint's
+    transaction.
+    """
+    marks: dict[str, Any] = {}
+    p = params if isinstance(params, dict) else {}
+    if job_type == "run_slice":
+        task_class = _task_class_of(conn, parent_id)
+        lane = task_class
+        recipe = conn.execute(
+            "SELECT task_kind, lane_class, consequence FROM task_recipes "
+            "WHERE source = %s",
+            (task_class,),
+        ).fetchone()
+        if recipe is not None:
+            marks["task_kind"] = str(recipe[0])
+            if recipe[1] and str(recipe[1]) != "none":
+                lane = str(recipe[1])
+            marks["consequence"] = str(recipe[2])
+        else:
+            marks["task_kind"] = f"unknown.{task_class}"
+            marks["consequence"] = "medium"
+        marks["lane"] = lane
+    else:
+        params_pass = p.get("pass")
+        marks["lane"] = (
+            f"{job_type}:{params_pass}" if params_pass is not None else job_type
+        )
+    size_key = _SIZE_PARAMS.get(job_type)
+    if size_key is not None and p.get(size_key) is not None:
+        raw = p[size_key]
+        value: Any = len(raw) if isinstance(raw, (list, tuple, dict)) else raw
+        marks["size"] = {"name": size_key, "value": value}
+    submitter = _submitter_mark()
+    if submitter is not None:
+        marks["submitter"] = submitter
+    return marks
+
+
 def mint_job_once(
     store: Store,
     *,
@@ -237,6 +366,9 @@ def mint_background_job(
     elif origin not in JOB_ORIGINS:
         raise ValueError(f"origin must be one of {JOB_ORIGINS}, got {origin!r}")
     meta["origin"] = origin
+    meta.update(
+        job_mint_marks(conn, job_type=job_type, params=params, parent_id=parent_id)
+    )
     ref = store.insert_ref(
         kind="job",
         slug=None,
@@ -261,6 +393,7 @@ __all__ = [
     "JOB_TERMINAL_STATUSES",
     "active_job_id",
     "idem_lock_key",
+    "job_mint_marks",
     "latest_job_for_idem",
     "meta_marked_mints_24h",
     "mint_background_job",

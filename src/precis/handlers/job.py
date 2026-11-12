@@ -3716,7 +3716,7 @@ class JobHandler(NumericRefHandler):
         # background loop 'background', a direct caller with no dispatch
         # context 'background'.
         from precis.store.revision_context import current_revision_context
-        from precis.workers._mint import JOB_ORIGINS
+        from precis.workers._mint import JOB_ORIGINS, job_mint_marks
 
         _ctx = current_revision_context()
         if origin is not None and origin not in JOB_ORIGINS:
@@ -3757,6 +3757,19 @@ class JobHandler(NumericRefHandler):
             meta["origin"] = "agent"
         else:
             meta["origin"] = "background"
+        # The rest of the derived mint stamps (gr595539) — lane /
+        # task_kind / consequence / size / submitter — the same helper
+        # the worker mint door runs, on a short read connection (the
+        # insert tx hasn't opened yet).
+        with self.store.pool.connection() as conn:
+            meta.update(
+                job_mint_marks(
+                    conn,
+                    job_type=spec.name,
+                    params=params,
+                    parent_id=parent_int,
+                )
+            )
         if resolved_idem is not None:
             meta["idem_key"] = resolved_idem
         if requires:
