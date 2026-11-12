@@ -802,7 +802,10 @@ def test_every_factory_mint_site_calls_finish_mint() -> None:
     src_root = Path(__file__).resolve().parents[1] / "src" / "precis"
     problems: list[str] = []
     for path in sorted(src_root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        if "insert_ref" not in source:
+            continue
+        tree = ast.parse(source, filename=str(path))
         # Every function in the file -> (its scan, its class when a method).
         scans: list[tuple[Any, str | None, dict[str, Any]]] = []
         class_of: dict[int, str] = {}

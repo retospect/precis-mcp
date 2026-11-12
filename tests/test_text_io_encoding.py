@@ -61,6 +61,7 @@ _NOT_PATHLIB = {
     "opener",  # urllib OpenerDirector.open(request, timeout=...)
 }
 _SUBPROCESS_FUNCS = {"run", "Popen", "call", "check_call", "check_output"}
+_TEXT_IO_METHODS = {"read_text", "write_text", "open"}
 
 
 def _sources() -> list[Path]:
@@ -90,17 +91,24 @@ def _mode(call: ast.Call, *, arg_index: int) -> str:
     return ""
 
 
-def _subprocess_names(tree: ast.AST) -> tuple[set[str], set[str]]:
-    """``(module aliases, from-imported funcs)`` bound to subprocess."""
-    mods, funcs = set(), set()
+def _calls_and_subprocess_names(
+    tree: ast.AST,
+) -> tuple[list[ast.Call], set[str], set[str]]:
+    """Every call, plus ``(module aliases, from-imported funcs)`` bound to
+    subprocess, in one walk of the tree."""
+    calls: list[ast.Call] = []
+    mods: set[str] = set()
+    funcs: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        elif isinstance(node, ast.Import):
             mods |= {a.asname or a.name for a in node.names if a.name == "subprocess"}
         elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
             funcs |= {
                 a.asname or a.name for a in node.names if a.name in _SUBPROCESS_FUNCS
             }
-    return mods, funcs
+    return calls, mods, funcs
 
 
 def _is_subprocess_call(call: ast.Call, mods: set[str], funcs: set[str]) -> str | None:
@@ -131,11 +139,9 @@ def _text_mode_without_encoding(call: ast.Call) -> bool:
 
 
 def _offenders(tree: ast.AST) -> list[tuple[int, str]]:
-    mods, funcs = _subprocess_names(tree)
+    calls, mods, funcs = _calls_and_subprocess_names(tree)
     out = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
+    for node in calls:
         subproc = _is_subprocess_call(node, mods, funcs)
         if subproc is not None:
             if _text_mode_without_encoding(node):
@@ -147,7 +153,7 @@ def _offenders(tree: ast.AST) -> list[tuple[int, str]]:
         if isinstance(func, ast.Name) and func.id == "open":
             if "b" not in _mode(node, arg_index=1):
                 out.append((node.lineno, "open()"))
-        elif isinstance(func, ast.Attribute):
+        elif isinstance(func, ast.Attribute) and func.attr in _TEXT_IO_METHODS:
             recv = ast.unparse(func.value).split("(")[0].strip()
             if recv in _NOT_PATHLIB:
                 continue

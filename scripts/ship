@@ -969,7 +969,7 @@ fi
 if [[ "$CHECKED" == 1 ]]; then
     say "checked ship (--checked) — pre-qland lint + a selected pytest (contract/corpus/import); merge machinery same as --quick"
 elif [[ "$QUICK" == 1 ]]; then
-    say "quick ship (--quick) — no pytest, no gate slot; ruff + secret scan + fast DB-free guards still run; the rest waits for the release gate (pre-qland lint, below)"
+    say "quick ship (--quick) — no full pytest suite, no gate slot; ruff + secret scan + fast DB-free guards still run; the rest waits for the release gate (pre-qland lint, below)"
 elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
     # Pure remote gate: no local containers on the quiet path — GitHub's
     # matrix is the gate. The hybrid race fallback calls setup_gate_infra
@@ -2661,8 +2661,8 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # ship: it is that the NEXT tree's gate is red for a reason its author
         # did not write (the qland drift guard, scripts/last-gated-main-sha).
         #
-        # Still deliberately deferred to the settle-up /go: anything only
-        # pytest sees. That is what /qland is for.
+        # The quick lane now pays the maintained static guard set below;
+        # broader pytest coverage remains deferred to the release gate.
         # Hygiene tests are the DB-free guards — AST/text walks plus the
         # cold-start wire-shape budgets (~80 s together, -n0).
         # The docs set runs on EVERY qland, docs-only included: two qlands
@@ -2694,19 +2694,18 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # hygiene batch run in --checked / --release and at the release
         # gate.
         SECRET_SCAN='uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py'
-        # td573922: the raise-hint ratchet and the skill-ingest size/shape
-        # tests joined after r232/r233 reddened the same way (Reto's cap:
-        # the whole set under 45 s — the set measures ~31 s; the polite
-        # outbound ratchet stays out, its ~32 s sweep would double it).
-        # skill_ingest is all-DB-free, so only its size/shape members join
-        # by node id: the three oversized-chunk checker tests plus the two
-        # real-corpus scans that fail on a >4000-char skill section.
-        # The next-literal ratchet, the ruff scripts-excludes sync and the
-        # scripts-use-uv shebang guard joined after the bench quick-lands
-        # reddened the gate on all three (each under ~6 s). The env-config,
-        # outbound-timeout and outbound-polite ratchets stay out: each is a
-        # 13-28 s src sweep.
-        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE tests/test_skill_vocabulary.py tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py tests/test_mcp_raise_next_ratchet.py tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots tests/test_next_literal_ratchet.py tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py'
+        # One maintained list for every plain quick land, including docs-only
+        # changes (gr576324). Keep this literal so the factory parity test can
+        # verify that builders run every selected file before handing off.
+        # Qualifies: DB-free, no network, reads only the repo tree (temporary
+        # synthetic fixtures are fine), under ~10 s each. Measure the complete
+        # set with scripts/test and keep its wall time <60 s. Mixed suites
+        # contribute explicit node IDs so DB fixtures cannot enter this lane.
+        # finish_mint, skill prose and text-io encoding joined after each
+        # reddened main through a quick land on 2026-11-12. The colour,
+        # launch-admission (python and bash), docstring-lint and paper-text
+        # ratchets joined with them (each under ~3 s).
+        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE -- tests/test_skill_vocabulary.py::test_allowlist_entries_are_real_and_reasoned tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py tests/test_skill_corpus.py::test_skills_use_seven_verb_surface tests/test_skill_size.py::test_allowlist_is_shrink_only tests/test_plan_dispatch.py::test_every_factory_mint_site_calls_finish_mint tests/test_skill_prose.py tests/test_text_io_encoding.py tests/test_type_ignore_ratchet.py tests/precis_web/test_colour_ratchet.py tests/test_launch_admission_ratchet.py tests/test_bash_launch_admission.py tests/test_docs_docstring_lint.py tests/test_paper_text_gate.py'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
@@ -2734,20 +2733,19 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                     say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab · paper-text tests) — ${GATE_MODE} gate, no gate slot"
                     QLAND_CMD="$HYGIENE"
                 else
-                    say "pre-qland lint (docs/config-only: secret-scan · skill-vocabulary + skill-size guards; the rest runs at the release gate) — ${GATE_MODE} gate, no gate slot"
-                    QLAND_CMD="$SECRET_SCAN && uv run pytest -q -n0 -p no:cacheprovider -rfE tests/test_skill_vocabulary.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings"
+                    say "pre-qland lint (docs/config-only: secret-scan · fast DB-free guards; the rest runs at the release gate) — ${GATE_MODE} gate, no gate slot"
+                    QLAND_CMD="$SECRET_SCAN && $QUICK_GUARDS"
                 fi
             else
                 # Plain --quick = ruff + secret scan + the fast DB-free
-                # guards (~31 s: skill vocabulary, render, type-ignore and
-                # raise-hint ratchets, skill-ingest size/shape — gr573555,
-                # td573922). mypy, import contracts and the rest of the
+                # guards in QUICK_GUARDS above. Full mypy, import contracts
+                # and the rest of the
                 # hygiene batch (~5:45) are the slow legs; the release
                 # gate (check.yml lint job + full pytest) runs them.
                 # --checked and --release keep all of them.
                 QLAND_MYPY=""
                 QLAND_TAIL="$SECRET_SCAN && $QUICK_GUARDS"
-                QLAND_WHAT="ruff autofix · secret-scan · fast guards (skill-vocab, render, type-ignore, raise-hint, skill-size, next-literal, ruff-excludes, scripts-use-uv); full mypy, import contracts and the other tests run at the release gate"
+                QLAND_WHAT="ruff autofix · secret-scan · fast DB-free guards; full mypy, import contracts and the other tests run at the release gate"
                 # mypy on the CHANGED python files only (gr579772): quick lands
                 # of a type error reddened main three times in one day. The
                 # list is computed here (the warm gate has no .git); the helper
@@ -2768,7 +2766,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                     done <<< "$(git diff --name-only --diff-filter=AMR "$(git merge-base origin/main HEAD)" HEAD)"
                     if [[ -n "$qm_files" ]]; then
                         QLAND_MYPY="uv run python scripts/lib/mypy_changed.py${qm_files} && "
-                        QLAND_WHAT="ruff autofix · secret-scan · mypy on the changed files · fast guards (skill-vocab, render, type-ignore, raise-hint, skill-size, next-literal, ruff-excludes, scripts-use-uv); full mypy, import contracts and the other tests run at the release gate"
+                        QLAND_WHAT="ruff autofix · secret-scan · mypy on the changed files · fast DB-free guards; full mypy, import contracts and the other tests run at the release gate"
                     fi
                 fi
                 if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then

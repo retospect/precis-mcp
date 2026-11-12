@@ -1405,8 +1405,17 @@ _SHIP_LINT_STEPS: tuple[str, ...] = (
     " tests/test_skill_ingest.py tests/test_skill_vocabulary.py"
     " tests/test_render_dry_guard.py tests/test_type_ignore_ratchet.py"
     " tests/test_mcp_raise_next_ratchet.py tests/test_next_literal_ratchet.py"
-    " tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py",
+    " tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py"
+    " tests/test_skill_prose.py tests/test_text_io_encoding.py"
+    " tests/precis_web/test_colour_ratchet.py"
+    " tests/test_launch_admission_ratchet.py tests/test_bash_launch_admission.py"
+    " tests/test_docs_docstring_lint.py tests/test_paper_text_gate.py",
     "uv run pytest -q -n0 -p no:cacheprovider tests/test_skill_size.py",
+    # Select the static guard: the rest of this file includes DB tests.
+    "uv run pytest -q -n0 -p no:cacheprovider tests/test_skill_corpus.py"
+    " -k test_skills_use_seven_verb_surface",
+    "uv run pytest -q -n0 -p no:cacheprovider tests/test_plan_dispatch.py"
+    " -k test_every_factory_mint_site_calls_finish_mint",
 )
 
 #: Squawk on the NEW migration files only (``scripts/ship``'s
