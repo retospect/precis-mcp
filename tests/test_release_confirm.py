@@ -39,6 +39,13 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     psettings.invalidate()
 
 
+def _past_window() -> datetime:
+    """A clock past the restart-race window of a deploy recorded just now
+    (``record_prod_head`` stamps the real clock): a worker still at
+    another sha is a problem, not still rolling."""
+    return datetime.now(UTC) + rcf._CONFIRM_WINDOW + timedelta(minutes=1)
+
+
 def _beat(store: Store, host: str, code_sha: str | None, **meta: Any) -> None:
     store.record_heartbeat(host, meta={"code_sha": code_sha, **meta})
 
@@ -106,7 +113,7 @@ def test_a_worker_behind_names_host_and_sha(store: Store) -> None:
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA)
     _beat(store, "node-b", SHA2)
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok
     assert ev.problems == [f"worker node-b reports {SHA2[:12]}, release is {SHA[:12]}"]
     assert "node-b" in rcf.failure_reason(ev) and SHA2[:12] in rcf.failure_reason(ev)
@@ -117,7 +124,7 @@ def test_a_worker_with_no_code_sha_is_a_problem(store: Store) -> None:
     _beat(store, "node-a", SHA)
     _beat(store, "node-b", None)
     _beat(store, "node-c", "unknown")
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok
     assert ev.problems == [
         f"worker node-b reports no code_sha, release is {SHA[:12]}",
@@ -186,7 +193,7 @@ def test_worker_units_snapshot_with_units_attests(store: Store) -> None:
     R.record_prod_head(store, SHA, [])
     _beat(store, "node-a", SHA, worker_units=_units())
     _beat(store, "node-b", SHA2, worker_units=_units())
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok
     assert ev.problems == [f"worker node-b reports {SHA2[:12]}, release is {SHA[:12]}"]
 
@@ -203,7 +210,7 @@ def test_empty_worker_units_with_activity_is_a_fleet_member(store: Store) -> Non
         worker_units={},
         activity={"precis-worker": {"idle": True}},
     )
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok and ev.noncohort == ()
     assert ev.problems == [
         f"worker node-mac reports {SHA2[:12]}, release is {SHA[:12]}"
@@ -218,7 +225,7 @@ def test_a_workerless_host_in_the_deploy_ledger_is_a_member(store: Store) -> Non
     _beat(store, "node-a", SHA, worker_units=_units())
     _beat(store, "hephaestus", SHA2, worker_units={}, activity={})
     _ledger(store, ["node-a", "hephaestus"])
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok and ev.noncohort == ()
     assert ev.problems == [
         f"worker hephaestus reports {SHA2[:12]}, release is {SHA[:12]}"
@@ -421,11 +428,11 @@ def test_a_web_only_failure_marks_the_evidence(
     _beat(store, "node-a", SHA)
     psettings.set_setting(rcf.HEALTH_URL_KEY, HEALTH_URL, store=store)
     _web(monkeypatch, resp=SimpleNamespace(status_code=503, headers={}))
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok and ev.web_only and ev.problems == ["web HTTP 503"]
 
     _beat(store, "node-b", SHA2)
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok and not ev.web_only and len(ev.problems) == 2
 
 
@@ -451,6 +458,96 @@ def test_a_web_failure_while_a_worker_waits_is_not_web_only(
     assert not ev.ok and not ev.web_only
     assert ev.waiting == ("node-a",)
     assert ev.problems == ["web HTTP 503"]
+
+
+# ── the worker roll and the unbounced range (gr645561) ──────────────
+
+
+def test_a_worker_still_rolling_waits_then_passes(store: Store) -> None:
+    """A worker heartbeating the old sha AFTER the deploy finished is
+    still rolling: inside the window it parks the probe (no problem);
+    the re-probe finds it at the release sha and passes."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _beat(store, "node-b", SHA2)
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert not ev.ok and ev.problems == []
+    assert ev.waiting == ("node-b",) and ev.deadline is not None
+    assert f"node-b at {SHA2[:12]}, still rolling" in ev.text
+
+    _beat(store, "node-b", SHA)  # the restart landed
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert ev.ok and ev.waiting == () and ev.unbounced == ()
+
+
+def test_a_runtime_range_with_a_stale_worker_fails_after_the_window(
+    store: Store,
+) -> None:
+    """The window is bounded: past it a worker still at the old sha is a
+    problem naming host and sha, a recorded ``full`` scope or none at all
+    never excuses it, and the wait ends at the window's end."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _beat(store, "node-b", SHA2)
+    rel = {**REL, "deploy_scope": {"scope": "full", "prev": SHA2}}
+    for release in (REL, rel):
+        inside = rcf.gather_evidence(store, release, now=datetime.now(UTC))
+        assert inside.waiting == ("node-b",) and inside.problems == []
+        ev = rcf.gather_evidence(store, release, now=_past_window())
+        assert not ev.ok and ev.waiting == ()
+        assert ev.problems == [
+            f"worker node-b reports {SHA2[:12]}, release is {SHA[:12]}"
+        ]
+
+
+@pytest.mark.parametrize("scope", ["none", "web"])
+def test_an_unbounced_range_accepts_the_previous_sha(store: Store, scope: str) -> None:
+    """The bounce scope restarted no worker: a worker still at the
+    previous prod sha is confirmed at once (no waiting) and the evidence
+    line says so."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA2)  # never restarted, still on the previous sha
+    _beat(store, "node-b", SHA)
+    rel = {**REL, "deploy_scope": {"scope": scope, "prev": SHA2}}
+    ev = rcf.gather_evidence(store, rel, now=datetime.now(UTC))
+    assert ev.ok and ev.problems == [] and ev.waiting == ()
+    assert ev.unbounced == ("node-a",)
+    assert f"unbounced: node-a still at the previous prod sha {SHA2[:12]}" in ev.text
+    assert f"node-a at {SHA2[:12]} (not bounced)" in ev.text
+    assert "all at" not in ev.text
+
+
+def test_an_unbounced_range_still_holds_other_shas_to_the_release(
+    store: Store,
+) -> None:
+    """Only the previous prod sha is excused: a worker at a third sha
+    waits out the window and then fails, and a short prev attests
+    nothing."""
+    R.record_prod_head(store, SHA, [])
+    third = "dead" + "3" * 36
+    _beat(store, "node-a", third)
+    rel = {**REL, "deploy_scope": {"scope": "none", "prev": SHA2}}
+    ev = rcf.gather_evidence(store, rel, now=datetime.now(UTC))
+    assert not ev.ok and ev.waiting == ("node-a",) and ev.unbounced == ()
+    ev = rcf.gather_evidence(store, rel, now=_past_window())
+    assert ev.problems == [f"worker node-a reports {third[:12]}, release is {SHA[:12]}"]
+    short = {**REL, "deploy_scope": {"scope": "none", "prev": "beef"}}
+    assert rcf.unbounced_prev_sha(short) is None
+    assert rcf.unbounced_prev_sha(REL) is None
+
+
+def test_an_unbounced_worker_with_a_pre_deploy_heartbeat_is_accepted(
+    store: Store,
+) -> None:
+    """A worker that never restarts also never refreshes past the deploy
+    finish if its beat is old: the unbounced scope accepts it before the
+    not-yet-restarted check."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA2)
+    _stale(store, "node-a", minutes=10)  # beat predates the deploy finish
+    rel = {**REL, "deploy_scope": {"scope": "none", "prev": SHA2}}
+    ev = rcf.gather_evidence(store, rel, now=datetime.now(UTC))
+    assert ev.ok and ev.unbounced == ("node-a",)
 
 
 # ── pinned_deploy_sha ───────────────────────────────────────────────
@@ -645,7 +742,7 @@ def test_failure_reason_is_capped_at_560(store: Store) -> None:
     R.record_prod_head(store, SHA, [])
     for i in range(40):
         _beat(store, f"node-{i:02d}x", SHA2)
-    ev = rcf.gather_evidence(store, REL, now=NOW)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
     assert not ev.ok
     assert len(rcf.failure_reason(ev)) <= 560
     assert "node-00x" in rcf.failure_reason(ev)

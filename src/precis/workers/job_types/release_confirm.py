@@ -31,12 +31,22 @@ factory attests, a failed probe asks, never rolls back; there is no
 still carry the old sha. The probe re-reads the store until a deadline —
 :data:`_CONFIRM_WINDOW` after the deploy finished (the round row's
 ``deploy.rollout_at``, else the prod head's ``deployed_at``): a worker
-whose newest heartbeat predates the deploy finish is *not yet restarted*
-and keeps the probe parked (phase ``probe``, ``not_before``-paced like
-``ci_red_digest``); a heartbeat written *after* the deploy finish at
-another sha fails at once; past the deadline anything still not at the
-release sha fails, naming each host, its last heartbeat time and its
-sha. Hosts with no heartbeat inside the liveness window stay ignored,
+whose newest heartbeat predates the deploy finish is *not yet restarted*,
+and one still heartbeating another sha after it is *still rolling*
+(gr645561: the restart lags the rollout by a minute or two); both keep
+the probe parked (phase ``probe``, ``not_before``-paced like
+``ci_red_digest``). Past the deadline anything still not at the release
+sha fails, naming each host, its last heartbeat time and its sha.
+
+**An unbounced range.** The deploy's bounce-scope classifier
+(``deploy/redeploy-precis.yml`` step 0b2) restarts no worker for a
+docs/scripts-only range (scope ``none``) nor for a web-only one (``web``);
+those workers heartbeat the previous prod sha for good. ``release_deploy``
+reads the classifier's verdict from the deploy log and stamps it with the
+previous prod sha on the plan root (``meta.release.deploy_scope``); a
+worker reporting exactly that previous sha then counts as confirmed under
+such a scope, and the evidence line says so (gr645561). A ``full`` scope,
+an unrecorded scope or any other sha is held to the release sha. Hosts with no heartbeat inside the liveness window stay ignored,
 as do live hosts outside the cohort — worker-less under unconfigured
 membership, or uncovered by a published ``deploy.fleet`` (gr623769,
 td649547).
@@ -71,6 +81,7 @@ from precis.plans import red_waiver as _red_waiver
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
 from precis.workers.job_types import release_cut as _rc
+from precis.workers.job_types import release_deploy as _rd
 from precis.workers.job_types import run_slice as _rs
 
 if TYPE_CHECKING:
@@ -165,7 +176,9 @@ class Evidence:
     attest nothing — no worker evidence under unconfigured membership
     (gr623769), or uncovered by a published ``deploy.fleet`` (td649547):
     reported as a note in ``text``, never a problem and never
-    ``waiting``."""
+    ``waiting``. ``unbounced`` names the workers accepted at the previous
+    prod sha because the deploy's bounce scope restarted no worker
+    (gr645561)."""
 
     ok: bool
     sha: str | None
@@ -175,6 +188,28 @@ class Evidence:
     deadline: datetime | None = None
     web_only: bool = False
     noncohort: tuple[str, ...] = ()
+    unbounced: tuple[str, ...] = ()
+
+
+def _same_sha(a: str | None, b: str) -> bool:
+    """Whether ``a`` and ``b`` name one commit: equal, or one a prefix of
+    the other (a heartbeat may carry the short form); ``a`` of at least
+    7 hex characters."""
+    if not a or len(a) < 7 or len(b) < 7:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def unbounced_prev_sha(rel: dict[str, Any]) -> str | None:
+    """The previous prod sha a worker may still report because the
+    deploy's recorded bounce scope restarted no worker, else ``None``
+    (:func:`precis.workers.job_types.release_deploy._record_deploy_scope`
+    writes ``meta.release.deploy_scope``)."""
+    ds = rel.get("deploy_scope")
+    if not isinstance(ds, dict) or ds.get("scope") not in _rd.UNBOUNCED_WORKER_SCOPES:
+        return None
+    prev = str(ds.get("prev") or "")
+    return prev if len(prev) >= 7 else None
 
 
 def _http_get(url: str) -> Any:
@@ -299,7 +334,9 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     predates the deploy finish (:func:`_deployed_at`) has not restarted
     yet — it joins ``waiting`` until ``deadline`` (the confirm window's
     end) and is a problem only past it; a heartbeat written *after* the
-    deploy finish at another sha is a problem at once. The web is
+    deploy finish at another sha is still rolling: it waits too
+    (gr645561). A worker still on the previous prod sha attests when the
+    deploy's bounce scope restarted no worker (:func:`unbounced_prev_sha`). The web is
     optional: ``release.health_url`` unset attests nothing and is not a
     problem. Any problem or any waiting host makes ``ok`` false."""
     rn = str(rel.get("rN") or "")
@@ -310,8 +347,10 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     deployed_at = _deployed_at(store, rn) if sha is not None else None
     deadline = deployed_at + _CONFIRM_WINDOW if deployed_at is not None else None
 
+    prev_sha = unbounced_prev_sha(rel)
     problems: list[str] = []
     waiting: list[str] = []
+    unbounced: list[str] = []
     states: list[str] = []
     if sha is not None:
         if rel_sha and sha != rel_sha:
@@ -321,7 +360,12 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
             )
         for host, ts, code_sha in live:
             reported = code_sha[:12] if code_sha else "no code_sha"
-            if deployed_at is not None and (ts is None or ts <= deployed_at):
+            if prev_sha is not None and _same_sha(code_sha, prev_sha):
+                # The deploy restarted no worker (bounce scope none/web):
+                # the previous sha is where this worker stays.
+                unbounced.append(host)
+                states.append(f"{host} at {reported} (not bounced)")
+            elif deployed_at is not None and (ts is None or ts <= deployed_at):
                 # The heartbeat predates the deploy finish: the worker
                 # has not restarted, its report says nothing yet.
                 if deadline is not None and now < deadline:
@@ -335,10 +379,16 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
                     )
                     states.append(f"{host} at {reported}")
             elif code_sha != sha:
-                problems.append(
-                    f"worker {host} reports {reported}, release is {sha[:12]}"
-                )
-                states.append(f"{host} at {reported}")
+                if deadline is not None and now < deadline:
+                    # Heartbeating after the deploy finish at another sha:
+                    # the restart is still rolling (gr645561).
+                    waiting.append(host)
+                    states.append(f"{host} at {reported}, still rolling")
+                else:
+                    problems.append(
+                        f"worker {host} reports {reported}, release is {sha[:12]}"
+                    )
+                    states.append(f"{host} at {reported}")
             else:
                 states.append(f"{host} at {sha[:12]}")
     from precis import settings
@@ -360,6 +410,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         sha is not None
         and live
         and not waiting
+        and not unbounced
         and all(code_sha == sha for _, _, code_sha in live)
     ):
         workers = f"workers: {len(live)} live ({hosts}), all at {sha[:12]}"
@@ -369,8 +420,13 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         workers = f"workers: {len(live)} live ({hosts})"
     short = sha[:12] if sha else "unset"
     note = ""
+    if unbounced and prev_sha is not None:
+        note = (
+            f"; unbounced: {', '.join(unbounced)} still at the previous prod "
+            f"sha {prev_sha[:12]} (deploy bounced no worker)"
+        )
     if noncohort:
-        note = "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
+        note += "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
     text = mask_secrets(
         f"{rn or 'r?'} pinned {short}; {workers}{note}; web: {web_clause}"
     )[:_TEXT_CAP]
@@ -383,6 +439,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         deadline=deadline,
         web_only=(web_problem is not None and len(problems) == 1 and not waiting),
         noncohort=tuple(h for h, _why in noncohort),
+        unbounced=tuple(unbounced),
     )
 
 

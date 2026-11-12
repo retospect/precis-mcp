@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,42 @@ def submit(ctx: Any, spec: Any) -> Any:
     return _rc.launch_script(ctx, NAME, ["--deploy-only", rn])
 
 
+#: The deploy playbook's own "Report the bounce-scope decision" line
+#: (``deploy/redeploy-precis.yml`` step 0b2 — the one classifier, read
+#: here from the deploy log rather than re-derived): ``bounce_scope=none``
+#: restarts nothing, ``web`` only precis-web, ``full`` every daemon.
+_BOUNCE_SCOPE_RE = re.compile(r"\bbounce_scope=(none|web|full)\b")
+
+#: Scopes under which the deploy left every worker running.
+UNBOUNCED_WORKER_SCOPES: frozenset[str] = frozenset({"none", "web"})
+
+
+def parse_bounce_scope(log_text: str) -> str | None:
+    """The deploy's bounce scope from its log: the widest verdict any host
+    reported (``full`` over ``web`` over ``none``); ``None`` when the log
+    carries no classifier line, and the caller then assumes nothing."""
+    found = set(_BOUNCE_SCOPE_RE.findall(log_text))
+    for scope in ("full", "web", "none"):
+        if scope in found:
+            return scope
+    return None
+
+
+def _record_deploy_scope(store: Any, todo_id: Any, scope: str, prev: str) -> str:
+    """Stamp the classifier verdict on the plan root's
+    ``meta.release.deploy_scope`` (``{scope, prev}``), the record
+    ``release_confirm`` already reads (gr645561): it accepts a worker still
+    on ``prev`` when the scope left the workers alone. One note."""
+    rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
+    if rel is None:
+        return "bounce scope not recorded: no release on the plan root"
+    root = _release.plan_root(store, todo_id)
+    store.stamp_ref_meta(
+        root, {"release": {**rel, "deploy_scope": {"scope": scope, "prev": prev}}}
+    )
+    return f"bounce scope {scope} recorded on td{root} (prev {prev[:9] or '-'})"
+
+
 def _landed(root: Path, prev: str, head: str) -> list[str]:
     rng = f"{prev}..{head}" if prev else head
     n = _release.LANDED_SHA_LEN
@@ -176,7 +213,23 @@ def poll(ctx: Any, handle: Any) -> bool:
         except Exception as exc:  # the rollout happened; bookkeeping is best-effort
             log.warning("%s: record_prod_head failed", NAME, exc_info=True)
             lines.append(f"prod head not recorded: {type(exc).__name__}")
-        ctx.set_meta(release_deploy={"rN": rn, "head": head, "prev": prev})
+        scope = parse_bounce_scope(log_text)
+        ctx.set_meta(
+            release_deploy={"rN": rn, "head": head, "prev": prev, "scope": scope}
+        )
+        if scope is not None and prev:
+            try:
+                lines.append(
+                    _record_deploy_scope(
+                        ctx.store,
+                        ((ctx.meta or {}).get("params") or {}).get("todo_id"),
+                        scope,
+                        prev,
+                    )
+                )
+            except Exception as exc:  # best-effort like the prod-head write
+                log.warning("%s: deploy scope record failed", NAME, exc_info=True)
+                lines.append(f"bounce scope not recorded: {type(exc).__name__}")
     else:
         lines.append("no RELEASE_DEPLOYED line (rollout was already done)")
     now = datetime.now(UTC)

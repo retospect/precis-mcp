@@ -3545,11 +3545,15 @@ def _round_script(checkout: dict[str, Any]) -> Path:
 
 
 def _walk_to_confirm(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    store: Store,
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    deploy_log: str = "",
 ) -> tuple[T.PlanMint, int, dict[str, Any]]:
     """Walk a release pass to a succeeded deploy on ``node-a``; the tick
-    then dispatches the confirm node. Returns ``(mint, confirm job id,
-    the job's params)``."""
+    then dispatches the confirm node. ``deploy_log`` is extra deploy
+    output after the ``RELEASE_DEPLOYED`` line. Returns ``(mint, confirm
+    job id, the job's params)``."""
     mint = T.mint_release_pass(store)
     ids = mint.ids
     monkeypatch.setenv("PRECIS_NODE", "node-a")
@@ -3580,7 +3584,7 @@ def _walk_to_confirm(
     ctx = Ctx(store, dict(meta["params"]))
     handle = rd.submit(ctx, None)
     assert handle is not None, ctx.failures
-    _exit(checkout, 3, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n")
+    _exit(checkout, 3, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n{deploy_log}")
     assert rd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     _succeed(store, job)
@@ -3688,8 +3692,12 @@ def test_probe_mismatch_files_an_ask_and_confirms_nothing(
     mint, job_id, params = _walk_to_confirm(store, checkout, monkeypatch)
     store.record_heartbeat("node-a", meta={"code_sha": SHA})
     store.record_heartbeat("node-b", meta={"code_sha": SHA2})
+    # Rolled out long enough ago that node-b is past the restart window.
+    rollout = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     psettings.set_setting(
-        "release.round", _round_row(7, "deployed", {"sha": SHA}), store=store
+        "release.round",
+        _round_row(7, "deployed", {"sha": SHA, "rollout_at": rollout}),
+        store=store,
     )
     launches = list(checkout["argv"])
     ctx = Ctx(store, params)
@@ -3716,7 +3724,9 @@ def test_probe_mismatch_files_an_ask_and_confirms_nothing(
         ).fetchone()
     assert link is not None
     assert "confirmed" not in _meta(store, mint.root_id)["release"]
-    assert R.read_round(store) == json.loads(_round_row(7, "deployed", {"sha": SHA}))
+    assert R.read_round(store) == json.loads(
+        _round_row(7, "deployed", {"sha": SHA, "rollout_at": rollout})
+    )
 
 
 def test_web_sha_mismatch_fails_the_confirm(
@@ -3972,6 +3982,136 @@ def test_probe_still_stale_at_the_deadline_files_an_ask(
     assert "node-a" in meta["ask"]["context"]
     assert "last heartbeat" in meta["ask"]["context"]
     assert "confirmed" not in _meta(store, mint.root_id)["release"]
+
+
+def _scope_line(scope: str) -> str:
+    """The deploy playbook's bounce-scope report as ansible prints it."""
+    return (
+        'ok: [node-a] => {"msg": "node-a: bounce_scope='
+        f'{scope} changed_paths=1 sample=[CLAUDE.md]"}}\n'
+    )
+
+
+def test_probe_waits_for_a_worker_still_on_the_old_sha(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645561: a worker that heartbeats the old sha AFTER the deploy
+    finished is still rolling — the probe parks (no failure, no ask),
+    and the re-probe (clock mocked by rewinding ``not_before``) launches
+    the confirm once it beats the release sha."""
+    script = _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(store, checkout, monkeypatch)
+    store.record_heartbeat("node-a", meta={"code_sha": SHA2})
+    launches = list(checkout["argv"])
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    assert ctx.failures == [] and checkout["argv"] == launches
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False  # still on the old sha: re-parked
+    assert handle["phase"] == "probe" and ctx.failures == []
+    store.record_heartbeat("node-a", meta={"code_sha": SHA})
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is False
+    assert handle["phase"] == "confirm", ctx.failures
+    assert checkout["argv"][-1][:4] == [str(script), "deploy", "--confirm-runtime", SHA]
+
+
+def test_probe_old_sha_past_the_window_fails_after_the_backoff(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime range whose worker never rolls: the probe parks through
+    the window, then fails naming the host and sha."""
+    _round_script(checkout)
+    _mint, _job, params = _walk_to_confirm(
+        store, checkout, monkeypatch, deploy_log=_scope_line("full")
+    )
+    store.record_heartbeat("node-a", meta={"code_sha": PREV * 4})
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "probe", ctx.failures
+    row = R.read_round(store)
+    assert row is not None
+    old = (datetime.now(UTC) - timedelta(minutes=11)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row["deploy"]["rollout_at"] = old
+    R.record_round(store, row)
+    handle["not_before"] = "2000-01-01T00:00:00Z"
+    assert rcf.poll(ctx, handle) is True
+    reason = ctx.failures[0]
+    assert "probe failed" in reason and "node-a" in reason
+    assert (PREV * 4)[:12] in reason and SHA[:12] in reason
+
+
+def test_probe_accepts_an_unbounced_worker_when_the_deploy_bounced_none(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645561 (r284): a docs-only range, bounce scope ``none``. The
+    worker keeps heartbeating the previous prod sha; the confirm passes
+    without a human and the job result says why."""
+    script = _round_script(checkout)
+    mint, _job, params = _walk_to_confirm(
+        store, checkout, monkeypatch, deploy_log=_scope_line("none")
+    )
+    rel = _meta(store, mint.root_id)["release"]
+    assert rel["deploy_scope"] == {"scope": "none", "prev": PREV}
+    store.record_heartbeat("node-a", meta={"code_sha": PREV + "9" * 28})
+    ctx = Ctx(store, params)
+    handle = rcf.submit(ctx, None)
+    assert handle is not None and handle["phase"] == "confirm", ctx.failures
+    assert "unbounced: node-a still at the previous prod sha" in handle["evidence"]
+    assert checkout["argv"][-1][:4] == [str(script), "deploy", "--confirm-runtime", SHA]
+    _exit(checkout, 0, "confirmed\n")
+    assert rcf.poll(ctx, handle) is False
+    _exit(checkout, 0, "closed\n")
+    assert rcf.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    summary = [t for k, t in ctx.chunks if k == "job_summary"][0]
+    assert "unbounced: node-a" in summary
+
+
+def test_release_deploy_poll_records_the_bounce_scope(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The classifier's verdict is read from the deploy log (widest scope
+    any host reported) and stamped with the previous prod sha on the plan
+    root; no classifier line records nothing."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    ctx, handle = _deploy_handle(store, mint)
+    log = _scope_line("none") + _scope_line("web")
+    _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n{log}")
+    assert rd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    rel = _meta(store, mint.root_id)["release"]
+    assert rel["deploy_scope"] == {"scope": "web", "prev": PREV}
+    assert rel["rN"] == "r7" and rel["sha"] == SHA  # the cut's facts survive
+    assert ctx.stamped["release_deploy"]["scope"] == "web"
+    assert any("bounce scope web recorded" in t for _k, t in ctx.chunks)
+
+
+def test_release_deploy_poll_without_a_scope_line_records_nothing(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {PREV}\n")
+    assert rd.poll(ctx, handle) is True
+    assert "deploy_scope" not in _meta(store, mint.root_id)["release"]
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("", None),
+        ("bounce_scope=none changed_paths=3", "none"),
+        ("a: bounce_scope=none\nb: bounce_scope=web", "web"),
+        ("a: bounce_scope=web\nb: bounce_scope=full\nc: bounce_scope=none", "full"),
+        ("precis_bounce_scope=nonexistent", None),
+    ],
+)
+def test_parse_bounce_scope(text: str, want: str | None) -> None:
+    assert rd.parse_bounce_scope(text) == want
 
 
 def test_web_failure_during_the_restart_window_mints_no_attest_ask(
