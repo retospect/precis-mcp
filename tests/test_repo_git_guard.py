@@ -28,9 +28,11 @@ calls whose ``-C``/``cwd`` is a ``tmp_path`` variable are all fine — the
 container has the git binary, just not this checkout's metadata. Known
 blind spots (same as the posix guard's): argv in a variable, a string
 ``shell=True`` command, and chdir'd modules are not resolved. The walk
-parses only files carrying a literal ``"git"``/``'git'`` — a flagged
-spawn needs exactly that constant argv[0] — so an argv[0] spelled to
-dodge the literal (``"g" "it"`` implicit concat, escapes) also slips.
+parses only files ``_GIT_NEEDLE`` cannot rule out — a regex for the
+source shape of a ``Constant("git")`` (letters or escapes, only fragment
+boundaries between them), so ``"g" "it"`` concat, ``\\x67`` escapes and
+``r``-prefixed fragments still parse; a truly non-constant argv[0]
+(``"g" + "it"``, an f-string) slips both the needle and the AST.
 
 Coverage is per call, not per file: a flagged spawn is covered when a
 scope enclosing it carries the declaration — ``@needs_repo_git`` (or a
@@ -84,6 +86,32 @@ _EXEMPT: set[str] = {
 }
 
 _SPAWN = {"run", "Popen", "check_output", "check_call", "call"}
+
+#: An escape that could spell one letter of "git" (``\x67``, ``\151``,
+#: ``\u0067``, ``\N{LATIN SMALL LETTER G}``, …).
+_ESCAPED = (
+    r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}"
+    r"|N\{[^}\n]{1,64}\})"
+)
+
+#: What may sit between the letters of one implicitly-concatenated literal:
+#: closing/opening quotes, whitespace, a ``\`` line-continuation, a ``#``
+#: comment, or a ≤4-letter string prefix (``r``/``b``/``f``/…) before an
+#: opening quote — nothing else survives tokenization between fragments.
+_FRAGMENT_SEAM = r"(?:[\"'\s\\]|#[^\n]*|[A-Za-z]{1,4}(?=[\"']))*"
+
+#: Cheap necessary condition for a ``Constant("git")`` in the source: a
+#: quote, then ``g``/``i``/``t`` — each a letter or an escape — separated
+#: only by fragment seams, with a closing quote after ``t``. ``"g" "it"``
+#: concat, ``"\x67it"`` and ``"g" r"it"`` match; ``"github"`` (``t`` is not
+#: quote-closed), ``["g", "it"]`` (a comma is no seam) and ``"g" + "it"``
+#: (a BinOp, no Constant anyway) do not. ~95% of test files carry no such
+#: spelling, so the full-corpus AST pass — which crossed the 300s worker
+#: kill on macos-3.12 — parses only the hits (gr647745).
+_GIT_NEEDLE = re.compile(
+    rf"[\"'](?:g|{_ESCAPED}){_FRAGMENT_SEAM}"
+    rf"(?:i|{_ESCAPED}){_FRAGMENT_SEAM}(?:t|{_ESCAPED})(?=[\"'])"
+)
 
 #: Names tests bind to the checkout root — ``str()``/``Path()`` wrappers are
 #: unwrapped before comparison. Lowercase ``repo``/``root`` are tmp repos.
@@ -385,6 +413,31 @@ def _uncovered_in(source: str) -> list[tuple[ast.Call, str]]:
     return _uncovered_flags(ast.parse(source), set(), True)
 
 
+def _file_findings(rel: str, source: str) -> list[str]:
+    """The scan one test file gets — needle prefilter, then the AST walk.
+
+    The classifier truth tables feed ``_uncovered_in`` directly and so
+    never see the prefilter; this is the path that decides whether a
+    file's source is parsed at all.
+    """
+    if _GIT_NEEDLE.search(source) is None:
+        return []
+    tree = ast.parse(source)
+    from_subprocess = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
+        for alias in node.names
+    }
+    # `monkeypatch.chdir`/`os.chdir` anywhere means an inheriting call may
+    # still be tmp-targeted — the module opted into cwd semantics.
+    chdir_free = "chdir" not in source
+    return [
+        f"{rel}:{call.lineno}: {why}"
+        for call, why in _uncovered_flags(tree, from_subprocess, chdir_free)
+    ]
+
+
 @pytest.mark.parametrize(
     ("call", "chdir_free", "flagged"),
     [
@@ -503,6 +556,57 @@ def test_each_flagged_call_needs_a_covering_declaration(
     assert len(_uncovered_in(source)) == uncovered
 
 
+_GIT_CONCAT_STATUS = 'subprocess.run(["g" "it", "status"])'
+
+
+@pytest.mark.parametrize(
+    ("source", "findings"),
+    [
+        # the prefilter must pass every source spelling of Constant("git")
+        # — the '"git"'-in-source check it replaced skipped these (td647949)
+        (f"def test_a():\n    {_GIT_STATUS}", 1),
+        (f"def test_a():\n    {_GIT_CONCAT_STATUS}", 1),
+        ("def test_a():\n    subprocess.run(['g' 'i' 't', 'status'])", 1),
+        ('def test_a():\n    subprocess.run(["g" r"it", "status"])', 1),
+        ('def test_a():\n    subprocess.run(["\\x67it", "status"])', 1),
+        (
+            "def test_a():\n"
+            "    subprocess.run(\n"
+            '        ["g"\n'
+            '         "it", "status"]\n'
+            "    )",
+            1,
+        ),
+        # …through the from-import spelling the scan resolves, too
+        (
+            "from subprocess import run\n\n"
+            "def test_a():\n"
+            f"    run({_GIT_CONCAT_STATUS[15:]}",  # drop "subprocess.run("
+            1,
+        ),
+        # a covering scope still covers, whatever the spelling
+        (
+            f"@needs_repo_git\ndef test_a():\n    {_GIT_CONCAT_STATUS}",
+            0,
+        ),
+        # and non-"git" argv[0]s stay unflagged: separate elements, a
+        # "github" literal, a BinOp join — the needle lets all three skip
+        ("def test_a():\n    subprocess.run(['g', 'it'])", 0),
+        ("def test_a():\n    subprocess.run(['github', 'status'])", 0),
+        ("def test_a():\n    subprocess.run(['g' + 'it', 'status'])", 0),
+        ("def test_a():\n    subprocess.run(['status'])", 0),
+    ],
+)
+def test_file_scan_prefilter_keeps_every_git_constant_spelling(
+    source: str, findings: int
+) -> None:
+    """File-scan truth table — ``_file_findings`` includes the
+    ``_GIT_NEEDLE`` gate the classifier tests bypass, so a literal
+    ``"git"`` spelled as concat/escape must still reach the AST walk and
+    flag."""
+    assert len(_file_findings("tests/test_x.py", source)) == findings
+
+
 @pytest.mark.timeout(900)  # CI worst >300s macos-3.12 (gr647745) x3
 def test_repo_git_spawns_are_marked_or_resilient() -> None:
     bad: list[str] = []
@@ -510,25 +614,7 @@ def test_repo_git_spawns_are_marked_or_resilient() -> None:
         rel = path.relative_to(_ROOT).as_posix()
         if rel in _EXEMPT:
             continue
-        source = path.read_text(encoding="utf-8")
-        # ~95% of test files cannot flag: a flagged spawn's argv[0] is the
-        # literal "git", so no quoted git literal means no parse. The full
-        # corpus AST pass crossed the 300s worker kill on macos-3.12
-        # (gr647745).
-        if '"git"' not in source and "'git'" not in source:
-            continue
-        tree = ast.parse(source)
-        from_subprocess = {
-            alias.asname or alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "subprocess"
-            for alias in node.names
-        }
-        # `monkeypatch.chdir`/`os.chdir` anywhere means an inheriting call may
-        # still be tmp-targeted — the module opted into cwd semantics.
-        chdir_free = "chdir" not in source
-        for call, why in _uncovered_flags(tree, from_subprocess, chdir_free):
-            bad.append(f"{rel}:{call.lineno}: {why}")
+        bad.extend(_file_findings(rel, path.read_text(encoding="utf-8")))
     assert not bad, (
         f"{len(bad)} git spawn(s) target this checkout with no enclosing "
         "declaration — the gate container has no .git, so the test reddens "
