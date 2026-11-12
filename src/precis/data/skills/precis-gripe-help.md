@@ -403,7 +403,7 @@ default read (it stays searchable, and `view='comments'` shows it marked
 A comment can carry an edge and tag edits in the same call, in one
 transaction (a bad target, `rel=` or tag writes nothing): closing a
 duplicate is one call,
-`put(kind='gripe', id=42, text='dup of gr7', link='gripe:7', rel='superseded-by', tags=['STATUS:wontfix'])`.
+`put(kind='gripe', id=42, text='resolved: wontfix — dup of gr7', link='gripe:7', rel='superseded-by', tags=['STATUS:wontfix'])`.
 Tag edits on an append run the same `tag()` validation —
 `STATUS:` is closed-prefix, so removing a `STATUS:` tag without a
 replacement is refused. `prio=` still belongs on `tag()`.
@@ -513,13 +513,14 @@ search(kind="job", link="gripe:42")
 put(
     kind="gripe",
     id=42,
-    text="not fixing — root cause is upstream in marker; tracking there instead",
+    text="resolved: wontfix — root cause is upstream in marker; tracking there instead",
     tags=["STATUS:wontfix"],
 )
 ```
 
 One call — the comment and the status flip land in the same
-transaction. `wontfix` is a kept final
+transaction. A terminal or verify `STATUS:` needs the comment text itself
+to start `resolved:`. `wontfix` is a kept final
 state — it doesn't imply deletion. Use `delete` separately when
 you want the gripe gone from search.
 

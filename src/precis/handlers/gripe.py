@@ -1681,7 +1681,8 @@ class GripeHandler(NumericRefHandler):
             example = "resolved: <sha> (r<N>) — <how verified>"
         raise BadInput(
             f"closing a {self._sense()} needs a newest comment starting "
-            f"{_RESOLVED_PREFIX!r}",
+            f"{_RESOLVED_PREFIX!r} (a same-call put's text= counts, so it "
+            f"must start with it too)",
             next=(
                 f"put(kind={self.kind!r}, id={ref_id}, text={example!r}) then "
                 f"tag(kind={self.kind!r}, id={ref_id}, add={list(add or ())!r})"

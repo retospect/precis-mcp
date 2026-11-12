@@ -74,6 +74,15 @@ def test_put_with_tags_closes_in_one_call(hub: Hub) -> None:
     assert "STATUS:done" in _tags(h, gid)
 
 
+def test_put_wontfix_one_call_needs_resolved_prefix(hub: Hub) -> None:
+    h, gid = _gripe(hub)
+    with pytest.raises(BadInput, match="same-call put"):
+        h.put(id=gid, text="dup of gr7", tags=["STATUS:wontfix"])
+    assert "STATUS:open" in _tags(h, gid)
+    h.put(id=gid, text="resolved: wontfix — dup of gr7", tags=["STATUS:wontfix"])
+    assert "STATUS:wontfix" in _tags(h, gid)
+
+
 def test_other_status_changes_unguarded(hub: Hub) -> None:
     h, gid = _gripe(hub)
     h.tag(id=gid, add=["STATUS:triaged"])
