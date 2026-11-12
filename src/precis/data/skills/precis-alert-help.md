@@ -9,6 +9,7 @@ answers:
   - is a specific failure id open, and has it come back before?
   - how do I triage or resolve an open alert?
   - how do I ack an alert for a few hours without resolving it?
+  - why did an alert I resolved come back under a new id?
   - which background passes raise alerts, and for what conditions?
   - does an alert show up in normal search?
 applies-to: kind='alert'; precis.alerts.raise_alert / resolve_stale_alerts / resolve_alert; /alerts web tab
@@ -145,9 +146,9 @@ recent history.
 
 ## Triage
 
-To dismiss an alert by hand ("I've seen it, stop showing it" while the
-underlying fix lands), either use the **dismiss** button on the
-`/alerts` web tab or flip the tags:
+To close an alert by hand — its condition has actually cleared but the
+producer's next pass hasn't confirmed it yet — either use the
+**dismiss** button on the `/alerts` web tab or flip the tags:
 
 ```
 tag(kind='alert', id=42, add=['alert-state:resolved'])
@@ -168,9 +169,20 @@ fresh alert — then the edit is rejected and points you at the live row.
 Most alerts auto-resolve when their producer next runs and the
 condition has cleared, so manual resolution is rarely needed.
 
-**Acknowledge, don't resolve, a known-failing id.** Resolving asserts the
-condition is gone and is undone the next time the producer sees it. To
-silence a still-failing id for a while, ack it with a TTL:
+**Resolving does nothing unless the cause is cleared.** The tag flips
+one row; the condition that raised it is untouched, so the producer
+re-mints the alert on its next pass as a **new row under a new id**
+(resolving frees the `(source, fingerprint)` dedup slot, and the fresh
+sighting inserts into it). Unless you actually fixed the cause — close
+or unpark the todo `subject_ref_id` points at, mark the dark host
+intermittent, land the change the detector flags — expect the alert
+back within minutes. 2026-11-11: five alerts resolved by tag re-fired
+within minutes under new ids (al635390-93, al635240) because the parked
+todo and the dark host behind them were untouched. A re-fired alert is
+a new row: it does not inherit the old row's ack.
+
+**Acknowledge, don't resolve, a known-failing id.** To silence a
+still-failing id for a while, ack it with a TTL:
 
 ```
 tag(kind='alert', id=42, add=['ack:6h'])   # ack:<N>m|h|d, 1 minute to 90 days
@@ -185,8 +197,7 @@ refuses an ack. `id=[42, 43]` acks several. An acked alert stays
 auto-resolves when the condition clears, and it shows dimmed on `/alerts`
 with its expiry. While acked it is left out of the nav badge, the
 `alert_backlog_rot` check and the remediation router (which also closes the
-tracker gripe it had filed). A resolve → re-raise is a new row and does not
-inherit the ack.
+tracker gripe it had filed).
 
 ## Producers
 
