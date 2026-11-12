@@ -128,6 +128,38 @@ def spent_usd(store: Store, *, since_seconds: int) -> float:
     return float(llm[0] if llm else 0.0) + float(fetch[0] if fetch else 0.0)
 
 
+def _spent_usd_windows(store: Store) -> tuple[float, float]:
+    """``(hourly, daily)`` real-money spend in one scan per table.
+
+    :func:`_compute_status` used to call :func:`spent_usd` twice — four
+    scans of ``llm_call_log`` + ``cache_state`` per compute, the steady
+    seq-scan load the db-thrash review logged on ``cache_state``
+    (gr575088). One FILTER'd aggregate per table answers both windows in
+    a single pass; the predicates mirror ``spent_usd`` exactly.
+    """
+    with store.pool.connection() as conn:
+        llm = conn.execute(
+            "SELECT COALESCE(sum(cost_usd) FILTER "
+            "(WHERE ts > now() - %s::interval), 0)::float, "
+            "COALESCE(sum(cost_usd), 0)::float "
+            "FROM llm_call_log "
+            "WHERE cost_usd IS NOT NULL AND ts > now() - %s::interval "
+            "AND (transport IS NULL OR transport <> ALL(%s))",
+            (f"{_HOUR_S} seconds", f"{_DAY_S} seconds", list(OAUTH_TRANSPORTS)),
+        ).fetchone()
+        fetch = conn.execute(
+            "SELECT COALESCE(sum(cost_usd) FILTER "
+            "(WHERE fetched_at > now() - %s::interval), 0)::float, "
+            "COALESCE(sum(cost_usd), 0)::float "
+            "FROM cache_state "
+            "WHERE cost_usd IS NOT NULL AND cost_usd > 0 "
+            "AND fetched_at > now() - %s::interval",
+            (f"{_HOUR_S} seconds", f"{_DAY_S} seconds"),
+        ).fetchone()
+    assert llm is not None and fetch is not None
+    return float(llm[0]) + float(fetch[0]), float(llm[1]) + float(fetch[1])
+
+
 def _compute_status(store: Store) -> BudgetStatus:
     # DB → env → compiled-default cap resolution now lives in the registry
     # (precis.settings) rather than being hand-rolled here; the registry's
@@ -137,9 +169,10 @@ def _compute_status(store: Store) -> BudgetStatus:
 
     hourly_cap = _settings.get_float("budget.hourly_usd", store=store)
     daily_cap = _settings.get_float("budget.daily_usd", store=store)
+    hourly_spent, daily_spent = _spent_usd_windows(store)
     return BudgetStatus(
-        hourly_spent=spent_usd(store, since_seconds=_HOUR_S),
-        daily_spent=spent_usd(store, since_seconds=_DAY_S),
+        hourly_spent=hourly_spent,
+        daily_spent=daily_spent,
         hourly_cap=hourly_cap if hourly_cap is not None else DEFAULT_HOURLY_USD,
         daily_cap=daily_cap if daily_cap is not None else DEFAULT_DAILY_USD,
     )

@@ -98,6 +98,8 @@ semantic search.
 from __future__ import annotations
 
 import logging
+import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -382,6 +384,33 @@ class Symptom:
     total: int | None = None
 
 
+#: Seconds between ``kind-shrinkage`` roster scans per store instance
+#: (gr575088): the detector diffs ``kind_provider`` rows per host — four
+#: scans of a ~550-row table on every nursery pass, ~45k seq scans in the
+#: db-thrash window — while kind rosters drift at boot/deploy cadence.
+#: Keyed by store so a fresh ``Store`` (each worker process, each test)
+#: always scans on its first pass; the interval throttles repeat passes.
+_KIND_ROSTER_INTERVAL_S = 900.0
+_kind_roster_checked: weakref.WeakKeyDictionary[Store, float] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _kind_roster_due(store: Store) -> bool:
+    """True when this store's ``kind-shrinkage`` scan is due again.
+
+    Skipping the whole category — detection *and* the resolve sweep — is
+    deliberate: a detector that didn't run can't tell a stale alert from
+    a live one, so a throttled pass leaves open alerts untouched (they
+    drain on the next due pass).
+    """
+    now = time.monotonic()
+    if now - _kind_roster_checked.get(store, 0.0) < _KIND_ROSTER_INTERVAL_S:
+        return False
+    _kind_roster_checked[store] = now
+    return True
+
+
 #: Detectors in catalogue order, each paired with its category. The
 #: category is both the alert sub-source (``nursery:<category>``) and
 #: the dedup-fingerprint prefix. Each detector self-limits to 50 hits.
@@ -432,6 +461,8 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
     raised = 0
     resolved = 0
     for category, detect in _DETECTORS:
+        if category == "kind-shrinkage" and not _kind_roster_due(store):
+            continue
         source = f"nursery:{category}"
         severity = _SEVERITY.get(category, "warn")
         findings = detect(store)

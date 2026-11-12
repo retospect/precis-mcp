@@ -243,3 +243,43 @@ def test_per_tag_write_failure_counts_failed(
     assert result["claimed"] == 2
     assert result["ok"] == 1
     assert result["failed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# gr575088: tag caches bust on writes — no stale discovery surfaces
+# ---------------------------------------------------------------------------
+
+
+class TestTagCacheFreshness:
+    def test_tag_namespaces_reflects_new_tag_immediately(self, store: Store) -> None:
+        # The cached namespace set must bust when a write mints a new
+        # axis — otherwise the read filter would not accept it for the
+        # TTL window.
+        from uuid import uuid4
+
+        ns = f"NS{uuid4().hex[:6].upper()}"
+        store.tag_namespaces()  # prime the cache
+        ref_id = seed_ref(store)
+        store.add_tag(ref_id, Tag.closed(ns, "v1"))
+        assert ns in store.tag_namespaces()
+
+    def test_suggest_tags_reflects_fresh_writes(self, store: Store) -> None:
+        # The usage roster cache busts on add_tag — a just-attached tag
+        # is suggestible on the very next call.
+        from uuid import uuid4
+
+        val = f"topic-{uuid4().hex[:8]}"
+        store.suggest_tags(val)  # prime the roster
+        ref_id = seed_ref(store)
+        store.add_tag(ref_id, Tag.open(val))
+        hits = store.suggest_tags(val)
+        assert (val, 1) in [(v, n) for _ns, v, n in hits]
+
+    def test_list_all_tags_reflects_fresh_writes(self, store: Store) -> None:
+        from uuid import uuid4
+
+        val = f"topic-{uuid4().hex[:8]}"
+        store.list_all_tags()  # prime the roster
+        ref_id = seed_ref(store)
+        store.add_tag(ref_id, Tag.open(val))
+        assert ("OPEN", val, 1) in store.list_all_tags()

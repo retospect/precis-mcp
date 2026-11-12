@@ -122,3 +122,30 @@ def test_budget_tote_rolls_up_llm_call_log_pg(store: Any) -> None:
     sources = {s["label"] for s in tote["by_source"]}
     assert "dream" in sources
     assert [w["label"] for w in tote["windows"]] == ["Hourly", "24h"]
+
+
+def test_spent_usd_windows_matches_spent_usd(store: Any) -> None:
+    """gr575088: ``_spent_usd_windows`` answers hourly+daily in one scan
+    per table; the values must match two ``spent_usd`` calls."""
+    from uuid import uuid4
+
+    tag = uuid4().hex[:8]
+    src = f"windows-{tag}"
+    with store.pool.connection() as conn:
+        # One row inside the hour, one inside the day only — so the two
+        # windows provably read different subsets.
+        conn.execute(
+            "INSERT INTO llm_call_log (ts, source, model, transport, cost_usd) "
+            "VALUES (now() - interval '10 minutes', %s, 'm', 'openrouter', 1.0),"
+            "       (now() - interval '3 hours', %s, 'm', 'openrouter', 2.0)",
+            (src, src),
+        )
+        conn.commit()
+    hourly, daily = meter._spent_usd_windows(store)
+    assert hourly <= daily
+    # Deltas are exact for this test's tagged rows even on the shared DB.
+    base_h = meter.spent_usd(store, since_seconds=meter._HOUR_S)
+    base_d = meter.spent_usd(store, since_seconds=meter._DAY_S)
+    assert hourly == pytest.approx(base_h)
+    assert daily == pytest.approx(base_d)
+    assert daily - hourly >= 1.99  # the 3h-old row lands only in the day window

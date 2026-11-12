@@ -2877,3 +2877,16 @@ def test_unattributed_claimant_ignores_non_claiming_container(store: Store) -> N
         f.fingerprint_key == f"unattributed-claimant:{host}"
         for f in _detect_unattributed_claimants(store)
     )
+
+
+def test_kind_roster_due_throttles_per_store(store: Store) -> None:
+    """gr575088: the kind-shrinkage roster scan runs at most once per
+    ``_KIND_ROSTER_INTERVAL_S`` per store — a fresh store always scans,
+    repeat passes within the interval skip detection *and* the resolve
+    sweep (a skipped detector can't tell stale from live)."""
+    from precis.workers import nursery
+
+    assert nursery._kind_roster_due(store) is True
+    assert nursery._kind_roster_due(store) is False
+    nursery._kind_roster_checked.pop(store, None)  # reset → due again
+    assert nursery._kind_roster_due(store) is True

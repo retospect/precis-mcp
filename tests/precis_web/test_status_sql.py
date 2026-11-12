@@ -450,3 +450,40 @@ def test_health_ctx_surfaces_registry_title_mismatch(store: Any) -> None:
     assert tm["n_sampled"] >= 3
     assert tm["n_mismatch"] >= 1
     assert tm["n_tagged"] >= 1
+
+
+def test_llm_op_stats_bounds_raw_read_and_uses_rollup(store: Any) -> None:
+    """gr575088: the stats read bounds llm_call_log to 7 days and takes
+    older activity from llm_call_rollup instead of grouping the whole
+    table per poll."""
+    from uuid import uuid4
+
+    from precis import route_log
+    from precis_web.routes.status import _llm_op_stats
+
+    tag = uuid4().hex[:8]
+    old_src, new_src = f"opstats-old-{tag}", f"opstats-new-{tag}"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO llm_call_log (ts, source, model, features) VALUES "
+            "(now() - interval '30 days', %s, 'm-old', '{}'),"
+            "(now(), %s, 'm-new', '{}')",
+            (old_src, new_src),
+        )
+        conn.commit()
+        wm = conn.execute(
+            "SELECT date_trunc('hour', now()) - interval '31 days'"
+        ).fetchone()[0]
+    store.set_setting(route_log._ROLLUP_WATERMARK_KEY, wm.isoformat())
+    # Roll far enough that the 30-day-old row lands in a bucket.
+    while route_log.rollup(store, hours_budget=744):
+        pass
+
+    stats = _llm_op_stats(store)
+    assert old_src in stats  # history survives via the rollup bucket
+    assert stats[old_src]["calls_7d"] == 0
+    assert stats[old_src]["last_seen_model"] == "m-old"
+    assert stats[old_src]["last_run"] is not None
+    assert new_src in stats
+    assert stats[new_src]["calls_7d"] == 1
+    assert stats[new_src]["last_seen_model"] == "m-new"

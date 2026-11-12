@@ -43,6 +43,8 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -112,6 +114,82 @@ def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
             "can't attach a tag to a chunk that doesn't exist"
         )
     return chunk_id
+
+
+# ── read-path caches (gr575088 db-thrash) ─────────────────────────────
+#
+#: ``tag_namespaces`` ran a DISTINCT over ``tags`` on every read-filter
+#: build (~77k scans in the review window), and ``suggest_tags`` /
+#: ``list_all_tags`` / ``search_tags_lexical`` each grouped ``ref_tags``
+#: and ``chunk_tags`` per call — a share of ref_tags' 109k seq scans.
+#: Both payloads are read-mostly, so they cache per process for a short
+#: TTL. Every store-layer tag write calls :func:`_bust_tag_caches`, so a
+#: same-process caller never sees stale data; a writer in another
+#: process leaves staleness bounded by the TTL — acceptable for the
+#: advisory surfaces these feeds (autocomplete ordering, filter axes).
+_TAG_CACHE_TTL_S = 120.0
+
+_tag_cache_lock = threading.Lock()
+_tag_ns_cache: tuple[float, frozenset[str]] | None = None
+_tag_usage_cache: tuple[float, list[tuple[str, str, int]]] | None = None
+
+
+def _bust_tag_caches() -> None:
+    """Drop the cached namespace set + usage roster after a tag write."""
+    global _tag_ns_cache, _tag_usage_cache
+    with _tag_cache_lock:
+        _tag_ns_cache = None
+        _tag_usage_cache = None
+
+
+def _tag_namespaces_cached(conn: Connection) -> frozenset[str]:
+    """``SELECT DISTINCT namespace FROM tags`` behind the TTL cache."""
+    global _tag_ns_cache
+    now = time.monotonic()
+    with _tag_cache_lock:
+        if _tag_ns_cache is not None and now - _tag_ns_cache[0] < _TAG_CACHE_TTL_S:
+            return _tag_ns_cache[1]
+    rows = conn.execute("SELECT DISTINCT namespace FROM tags").fetchall()
+    fresh = frozenset(str(r[0]) for r in rows)
+    with _tag_cache_lock:
+        _tag_ns_cache = (now, fresh)
+    return fresh
+
+
+def _tag_usage_roster(conn: Connection) -> list[tuple[str, str, int]]:
+    """``(namespace, value, usage_count)`` for every tag row, cached.
+
+    One UNIONed GROUP BY over ``ref_tags`` + ``chunk_tags`` per TTL per
+    process — the same rollup the discovery surfaces used to run per
+    call. Counts are cumulative attachments from both join tables,
+    matching the old ``rc.n + cc.n`` discovery SQL (``suggest_tags``
+    counted ref-level rows only before; chunk attachments are a
+    strictly better "most used" signal and keep one roster for all
+    three surfaces).
+    """
+    global _tag_usage_cache
+    now = time.monotonic()
+    with _tag_cache_lock:
+        if (
+            _tag_usage_cache is not None
+            and now - _tag_usage_cache[0] < _TAG_CACHE_TTL_S
+        ):
+            return _tag_usage_cache[1]
+    rows = conn.execute(
+        "SELECT t.namespace, t.value, COALESCE(u.n, 0)::int "
+        "FROM tags t "
+        "LEFT JOIN ("
+        "  SELECT tag_id, count(*) AS n FROM ("
+        "    SELECT tag_id FROM ref_tags "
+        "    UNION ALL "
+        "    SELECT tag_id FROM chunk_tags"
+        "  ) a GROUP BY tag_id"
+        ") u ON u.tag_id = t.tag_id"
+    ).fetchall()
+    fresh = [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
+    with _tag_cache_lock:
+        _tag_usage_cache = (now, fresh)
+    return fresh
 
 
 #: ``STATUS:`` values that end a job's run (mirrors
@@ -292,6 +370,7 @@ class TagsMixin:
         else:
             with self.pool.connection() as c:
                 _do(c)
+        _bust_tag_caches()
 
     def remove_tag(
         self,
@@ -335,9 +414,13 @@ class TagsMixin:
             return cur.rowcount > 0
 
         if conn is not None:
-            return _do(conn)
-        with self.pool.connection() as c:
-            return _do(c)
+            deleted = _do(conn)
+        else:
+            with self.pool.connection() as c:
+                deleted = _do(c)
+        if deleted:
+            _bust_tag_caches()
+        return deleted
 
     def tags_for(
         self,
@@ -467,16 +550,12 @@ class TagsMixin:
         q = (q or "").strip()
         if not q:
             return []
+        needle = q.lower()
         with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT t.namespace, t.value, count(rt.ref_id) AS n "
-                "FROM tags t LEFT JOIN ref_tags rt USING(tag_id) "
-                "WHERE (t.namespace || ':' || t.value) ILIKE %s "
-                "GROUP BY t.namespace, t.value "
-                "ORDER BY n DESC, t.namespace, t.value LIMIT %s",
-                (f"%{q}%", limit),
-            ).fetchall()
-        return [(str(ns), str(val), int(n)) for ns, val, n in rows]
+            roster = _tag_usage_roster(conn)
+        hits = [t for t in roster if needle in f"{t[0]}:{t[1]}".lower()]
+        hits.sort(key=lambda t: (-t[2], t[0], t[1]))
+        return hits[:limit]
 
     def tag_namespaces(self) -> frozenset[str]:
         """Every ``tags.namespace`` in the table — the data-carried axes.
@@ -484,11 +563,11 @@ class TagsMixin:
         The read filter's in-use registry (gr504808): machine-stamped
         axes like ``MATERIAL`` outnumber the ``_CLOSED_VOCAB`` registry
         ~3:1, and ``search(tags=[...])`` accepts any axis the data
-        actually carries.
+        actually carries. Cached per process for ``_TAG_CACHE_TTL_S``
+        (gr575088) — tag writes bust it.
         """
         with self.pool.connection() as conn:
-            rows = conn.execute("SELECT DISTINCT namespace FROM tags").fetchall()
-        return frozenset(str(r[0]) for r in rows)
+            return _tag_namespaces_cached(conn)
 
     def ref_tags_bulk(self, ref_ids: list[int]) -> dict[int, list[tuple[str, str]]]:
         """All ref-level tags for many refs in one query — the N+1 avoidance
@@ -596,37 +675,28 @@ class TagsMixin:
         if page < 1:
             page = 1
         offset = (page - 1) * page_size
+        if kind is None:
+            # Cached roster (gr575088) — every tag row with at least one
+            # ref-level or chunk-level attachment.
+            with self.pool.connection() as conn:
+                roster = _tag_usage_roster(conn)
+            rows = [t for t in roster if t[2] > 0]
+            rows.sort(key=lambda t: (-t[2], t[0], t[1]))
+            return rows[offset : offset + page_size]
         with self.pool.connection() as conn:
-            if kind is None:
-                # Sum ref-level and chunk-level attachments — every tag
-                # row that has at least one join from either table.
-                rows = conn.execute(
-                    "SELECT t.namespace, t.value, "
-                    "       COALESCE(rc.n, 0) + COALESCE(cc.n, 0) AS usage_count "
-                    "FROM tags t "
-                    "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM ref_tags "
-                    "           GROUP BY tag_id) rc ON rc.tag_id = t.tag_id "
-                    "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM chunk_tags "
-                    "           GROUP BY tag_id) cc ON cc.tag_id = t.tag_id "
-                    "WHERE COALESCE(rc.n, 0) + COALESCE(cc.n, 0) > 0 "
-                    "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
-                    "LIMIT %s OFFSET %s",
-                    (page_size, offset),
-                ).fetchall()
-            else:
-                # Scope to refs of the given kind. Chunk-level
-                # attachments inherit the parent ref's kind.
-                rows = conn.execute(
-                    "SELECT t.namespace, t.value, COUNT(*) AS usage_count "
-                    "FROM tags t "
-                    "JOIN ref_tags rt ON rt.tag_id = t.tag_id "
-                    "JOIN refs r ON r.ref_id = rt.ref_id "
-                    "WHERE r.kind = %s AND r.retired_at IS NULL "
-                    "GROUP BY t.namespace, t.value "
-                    "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
-                    "LIMIT %s OFFSET %s",
-                    (kind, page_size, offset),
-                ).fetchall()
+            # Scope to refs of the given kind. Chunk-level
+            # attachments inherit the parent ref's kind.
+            rows = conn.execute(
+                "SELECT t.namespace, t.value, COUNT(*) AS usage_count "
+                "FROM tags t "
+                "JOIN ref_tags rt ON rt.tag_id = t.tag_id "
+                "JOIN refs r ON r.ref_id = rt.ref_id "
+                "WHERE r.kind = %s AND r.retired_at IS NULL "
+                "GROUP BY t.namespace, t.value "
+                "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
+                "LIMIT %s OFFSET %s",
+                (kind, page_size, offset),
+            ).fetchall()
         return [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
 
     def tag_metadata(
@@ -852,25 +922,15 @@ class TagsMixin:
         if page < 1:
             page = 1
         offset = (page - 1) * page_size
-        # ``%`` is the wildcard; escape any literal % / _ in q so a
-        # user-supplied string doesn't behave like a pattern.
-        needle = escape_like(q.strip())
+        needle = q.strip().lower()
         with self.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT t.namespace, t.value, "
-                "       COALESCE(rc.n, 0) + COALESCE(cc.n, 0) AS usage_count "
-                "FROM tags t "
-                "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM ref_tags "
-                "           GROUP BY tag_id) rc ON rc.tag_id = t.tag_id "
-                "LEFT JOIN (SELECT tag_id, COUNT(*) AS n FROM chunk_tags "
-                "           GROUP BY tag_id) cc ON cc.tag_id = t.tag_id "
-                "WHERE (t.namespace || ':' || t.value) ILIKE %s "
-                "   OR t.value ILIKE %s "
-                "ORDER BY usage_count DESC, t.namespace ASC, t.value ASC "
-                "LIMIT %s OFFSET %s",
-                (f"%{needle}%", f"%{needle}%", page_size, offset),
-            ).fetchall()
-        return [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
+            roster = _tag_usage_roster(conn)
+        # The old SQL matched ``namespace || ':' || value`` OR bare
+        # ``value`` — the first is a superset (value is inside it), so a
+        # plain substring check over the roster carries the same match.
+        hits = [t for t in roster if needle in f"{t[0]}:{t[1]}".lower()]
+        hits.sort(key=lambda t: (-t[2], t[0], t[1]))
+        return hits[offset : offset + page_size]
 
     def find_first_meta_for_open_tag(
         self,

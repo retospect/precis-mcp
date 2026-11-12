@@ -1527,34 +1527,64 @@ def _llm_chain_ctx(store: Store) -> dict[str, Any]:
 
 
 def _llm_op_stats(store: Store) -> dict[str, dict[str, Any]]:
-    """One ``GROUP BY source`` rollup over ``llm_call_log`` — last-run,
-    7-day call volume, and last-seen model per observed ``source``, for the
+    """Per-source last-run / 7-day volume / last-seen model for the
     operations panel's row set (:func:`_llm_ops_ctx`) and its activity
-    columns. Migration ``0078`` dropped the ``(source, ts)`` composite index
-    as unused; a live join is fine at today's table size (the proposal's
-    blast-radius note). Degrades to ``{}`` on any surprise.
+    columns.
+
+    Two bounded reads instead of the old unbounded ``GROUP BY source`` —
+    that query seq-scanned the whole ~9.5M-row log on every status poll
+    (gr575088's ~23 near-full scans/day). The trailing 7 days come off
+    ``llm_call_log`` directly (its ``ts`` index makes a week cheap);
+    activity older than that comes from ``llm_call_rollup`` (migration
+    0313), which ``route_log.rollup`` fills ahead of the GC horizon. A
+    source quiet >7d still surfaces with its last rolled hour; one never
+    rolled up yet simply appears at its next call. Degrades to ``{}`` on
+    any surprise (a pre-0313 database included).
     """
     try:
         with _connect(store) as conn:
-            cur = conn.execute(
-                "SELECT source, max(ts) AS last_run, "
-                "count(*) FILTER (WHERE ts > now() - interval '7 days') AS calls_7d, "
+            recent = conn.execute(
+                "SELECT source, max(ts) AS last_run, count(*) AS calls_7d, "
                 "(array_agg(model ORDER BY ts DESC))[1] AS last_seen_model "
                 "FROM llm_call_log "
-                "WHERE source IS NOT NULL AND source <> '' "
+                "WHERE ts > now() - interval '7 days' "
+                "AND source IS NOT NULL AND source <> '' "
                 # Gate-outs (features.gated, gr516941) never ran — a paused
                 # attempt is not activity for last_run/calls_7d.
                 "AND (features->>'gated') IS DISTINCT FROM 'true' "
                 "GROUP BY source"
-            )
-            rows = cur.fetchall()
+            ).fetchall()
+            hist = conn.execute(
+                "SELECT DISTINCT ON (source) source, hour, model "
+                "FROM llm_call_rollup "
+                "WHERE source IS NOT NULL AND source <> '' "
+                "ORDER BY source, hour DESC"
+            ).fetchall()
     except Exception:
         log.warning("status: llm_call_log source rollup failed", exc_info=True)
         return {}
-    return {
-        r[0]: {"last_run": r[1], "calls_7d": int(r[2] or 0), "last_seen_model": r[3]}
-        for r in rows
-    }
+    out: dict[str, dict[str, Any]] = {}
+    for source, hour, model in hist:
+        out[str(source)] = {
+            "last_run": hour,
+            "calls_7d": 0,
+            "last_seen_model": model,
+        }
+    for source, last_run, calls_7d, model in recent:
+        entry = out.get(str(source))
+        if entry is None:
+            out[str(source)] = {
+                "last_run": last_run,
+                "calls_7d": int(calls_7d),
+                "last_seen_model": model,
+            }
+            continue
+        if last_run is not None and last_run > entry["last_run"]:
+            entry["last_run"] = last_run
+        entry["calls_7d"] = int(calls_7d)
+        if model is not None:
+            entry["last_seen_model"] = model
+    return out
 
 
 def _llm_ops_ctx(store: Store) -> dict[str, Any]:

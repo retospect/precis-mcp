@@ -819,3 +819,122 @@ def test_dispatch_local_records_openai_token_split(
     assert row[3] == 20  # output_tokens ← completion_tokens
     assert row[4] is None  # cache_read_tokens — no cache split reported
     assert row[5] is None  # cache_creation_tokens — no cache split reported
+
+
+# ── llm_call_rollup (migration 0313, gr575088) ───────────────────────
+#
+# The rollup pass aggregates completed hours of llm_call_log into
+# llm_call_rollup ahead of the GC horizon. Tests seed the app_state
+# watermark explicitly so the rolled window contains only their tagged
+# rows — the shared test DB's other history stays untouched.
+
+
+def _set_rollup_watermark(store: Any, interval_sql: str) -> None:
+    """Point the rollup watermark at ``now() - <interval_sql>``."""
+    with store.pool.connection() as conn:
+        wm = conn.execute(
+            f"SELECT date_trunc('hour', now()) - interval '{interval_sql}'"
+        ).fetchone()[0]
+    store.set_setting(route_log._ROLLUP_WATERMARK_KEY, wm.isoformat())
+
+
+def _rollup_rows(store: Any, source: str) -> list[Any]:
+    with store.pool.connection() as conn:
+        return conn.execute(
+            "SELECT calls, errored, cost_usd FROM llm_call_rollup WHERE source=%s",
+            (source,),
+        ).fetchall()
+
+
+def test_rollup_aggregates_completed_hours(store: Any) -> None:
+    tag = uuid4().hex[:8]
+    src = f"rollup-{tag}"
+    route_log.record_call(_rec(source=src, request_text=f"RO-{tag}"), store=store)
+    route_log.record_call(
+        _rec(source=src, request_text=f"RO2-{tag}", errored=True), store=store
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_call_log SET ts = date_trunc('hour', now()) "
+            "- interval '2 hours' WHERE source=%s",
+            (src,),
+        )
+        conn.commit()
+    _set_rollup_watermark(store, "3 hours")
+    assert route_log.rollup(store) == 3
+    rows = _rollup_rows(store, src)
+    assert len(rows) == 1
+    assert rows[0][0] == 2  # both calls in one hour bucket
+    assert rows[0][1] == 1  # one errored
+    assert rows[0][2] == 1.0  # 2 × 0.5
+    # Caught up → the next pass is a no-op.
+    assert route_log.rollup(store) == 0
+
+
+def test_rollup_skips_incomplete_hour(store: Any) -> None:
+    tag = uuid4().hex[:8]
+    src = f"rollup-cur-{tag}"
+    route_log.record_call(_rec(source=src, request_text=f"RC-{tag}"), store=store)
+    _set_rollup_watermark(store, "0 hours")
+    # Watermark is already at the current hour → nothing to roll.
+    assert route_log.rollup(store) == 0
+    assert _rollup_rows(store, src) == []
+
+
+def test_rollup_replay_replaces_not_duplicates(store: Any) -> None:
+    # Re-rolling a window rewrites the bucket (NULLS NOT DISTINCT upsert)
+    # rather than double-counting it.
+    tag = uuid4().hex[:8]
+    src = f"rollup-re-{tag}"
+    route_log.record_call(_rec(source=src, request_text=f"RR-{tag}"), store=store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_call_log SET ts = date_trunc('hour', now()) "
+            "- interval '1 hour' WHERE source=%s",
+            (src,),
+        )
+        conn.commit()
+    _set_rollup_watermark(store, "1 hour")
+    assert route_log.rollup(store) == 1
+    _set_rollup_watermark(store, "1 hour")  # replay the same hour
+    assert route_log.rollup(store) == 1
+    rows = _rollup_rows(store, src)
+    assert len(rows) == 1
+    assert rows[0][0] == 1
+
+
+def test_rollup_excludes_gated_rows(store: Any) -> None:
+    # A gate-out (features.gated) never ran — matching the live reads,
+    # it lands in no rollup bucket.
+    tag = uuid4().hex[:8]
+    src = f"rollup-gated-{tag}"
+    route_log.record_call(
+        _rec(
+            source=src,
+            request_text=f"RG-{tag}",
+            features={"gated": "true", "reason_class": "budget"},
+        ),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE llm_call_log SET ts = date_trunc('hour', now()) "
+            "- interval '1 hour' WHERE source=%s",
+            (src,),
+        )
+        conn.commit()
+    _set_rollup_watermark(store, "1 hour")
+    assert route_log.rollup(store) == 1
+    assert _rollup_rows(store, src) == []
+
+
+def test_rollup_single_flight_when_lock_held(store: Any) -> None:
+    # Rollup shares gc's advisory lock — a holder makes it fast-fail
+    # instead of piling a second aggregate pass onto the DB.
+    _set_rollup_watermark(store, "2 hours")
+    with store.pool.connection() as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", (route_log._GC_LOCK,))
+        holder.commit()
+        assert route_log.rollup(store) == 0
+        holder.execute("SELECT pg_advisory_unlock(%s)", (route_log._GC_LOCK,))
+        holder.commit()

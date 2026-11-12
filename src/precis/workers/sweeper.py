@@ -938,6 +938,11 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
         log.info("sweeper: retired %d dead fleet row(s)", reaped_fleet)
     from precis import route_log
 
+    # Rollup before GC (gr575088): aggregates land ahead of the retention
+    # horizon so history survives as buckets after raw rows prune.
+    rolled = route_log.rollup(store, retention_days=_route_log_retention_days())
+    if rolled:
+        log.info("sweeper: rolled up %d llm_call_log hour(s)", rolled)
     reaped_calls = route_log.gc(store, retention_days=_route_log_retention_days())
     if reaped_calls:
         log.info("sweeper: GC'd %d stale llm_call_log row(s)", reaped_calls)

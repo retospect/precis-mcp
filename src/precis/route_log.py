@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.env import env_flag
@@ -57,6 +58,15 @@ _CALL_GC_BUDGET = 250_000
 #: a huge orphan backlog exists.
 _BLOB_GC_BATCH = 2_000
 _BLOB_GC_BUDGET = 100_000
+
+#: ``app_state`` key carrying :func:`rollup`'s watermark — the oldest hour still
+#: to aggregate, ISO-8601. Missing → seeded from the log's retained history.
+_ROLLUP_WATERMARK_KEY = "route_log:rollup_watermark"
+
+#: Max *completed hours* one :func:`rollup` pass aggregates. Bounds the catch-up
+#: pass inside ``statement_timeout`` the same way ``_CALL_GC_BUDGET`` bounds a
+#: delete backlog; successive sweeps drain the rest.
+_ROLLUP_HOURS_BUDGET = 48
 
 #: ``autoskill_sessions`` retention (days, migration 0264; spec
 #: docs/backlog/autoskill.md) and its per-statement / per-pass row limits.
@@ -540,6 +550,111 @@ def gc(
     return deleted
 
 
+def rollup(
+    store: Store,
+    *,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+    hours_budget: int = _ROLLUP_HOURS_BUDGET,
+) -> int:
+    """Aggregate completed hours of ``llm_call_log`` into ``llm_call_rollup``.
+
+    Returns the number of hours rolled this pass (0 when another worker
+    holds the lock — rollup shares :data:`_GC_LOCK` with :func:`gc` so a
+    catch-up pass never runs alongside a retention sweep on another host,
+    and 0 when the watermark is already at the current hour).
+
+    gr575088: the raw log kept no aggregates, so every historical rollup
+    question — the status page's per-source stats among them — seq-scanned
+    the full table. This fills ``llm_call_rollup`` (migration 0313) forward
+    from an ``app_state`` watermark, oldest-first and capped at
+    ``hours_budget`` hours per pass, so a large backlog drains over sweeps
+    instead of one long aggregate. The watermark seeds at the *retention
+    edge* (or the log's oldest row, whichever is later): rows already below
+    the GC floor are being deleted this same pass — backfill beyond that is
+    an operator choice via the watermark key, not the default.
+
+    Only *completed* hours are aggregated, so a bucket is never written
+    under rows still arriving. Replays are safe: the rollup key is unique
+    ``NULLS NOT DISTINCT``, so an overlapping pass replaces rather than
+    duplicates. Gate-out rows (``features.gated``) are excluded, matching
+    the live reads — a paused attempt is neither activity nor spend
+    (gr516941).
+    """
+    with store.pool.connection() as conn:
+        got = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)", (_GC_LOCK,)
+        ).fetchone()
+        if not got or not got[0]:
+            return 0  # another worker holds the GC/rollup lock — don't pile on
+        cut_row = conn.execute("SELECT date_trunc('hour', now())").fetchone()
+        assert cut_row is not None
+        cutoff = cut_row[0]
+        row = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s",
+            (_ROLLUP_WATERMARK_KEY,),
+        ).fetchone()
+        if row is None:
+            seed_row = conn.execute(
+                "SELECT GREATEST("
+                " COALESCE(date_trunc('hour', min(ts)), date_trunc('hour', now())),"
+                " date_trunc('hour', now()) - (%s || ' days')::interval) "
+                "FROM llm_call_log",
+                (retention_days,),
+            ).fetchone()
+            assert seed_row is not None
+            wm = seed_row[0]
+        else:
+            wm = datetime.fromisoformat(str(row[0]))
+        if wm >= cutoff:
+            conn.commit()
+            return 0
+        upper = min(wm + timedelta(hours=hours_budget), cutoff)
+        conn.execute(
+            "INSERT INTO llm_call_rollup ("
+            " hour, source, tier, transport, model, placement,"
+            " calls, errored, cost_usd, billed_usd,"
+            " req_chars, resp_chars, wall_ms, turns_used,"
+            " input_tokens, output_tokens,"
+            " cache_read_tokens, cache_creation_tokens)"
+            " SELECT date_trunc('hour', ts), source, tier, transport,"
+            "  model, placement,"
+            "  count(*), count(*) FILTER (WHERE errored),"
+            "  sum(cost_usd) FILTER (WHERE cost_usd IS NOT NULL),"
+            "  sum(billed_usd) FILTER (WHERE billed_usd IS NOT NULL),"
+            "  COALESCE(sum(request_chars), 0), COALESCE(sum(response_chars), 0),"
+            "  COALESCE(sum(duration_ms), 0), COALESCE(sum(turns_used), 0),"
+            "  COALESCE(sum(input_tokens), 0), COALESCE(sum(output_tokens), 0),"
+            "  COALESCE(sum(cache_read_tokens), 0),"
+            "  COALESCE(sum(cache_creation_tokens), 0)"
+            "  FROM llm_call_log"
+            " WHERE ts >= %s AND ts < %s"
+            "   AND (features->>'gated') IS DISTINCT FROM 'true'"
+            " GROUP BY 1, 2, 3, 4, 5, 6"
+            " ON CONFLICT (hour, source, tier, transport, model, placement)"
+            " DO UPDATE SET"
+            "  calls = EXCLUDED.calls, errored = EXCLUDED.errored,"
+            "  cost_usd = EXCLUDED.cost_usd, billed_usd = EXCLUDED.billed_usd,"
+            "  req_chars = EXCLUDED.req_chars, resp_chars = EXCLUDED.resp_chars,"
+            "  wall_ms = EXCLUDED.wall_ms, turns_used = EXCLUDED.turns_used,"
+            "  input_tokens = EXCLUDED.input_tokens,"
+            "  output_tokens = EXCLUDED.output_tokens,"
+            "  cache_read_tokens = EXCLUDED.cache_read_tokens,"
+            "  cache_creation_tokens = EXCLUDED.cache_creation_tokens",
+            (wm, upper),
+        )
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET "
+            "value = EXCLUDED.value, updated_at = now()",
+            (_ROLLUP_WATERMARK_KEY, upper.isoformat()),
+        )
+        conn.commit()
+    hours = int((upper - wm).total_seconds() // 3600)
+    if hours:
+        log.info("route_log: rolled up %d hour(s) of llm_call_log", hours)
+    return hours
+
+
 __all__ = [
     "AUTOSKILL_RETENTION_DAYS",
     "DEFAULT_RETENTION_DAYS",
@@ -552,5 +667,6 @@ __all__ = [
     "enabled",
     "gc",
     "record_call",
+    "rollup",
     "spend_rollup",
 ]
