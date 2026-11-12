@@ -558,6 +558,58 @@ def test_gc_blob_sweep_stops_at_budget_and_second_run_continues(
     assert _count_blobs_like(store, f"ORPH-{tag}-%") == 0
 
 
+def test_gc_preserves_unrolled_rows_behind_rollup_watermark(store: Any) -> None:
+    # td653050 review: rollup aggregates at most 48 h per pass, so while a
+    # backlog drains its app_state watermark sits BELOW the retention edge.
+    # GC must bound the delete at the watermark — rows at/above it haven't
+    # been aggregated yet — while still reaping the rolled history below.
+    from datetime import UTC, datetime, timedelta
+
+    tag = uuid4().hex[:8]
+    src = f"gcwm-{tag}"
+    ages = {"rolled": 120, "pending": 80, "fresh": 10}
+    hashes: dict[str, str | None] = {}
+    for name in ages:
+        hashes[name] = route_log.record_call(
+            _rec(source=src, request_text=f"{name}-{tag}"), store=store
+        )
+    wm = (datetime.now(UTC) - timedelta(days=100)).isoformat()
+    with store.pool.connection() as conn:
+        for name, days in ages.items():
+            conn.execute(
+                "UPDATE llm_call_log SET ts = now() - (%s || ' days')::interval "
+                "WHERE request_hash = %s",
+                (str(days), hashes[name]),
+            )
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (route_log._ROLLUP_WATERMARK_KEY, wm),
+        )
+        conn.commit()
+    # rolled(-120d) < watermark(-100d): already aggregated → reaped.
+    # pending(-80d) >= watermark: still to roll → survives retention(30d).
+    # fresh(-10d): inside retention → untouched either way.
+    assert route_log.gc(store, retention_days=30) == 1
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT request_hash FROM llm_call_log WHERE source=%s", (src,)
+        ).fetchall()
+    assert {r[0] for r in rows} == {hashes["pending"], hashes["fresh"]}
+    # Catch-up moves the watermark past the row → the next pass reaps it.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE app_state SET value = %s WHERE key = %s",
+            (
+                (datetime.now(UTC) - timedelta(days=70)).isoformat(),
+                route_log._ROLLUP_WATERMARK_KEY,
+            ),
+        )
+        conn.commit()
+    assert route_log.gc(store, retention_days=30) == 1
+    assert _count_calls(store, src) == 1
+
+
 def test_record_call_persists_reason_class(store: Any) -> None:
     # Migration 0204: the promoted column round-trips beside the features
     # copy; an unclassed (successful) row stays NULL.

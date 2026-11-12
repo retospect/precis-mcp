@@ -78,7 +78,7 @@ def _upsert_tag(conn: Connection, namespace: str, value: str) -> int:
             # (gr575088) may have gained a member.
             from precis.store._tags_ops import _bust_tag_caches
 
-            _bust_tag_caches()
+            _bust_tag_caches(conn)
     if row is None:
         row = conn.execute(select, (namespace, value)).fetchone()
     assert row is not None, (

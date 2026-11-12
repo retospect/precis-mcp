@@ -283,3 +283,101 @@ class TestTagCacheFreshness:
         ref_id = seed_ref(store)
         store.add_tag(ref_id, Tag.open(val))
         assert ("OPEN", val, 1) in store.list_all_tags()
+
+    def test_caches_are_scoped_per_database(self, store: Store) -> None:
+        # td653050 review: the module-global pair mixed every Store the
+        # process held — now keyed by (dbname, host, port). A foreign
+        # database's cached state must not leak into this store's reads.
+        import time
+        from uuid import uuid4
+
+        from precis.store import _tags_ops
+
+        foreign = _tags_ops._TagDbCache()
+        foreign.ns = (time.monotonic(), frozenset({"FOREIGN_NS"}))
+        foreign.usage = (time.monotonic(), [("OPEN", "foreign-tag", 99)])
+        key = ("other_db", "otherhost", "5432")
+        _tags_ops._tag_caches[key] = foreign
+        try:
+            val = f"topic-{uuid4().hex[:8]}"
+            store.add_tag(seed_ref(store), Tag.open(val))
+            assert "FOREIGN_NS" not in store.tag_namespaces()
+            assert "OPEN" in store.tag_namespaces()  # this DB's own data
+            roster = store.list_all_tags()
+            assert ("OPEN", "foreign-tag", 99) not in roster
+            assert any(v == val for _ns, v, _n in roster)
+        finally:
+            _tags_ops._tag_caches.pop(key, None)
+
+    def test_uncommitted_write_does_not_pin_stale_fill(self, store: Store) -> None:
+        # td653050 review: a bust inside an open transaction used to clear
+        # the cache BEFORE the write committed — a reader filling in that
+        # window pinned the pre-commit snapshot for the whole TTL. Now the
+        # writing connection is tracked until its transaction ends and
+        # nothing publishes while it's open.
+        from uuid import uuid4
+
+        from precis.store import _tags_ops
+
+        ns = f"NS{uuid4().hex[:6].upper()}"
+        ref_id = seed_ref(store)
+        store.tag_namespaces()  # prime the cache without ns
+        with store.pool.connection() as w:
+            store.add_tag(ref_id, Tag.closed(ns, "v"), conn=w)
+            # A concurrent reader mid-transaction fills from committed
+            # state (no ns yet) but must not publish that snapshot.
+            with store.pool.connection() as r:
+                assert ns not in _tags_ops._tag_namespaces_cached(r)
+            # w commits at this with-block's exit.
+        assert ns in store.tag_namespaces()
+
+    def test_rolled_back_write_leaves_no_cached_trace(self, store: Store) -> None:
+        # td653050 review: under Store.atomic() every pool checkout is the
+        # pinned connection inside the outer transaction, so a cached fill
+        # inside the scope reads the uncommitted tag — correct for that
+        # caller — but publishing it would leave a phantom entry after the
+        # rollback.
+        from uuid import uuid4
+
+        ns = f"NS{uuid4().hex[:6].upper()}"
+        ref_id = seed_ref(store)
+        store.tag_namespaces()  # prime the cache without ns
+        with pytest.raises(RuntimeError, match="roll it back"):
+            with store.atomic() as conn:
+                store.add_tag(ref_id, Tag.closed(ns, "v"), conn=conn)
+                assert ns in store.tag_namespaces()  # live read of own write
+                raise RuntimeError("roll it back")
+        assert ns not in store.tag_namespaces()
+
+    def test_fill_spanning_invalidation_cannot_repopulate(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # td653050 review: a fill that reads its snapshot before a tag
+        # write's bust but publishes after it used to repopulate the cache
+        # with stale data for the TTL. The generation check drops the
+        # straddling publish.
+        from uuid import uuid4
+
+        from precis.store import _tags_ops
+
+        ns = f"NS{uuid4().hex[:6].upper()}"
+        ref_id = seed_ref(store)
+        store.tag_namespaces()  # prime the cache
+        store.add_tag(ref_id, Tag.closed(ns, "v"))  # committed write
+
+        with store.pool.connection() as r:
+            orig = r.execute
+
+            def interleaved(*a: Any, **k: Any) -> Any:
+                # A committed write's invalidation lands between this
+                # fill's cache-miss and its publish.
+                with store.pool.connection() as clean:
+                    _tags_ops._bust_tag_caches(clean)
+                return orig(*a, **k)
+
+            monkeypatch.setattr(r, "execute", interleaved)
+            seen = _tags_ops._tag_namespaces_cached(r)
+            assert ns in seen  # the fill itself returns fresh data
+        state = _tags_ops._db_cache(r)
+        assert state is not None
+        assert state.ns is None  # but it was not republished

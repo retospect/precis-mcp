@@ -476,6 +476,15 @@ def gc(
     * **Skip when idle** — the orphan-blob sweep only runs when this pass
       actually deleted call rows. No deleted calls → no newly-orphaned blobs,
       so the sweep is skipped entirely on the common no-op pass.
+    * **Rollup-safe cutoff** — the delete edge is ``min(retention edge,
+      rollup watermark)``: :func:`rollup` aggregates at most
+      :data:`_ROLLUP_HOURS_BUDGET` hours per pass, so while a backlog drains
+      its watermark can sit *below* the retention edge. Deleting by age
+      alone would then reap rows that were never aggregated — the history
+      the rollup exists to preserve. Rows below the watermark are already
+      in ``llm_call_rollup``; rows at/above it stay until covered. A
+      missing watermark means no rollup state — its seed sits at/above the
+      retention edge, so the edge alone applies.
 
     Also prunes ``autoskill_sessions`` past :data:`AUTOSKILL_RETENTION_DAYS`
     (batched the same way, under the same lock; not counted in the return).
@@ -494,15 +503,28 @@ def gc(
         ).fetchone()
         if not got or not got[0]:
             return 0  # another worker is already GC'ing — don't pile on
+        edge_row = conn.execute(
+            "SELECT now() - (%s || ' days')::interval", (retention_days,)
+        ).fetchone()
+        assert edge_row is not None
+        edge = edge_row[0]
+        wm_row = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s",
+            (_ROLLUP_WATERMARK_KEY,),
+        ).fetchone()
+        if wm_row is not None:
+            wm = datetime.fromisoformat(str(wm_row[0]))
+            if wm < edge:
+                edge = wm  # un-rolled rows must survive retention
         deleted = 0
         while deleted < call_budget:
             batch = min(_CALL_GC_BATCH, call_budget - deleted)
             cur = conn.execute(
                 "DELETE FROM llm_call_log WHERE id IN ("
                 "  SELECT id FROM llm_call_log"
-                "   WHERE ts < now() - (%s || ' days')::interval"
+                "   WHERE ts < %s"
                 "   ORDER BY ts LIMIT %s)",
-                (retention_days, batch),
+                (edge, batch),
             )
             n = cur.rowcount or 0
             deleted += n

@@ -157,11 +157,15 @@ def clear_attempt(store: Store, ref_id: int, marker_ns: str, *, conn: Any) -> No
             (ref_id, namespace),
         )
 
+    from precis.store._tags_ops import _bust_tag_caches
+
     if conn is not None:
         _do(conn)
+        _bust_tag_caches(conn)
     else:
         with store.pool.connection() as c:
             _do(c)
+        _bust_tag_caches(c)
 
 
 def exclude_clause(ref_col: str, param: str) -> str:

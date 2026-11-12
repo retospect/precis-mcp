@@ -17,7 +17,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis import profiles
-from precis.store._tags_ops import escape_like
+from precis.store._tags_ops import _bust_tag_caches, escape_like
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
 from precis_web.ref_urls import ref_url
@@ -381,6 +381,10 @@ async def delete_tag(
                 "DELETE FROM tags WHERE namespace = %s AND value = %s",
                 (namespace, value),
             )
+    # Committed now — drop this process's cached roster / namespace set so
+    # the discovery surfaces (which read through this same store) reflect
+    # the delete instead of serving it stale for the TTL.
+    _bust_tag_caches(conn)
     target = "/tags"
     if q.strip():
         target = f"/tags?q={q.strip()}"

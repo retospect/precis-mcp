@@ -310,7 +310,7 @@ class CacheMixin:
                 conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref_id,))
                 from precis.store._tags_ops import _bust_tag_caches
 
-                _bust_tag_caches()  # chunk_tags rows just cascaded away
+                _bust_tag_caches(conn)  # chunk_tags rows just cascaded away
                 if body_blocks:
                     self.chunks.insert_chunks(ref_id, body_blocks, conn=conn)
 
@@ -451,7 +451,7 @@ class CacheMixin:
                 conn.execute("DELETE FROM refs WHERE ref_id = %s", (existing[0],))
                 from precis.store._tags_ops import _bust_tag_caches
 
-                _bust_tag_caches()  # ref_tags rows just cascaded away
+                _bust_tag_caches(conn)  # ref_tags rows just cascaded away
 
             ref = self.insert_ref(
                 kind=kind,

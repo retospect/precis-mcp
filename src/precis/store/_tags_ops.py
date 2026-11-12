@@ -45,10 +45,11 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from datetime import UTC, datetime
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, pq
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
@@ -122,37 +123,153 @@ def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
 #: build (~77k scans in the review window), and ``suggest_tags`` /
 #: ``list_all_tags`` / ``search_tags_lexical`` each grouped ``ref_tags``
 #: and ``chunk_tags`` per call — a share of ref_tags' 109k seq scans.
-#: Both payloads are read-mostly, so they cache per process for a short
-#: TTL. Every store-layer tag write calls :func:`_bust_tag_caches`, so a
-#: same-process caller never sees stale data; a writer in another
-#: process leaves staleness bounded by the TTL — acceptable for the
-#: advisory surfaces these feeds (autocomplete ordering, filter axes).
+#: Both payloads are read-mostly, so they cache for a short TTL, keyed
+#: by database — a process can hold Stores against different DBs and
+#: must never serve one DB's roster to the other. Every store-layer tag
+#: write calls :func:`_bust_tag_caches` with its connection: the entries
+#: clear, ``gen`` bumps so an in-flight fill can't republish a stale
+#: snapshot behind the invalidation, and while the write's transaction
+#: is still open the connection is tracked — nothing publishes until it
+#: commits or rolls back, so uncommitted rows can't reach the cache and
+#: a pre-commit fill can't pin a snapshot the pending commit would
+#: invalidate. A writer in another process leaves staleness bounded by
+#: the TTL — acceptable for the advisory surfaces these feeds
+#: (autocomplete ordering, filter axes).
 _TAG_CACHE_TTL_S = 120.0
 
+
+class _TagDbCache:
+    """One database's tag-cache state (keyed per :func:`_db_cache`)."""
+
+    __slots__ = ("dirty", "gen", "ns", "usage")
+
+    def __init__(self) -> None:
+        #: Bumped by every invalidation — and again when a tracked writer
+        #: transaction ends — so a fill publishes only at the generation
+        #: it started under; a stale read in flight across a bust or a
+        #: commit boundary can't repopulate the entries it just missed.
+        self.gen = 0
+        self.ns: tuple[float, frozenset[str]] | None = None
+        self.usage: tuple[float, list[tuple[str, str, int]]] | None = None
+        #: Connections whose tag writes are inside an open transaction.
+        #: WeakSet: a connection dropped mid-transaction rolls back with
+        #: the GC, so it must not pin the caches bypassed forever.
+        self.dirty: weakref.WeakSet[Connection] = weakref.WeakSet()
+
+
 _tag_cache_lock = threading.Lock()
-_tag_ns_cache: tuple[float, frozenset[str]] | None = None
-_tag_usage_cache: tuple[float, list[tuple[str, str, int]]] | None = None
+
+#: ``(dbname, host, port)`` → cache state. Keyed by database rather than
+#: one module global: Stores on different databases can't share a
+#: roster, and Stores sharing one database share the cache a write
+#: through either of them busts.
+_tag_caches: dict[tuple[str, str, str], _TagDbCache] = {}
 
 
-def _bust_tag_caches() -> None:
-    """Drop the cached namespace set + usage roster after a tag write."""
-    global _tag_ns_cache, _tag_usage_cache
+def _db_cache(conn: Connection) -> _TagDbCache | None:
+    """The cache state for ``conn``'s database; ``None`` when the
+    connection won't say which database it's on (caching bypassed)."""
+    try:
+        info = conn.info
+        key = (info.dbname or "", info.host or "", str(info.port or ""))
+    except Exception:
+        return None
     with _tag_cache_lock:
-        _tag_ns_cache = None
-        _tag_usage_cache = None
+        state = _tag_caches.get(key)
+        if state is None:
+            state = _tag_caches[key] = _TagDbCache()
+    return state
+
+
+def _txn_open(conn: Connection) -> bool:
+    """True while ``conn`` still has an open transaction — commit,
+    rollback and close all end it. An uninspectable connection counts
+    as ended."""
+    try:
+        if conn.closed:
+            return False
+        return conn.info.transaction_status not in (
+            pq.TransactionStatus.IDLE,
+            pq.TransactionStatus.UNKNOWN,
+        )
+    except Exception:
+        return False
+
+
+def _prune_dirty(state: _TagDbCache) -> None:
+    """Drop tracked connections whose transaction ended, and bump ``gen``
+    when any did — a fill that straddled the commit must not publish its
+    pre-commit snapshot. Caller holds :data:`_tag_cache_lock`."""
+    ended = [c for c in state.dirty if not _txn_open(c)]
+    for c in ended:
+        state.dirty.discard(c)
+    if ended:
+        state.gen += 1
+
+
+def _bust_tag_caches(conn: Connection) -> None:
+    """Invalidate the tag caches of ``conn``'s database after a tag write.
+
+    Called by every store-layer write to ``tags`` / ``ref_tags`` /
+    ``chunk_tags``, on the connection the write ran through. Entries
+    clear at once and ``gen`` bumps, so a fill that started before the
+    write can't republish its stale snapshot over the bust.
+
+    When the write's transaction is still open (``conn=`` callers,
+    ``Store.tx``/``Store.atomic`` scopes, mid-transaction helpers like
+    ``_upsert_tag``), the connection is tracked in ``state.dirty`` until
+    it ends: publishing in that window could pin a snapshot that
+    predates the pending commit — or, filled on the writing connection
+    itself, carry rows a rollback would erase. While any tracked
+    connection is open the caches stay empty but fills still run, so
+    callers always read fresh; the end-of-transaction prune bumps
+    ``gen`` again to invalidate fills that straddled it. A write that
+    already committed (the self-checkout paths below) just clears.
+    """
+    state = _db_cache(conn)
+    with _tag_cache_lock:
+        if state is None:
+            # Can't name the database: clear everything — over-
+            # invalidation is always safe.
+            for s in _tag_caches.values():
+                s.gen += 1
+                s.ns = None
+                s.usage = None
+            return
+        state.gen += 1
+        state.ns = None
+        state.usage = None
+        if _txn_open(conn):
+            state.dirty.add(conn)
+
+
+def reset_tag_caches() -> None:
+    """Drop every cached tag payload. Test isolation only: the per-test
+    TRUNCATE deletes rows no write path invalidates, so the ``store``
+    fixture resets this like the settings / secrets / money caches."""
+    with _tag_cache_lock:
+        _tag_caches.clear()
 
 
 def _tag_namespaces_cached(conn: Connection) -> frozenset[str]:
     """``SELECT DISTINCT namespace FROM tags`` behind the TTL cache."""
-    global _tag_ns_cache
+    state = _db_cache(conn)
     now = time.monotonic()
-    with _tag_cache_lock:
-        if _tag_ns_cache is not None and now - _tag_ns_cache[0] < _TAG_CACHE_TTL_S:
-            return _tag_ns_cache[1]
+    gen = 0
+    if state is not None:
+        with _tag_cache_lock:
+            _prune_dirty(state)
+            hit = state.ns
+            if hit is not None and now - hit[0] < _TAG_CACHE_TTL_S:
+                return hit[1]
+            gen = state.gen
     rows = conn.execute("SELECT DISTINCT namespace FROM tags").fetchall()
     fresh = frozenset(str(r[0]) for r in rows)
-    with _tag_cache_lock:
-        _tag_ns_cache = (now, fresh)
+    if state is not None:
+        with _tag_cache_lock:
+            _prune_dirty(state)
+            if gen == state.gen and not state.dirty:
+                state.ns = (now, fresh)
     return fresh
 
 
@@ -167,14 +284,16 @@ def _tag_usage_roster(conn: Connection) -> list[tuple[str, str, int]]:
     strictly better "most used" signal and keep one roster for all
     three surfaces).
     """
-    global _tag_usage_cache
+    state = _db_cache(conn)
     now = time.monotonic()
-    with _tag_cache_lock:
-        if (
-            _tag_usage_cache is not None
-            and now - _tag_usage_cache[0] < _TAG_CACHE_TTL_S
-        ):
-            return _tag_usage_cache[1]
+    gen = 0
+    if state is not None:
+        with _tag_cache_lock:
+            _prune_dirty(state)
+            hit = state.usage
+            if hit is not None and now - hit[0] < _TAG_CACHE_TTL_S:
+                return hit[1]
+            gen = state.gen
     rows = conn.execute(
         "SELECT t.namespace, t.value, COALESCE(u.n, 0)::int "
         "FROM tags t "
@@ -187,8 +306,11 @@ def _tag_usage_roster(conn: Connection) -> list[tuple[str, str, int]]:
         ") u ON u.tag_id = t.tag_id"
     ).fetchall()
     fresh = [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
-    with _tag_cache_lock:
-        _tag_usage_cache = (now, fresh)
+    if state is not None:
+        with _tag_cache_lock:
+            _prune_dirty(state)
+            if gen == state.gen and not state.dirty:
+                state.usage = (now, fresh)
     return fresh
 
 
@@ -367,10 +489,11 @@ class TagsMixin:
 
         if conn is not None:
             _do(conn)
+            _bust_tag_caches(conn)
         else:
             with self.pool.connection() as c:
                 _do(c)
-        _bust_tag_caches()
+            _bust_tag_caches(c)
 
     def remove_tag(
         self,
@@ -415,11 +538,13 @@ class TagsMixin:
 
         if conn is not None:
             deleted = _do(conn)
+            bust_conn = conn
         else:
             with self.pool.connection() as c:
                 deleted = _do(c)
+            bust_conn = c
         if deleted:
-            _bust_tag_caches()
+            _bust_tag_caches(bust_conn)
         return deleted
 
     def tags_for(

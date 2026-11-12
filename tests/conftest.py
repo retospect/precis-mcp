@@ -1489,6 +1489,12 @@ def store() -> Iterator[Store]:
     from precis.store._measures_ops import reset_money_tables_cache
 
     reset_money_tables_cache()
+    # Same for the tag roster / namespace caches (gr575088): keyed by
+    # database with a 120s TTL — a roster filled last test would serve
+    # tags the TRUNCATE just deleted.
+    from precis.store._tags_ops import reset_tag_caches
+
+    reset_tag_caches()
     # And the band-ref sets (gr515633): 300s TTL keyed by (predicate,
     # kinds), not by Store — a resolved set would otherwise hand the next
     # test's claim sweep ref_ids the TRUNCATE already deleted.
