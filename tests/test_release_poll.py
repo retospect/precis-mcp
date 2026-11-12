@@ -2009,6 +2009,25 @@ def _slicer_child(store: Store) -> tuple[int, int]:
     return int(s.id), int(c.id)
 
 
+def _release_fix(store: Store) -> int:
+    """A fix todo under a ``release-fix`` loop — the parentage
+    ``_release_fix_todo`` reads for the must-carry rule (gr653036)."""
+    loop = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="fix and re-cut until green",
+        meta={"loop": {"max": 3, "until": {}, "body": "release-fix"}},
+    )
+    fix = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="the release fix",
+        meta=None,
+        parent_id=int(loop.id),
+    )
+    return int(fix.id)
+
+
 def test_open_engine_reviewer_blocks_a_pass(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2192,6 +2211,95 @@ def test_the_cut_carries_the_fix_commit(
     target = R.release_target_of(store, res.minted)
     assert target is not None
     assert target["sha"] == c and target["upto"] == [a[:12], c[:12]]
+
+
+def test_an_unreviewed_release_fix_holds_the_whole_window(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr653036 (r291 → r292): [A reviewed, F a landed release-fix still
+    under review] — before, the cut sat at A under the landed fix and
+    shipped the same red again. F is a must-carry: it holds the whole
+    window, so the fresh pass waits for the fix's own review."""
+    a, f = "a" * 40, "b" * 40
+    _GIT_PIN[0] = f
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": f}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    fix = _release_fix(store)
+    _engine_land(store, fix, paths=["scripts/ship"], sha=f)
+    rid = _reviewer(store, fix)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and f"td{fix}" in res.blocker
+
+
+def test_a_cleared_release_fix_still_pins_the_cut_at_or_above_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr653036: [A reviewed, G pending, F a landed release-fix already
+    reviewed] — G alone would cut at A, below the fix: that ships F's
+    red. The must-carry span pins the cut at-or-above F, so nothing
+    clears and the pass waits for G's review."""
+    a, g, f = "a" * 40, "9" * 40, "b" * 40
+    _GIT_PIN[0] = f
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": g}, {"sha": f}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=g)
+    rid = _reviewer(store, 43)
+    fix = _release_fix(store)
+    _engine_land(store, fix, paths=["scripts/ship"], sha=f)
+    _reviewer(store, fix, status="done", review={"verdict": "LAND"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td43" in res.blocker
+
+
+def test_a_landed_release_fix_is_carried_once_everything_clears(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The complement of the pin: every land reviewed — the pass mints
+    at the head, carrying the release-fix in the cut's ``upto``."""
+    a, f = "a" * 40, "b" * 40
+    _GIT_PIN[0] = f
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": f}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    fix = _release_fix(store)
+    _engine_land(store, fix, paths=["scripts/ship"], sha=f)
+    _reviewer(store, fix, status="done", review={"verdict": "LAND"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{f[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == f and target["upto"] == [a[:12], f[:12]]
 
 
 def test_a_fix_sha_off_main_blocks_and_says_so(

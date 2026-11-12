@@ -1594,6 +1594,28 @@ def _parent_of(store: Any, ref_id: int) -> int | None:
     return None if row is None else row[0]
 
 
+def _release_fix_todo(store: Any, todo_id: int | None) -> bool:
+    """``True`` when ``todo_id`` is a ``release-fix`` loop's child — a
+    fix minted for a cut's red tests (gr653036). Its landed commit is a
+    must-carry on every later cut, fresh pass or re-cut: below it the
+    release ships the same red again (r292 cut at a sha under r291's
+    landed fixes)."""
+    if todo_id is None:
+        return False
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM refs c JOIN refs p ON p.ref_id = c.parent_id
+             WHERE c.ref_id = %s AND c.retired_at IS NULL
+               AND p.retired_at IS NULL
+               AND p.meta->'loop'->>'body' = 'release-fix'
+             LIMIT 1
+            """,
+            (todo_id,),
+        ).fetchone()
+    return row is not None
+
+
 def _root(store: Any, todo_id: int) -> tuple[int, str]:
     """``(top todo id, its STATUS tag)`` walking ``parent_id`` up —
     capped at 25 hops; a ``parent_id`` cycle, or a link pointing at a
@@ -2073,13 +2095,17 @@ class _LandVerdict:
     ``line`` is the blocker an uncleared one carries. ``requires``
     names corrective commit shas the selected cut must CARRY for the
     clearance to hold — a FIX's fix, a sha-keyed REVERT's revert
-    (td601005). ``unit.sha12`` positions the land on main for
-    :func:`_cut_below`."""
+    (td601005). ``must_carry`` marks a landed release-fix unit
+    (gr653036): its commit is itself corrective — a cut below it ships
+    the red it fixes — so it pins the cut at-or-above its own position
+    whether or not its review has cleared. ``unit.sha12`` positions the
+    land on main for :func:`_cut_below`."""
 
     unit: _GateLand
     cleared: bool
     line: str = ""
     requires: tuple[str, ...] = ()
+    must_carry: bool = False
 
 
 def _same_sha(a: str, b: str) -> bool:
@@ -2209,6 +2235,7 @@ def _engine_verdicts(
         units, pin, scanned = _gate_lands(store)
         for unit in units:
             verdict = _LandVerdict(unit, cleared=False)
+            verdict.must_carry = _release_fix_todo(store, unit.todo_id)
             if _answered_wait_ask(store, unit.ask_key):
                 verdict.cleared = True
                 verdicts.append(verdict)
@@ -2522,8 +2549,19 @@ def _spans(
                 return None
             continue  # already on prod: the cut cannot change it
         if not v.cleared:
-            spans.append((p, len(commits), v))
+            # gr653036: a must-carry unit holds the whole window, not
+            # just the span above it — a cut anywhere below its commit
+            # ships the red its fix lands, so no position clears until
+            # its review does.
+            spans.append((0 if v.must_carry else p, len(commits), v))
             continue
+        if v.must_carry and p > 0:
+            # A cleared release-fix still pins the cut at-or-above its
+            # own commit — max(cleared_head, the landed fix): an
+            # uncleared land below it may not push the cut under it
+            # either (the pass waits for that land, never ships the fix
+            # away).
+            spans.append((0, p - 1, v))
         req = [_sha_on(r, commits) for r in v.requires]
         if not req:
             continue
@@ -2572,7 +2610,11 @@ def _cut_below(
     the span from its own position to just under the newest required
     commit — the cut must CARRY the corrective, and a land is also
     satisfied by being left out entirely (td601005: [A FIX, B pending,
-    C fixes A] must not cut A without C). A required commit the window
+    C fixes A] must not cut A without C). A must-carry unit — a landed
+    release-fix (gr653036) — is itself a corrective the cut may not sit
+    below: uncleared it holds the whole window, cleared it holds
+    everything under its own position, so the cut is never below a
+    landed fix for a previous cut's reds. A required commit the window
     never reaches holds like an uncleared land; a cleared land off the
     window is already on prod — nothing the cut decides."""
     spans = _spans(verdicts, commits)

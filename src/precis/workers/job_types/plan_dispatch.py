@@ -34,7 +34,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    :data:`_RELEASE_FIX_AUTO_CAP` regardless of its stamped ``max``: the
    second red iteration files a ruling ask (naming the round, the head
    sha and the failing CI) and closes the loop — a third fix is a human
-   call (me573231).
+   call (me573231). The cap counts iterations that honestly RAN red: an
+   iteration whose fixes all landed but whose re-cut closed without a
+   cut re-opens its re-cut and poll once instead of asking (gr653036 —
+   the re-cut starts on its own).
 2a. **reviews** — a reviewer generator (``meta.generate.role ==
    'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
    its newest comment starting ``review:`` posted since that job was minted
@@ -1372,6 +1375,53 @@ def _close_loop(w: _Writer, res: PassResult, n: _Node, why: str) -> None:
     res.notes.append(f"loop td{n.id} closed: {why}")
 
 
+def _unrun_recut(plan: _Plan, loop: _Node) -> tuple[_Node, _Node] | None:
+    """``(recut, poll)`` to re-open when the loop's last iteration left
+    its landed fixes untried (gr653036): every ``run_slice`` fix child
+    of ``loop`` closed behind a succeeded ``land_slice``, and the newest
+    ``release_cut`` child closed without a succeeded job — a re-cut that
+    held below origin/main and was killed rather than let through. The
+    pair re-opens once: the re-cut starts on its own next tick, its poll
+    re-arms under the ``rearmed_after_job`` floor so the new cut's
+    verdict is what the ``until`` reads.
+
+    ``None`` when the cap honestly ran red — the newest re-cut cut (its
+    poll read the verdict), a fix is unlanded, the pair is blocked or
+    exclusion-tagged (a reopened node that could never dispatch would
+    stall the loop instead), the re-cut's newest job is ``cancelled``
+    (a release step never blind-re-runs, :data:`_REQUEUE_ON_CANCEL`),
+    or the re-cut already re-armed once (``meta.recut_rearmed``) — the
+    exhausted-loop ask then fires as before."""
+    children = [c for c in plan.child_todos(loop) if "ask" not in c.meta]
+    fixes = [c for c in children if _op_type(c) == DEFAULT_OP]
+    recuts = [c for c in children if _op_type(c) == "release_cut"]
+    polls = [c for c in children if _op_type(c) == "ci_verdict_poll"]
+    if not fixes or not recuts or not polls:
+        return None
+    unlanded = [
+        c
+        for c in fixes
+        if not any(
+            j.status == "succeeded" and j.meta.get("job_type") == "land_slice"
+            for j in plan.jobs(c)
+        )
+    ]
+    if unlanded:
+        return None
+    recut = max(recuts, key=lambda c: c.id)
+    if recut.meta.get("recut_rearmed") or plan.blocked(recut) or _excluded(plan, recut):
+        return None
+    jobs = plan.jobs(recut)
+    if any(j.status == "succeeded" for j in jobs):
+        return None
+    if jobs and jobs[-1].status == "cancelled":
+        return None
+    poll = max(polls, key=lambda c: c.id)
+    if plan.blocked(poll) or _excluded(plan, poll):
+        return None
+    return recut, poll
+
+
 def _step_loops(
     store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
 ) -> None:
@@ -1406,6 +1456,32 @@ def _step_loops(
             continue
         if count >= cap:
             if body == "release-fix" and not spec.get("exhausted_ask"):
+                owed = _unrun_recut(plan, n)
+                if owed is not None:
+                    # gr653036: the iteration's fixes all landed but its
+                    # re-cut never ran — the cap counts red iterations,
+                    # and an iteration nobody re-cut is not one. The
+                    # re-cut and its poll re-open once and start on
+                    # their own; a re-cut killed again, or one that ran
+                    # red, takes the ask below.
+                    recut, poll = owed
+                    for node in (recut, poll):
+                        w.set_status(node, "open")
+                        ended = [j for j in plan.jobs(node) if j.status in _JOB_ENDED]
+                        stamp: dict[str, Any] = {"recut_rearmed": True}
+                        if ended:
+                            stamp["rearmed_after_job"] = ended[-1].id
+                        w.stamp_meta(node, stamp)
+                        w.comment(
+                            node,
+                            "plan_dispatch: re-opened — the iteration's fixes "
+                            "all landed and its re-cut never ran (gr653036)",
+                        )
+                    res.notes.append(
+                        f"loop td{n.id}: re-opened un-run re-cut td{recut.id} "
+                        f"and poll td{poll.id} — the fixes landed, no re-cut ran"
+                    )
+                    continue
                 if w.dry_run:
                     res.notes.append(
                         f"loop td{n.id}: would file the exhausted release-fix ask"
