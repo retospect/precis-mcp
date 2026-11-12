@@ -75,7 +75,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -901,6 +901,17 @@ def read_temp_c() -> float | None:
     return None
 
 
+@runtime_checkable
+class _CapacitySink(Protocol):
+    """The one store method the host-capacity publish needs
+    (``Store.sync_host_capacity``). Narrow on purpose, like the ``object``
+    annotation below: a test fake without it skips the publish."""
+
+    def sync_host_capacity(
+        self, host: str, capacity: dict[str, int | None]
+    ) -> None: ...
+
+
 def _report_resource_slots(store: object, host: str) -> str:
     """Self-probe this host's capabilities and sync ``resource_slots``.
 
@@ -943,6 +954,16 @@ def _report_resource_slots(store: object, host: str) -> str:
     except Exception:
         log.warning("heartbeat: resource-slot probe/sync failed", exc_info=True)
         return "n/a"
+    # Admittable host capacity (gr647996): measured mem/cpu/vram minus
+    # reserves, the multi-unit hard rows admission.admit() reserves against.
+    # Separate try so a capacity hiccup never blocks the capability map.
+    try:
+        from precis.workers.capability_probe import probe_host_capacity
+
+        if isinstance(store, _CapacitySink):
+            store.sync_host_capacity(host, probe_host_capacity())
+    except Exception:
+        log.warning("heartbeat: host-capacity probe/sync failed", exc_info=True)
     # Crash-safe reclaim (0118): sweep any resource_slot_holds a killed process
     # left expired, refunding the leaked units — the 2026-08-10 fleet-wide
     # llm:* outage's fix. Separate try so a sweep hiccup never blocks the

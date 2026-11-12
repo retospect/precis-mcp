@@ -31,10 +31,13 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from importlib.util import find_spec
+from pathlib import PurePosixPath
 
 from precis.embedder_wire import PATH_READY
 from precis.workers.registry import SERVICES
@@ -662,6 +665,194 @@ def mem_used_pct() -> float | None:
     return round(max(0.0, 100.0 - pct), 1)
 
 
+#: Memory the OS keeps for itself, off the admittable ``mem_mb`` capacity.
+#: Code default mirroring deploy's ``host_memory_os_reserve: 10G``
+#: (``roles/hardening/defaults/main.yml``), which reaches no running code;
+#: ``PRECIS_HOST_MEM_RESERVE_MB`` overrides it per host.
+DEFAULT_MEM_RESERVE_MB = 10240
+
+
+def _reserve(name: str, default: int = 0) -> int:
+    """A host reserve from ``os.environ[name]``, else ``default``."""
+    value = _env_slots(name)
+    return default if value is None else value
+
+
+def _linux_mem_total_mb() -> int | None:
+    """``MemTotal`` from ``/proc/meminfo`` in MiB (Linux)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key == "MemTotal":
+                    return int(rest.strip().split()[0]) // 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _darwin_mem_total_mb() -> int | None:
+    """``sysctl -n hw.memsize`` in MiB (macOS)."""
+    try:
+        res = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        if res.returncode != 0:
+            return None
+        return int(res.stdout.strip()) // (1024 * 1024)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _total_mem_mb() -> int | None:
+    """This host's physical memory in MiB, or ``None`` if unreadable."""
+    total = _linux_mem_total_mb()
+    if total is None and sys.platform == "darwin":
+        total = _darwin_mem_total_mb()
+    return total
+
+
+def _total_vram_mb() -> int | None:
+    """Summed ``memory.total`` of every NVIDIA card in MiB.
+
+    No ``nvidia-smi`` → ``0`` (no VRAM, retract the row). A failing call or
+    an unparseable answer (``[N/A]`` on unified-memory cards) → ``None``
+    (unknown, leave the row)."""
+    if shutil.which("nvidia-smi") is None:
+        return 0
+    try:
+        res = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("capability_probe: nvidia-smi vram query failed", exc_info=True)
+        return None
+    if res.returncode != 0:
+        return None
+    try:
+        return sum(
+            int(line.strip()) for line in res.stdout.splitlines() if line.strip()
+        )
+    except ValueError:
+        return None
+
+
+#: Where this process's cgroup v2 membership and the unified hierarchy live
+#: (module constants so tests can point them at a fixture tree).
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
+_CGROUP_ROOT = "/sys/fs/cgroup"
+
+
+def _read_cpu_max(path: str) -> int | None:
+    """A cgroup v2 ``cpu.max`` (``"<quota> <period>"``) as millicores;
+    ``None`` when unreadable or unlimited (``max``)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            quota, period = fh.read().split()[:2]
+        if quota == "max":
+            return None
+        return int(quota) * 1000 // int(period)
+    except (OSError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _cgroup_cpu_quota_milli() -> int | None:
+    """The tightest cgroup v2 CPU quota on this process's cgroup or any
+    ancestor, in millicores; ``None`` on cgroup v1, no cgroup, or no quota."""
+    try:
+        with open(_PROC_SELF_CGROUP, encoding="utf-8") as fh:
+            rel = next((ln.strip()[3:] for ln in fh if ln.startswith("0::")), None)
+    except OSError:
+        return None
+    if rel is None:
+        return None
+    path = PurePosixPath(rel or "/")
+    quotas: list[int] = []
+    for d in (path, *path.parents):
+        q = _read_cpu_max(os.path.join(_CGROUP_ROOT, str(d).lstrip("/"), "cpu.max"))
+        if q is not None:
+            quotas.append(q)
+    return min(quotas) if quotas else None
+
+
+def _available_cpu_milli() -> int | None:
+    """CPUs this process may actually use, in millicores: its affinity set
+    (``sched_getaffinity``, Linux) else ``os.cpu_count()``, capped by a
+    readable cgroup v2 ``cpu.max`` quota."""
+    affinity = getattr(os, "sched_getaffinity", None)
+    try:
+        n = len(affinity(0)) if affinity is not None else os.cpu_count()
+    except OSError:
+        n = os.cpu_count()
+    cpus = None if n is None else n * 1000
+    quota = _cgroup_cpu_quota_milli()
+    if quota is None:
+        return cpus
+    return quota if cpus is None else min(cpus, quota)
+
+
+def _minus(total: int | None, reserve: int) -> int | None:
+    return None if total is None else max(0, total - reserve)
+
+
+#: How long a capacity probe is reused. Total memory, CPUs and VRAM are
+#: static between reboots, so the heartbeat re-probes (sysctl, nvidia-smi,
+#: cgroup reads) at most this often instead of every beat.
+_CAPACITY_TTL_S = 600.0
+_capacity_cache: tuple[float, dict[str, int | None]] | None = None
+
+
+def reset_capacity_cache() -> None:
+    """Drop the cached :func:`probe_host_capacity` verdict (tests)."""
+    global _capacity_cache
+    _capacity_cache = None
+
+
+def probe_host_capacity() -> dict[str, int | None]:
+    """Admittable host capacity as hard multi-unit rows (gr647996).
+
+    ``{mem_mb, cpu_milli, vram_mb}``: the measured total minus this host's
+    reserve, in the units :class:`precis.workers.admission.Footprint`
+    reserves. Same three-way verdict as :func:`probe_host_resources`
+    (``> 0`` present, ``0`` retract, ``None`` leave). Reserves:
+    ``PRECIS_HOST_MEM_RESERVE_MB`` (default :data:`DEFAULT_MEM_RESERVE_MB`),
+    ``PRECIS_HOST_CPU_RESERVE_MILLI`` and ``PRECIS_HOST_VRAM_RESERVE_MB``
+    (default 0). Cached for :data:`_CAPACITY_TTL_S`. Kept out of
+    :data:`_PROBES`: these are not ``requires`` capability tokens."""
+    global _capacity_cache
+    now = time.monotonic()
+    if _capacity_cache is not None and now - _capacity_cache[0] < _CAPACITY_TTL_S:
+        return dict(_capacity_cache[1])
+    from precis.workers.admission import CPU_MILLI, MEM_MB, VRAM_MB
+
+    out = {
+        MEM_MB: _minus(
+            _total_mem_mb(),
+            _reserve("PRECIS_HOST_MEM_RESERVE_MB", DEFAULT_MEM_RESERVE_MB),
+        ),
+        CPU_MILLI: _minus(
+            _available_cpu_milli(), _reserve("PRECIS_HOST_CPU_RESERVE_MILLI")
+        ),
+        VRAM_MB: _minus(_total_vram_mb(), _reserve("PRECIS_HOST_VRAM_RESERVE_MB")),
+    }
+    _capacity_cache = (now, out)
+    return dict(out)
+
+
 def mem_capacity() -> int:
     """Nominal capacity of the soft ``mem`` gauge (for the heartbeat writer)."""
     return _MEM_CAP
@@ -684,8 +875,10 @@ __all__ = [
     "claude_bin_present",
     "mem_capacity",
     "mem_used_pct",
+    "probe_host_capacity",
     "probe_host_resources",
     "probe_soft_signals",
+    "reset_capacity_cache",
     "resource_kind",
     "soft_capacity",
 ]

@@ -19,11 +19,26 @@ by the heartbeat pass) deletes expired holds and refunds their units.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from psycopg import Connection
+
+
+def lock_order[K: (str, tuple[str, str]), V](
+    items: Mapping[K, V],
+) -> list[tuple[K, V]]:
+    """``items`` in the one row-lock order every multi-row writer of
+    ``resource_slots`` follows: sorted by resource name (or by
+    ``(host, resource)`` for a cross-host write).
+
+    A multi-resource reserve and a heartbeat resync on the same host take
+    row locks one statement at a time inside one transaction; in opposite
+    orders they deadlock (gr647996). A single sorted order makes every
+    wait one-way."""
+    return sorted(items.items(), key=lambda kv: kv[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +148,7 @@ def reserve_resource_slots(
     must record what it reserved (``meta.reserved``) so it can be released.
     """
     taken: list[tuple[str, int]] = []
-    for resource, units in requirements.items():
+    for resource, units in lock_order(requirements):
         u = int(units)
         row = conn.execute(_RESERVE_ONE, (u, host, resource, u)).fetchone()
         if row is None:
@@ -148,7 +163,7 @@ def release_resource_slots(
     conn: Connection, host: str, requirements: dict[str, int]
 ) -> None:
     """Refund a prior reservation on ``host`` (``free += units``, capped)."""
-    for resource, units in requirements.items():
+    for resource, units in lock_order(requirements):
         conn.execute(_RELEASE_ONE, (int(units), host, resource))
 
 
@@ -321,7 +336,7 @@ class ResourceSlotsMixin:
         kinds = kinds or {}
 
         def _apply(c: Connection) -> None:
-            for resource, capacity in slots.items():
+            for resource, capacity in lock_order(slots):
                 if capacity is None:
                     continue  # unknown — do not touch the row
                 if capacity <= 0:
@@ -331,6 +346,54 @@ class ResourceSlotsMixin:
                     _UPSERT_SLOT,
                     (host, resource, capacity, capacity, kinds.get(resource, "hard")),
                 )
+
+        if conn is not None:
+            _apply(conn)
+        else:
+            with self.pool.connection() as c:
+                with c.transaction():
+                    _apply(c)
+
+    def sync_host_capacity(
+        self,
+        host: str,
+        capacity: dict[str, int | None],
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Publish a host's admittable capacity as multi-unit hard rows.
+
+        ``capacity`` is :func:`precis.workers.capability_probe.probe_host_capacity`
+        (``mem_mb`` / ``cpu_milli`` / ``vram_mb``: one unit per MiB or
+        millicore), synced with the same present/absent/unknown discipline
+        as :meth:`sync_host_resource_slots`. The delta-adjusting UPSERT
+        keeps units :func:`precis.workers.admission.admit` holds across a
+        resync, so a heartbeat never refunds a live admission.
+
+        Writes only what changed: these rows are hot (every admission
+        decrements them) and the capacity is static between reboots, so a
+        beat that re-upserted unchanged rows would take their row locks and
+        bump ``updated_at`` for nothing. Changed rows are written in
+        :func:`lock_order`."""
+        names = list(capacity)
+
+        def _apply(c: Connection) -> None:
+            current = {
+                str(r): (int(cap), str(kind))
+                for r, cap, kind in c.execute(
+                    "SELECT resource, capacity, kind FROM resource_slots "
+                    "WHERE host = %s AND resource = ANY(%s)",
+                    (host, names),
+                ).fetchall()
+            }
+            for resource, units in lock_order(capacity):
+                if units is None:
+                    continue  # unknown — do not touch the row
+                if units <= 0:
+                    if resource in current:
+                        c.execute(_DELETE_SLOT, (host, resource))
+                elif current.get(resource) != (units, "hard"):
+                    c.execute(_UPSERT_SLOT, (host, resource, units, units, "hard"))
 
         if conn is not None:
             _apply(conn)
@@ -425,7 +488,7 @@ class ResourceSlotsMixin:
         """
         with self.pool.connection() as conn:
             with conn.transaction():
-                for (host, resource), capacity in desired.items():
+                for (host, resource), capacity in lock_order(desired):
                     cap = max(1, int(capacity))
                     conn.execute(_UPSERT_SLOT, (host, resource, cap, cap, "hard"))
                 # Delete stale llm: rows no longer declared.
