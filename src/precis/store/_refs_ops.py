@@ -542,6 +542,26 @@ class RefsMixin:
             # from ``(kind, ref_id)`` on demand (handle_registry.format_handle),
             # never stored.
             if slug is not None:
+                # A displaced key is RESERVED (gr521515): a value another
+                # ref holds as a ``cite_key_alias`` redirect is never handed
+                # to a new ref — the live cite_key would shadow the alias
+                # and silently retarget every stored ``\\cite{<old>}`` /
+                # ``source_handle`` onto an unrelated paper (gr646156).
+                # Raising rolls the refs row back with the caller's
+                # transaction; mint paths retry with an alias-aware suffix.
+                alias_owner = c.execute(
+                    "SELECT ref_id FROM ref_identifiers "
+                    "WHERE id_kind = 'cite_key_alias' AND id_value = %s "
+                    "AND ref_id <> %s",
+                    (slug, ref_id),
+                ).fetchone()
+                if alias_owner is not None:
+                    raise Conflict(
+                        f"slug {slug!r} is held as a cite_key_alias redirect "
+                        f"by ref id={int(alias_owner[0])} — a displaced key "
+                        "stays reserved, it is never re-minted",
+                        next=f"get(kind='{kind}', id='{slug}')",
+                    )
                 # Routing decision: every slug-addressed
                 # kind uses id_kind='cite_key' uniformly so the
                 # correlated subquery in ``_REFS_COLS`` resolves with a
