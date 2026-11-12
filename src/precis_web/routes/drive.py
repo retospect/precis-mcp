@@ -636,17 +636,32 @@ def _flatten_tree(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _tag_rows(store: Any, q: str, page: int) -> tuple[list[dict[str, Any]], bool]:
+def _tag_rows(
+    store: Any, q: str, page: int, ref_kinds: list[str]
+) -> tuple[list[dict[str, Any]], bool]:
     """Rows for the ``tag`` kind (gr636493): tags live in their own table,
     not ``refs``, so the ref queries never see them. One row per tag —
     most-used first, or the substring matches of ``q`` — linking to the
-    drive filtered to that tag. Over-fetches one for ``has_next``."""
+    drive filtered to that tag. Over-fetches one for ``has_next``.
+
+    Pagination fetches ``offset + _PAGE_SIZE + 1`` rows from offset 0 and
+    slices off ``offset`` — offsets based on ``_PAGE_SIZE`` (td650230): a
+    ``page_size=_PAGE_SIZE + 1`` page parameter would step its offset by
+    the over-fetched size and skip one tag between pages.
+
+    Each link pins ``ref_kinds`` as explicit ``k=`` params: the landing
+    resolves the ``items_kinds`` cookie when the URL names no ``k=``, so
+    a bare ``?tag=`` link would re-list tags (a saved ``k=tag``) instead
+    of the refs the tag matches."""
+    offset = (page - 1) * _PAGE_SIZE
     if q:
-        found = store.suggest_tags(q, limit=page * _PAGE_SIZE + 1)
-        found = found[(page - 1) * _PAGE_SIZE :]
+        found = store.suggest_tags(q, limit=offset + _PAGE_SIZE + 1)
+        found = found[offset:]
     else:
-        found = store.list_all_tags(page=page, page_size=_PAGE_SIZE + 1)
+        found = store.list_all_tags(page=1, page_size=offset + _PAGE_SIZE + 1)
+        found = found[offset:]
     has_next = len(found) > _PAGE_SIZE
+    kind_params = [("k", kk) for kk in ref_kinds]
     rows: list[dict[str, Any]] = []
     for ns, value, n in found[:_PAGE_SIZE]:
         flt = _tag_filter_string(ns, value)
@@ -655,7 +670,7 @@ def _tag_rows(store: Any, q: str, page: int) -> tuple[list[dict[str, Any]], bool
                 "id": None,
                 "kind": "tag",
                 "title": f"{ns}:{value}",
-                "open_url": "/drive?" + urlencode([("tag", flt)]),
+                "open_url": "/drive?" + urlencode([("tag", flt), *kind_params]),
                 "preview": f"{n} ref{'' if n == 1 else 's'}",
                 "thumbnail": None,
                 "actions": [],
@@ -1104,6 +1119,17 @@ async def index(
     # ``tag`` is not a ref kind (gr636493): the ref queries run on the rest.
     want_tags = "tag" in selected_kinds and not fetch_ref_ids
     ref_kinds = [kk for kk in selected_kinds if kk != "tag"]
+    # Tag-row links pin the ref kinds as explicit ``k=`` params (the
+    # bare-``?tag=`` link would resolve a saved ``k=tag`` cookie and list
+    # tags again, td650230). A tag-only selection falls back to the
+    # fresh-landing scope so the click still lands on matching refs.
+    tag_row_kinds = ref_kinds or [
+        *_DEFAULT_SOURCE_KINDS,
+        *artifact_kind_defs,
+        *design_kind_defs,
+        *kind_buckets["derived"],
+        "concept",
+    ]
     result_total: int | None = None
     # Whether ``result_total`` is exact (the browse path — a plain filtered
     # count) or a ≈lexical approximation (the fused-search path). Gates the
@@ -1112,7 +1138,9 @@ async def index(
     total_exact = False
     tag_only = want_tags and not ref_kinds
     if tag_only:
-        tag_rows, has_next = await asyncio.to_thread(_tag_rows, store, q, page)
+        tag_rows, has_next = await asyncio.to_thread(
+            _tag_rows, store, q, page, tag_row_kinds
+        )
         (rows if q else recent).extend(tag_rows)
         result_total = offset + len(tag_rows) + (1 if has_next else 0)
     elif q:
@@ -1229,7 +1257,7 @@ async def index(
         total_exact = True
 
     if want_tags and not tag_only and page == 1:
-        tag_rows, _ = await asyncio.to_thread(_tag_rows, store, q, 1)
+        tag_rows, _ = await asyncio.to_thread(_tag_rows, store, q, 1, ref_kinds)
         (rows if q else recent).extend(tag_rows)
 
     # The manual-retrieval section under the stub queue: the cooled no-OA
