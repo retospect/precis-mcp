@@ -536,6 +536,42 @@ def test_waiting_abandoned_after_long_starvation(store) -> None:
     assert _status_tag(store, fid) == "dead_chain"
 
 
+def test_abandoned_waiting_revived_once_frontier_has_chunks(store) -> None:
+    """gr646236: an ``abandoned_waiting`` dead_chain only meant the
+    frontier stub had no chunks. When the paper later ingests, the
+    finding is claimed again and re-grounds instead of staying dead."""
+    ref_id = _seed_paper(store, cite_key="stub_late", blocks=[])
+    fid = _seed_finding(store, cite_key="stub_late")
+    _insert_chase_event(store, fid, "waiting", minutes_ago=15 * 1440)
+    _insert_chase_event(store, fid, "waiting", minutes_ago=2 * 1440)
+    run_finding_chase_pass(store, limit=10)
+    assert _status_tag(store, fid) == "dead_chain"
+
+    # Still no chunks: stays dead, not claimed.
+    with store.pool.connection() as conn:
+        assert fid not in [f.ref_id for f in claim_tracing_findings(conn, limit=10)]
+        conn.commit()
+
+    store.chunks.insert_chunks(
+        ref_id,
+        [
+            ChunkInsert(
+                ord=0,
+                text="A direct measurement statement with no citations anywhere in it.",
+                meta={},
+            )
+        ],
+    )
+    result = run_finding_chase_pass(store, limit=10)
+    assert result["claimed"] == 1
+    assert _status_tag(store, fid) == "established"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta ? 'dead_reason' FROM refs WHERE ref_id = %s", (fid,)
+        ).fetchone()
+    assert row is not None and row[0] is False
+
+
 def test_waiting_not_abandoned_before_threshold(store) -> None:
     """A finding only a few days into waiting is still re-polled, not
     abandoned — the give-up is for genuine multi-week starvation only."""

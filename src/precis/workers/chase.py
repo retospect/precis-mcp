@@ -92,6 +92,7 @@ _TRACING = "tracing"
 _ACQUIRING = "acquiring"
 _ESTABLISHED = "established"
 _DEAD_CHAIN = "dead_chain"
+_ABANDONED_WAITING = "abandoned_waiting"
 _CYCLE = "cycle"
 _MULTI_CANDIDATE = "multi_candidate"
 
@@ -334,11 +335,32 @@ def claim_tracing_findings(
           ) wait_run ON TRUE
          WHERE r.kind = 'finding'
            AND r.retired_at IS NULL
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %(status_ns)s
-                    AND t.value = ANY(%(statuses)s)
+           AND (
+                 EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = %(status_ns)s
+                      AND t.value = ANY(%(statuses)s)
+                 )
+                 -- Revive a give-up: ``abandoned_waiting`` only meant the
+                 -- frontier stub had no chunks for 14 days. Once the
+                 -- frontier has body chunks the reason is gone, so the
+                 -- finding is claimable again (advance_finding flips it
+                 -- back to tracing). Other dead reasons stay dead.
+                 OR (
+                   EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = %(status_ns)s
+                        AND t.value = %(dead)s
+                   )
+                   AND r.meta->>'dead_reason' = %(abandoned)s
+                   AND EXISTS (
+                     SELECT 1 FROM chunks c
+                      WHERE c.ref_id = (r.meta->'chain'->-1->>'ref_id')::bigint
+                        AND c.ord >= 0
+                   )
+                 )
                )
            -- Skip a REAL mint_hub claim hub (empty chain, not a chase-
            -- owned chain) so it can't re-claim + die as an empty-chain
@@ -400,6 +422,8 @@ def claim_tracing_findings(
             "status_ns": _STATUS_NAMESPACE,
             "tracing": _TRACING,
             "statuses": [_TRACING, _ACQUIRING],
+            "dead": _DEAD_CHAIN,
+            "abandoned": _ABANDONED_WAITING,
             "taproot_ns": TAPROOT_NAMESPACE,
             "taproot_claim": TAPROOT_CLAIM,
             "cascade_ns": _TAPROOT_CASCADE_NS,
@@ -459,6 +483,10 @@ def advance_finding(
         return _advance_acquiring(
             conn, store, finding, ev, with_llm=with_llm, embedder=taproot_embedder
         )
+    if finding.status == _DEAD_CHAIN:
+        # Revived abandoned_waiting finding (see claim_tracing_findings):
+        # back to tracing, dropping the stale dead_reason.
+        _set_status(conn, finding.ref_id, _TRACING)
     chain = list(finding.meta.get("chain") or [])
     if not chain:
         _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason="empty_chain")
@@ -486,8 +514,8 @@ def advance_finding(
     if not target_chunks:
         waits, run_age_days = _waiting_run_stats(conn, finding.ref_id)
         if run_age_days >= WAITING_ABANDON_AFTER_DAYS:
-            _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason="abandoned_waiting")
-            ev.reason = "abandoned_waiting"
+            _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason=_ABANDONED_WAITING)
+            ev.reason = _ABANDONED_WAITING
             ev.frontier["waited_days"] = round(run_age_days, 1)
             ev.frontier["waits"] = waits
             return "dead", ev
