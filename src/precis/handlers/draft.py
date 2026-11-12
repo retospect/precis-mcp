@@ -1927,6 +1927,7 @@ class DraftHandler(Handler):
                     next="put(kind='draft', id='nanotrans', chunk_kind='paragraph', text='…', at={'after': 'dc<chunk_id>'})",
                 )
             kind = chunk_kind or "paragraph"
+            self._require_known_chunk_kind(kind)
             # Per-chunk narration routing (audio export): which Kokoro voice +
             # language phonemizer speaks this chunk. Validated against the voice
             # catalogue so a typo fails loudly; merged into the chunk meta the
@@ -3978,6 +3979,35 @@ class DraftHandler(Handler):
         if row is None:
             return None
         return str(row[0]), int(row[1]), str(row[2]), (str(row[3]) if row[3] else None)
+
+    def _require_known_chunk_kind(self, kind: str) -> None:
+        """Refuse a ``chunk_kind=`` that is not a live body kind (gr648737).
+
+        ``chunks.chunk_kind`` has a FK to ``chunk_kinds``; an unknown slug
+        (``'paper'``) otherwise surfaces as an opaque ForeignKeyViolation
+        / ``[error:Internal]``. Card kinds are paper-card chunks, never
+        draft body."""
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT is_card, deprecated_at IS NOT NULL "
+                "FROM chunk_kinds WHERE slug = %s",
+                (kind,),
+            ).fetchone()
+            if row is not None and not row[0] and not row[1]:
+                return
+            live = [
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT slug FROM chunk_kinds "
+                    "WHERE NOT is_card AND deprecated_at IS NULL ORDER BY slug"
+                ).fetchall()
+            ]
+        raise BadInput(
+            f"chunk_kind={kind!r} is not a draft chunk kind; one of: "
+            + ", ".join(live),
+            next="put(kind='draft', id='<slug>', chunk_kind='paragraph', "
+            "text='…') — cite a paper inline with [slug] in the text",
+        )
 
     def _refuse_if_machine_owned(self, ref_id: int) -> None:
         """Raise :class:`Unsupported` when the draft ``ref_id`` is a
