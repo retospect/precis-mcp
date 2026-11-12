@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.workers import scheduler
 
 
@@ -106,3 +106,62 @@ def test_scheduler_pass_fires_the_real_doctor_tick_cadence(store: Store) -> None
     result = scheduler.run_scheduler_pass(store, host="h", cadences=(cad,))
     assert (result.claimed, result.ok, result.failed) == (1, 1, 0)
     assert len(_doctor_jobs(store)) == 1
+
+
+def _status(store: Store, idem_key: str) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM refs r JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE r.kind = 'job' AND r.meta->>'idem_key' = %s "
+            "AND t.namespace = 'STATUS'",
+            (idem_key,),
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def test_stale_parked_tick_is_cancelled_when_a_later_window_mints(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr646115: a tick parked/wedged non-terminal must not outlive its
+    window — the next mint supersedes it."""
+    _freeze(monkeypatch, datetime(2026, 8, 23, 1, 0, tzinfo=UTC))
+    scheduler._run_doctor_tick_mint(store, 32)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE meta->>'idem_key' = 'doctor:2026-08-23/0'"
+        ).fetchone()
+        assert row is not None
+        ref_id = row[0]
+        store.add_tag(
+            ref_id,
+            Tag.closed("STATUS", "waiting_time"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '9 hours' "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
+    _freeze(monkeypatch, datetime(2026, 8, 23, 9, 0, tzinfo=UTC))
+
+    scheduler._run_doctor_tick_mint(store, 32)
+
+    assert _status(store, "doctor:2026-08-23/0") == "cancelled"
+    assert _status(store, "doctor:2026-08-23/1") == "queued"
+
+
+def test_fresh_prior_window_tick_is_left_alone(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _freeze(monkeypatch, datetime(2026, 8, 23, 1, 0, tzinfo=UTC))
+    scheduler._run_doctor_tick_mint(store, 32)
+    _freeze(monkeypatch, datetime(2026, 8, 23, 9, 0, tzinfo=UTC))
+
+    scheduler._run_doctor_tick_mint(store, 32)
+
+    assert _status(store, "doctor:2026-08-23/0") == "queued"

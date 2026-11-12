@@ -246,6 +246,66 @@ def _doctor_tick_window(now: datetime) -> str:
     return f"{now:%Y-%m-%d}/{now.hour // 8}"
 
 
+#: A doctor_tick stuck in any non-terminal state this long belongs to a
+#: past window — the 8h cadence already minted its successor.
+_DOCTOR_TICK_STALE_S = 8 * 3600
+
+_DOCTOR_NON_TERMINAL = (
+    "queued",
+    "yielded",
+    "running",
+    "waiting_time",
+    "waiting_children",
+)
+
+
+def _supersede_stale_doctor_ticks(store: Store, conn: Any, current_key: str) -> int:
+    """Cancel doctor_tick jobs of earlier windows still non-terminal past
+    :data:`_DOCTOR_TICK_STALE_S` (gr646115).
+
+    A tick parked on a budget window whose wake never re-dispatched it
+    (or that was claimed and then wedged ``running``) otherwise sits
+    non-terminal for days while every later window's tick queues behind it
+    and the doctor report goes stale. The current window's tick supersedes
+    it: a doctor pass is a point-in-time judgment, so re-running a day-old
+    one has no value. Caller commits. Returns the number cancelled."""
+    from precis.workers.executors._common import (
+        JOB_EVENT_KIND,
+        append_chunk,
+        set_status,
+    )
+
+    rows = conn.execute(
+        """
+        SELECT r.ref_id
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'job_type' = 'doctor_tick'
+           AND r.meta->>'idem_key' LIKE 'doctor:%%'
+           AND r.meta->>'idem_key' <> %s
+           AND t.namespace = 'STATUS' AND t.value = ANY(%s)
+           AND rt.created_at < now() - %s::interval
+         ORDER BY r.ref_id
+           FOR UPDATE OF r SKIP LOCKED
+        """,
+        (current_key, list(_DOCTOR_NON_TERMINAL), f"{_DOCTOR_TICK_STALE_S} seconds"),
+    ).fetchall()
+    for (ref_id,) in rows:
+        append_chunk(
+            store,
+            int(ref_id),
+            JOB_EVENT_KIND,
+            f"scheduler: superseded by {current_key} — still non-terminal "
+            f"past {_DOCTOR_TICK_STALE_S // 3600}h (gr646115)",
+            conn=conn,
+        )
+        set_status(store, int(ref_id), "cancelled", conn=conn)
+        log.warning("scheduler: cancelled stale doctor_tick job #%d", ref_id)
+    return len(rows)
+
+
 def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     """Mint ONE queued ``doctor_tick`` job for the current 8h window
     (``docs/backlog/doctor-tick-report.md`` item 1: the self-healing
@@ -272,6 +332,7 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     now = datetime.now(UTC)
     idem_key = f"doctor:{_doctor_tick_window(now)}"
     with store.pool.connection() as conn:
+        _supersede_stale_doctor_ticks(store, conn, idem_key)
         existing = conn.execute(
             "SELECT 1 FROM refs WHERE kind = 'job' AND retired_at IS NULL "
             "AND meta->>'idem_key' = %s LIMIT 1",
