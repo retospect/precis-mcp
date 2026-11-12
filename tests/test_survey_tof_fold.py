@@ -13,11 +13,18 @@ merge's migrate_links semantics), its measures re-point through the
 0234 door when the unit contract matches, and the loser retires with a
 `supersedes` trail.
 
+0310 is the corrected re-run (review td650235 of td650234; 0309 is
+sealed): every refusal guard now runs before the first write — 0309
+re-pointed measures before the foreign-chunk guard, so a "skipped"
+fold still committed the re-point — and the winner card's re-emit
+re-points grounded links onto the replacement instead of letting the
+chunk-end FKs' ON DELETE CASCADE drop them.
+
 Real PG, same replay harness as test_survey_measurand_seed: the store
 fixture's per-test TRUNCATE leaves `refs` empty, so each test replays
 0174 + 0305, plants the prod-shaped `turnover-frequency` winner by
-hand, and runs 0309. On a fresh replay (no winner) the fold is a
-no-op, so the fixture's own schema build is unaffected.
+hand, and runs the fold migration. On a fresh replay (no winner) the
+fold is a no-op, so the fixture's own schema build is unaffected.
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ def _run_migration(name: str) -> None:
 
 _SEED = "0305_survey_measurand_seed.sql"
 _FOLD = "0309_survey_tof_fold.sql"
+_FIX = "0310_survey_tof_fold_fix.sql"
 
 
 @pytest.fixture
@@ -355,3 +363,115 @@ def test_fold_is_a_noop_without_the_measurand_root(store: Store) -> None:
         (n,) = _one(conn, "SELECT count(*) FROM refs WHERE kind = 'taxon'")
         (m,) = _one(conn, "SELECT count(*) FROM refs WHERE retired_at IS NOT NULL")
     assert n == 0 and m == 0
+
+
+def _card_chunk(store: Store, ref_id: int) -> int:
+    """The ref's ord -1 ``card_combined`` chunk_id — asserted present."""
+    with store.pool.connection() as conn:
+        (cid,) = _one(
+            conn,
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = -1 "
+            "AND chunk_kind = 'card_combined'",
+            (ref_id,),
+        )
+    return int(cid)
+
+
+def test_fix_skips_without_repointing_measures_on_a_foreign_chunk_edge(
+    seeded: Store,
+) -> None:
+    """Regression (td650235): 0309 ran the foreign-chunk guard AFTER the
+    measure re-point, so a fold reporting "skipped" still committed the
+    re-point — a partial fold. Every refusal guard must run before the
+    first write: a skip leaves measures on the loser."""
+    store = seeded
+    loser = _seeded_tof_id(store)
+    winner = _put_winner(store, aliases=["TOF"])
+    mat = _material(store, "catalyst-d")
+    measure = _measure_on(store, subject=mat, measurand=loser)
+    concept = store.insert_ref(kind="concept", slug=None, title="kinetics", meta={}).id
+    topic = store.insert_ref(kind="concept", slug=None, title="reactor", meta={}).id
+    with store.pool.connection() as conn:
+        # A foreign chunk-level edge: another ref's end grounds on one of
+        # the loser's chunks — the one shape the fold refuses to re-home.
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, dst_chunk_id, "
+            " relation, set_by) VALUES (%s, %s, %s, 'see-also', 'system')",
+            (concept, topic, _card_chunk(store, loser)),
+        )
+    _run_migration(_FIX)
+    assert not _loser_retired(store, loser)
+    assert sorted(_claimants(store, "tof")) == sorted([loser, winner])
+    with store.pool.connection() as conn:
+        (measurand,) = _one(
+            conn, "SELECT measurand_ref_id FROM measures WHERE id = %s", (measure,)
+        )
+    assert int(measurand) == loser
+
+
+def test_fix_card_reemit_preserves_links_grounded_on_the_card(
+    seeded: Store,
+) -> None:
+    """Regression (td650235): the card re-emit's DELETE let the chunk-end
+    FKs' ON DELETE CASCADE drop links already grounded on the winner's
+    old card. The grounded ends must re-point onto the replacement."""
+    store = seeded
+    loser = _seeded_tof_id(store)
+    winner = _put_winner(store, aliases=["catalyst turnover"])
+    concept = store.insert_ref(kind="concept", slug=None, title="review", meta={}).id
+    old_card = _card_chunk(store, winner)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, dst_chunk_id, "
+            " relation, set_by) VALUES (%s, %s, %s, 'see-also', 'system')",
+            (concept, winner, old_card),
+        )
+    _run_migration(_FIX)
+    assert _loser_retired(store, loser)
+    new_card = _card_chunk(store, winner)
+    assert new_card != old_card
+    with store.pool.connection() as conn:
+        (dst_chunk,) = _one(
+            conn,
+            "SELECT dst_chunk_id FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = 'see-also'",
+            (concept, winner),
+        )
+    assert int(dst_chunk) == new_card
+
+
+def test_fix_card_reemit_preserves_a_link_migrated_onto_the_card(
+    seeded: Store,
+) -> None:
+    """Regression (td650235): an edge migrated from the loser re-grounds
+    onto the winner's identical-text card — the re-emit must re-point it
+    onto the replacement card, not cascade-delete it."""
+    store = seeded
+    loser = _seeded_tof_id(store)
+    winner = _put_winner(store, aliases=["catalyst turnover"])
+    concept = store.insert_ref(kind="concept", slug=None, title="spectator", meta={}).id
+    loser_card = _card_chunk(store, loser)
+    with store.pool.connection() as conn:
+        # The winner's card carries the loser's card text so the migrated
+        # edge re-grounds onto it (migrate_links' identical-text rule).
+        conn.execute(
+            "UPDATE chunks SET text = (SELECT text FROM chunks "
+            " WHERE chunk_id = %s) WHERE chunk_id = %s",
+            (loser_card, _card_chunk(store, winner)),
+        )
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, dst_chunk_id, "
+            " relation, set_by) VALUES (%s, %s, %s, 'see-also', 'system')",
+            (concept, loser, loser_card),
+        )
+    _run_migration(_FIX)
+    assert _loser_retired(store, loser)
+    new_card = _card_chunk(store, winner)
+    with store.pool.connection() as conn:
+        (dst_chunk,) = _one(
+            conn,
+            "SELECT dst_chunk_id FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = 'see-also'",
+            (concept, winner),
+        )
+    assert int(dst_chunk) == new_card
