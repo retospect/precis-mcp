@@ -12,6 +12,7 @@ module imports ``wires`` for typing only: ``wires`` imports it.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import itertools
 import math
 from collections.abc import Sequence
@@ -197,16 +198,30 @@ def arc_bracket(marks: Sequence[float], s: float) -> tuple[int, int]:
     return (min(k, n - 1) - 1, min(k, n - 1))
 
 
+#: ``branch_geom`` memo, keyed on the mesh identity and the branch's own
+#: points/edges/t (the mesh rides in the value so its id stays live).
+_GEOM_MEMO: dict[Any, tuple[TopoMesh, Geom]] = {}
+_GEOM_MEMO_MAX = 8192
+
+
 def branch_geom(mesh: TopoMesh, br: WirePath) -> Geom:
     """A branch's polyline, its segment lengths and the arc position of
     each crossed edge on it — what :func:`crossing_events` reads per
-    branch, kept by a caller that tests one branch against many."""
+    branch, kept by a caller that tests one branch against many. Memoised
+    per (mesh, branch geometry): the result is read-only to callers."""
     pts = [(float(x), float(y)) for x, y in br.points]
+    key = (id(mesh), tuple(pts), tuple(int(e) for e in br.edges), tuple(br.t))
+    hit = _GEOM_MEMO.get(key)
+    if hit is not None and hit[0] is mesh:
+        return hit[1]
     seg = [math.dist(p, q) for p, q in itertools.pairwise(pts)]
     marks = [
         poly_project(pts, seg, edge_xy(mesh, int(e), float(t)))
         for e, t in zip(br.edges, br.t)
     ]
+    if len(_GEOM_MEMO) >= _GEOM_MEMO_MAX:
+        _GEOM_MEMO.clear()
+    _GEOM_MEMO[key] = (mesh, (pts, seg, marks))
     return pts, seg, marks
 
 
@@ -294,23 +309,28 @@ def crossing_events(
     return events
 
 
+def _line(pts: Sequence[Pt]) -> Any:
+    return LineString([p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]])
+
+
 def bigon_empty(
     pts_a: Sequence[Pt],
     pts_b: Sequence[Pt],
     x: Cross,
     y: Cross,
     obstacles: np.ndarray,
+    lines: tuple[Any, Any] | None = None,
 ) -> bool:
     """Whether the region the two wires bound between crossings ``x`` and
     ``y`` holds no obstacle point strictly inside. Anything doubtful — a
-    self-touching or zero-area region — reads as not empty."""
+    self-touching or zero-area region — reads as not empty. ``lines`` is
+    the two wires' LineStrings where the caller kept them; only obstacles
+    inside the region's bounding box are tested."""
     from shapely.ops import substring
 
-    def line(pts: Sequence[Pt]) -> Any:
-        return LineString([p for i, p in enumerate(pts) if i == 0 or p != pts[i - 1]])
-
-    arc_a = substring(line(pts_a), x[0], y[0])
-    arc_b = substring(line(pts_b), y[1], x[1])
+    la, lb = lines if lines is not None else (_line(pts_a), _line(pts_b))
+    arc_a = substring(la, x[0], y[0])
+    arc_b = substring(lb, y[1], x[1])
     if arc_a.geom_type != "LineString" or arc_b.geom_type != "LineString":
         return False
     poly = Polygon([*arc_a.coords, *arc_b.coords])
@@ -319,7 +339,55 @@ def bigon_empty(
     inner = poly.buffer(-1e-6)
     if inner.is_empty or not len(obstacles):
         return True
-    return not bool(shapely.contains_xy(inner, obstacles[:, 0], obstacles[:, 1]).any())
+    x0, y0, x1, y1 = inner.bounds
+    ox, oy = obstacles[:, 0], obstacles[:, 1]
+    near = (ox >= x0) & (ox <= x1) & (oy >= y0) & (oy <= y1)
+    if not near.any():
+        return True
+    return not bool(shapely.contains_xy(inner, ox[near], oy[near]).any())
+
+
+#: Per-pair cancellation memo: (wire a, wire b, crossings, obstacles
+#: digest) -> (cancelled bigons, crossings left). Pure in its key.
+_PAIR_MEMO: dict[Any, tuple[list[tuple[Cross, Cross]], list[Cross]]] = {}
+_PAIR_MEMO_MAX = 20000
+
+
+def _cancel_pair(
+    pts_a: list[Pt],
+    pts_b: list[Pt],
+    evs: list[Cross],
+    obstacles: np.ndarray,
+    odig: bytes,
+) -> tuple[list[tuple[Cross, Cross]], list[Cross]]:
+    key = (tuple(pts_a), tuple(pts_b), tuple(evs), odig)
+    hit = _PAIR_MEMO.get(key)
+    if hit is not None:
+        return hit
+    gone_pairs: list[tuple[Cross, Cross]] = []
+    lines: tuple[Any, Any] | None = None
+    while len(evs) >= 2:
+        by_a = sorted(range(len(evs)), key=lambda i: evs[i][0])
+        rank_b = {
+            i: r for r, i in enumerate(sorted(range(len(evs)), key=lambda i: evs[i][1]))
+        }
+        gone = None
+        for i, j in itertools.pairwise(by_a):
+            if abs(rank_b[i] - rank_b[j]) != 1:
+                continue
+            if lines is None:
+                lines = (_line(pts_a), _line(pts_b))
+            if bigon_empty(pts_a, pts_b, evs[i], evs[j], obstacles, lines):
+                gone = (i, j)
+                break
+        if gone is None:
+            break
+        gone_pairs.append((evs[gone[0]], evs[gone[1]]))
+        evs = [e for k, e in enumerate(evs) if k not in gone]
+    if len(_PAIR_MEMO) >= _PAIR_MEMO_MAX:
+        _PAIR_MEMO.clear()
+    _PAIR_MEMO[key] = (gone_pairs, evs)
+    return gone_pairs, evs
 
 
 def resolve_crossings(
@@ -340,33 +408,21 @@ def resolve_crossings(
     removal can make others consecutive), an odd count keeping its last
     crossing. A homotopy test on the polylines, not an order comparison.
     ``events`` is :func:`crossing_events`' result when the caller already
-    has it. Regions: ``{(a, b): [(ia1, ia2, ib1, ib2), ...]}``, ``a < b``."""
+    has it. Regions: ``{(a, b): [(ia1, ia2, ib1, ib2), ...]}``, ``a < b``.
+    A pair's outcome is memoised on its two polylines, crossings and the
+    obstacle set, so an unchanged pair is not rescanned."""
     regions: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {}
     cancelled: list[tuple[int, int, Cross, Cross]] = []
     if events is None:
         events = crossing_events(mesh, branches)
+    odig = hashlib.blake2b(
+        np.ascontiguousarray(obstacles, dtype=float).tobytes(), digest_size=16
+    ).digest()
     for (a, b), evs in events.items():
         pts_a = [(float(x), float(y)) for x, y in branches[a].points]
         pts_b = [(float(x), float(y)) for x, y in branches[b].points]
-        while len(evs) >= 2:
-            by_a = sorted(range(len(evs)), key=lambda i: evs[i][0])
-            rank_b = {
-                i: r
-                for r, i in enumerate(sorted(range(len(evs)), key=lambda i: evs[i][1]))
-            }
-            gone = next(
-                (
-                    (i, j)
-                    for i, j in itertools.pairwise(by_a)
-                    if abs(rank_b[i] - rank_b[j]) == 1
-                    and bigon_empty(pts_a, pts_b, evs[i], evs[j], obstacles)
-                ),
-                None,
-            )
-            if gone is None:
-                break
-            cancelled.append((a, b, evs[gone[0]], evs[gone[1]]))
-            evs = [e for k, e in enumerate(evs) if k not in gone]
+        gone_pairs, evs = _cancel_pair(pts_a, pts_b, list(evs), obstacles, odig)
+        cancelled += [(a, b, x, y) for x, y in gone_pairs]
         if evs:
             regions[(a, b)] = [e[2] for e in evs]
     return regions, cancelled
