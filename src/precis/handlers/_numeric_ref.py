@@ -48,7 +48,7 @@ import dataclasses
 import logging
 import re
 from collections.abc import Callable, Collection
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any, ClassVar
 
@@ -447,6 +447,24 @@ def _extract_summary(body: str) -> tuple[str, int]:
     else:
         return body.rstrip(), 0
     return summary, len(tail.split())
+
+
+def scaled_age(delta: timedelta) -> str:
+    """Compact one-unit age label (``43s``/``43m``/``5h``/``3d``).
+
+    Same bucket thresholds as the web UI's relative-time formatter
+    (``precis_web.timefmt._bucket``): under 90 seconds in seconds, under
+    90 minutes in minutes, under 48 hours in hours, then days. A
+    negative span (clock skew) clamps to ``"0s"``.
+    """
+    secs = max(0, int(delta.total_seconds()))
+    if secs < 90:
+        return f"{secs}s"
+    if secs < 5400:
+        return f"{secs // 60}m"
+    if secs < 172800:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
 
 
 def _tag_response_body(
@@ -4779,6 +4797,20 @@ class NumericRefHandler(Handler):
             out.append("tags: " + " ".join(str(t) for t in tags))
         return "\n".join(out)
 
+    def _list_row_time_cells(self, ref: Ref, now: datetime) -> dict[str, str]:
+        """Timestamp cells for one listing row.
+
+        Default: whole-day ``age`` since ``updated_at`` — answers "is
+        this stale?" for long-lived kinds (memory, todo, gripe), where
+        an edit bumps the age back to 0 and day granularity is enough.
+        Kinds whose staleness question needs finer granularity (alerts —
+        gr648197: same-day rows all read as age 0, so a live alert was
+        indistinguishable from a stale one) override this with scaled
+        ages and/or absolute stamps. The dict's keys become the table
+        columns where ``age`` sits.
+        """
+        return {"age": str(max(0, (now - ref.updated_at).days))}
+
     def _render_hits_table(self, refs: list[Ref]) -> str:
         """Render a list of refs as a single TOON table.
 
@@ -4798,9 +4830,11 @@ class NumericRefHandler(Handler):
             agent knows how much body is hiding behind the id.
           - ``links``: total edges touching this ref (in + out),
             batched into one COUNT across the page.
-          - ``age``: integer days since ``updated_at``. Answers "is
-            this stale?" at a glance; an edit bumps it back to 0
-            (tag writes don't touch ``updated_at``).
+          - ``age``: integer days since ``updated_at`` (default; a kind
+            overrides via ``_list_row_time_cells`` — alerts carry a
+            scaled age plus first-raised/last-reported stamps,
+            gr648197). Answers "is this stale?" at a glance; an edit
+            bumps it back to 0 (tag writes don't touch ``updated_at``).
 
         Body source is ``ref.title`` for numeric-ref kinds (memory,
         todo, gripe-body). Side chunks (gripe comments) aren't
@@ -4837,11 +4871,11 @@ class NumericRefHandler(Handler):
         any_chips = bool(chip_map)
         marks = self._list_row_marks(refs)
         now = datetime.now(UTC)
+        time_cells = [self._list_row_time_cells(r, now) for r in refs]
         rows: list[dict[str, str]] = []
-        for r in refs:
+        for r, cells in zip(refs, time_cells):
             body = r.title or ""
             summary, remaining_words = _extract_summary(body)
-            age_days = max(0, (now - r.updated_at).days)
             state = "unspecified"
             if lifecycle:
                 for ns, val in tag_rows.get(r.id, []):
@@ -4859,12 +4893,19 @@ class NumericRefHandler(Handler):
                     "summary": summary,
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
-                    "age": str(age_days),
+                    **cells,
                     "size": size_cell(sizes.get(int(r.id), 0)),
                     **({"stale": marks.get(r.id, "")} if marks else {}),
                 }
             )
-        schema = ["id", "summary", "remaining_words", "links", "age", "size"]
+        schema = [
+            "id",
+            "summary",
+            "remaining_words",
+            "links",
+            *time_cells[0],
+            "size",
+        ]
         if lifecycle:
             schema.insert(1, "status")
         if any_chips:

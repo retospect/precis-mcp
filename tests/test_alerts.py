@@ -647,6 +647,90 @@ def test_handler_open_view_empty_is_all_clear(hub: Hub) -> None:
     assert "no open alerts" in resp.body.lower()
 
 
+def _backdate(
+    store: Store, ref_id: int, *, created_hours: int, updated_minutes: int
+) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - make_interval(hours => %s), "
+            "updated_at = now() - make_interval(mins => %s) WHERE ref_id = %s",
+            (created_hours, updated_minutes, ref_id),
+        )
+
+
+def test_handler_open_rows_carry_first_raised_and_last_reported(
+    hub: Hub, store: Store
+) -> None:
+    """gr648197: whole-day age read every same-day alert as ``0``, so a
+    live alert was indistinguishable from a stale one. The listing rows
+    now carry the /alerts web tab's two stamps (minute precision) plus a
+    scaled age."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:ages", title="aged alert")
+    _backdate(store, aid, created_hours=72, updated_minutes=43)
+    body = handler.get(id="/open").body
+    assert "first_raised" in body
+    assert "last_reported" in body
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT created_at, updated_at FROM refs WHERE ref_id = %s", (aid,)
+        ).fetchone()
+    assert row is not None
+    created, updated = row
+    assert created.strftime("%Y-%m-%d %H:%MZ") in body
+    assert updated.strftime("%Y-%m-%d %H:%MZ") in body
+    # scaled age since the last report — 43 minutes back reads "43m",
+    # not the whole-day "0" that made same-day alerts unreadable.
+    assert "43m" in body
+
+
+def test_handler_search_rows_carry_first_raised_and_last_reported(
+    hub: Hub, store: Store
+) -> None:
+    """search(kind='alert') rows flow through the same hits table — the
+    two stamps ride them too, not just the /open listing."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(
+        store, source="s", fingerprint="fp:search-ages", title="credit outage live"
+    )
+    _backdate(store, aid, created_hours=26, updated_minutes=10)
+    body = handler.search(q="credit").body
+    assert "first_raised" in body
+    assert "last_reported" in body
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT created_at, updated_at FROM refs WHERE ref_id = %s", (aid,)
+        ).fetchone()
+    assert row is not None
+    created, updated = row
+    assert created.strftime("%Y-%m-%d %H:%MZ") in body
+    assert updated.strftime("%Y-%m-%d %H:%MZ") in body
+    assert "10m" in body
+
+
+@pytest.mark.parametrize(
+    ("seconds", "label"),
+    [
+        (-5, "0s"),  # clock skew clamps, never a negative label
+        (45, "45s"),
+        (89, "89s"),
+        (90, "1m"),
+        (3600, "60m"),
+        (5399, "89m"),
+        (5400, "1h"),
+        (171999, "47h"),
+        (172800, "2d"),
+        (10 * 86400, "10d"),
+    ],
+)
+def test_scaled_age_buckets(seconds: int, label: str) -> None:
+    from datetime import timedelta
+
+    from precis.handlers._numeric_ref import scaled_age
+
+    assert scaled_age(timedelta(seconds=seconds)) == label
+
+
 def test_handler_get_by_id_reads_one_alert(hub: Hub, store: Store) -> None:
     handler = AlertHandler(hub=hub)
     aid, _ = raise_alert(store, source="s", fingerprint="fp:1", title="readable alert")

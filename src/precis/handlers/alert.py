@@ -20,7 +20,11 @@ the agent surface is the read / triage half:
     - get(kind='alert', id=N, view='links'/'log'/'raw')
                                            — generic numeric-ref views
     - get(kind='alert', id='/recent')     — recent alerts (open + resolved)
-    - get(kind='alert', id='/open')       — currently-open alerts only
+    - get(kind='alert', id='/open')       — currently-open alerts only;
+                                             rows carry scaled age +
+                                             first-raised/last-reported
+                                             (minute precision, like the
+                                             /alerts web tab — gr648197)
     - get(kind='alert', id='/rules')      — the registered failure-id
                                              catalogue (precis.alert_ids):
                                              every rule with its meaning,
@@ -73,7 +77,7 @@ from precis.alerts import (
     unack_alert,
 )
 from precis.errors import BadInput, Unsupported
-from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
+from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler, scaled_age
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import Ref, Tag
@@ -460,6 +464,20 @@ class AlertHandler(NumericRefHandler):
             body += "\nacked (left out of the badge and remediation until then):\n"
             body += "\n".join(acked_lines)
         return Response(body=body)
+
+    def _list_row_time_cells(self, ref: Ref, now: datetime) -> dict[str, str]:
+        """Alert listing rows carry the web UI's two lifecycle stamps
+        (gr648197): whole-day age read every same-day alert as ``0``, so
+        a live alert was indistinguishable from one whose condition ended
+        hours ago. ``age`` is scaled (``43m``/``5h``/``3d`` — staleness
+        of the last report) and ``first_raised``/``last_reported`` give
+        the absolute UTC times to the minute, like the ``/alerts`` tab's
+        first/last seen."""
+        return {
+            "age": scaled_age(now - ref.updated_at),
+            "first_raised": ref.created_at.strftime("%Y-%m-%d %H:%MZ"),
+            "last_reported": ref.updated_at.strftime("%Y-%m-%d %H:%MZ"),
+        }
 
     # ── get: base views + view='detail' (alias 'full') ─────────────
 

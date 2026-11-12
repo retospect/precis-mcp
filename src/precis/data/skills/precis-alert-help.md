@@ -133,6 +133,12 @@ get(kind='alert', id=42, view='context',
 Empty means the guess missed the producer's pass — widen `minutes` or
 name `log_pass`/`process` explicitly rather than reaching for psql.
 
+Listing rows (`/open`, `/recent`, `search` hits) carry the web tab's two
+lifecycle stamps beside the scaled `age` — `first_raised` and
+`last_reported`, UTC to the minute (`2026-11-12 10:17Z`). `age` is scaled
+(`43m`/`5h`/`3d`) off the last report, so a live alert raised today no
+longer reads the same as one whose condition ended hours ago (gr648197).
+
 Or browse the **Alerts** tab in `precis web` (`/alerts`) — open by
 default, grouped by source, severity-sorted; `?state=resolved` shows
 recent history.
