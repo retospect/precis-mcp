@@ -571,6 +571,7 @@
         {% endif %}
       </div>
       <div class="shrink-0 flex flex-col items-end gap-1">
+        {% if row.id is not none %}
         {% set ref_kind = row.kind %}
         {% set ref_id = row.id %}
         {% set active = row.flags %}
@@ -584,6 +585,7 @@
         {% set flag_defs = acquire_flag_defs %}
         {% set group = 'acquire' %}
         {% include "_flag_buttons.html.j2" with context %}
+        {% endif %}
         {% endif %}
       </div>
     </div>

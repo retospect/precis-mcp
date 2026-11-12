@@ -636,6 +636,44 @@ def _flatten_tree(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _tag_rows(store: Any, q: str, page: int) -> tuple[list[dict[str, Any]], bool]:
+    """Rows for the ``tag`` kind (gr636493): tags live in their own table,
+    not ``refs``, so the ref queries never see them. One row per tag —
+    most-used first, or the substring matches of ``q`` — linking to the
+    drive filtered to that tag. Over-fetches one for ``has_next``."""
+    if q:
+        found = store.suggest_tags(q, limit=page * _PAGE_SIZE + 1)
+        found = found[(page - 1) * _PAGE_SIZE :]
+    else:
+        found = store.list_all_tags(page=page, page_size=_PAGE_SIZE + 1)
+    has_next = len(found) > _PAGE_SIZE
+    rows: list[dict[str, Any]] = []
+    for ns, value, n in found[:_PAGE_SIZE]:
+        flt = _tag_filter_string(ns, value)
+        rows.append(
+            {
+                "id": None,
+                "kind": "tag",
+                "title": f"{ns}:{value}",
+                "open_url": "/drive?" + urlencode([("tag", flt)]),
+                "preview": f"{n} ref{'' if n == 1 else 's'}",
+                "thumbnail": None,
+                "actions": [],
+                "created_at": None,
+                "updated_at": None,
+                "state": [],
+                "tags": [],
+                "links": [],
+                "score": 0.0,
+                "title_meta": None,
+                "chunk_full": None,
+                "flags": set(),
+                "title_is_md": False,
+            }
+        )
+    return rows, has_next
+
+
 def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
     ref_id, kind, title, slug, updated_at = (
         int(r[0]),
@@ -1063,19 +1101,27 @@ async def index(
     rows: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
     has_next = False
+    # ``tag`` is not a ref kind (gr636493): the ref queries run on the rest.
+    want_tags = "tag" in selected_kinds and not fetch_ref_ids
+    ref_kinds = [kk for kk in selected_kinds if kk != "tag"]
     result_total: int | None = None
     # Whether ``result_total`` is exact (the browse path — a plain filtered
     # count) or a ≈lexical approximation (the fused-search path). Gates the
     # pager's "Last »" jump: an approximate total could send you to an empty
     # page, so Last is offered only when the count is trustworthy.
     total_exact = False
-    if q:
+    tag_only = want_tags and not ref_kinds
+    if tag_only:
+        tag_rows, has_next = await asyncio.to_thread(_tag_rows, store, q, page)
+        (rows if q else recent).extend(tag_rows)
+        result_total = offset + len(tag_rows) + (1 if has_next else 0)
+    elif q:
         embedder = getattr(hub, "embedder", None)
         rows, has_next = await asyncio.to_thread(
             _run_search,
             store,
             embedder,
-            kinds=selected_kinds,
+            kinds=ref_kinds,
             q=q,
             sort=sort,
             since=since_dt,
@@ -1103,11 +1149,11 @@ async def index(
         # difference between finding 5 of 50 and 5 of 50,000. Skip the
         # query when no kind is selected — it can only match nothing (``q``
         # is already guaranteed non-blank by the outer ``if q:``).
-        if selected_kinds:
+        if ref_kinds:
             result_total = await asyncio.to_thread(
                 store.chunks.count_chunks_lexical,
                 q=q,
-                kinds=selected_kinds,
+                kinds=ref_kinds,
                 tags=tags,
                 distinct_refs=True,
                 since=since_dt,
@@ -1135,7 +1181,7 @@ async def index(
         recent, has_next = await asyncio.to_thread(
             _recent_rows,
             store,
-            selected_kinds,
+            ref_kinds,
             tags,
             has_pdf,
             folder_id,
@@ -1167,7 +1213,7 @@ async def index(
         # the page shows.
         result_total = await asyncio.to_thread(
             store.count_recent_refs,
-            selected_kinds,
+            ref_kinds,
             tags=tags,
             has_pdf=has_pdf,
             has_chunks=has_chunks,
@@ -1181,6 +1227,10 @@ async def index(
             viewer=viewer,
         )
         total_exact = True
+
+    if want_tags and not tag_only and page == 1:
+        tag_rows, _ = await asyncio.to_thread(_tag_rows, store, q, 1)
+        (rows if q else recent).extend(tag_rows)
 
     # The manual-retrieval section under the stub queue: the cooled no-OA
     # bucket as a buy-list (DOI, title, year, cites; newest request first),
