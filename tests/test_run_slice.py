@@ -3148,7 +3148,7 @@ def _codex_and_sub() -> tuple[Lane, Lane]:
 
 def _pool_failures(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
     """Capture ``accounts.record_pool_failure`` calls as
-    ``{key: {parked_until, reason_class}}`` — the ``_Store`` fake carries
+    ``{key: {parked_until, reason_class, notice}}`` — the ``_Store`` fake carries
     no ``external_rate_limits`` rows (td572037)."""
     recorded: dict[str, dict[str, Any]] = {}
 
@@ -3165,6 +3165,7 @@ def _pool_failures(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]
         if until is None or until <= retry_at:
             pool["parked_until"] = retry_at
         pool["reason_class"] = reason_class
+        pool["notice"] = notice
         return True
 
     monkeypatch.setattr(accounts, "record_pool_failure", record)
@@ -3179,9 +3180,9 @@ def test_poll_quota_window_parks_without_an_attempt_and_switches_vendor(
 ) -> None:
     """gr565359 / jo565344: a claude-sub 429 is the lane's window, not the
     task's verdict: no attempt, lease back, relaunch now on codex.
-    td572037: the same outage feeds the lane's pools — their
-    ``parked_until`` reads the parsed reset although the job's own
-    ``not_before`` is now."""
+    td572037: the same outage feeds the pool the notice names (weekly
+    wording: 7d only) — its ``parked_until`` reads the parsed reset
+    although the job's own ``not_before`` is now."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -3204,10 +3205,11 @@ def test_poll_quota_window_parks_without_an_attempt_and_switches_vendor(
     # although the job relaunches at once on the other vendor.
     expected = quota_retry_at(str(_QUOTA_RESULT["result"]))
     assert expected is not None and expected > datetime.now(UTC)
-    for key in _CLAUDE_SUB_POOLS:
-        until = pools[key]["parked_until"]
-        assert abs((until - expected).total_seconds()) < 90
-        assert pools[key]["reason_class"] == "quota"
+    assert set(pools) == {"llm:claude-sub:7d"}  # the 5h pool is not parked
+    until = pools["llm:claude-sub:7d"]["parked_until"]
+    assert abs((until - expected).total_seconds()) < 90
+    assert pools["llm:claude-sub:7d"]["reason_class"] == "quota"
+    assert pools["llm:claude-sub:7d"]["notice"] == "provider"
     assert pctx.meta_set["exclude_vendor"] == "anthropic"
     assert pctx.meta_set["compute_handle"] is handle
     assert pctx.meta_set["compute_handle_released"] is False
@@ -3324,7 +3326,7 @@ def test_poll_quota_window_past_the_park_cap_still_records_the_pool(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td572037: the window past the park cap is a failed attempt for the
-    todo, but the account's pools still record the outage."""
+    todo, but the pool the notice names still records the outage."""
     store = _Store()
     store.add_todo(42, "t")
     pools = _pool_failures(monkeypatch)
@@ -3340,9 +3342,9 @@ def test_poll_quota_window_past_the_park_cap_still_records_the_pool(
     assert "attempt:1" in store.tag_strings(42)
     expected = quota_retry_at(str(_QUOTA_RESULT["result"]))
     assert expected is not None
-    for key in _CLAUDE_SUB_POOLS:
-        until = pools[key]["parked_until"]
-        assert abs((until - expected).total_seconds()) < 90
+    assert set(pools) == {"llm:claude-sub:7d"}
+    until = pools["llm:claude-sub:7d"]["parked_until"]
+    assert abs((until - expected).total_seconds()) < 90
 
 
 def test_poll_quota_window_still_parks_when_the_pool_write_fails(
@@ -3363,6 +3365,78 @@ def test_poll_quota_window_still_parks_when_the_pool_write_fails(
     assert "pid" not in handle and handle["outage"] == "quota"
     assert "STATUS:open" in store.tag_strings(42)
     assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_session_limit_parks_only_the_5h_pool(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572037: wording that names no week parks the shorter window
+    only — a park only extends, so the 7d pool would otherwise hold to
+    the weekly reset."""
+    store = _Store()
+    store.add_todo(42, "t")
+    pools = _pool_failures(monkeypatch)
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    ctx, handle = _submit(store, seams)
+    session = dict(
+        _QUOTA_RESULT, result="You've hit your session limit · resets 3pm (UTC)"
+    )
+    _finish(handle, 1, json.dumps(session) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert set(pools) == {"llm:claude-sub:5h"}
+    assert pools["llm:claude-sub:5h"]["notice"] == "provider"
+
+
+def test_poll_bare_429_parks_the_5h_pool_as_an_estimate(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572037: a 429 with no wording names no reset and no week: the
+    first pool, the fallback backoff, an estimate."""
+    store = _Store()
+    store.add_todo(42, "t")
+    pools = _pool_failures(monkeypatch)
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    ctx, handle = _submit(store, seams)
+    bare = {"type": "result", "is_error": True, "result": "", "api_error_status": 429}
+    _finish(handle, 1, json.dumps(bare) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert set(pools) == {"llm:claude-sub:5h"}
+    assert pools["llm:claude-sub:5h"]["reason_class"] == "rate"
+    assert pools["llm:claude-sub:5h"]["notice"] == "estimate"
+    until = pools["llm:claude-sub:5h"]["parked_until"]
+    assert until > datetime.now(UTC) + timedelta(hours=1)
+
+
+def test_poll_auth_outage_records_no_pool_failure(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572037: an auth outage is the lane's credential, not a rate
+    window — the lane parks, no pool does."""
+    _parks(monkeypatch)
+    store = _Store()
+    store.add_todo(42, "t")
+    pools = _pool_failures(monkeypatch)
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    ctx, handle = _submit(store, seams)
+    auth = {
+        "type": "result",
+        "is_error": True,
+        "result": "Not logged in",
+        "api_error": "authentication_error",
+    }
+    _finish(handle, 1, json.dumps(auth) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert handle["outage"] == "auth"
+    assert pools == {}
 
 
 _CODEX_LIMIT_LOG = "\n".join(
@@ -3413,6 +3487,8 @@ def test_poll_codex_usage_limit_death_parks_with_no_attempt(
     until = pools["llm:codex:weekly"]["parked_until"]
     assert abs((until - due).total_seconds()) < 2
     assert pools["llm:codex:weekly"]["reason_class"] == "quota"
+    # No reset clause in the text: the two-hour default is an estimate.
+    assert pools["llm:codex:weekly"]["notice"] == "estimate"
 
 
 def test_poll_plain_error_is_still_a_failed_attempt(seams: dict[str, Any]) -> None:

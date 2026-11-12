@@ -3633,41 +3633,82 @@ def _outage_alternative(
     return _lanes.pick_lane(store, task_class, lanes=others) is not None
 
 
+def _lane_pools(store: Any, lane: str | None) -> tuple[str, ...]:
+    """The ``llm:<account>:<window>`` pools of the account named like the
+    lane, in seed order (``claude-sub`` 5h before 7d)."""
+    from precis.utils.llm import accounts
+
+    for a in accounts.list_accounts(store):
+        if str(a.name) == str(lane):
+            return tuple(k for k in getattr(a, "pools", ()) or () if isinstance(k, str))
+    return ()
+
+
+def _lane_pool_key(store: Any, lane: str | None, text: str) -> str | None:
+    """The one pool a lane's closed window exhausted. A single-pool
+    account has no choice. With several, wording that names a week is the
+    weekly pool (``:7d`` / ``:weekly``); anything else the first, the
+    shorter window — the router's own rule for a refusal that names none
+    (``router._harvest_pool_signals``: a 5-hour refusal must not park the
+    7-day pool, which a park only ever extends)."""
+    pools = _lane_pools(store, lane)
+    if len(pools) > 1 and re.search(r"week|7.?day", text, re.IGNORECASE):
+        weekly = [p for p in pools if p.endswith((":7d", ":weekly"))]
+        if weekly:
+            return weekly[0]
+    return pools[0] if pools else None
+
+
+def _reset_named(text: str, now: datetime) -> bool:
+    """Whether ``text`` itself names the reset instant (a clock clause or
+    an account regain date) — else ``classify_text``'s retry time is a
+    fixed-horizon estimate."""
+    from precis.utils.llm import quota
+
+    match = quota.QUOTA_RESET_PATTERN.search(text)
+    if match is not None and quota.parse_quota_reset_at(match, now) is not None:
+        return True
+    return quota.parse_api_usage_reset_at(text) is not None
+
+
 def _record_pool_outage(
-    store: Any, lane: str | None, outage: tuple[str, datetime | None, str]
+    store: Any,
+    lane: str | None,
+    outage: tuple[str, datetime | None, str],
+    result: str | None = None,
 ) -> None:
     """Feed the lane outage into the pool ledger (task-aware routing,
-    td572037): every pool the lane's account row names
-    (``llm:<account>:<window>``) gets ``parked_until`` = the parsed
-    reset, or :data:`OUTAGE_BACKOFF` when the wording named none. The
-    job's own park can be ``now`` — a vendor switch relaunches it at
-    once while the account's window stays shut — so the pool horizon
-    derives from the outage, never from ``not_before``. A reset the
-    provider's own text named records ``notice='provider'``; the
-    fallback backoff stays an estimate. Best-effort only: an account
-    naming no pools, a missing pool row or a store with no DB leaves
-    the park decision untouched."""
+    td572037): the ONE pool the notice names (:func:`_lane_pool_key`)
+    gets ``parked_until`` = the parsed reset, or :data:`OUTAGE_BACKOFF`
+    when the wording named none. The job's own park can be ``now`` — a
+    vendor switch relaunches it at once while the account's window stays
+    shut — so the pool horizon derives from the outage, never from
+    ``not_before``. A reset the provider's own text named records
+    ``notice='provider'``; a classifier default horizon or the fallback
+    backoff stays an ``estimate``. Only ``quota``/``rate`` windows: an
+    ``auth`` outage is the lane's credential, not a pool window.
+    Best-effort only: an account naming no pools, a missing pool row or
+    a store with no DB leaves the park decision untouched."""
     cls, parsed, _phrase = outage
+    if cls not in _OUTAGE_CLASSES:
+        return
     now = datetime.now(UTC)
+    text = result or ""
     horizon = parsed if parsed is not None and parsed > now else now + OUTAGE_BACKOFF
+    named = parsed is not None and _reset_named(text, now)
     try:
         from precis.utils.llm import accounts
 
-        keys: tuple[str, ...] = ()
-        for a in accounts.list_accounts(store):
-            if str(a.name) == str(lane):
-                keys = tuple(
-                    k for k in getattr(a, "pools", ()) or () if isinstance(k, str)
-                )
-                break
-        for key in keys:
-            accounts.record_pool_failure(
-                store,
-                key,
-                reason_class=cls,
-                retry_at=horizon,
-                notice="provider" if parsed is not None else None,
-            )
+        key = _lane_pool_key(store, lane, text)
+        if key is None:
+            return
+        accounts.record_pool_failure(
+            store,
+            key,
+            reason_class=cls,
+            retry_at=horizon,
+            notice="provider" if named else "estimate",
+        )
     except Exception:
         log.warning(
             "run_slice: pool failure record for lane %s failed", lane, exc_info=True
@@ -4108,7 +4149,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             # The pool ledger hears about every outage — past the park
             # cap the window still counts as a failed attempt, but the
             # account's pools record it either way (td572037).
-            _record_pool_outage(ctx.store, lane, outage)
+            _record_pool_outage(ctx.store, lane, outage, result)
             parks = int(handle.get("outage_parks") or 0)
             if parks < OUTAGE_PARK_CAP:
                 # The lane's window, not the task: no attempt, no handoff.
