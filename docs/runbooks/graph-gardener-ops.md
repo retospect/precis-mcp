@@ -47,8 +47,10 @@ read for the key yet (gr548280); until then `scripts/prod-psql --ro
   (proposer); CLI `scripts/prod-precis garden stats`. No MCP door yet
   (gr548280).
 - Logs: the melchior workers run under launchd — grep the
-  `precis-worker*.log` files on the host, not `journalctl`;
-  `/var/log/precis-worker-agent.log` is 0 bytes (gr508975).
+  `precis-worker*.log` files on the host, not `journalctl`; the agent
+  lane's stdout is `/var/log/precis-worker-agentlane.log` (the old
+  `precis-worker-agent.log` is a retired unit's frozen 0-byte file —
+  gr508975, gr638954).
 
 ## Undo a merge
 

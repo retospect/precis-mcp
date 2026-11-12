@@ -2002,7 +2002,8 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
 
     Fire iff **work is waiting, nothing is running, and the lane has been
     quiet**: at least one ``claude_inproc`` job queued past
-    :data:`DISPATCH_STALL_MINUTES`, zero jobs holding a live lease, and no
+    :data:`DISPATCH_STALL_MINUTES`, zero jobs holding a live lease, no
+    quota/window-parked job still awaiting its wake, and no
     sign of executor life inside :data:`DISPATCH_STALL_DEBOUNCE_S`. The
     "nothing running" gate is what distinguishes a dead executor from a
     healthy-but-backlogged one — a live executor grinding a long tick
@@ -2016,7 +2017,19 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
     ``queued`` — a mint or re-queue isn't the executor moving — or
     ``running``, whose claim stamp is covered by the lease check instead)
     or the newest ``running`` row's ``lease_until``: a lease that lapsed
-    seconds ago was being renewed moments ago. A single non-ref-scoped
+    seconds ago was being renewed moments ago.
+
+    A ``STATUS:waiting_time`` row with ``meta.pause_parks > 0`` and a
+    ``meta.wake_when`` instant still in the future is *parked*, not stalled:
+    the executor claimed it and deliberately slept it past a quota/cost
+    window, and the wake_runner re-queues it at the instant (gr638954 — a
+    queue of quota-parked ticks plus a handful of queued stragglers read as
+    "zero running, no life" and paged a live, self-resuming lane). Any
+    pending park means the lane paused itself inside a bounded window; the
+    ``budget`` alert already pages the quota condition, so this detector
+    stays silent until every park's wake has passed — a parked row whose
+    wake is overdue should long since have been re-queued, so it no longer
+    vouches for the lane. A single non-ref-scoped
     critical alert (one page, not one per stuck job); it auto-resolves
     the moment the queue drains.
     """
@@ -2052,6 +2065,12 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
                       AND (meta->>'lease_until') IS NOT NULL
                       AND (meta->>'lease_until')::timestamptz > now()
                 )::int AS n_running,
+                count(*) FILTER (
+                    WHERE status = 'waiting_time'
+                      AND COALESCE((meta->>'pause_parks')::int, 0) > 0
+                      AND (meta->'wake_when'->'payload'->>'ts')::double precision
+                          > extract(epoch FROM now())
+                )::int AS n_parked,
                 COALESCE(
                     GREATEST(
                         max(status_at) FILTER (
@@ -2073,8 +2092,14 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
         return []
     n_stalled, oldest, n_running = int(row[0]), row[1], int(row[2])
     recent_life = bool(row[3])
+    n_parked = int(row[4])
     # Work is waiting (queued past threshold) AND nothing is executing.
     if n_stalled == 0 or n_running > 0:
+        return []
+    # …but the lane parked itself inside a live quota/cost window: claimed
+    # rows sleeping until their wake instant, not a dead executor. The
+    # budget alert owns that page (gr638954).
+    if n_parked > 0:
         return []
     # …but the lane moved inside the debounce window: a reconnect gap,
     # not a dead executor — don't page.

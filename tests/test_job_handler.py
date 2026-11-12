@@ -536,7 +536,7 @@ def _seed_throughput_job(
     status: str,
     started_hours_ago: float | None = None,
     executor: str = "coordinator",
-) -> None:
+) -> int:
     meta: dict[str, Any] = {"job_type": "fake", "executor": executor}
     if host is not None:
         meta["lease_host"] = host
@@ -554,6 +554,7 @@ def _seed_throughput_job(
                 (started_hours_ago, ref.id),
             )
             conn.commit()
+    return ref.id
 
 
 def test_throughput_counts_claims_outcomes_and_queue(
@@ -579,6 +580,21 @@ def test_throughput_window_widens(jobs: JobHandler, store: Store) -> None:
     _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
     assert "castor" not in jobs.get(id="/throughput").body
     assert "castor precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
+
+
+def test_throughput_queue_depth_ignores_retired_jobs(
+    jobs: JobHandler, store: Store
+) -> None:
+    """gr638954: retirement doesn't strip a ref's last ``STATUS`` tag, so a
+    job retired mid-queue still carries ``STATUS:queued`` — the live depth
+    must exclude retired rows or the view disagrees with the DB."""
+    _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    retired = _seed_throughput_job(
+        store, host=None, status="queued", executor="ssh_node"
+    )
+    store.retire_ref(retired)
+
+    assert "queued now by executor: ssh_node=1" in jobs.get(id="/throughput").body
 
 
 def test_throughput_lists_heartbeating_host_with_no_claims(

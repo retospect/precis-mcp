@@ -2358,7 +2358,10 @@ class JobHandler(NumericRefHandler):
         from the lease stamps: ``claimed`` (first claim inside the window),
         ``succeeded`` / ``failed`` (terminal and last touched inside the
         window), ``running`` now. A trailer gives the current queue depth by
-        executor, so "idle" is read next to "and there was nothing to do".
+        executor (live refs only — retirement doesn't strip a ref's last
+        ``STATUS`` tag, so without the ``retired_at IS NULL`` filter the
+        depth counted every job ever retired mid-queue, gr638954), so
+        "idle" is read next to "and there was nothing to do".
         Heartbeating hosts with no claim in the window are listed as
         ``claimed=0``.
         """
@@ -2416,7 +2419,8 @@ class JobHandler(NumericRefHandler):
                   FROM refs r
                   JOIN ref_tags rt ON rt.ref_id = r.ref_id
                   JOIN tags t ON t.tag_id = rt.tag_id
-                 WHERE r.kind = 'job' AND t.namespace = 'STATUS'
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND t.namespace = 'STATUS'
                    AND t.value = ANY(%s)
                  GROUP BY 1 ORDER BY 1
                 """,

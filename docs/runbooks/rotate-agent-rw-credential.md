@@ -110,7 +110,7 @@ From here until step 4 finishes, connections through `:6432` fail. Expected.
 Then confirm nothing is auth-looping:
 
     ssh caspar 'tail -50 /usr/local/var/log/pgbouncer.log' | grep -i "auth\|error"
-    ssh melchior 'tail -30 /var/log/precis-worker-agent.log'
+    ssh melchior 'tail -30 /var/log/precis-worker-agentlane.log'
 
 A `fe_sendauth: no password supplied` on a *sandboxed* job is a different,
 known defect (gr196677 — `PGPASSFILE` pinning), not a rotation failure.

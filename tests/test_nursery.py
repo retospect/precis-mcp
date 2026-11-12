@@ -2017,14 +2017,25 @@ def _mint_inproc_job(
     status_age_seconds: float = 0.0,
     lease_until: datetime | None = None,
     job_type: str = "plan_tick",
+    pause_parks: int = 0,
+    wake_when_ts: float | None = None,
 ) -> int:
     """Mint a ``claude_inproc`` job with a ``STATUS`` tag, optional lease,
     and a backdated ``created_at`` (jobs sit ``queued`` from mint time);
     ``status_age_seconds`` backdates the STATUS tag's own ``created_at`` —
-    the detector's lane-lifetime stamp."""
+    the detector's lane-lifetime stamp. ``pause_parks``/``wake_when_ts``
+    shape a quota park (:func:`park_job_until`): ``STATUS:waiting_time``
+    with a pending ``meta.wake_when`` at-time instant."""
     meta: dict[str, object] = {"job_type": job_type, "executor": "claude_inproc"}
     if lease_until is not None:
         meta["lease_until"] = lease_until.isoformat()
+    if pause_parks:
+        meta["pause_parks"] = pause_parks
+    if wake_when_ts is not None:
+        meta["wake_when"] = {
+            "kind": "at_time",
+            "payload": {"ts": int(wake_when_ts), "why": "test park"},
+        }
     ref = store.insert_ref(
         kind="job", slug=None, title=f"{job_type} job", meta=meta, parent_id=parent_id
     )
@@ -2151,6 +2162,46 @@ def test_dispatch_stall_queued_stamp_is_not_lane_life(store: Store) -> None:
 
     findings = _detect_dispatch_stalls(store)
     assert len(findings) == 1
+
+
+def test_dispatch_stall_suppressed_while_parks_pending(store: Store) -> None:
+    """gr638954: a queue of quota-parked ticks (``STATUS:waiting_time`` +
+    ``pause_parks`` + a ``wake_when`` still in the future) reads as "zero
+    running, no lane life", but the lane parked itself inside a bounded
+    quota window and the wake_runner will resume it — parked is not
+    stalled, and the budget alert already owns that page."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(
+        store,
+        parent.id,
+        status="waiting_time",
+        status_age_seconds=7200,  # parked hours ago, outside the debounce
+        pause_parks=1,
+        wake_when_ts=(datetime.now(UTC) + timedelta(hours=15)).timestamp(),
+    )
+
+    assert _detect_dispatch_stalls(store) == []
+
+
+def test_dispatch_stall_fires_once_park_wake_passes(store: Store) -> None:
+    """A park whose ``wake_when`` instant has passed should long since have
+    been re-queued by the wake_runner — an overdue park no longer vouches
+    for the lane, so a genuine stall still pages."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(
+        store,
+        parent.id,
+        status="waiting_time",
+        status_age_seconds=7200,
+        pause_parks=1,
+        wake_when_ts=(datetime.now(UTC) - timedelta(minutes=30)).timestamp(),
+    )
+
+    findings = _detect_dispatch_stalls(store)
+    assert len(findings) == 1
+    assert findings[0].category == "dispatch-stall"
 
 
 def test_run_nursery_pass_raises_critical_for_dispatch_stall(store: Store) -> None:

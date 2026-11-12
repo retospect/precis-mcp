@@ -73,7 +73,7 @@ panel for pull-style monitoring.
 |---|---|---|
 | `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
 | `dead-worker` | the continuous per-host daemon silent >threshold while its host is alive | 10 min · **critical** |
-| `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
+| `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running and **no** quota/window park pending (a `STATUS:waiting_time` row with `pause_parks` and a future `wake_when` is parked, not stalled — gr638954; the `budget` alert owns that page) | 15 min · **critical** |
 | `embed-lane-stalled` | `embed_batch` jobs queued but none completed in the window — the in-proc embed lane is dark while looking clean | 60 min · **critical** |
 | `unattributed-claimant` | a `claimed-by:` identity (e.g. a container id) with no `host_heartbeat` row claimed work in the window — a non-fleet worker is running | 25 d lookback · warn |
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |

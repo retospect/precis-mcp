@@ -27,14 +27,14 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 | log | hosts | what |
 |-----|-------|------|
 | `precis-worker.log`        | all         | system-profile worker (embed, summarize, chunk_keywords, dispatch, nursery, `scheduler` [cron_tick/watch_poll], `heartbeat`, `paper_reconcile`, …). The big one (100s of MB–1 GB). |
-| `precis-worker-agent.log`  | melchior    | agent-profile worker (structural/deep_review, `job_claude_inproc` plan_tick, quota_check, and — since §A — the `scheduler` pass's `dream_agent`/`anki_sync` cadence fires, folded from the retired `precis-dream.log`/`precis-anki-sync.log` daemons below). Owner `deploy`. |
+| `precis-worker-agentlane.log` | melchior | agent-lane worker — the dedicated `com.precis.worker-agentlane` unit (playbook `20e-precis-worker-agentlane.yml`, `precis worker --only job_claude_inproc --only job_inproc`): `job_claude_inproc` plan_tick/reviewers, `quota_check`, and — since §A — the `scheduler` pass's `dream_agent`/`anki_sync` cadence fires. The authoritative log is the DB `worker_logs` table (`process='precis-worker-agentlane'`) — read it via the `/logs` view (`id='/logs?process=precis-worker-agentlane&level=INFO'`); the stdout file only ever carries bootstrap/fallback lines. Owner `deploy`. ⚠ The old `/var/log/precis-worker-agent.log` (0 bytes since 2026-08-07) belongs to the retired `com.precis.worker-agent` unit — it means nothing (gr638954). |
 | `precis-web.log`           | melchior    | FastAPI/uvicorn web UI. uvicorn lines have no leading timestamp. |
 | `precis-embedder.log`      | all         | `serve-embeddings` (bge-m3), loopback `127.0.0.1:8181`. Health: `curl 127.0.0.1:8181/readyz` → `200` + JSON `{"status": "ready"\|"warming", "state": "loaded"\|"idle"\|"warming"}` (§F cycle b: `idle` is still 200 — a lazy reload happens on the next `/embed`). |
 | `precis-watch.log`         | all         | ingest inbox watcher. |
 | `precis-heartbeat.log`     | all         | per-node liveness heartbeat (still-live launchd/systemd timer; §A also runs it as a `--profile=system` worker pass — same log, `precis-worker.log`, for that half). |
 
 **Retired by §15i/§A** (their LaunchDaemons are booted out;
-`retire-thin-timers.yml` — look in `precis-worker.log`/`precis-worker-agent.log`
+`retire-thin-timers.yml` — look in `precis-worker.log`/`precis-worker-agentlane.log`
 instead): `precis-cron-tick.log`, `precis-watch-poll.log`, `precis-dream.log`,
 `precis-anki-sync.log`, `precis-reconcile.log`.
 | asa-bot: `/Users/hermes/.asa/asa-bot.log` (needs `sudo`) | melchior | Discord bridge. Also relays nursery Discord alerts. | <!-- home-path: allow — the real path on the named host -->

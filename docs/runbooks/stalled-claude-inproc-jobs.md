@@ -9,18 +9,25 @@ whether the worker is dead, blocked, or merely not selecting them.
 - `job_claude_inproc` runs on **melchior only**. ALL `claude_inproc` jobs
   cluster-wide drain through that **one single-threaded worker**; if it hangs,
   they all stall.
-- Since ~2026-08-07Z the agent profile is folded into the single
-  `com.precis.worker` unit on melchior (`precis worker --profile all
-  --batch-size 32 --idle-seconds 2`), per the 2026-08-19Z check. The separate
-  `com.precis.worker-agent` plist was retired ~2026-07-22Z (only a `.bak`
-  remains). **Don't diagnose a stall from the daemon's absence:** a missing
-  `com.precis.worker-agent` and a 0-byte, frozen
-  `/var/log/precis-worker-agent.log` are both expected and mean nothing — two
-  agents once read them as "the worker is dead".
-  ⚠ Verify against the live host (`launchctl print`) before relying on this:
-  [`cluster-logs`](./cluster-logs.md) still lists the agent log and the
-  `playbooks/37-precis-worker-agent.yml` role still exists.
-- Log: **`/var/log/precis-worker.log`** — grep for `job_claude_inproc`.
+- The agent lane is the dedicated **`com.precis.worker-agentlane`** unit on
+  melchior (playbook `20e-precis-worker-agentlane.yml`, gr247125:
+  `precis worker --only job_claude_inproc --only job_inproc`, running as
+  `PRECIS_PROCESS=precis-worker-agentlane`). The old
+  `com.precis.worker-agent` plist was retired ~2026-07-22Z; its
+  `/var/log/precis-worker-agent.log` has been 0 bytes since ~2026-08-07 and
+  means nothing — don't read a stall from it (gr638954).
+- Logs for the agent lane, in order of authority:
+  1. the DB **`worker_logs`** table, `process='precis-worker-agentlane'`
+     (gr638954) — read via the `/logs` view:
+     `id='/logs?process=precis-worker-agentlane&level=INFO'`, or
+     `scripts/prod-psql` on `worker_logs` with the same filter;
+  2. **`/var/log/precis-worker-agentlane.log`** — the unit's stdout file,
+     bootstrap/fallback lines only.
+  Note a **quota-parked** lane is healthy, not stalled: ticks park as
+  `STATUS:waiting_time` with `pause_parks=1` and a `wake_when` instant while
+  the claude subscription quota is exhausted, and the wake_runner resumes
+  them — the nursery's `dispatch-stall` alert stays silent on a pending
+  park; the `budget` alert pages the quota itself.
 - `job_coordinator` (system profile, every node) is the *other* executor path;
   it shows `claimed=0` constantly because `claude_inproc` work doesn't route
   through it.
