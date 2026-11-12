@@ -43,7 +43,7 @@ _BIB = """\
 """
 
 
-def _smoke_project(target: Path) -> None:
+def _smoke_project(target: Path, author_block: str = "\\author{precis}") -> None:
     """main.tex (preamble inlined by assemble_document) + refs.bib +
     .latexmkrc — the same self-contained project shape ``export_draft``
     writes."""
@@ -58,7 +58,7 @@ def _smoke_project(target: Path) -> None:
     )
     main = assemble_document(
         title="Preamble gate smoke",
-        author_block="\\author{precis}",
+        author_block=author_block,
         body=body,
         acronyms="\\newacronym{tla}{TLA}{Three Letter Acronym}",
     )
@@ -208,6 +208,33 @@ def test_abbrev_forms_compile_and_headings_stay_bookmark_safe(tmp_path: Path) ->
         )
     ]
     assert "DFT Benchmarks" in titles, titles
+
+
+def test_export_pdf_info_matches_draft_export_guard(tmp_path: Path) -> None:
+    """td649878 (review of td649877): the draft-export guard's fingerprint
+    must be what the real exporter produces. The guard's unit tests
+    manufacture the Info dict by hand, which proved nothing — the shipped
+    preamble never set ``pdfauthor``, so real exports kept an empty Info
+    ``Author`` and sailed past the guard (pa553467/pa553463). Compile the
+    assembled project and read the metadata back through the guard
+    itself, for both the no-author byline fallback and a real-author
+    byline — the stamp is unconditional."""
+    from precis.ingest.draft_export_guard import draft_export_refusal, read_pdf_info
+
+    for name, author_block in (
+        ("fallback", "\\author{precis}"),
+        ("real_author", "\\author{Ada Lovelace}"),
+    ):
+        project = tmp_path / name
+        project.mkdir()
+        _smoke_project(project, author_block=author_block)
+        res = compile_pdf(project, timeout_s=300)
+        assert not res.skipped
+        assert res.ok, f"{name}: compile failed:\n{res.log_tail}"
+        assert res.pdf is not None
+        info = read_pdf_info(res.pdf)
+        assert info.get("author") == "precis", (name, info)
+        assert draft_export_refusal(info) is not None, (name, info)
 
 
 def test_aux_step_failure_still_serves_the_shipped_pdf(

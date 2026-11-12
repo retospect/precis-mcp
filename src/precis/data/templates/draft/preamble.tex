@@ -54,6 +54,16 @@
 % Hyperlinks + clever cross-references (intra-draft ¶ refs become
 % \cref{chunk:<handle>} pointing at \label{chunk:<handle>}).
 \usepackage[hidelinks]{hyperref}
+
+% Own-output fingerprint for the ingest guard
+% (src/precis/ingest/draft_export_guard.py, td649878): hyperref does not
+% copy the \author byline into the PDF Info dict on its own — without this
+% stamp an exported draft's Info Author stays empty and the draft-export
+% refusal at paper ingest can never match a real export. Unconditional on
+% purpose: every precis draft export is precis-authored in this sense,
+% whatever the printed byline says. With lualatex's TeX Producer/Creator
+% it forms the conjunctive fingerprint the guard checks.
+\hypersetup{pdfauthor={precis}}
 \usepackage{cleveref}
 
 % Numbered display equations (export/latex.py's standalone-equation

@@ -3,8 +3,8 @@
 pa553467 / pa553463 — draft-export PDFs that landed in the paper corpus
 with author "precis" and empty bibtex, then drew title-fix todos. The
 guard (:mod:`precis.ingest.draft_export_guard`) fingerprints the export
-pipeline's own metadata — the ``\\author{precis}`` byline fallback plus
-a TeX producer — and both ingest doors refuse on it:
+pipeline's own metadata — the preamble's ``pdfauthor={precis}`` Info
+stamp plus a TeX producer — and both ingest doors refuse on it:
 :func:`precis.ingest.add.precis_add` raises
 :class:`~precis.errors.DraftExportRefused` before any DB write, and
 ``paper_pull.check_pdf`` records ``draft_export``.
