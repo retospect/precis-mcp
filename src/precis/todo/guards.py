@@ -40,6 +40,7 @@ shows up as "the strategic guard didn't fire" rather than as
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
@@ -521,15 +522,53 @@ _ASK_OPTION_CAP = 200
 _ASK_CONTEXT_CAP = 600
 _ASK_MAX_OPTIONS = 12
 
+#: An ask poses a decision between concrete options, never delegated
+#: work (gr595189): a question or option whose LEADING verb hands the
+#: scoping back upward — "scope the initiative", "prioritize this",
+#: "have a human decide" — is refused. Rewrite as a bounded choice:
+#: "approve X at cost Y, or Z". ``decide`` only trips when it takes an
+#: object ("decide the initiative"); "decide whether X or Y" already
+#: poses the choice.
+_ASK_DELEGATE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:"
+    r"scope|prioriti[sz]e|own|delegate|escalate|"
+    r"decide\s+(?:the|this|that|these|those|a|an)\b|"
+    r"have\s+(?:a|the)\s+(?:human|owner)\b|"
+    r"ask\s+(?:the\s+)?(?:owner|reto|a\s+human)\b|"
+    r"hand\s+(?:off|over)\b"
+    r")",
+    re.IGNORECASE,
+)
+_ASK_DELEGATE_NEXT = (
+    "an ask poses a decision between options — rewrite as 'approve X "
+    "at cost Y, or Z' with the options in meta.ask.options"
+)
 
-def check_ask_meta(meta: dict[str, Any] | None) -> int | None:
+
+def _check_ask_delegate(text: str, *, where: str) -> None:
+    """Refuse an ask surface that delegates the work upward instead of
+    posing a choice (gr595189)."""
+    if _ASK_DELEGATE_RE.match(text):
+        raise BadInput(
+            f"meta.ask {where} delegates work upward ({text.strip()[:80]!r}) "
+            "instead of posing a decision",
+            next=_ASK_DELEGATE_NEXT,
+        )
+
+
+def check_ask_meta(
+    meta: dict[str, Any] | None, *, question: str | None = None
+) -> int | None:
     """Validate ``meta.ask``; return the todo id its ``blocks`` names.
 
     Shape: ``{kind: design-verdict|ruling|approval, options: [str, ...],
     blocks: 'td<id>'|'nothing', context: str}``. ``kind`` and ``blocks``
     are required; ``options`` and ``context`` are optional. Unknown keys
-    are refused rather than dropped. Returns ``None`` when there is no
-    ``meta.ask`` or ``blocks`` is ``'nothing'``.
+    are refused rather than dropped. ``question`` is the ask's surface
+    text (the todo's title at mint) — a leading delegation verb
+    (``scope``, ``prioritize``, ``own``, ``decide the…``) is refused
+    there and on each option (gr595189). Returns ``None`` when there is
+    no ``meta.ask`` or ``blocks`` is ``'nothing'``.
     """
     if not meta or "ask" not in meta:
         return None
@@ -551,6 +590,8 @@ def check_ask_meta(meta: dict[str, Any] | None) -> int | None:
             f"are [{', '.join(ASK_KINDS)}]",
             next=_ASK_NEXT,
         )
+    if question is not None:
+        _check_ask_delegate(str(question), where="question")
     options = ask.get("options", [])
     if (
         not isinstance(options, list)
@@ -566,6 +607,8 @@ def check_ask_meta(meta: dict[str, Any] | None) -> int | None:
             f"{_ASK_OPTION_CAP} chars each (recommended option first)",
             next=_ASK_NEXT,
         )
+    for o in options:
+        _check_ask_delegate(o, where="option")
     context = ask.get("context", "")
     if not isinstance(context, str) or len(context) > _ASK_CONTEXT_CAP:
         raise BadInput(

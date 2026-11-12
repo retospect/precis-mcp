@@ -109,6 +109,14 @@ class AskRow:
     created_at: datetime | None = None
 
     @property
+    def age_days(self) -> float:
+        """Days since the row was filed (gr595189 — a waiting ask shows
+        its age so an unanswered one can't rot invisibly)."""
+        if self.created_at is None:
+            return 0.0
+        return max(0.0, (datetime.now(UTC) - self.created_at).total_seconds() / 86400)
+
+    @property
     def is_ask(self) -> bool:
         """An ask-user todo or a ruling-tagged row: a question, not a
         status line (``waiting-for:reto``) or a shape discussion."""
@@ -199,8 +207,15 @@ def _quest_key(
     return (0, prio if prio is not None else 5, qid)
 
 
-def _row_key(r: AskRow) -> tuple[str, int]:
-    return (r.kind, r.ref_id if r.ref_id is not None else 0)
+def _blocked_key(r: AskRow) -> tuple[int, float]:
+    """Most-blocked first (gr595189): an ask more work waits on
+    outranks a freer one; age breaks the tie (the oldest wait is the
+    most likely to be rotting)."""
+    return (-r.blocked, -r.age_days)
+
+
+def _row_key(r: AskRow) -> tuple[int, float, str, int]:
+    return (*_blocked_key(r), r.kind, r.ref_id if r.ref_id is not None else 0)
 
 
 def _h(kind: str, ref_id: int) -> str:
@@ -485,14 +500,27 @@ def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
 
 
 def asks_model(store: Store) -> AsksModel:
-    """Every row that waits on the human, classed and quest-resolved."""
+    """Every row that waits on the human, classed and quest-resolved —
+    sorted most-blocked first within a class (gr595189)."""
     rows = _ref_rows(store)
-    rows.sort(key=lambda r: (_RANK[r.klass], r.kind, r.ref_id or 0, r.handle))
+    rows.sort(key=lambda r: (_RANK[r.klass], *_blocked_key(r), r.kind, r.ref_id or 0))
     return AsksModel(rows=tuple(rows))
 
 
+def _age(age_days: float) -> str:
+    """``3d`` / ``9h`` / ``20m`` — the compact age a waiting ask shows."""
+    if age_days >= 1:
+        return f"{int(age_days)}d"
+    hours = age_days * 24
+    if hours >= 1:
+        return f"{int(hours)}h"
+    return f"{max(1, int(hours * 60))}m"
+
+
 def _line(r: AskRow, indent: str) -> str:
-    out = f"{' '.join((r.handle, *r.reasons))} — {r.title}"
+    out = f"{' '.join((r.handle, *r.reasons))} — {r.title} · {_age(r.age_days)}"
+    if r.blocked:
+        out += f" · blocks {r.blocked}"
     if r.question and r.question != r.title:
         out += f"\n{indent}  ? {r.question}"
     if r.ask_kind:

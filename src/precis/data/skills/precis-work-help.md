@@ -71,13 +71,13 @@ A job resolves to a quest two ways: its `parent_id` chain walks up to
 the nearest ancestor that `serves` one, else its own meta answers
 (`params.quest_id`, `coordinator_state.quest_id`, or its structure's
 `quest:<id>` tag). A resolved job outside its quest's served trees still
-joins that quest's job lines; a todo serving a quest directly and also
-sitting inside another served root renders once, inside the larger tree.
+joins that quest's job lines; a todo serving a quest and sitting inside
+another served root renders once, in the larger tree.
 
 Blocked-only quests leave the idle group and sort by who can unblock
-them (gr573557): a quest whose live leaf rows are all blocked lands in
+them (gr573557): a quest with every live leaf blocked lands in
 `needs you (N)` at the top (its line naming the unblocking items) when
-Reto can unblock at least one leaf, else in `blocked by other work (N)`
+Reto can unblock one, else in `blocked by other work (N)`
 at the bottom. Reto can unblock a leaf that carries
 `waiting-for:reto`, is `blocked-by` an open `ask-user` todo, or is
 itself an open ask; anything else (another open todo,
@@ -102,8 +102,8 @@ handle in yours so the count finds you:
 edit(kind="fleet", id="fl123", mode="replace", args={"slice": "td540848"})
 ```
 
-One node with its place in the tree (parent, peers, children, each with
-its icon) sits under a `— tree —` ring (`part-of:`, `peers (N):`,
+One node with its tree place (parent, peers, children, each with its
+icon) sits under a `— tree —` ring (`part-of:`, `peers (N):`,
 `contains (N):`):
 
 ```python
@@ -122,8 +122,8 @@ serving it; neither button cancels a job.
 ## What blocks a lane, and what waits on the owner?
 ## Which questions are waiting for a human decision?
 
-The asks list is one view with three classes, grouped by the quest the
-row serves, then by thread:
+The asks list is one view with three classes, grouped by the row's
+quest then thread:
 
 | class | the row is | sources |
 |---|---|---|
@@ -171,27 +171,31 @@ put(kind="todo", text="Should the pass cut on a red gate?", parent_id=540836,
                   "blocks": "td540848", "context": "gate went red twice this week"}})
 ```
 
-- `text` is the question, one sentence he can answer; put the argument
-  in `body=` or a later comment.
+- `text` is the question — a bounded choice ("approve X at cost Y, or
+  Z"), never delegated work: a leading `scope`/`prioritize`/`own`/
+  `decide the…` is refused; argue in `body=` or a comment.
 - `parent_id` is the slice or root it belongs to; omit it for a loose
   question. The row appears under that row's quest and thread.
 - `meta.ask.kind` is `design-verdict` (a shape question), `ruling` (a
   choice between options) or `approval` (a yes to sign off); anything
   else is refused with the accepted values.
-- `meta.ask.options` is a list of short strings, the recommended one
-  first (optional); `context` is one short line he needs.
+- `meta.ask.options` is short strings, each with a one-line cost
+  ("both — ~$20, one night"), recommended first; `context` is 2-3
+  sentences: what corner, what's up, why now, a source link.
 - `meta.ask.blocks` is `td<id>` of the slice that cannot proceed until
   answered, or `nothing`. A handle writes a `blocked-by` link from that
-  slice to the question (it leaves `view='doable'` until the question
-  closes) and files a showstopper; `nothing` files a decision.
+  slice to the question (it stays off `view='doable'` till answered)
+  and files a showstopper; `nothing` files a decision.
 - The `ask-user` tag is required with `meta.ask`; add `thread:<slug>`.
+- No auto-default: decide what you can (log the call); a waiting ask
+  shows its age and what it blocks, most-blocked first.
 
 Change a question with `edit(kind="todo", id=N, meta={"ask": {...}})`;
 the new dict replaces the old one.
 
-The owner answers on the web `/asks` page, which does both steps below.
-Over the MCP, an answer is a comment starting `answer:` plus closing the
-row, which drops it from the asks view and releases the blocked slice:
+The owner answers on the web `/asks` page. Over the MCP, an answer is
+a comment starting `answer:` plus closing the row — it drops off the
+asks view and releases the blocked slice:
 
 ```python
 put(kind="todo", id=541990, text="answer: yes, cut; warn-only hides real reds")
@@ -246,12 +250,11 @@ After the root's todo rows, one line per open gripe (15, then a
     gr541348 fixing [claude] — Work view: tree ring for a todo eye
 ```
 
-`gr<id> <stage> [lane] — title`: the stage is the gripe's `STATUS` tag;
-the lane is the one recorded on the newest job under the gripe, absent
-with no job. A gripe with two `thread:` tags hangs under both roots.
-Gripes with no `thread:` tag, or one no rendered root carries, go in
-`unplaced gripes (N)` at the end of the view: the count plus the five
-oldest.
+`gr<id> <stage> [lane] — title`: stage is the gripe's `STATUS` tag;
+lane is the newest job's under it, absent with no job. A gripe with two
+`thread:` tags hangs under both roots. Gripes with no `thread:` tag, or
+one no rendered root carries, land in `unplaced gripes (N)` at view's
+end: the count plus the five oldest.
 
 The stage is the `STATUS` ladder; a row leaves it only when the status
 changes:

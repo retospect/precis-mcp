@@ -73,7 +73,7 @@ No new table. Tags, links and `refs.meta` (`jsonb NOT NULL DEFAULT '{}'`;
 | fix sha | comment `fix-sha: <sha>` by the builder |
 | recurrence answer | comment `prevents: skill\|check\|test <path>` or `prevents: none - <reason>` |
 | verify probe | comment `probe: ops/probes/gr<id>_*.py` |
-| Reto question | tag `reto:ask`, recommendation in a `recommend:` comment |
+| Reto question | tag `reto:ask` + one `ask-user` todo per gripe (`meta.ask` = question, 2-4 priced options, recommended marked); recommendation in a `recommend:` comment |
 
 Migration: 0176 deferred triggers hold the six-value STATUS vocabulary, so
 `verify` needs one forward migration replacing it, plus the Slice 1
@@ -158,9 +158,10 @@ session (full-context wake-ups are the expensive part of today's flow).
   groom's rule), close with `resolved: duplicate of gr<N>`. Different:
   `dup-checked` in meta, never re-judged. Unsure: leave both; severity 4+
   goes to the Reto batch.
-- **Reto batch:** `reto:ask` gripes go out as one digest (question,
-  recommendation) via the review queue (`.claude/fleet/review-protocol.md`)
-  and one `scripts/board post` line.
+- **Reto batch:** each `reto:ask` gripe goes out as its own
+  `ask-user` todo (`meta.ask`: question + 2-4 priced options, the
+  recommended one marked — gr595189) on the asks list, plus one
+  `scripts/board post` line per tick.
 - **Lease, not a lock.** No `FOR UPDATE SKIP LOCKED` (or any transaction)
   is held across the LLM call: migration 0045 (`30766194a`) replaced a
   transaction spanning per-chunk LLM calls, which starved autovacuum on hot

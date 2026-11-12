@@ -31,7 +31,11 @@ when the ``fixed`` verdict's cited commit is provably deployed;
 is never written on a reopened gripe; an owner-filed dispute and any
 verdict past the per-tick dispute cap stay ``triaged`` +
 ``disagreement`` for the Reto batch, and a closing verdict never
-takes ``reto:ask``.
+takes ``reto:ask``. A ``reto:ask`` gripe files its own ask-user todo
+carrying ``meta.ask`` — a bounded question, 2-4 priced options, the
+recommended one marked (gr595189: the batch digest's bare
+``recommend:`` prose delegated the deciding upward; Reto's ask
+grammar already existed for the job).
 
 Lease, not a lock (the 0045 lesson, 30766194a — never hold a transaction
 across the model call): the claim is one short transaction stamping
@@ -163,9 +167,10 @@ _BATCH_FAIL_LIMIT = 3
 #: simply too slow and the counter keeps climbing for observability.
 _TIMEOUT_BATCH_FLOOR = 5
 #: ``reto:ask`` writes allowed per tick — a steered mass-``fix:reto``
-#: reply can't flood the review queue (Opus re-review item 7). Verdicts
-#: past the cap keep ``fix:reto`` but skip ``reto:ask`` and the digest,
-#: taking a ``reto:overflow`` tag instead (N5 — silent otherwise).
+#: reply can't flood the asks list (Opus re-review item 7). Verdicts
+#: past the cap keep ``fix:reto`` but skip ``reto:ask`` and its
+#: ask-user todo, taking a ``reto:overflow`` tag instead (N5 — silent
+#: otherwise).
 _RETO_CAP = 5
 #: Dispute closes (``not-a-bug``/``working-as-designed``) allowed per
 #: tick — the same anti-steering bound as :data:`_RETO_CAP` (Opus review
@@ -1177,8 +1182,21 @@ For EACH gripe decide:
   owner-filed gripe, which stays open for the owner's ruling.
 - reason: one short sentence (required for the closing verdicts — it
   becomes the close comment).
-- recommend: REQUIRED when fix is "reto" — the one-line recommendation
-  you would put to the human.
+- ask: REQUIRED when fix is "reto" — the decision you would put to the
+  human, as an object:
+    "question": one sentence — a bounded choice he can answer, never
+      delegated work ('scope the initiative' or 'have a human decide'
+      is refused: pose it as 'approve X at cost Y, or Z' instead). If
+      the choice can be made automatically, do NOT ask it — pick it in
+      "reason" and use a non-reto fix instead.
+    "context": 2-3 sentences — which corner of the system this is,
+      what is going on, and why it matters now.
+    "options": 2-4 objects, each
+      {{"option": "...", "cost": "<one-line cost, risk, or what it
+        unblocks>", "recommended": true|false}} — exactly one
+      recommended.
+- recommend: OPTIONAL when fix is "reto" — the one-line summary of the
+  recommended option (used for the gripe's comment).
 - dups: when the gripe lists potential duplicate parents, one entry per
   parent judging "same root cause?" — {{"parent": gr<N>, "same":
   true|false|"unsure", "why": "..."}}. "same": true means the two gripes
@@ -1212,6 +1230,9 @@ per gripe shown, exactly {n} entries:
       "sha": "<evidence sha — required for verdict=fixed>",
       "reason": "<one sentence>",
       "recommend": "<only for fix=reto>",
+      "ask": {{"question": "...", "context": "...",
+             "options": [{{"option": "...", "cost": "...",
+                          "recommended": true}}]}},
       "dups": [{{"parent": <gr id>, "same": true|false|"unsure",
                 "why": "..."}}]
     }}
@@ -1369,6 +1390,33 @@ _VERDICT_ALIASES = {
 
 
 @dataclass(frozen=True, slots=True)
+class AskOption:
+    """One option of a reto ask (gr595189): the choice plus its
+    one-line cost, risk or unblock; the recommended one is marked."""
+
+    option: str
+    cost: str
+    recommended: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RetoAsk:
+    """The structured decision a ``fix:reto`` verdict puts to the
+    owner — the ``meta.ask`` payload its ask-user todo carries."""
+
+    question: str
+    context: str
+    options: tuple[AskOption, ...]
+    #: ``meta.ask.kind`` — a ``ruling`` unless the model asked for a
+    #: sign-off (``approval``) or a shape call (``design-verdict``).
+    kind: str = "ruling"
+
+    @property
+    def recommended(self) -> AskOption | None:
+        return next((o for o in self.options if o.recommended), None)
+
+
+@dataclass(frozen=True, slots=True)
 class Verdict:
     """One gripe's validated triage answer."""
 
@@ -1389,12 +1437,26 @@ class Verdict:
     project: str = _DEFAULT_PROJECT
     #: The short "because …" for a non-default project correction.
     project_why: str | None = None
+    #: The structured ask a ``fix:reto`` verdict must carry (gr595189)
+    #: — ``None`` for every other fix; the writer synthesizes one for
+    #: reto-bound verdicts that never posed a question (an unsure dup
+    #: at severity ≥ 4, a held owner-filed dispute).
+    ask: RetoAsk | None = None
 
     @property
     def not_a_bug(self) -> bool:
         """Back-compat alias: a dispute verdict (``not-a-bug`` or
         ``working-as-designed``)."""
         return self.verdict in _DISPUTES
+
+    @property
+    def recommendation(self) -> str | None:
+        """The one-line recommendation: ``recommend`` when the model
+        wrote one, else the recommended ask option's text."""
+        if self.recommend:
+            return self.recommend
+        rec = self.ask.recommended if self.ask is not None else None
+        return rec.option if rec is not None else None
 
 
 def _needs_reto(v: Verdict) -> bool:
@@ -1445,6 +1507,59 @@ def _match_evidence(
         if _same_sha(ev.sha, raw)
     ]
     return hits[0] if len(hits) == 1 else None
+
+
+#: Bounds on a model-authored ``ask`` (gr595189): the meta.ask shape
+#: the writer files wants 2-4 options with a cost each.
+_ASK_MIN_OPTIONS = 2
+_ASK_MAX_OPTIONS = 4
+
+
+def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
+    """The verdict's structured reto ask, or ``None`` when malformed.
+
+    Required shape (the prompt's contract): ``question`` + ``context``
+    strings and 2-4 ``options`` of ``{option, cost, recommended}`` with
+    at least one recommended — several marked keeps the first. An
+    optional ``kind`` inside the ``meta.ask`` vocabulary wins over the
+    ``ruling`` default. Lenient on the prose (question/context fall
+    back to the gripe's title/reason), strict on the options — a
+    decision without priced options is the gr595189 failure shape.
+    """
+    from precis.todo.guards import ASK_KINDS
+
+    raw = item.get("ask")
+    if not isinstance(raw, dict):
+        return None
+    options: list[AskOption] = []
+    for o in raw.get("options") or ():
+        if isinstance(o, str):
+            o = {"option": o}
+        if not isinstance(o, dict):
+            continue
+        option = _one_line(o.get("option") or "")
+        cost = _one_line(o.get("cost") or o.get("impact") or "")
+        if not option:
+            continue
+        options.append(
+            AskOption(option=option, cost=cost, recommended=bool(o.get("recommended")))
+        )
+    if not _ASK_MIN_OPTIONS <= len(options) <= _ASK_MAX_OPTIONS:
+        return None
+    if not any(o.recommended for o in options):
+        return None
+    first = next(i for i, o in enumerate(options) if o.recommended)
+    options = [
+        AskOption(o.option, o.cost, recommended=i == first)
+        for i, o in enumerate(options)
+    ]
+    kind = str(raw.get("kind") or "ruling").strip()
+    return RetoAsk(
+        question=_one_line(raw.get("question") or ""),
+        context=_one_line(raw.get("context") or ""),
+        options=tuple(options),
+        kind=kind if kind in ASK_KINDS else "ruling",
+    )
 
 
 def parse_verdicts(
@@ -1518,9 +1633,10 @@ def parse_verdicts(
             verdict = "bug"
         rec = item.get("recommend")
         recommend = str(rec).strip() or None if rec is not None else None
-        if fix == "reto" and recommend is None:
+        ask = _parse_ask(item) if fix == "reto" else None
+        if fix == "reto" and ask is None:
             log.warning(
-                "gripe_triage: gr%d fix=reto without recommend — dropped",
+                "gripe_triage: gr%d fix=reto without a usable ask — dropped",
                 gid,
             )
             continue
@@ -1570,6 +1686,7 @@ def parse_verdicts(
             fix_sha=ev.sha if ev is not None else None,
             project=project,
             project_why=project_why,
+            ask=ask,
         )
     return verdicts, sorted(set(claimed) - set(verdicts))
 
@@ -1772,7 +1889,9 @@ def _write_verdict(
             # picks this. needs_spec parks it off the pick list; the
             # deploy verifier closes it once a docs/backlog spec names it.
             status = "needs_spec"
-            comments.append(f"needs-spec: {v.recommend or v.reason or '(see gripe)'}")
+            comments.append(
+                f"needs-spec: {v.recommendation or v.reason or '(see gripe)'}"
+            )
         # Replace the OPEN triage tags + a stale disagreement flag.
         conn.execute(
             """
@@ -1814,9 +1933,12 @@ def _write_verdict(
                 )
         if reto:
             store.add_tag(g.ref_id, Tag.open("reto:ask"), set_by="system", conn=conn)
-            comments.append(
-                f"{_RECOMMEND_PREFIX}{v.recommend or v.reason or '(see gripe)'}"
-            )
+            # gr595189: one payload, one comment — when the needs-spec
+            # note already carries this text, the `recommend:` twin
+            # adds only a second label to the same words.
+            rec_text = v.recommendation or v.reason or "(see gripe)"
+            if all(c.split(": ", 1)[-1] != rec_text for c in comments):
+                comments.append(f"{_RECOMMEND_PREFIX}{rec_text}")
         elif reto_overflow:
             store.add_tag(
                 g.ref_id, Tag.open("reto:overflow"), set_by="system", conn=conn
@@ -2235,6 +2357,10 @@ def run_gripe_triage_pass(
     # batch slots the open arm leaves, so open triage always wins.
     backfill = _claim_backfill(store, batch - len(claimed))
     if not claimed and not backfill:
+        if notify:
+            # An idle tick still sweeps (gr595189): an ask whose gripe
+            # shed ``reto:ask`` since the last tick retires here.
+            _sync_reto_asks(store, [], when, overflow=0)
         return BatchResult(handler=SERVICE_NAME, claimed=0, ok=0, failed=0, extra=flood)
     backfill_ids = {i for i, _s in backfill}
     gripes = _batch_rows(store, [*claimed, *backfill], backfill=backfill_ids)
@@ -2507,8 +2633,10 @@ def run_gripe_triage_pass(
         len(misses),
         len(reto),
     )
-    if reto and notify:
-        _post_reto_digest(store, reto, when, overflow=reto_overflow)
+    if notify:
+        # Runs even on an empty batch — the sweep inside retires asks
+        # whose gripe shed ``reto:ask`` since the last tick.
+        _sync_reto_asks(store, reto, when, overflow=reto_overflow)
     return BatchResult(
         handler=SERVICE_NAME,
         claimed=len(gripes),
@@ -2570,35 +2698,117 @@ def _one_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
+def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
+    """The :class:`RetoAsk` this reto-bound verdict poses — the model's
+    own structured ask for ``fix:reto``, else a synthesized one for the
+    reto candidates that never posed a question (gr595189): an
+    ``unsure`` dup pair at severity ≥ 4 asks merge-or-keep, a held
+    owner-filed dispute asks close-or-keep."""
+    if v.ask is not None:
+        return v.ask
+    if v.verdict in _DISPUTES:
+        return RetoAsk(
+            question=f"Close gr{g.ref_id} as {v.verdict}?",
+            context=(
+                f"You filed this gripe; triage's {v.verdict} verdict "
+                "would close it wontfix — owner-filed disputes wait on "
+                f"your ruling. Source: gr{g.ref_id}."
+            ),
+            options=(
+                AskOption(
+                    option="close wontfix",
+                    cost=f"triage judged {v.verdict}: "
+                    f"{_one_line(v.reason) or '(no reason given)'}",
+                    recommended=True,
+                ),
+                AskOption(
+                    option="keep open",
+                    cost="the report stands — route it to a builder",
+                ),
+            ),
+        )
+    parent = next((d.parent for d in v.dups if d.same is None), None)
+    if parent is not None:
+        pair = f"gr{parent}"
+        return RetoAsk(
+            question=f"Merge gr{g.ref_id} into {pair} or keep both?",
+            context=(
+                f"Triage could not decide whether gr{g.ref_id} duplicates "
+                f"{pair} (severity {v.severity}). The merge call is yours; "
+                f"the gripe's fix stays held meanwhile. Source: gr{g.ref_id}."
+            ),
+            options=(
+                AskOption(
+                    option="keep both",
+                    cost="nothing lost — different root causes may exist",
+                    recommended=True,
+                ),
+                AskOption(
+                    option=f"merge into {pair}",
+                    cost="closes the duplicate; the keeper takes its facts",
+                ),
+            ),
+        )
+    # Defensive — a reto-bound verdict carrying no ask at all (only a
+    # ``fix:reto`` parse can reach here, and that now requires one):
+    # frame the recommendation itself as the choice rather than ask
+    # the owner to do the scoping (gr595189).
+    rec = _one_line(v.recommend or v.reason or g.title)
+    return RetoAsk(
+        question=f"Apply this recommendation on gr{g.ref_id}?",
+        context=(
+            f"Triage needs a ruling it cannot make itself. Its "
+            f"recommendation: {rec}. Source: gr{g.ref_id}."
+        ),
+        options=(
+            AskOption(option=rec, cost="triage's recommendation", recommended=True),
+            AskOption(
+                option="leave as filed",
+                cost="nothing changes — the gripe stays triaged",
+            ),
+        ),
+    )
+
+
 def digest_line(g: ClaimedGripe, v: Verdict) -> str:
     """One digest line for the Reto batch: ``gr<id> [fix] — question —
-    recommendation``."""
-    what = _one_line(v.recommend or v.reason or g.title)
-    return f"gr{g.ref_id} [{v.fix}] — {_one_line(g.title)} — recommend: {what}"
+    (a) option — cost (recommended) (b) …`` (gr595189: the options are
+    the ask; the recommendation prose was not)."""
+    ask = _reto_ask(g, v)
+    if ask.options:
+        opts = " ".join(
+            f"({chr(97 + i)}) {_one_line(o.option)}"
+            + (f" — {_one_line(o.cost)}" if o.cost else "")
+            + (" (recommended)" if o.recommended else "")
+            for i, o in enumerate(ask.options)
+        )
+        question = _one_line(ask.question or g.title)
+        return f"gr{g.ref_id} [{v.fix}] — {question} — {opts}"
+    rec = _one_line(v.recommend or v.reason or g.title)
+    return f"gr{g.ref_id} [{v.fix}] — {_one_line(g.title)} — recommend: {rec}"
 
 
-#: ``meta.digest`` marker on the one live reto:ask digest todo —
-#: ``_post_reto_digest`` mints or refreshes it (td541979 retired the
-#: review-queue directory; a question for the owner is an ``ask-user``
-#: todo with ``meta.ask``).
+#: ``meta.digest`` marker on the live reto:ask ask-user todos —
+#: ``_sync_reto_asks`` mints or refreshes one per flagged gripe
+#: (td541979 retired the review-queue directory; a question for the
+#: owner is an ``ask-user`` todo with ``meta.ask``, gr595189 made it
+#: per-gripe so each ask carries its own options). ``meta.ask_of``
+#: names the gripe ref_id the ask covers.
 _DIGEST_META = "gripe_triage:reto"
-#: The digest todo's ``meta.ask`` — a ``ruling`` that ``blocks``
-#: nothing (the per-gripe ``reto:ask`` tags are what wait on the
-#: owner); options run recommended-first.
-_DIGEST_ASK_OPTIONS: tuple[str, ...] = (
-    "reviewed — apply the recommendations",
-    "overridden — see my comments on the gripes",
-)
+_ASK_OF_META = "ask_of"
+_ASK_TITLE_CAP = 160
 
 
-def _live_digest_ids(conn: Any) -> list[int]:
+def _live_reto_asks(conn: Any) -> dict[int | None, list[int]]:
     """Live ``meta.digest``-marked todos with a non-terminal STATUS,
-    newest first — normally zero or one."""
+    keyed by their ``meta.ask_of`` gripe id (``None`` for a legacy
+    batch digest minted before gr595189) — one ask per gripe, each id
+    list newest first."""
     from precis.todo import TERMINAL_TODO_STATUSES
 
     rows = conn.execute(
         """
-        SELECT r.ref_id FROM refs r
+        SELECT r.ref_id, r.meta->>'ask_of' FROM refs r
          WHERE r.kind = 'todo' AND r.retired_at IS NULL
            AND r.meta->>'digest' = %s
            AND COALESCE(
@@ -2612,106 +2822,186 @@ def _live_digest_ids(conn: Any) -> list[int]:
         """,
         (_DIGEST_META, sorted(TERMINAL_TODO_STATUSES)),
     ).fetchall()
-    return [int(r[0]) for r in rows]
+    out: dict[int | None, list[int]] = {}
+    for rid, ask_of in rows:
+        gid = int(ask_of) if str(ask_of or "").isdigit() else None
+        out.setdefault(gid, []).append(int(rid))
+    return out
 
 
-def _post_reto_digest(
+def _gripe_still_reto(conn: Any, gid: int) -> bool:
+    """The gripe still waits on the ruling — a live gripe carrying the
+    OPEN ``reto:ask`` tag."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM refs r
+         WHERE r.ref_id = %s AND r.kind = 'gripe' AND r.retired_at IS NULL
+           AND EXISTS (SELECT 1 FROM ref_tags rt
+                         JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                          AND t.value = 'reto:ask')
+        """,
+        (gid,),
+    ).fetchone()
+    return row is not None
+
+
+def _sync_reto_asks(
     store: Store,
     items: list[tuple[ClaimedGripe, Verdict]],
     when: datetime,
     *,
     overflow: int = 0,
 ) -> int | None:
-    """``reto:ask`` gripes go out as ONE ask-user todo plus one board
-    line. The todo is the td541979 mechanism — ``meta.ask`` a
-    ``ruling`` that ``blocks`` nothing, tagged ``ask-user`` so
-    ``search(kind='todo', view='asks')`` and the web ``/asks`` see it;
-    the review-queue directory it replaces is retired. The mint shape
-    is ``plan_dispatch``'s ``_mint_ask`` — ``insert_ref`` + STATUS +
-    tags + a ``todo_body`` chunk, all inside one ``store.tx()``.
+    """Each ``reto:ask`` gripe goes out as ITS OWN ask-user todo (one
+    question, its own priced options — gr595189) plus one board line.
+    The todo is the td541979 mechanism — ``meta.ask`` a ``ruling``
+    that ``blocks`` nothing, tagged ``ask-user`` so
+    ``search(kind='todo', view='asks')`` and the web ``/asks`` see it.
+    The mint shape is ``plan_dispatch``'s ``_mint_ask`` —
+    ``insert_ref`` + STATUS + tags + a ``todo_body`` chunk, all inside
+    one ``store.tx()``.
 
-    Idempotent: at most one live digest todo. A new tick rewrites the
-    live one's title/ask/body in place (a doubled ``meta.digest`` row —
-    a racing tick — retires superseded); a closed one stays closed and
-    a fresh todo mints. All best-effort — a store fault logs and moves
-    on. ``overflow`` notes ``fix:reto`` verdicts dropped by the
-    :data:`_RETO_CAP` per-tick cap — visible here, not queued. Returns
-    the todo id (``None`` when the write failed)."""
+    Idempotent: at most one live ask todo per gripe. A tick rewrites
+    the live one's title/ask/body in place (keeping its ``created_at``
+    — the asks view sorts most-blocked and shows the age), and a
+    closed one stays closed with a fresh todo minting. Anti-rot: an
+    ask whose gripe still carries ``reto:ask`` stays live across ticks
+    (it was never answered); only an ask whose gripe shed the tag —
+    ruled, re-triaged, closed — retires, and a doubled ``meta.digest``
+    row for the same gripe retires superseded. All best-effort — a
+    store fault logs and moves on. ``overflow`` notes ``fix:reto``
+    verdicts dropped by the :data:`_RETO_CAP` per-tick cap. Returns
+    the first todo id (``None`` when every write failed)."""
+    from precis.errors import PrecisError
     from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
     from precis.todo.guards import check_ask_meta
 
-    lines = [digest_line(g, v) for g, v in items]
-    if overflow:
-        lines.append(
-            f"(+{overflow} more fix:reto verdicts — per-tick cap {_RETO_CAP}; "
-            "find them by the fix:reto tag)"
-        )
-    title = f"gripe triage: {len(items)} reto:ask need a ruling"
-    body = (
-        "Triage flagged these gripes for you. Recommended action first per "
-        "line; the tag on each gripe is `reto:ask`.\n\n"
-        + "\n".join(f"- {ln}" for ln in lines)
-        + "\n"
-    )
-    ask = {
-        "kind": "ruling",
-        "options": list(_DIGEST_ASK_OPTIONS),
-        "blocks": "nothing",
-        "context": (
-            f"{len(items)} reto:ask this tick ({when:%Y-%m-%d %H:%M}Z)"
-            + (f", +{overflow} past the cap" if overflow else "")
-        ),
-    }
-    check_ask_meta({"ask": ask})
     todo_id: int | None = None
+    written = 0
+    for g, v in items:
+        ask = _reto_ask(g, v)
+        title = _one_line(ask.question or g.title)[:_ASK_TITLE_CAP]
+        options = [
+            o.option + (f" — {o.cost}" if o.cost else "")
+            for o in sorted(ask.options, key=lambda o: not o.recommended)
+        ]
+        meta_ask = {
+            "kind": ask.kind,
+            "options": options,
+            "blocks": "nothing",
+            "context": _one_line(ask.context or v.reason or g.title)[:600],
+        }
+        try:
+            check_ask_meta({"ask": meta_ask}, question=title)
+        except PrecisError:
+            # The model's own ask failed the lint (gr595189 — a
+            # delegation question, an oversized option): skip this
+            # item's todo rather than mint a malformed ask; the gripe
+            # keeps its reto:ask tag for a later tick.
+            log.warning(
+                "gripe_triage: gr%d reto ask refused by the ask lint — no todo minted",
+                g.ref_id,
+                exc_info=True,
+            )
+            continue
+        body = (
+            f"{_one_line(ask.context) or 'Triage flagged this gripe for a ruling.'}"
+            f"\n\nSource: gr{g.ref_id} — {_one_line(g.title)}. Its fix waits "
+            "on this ruling; the gripe carries `reto:ask` until answered. "
+            "Answer on this todo (`answer: …` + close) or comment on the "
+            "gripe itself.\n\n"
+            + "\n".join(
+                f"- {'(recommended) ' if o.recommended else ''}{o.option}"
+                + (f" — {o.cost}" if o.cost else "")
+                for o in ask.options
+            )
+            + "\n"
+        )
+        try:
+            with store.tx() as conn:
+                live = _live_reto_asks(conn)
+                same_gripe = live.get(g.ref_id) or []
+                if same_gripe:
+                    tid = same_gripe[0]
+                    store.chunks.set_ref_title(tid, title, source="system", conn=conn)
+                    store.stamp_ref_meta(tid, {"ask": meta_ask}, conn=conn)
+                    store.chunks.replace_body_chunk(
+                        tid,
+                        body,
+                        chunk_kind=TODO_BODY_KIND,
+                        source="system",
+                        conn=conn,
+                    )
+                    store.add_tag(tid, Tag.open("ask-user"), set_by="system", conn=conn)
+                    for dup in same_gripe[1:]:
+                        store.stamp_ref_meta(dup, {"superseded_by": tid}, conn=conn)
+                        store.retire_ref(dup, conn=conn)
+                else:
+                    ref = store.insert_ref(
+                        kind="todo",
+                        slug=None,
+                        title=title,
+                        meta={
+                            "digest": _DIGEST_META,
+                            _ASK_OF_META: g.ref_id,
+                            "ask": meta_ask,
+                        },
+                        conn=conn,
+                    )
+                    tid = int(ref.id)
+                    store.add_tag(
+                        ref.id,
+                        Tag.closed("STATUS", "open"),
+                        set_by="system",
+                        replace_prefix=True,
+                        conn=conn,
+                    )
+                    store.add_tag(
+                        ref.id, Tag.open("ask-user"), set_by="system", conn=conn
+                    )
+                    store.chunks.insert_chunks(
+                        ref.id,
+                        [
+                            ChunkInsert(
+                                ord=0,
+                                text=body,
+                                meta={"chunk_kind": TODO_BODY_KIND},
+                            )
+                        ],
+                        conn=conn,
+                    )
+            written += 1
+            if todo_id is None:
+                todo_id = tid
+        except Exception:
+            log.warning(
+                "gripe_triage: reto:ask write failed for gr%d",
+                g.ref_id,
+                exc_info=True,
+            )
+    # Sweep (gr595189 — asks must not rot silently, and must not linger
+    # answered): an ask whose gripe shed ``reto:ask`` — ruled on the
+    # gripe, re-triaged, closed — retires; an ask whose gripe still
+    # waits stays live across ticks. A legacy batch digest
+    # (``ask_of`` None) always retires — the per-gripe mints replace it.
     try:
         with store.tx() as conn:
-            live = _live_digest_ids(conn)
-            if live:
-                todo_id = live[0]
-                store.chunks.set_ref_title(todo_id, title, source="system", conn=conn)
-                store.stamp_ref_meta(todo_id, {"ask": ask}, conn=conn)
-                store.chunks.replace_body_chunk(
-                    todo_id,
-                    body,
-                    chunk_kind=TODO_BODY_KIND,
-                    source="system",
-                    conn=conn,
-                )
-                store.add_tag(todo_id, Tag.open("ask-user"), set_by="system", conn=conn)
-                for extra in live[1:]:
-                    store.stamp_ref_meta(extra, {"superseded_by": todo_id}, conn=conn)
-                    store.retire_ref(extra, conn=conn)
-            else:
-                ref = store.insert_ref(
-                    kind="todo",
-                    slug=None,
-                    title=title,
-                    meta={"digest": _DIGEST_META, "ask": ask},
-                    conn=conn,
-                )
-                todo_id = int(ref.id)
-                store.add_tag(
-                    ref.id,
-                    Tag.closed("STATUS", "open"),
-                    set_by="system",
-                    replace_prefix=True,
-                    conn=conn,
-                )
-                store.add_tag(ref.id, Tag.open("ask-user"), set_by="system", conn=conn)
-                store.chunks.insert_chunks(
-                    ref.id,
-                    [
-                        ChunkInsert(
-                            ord=0,
-                            text=body,
-                            meta={"chunk_kind": TODO_BODY_KIND},
-                        )
-                    ],
-                    conn=conn,
-                )
+            for gid, tids in _live_reto_asks(conn).items():
+                if gid is not None and _gripe_still_reto(conn, gid):
+                    continue
+                for tid in tids:
+                    store.stamp_ref_meta(
+                        tid,
+                        {"superseded_by": f"gr{gid}" if gid is not None else "sweep"},
+                        conn=conn,
+                    )
+                    store.retire_ref(tid, conn=conn)
     except Exception:
-        log.warning("gripe_triage: reto:ask digest write failed", exc_info=True)
-    note = f"ask td{todo_id}" if todo_id is not None else "digest write failed"
-    _post_board("waiting", f"gripe triage: {len(items)} reto:ask — {note}")
+        log.warning("gripe_triage: reto:ask sweep failed", exc_info=True)
+    if items or overflow:
+        note = f"{written} ask(s) filed" + (
+            f" (+{overflow} past cap {_RETO_CAP})" if overflow else ""
+        )
+        _post_board("waiting", f"gripe triage: {len(items)} reto:ask — {note}")
     return todo_id

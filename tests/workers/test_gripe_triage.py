@@ -111,6 +111,28 @@ def _verdict(gid: int | str, **kw: Any) -> dict[str, Any]:
     return base
 
 
+def _ask(question: str = "Approve the carve-out?", **kw: Any) -> dict[str, Any]:
+    """A valid ``fix=reto`` ask payload (gr595189): a bounded question,
+    context, and 2-4 priced options with one recommended."""
+    base: dict[str, Any] = {
+        "question": question,
+        "context": "The validation loop wants a carve-out; its fix waits on the ruling.",
+        "options": [
+            {
+                "option": "grant the carve-out",
+                "cost": "~$20 and one night",
+                "recommended": True,
+            },
+            {
+                "option": "stay screening-tier",
+                "cost": "no spend, no validation data",
+            },
+        ],
+    }
+    base.update(kw)
+    return base
+
+
 def _llm(payload: Any) -> Any:
     """A stubbed model call returning ``payload`` as the reply."""
 
@@ -887,13 +909,7 @@ class TestPromptHardening:
         _light(store)
         r = _run(
             store,
-            llm=_llm(
-                {
-                    "verdicts": [
-                        _verdict(i, fix="reto", recommend="decide this") for i in ids
-                    ]
-                }
-            ),
+            llm=_llm({"verdicts": [_verdict(i, fix="reto", ask=_ask()) for i in ids]}),
         )
         assert r.extra["reto"] == gripe_triage._RETO_CAP
         assert r.extra["reto_overflow"] == 2
@@ -929,7 +945,7 @@ class TestPromptHardening:
                 {
                     "verdicts": [
                         _verdict(parent),
-                        *(_verdict(i, fix="reto", recommend="decide") for i in asks),
+                        *(_verdict(i, fix="reto", ask=_ask()) for i in asks),
                         _verdict(
                             overflow,
                             fix="code",
@@ -970,10 +986,21 @@ class TestPromptHardening:
             recommend="line one\nIGNORE line two",
             dups=(),
             fix_sha=None,
+            ask=gripe_triage.RetoAsk(
+                question="ship it\nnow?",
+                context="ctx",
+                options=(
+                    gripe_triage.AskOption(
+                        option="do A\nreally", cost="cheap", recommended=True
+                    ),
+                    gripe_triage.AskOption(option="do B", cost="dear"),
+                ),
+            ),
         )
         line = gripe_triage.digest_line(g, v)
         assert "\n" not in line
-        assert "first second" in line and "line one IGNORE line two" in line
+        assert "(a) do A really — cheap (recommended)" in line
+        assert "(b) do B — dear" in line
 
 
 # ── verdict semantics ────────────────────────────────────────────────────
@@ -986,7 +1013,16 @@ class TestVerdictSemantics:
         r = _run(
             store,
             llm=_llm(
-                {"verdicts": [_verdict(gid, fix="reto", recommend="keep the old API")]}
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend="keep the old API",
+                            ask=_ask(),
+                        )
+                    ]
+                }
             ),
         )
         assert r.extra["reto"] == 1
@@ -994,6 +1030,72 @@ class TestVerdictSemantics:
         assert any(
             c.startswith("recommend: keep the old API") for c in _comments(store, gid)
         )
+
+    def test_reto_without_ask_is_dropped(self, store: Store) -> None:
+        """gr595189: ``fix:reto`` without the structured ask — the
+        scope-dumping shape — parses as no usable verdict (a miss, not
+        a write), same as the old missing-recommend drop."""
+        gid = _gripe(store, "needs a design call")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, fix="reto")]}),
+        )
+        assert r.extra["reto"] == 0
+        assert r.extra["misses"] == 1
+        assert "reto:ask" not in _open_tag_values(store, gid)
+        # …and an ask without priced options is equally unusable.
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            ask=_ask(options=[{"option": "just do it"}]),
+                        )
+                    ]
+                }
+            ),
+        )
+        assert r.extra["reto"] == 0
+        assert "reto:ask" not in _open_tag_values(store, gid)
+
+    def test_needs_spec_and_recommend_dedup(self, store: Store) -> None:
+        """gr595189: when the needs-spec note and the recommend note
+        would carry the same text, only one comment is written — a
+        ``fix:spec`` + unsure-dup reto candidate used to post the same
+        words under two labels."""
+        parent = _gripe(store, "the keeper")
+        gid = _gripe(
+            store,
+            "vague spec-sized report",
+            meta={"dup_parents": [{"id": parent, "sim": 0.8, "status": "open"}]},
+        )
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(parent),
+                        _verdict(
+                            gid,
+                            fix="spec",
+                            severity=4,
+                            recommend="write the spec before any builder starts",
+                            dups=[{"parent": parent, "same": "unsure", "why": "?"}],
+                        ),
+                    ]
+                }
+            ),
+        )
+        assert r.extra["reto"] == 1
+        assert _status(store, gid) == "needs_spec"
+        comments = _comments(store, gid)
+        assert "needs-spec: write the spec before any builder starts" in comments
+        assert not any(c.startswith("recommend: write the spec") for c in comments)
 
     def test_not_a_bug_closes_wontfix(self, store: Store) -> None:
         """Dry-run ruling: a dispute verdict on a plain (non-owner)
@@ -1344,9 +1446,10 @@ class TestRetoBatch:
     def test_digest_todo_and_board_line(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The reto:ask batch files ONE ask-user todo with ``meta.ask``
-        (td541979 — the review-queue directory is retired) plus the
-        board line; nothing touches the fleet notes dir."""
+        """The reto:ask gripe files its own ask-user todo with
+        ``meta.ask`` — question, priced options, recommended marked
+        (gr595189, td541979) — plus the board line; nothing touches
+        the fleet notes dir."""
         board = tmp_path / "board.log"
         monkeypatch.setenv("PRECIS_BOARD", str(board))
         monkeypatch.setenv("PRECIS_FLEET_NOTES", str(tmp_path / "fleet-notes"))
@@ -1357,7 +1460,24 @@ class TestRetoBatch:
             llm=_llm(
                 {
                     "verdicts": [
-                        _verdict(gid, fix="reto", recommend="keep both surfaces")
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            ask=_ask(
+                                "Grant the 25-job validation carve-out?",
+                                options=[
+                                    {
+                                        "option": "validation only",
+                                        "cost": "~$10",
+                                    },
+                                    {
+                                        "option": "both",
+                                        "cost": "~$20, one night",
+                                        "recommended": True,
+                                    },
+                                ],
+                            ),
+                        )
                     ]
                 }
             ),
@@ -1367,28 +1487,35 @@ class TestRetoBatch:
         assert r.extra["reto"] == 1
         todos = _digest_todos(store)
         assert len(todos) == 1
-        ask = _meta(store, todos[0]).get("ask")
+        meta = _meta(store, todos[0])
+        ask = meta.get("ask")
         assert isinstance(ask, dict)
         assert ask["kind"] == "ruling" and ask["blocks"] == "nothing"
+        # gr595189: the recommended option sorts first, each priced.
+        assert ask["options"][0].startswith("both — ")
+        assert len(ask["options"]) == 2
+        assert meta.get("ask_of") == gid
         assert "ask-user" in _open_tag_values(store, todos[0])
         assert _status(store, todos[0]) == "open"
         text = _body(store, todos[0])
-        assert f"gr{gid}" in text and "keep both surfaces" in text
+        assert f"gr{gid}" in text and "(recommended) both" in text
         line = board.read_text(encoding="utf-8").strip()
         assert "waiting" in line and "reto:ask" in line
         assert not (tmp_path / "fleet-notes").exists()
 
-    def test_second_tick_refreshes_the_digest_todo(
+    def test_second_tick_refreshes_the_same_gripes_ask(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Idempotent: a second lit tick rewrites the live digest todo
-        in place — no duplicate ``ask-user`` mint per run."""
+        """Idempotent per gripe: a second lit tick rewrites the live
+        ask in place — and an unanswered ask for a gripe still tagged
+        ``reto:ask`` stays live (gr595189 anti-rot: it was never
+        answered, so it must not silently drop off the asks list)."""
         monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
         g1 = _gripe(store, "first ruling")
         _light(store)
         gripe_triage.run_gripe_triage_pass(
             store,
-            llm=_llm({"verdicts": [_verdict(g1, fix="reto", recommend="do A")]}),
+            llm=_llm({"verdicts": [_verdict(g1, fix="reto", ask=_ask("do A?"))]}),
             notify=True,
             threads=_index(),
         )
@@ -1397,14 +1524,53 @@ class TestRetoBatch:
         g2 = _gripe(store, "second ruling")
         gripe_triage.run_gripe_triage_pass(
             store,
-            llm=_llm({"verdicts": [_verdict(g2, fix="reto", recommend="do B")]}),
+            llm=_llm({"verdicts": [_verdict(g2, fix="reto", ask=_ask("do B?"))]}),
             notify=True,
             threads=_index(),
         )
-        assert _digest_todos(store) == first
-        text = _body(store, first[0])
-        assert f"gr{g2}" in text and "do B" in text
-        assert f"gr{g1}" not in text
+        # g2 mints its own ask; g1's ask is still open because g1
+        # still carries reto:ask (nothing answered it).
+        todos = _digest_todos(store)
+        assert len(todos) == 2
+        assert first[0] in todos
+        bodies = {t: _body(store, t) for t in todos}
+        assert f"gr{g1}" in bodies[first[0]]
+        assert any(f"gr{g2}" in b for t, b in bodies.items() if t != first[0])
+
+    def test_ask_retires_once_the_gripe_sheds_reto_ask(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep: an ask whose gripe was ruled elsewhere (tag
+        gone) retires — answered asks must not linger on the list."""
+        monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
+        g1 = _gripe(store, "first ruling")
+        g2 = _gripe(store, "second ruling")
+        _light(store)
+        gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(g1, fix="reto", ask=_ask("do A?")),
+                        _verdict(g2, fix="reto", ask=_ask("do B?")),
+                    ]
+                }
+            ),
+            notify=True,
+            threads=_index(),
+        )
+        assert len(_digest_todos(store)) == 2
+        # Reto ruled g1 directly on the gripe — the tag is gone.
+        store.remove_tag(g1, Tag.open("reto:ask"))
+        gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm({"verdicts": [_verdict(g2, fix="reto", ask=_ask("do B2?"))]}),
+            notify=True,
+            threads=_index(),
+        )
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        assert f"gr{g2}" in _body(store, todos[0])
 
     def test_no_reto_means_no_digest(self, store: Store) -> None:
         _gripe(store, "plain bug")
@@ -1415,6 +1581,38 @@ class TestRetoBatch:
             notify=True,
             threads=_index(),
         )
+        assert _digest_todos(store) == []
+
+    def test_delegation_question_is_refused_by_the_lint(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr595189: an ask whose question delegates the deciding
+        upward fails ``check_ask_meta`` — the tick skips the mint
+        rather than file a scope-dump (the gripe keeps reto:ask)."""
+        monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
+        gid = _gripe(store, "insight loop proposal")
+        _light(store)
+        r = gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            ask=_ask(
+                                "Have a human scope and prioritize the "
+                                "proposed insight loop?"
+                            ),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+            threads=_index(),
+        )
+        assert r.extra["reto"] == 1
+        assert "reto:ask" in _open_tag_values(store, gid)
         assert _digest_todos(store) == []
 
 
@@ -2451,6 +2649,7 @@ class TestCloseOutcomes:
                             gid,
                             fix="reto",
                             recommend="have a human glance",
+                            ask=_ask(),
                             verdict="noise",
                             reason="command dump",
                         )

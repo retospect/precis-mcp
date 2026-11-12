@@ -345,6 +345,76 @@ def test_default_rows_hide_waiting_for_and_discussion(
     assert {r.ref_id for r in full.rows} - default == {t["plain"], t["shape"]}
 
 
+# ── gr595189: the ask poses a decision; the digest shows age + blocks ──
+
+
+def test_a_delegating_question_is_refused(handler: TodoHandler) -> None:
+    """The lint: "scope / prioritize / own / decide the…" hands the
+    work upward instead of posing a choice — rewrite as
+    "approve X at cost Y, or Z"."""
+    with pytest.raises(BadInput) as exc:
+        handler.put(
+            text="Scope and prioritize the proposed insight loop",
+            tags=["ask-user"],
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["yes", "no"],
+                    "blocks": "nothing",
+                }
+            },
+        )
+    assert "delegates" in exc.value.cause
+    assert "approve X at cost Y" in (exc.value.next or "")
+
+
+def test_a_delegating_option_is_refused(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput) as exc:
+        handler.put(
+            text="Grant the validation carve-out?",
+            tags=["ask-user"],
+            meta={
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["grant it — ~$20", "scope the initiative"],
+                    "blocks": "nothing",
+                }
+            },
+        )
+    assert "delegates" in exc.value.cause
+
+
+def test_decide_whether_is_not_a_delegation(handler: TodoHandler) -> None:
+    """A "decide whether X or Y" question already poses the choice —
+    only ``decide the <initiative>`` (an object, delegating) is refused."""
+    ask = _ask(handler, text="Decide whether the pass cuts on red?")
+    assert ask
+
+
+def test_rows_show_age_and_sort_oldest_wait_first(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """Anti-rot display (gr595189): every row shows its age and the
+    digest orders the oldest wait first within its bucket."""
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    older = _ask(handler, text="Older question?", parent_id=t["root"])
+    newer = _ask(handler, text="Newer question?", parent_id=t["root"])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '3 days' WHERE ref_id = %s",
+            (older,),
+        )
+    model = asks_view.asks_model(store)
+    pair = [r for r in model.rows if r.ref_id in (older, newer)]
+    assert [r.ref_id for r in pair] == [older, newer]
+    assert _row(model, older).age_days >= 3
+    out = handler.search(view="asks").body
+    line = next(ln for ln in out.splitlines() if f"td{older} " in ln)
+    assert "· 3d" in line
+    assert out.index(f"td{older} ") < out.index(f"td{newer} ")
+
+
 def test_reto_queue_orders_by_blocked_then_age(
     handler: TodoHandler, hub: Hub, store: Store
 ) -> None:

@@ -1069,7 +1069,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_rung_meta(meta)
         guards.check_fix_meta(meta)
         _check_plan_meta(meta)
-        ask_blocks = guards.check_ask_meta(meta)
+        ask_blocks = guards.check_ask_meta(meta, question=text)
         if meta is not None and "ask" in meta and not guards.has_ask_user_tag(tags):
             raise BadInput(
                 "meta.ask makes this todo a question for the owner, which "
@@ -1715,7 +1715,11 @@ class TodoHandler(NumericRefHandler):
                         ),
                     )
             if "ask" in meta:
-                ask_blocks = guards.check_ask_meta(meta)
+                # The delegation lint sees the question only in replace
+                # mode — under find-replace ``text`` is a body snippet.
+                ask_blocks = guards.check_ask_meta(
+                    meta, question=text if mode == "replace" else None
+                )
                 ask_value = dict(meta["ask"])
             plan_set = {
                 k: meta[k]

@@ -627,8 +627,10 @@ or dispute close);
 an owner-filed gripe's dispute stays `triaged` + `disagreement` for
 the owner's ruling; dispute closes cap at 5 per tick, the overflow
 held the same way. Duplicates are suggestion-only (`dup-suggest:`
-comment + `meta.dup_suggested`), and `fix:reto` gripes land in the
-`reto:ask` digest — one `ask-user` todo on the asks list.
+comment + `meta.dup_suggested`), and `fix:reto` gripes get tagged
+`reto:ask` — each flagged gripe files its own `ask-user` todo on the
+asks list, `meta.ask` carrying the question, 2-4 priced options and
+the recommended one marked.
 It never links `supersedes` or edits the gripe body.
 
 ## Link a gripe to a related paper or chunk {write}
