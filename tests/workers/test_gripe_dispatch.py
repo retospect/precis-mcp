@@ -573,6 +573,51 @@ def test_hand_minted_chain_counts(store: Store, two_lanes: Any) -> None:
     assert res.claimed == 0 and len(_roots_for(store, a)) == 1
 
 
+def test_deny_path_report_routes_to_the_coordinator(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr645163: a gripe whose report names a factory deny path mints no
+    chain — work no builder lane may write becomes one ask-coordinator
+    ask carrying the report, and ``hold:no-dispatch`` keeps the gripe
+    out of later picks until a human re-judges it."""
+    _light(store)
+    gid = _gripe(store, "add a --remote flag to scripts/ship")
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    assert res.extra["minted"] == []
+    (routed,) = res.extra["routed"]
+    assert routed["gripe"] == gid
+    ask = int(routed["ask"])
+    ask_tags = [str(t.value) for t in store.tags_for(ask) if t.namespace == "open"]
+    assert "ask-coordinator" in ask_tags
+    gripe_tags = [str(t.value) for t in store.tags_for(gid) if t.namespace == "open"]
+    assert "hold:no-dispatch" in gripe_tags
+    assert _roots_for(store, gid) == [ask]
+    assert any(
+        c.startswith("dispatch: routes to the coordinator")
+        for c in _comments(store, gid)
+    )
+    # The ask's related-to link holds the gripe while it is open; the
+    # hold tag holds it after — a second pass picks nothing.
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.claimed == 0
+
+
+def test_graph_only_report_routes_to_the_coordinator(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr645163: a gripe reduced to graph handles is prod-graph work
+    (gr630346/gr630611's class of no-commit runs) — no chain, one
+    coordinator ask."""
+    _light(store)
+    gid = _gripe(store, "gr630346 me123456 td999")
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
+    assert res.extra["minted"] == []
+    (routed,) = res.extra["routed"]
+    assert routed["gripe"] == gid
+
+
 def test_enabled_resolves_per_host(store: Store) -> None:
     _light(store, prio=1, host="*")
     _light(store, prio=0, host="dim")

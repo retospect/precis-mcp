@@ -2602,12 +2602,14 @@ def test_no_commit_moot_log_tail_drops_the_plan(
     assert (res.dispatched, res.asks, res.rescued) == (0, 0, 0)
 
 
-def test_no_commit_failure_without_a_verdict_still_rescues(
+def test_no_commit_failure_without_a_verdict_climbs_the_ladder(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td584381 S1a F4 unchanged: a clean-exit failure with no verdict
-    anywhere is still the LAST attempt — straight to rescue."""
-    use_lanes(monkeypatch)
+    """gr645163 (Reto 2026-11-12, "escalate to next model"): a clean-exit
+    failure with no verdict is the builder's can't-finish — it burns one
+    attempt and the retry climbs one ladder rung (devin/swe-2-high →
+    swe-2-max); the instant-cap-to-rescue of td584381 S1a F4 is gone."""
+    use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
     mint = _one_task_plan(store)
     task = mint.ids["task"]
     _failed_job(
@@ -2620,8 +2622,129 @@ def test_no_commit_failure_without_a_verdict_still_rescues(
         meta={"no_commit": True},
     )
     res = pd.run_pass(store)
-    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
-    assert "rescue:builder" in _open_tags(store, task)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    jobs = _jobs_under(store, task)
+    assert len(jobs) == 2
+    assert jobs[-1][1]["params"]["lane"] == "devin"
+    assert jobs[-1][1]["params"]["model"] == "swe-2-max"
+    assert "rescue:builder" not in _open_tags(store, task)
+
+
+def test_no_commit_at_the_ladder_cap_asks_the_coordinator(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645163: the ladder spent on can't-finish attempts — the top
+    rung's failure goes to the coordinator, not rescue: one
+    ask-coordinator ask blocks the node with the last attempt named."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for lane, model in (
+        ("devin", "swe-2-high"),
+        ("devin", "swe-2-max"),
+        ("claude-sub", "claude-sonnet-5-5"),
+        ("claude-sub", "claude-opus-5-5"),
+    ):
+        _failed_job(
+            store,
+            task,
+            "run_slice: session left no commit on slice/td0 ahead of "
+            "origin/main (nothing to land)\n--- log tail ---\nexit 0\n",
+            lane=lane,
+            model=model,
+            meta={"no_commit": True},
+        )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    (ask,) = _blocked_by_ids(store, task)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    # A second pass files no second ask while the first is open.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+
+
+def test_deny_path_brief_routes_to_the_coordinator(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645163: a build brief naming a factory deny path mints no
+    run_slice — the tick files one ask-coordinator ask blocking the
+    node with the brief attached (the td643078/gr626879 shape)."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Wire the land's remote flag",
+            {"op": "run_slice"},
+            body="Add a --remote flag to scripts/ship for harness diffs.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    assert _jobs_under(store, task) == []
+    (ask,) = _blocked_by_ids(store, task)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    # A second pass files no second ask while the first is open.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+
+
+def test_graph_only_brief_routes_to_the_coordinator(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645163: a brief reduced to graph handles names no repo target —
+    the fix is prod-graph only (gr630346/gr630611's class of no-commit
+    runs) and routes to the coordinator at mint."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Fix the memory nodes",
+            {"op": "run_slice"},
+            body="gr630346\nme123456\ntd999",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    assert _jobs_under(store, task) == []
+    (ask,) = _blocked_by_ids(store, task)
+    assert "ask-coordinator" in _open_tags(store, ask)
+
+
+def test_brief_boilerplate_never_routes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645163: the slice brief's own boilerplate — the deny-path list
+    and the land-lint steps naming ``scripts/test`` — is stripped
+    before classification; only the brief's real text routes."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Fix the flake",
+            {"op": "run_slice"},
+            body=(
+                "Fix the flaky assert in the widget test.\n\n"
+                "## Paths you may not write\n\n- `scripts/ship`\n\n"
+                "## When done: commit on the branch and hand off\n\n"
+                "12. Run the tests you added or changed with "
+                "`scripts/test <paths>`"
+            ),
+        )
+
+    mint = T._run(store, None, build)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
 
 
 def test_no_commit_noop_log_tail_closes_the_node(

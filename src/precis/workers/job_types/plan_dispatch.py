@@ -153,7 +153,21 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
    A ``run_slice`` class with no enabled offering is blocked on one
-   coordinator ask before any job is minted (gr611305). Capacity and
+   coordinator ask before any job is minted (gr611305). So is a
+   ``run_slice`` leaf whose judged text — its body and newest
+   ``brief:`` — names a deny path or is prod-graph only:
+   work no builder lane may write skips the ladder and files one
+   ``ask-coordinator`` ask with the brief attached (gr645163, Reto's
+   2026-11-12 "escalate to next model" ruling — td643078/td638980's
+   won't-do stalls and gr630346/gr630611's no-commit runs were this
+   class). Generators never classify: they read source text, and a
+   gripe or diff may name deny paths legitimately. A ``handoff:``
+   never classifies either — it reports the attempt, and a denied
+   run's own deny-path line is the event, not the target. The
+   ``gripe-fix-direct`` instruction head and a pasted brief's
+   deny-path/land-lint sections are stripped before the text is
+   judged (:func:`precis.plans.route`).
+   Capacity and
    temporary lane holds still wait in ``run_slice``; answering the ask
    after enabling a lane or retargeting the class releases the node.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
@@ -245,8 +259,7 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    live usage meets the bound, so an attempt starting under the cap
    cannot run past it (td601015). An uncapped
    rung is never spend-blocked. What
-   parks it follows the failure: a failed job stamped ``no_commit``
-   (a clean exit that wrote nothing — no rung teaches that) or an
+   parks it follows the failure: an
    exhausted ``run_slice`` node enters rescue —
    :func:`precis.workers.factory_rescue.enter_rescue` tags it
    ``rescue:<cls>`` (cls ``review`` for a reviewer, else ``builder``),
@@ -254,7 +267,14 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    follows — one diagnose-and-re-arm, then its own ask on a second
    exhaustion (``meta.rescue.n >= 1``), the end of the autonomous road;
    answering that ask re-arms the node and clears the rescue tag in the
-   same step (``_step_rearm``). A failed job stamped
+   same step (``_step_rearm``). A failed job stamped ``no_commit``
+   (``run_slice``'s mark for a clean exit that wrote nothing — the
+   builder's can't-finish, a won't-do with no verdict) burns an attempt
+   like any red and climbs the ladder instead of capping at once
+   (gr645163, the same ruling); the node the cap finally parks files
+   the ``ask-coordinator`` ask, never rescue — the ladder is spent and
+   td643078's hand-land was the coordinator's job all along. A failed
+   job stamped
    ``human_only_hit=[paths]`` (``run_slice`` writes
    it when the branch touches ``lanes.HUMAN_ONLY_PATHS`` — no lane may
    write those paths) and a ``run_slice`` with no enabled fit lane still
@@ -333,6 +353,7 @@ from precis.errors import BadInput
 from precis.plans import gates as _gates
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
+from precis.plans import route as _route
 from precis.plans import templates as _templates
 from precis.plans.logbook import log_plan_event
 from precis.plans.nodes import (
@@ -343,6 +364,7 @@ from precis.plans.nodes import (
     generator_verdict,
     node_kind,
 )
+from precis.principal import worker_comment_meta
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -509,8 +531,10 @@ HUMAN_ONLY_KEY = "human_only_hit"
 
 #: ``run_slice.NO_COMMIT_KEY``, restated — the same one-way rule. A
 #: clean-exit failure that left no commit on the slice branch is the
-#: LAST attempt: no rung can teach a session to write what it chose
-#: not to, so the tick caps at once (td584381 S1a F4).
+#: builder's can't-finish: it burns an attempt and climbs the ladder
+#: like any red; the cap — the ladder spent — files the coordinator
+#: ask instead of entering rescue (gr645163, the 2026-11-12 "escalate
+#: to next model" ruling).
 NO_COMMIT_KEY = "no_commit"
 
 #: ``run_slice.MOOT_VERIFIED_KEY``, restated — the same one-way rule. A
@@ -1264,7 +1288,13 @@ class _Writer:
         ord_ = max((int(c.ord) for c in existing), default=0) + 1
         self.store.chunks.insert_chunks(
             n.id,
-            [ChunkInsert(ord=ord_, text=text, meta={"chunk_kind": _COMMENT_KIND})],
+            [
+                ChunkInsert(
+                    ord=ord_,
+                    text=text,
+                    meta={"chunk_kind": _COMMENT_KIND, **worker_comment_meta()},
+                )
+            ],
         )
 
 
@@ -3273,8 +3303,9 @@ def _human_hit(plan: _Plan, n: _Node) -> list[str]:
 def _no_commit(plan: _Plan, n: _Node) -> bool:
     """The newest attempt ended ``failed`` carrying ``run_slice``'s
     :data:`NO_COMMIT_KEY` stamp — a clean exit that left no commit on
-    ``slice/<id>`` (td584381 S1a F4). One such attempt exhausts the
-    cap: no rung fixes a session that wrote nothing."""
+    ``slice/<id>``, the builder's can't-finish (td584381 S1a F4). The
+    attempt climbs the ladder like any red; only the cap — the ladder
+    spent — routes the node to the coordinator ask (gr645163)."""
     ended = _attempt_jobs(plan, n)
     return bool(
         ended and ended[-1].status == "failed" and ended[-1].meta.get(NO_COMMIT_KEY)
@@ -3765,10 +3796,6 @@ def _capped(plan: _Plan, n: _Node, cap: int, *, spend_capped: bool = False) -> b
     # A human-only hit caps at once: no lane may write those paths, so
     # no rung and no rescue can fix the failure (td584381 S1a).
     if _human_hit(plan, n):
-        return True
-    # A clean exit that left no commit is likewise the last attempt:
-    # the ladder cannot teach a session to write (td584381 S1a F4).
-    if _no_commit(plan, n):
         return True
     if _land_again_capped(plan, n):
         return True
@@ -4648,6 +4675,81 @@ def _block_lane_gap(
     res.asks += 1
 
 
+def _route_text(store: Any, n: _Node) -> str:
+    """The text the mint-time coordinator route judges (gr645163): the
+    todo's body plus its newest coordinator ``brief:`` comment — the
+    brief is the instruction. Worker-stamped comments (``principal:
+    worker:*`` — the mechanical-red briefs, ``handoff:`` reports and
+    lander notes plan_dispatch/run_slice post) never classify: they
+    report what happened, and a denied attempt's own deny-path line or
+    a mechanical brief's ``scripts/ship`` mention is the event, not
+    the target. ``route.strip_direct_head`` removes the
+    ``gripe-fix-direct`` instruction head for the same reason."""
+    from precis.workers.job_types import run_slice as _rs
+
+    chunks = _rs._todo_chunks(store, n.id)
+    parts = [str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text]
+    brief = next(
+        (
+            str(c.text).lstrip()
+            for c in sorted(chunks, key=lambda c: int(c.ord), reverse=True)
+            if c.chunk_kind == _rs._COMMENT_KIND
+            and not str((c.meta or {}).get("principal", "")).startswith("worker:")
+            and str(c.text or "").lstrip().lower().startswith("brief:")
+        ),
+        None,
+    )
+    if brief is not None:
+        parts.append(brief)
+    return "\n\n".join(parts)
+
+
+def _block_route(
+    plan: _Plan, w: _Writer, res: PassResult, n: _Node, why: str, text: str
+) -> None:
+    """Hold one run_slice-bound node on a coordinator ask — the mint-time
+    route of gr645163: a brief no builder lane may run (it names a deny
+    path, or the fix is prod-graph only) mints no job and burns no
+    build; the ``blocked-by`` edge keeps later passes from re-minting or
+    re-asking. The ask's body carries the brief itself — the ruling's
+    "with the diff/brief attached"."""
+    now = datetime.now(UTC)
+    if w.dry_run:
+        # Mirror the hold so hygiene cannot report a second ask this pass.
+        plan.blockers.setdefault(n.id, []).append(
+            _Blocker(id=-n.id, status="open", is_ask=True, created_at=now)
+        )
+        res.notes.append(f"td{n.id}: would ask coordinator — brief {why}")
+    else:
+        ask_id = _mint_coordinator_ask(
+            w.store,
+            plan,
+            n,
+            title=f"td{n.id}: {why} — a coordinator call",
+            body=(
+                f"Task td{n.id} routes to the coordinator at mint: the "
+                f"brief {why}. No builder lane may do the work, so no "
+                "run_slice job was minted — the builder that ran it would "
+                "refuse as won't-do or end with no commit (gr645163, the "
+                "td643078/td638980 stalls). Land it by hand, mint a "
+                "builder outside the factory's deny rules, or drop the "
+                f"node; closing this ask `acknowledged` re-arms td{n.id} "
+                "and it routes again while the text still names a denied "
+                "path.\n\n---\n\n" + text.strip()[:4000]
+            ),
+            context=why,
+            now=now,
+            block_node=True,
+        )
+        w.comment(
+            n, f"plan_dispatch: routes to the coordinator — {why}; ask td{ask_id}"
+        )
+        res.notes.append(
+            f"td{n.id}: routes to the coordinator — {why}; asked in td{ask_id}"
+        )
+    res.asks += 1
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
@@ -4683,6 +4785,7 @@ def _step_dispatch(
                 if hid != n.id and mine and mine & hfiles:
                     held[n.id] = hid
                     break
+    deny = _lanes.deny_paths_for(w.store)
     for n in candidates:
         if _excluded(plan, n) or _claims(n) or plan.live_job(n):
             continue
@@ -4703,6 +4806,18 @@ def _step_dispatch(
             if gap is not None:
                 _block_lane_gap(plan, w, res, n, gap)
                 continue
+            # gr645163 (Reto 2026-11-12, "escalate to next model"): work
+            # no builder lane may write — the judged text names a deny
+            # path, or the fix is prod-graph only — skips the builders
+            # and files one coordinator ask at mint. Generators never
+            # classify: they read source text, and a gripe or diff may
+            # name deny paths legitimately.
+            if node_kind(n.meta) != "generator":
+                text = _route_text(w.store, n)
+                routed = _route.coordinator_route(text, deny)
+                if routed is not None:
+                    _block_route(plan, w, res, n, routed, text)
+                    continue
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
         cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
         spend_hit = _spend_hit(plan, n, rungs, rules) if rules else None
@@ -5765,6 +5880,7 @@ def _step_hygiene(
         land_capped = _land_again_capped(plan, n)
         mech_sig = _mech_done(plan, n)
         coord = _coordinator_hit(plan, n)
+        no_commit = _no_commit(plan, n)
         lane_gap: str | None = None
         if (
             not human
@@ -5786,6 +5902,7 @@ def _step_hygiene(
             and mech_sig is None
             and not human
             and not land_capped
+            and not no_commit
             and job_type == DEFAULT_OP
             and lane_gap is None
         )
@@ -5794,7 +5911,7 @@ def _step_hygiene(
                 f"enter rescue ({'review' if _is_reviewer(n) else 'builder'})"
                 if rescue
                 else f"file a coordinator ask (retry cap {cap})"
-                if coord is not None
+                if coord is not None or no_commit
                 else f"file an ask (retry cap {cap})"
             )
             res.notes.append(f"td{n.id}: would {what}")
@@ -5834,6 +5951,40 @@ def _step_hygiene(
                 now=now,
                 block_node=True,
             )
+        elif no_commit:
+            # gr645163: the ladder is spent and the newest attempt still
+            # ended with no commit and no verdict — a builder's
+            # can't-finish. No rung is left to teach it and a rescue
+            # cycle only re-arms the same wall; the call is the
+            # coordinator's (a hand land, a re-briefed mint outside the
+            # deny rules, a drop) — the td643078/td638980 shape.
+            ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED]
+            last = ended[-1].id if ended else 0
+            ask_id = _mint_coordinator_ask(
+                w.store,
+                plan,
+                n,
+                title=(
+                    f"td{n.id}: the ladder spent, still no commit — a coordinator call"
+                ),
+                body=(
+                    f"The plan tick stopped dispatching td{n.id} "
+                    f"({n.title.splitlines()[0] if n.title else ''}): "
+                    f"{attempts} attempts climbed the lane ladder and the "
+                    f"newest (jo{last}) still ended with no commit and no "
+                    "verdict — a builder that can't finish (gr645163, "
+                    'Reto 2026-11-12, "escalate to next model"). The '
+                    "newest handoff comment on the todo carries the "
+                    "session's own account. A coordinator call: land it "
+                    "by hand, mint a builder outside the factory's deny "
+                    "rules, re-brief the node, or drop it — closing this "
+                    f"ask `acknowledged` re-arms td{n.id} with a fresh "
+                    "retry budget."
+                ),
+                context=f"no-commit failure at retry cap {cap}",
+                now=now,
+                block_node=True,
+            )
         else:
             ask_id = _mint_ask(
                 w.store,
@@ -5855,6 +6006,8 @@ def _step_hygiene(
             if human
             else "re-land cap hit"
             if land_capped
+            else "can't finish — ladder spent"
+            if no_commit
             else "no enabled lane"
             if lane_gap
             else "retry cap hit"

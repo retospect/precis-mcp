@@ -28,7 +28,12 @@ Modules (each lands as its own slice under td540836):
   land for the ``security-review`` lane (read-only until the A3 land
   wiring);
 - :mod:`precis.plans.templates` — subtree minters (gripe-fix, slice-tree,
-  release-pass, pcb-pipeline) behind ``put(kind='todo', mode='plan')``.
+  release-pass, pcb-pipeline) behind ``put(kind='todo', mode='plan')``;
+- :mod:`precis.plans.route` — the mint-time coordinator route
+  (gr645163): the shared classifier naming work no builder lane may
+  write (a deny-path brief or prod-graph-only work), run by
+  ``gripe_dispatch`` on the gripe report and by ``plan_dispatch`` on
+  each run_slice-bound todo's brief.
 
 The dispatcher tick lives with the other job types
 (``precis.workers.job_types``), not here: this package holds the plan

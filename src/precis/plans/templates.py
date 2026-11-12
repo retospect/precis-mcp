@@ -460,6 +460,13 @@ def _gripe_report(store: Store, gid: int, handle: str, title: str) -> str:
     return f"## {handle}: {title}\n\n{text}" if text else f"## {handle}: {title}"
 
 
+#: The sentence ending :func:`_direct_build_body`'s instruction head —
+#: ``precis.plans.route`` strips through it when it classifies a build
+#: brief, so the head's own ``scripts/ship --quick`` mention never reads
+#: as the fix's deny-path target (gr645163).
+DIRECT_HEAD_END = "a reviewer reads the land afterwards from another lane."
+
+
 def _direct_build_body(handle: str, report: str) -> str:
     return (
         f"Fix {handle} directly: no triage and no brief ran, and this lane may "
@@ -467,8 +474,7 @@ def _direct_build_body(handle: str, report: str) -> str:
         "the code it names, commit the fix with its test on this branch, and "
         "touch nothing under the lane's deny paths. The land (land_slice, "
         "`scripts/ship --quick`) squash-merges onto main and writes "
-        f"'resolved: <sha>' + verify on {handle}; a reviewer reads the land "
-        "afterwards from another lane.\n\n" + report
+        f"'resolved: <sha>' + verify on {handle}; " + DIRECT_HEAD_END + "\n\n" + report
     )
 
 

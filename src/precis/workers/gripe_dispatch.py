@@ -75,6 +75,14 @@ Each fire:
   build and land jobs claim at the release legs' class
   (``executors/_common._CLASS_RANK_CASE``), ahead of ordinary builds.
   The hold tags and a live linked todo still apply.
+* **Coordinator route** (gr645163, Reto 2026-11-12 "escalate to next
+  model"): a picked gripe whose report names a deny path or is
+  prod-graph only mints no chain — work no builder lane may write skips
+  the builders (:mod:`precis.plans.route`, the same classifier
+  ``plan_dispatch._step_dispatch`` runs on each todo's brief). One
+  ``ask-coordinator`` ask carries the report for the coordinator — the
+  ruling's "with the diff/brief attached" — and the gripe holds
+  ``hold:no-dispatch``; removing the tag returns it to dispatch.
 * **Mint** through :func:`precis.plans.templates.mint_gripe_fix_direct`
   (unpinned: the build picks its lane at dispatch, devin first by table
   order) and one ``dispatch:`` comment on the gripe naming the root. The
@@ -94,10 +102,14 @@ from typing import Any
 from precis import settings as psettings
 from precis.corpus_layout import host_name
 from precis.plans import lanes as _lanes
+from precis.plans import route as _route
+from precis.plans.nodes import finish_mint
 from precis.plans.templates import mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo.guards import check_ask_meta
 from precis.utils import dispatch_score as _dscore
 from precis.workers.job_types.ci_watch import WORKER_PRINCIPAL as _CI_WATCH_PRINCIPAL
 from precis.workers.runner import BatchResult
@@ -431,7 +443,37 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         "minted": [],
     }
     ok = failed = 0
+    deny = _lanes.deny_paths_for(store)
     for c in picks:
+        # gr645163: work no builder lane may write — the report names a
+        # deny path, or the fix is prod-graph only — skips the chain and
+        # files the one coordinator ask with the report attached. A
+        # classifier blip must not lose the mint, so it fails open.
+        report = ""
+        try:
+            report = _route_report(store, c)
+            routed = _route.coordinator_route(report, deny)
+        except Exception:
+            log.warning(
+                "gripe_dispatch: route check on gr%d failed; minting anyway",
+                c.gripe_id,
+                exc_info=True,
+            )
+            routed = None
+        if routed is not None:
+            try:
+                ask_id = _route_to_coordinator(store, c, routed, report)
+            except Exception:
+                failed += 1
+                log.warning(
+                    "gripe_dispatch: coordinator route for gr%d failed",
+                    c.gripe_id,
+                    exc_info=True,
+                )
+                continue
+            ok += 1
+            extra.setdefault("routed", []).append({"gripe": c.gripe_id, "ask": ask_id})
+            continue
         try:
             mint = mint_gripe_fix_direct(
                 store,
@@ -481,6 +523,91 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     return BatchResult(
         handler=SERVICE_NAME, claimed=len(picks), ok=ok, failed=failed, extra=extra
     )
+
+
+def _route_report(store: Store, pick: DispatchPick) -> str:
+    """The text the mint-time coordinator route judges for a gripe
+    (gr645163): title plus every chunk — the same material
+    ``mint_gripe_fix_direct`` embeds in the build body."""
+    parts = [
+        str(c.text) for c in store.chunks.list_chunks_for_ref(pick.gripe_id) if c.text
+    ]
+    return "\n\n".join([pick.title, *parts])
+
+
+def _route_to_coordinator(
+    store: Store, pick: DispatchPick, why: str, report: str
+) -> int:
+    """File the one ``ask-coordinator`` ask a routed gripe becomes
+    (gr645163): the report rides the ask body — the ruling's "with the
+    diff/brief attached" — the ask's ``related-to`` link keeps the gripe
+    out of ``candidates`` while it is open, and ``hold:no-dispatch``
+    keeps it out after, until a human re-judges the work (the
+    coordinator removes the tag to release the gripe back to dispatch)."""
+    handle = f"gr{pick.gripe_id}"
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": ["acknowledged"],
+            "blocks": "nothing",
+            "context": f"{handle}: {why}"[:600],
+        }
+    }
+    check_ask_meta(meta)
+    body = (
+        f"gripe_dispatch classified {handle} ({pick.title!r}) as work no "
+        f"builder lane may do: the report {why}. No gripe-fix chain was "
+        "minted — the builder that ran it would refuse as won't-do or end "
+        "with no commit (gr645163, the td643078/td638980 stalls). The "
+        "report follows; a coordinator call: land it by hand, mint a "
+        "builder outside the factory's deny rules, or drop the gripe — "
+        "removing `hold:no-dispatch` returns it to dispatch.\n\n---\n\n"
+        + report.strip()[:4000]
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=f"{handle}: {why} — a coordinator call",
+            meta=meta,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-coordinator", "ask-user", "showstopper"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=pick.gripe_id,
+            relation="related-to",
+            conn=conn,
+        )
+        store.add_tag(
+            pick.gripe_id,
+            Tag.open("hold:no-dispatch"),
+            set_by="system",
+            conn=conn,
+        )
+        finish_mint(store, ref.id, conn=conn)
+    ask_id = int(ref.id)
+    _append_comment(
+        store,
+        pick.gripe_id,
+        f"dispatch: routes to the coordinator — report {why}; ask td{ask_id}. "
+        "No chain minted; `hold:no-dispatch` holds the gripe — remove the "
+        "tag to release it back to dispatch.",
+    )
+    return ask_id
 
 
 def _note_unsupported_projects(store: Store) -> None:
