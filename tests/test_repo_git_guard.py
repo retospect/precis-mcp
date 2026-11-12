@@ -27,7 +27,10 @@ A flagged call is a ``subprocess.*`` spawn whose argv[0] is a literal
 calls whose ``-C``/``cwd`` is a ``tmp_path`` variable are all fine — the
 container has the git binary, just not this checkout's metadata. Known
 blind spots (same as the posix guard's): argv in a variable, a string
-``shell=True`` command, and chdir'd modules are not resolved.
+``shell=True`` command, and chdir'd modules are not resolved. The walk
+parses only files carrying a literal ``"git"``/``'git'`` — a flagged
+spawn needs exactly that constant argv[0] — so an argv[0] spelled to
+dodge the literal (``"g" "it"`` implicit concat, escapes) also slips.
 
 Coverage is per call, not per file: a flagged spawn is covered when a
 scope enclosing it carries the declaration — ``@needs_repo_git`` (or a
@@ -500,6 +503,7 @@ def test_each_flagged_call_needs_a_covering_declaration(
     assert len(_uncovered_in(source)) == uncovered
 
 
+@pytest.mark.timeout(900)  # CI worst >300s macos-3.12 (gr647745) x3
 def test_repo_git_spawns_are_marked_or_resilient() -> None:
     bad: list[str] = []
     for path in walk_files(_ROOT / "tests", "test_*.py"):
@@ -507,6 +511,12 @@ def test_repo_git_spawns_are_marked_or_resilient() -> None:
         if rel in _EXEMPT:
             continue
         source = path.read_text(encoding="utf-8")
+        # ~95% of test files cannot flag: a flagged spawn's argv[0] is the
+        # literal "git", so no quoted git literal means no parse. The full
+        # corpus AST pass crossed the 300s worker kill on macos-3.12
+        # (gr647745).
+        if '"git"' not in source and "'git'" not in source:
+            continue
         tree = ast.parse(source)
         from_subprocess = {
             alias.asname or alias.name
