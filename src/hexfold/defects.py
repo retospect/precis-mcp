@@ -118,6 +118,28 @@ class Patch:
                     self.dirs[(b, a)] = -dv
         self._apex = np.zeros(2)
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> Patch:
+        """Field-wise copy: every mutable container is copied, while
+        immutable leaves — the frozen ``Lattice``/``Site``/frozensets and
+        the ndarrays this class only ever reassigns, never mutates in
+        place — are shared.  ``copy.deepcopy``'s generic per-object
+        dispatch cost the ``@fit`` collar solver ~40% of its runtime
+        (gr647531)."""
+        p = type(self).__new__(type(self))
+        memo[id(self)] = p
+        p.__dict__ = dict(self.__dict__)
+        p.flatpos = dict(self.flatpos)
+        p.hole_b = dict(self.hole_b)
+        p.hole_bexp = dict(self.hole_bexp)
+        p.pos3 = None if self.pos3 is None else dict(self.pos3)
+        p.discl = [
+            Disclination(rec.core, rec.ray, rec.k, dict(rec.phi)) for rec in self.discl
+        ]
+        p.edges = set(self.edges)
+        p.dirs = dict(self.dirs)
+        p._apex = self._apex.copy()
+        return p
+
     # -- geometry helpers -------------------------------------------------
 
     def _angle(self, v: Vid) -> float:
@@ -133,10 +155,14 @@ class Patch:
         return 1e-9 < x < w - 1e-9
 
     def _site_at(self, p: np.ndarray) -> Vid | None:
-        for s, pp in self.flatpos.items():
-            if float(np.linalg.norm(pp - p)) < 0.1 * self.lat.sigma_A:
-                return s
-        return None
+        # vectorized scan (gr647531): still returns the first hit in
+        # flatpos insertion order, like the linear loop it replaces
+        vids = list(self.flatpos)
+        if not vids:
+            return None
+        arr = np.asarray([self.flatpos[s] for s in vids])
+        near = np.flatnonzero(np.linalg.norm(arr - p, axis=1) < 0.1 * self.lat.sigma_A)
+        return vids[int(near[0])] if len(near) else None
 
     def _rot(self, k: int) -> np.ndarray:
         t = math.radians(60.0 * k)
@@ -239,9 +265,14 @@ class Patch:
         rp = self._rot(d.wedges)
         rm = self._rot(-d.wedges)
 
+        # one vectorized atan2 sweep over flatpos (gr647531): same values
+        # _angle returns per vertex, shared by the side and phi passes
+        vids = list(self.flatpos)
+        rel0 = np.asarray([self.flatpos[s] for s in vids]) - c
+        ang = dict(zip(vids, np.degrees(np.arctan2(rel0[:, 1], rel0[:, 0])) % 360.0))
+
         def side(s: Vid) -> str:
-            a = self._angle(s)
-            x = (a - t1) % 360.0
+            x = (float(ang[s]) - t1) % 360.0
             if x < 1e-6 or x > 360.0 - 1e-6:
                 return "R1"
             if abs(x - w) < 1e-6:
@@ -252,10 +283,10 @@ class Patch:
                 return "L"
             return "H"
 
-        sides = {s: side(s) for s in self.flatpos}
-        ray1 = [s for s in self.flatpos if sides[s] == "R1"]
-        wedge = [s for s in self.flatpos if sides[s] == "W"]
-        ray2 = [s for s in self.flatpos if sides[s] == "R2"]
+        sides = {s: side(s) for s in vids}
+        ray1 = [s for s in vids if sides[s] == "R1"]
+        wedge = [s for s in vids if sides[s] == "W"]
+        ray2 = [s for s in vids if sides[s] == "R2"]
         dup = {q: ("d", index, *self._frame_coords(q, d)) for q in ray1}
         wcp = {x: ("w", index, *self._frame_coords(x, d)) for x in wedge}
         # intrinsic angle: ray duplicates 0, ordinary atoms their flat angle,
@@ -267,7 +298,7 @@ class Patch:
             phi[s] = (
                 360.0
                 if sd == "R1"
-                else (w if sd == "R2" else (self._angle(s) - t1) % 360.0)
+                else (w if sd == "R2" else (float(ang[s]) - t1) % 360.0)
             )
         for q in ray1:
             phi[dup[q]] = 0.0
@@ -361,8 +392,14 @@ class Patch:
         # A 60-deg turn about an atom maps the other sublattice onto the
         # -delta family (only 120 deg keeps +delta), so odd dirs and B-site
         # defects need both offsets; one frame only ever holds one of them.
-        for s, off in ((0, 0.0), (1, 1.0), (1, -1.0)):
-            uv = np.linalg.solve(np.column_stack([a1, a2]), rel - off * delta)
+        # one factorization solves all three offsets (gr647531)
+        offs = ((0, 0.0), (1, 1.0), (1, -1.0))
+        uvs = np.linalg.solve(
+            np.column_stack([a1, a2]),
+            np.column_stack([rel - off * delta for _s, off in offs]),
+        )
+        for i, (s, _off) in enumerate(offs):
+            uv = uvs[:, i]
             ui, vi = round(float(uv[0])), round(float(uv[1]))
             if np.allclose(uv, [ui, vi], atol=0.25):
                 return (ui, vi, s)
@@ -504,9 +541,14 @@ class Patch:
                 rings.append(face)
         return rings, rims
 
-    def euler_components(self) -> tuple[int, int]:
-        """(V - E + F, number of connected components)."""
-        rings, rims = self.rings_and_rims()
+    def euler_components(
+        self,
+        rr: tuple[list[list[Vid]], list[tuple[list[Vid], list[float]]]] | None = None,
+    ) -> tuple[int, int]:
+        """(V - E + F, number of connected components).  ``rr`` is a
+        precomputed :meth:`rings_and_rims` — callers checking several
+        invariants on one state pay for one face walk (gr647531)."""
+        rings, rims = rr if rr is not None else self.rings_and_rims()
         f = len(rings) + len(rims)
         # components via union-find on edges
         parent = {v: v for v in self.flatpos}

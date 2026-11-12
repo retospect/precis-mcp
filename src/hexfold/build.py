@@ -2763,6 +2763,14 @@ def _solve_collar(
             )
             return []
 
+        # patch.flatpos is read-only during the family enumeration below,
+        # so one site array serves every orbit evaluation (gr647531)
+        orb_sites = sorted(
+            (s for s in patch.flatpos if isinstance(s, Site)),
+            key=lambda s: (s.u, s.v, s.s),
+        )
+        orb_pos = np.asarray([patch.flatpos[s] for s in orb_sites])
+
         def orbit(base: Site) -> list[Site]:
             out = []
             p = patch.flatpos[base]
@@ -2772,20 +2780,24 @@ def _solve_collar(
                     [[math.cos(th), -math.sin(th)], [math.sin(th), math.cos(th)]]
                 )
                 q = rm @ (p - centre) + centre
-                out.append(
-                    min(
-                        (s for s in patch.flatpos if isinstance(s, Site)),
-                        key=lambda s: (
-                            float(np.linalg.norm(patch.flatpos[s] - q)),
-                            s.u,
-                            s.v,
-                            s.s,
-                        ),
-                    )
-                )
+                dists = np.linalg.norm(orb_pos - q, axis=1)
+                # the (u, v, s) sort order makes argmin's first hit the
+                # same lowest-index site the old min() tie-break chose
+                out.append(orb_sites[int(np.flatnonzero(dists == dists.min())[0])])
             return out
 
     flat = set(patch.flatpos)
+    # collar disks depend only on the defect and the (shared, immutable)
+    # lattice — memoize across every work copy of this solve (gr647531)
+    disks: dict[tuple[int, Site, int], frozenset[Site]] = {}
+
+    def collar_disk(cand: Defect) -> frozenset[Site]:
+        key = (cand.ring, cand.site, cand.dir)
+        got = disks.get(key)
+        if got is None:
+            got = disks[key] = _collar_disk(cand, patch.lat)
+        return got
+
     n_comp0 = patch.euler_components()
     # pre-existing low-degree atoms (sheet corners are deg-1) are not the
     # collar's fault: only *new* deg<2 atoms invalidate an insertion
@@ -2811,12 +2823,13 @@ def _solve_collar(
         for di, o in enumerate(orb):
             for d in dir_order(o):
                 cand = Defect(ring_n, o, d)
-                dk = set(_collar_disk(cand, work.lat))
+                dk0 = collar_disk(cand)
+                dk = set(dk0)
                 if patch.tube_nm is not None:
                     n2, m2 = patch.tube_nm
                     sh = getattr(patch, "seam", 0.0)
                     dk = {wrap_tube(x, n2, m2, sh) for x in dk}
-                    if len(dk) != len(_collar_disk(cand, work.lat)):
+                    if len(dk) != len(dk0):
                         findings.append(
                             Finding(
                                 "cut.overlap",
@@ -2834,7 +2847,9 @@ def _solve_collar(
                 except Exception:
                     work = snapshot
                     continue
-                if work.euler_components() != n_comp0:
+                # one face walk feeds both the euler and rim checks
+                _wr, wrims = work.rings_and_rims()
+                if work.euler_components((_wr, wrims)) != n_comp0:
                     work = snapshot
                     continue
                 # a clean insertion: no deg<2 atoms anywhere, and new
@@ -2843,7 +2858,6 @@ def _solve_collar(
                 if any(d < 2 for v, d in wdeg.items() if v not in low0):
                     work = snapshot
                     continue
-                _wr, wrims = work.rings_and_rims()
                 rimset = {v for rim, _t in wrims for v in rim}
                 if any(wdeg[v] < 3 and v not in rimset for v in work.flatpos):
                     work = snapshot
