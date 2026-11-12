@@ -93,6 +93,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.container_limits import KILLED_FOR_MEMORY, memory_cap_killed
 from precis.utils.llm.router import Backend, resolve_backend
 from precis.workers.executors import (
     _sandbox_harvest,
@@ -317,7 +318,11 @@ def build_run_argv(
         "--env",
         f"PRECIS_SANDBOX_MODEL={model}",
         # cgroup caps — bound the blast radius on a load-dominant host.
+        # --memory-swap equal to --memory: no swap on top of the cap
+        # (gr595537 — swap is the host-wedging path the cap exists to close).
         "--memory",
+        memory,
+        "--memory-swap",
         memory,
         "--cpus",
         cpus,
@@ -375,7 +380,11 @@ def build_rerun_argv(
         "--name",
         container_name(job_id),
         # cgroup caps — bound the blast radius on a load-dominant host.
+        # --memory-swap equal to --memory: no swap on top of the cap
+        # (gr595537 — swap is the host-wedging path the cap exists to close).
         "--memory",
+        memory,
+        "--memory-swap",
         memory,
         "--cpus",
         cpus,
@@ -479,7 +488,11 @@ def build_script_argv(
         "--name",
         container_name(job_id),
         # cgroup caps — bound the blast radius on a load-dominant host.
+        # --memory-swap equal to --memory: no swap on top of the cap
+        # (gr595537 — swap is the host-wedging path the cap exists to close).
         "--memory",
+        memory,
+        "--memory-swap",
         memory,
         "--cpus",
         cpus,
@@ -517,15 +530,17 @@ def _podman(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProces
     )
 
 
-def _inspect(name: str) -> tuple[str, int] | None:
-    """Return ``(status, exit_code)`` for a container, or ``None`` if it
-    doesn't exist. Status is podman's ``.State.Status`` (``running`` /
-    ``exited`` / ``created`` …)."""
+def _inspect(name: str) -> tuple[str, int, bool] | None:
+    """Return ``(status, exit_code, oom_killed)`` for a container, or
+    ``None`` if it doesn't exist. Status is podman's ``.State.Status``
+    (``running`` / ``exited`` / ``created`` …); ``oom_killed`` is
+    ``.State.OOMKilled`` — the authoritative cgroup OOM flag the
+    killed-for-memory outcome reads (gr595537)."""
     res = _podman(
         [
             "inspect",
             "--format",
-            "{{.State.Status}} {{.State.ExitCode}}",
+            "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}",
             name,
         ]
     )
@@ -534,10 +549,11 @@ def _inspect(name: str) -> tuple[str, int] | None:
     parts = (res.stdout or "").split()
     if len(parts) < 2:
         return None
+    oom = len(parts) > 2 and parts[2].lower() == "true"
     try:
-        return parts[0], int(parts[1])
+        return parts[0], int(parts[1]), oom
     except ValueError:
-        return parts[0], -1
+        return parts[0], -1, oom
 
 
 def _logs_tail(name: str, *, max_chars: int = 4000) -> str:
@@ -1568,7 +1584,7 @@ def _poll_job(store: Store, ref_id: int, meta: dict[str, Any]) -> str | None:
         )
         return _FAILED
 
-    status, exit_code = state
+    status, exit_code, oom_killed = state
     if status == "exited":
         ok = exit_code == 0
         _terminate(
@@ -1578,6 +1594,7 @@ def _poll_job(store: Store, ref_id: int, meta: dict[str, Any]) -> str | None:
             status=_SUCCEEDED if ok else _FAILED,
             summary=f"sandbox_run job:{ref_id}: container {name} exited {exit_code}.",
             exit_code=exit_code,
+            oom_killed=oom_killed,
             meta=meta,
         )
         return _SUCCEEDED if ok else _FAILED
@@ -1640,6 +1657,7 @@ def _terminate(
     summary: str,
     exit_code: int | None,
     swept: str | None = None,
+    oom_killed: bool | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
     """Write minimal forensics, reap the container + workdir, set the
@@ -1787,6 +1805,12 @@ def _terminate(
                 conn=conn,
             )
         _set_meta(conn, ref_id, exit_code=exit_code)
+        # gr595537: a cap-killed container (cgroup OOM — .State.OOMKilled,
+        # or SIGKILL under --memory when the flag wasn't read) gets the
+        # recognisable outcome the requeue policy (gr595538) reads to
+        # retry with a bigger estimate instead of an identical re-run.
+        if memory_cap_killed(exit_code, oom_killed=oom_killed):
+            _set_meta(conn, ref_id, outcome=KILLED_FOR_MEMORY)
         if swept is not None:
             from precis.store import Tag
 

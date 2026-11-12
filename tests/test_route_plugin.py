@@ -501,6 +501,49 @@ def test_container_dispatch_stages_max_routes_overlay(
     assert seen_argv[-1] == "/work/in/config.yml"
 
 
+def test_container_oom_exit_stamps_killed_for_memory(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr595537: a --memory-cap kill (rc=137) stamps meta.outcome —
+    the recognisable flag the requeue policy (gr595538) reads to retry
+    with a bigger estimate instead of re-running identically. A plain
+    rc=1 leaves meta.outcome unset."""
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    monkeypatch.setattr(chem_jobs, "STAGER", lambda rid: (str(in_dir), str(out_dir)))
+    monkeypatch.setattr(
+        chem_jobs, "RUNNER", lambda argv, *, node, timeout=None: (137, "OOMKilled")
+    )
+
+    ref = route_store.insert_ref(
+        kind="route", slug="oom", title="oom", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:oom",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status == "failed"
+    assert ctx.meta_updates.get("outcome") == "killed-for-memory"
+    assert ctx.failure is not None and "killed-for-memory" in ctx.failure
+
+    monkeypatch.setattr(
+        chem_jobs, "RUNNER", lambda argv, *, node, timeout=None: (1, "boom")
+    )
+    ctx2 = _FakeCtx(store=route_store, params=dict(params))
+    chem_jobs._dispatch(ctx2, RETROSYNTH_SPEC)
+    assert ctx2.status == "failed"
+    assert "outcome" not in ctx2.meta_updates
+
+
 def test_route_json_routes_list_lands_as_alternatives(
     route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

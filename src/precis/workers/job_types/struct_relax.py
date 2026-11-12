@@ -99,7 +99,12 @@ from typing import Any
 import numpy as np
 
 from precis.structure.relax_dispatch import phase
-from precis.utils.container_limits import container_limit_flags, container_user_flags
+from precis.utils.container_limits import (
+    KILLED_FOR_MEMORY,
+    container_limit_flags,
+    container_user_flags,
+    memory_cap_killed,
+)
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -1347,8 +1352,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # docker/ssh failure, …) — an INFRA failure, not a physical verdict on
         # the candidate. A genuine non-convergence still exits 0 and writes a
         # result.json (``ok: false`` below).
+        killed = memory_cap_killed(rc)
+        if killed:
+            # gr595537: the --memory cap's OOM kill — the recognisable
+            # outcome the requeue policy (gr595538) reads to retry with a
+            # bigger estimate instead of re-running identically.
+            ctx.set_meta(outcome=KILLED_FOR_MEMORY)
         ctx.record_failure(
-            f"struct_relax: container rc={rc}, no {_RESULT_FILE} — see the log event",
+            f"struct_relax: container rc={rc}"
+            f"{' (killed-for-memory)' if killed else ''}, no {_RESULT_FILE} "
+            "— see the log event",
             failure_class="infra",
         )
         return

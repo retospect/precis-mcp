@@ -549,6 +549,42 @@ def test_container_dispatch_no_model_fails(
     assert ctx.failure is not None and "no model mmCIF" in ctx.failure
 
 
+def test_container_oom_exit_stamps_killed_for_memory(
+    protein_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr595537: a --memory-cap kill (rc=137) stamps meta.outcome —
+    the recognisable flag the requeue policy (gr595538) reads to retry
+    with a bigger estimate instead of re-running identically."""
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    monkeypatch.setattr(bio_jobs, "STAGER", lambda rid: (str(in_dir), str(out_dir)))
+    monkeypatch.setattr(
+        bio_jobs, "RUNNER", lambda argv, *, node, timeout=None: (137, "OOMKilled")
+    )
+    monkeypatch.setattr(bio_jobs, "_MODELS_DIR", "/nas/models")
+
+    ref = protein_store.insert_ref(
+        kind="protein", slug="oom", title="oom", meta={"sequence": "ACDE"}
+    )
+    params = {
+        "protein_ref_id": ref.id,
+        "name": "oom",
+        "sequence": "ACDE",
+        "engine": "alphafold3",
+        "engine_version": "af3-v3.0.1",
+        "cache_key": "fold:oom",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=protein_store, params=params)
+    bio_jobs._dispatch(ctx, FOLD_SPEC)
+    assert ctx.status != "succeeded"
+    assert ctx.meta_updates.get("outcome") == "killed-for-memory"
+    assert ctx.failure is not None and "killed-for-memory" in ctx.failure
+
+
 # ─────────────────── structure convergence (slice 4c) ───────────────────
 
 

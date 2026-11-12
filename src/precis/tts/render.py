@@ -47,12 +47,13 @@ log = logging.getLogger(__name__)
 #: not escalate on (see ``precis.workers.cast_audio._stamp_failure``). ``subprocess``
 #: can also surface SIGTERM as the negative ``-15``, so accept both encodings.
 #:
-#: **SIGKILL (137 / -9) is deliberately excluded**: it is ambiguous — a cgroup
-#: OOM-killer kills a genuinely-oversized render with the *same* 137 a hard bounce
-#: produces, and nothing bounds a single draft's memory (``container_limit_flags``
-#: sets CPU only). Since the observed prod restart-kills are all 143 (SIGTERM,
-#: zero 137s), treating 137 as a genuine failure is the safe default: an OOM-
-#: looping draft correctly backs off to the hourly ceiling instead of respinning a
+#: **SIGKILL (137 / -9) is deliberately excluded**: it is ambiguous — the
+#: ``--memory`` cap's OOM-killer kills a genuinely-oversized render with the
+#: *same* 137 a hard bounce produces (gr595537 bounds a single draft's
+#: memory now, so 137 mostly reads as that cap firing). Since the observed
+#: prod restart-kills are all 143 (SIGTERM, zero 137s), treating 137 as a
+#: genuine failure is the safe default: an OOM-looping draft correctly
+#: backs off to the hourly ceiling instead of respinning a
 #: container every ~2 minutes for 48h.
 SIGNAL_KILL_RETURNCODES = frozenset({143, -15})
 
@@ -122,7 +123,7 @@ def render_via_container(
     (indir / "segments.json").write_text(json.dumps(payload), encoding="utf-8")
     try:
         argv = [container_cmd, "run", "--rm"]
-        argv += container_limit_flags()
+        argv += container_limit_flags(job_type="tts_render")
         argv += [
             "-v",
             f"{indir}:/work/in:ro",

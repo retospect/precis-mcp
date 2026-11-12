@@ -127,7 +127,9 @@ a permanently-unschedulable child that never reaches a terminal STATUS.
 
 Every spawned job container splices ``container_limit_flags()``
 (``utils/container_limits.py``) so heavy compute stays off reserved
-system cores — a container does not inherit the worker's ``nice``.
+system cores and inside a per-task ``--memory`` cap (gr595537) — a
+container does not inherit the worker's ``nice``, and a runaway job
+dies under its own ceiling rather than wedging the host into swap.
 
 The sandbox read callback uses one ``READ_KIND_ALLOWLIST`` in
 ``_sandbox_read_mcp``, consulted by the serving process. Stored datasheets

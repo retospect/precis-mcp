@@ -44,7 +44,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from precis.utils.container_limits import container_user_flags
+from precis.utils.container_limits import (
+    KILLED_FOR_MEMORY,
+    container_limit_flags,
+    container_user_flags,
+    memory_cap_killed,
+)
 from precis.workers.job_types import JobTypeSpec
 from precis_chem import steer
 from precis_chem.askcos import (
@@ -138,6 +143,7 @@ def _build_normalizer_argv(
         "--name",
         f"precis-normalize-{ref_id}",
         *container_user_flags(),
+        *container_limit_flags(job_type="retrosynth"),
         "-v",
         f"{in_dir}:/work/in:ro",
         "-v",
@@ -313,8 +319,15 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
     native = Path(out_dir) / native_name if native_name else None
     if rc != 0 or not (route.exists() or (native and native.exists())):
         want = ROUTE_FILE + (f"/{native_name}" if native_name else "")
+        killed = memory_cap_killed(rc)
+        if killed:
+            # gr595537: the --memory cap's OOM kill — the recognisable
+            # outcome the requeue policy (gr595538) reads to retry with a
+            # bigger estimate instead of re-running identically.
+            ctx.set_meta(outcome=KILLED_FOR_MEMORY)
         ctx.record_failure(
-            f"retrosynth: container rc={rc}, no {want} — see the log event"
+            f"retrosynth: container rc={rc}{' (killed-for-memory)' if killed else ''}"
+            f", no {want} — see the log event"
         )
         return None
     if route.exists():

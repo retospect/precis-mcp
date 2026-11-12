@@ -32,7 +32,7 @@ from dataclasses import replace
 from typing import Any
 
 from precis.utils.coerce import as_float
-from precis.utils.container_limits import container_user_flags
+from precis.utils.container_limits import container_limit_flags, container_user_flags
 from precis_chem.ir import RouteGraph, RouteStep, normalize_smiles
 
 #: Bind-mount points inside the container + the AiZynth output filename.
@@ -206,6 +206,7 @@ def build_aizynth_argv(
         "--name",
         f"precis-route-{ref_id}",
         *container_user_flags(),
+        *container_limit_flags(job_type="retrosynth"),
         "-v",
         f"{in_dir}:{CONTAINER_IN}:ro",
         "-v",

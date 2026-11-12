@@ -598,7 +598,7 @@ def build_agent_run_argv(
     if interactive:
         argv += ["-i"]
     argv += ["--rm", "--name", name]
-    argv += container_limit_flags()
+    argv += container_limit_flags(job_type="agent_container")
     for m in mounts:
         argv += ["-v", _mount_flag(m)]
     if workdir is not None:

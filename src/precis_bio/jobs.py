@@ -32,6 +32,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from precis.utils.container_limits import KILLED_FOR_MEMORY, memory_cap_killed
 from precis.workers.job_types import JobTypeSpec
 from precis_bio.alphafold import INPUT_FILE
 from precis_bio.engine import DEFAULT_SEEDS, resolve_engine
@@ -193,7 +194,16 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> ProteinFold
     ctx.append_chunk("job_event", f"container rc={rc}\n{output[-2000:]}")
 
     if rc != 0:
-        ctx.record_failure(f"fold: container rc={rc} — see the log event")
+        killed = memory_cap_killed(rc)
+        if killed:
+            # gr595537: the --memory cap's OOM kill — the recognisable
+            # outcome the requeue policy (gr595538) reads to retry with a
+            # bigger estimate instead of re-running identically.
+            ctx.set_meta(outcome=KILLED_FOR_MEMORY)
+        ctx.record_failure(
+            f"fold: container rc={rc}{' (killed-for-memory)' if killed else ''}"
+            " — see the log event"
+        )
         return None
     try:
         fold = engine.parse(out_dir, name=name, sequence=sequence, seeds=seeds)

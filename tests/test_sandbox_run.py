@@ -396,6 +396,8 @@ def test_build_run_argv_invariants() -> None:
     assert "ANTHROPIC_API_KEY" not in joined
     # cgroup caps present
     assert "--memory" in argv and "--cpus" in argv and "--pids-limit" in argv
+    # gr595537: --memory-swap equal to --memory — no swap on top of the cap
+    assert argv[argv.index("--memory-swap") + 1] == "8g"
     # never a GPU
     assert "--device" not in argv
     # the image is the final token, pinned as the IMAGE positional by a
@@ -961,6 +963,35 @@ def test_poll_exit_one_fails_and_bubbles(store: Store, sandbox_env: Path) -> Non
     claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap
     assert _status(store, jid) == "failed"
     assert any(t.startswith("child-failed:") for t in _tags(store, parent.id))
+
+
+def test_poll_oom_killed_stamps_outcome(store: Store, sandbox_env: Path) -> None:
+    """gr595537: the --memory cap's OOM kill (.State.OOMKilled) stamps
+    meta.outcome=killed-for-memory — the recognisable flag the requeue
+    policy (gr595538) reads to retry with a bigger estimate."""
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+    (sandbox_env / f"sandbox-{jid}.state").write_text(
+        "exited 137 true", encoding="utf-8"
+    )
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap
+    assert _status(store, jid) == "failed"
+    meta = _meta(store, jid)
+    assert meta.get("outcome") == "killed-for-memory"
+    assert meta.get("exit_code") == 137
+
+
+def test_poll_sigkill_without_oom_flag_no_outcome(
+    store: Store, sandbox_env: Path
+) -> None:
+    """An external SIGKILL (137 with OOMKilled false — a deploy bounce,
+    not the cap) is NOT the killed-for-memory outcome."""
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 137", encoding="utf-8")
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → reap
+    assert _status(store, jid) == "failed"
+    assert _meta(store, jid).get("outcome") is None
 
 
 def test_poll_deadline_kills_and_sweeps(store: Store, sandbox_env: Path) -> None:
