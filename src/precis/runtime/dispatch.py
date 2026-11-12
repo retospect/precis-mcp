@@ -664,6 +664,20 @@ def _alias_parent_id(
     kw["parent_id"] = kw.pop("parent")
 
 
+def _opens_with_title(text: str, title: str) -> bool:
+    """``text`` opens with ``title`` as a complete first-line token.
+
+    The char after the match must end the string or be a non-word
+    char; a prefix that runs on into word characters names a
+    different title (``'cat'`` inside ``'catalog'`` — td651769
+    review), so the kwarg is not redundant.
+    """
+    if not text.startswith(title):
+        return False
+    rest = text[len(title) :]
+    return not rest or (not rest[0].isalnum() and rest[0] != "_")
+
+
 def _fold_title_kwarg(
     handler: Handler,
     verb: str,
@@ -680,10 +694,13 @@ def _fold_title_kwarg(
     session, retried verbatim under the "title is the first line of
     text=" hint. On a kind whose handler declares ``text`` but not
     ``title`` the kwarg has exactly one reading: ``title`` alone becomes
-    the whole ``text``; a ``text`` that already opens with it makes the
-    kwarg redundant — it drops and the caller's text stands verbatim;
-    otherwise it is prepended as ``text``'s new first line. Either way
-    both values land — nothing collapses into one slot silently. A
+    the whole ``text``; a ``text`` that already opens with the complete
+    title — next char a boundary, not more of the same word — makes the
+    kwarg redundant: it drops and the caller's text stands verbatim.
+    A bare string prefix is not an opening title (``title='cat'`` inside
+    ``text='catalog — …'`` is a different title, td651769 review), so it
+    prepends like any non-match — both values land, nothing collapses
+    into one slot silently. A
     handler that declares ``title`` itself (memory, gripe, finding, …)
     or tolerates extra kwargs keeps it untouched.
 
@@ -722,7 +739,7 @@ def _fold_title_kwarg(
         return
     if text is None or not text.strip():
         target["text"] = title
-    elif not text.lstrip().startswith(title):
+    elif not _opens_with_title(text.lstrip(), title):
         target["text"] = f"{title}\n{text}"
     if verb == "edit" and "replace" in (handler.spec.edit_modes or ()):
         holder = kw if kw.get("mode") is not None else top

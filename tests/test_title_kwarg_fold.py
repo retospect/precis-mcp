@@ -9,7 +9,9 @@ is the first line of text=" hint. On a kind whose handler declares
 ``text`` but not ``title`` the kwarg has exactly one reading, so
 :func:`precis.runtime.dispatch._fold_title_kwarg` rewrites it before
 either kwargs gate: a lone ``title`` becomes the whole ``text``, a
-``text`` that already opens with it drops the redundant kwarg, and any
+``text`` that already opens with the complete title (not a bare
+prefix: ``'cat'`` inside ``'catalog'`` is a different title) drops the
+redundant kwarg, and any
 other ``text`` gets it prepended as the new first line. A handler that
 declares ``title`` itself (memory, gripe, finding, …) keeps it
 untouched.
@@ -69,6 +71,30 @@ def test_put_taxon_title_plus_text_keeps_the_text_verbatim(
     assert ref.title == "zzq fold term"
     assert (ref.meta or {}).get("definition") == (
         "the gloss a first line already carries"
+    )
+
+
+def test_put_taxon_title_prefix_of_a_longer_word_is_not_redundant(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """td651769 review: ``title='cat'`` against ``text='catalog — …'``
+    is a bare string prefix, not an opening title — the fold prepends
+    so the requested title stands instead of silently creating
+    'catalog'."""
+    body = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "taxon",
+            "title": "zzq cat",
+            "text": "zzq catalog — the gloss under a longer first word",
+        },
+    )
+    assert "[error" not in body, body
+    ref = store.get_ref(kind="taxon", id=id_of(body))
+    assert ref is not None
+    assert ref.title == "zzq cat"
+    assert (ref.meta or {}).get("definition") == (
+        "zzq catalog — the gloss under a longer first word"
     )
 
 
