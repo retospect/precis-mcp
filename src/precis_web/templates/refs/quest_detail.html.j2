@@ -107,6 +107,26 @@
         <option value="0" {% if not frontier_c %}selected{% endif %}>off</option>
       </select>
     </label>
+    {# Visual filters (gr636179) — the pathway explorer's barrier
+       threshold / turnover floor pair applied to the Pareto scatter.
+       Each input renders only when some candidate carries the measure;
+       blank means "no filter". #}
+    {% if frontier_axis_counts.get('barrier') %}
+    <label class="flex items-center gap-1"
+           title="Dim candidates whose rate-limiting barrier exceeds this (eV); a candidate with no barrier measure stays visible">barrier ≤
+      <input type="number" name="fbar" min="0" step="any" aria-label="Barrier threshold in eV"
+             class="w-20 rounded border border-line-strong px-1 py-0.5 text-xs"
+             value="{{ frontier_fbar if frontier_fbar is not none else '' }}">
+    </label>
+    {% endif %}
+    {% if frontier_axis_counts.get('log_tof') %}
+    <label class="flex items-center gap-1"
+           title="Dim candidates whose log₁₀ TOF falls below this floor; a candidate with no TOF measure stays visible">log₁₀ TOF ≥
+      <input type="number" name="ftof" step="any" aria-label="log₁₀ turnover floor"
+             class="w-20 rounded border border-line-strong px-1 py-0.5 text-xs"
+             value="{{ frontier_ftof if frontier_ftof is not none else '' }}">
+    </label>
+    {% endif %}
     <button class="rounded-md border border-line-strong bg-surface text-xs px-2 py-1 text-fg-secondary hover:bg-surface-subtle">plot</button>
   </form>
   {% endif %}
@@ -158,6 +178,16 @@
     {% endfor %}
     <line x1="{{ fs.pad }}" y1="{{ fs.height - fs.pad }}" x2="{{ fs.width - fs.pad }}" y2="{{ fs.height - fs.pad }}" class="stroke-fg-faint" stroke-width="1"/>
     <line x1="{{ fs.pad }}" y1="{{ fs.pad }}" x2="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" class="stroke-fg-faint" stroke-width="1"/>
+    {# visual-filter thresholds as indicators (gr636179): a dashed guide
+       where the barrier/turnover bound lands — present only when the
+       filtered measure is itself a plotted axis and inside the range;
+       same red the explorer's ⊣ cut glyph uses #}
+    {% for fl in fs.filter_lines %}
+    <line x1="{{ fl.x1 }}" y1="{{ fl.y1 }}" x2="{{ fl.x2 }}" y2="{{ fl.y2 }}"
+          stroke="#d9534f" stroke-width="1" stroke-dasharray="4,3" pointer-events="none">
+      <title>{{ fl.label }}</title>
+    </line>
+    {% endfor %}
     {# hover crosshair — full-width/height guide lines through the hovered
        point, recoloured to the point's own band colour by the JS below #}
     <line id="fs-cross-h" x1="{{ fs.pad }}" x2="{{ fs.width - fs.pad }}" y1="0" y2="0" stroke-width="1" style="display:none" pointer-events="none"/>
@@ -179,8 +209,16 @@
     {% for m in p.extra_measures %}
       {% set ns.extra = ns.extra ~ "\n" ~ m.label ~ " = " ~ m.value %}
     {% endfor %}
+    {# indicators (gr636179): the point's own barrier/log₁₀-TOF when not
+       already displayed on an axis or as a declared objective #}
+    {% for ind in p.indicators %}
+      {% set ns.extra = ns.extra ~ "\n" ~ ind.label ~ " = " ~ ind.value %}
+    {% endfor %}
     {% if p.rate_readout %}
       {% set ns.extra = ns.extra ~ "\n$/rate = " ~ p.rate_readout %}
+    {% endif %}
+    {% if p.filtered %}
+      {% set ns.extra = ns.extra ~ "\nfiltered: " ~ p.filter_reasons | join("\nfiltered: ") %}
     {% endif %}
     {% if p.band == "provisional" %}
       {% set pcolor = "#c2410c" %}
@@ -192,7 +230,8 @@
       {% set tip = p.name ~ " (" ~ p.handle ~ ")\n" ~ fs.x_label ~ " = " ~ "%g"|format(p.x) ~ "\n" ~ fs.y_label ~ " = " ~ "%g"|format(p.y) ~ ns.mid ~ ns.extra ~ "\n" ~ status %}
     {% endif %}
     {% if p.open_url %}<a href="{{ p.open_url }}">{% endif %}
-    <g class="fs-pt" data-color="{{ pcolor }}" data-cx="{{ p.cx }}" data-cy="{{ p.cy }}" data-tip="{{ tip }}" aria-label="{{ tip }}">
+    <g class="fs-pt" data-color="{{ pcolor }}" data-cx="{{ p.cx }}" data-cy="{{ p.cy }}" data-tip="{{ tip }}" aria-label="{{ tip }}"
+       {% if p.filtered %}opacity="0.25"{% endif %}>
       {# oversize invisible hit target so the hover doesn't need pixel aim #}
       <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="11" fill="transparent" stroke="none"/>
       {# z-axis coloring (?fz=): when this point carries a colour, the
@@ -240,6 +279,16 @@
     {%- if fs.z_key %} · fill colour = {{ fs.z_label }}{% endif %}
     {%- if fs.contour_bands %} · background = interpolated {{ fs.z_label }} (trusted points only){% endif %}
   </p>
+  {% if frontier_fbar is not none or frontier_ftof is not none %}
+  {% set n_dim = fs.points | selectattr('filtered') | list | length %}
+  <p class="text-xs text-fg-faint mb-3">
+    visual filters:
+    {%- if frontier_fbar is not none %} barrier ≤ {{ "%g" | format(frontier_fbar) }} eV{% endif %}
+    {%- if frontier_ftof is not none %} log₁₀ TOF ≥ {{ "%g" | format(frontier_ftof) }}{% endif %}
+    — {{ n_dim }} of {{ fs.points | length }} point{{ "" if (fs.points | length) == 1 else "s" }} dimmed;
+    a candidate missing the filtered measure stays visible
+  </p>
+  {% endif %}
   {% if frontier_axis_docs %}
   <details class="text-xs text-fg-muted mb-3 max-w-3xl" open>
     <summary class="cursor-pointer font-semibold text-fg-secondary">What the axes mean</summary>

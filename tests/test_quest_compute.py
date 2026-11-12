@@ -639,6 +639,175 @@ class TestFrontierContour:
         assert scatter.contour_bands == [] and scatter.contour_lines == []
 
 
+class TestFrontierVisualFilters:
+    """gr636179 — the pathway explorer's barrier-threshold/turnover-floor
+    pair applied to the quest Pareto scatter: violating points are marked
+    ``filtered`` (the template dims, never hides) and missing measures
+    stay visible, explorer-parity."""
+
+    def test_barrier_max_marks_only_over_threshold_points(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 1.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b], barrier_max=1.0)
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["filtered"] is False
+        assert by_id[1]["filter_reasons"] == []
+        assert by_id[2]["filtered"] is True
+        assert by_id[2]["filter_reasons"] == ["barrier 1.9 eV > 1 eV"]
+
+    def test_log_tof_min_marks_only_below_floor_points(self) -> None:
+        a = Candidate(
+            1, "st1", "A", {"barrier": 0.3, "energy": -20.0, "log_tof": 1.0}, True
+        )
+        b = Candidate(
+            2, "st2", "B", {"barrier": 0.9, "energy": -10.0, "log_tof": -3.0}, True
+        )
+        scatter = build_frontier_scatter([a, b], log_tof_min=-2.0)
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["filtered"] is False
+        assert by_id[2]["filtered"] is True
+        assert by_id[2]["filter_reasons"] == ["log₁₀ TOF -3 < -2"]
+
+    def test_both_filters_combine_in_one_reason_list(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(
+            2, "st2", "B", {"barrier": 1.9, "energy": -10.0, "log_tof": -3.0}, True
+        )
+        scatter = build_frontier_scatter([a, b], barrier_max=1.0, log_tof_min=0.0)
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[2]["filter_reasons"] == [
+            "barrier 1.9 eV > 1 eV",
+            "log₁₀ TOF -3 < 0",
+        ]
+
+    def test_missing_filtered_measure_stays_visible(self) -> None:
+        # b has no log_tof measure — the turnover floor alone must not cut
+        # it (explorer: "missing rates leave steps visible"), though its
+        # real barrier can still be caught by the barrier filter.
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b], log_tof_min=0.0)
+        assert scatter is not None
+        assert all(p["filtered"] is False for p in scatter.points)
+        scatter = build_frontier_scatter([a, b], log_tof_min=0.0, barrier_max=0.5)
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["filtered"] is False
+        assert by_id[2]["filter_reasons"] == ["barrier 0.9 eV > 0.5 eV"]
+
+    def test_no_filters_marks_nothing(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        assert all(p["filtered"] is False for p in scatter.points)
+        assert scatter.filter_lines == []
+
+    def test_provisional_point_filtered_on_its_merged_view(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        pc = ProvisionalCandidate(
+            candidate=Candidate(2, "st2", "B", {}, True),
+            measures={"barrier": 1.9, "energy": -12.0},
+            untrusted_keys=frozenset({"barrier"}),
+            reasons=["barrier untrusted"],
+        )
+        scatter = build_frontier_scatter([a], provisional=[pc], barrier_max=1.0)
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[2]["filtered"] is True
+        assert by_id[2]["filter_reasons"] == ["barrier 1.9 eV > 1 eV"]
+
+    def test_filter_line_drawn_where_bound_lands_on_plotted_axis(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.0, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 1.0, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b], barrier_max=0.5, log_tof_min=2.0)
+        assert scatter is not None
+        # barrier is the default x axis — a vertical guide at x=0.5; log_tof
+        # is not plotted, so the floor gets no line.
+        assert len(scatter.filter_lines) == 1
+        line = scatter.filter_lines[0]
+        assert line["x1"] == line["x2"]
+        assert line["y1"] == scatter.pad and line["y2"] == scatter.height - scatter.pad
+        assert scatter.pad < line["x1"] < scatter.width - scatter.pad
+        assert "Barrier" in line["label"] and "0.5" in line["label"]
+
+    def test_filter_line_on_y_axis_and_out_of_range_bound(self) -> None:
+        a = Candidate(
+            1, "st1", "A", {"barrier": 0.3, "log_tof": 0.0, "energy": -20.0}, True
+        )
+        b = Candidate(
+            2, "st2", "B", {"barrier": 0.9, "log_tof": 2.0, "energy": -10.0}, True
+        )
+        scatter = build_frontier_scatter(
+            [a, b],
+            x_measure="energy",
+            y_measure="log_tof",
+            barrier_max=0.5,  # not a plotted axis → no line
+            log_tof_min=1.0,  # plotted on y → horizontal guide
+        )
+        assert scatter is not None
+        assert len(scatter.filter_lines) == 1
+        line = scatter.filter_lines[0]
+        assert line["y1"] == line["y2"]
+        assert line["x1"] == scatter.pad and line["x2"] == scatter.width - scatter.pad
+        out = build_frontier_scatter(
+            [a, b],
+            x_measure="energy",
+            y_measure="log_tof",
+            log_tof_min=9.0,  # plotted but outside the range → still no line
+        )
+        assert out is not None
+        assert out.filter_lines == []
+
+    def test_indicators_surface_barrier_and_log_tof_not_otherwise_shown(
+        self,
+    ) -> None:
+        a = Candidate(
+            1, "st1", "A", {"barrier": 0.3, "energy": -20.0, "log_tof": 1.5}, True
+        )
+        b = Candidate(
+            2, "st2", "B", {"barrier": 0.9, "energy": -10.0, "log_tof": 0.5}, True
+        )
+        # default axes barrier×energy — barrier already displays, only
+        # log_tof needs an indicator.
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["indicators"] == [
+            {"key": "log_tof", "label": "log₁₀ TOF (site⁻¹ s⁻¹)", "value": "1.5"}
+        ]
+
+    def test_indicators_skip_plotted_axes_and_declared_objectives(self) -> None:
+        a = Candidate(
+            1,
+            "st1",
+            "A",
+            {"barrier": 0.3, "energy": -20.0, "log_tof": 1.5, "atom_cost": 1.0},
+            True,
+        )
+        b = Candidate(
+            2,
+            "st2",
+            "B",
+            {"barrier": 0.9, "energy": -10.0, "log_tof": 0.5, "atom_cost": 0.5},
+            True,
+        )
+        scatter = build_frontier_scatter(
+            [a, b],
+            x_measure="energy",
+            y_measure="atom_cost",
+            objectives=[("energy", "min"), ("atom_cost", "min"), ("barrier", "min")],
+            z_measure="log_tof",
+        )
+        assert scatter is not None
+        # barrier is a declared objective (extra_measures carries it),
+        # log_tof is the colour axis — nothing left to indicate.
+        assert all(p["indicators"] == [] for p in scatter.points)
+
+
 class TestBetterArrowFor:
     def test_x_axis_min_sense(self) -> None:
         assert better_arrow_for("x", "min") == "← better"

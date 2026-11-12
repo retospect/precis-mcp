@@ -674,6 +674,75 @@ def test_frontier_contour_underlay_renders_and_fc0_suppresses(
     assert "linear-gradient(to right, #440154" in resp.text
 
 
+def test_frontier_visual_filters_dim_and_annotate(client, runtime, monkeypatch) -> None:
+    """``?fbar=``/``?ftof=`` (gr636179): the explorer's barrier-threshold /
+    turnover-floor pair applied to the Pareto scatter — a violating point
+    is dimmed (never hidden), its tooltip names the cut, the threshold
+    draws a dashed guide on the axis that plots it, and the caption
+    reports the dimmed count."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min"), ("energy", "min")],
+        frontier=[
+            Candidate(
+                1,
+                "st1",
+                "Fe-N4",
+                {"barrier": 0.3, "energy": -20.0, "log_tof": 1.0},
+                True,
+            ),
+        ],
+        dominated=[
+            Candidate(
+                2,
+                "st2",
+                "Cu-N4",
+                {"barrier": 2.0, "energy": -10.0, "log_tof": -3.0},
+                True,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97?fbar=1.0&ftof=0")
+    assert resp.status_code == 200
+    assert resp.text.count('class="fs-pt"') == 2  # both still plotted
+    assert resp.text.count('opacity="0.25"') == 1  # st2 violates both
+    assert "filtered: barrier 2 eV &gt; 1 eV" in resp.text
+    assert 'name="fbar"' in resp.text and 'name="ftof"' in resp.text
+    # barrier is the plotted x axis → its threshold draws a dashed guide
+    assert 'stroke="#d9534f"' in resp.text
+    assert "1 of 2 points dimmed" in resp.text
+
+
+def test_frontier_visual_filters_bad_params_ignored(
+    client, runtime, monkeypatch
+) -> None:
+    """A non-numeric/out-of-range ``fbar``/``ftof`` degrades to "no
+    filter" — same quiet rule as a bogus ``?fx=`` pick."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min"), ("energy", "min")],
+        frontier=[
+            Candidate(1, "st1", "Fe-N4", {"barrier": 0.3, "energy": -20.0}, True),
+            Candidate(2, "st2", "Cu-N4", {"barrier": 2.0, "energy": -10.0}, True),
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97?fbar=abc&ftof=&fbar=-1")
+    assert resp.status_code == 200
+    assert 'opacity="0.25"' not in resp.text
+    assert 'stroke="#d9534f"' not in resp.text
+    assert "dimmed" not in resp.text
+
+
 def _three_objective_frontier():
     """A frontier whose quest declares a third objective (``log_tof``) beyond
     the two fallback axes (barrier/energy), every candidate carrying a value

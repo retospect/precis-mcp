@@ -569,6 +569,12 @@ class FrontierScatter:
     #: points carry a z value to interpolate honestly.
     contour_bands: list[dict[str, str]] = field(default_factory=list)
     contour_lines: list[str] = field(default_factory=list)
+    #: Filter-threshold guides (:func:`build_frontier_scatter`'s
+    #: ``barrier_max``/``log_tof_min``) — ``{"x1","y1","x2","y2","label"}``
+    #: in pixel space, drawn as dashed indicator lines where a filtered
+    #: measure's bound lands on the axis that plots it. Empty when no
+    #: filter is active or the filtered measure isn't a plotted axis.
+    filter_lines: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _svg_path(px: Any, py: Any, *, close: bool) -> str:
@@ -731,6 +737,48 @@ def _extra_objective_measures(
     return out
 
 
+def _filter_reasons(
+    measures: dict[str, float],
+    barrier_max: float | None,
+    log_tof_min: float | None,
+) -> list[str]:
+    """Which active visual-filter bounds ``measures`` violates (gr636179).
+
+    The same pair the pathway explorer's "Visual filters" box cuts on —
+    ``barrier_max`` flags a step-barrier above the eV threshold,
+    ``log_tof_min`` flags a turnover below the floor — applied to the
+    quest's Pareto scatter. Explorer-parity rule: a MISSING filtered
+    measure keeps the point visible (the explorer leaves unknown-barrier
+    and no-rate steps drawn); the filter cuts on a real value, never on
+    an absence.
+    """
+    out: list[str] = []
+    b = measures.get("barrier")
+    if barrier_max is not None and isinstance(b, (int, float)) and b > barrier_max:
+        out.append(f"barrier {b:g} eV > {barrier_max:g} eV")
+    t = measures.get("log_tof")
+    if log_tof_min is not None and isinstance(t, (int, float)) and t < log_tof_min:
+        out.append(f"log₁₀ TOF {t:g} < {log_tof_min:g}")
+    return out
+
+
+def _measure_indicators(
+    measures: dict[str, float], shown: set[str]
+) -> list[dict[str, str]]:
+    """The candidate's barrier/log₁₀-TOF values for the hover card when not
+    already displayed (a plotted axis, the colour axis, or a declared
+    objective's ``extra_measures`` line) — the same quantities the visual
+    filters cut on, shown as per-point indicators (gr636179)."""
+    out: list[dict[str, str]] = []
+    for key in ("barrier", "log_tof"):
+        if key in shown:
+            continue
+        v = measures.get(key)
+        if isinstance(v, (int, float)):
+            out.append({"key": key, "label": axis_label_for(key), "value": f"{v:g}"})
+    return out
+
+
 def _format_param_value(v: Any) -> str:
     """A param's display string for the hover-tooltip param list — ``%.4g``
     for a real number (never a fabricated precision), ``str()`` for
@@ -791,6 +839,8 @@ def build_frontier_scatter(
     z_measure: str | None = None,
     z_label: str = "",
     contour: bool = True,
+    barrier_max: float | None = None,
+    log_tof_min: float | None = None,
 ) -> FrontierScatter | None:
     """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
 
@@ -841,6 +891,18 @@ def build_frontier_scatter(
     provisional point still gets its dashed marker but must not warp the
     field). Too few trusted inputs, a flat z span, or ``contour=False`` ⇒
     ``contour_bands``/``contour_lines`` stay empty.
+
+    ``barrier_max``/``log_tof_min`` (optional, the quest hub's ``?fbar=`` /
+    ``?ftof=`` visual filters — the same barrier-threshold/turnover-floor
+    pair the pathway explorer's "Visual filters" box uses, gr636179) mark
+    each point violating a bound with ``filtered=True`` +
+    ``filter_reasons``; the template dims such points rather than hiding
+    them, and a candidate missing the filtered measure stays visible
+    (:func:`_filter_reasons`, explorer-parity). Each point also carries
+    ``indicators`` — its barrier/log₁₀-TOF values when they aren't
+    already displayed on an axis or as a declared objective
+    (:func:`_measure_indicators`) — and a bound whose measure is itself a
+    plotted axis lands in ``filter_lines`` as a dashed guide.
     """
     plottable = [
         c
@@ -954,11 +1016,38 @@ def build_frontier_scatter(
     x_better = better_arrow_for("x", obj_sense.get(x_measure))
     y_better = better_arrow_for("y", obj_sense.get(y_measure))
 
+    # Visual filters (gr636179) — threshold guides drawn where a filtered
+    # measure's bound lands on the axis plotting it ("them as indicators"),
+    # plus the measures each point's hover card must NOT repeat because
+    # they already display elsewhere on it.
+    filter_lines: list[dict[str, Any]] = []
+    for measure, bound, cmp_sym in (
+        ("barrier", barrier_max, "≤"),
+        ("log_tof", log_tof_min, "≥"),
+    ):
+        if bound is None:
+            continue
+        label = f"{axis_label_for(measure)} {cmp_sym} {bound:g}"
+        if measure == x_measure and x_lo <= bound <= x_hi:
+            px = round(_cx(bound), 2)
+            filter_lines.append(
+                {"x1": px, "x2": px, "y1": pad, "y2": height - pad, "label": label}
+            )
+        if measure == y_measure and y_lo <= bound <= y_hi:
+            py = round(_cy(bound), 2)
+            filter_lines.append(
+                {"x1": pad, "x2": width - pad, "y1": py, "y2": py, "label": label}
+            )
+    shown_keys = {x_measure, y_measure} | {k for k, _ in objectives}
+    if z_measure:
+        shown_keys.add(z_measure)
+
     plotted = (x_measure, y_measure)
     points: list[dict[str, Any]] = []
     for c in plottable:
         x = c.measures[x_measure]
         y = c.measures[y_measure]
+        filter_reasons = _filter_reasons(c.measures, barrier_max, log_tof_min)
         point: dict[str, Any] = {
             "ref_id": c.ref_id,
             "handle": c.handle,
@@ -973,6 +1062,9 @@ def build_frontier_scatter(
             "extra_measures": _extra_objective_measures(
                 c.measures, objectives, plotted
             ),
+            "indicators": _measure_indicators(c.measures, shown_keys),
+            "filtered": bool(filter_reasons),
+            "filter_reasons": filter_reasons,
             "rate_readout": _rate_readout(c.measures),
             "params": _param_rows(c.params),
         }
@@ -987,6 +1079,7 @@ def build_frontier_scatter(
         c = pc.candidate
         x = pc.measures[x_measure]
         y = pc.measures[y_measure]
+        filter_reasons = _filter_reasons(pc.measures, barrier_max, log_tof_min)
         ppoint: dict[str, Any] = {
             "ref_id": c.ref_id,
             "handle": c.handle,
@@ -1004,6 +1097,9 @@ def build_frontier_scatter(
             "extra_measures": _extra_objective_measures(
                 pc.measures, objectives, plotted
             ),
+            "indicators": _measure_indicators(pc.measures, shown_keys),
+            "filtered": bool(filter_reasons),
+            "filter_reasons": filter_reasons,
             "rate_readout": _rate_readout(pc.measures),
             "params": _param_rows(c.params),
         }
@@ -1045,6 +1141,7 @@ def build_frontier_scatter(
         z_stops=z_stops,
         contour_bands=contour_bands,
         contour_lines=contour_lines,
+        filter_lines=filter_lines,
     )
 
 

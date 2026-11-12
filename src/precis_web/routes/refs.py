@@ -565,6 +565,23 @@ def _quest_last_agentlog_id(store: Store, qid: int) -> int | None:
     return int(row[0]) if row else None
 
 
+def _quest_float_param(
+    raw: str | None, *, minimum: float | None = None
+) -> float | None:
+    """A frontier visual-filter GET param as a finite ``float``, else
+    ``None`` — blank/missing/non-numeric/non-finite/below-``minimum`` all
+    degrade to "no filter", the same quiet rule the ``?fx=`` pickers use."""
+    if raw is None or not raw.strip():
+        return None
+    try:
+        v = float(raw.strip())
+    except ValueError:
+        return None
+    if not math.isfinite(v) or (minimum is not None and v < minimum):
+        return None
+    return v
+
+
 async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLResponse:
     """Hub dashboard for ``kind='quest'`` — the striving above the work.
 
@@ -713,6 +730,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_y: str | None = None
     frontier_z: str | None = None
     frontier_c = True
+    frontier_fbar: float | None = None
+    frontier_ftof: float | None = None
     frontier_axis_keys: list[str] = []
     frontier_axis_counts: dict[str, int] = {}
     frontier_axis_docs: list[dict[str, str]] = []
@@ -786,6 +805,16 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             # anyway, and a sparse quest's misleading field is one explicit
             # ``fc=0`` away from dismissed.
             frontier_c = request.query_params.get("fc") != "0"
+            # Visual filters (gr636179) — the pathway explorer's "Barrier
+            # threshold"/"Turnover floor" pair as GET params: ``?fbar=``
+            # dims points whose barrier measure exceeds the eV ceiling,
+            # ``?ftof=`` dims points below the log₁₀-TOF floor. A bad or
+            # out-of-range value is "no filter" — same quiet-degradation
+            # rule as the axis pickers.
+            frontier_fbar = _quest_float_param(
+                request.query_params.get("fbar"), minimum=0.0
+            )
+            frontier_ftof = _quest_float_param(request.query_params.get("ftof"))
             # Per-quest pinned viewport (``meta.frontier_viewport = {measure:
             # [lo, hi]}``) — unions into the plotted range so the axis doesn't
             # keep re-scaling as new points land inside a range already widened
@@ -807,6 +836,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
                 z_measure=z_key,
                 z_label=z_label,
                 contour=frontier_c,
+                barrier_max=frontier_fbar,
+                log_tof_min=frontier_ftof,
             )
             if frontier_scatter is not None:
                 axis_slots = [("x", x_key), ("y", y_key)]
@@ -921,6 +952,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "frontier_y": frontier_y,
             "frontier_z": frontier_z,
             "frontier_c": frontier_c,
+            "frontier_fbar": frontier_fbar,
+            "frontier_ftof": frontier_ftof,
             "frontier_axis_counts": frontier_axis_counts,
             "frontier_axis_docs": frontier_axis_docs,
             "frontier_axis_note": frontier_mod.AXIS_CONDITIONS_NOTE,
