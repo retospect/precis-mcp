@@ -39,7 +39,10 @@ Steps, in order:
   3. A release in flight (a live round.json record or an unrecorded origin
      `release/*`; a branch recorded terminal, or whose head origin/main
      already contains, is a leftover — ignored, with the delete command
-     printed for a human; the script never deletes a remote branch):
+     printed for a human; the script never deletes a remote branch. An
+     unrecorded branch whose head holds S is in flight even on main:
+     round.json is per checkout, so it is another checkout's cut of S, and
+     cutting S again would gate it twice, gr646224):
      - this worktree owns the record (`.release-owner` marker at the worktree
        root, written at cut, matching the recorded branch + base; round.json
        is shared by every worktree, so "recorded" is not "mine"): resume
@@ -1690,7 +1693,16 @@ def run(args: argparse.Namespace) -> int:
             head = remote(f"refs/heads/{b}") or ""
             if head and not rev(head):
                 git("fetch", "-q", "origin", f"refs/heads/{b}")
-            if head and rev(head) and ancestor(head, "refs/remotes/origin/main"):
+            if b not in recorded and head and rev(head) and ancestor(s, head):
+                # gr646224: round.json is per checkout — an unrecorded branch
+                # already holding S is another checkout's cut of it, in flight
+                # even with its head on main; cutting again gates S twice.
+                say(
+                    f"release in flight: {b} at {head[:9]} already holds {s9} "
+                    "(cut by another checkout)"
+                )
+                foreign.append(b)
+            elif head and rev(head) and ancestor(head, "refs/remotes/origin/main"):
                 # gr544044: a terminal record's leftover branch, or a stale
                 # one predating the record fix, is retired — not in flight.
                 # Deleting it is the operator's call, so name the command.
@@ -1902,8 +1914,13 @@ def deploy_only(args: argparse.Namespace) -> int:
     return deploy_and_close(args, sha)
 
 
-def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
-    """Cut (or reconcile our own pending cut), wait for CI, deploy. -1 = not ours."""
+def cut_and_finish(
+    args: argparse.Namespace, s: str, branch: str = "", *, supersede: bool = False
+) -> int:
+    """Cut (or reconcile our own pending cut), wait for CI, deploy. -1 = not ours.
+
+    ``supersede`` passes ``--supersede`` to ``round cut``: the caller has
+    already proved the open release red and contained in main."""
     if not branch:
         n = next_round_n() or (round_state() or {}).get("n")
         branch = f"release/r{n}"
@@ -1923,7 +1940,7 @@ def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     # Marker first: a crash between cut and marker must still resume as ours.
     write_owner(branch, s, stamp)
-    cp = rnd("cut", "--sha", s)
+    cp = rnd("cut", "--sha", s, *(("--supersede",) if supersede else ()))
     sys.stdout.write(cp.stdout)
     sys.stdout.flush()
     if cp.returncode:
@@ -1992,6 +2009,9 @@ def resume(
             # gr573151: our release went red and its head is fully on main
             # (the fix already landed) — re-cut at S instead of reporting
             # the dead cut; `round cut` supersedes it in the record.
+            # gr648267: pass --supersede — round's own red reader needs
+            # every gate leg completed and reads a rerun in flight as
+            # undecided, so its auto-supersede would refuse the cut.
             say(
                 f"release {branch} is red and its head is on main: "
                 f"re-cutting at {s[:9]}"
@@ -1999,7 +2019,7 @@ def resume(
             if args.dry_run:
                 say(f"would mark {branch} superseded and cut at {s[:9]}")
                 return 0
-            rc = cut_and_finish(args, s)
+            rc = cut_and_finish(args, s, supersede=True)
             if rc:
                 # Any non-zero outcome can leave the marker naming a branch
                 # that was never recorded (the refusal) or cleared (a lost

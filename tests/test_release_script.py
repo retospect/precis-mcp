@@ -17,6 +17,10 @@ from typing import Any
 
 import pytest
 
+from precis.workers.job_types.release_cut import (
+    REFUSAL_IN_FLIGHT,
+    classify_cut_refusal,
+)
 from tests._script import load_script
 from tests.test_round_gate import (
     REPO_ROOT,
@@ -457,6 +461,49 @@ def test_cut_only_recuts_a_red_owned_release_once_the_fix_is_on_main(
     assert rig.origin_ref("release/r2") == c3
     mark = json.loads(_marker(rig).read_text(encoding="utf-8"))
     assert (mark["branch"], mark["base"]) == ("release/r2", c3)
+
+
+def test_cut_only_recuts_a_red_release_while_its_rerun_is_in_flight(
+    rig: Rig,
+) -> None:
+    """gr648267: release::ci_red counts a completed red leg while a rerun
+    still runs; round::_red_verdict waits for every leg and reads it
+    undecided. The red re-cut passes --supersede, so round's refusal
+    ("already records an open release") never fires."""
+    c2 = rig.shas["c2"]
+    assert _release(rig, "--cut-only", "--sha", c2, *FAST).returncode == 0
+    (rig.gh_dir / c2).write_text(
+        "lint\tcompleted\tfailure\thttps://ci.invalid/actions/runs/42\n"
+        "test-linux (1)\tin_progress\t\thttps://ci.invalid/actions/runs/42\n",
+        encoding="utf-8",
+    )
+    c3 = rig.shas["c3"]
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "already records an open release" not in out.stderr
+    assert f"RELEASE_CUT: r2 {c3}" in out.stdout.splitlines()
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert rig.origin_ref("release/r2") == c3
+
+
+def test_cut_only_skips_a_sha_another_checkout_already_cut(rig: Rig) -> None:
+    """gr646224: round.json is per checkout. An unrecorded release/* whose
+    head holds S is another checkout's cut of S — in flight even with its
+    head on main, so no second branch gates S; the job reads in-flight."""
+    c3 = rig.shas["c3"]
+    _push_branch(rig, "release/r5", c3)
+    out = _release(rig, "--cut-only", "--sha", c3, *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "RELEASE_CUT:" not in out.stdout
+    assert f"release in flight: release/r5 at {c3[:9]}" in out.stdout
+    assert f"riding release release/r5 at {c3[:9]}" in out.stdout
+    assert rig.origin_ref("release/r6") == ""
+    assert classify_cut_refusal(out.stdout)["class"] == REFUSAL_IN_FLIGHT
+    # A cut at an ancestor of that head rides it too.
+    out = _release(rig, "--cut-only", "--sha", rig.shas["c2"], *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "RELEASE_CUT:" not in out.stdout
+    assert rig.origin_ref("release/r6") == ""
 
 
 def test_cut_only_reports_an_owned_green_release_without_recutting(
