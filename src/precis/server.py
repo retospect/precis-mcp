@@ -2198,10 +2198,10 @@ def _install_token_auth(
     """
     from starlette.authentication import AuthCredentials
     from starlette.datastructures import Headers
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, PlainTextResponse
     from starlette.types import ASGIApp, Receive, Send
 
-    from precis import mcp_identity, principal, slice_tokens
+    from precis import mcp_identity, principal, security_txt, slice_tokens
     from precis.oauth import store as oauth_store
     from precis.oauth_transport import challenge, metadata, metadata_path
 
@@ -2227,6 +2227,13 @@ def _install_token_auth(
                 "auth",
             ):
                 scope.pop(key, None)
+            if scope.get("method") in {"GET", "HEAD"} and scope.get("path") == (
+                security_txt.PATH
+            ):
+                body = security_txt.render()
+                if body is not None:
+                    await PlainTextResponse(body)(scope, receive, send)
+                    return
             if (
                 oauth_config is not None
                 and personal_path is not None
