@@ -1236,12 +1236,6 @@ module = [
     "ansible.*",
     "anki",
     "anki.*",
-    # anthropic/openai ride in transitively via marker-pdf ([paper]
-    # extra): typed upstream, absent from a bare host `uv sync` —
-    # runtime/dispatch.py + tests/test_dispatch_boundary_map.py import
-    # them under try/except ImportError (ac1ac3347).
-    "anthropic",
-    "anthropic.*",
     "autocatpath",
     "autocatpath.*",
     "chgnet.*",
@@ -1281,8 +1275,6 @@ module = [
     "numba.*",
     "OCP",
     "OCP.*",
-    "openai",
-    "openai.*",
     "opentimestamps.*",
     "pdf2doi",
     "pygments",  # [web] extra (precis_web code view); no py.typed marker

@@ -425,7 +425,13 @@ attempt ledger as real, linkable refs. State rides the ordinary todo
 exactly — `open`→`open`, `active`→`doing`, `tried`→`done`,
 `ruled-out`→`won't-do` (`blocked`/`paused` still read as open).
 `done`/`won't-do` are the do-not-repropose set — a ruled-out branch
-reads as a subtree, and that is what stops a tick re-treading it.
+reads as a subtree. **Pending integration:** the tick still takes its
+do-not-repropose list from the dossier's pinned ledger chunks on
+unconverted quests — `quest/tick.py` reads and writes dossier chunks
+only, not direction todos — so the direction tree stops *human and
+graph readers* re-treading a branch today, and stops the tick only
+once the tick's ledger reads switch to it (see "The dossier is
+deprecated" below).
 Directions are **not work**: the
 rotation fence keeps them out of `view='doable'`/`'queue'`, the nursery
 and the momentum counts, so minting one never queues a task.
@@ -440,8 +446,12 @@ tag(kind="todo", id=<td>, add=["STATUS:won't-do"])           # rule it out
 An *idea* is an `open` direction; a try that ran its course marks
 `done`; a never-again marks `won't-do`. Record the *why* as a
 `hypothesis` / `dead-end` logbook entry — that also feeds the
-`open-hypothesis` gap — and link evidence `serves` the narrowest
-direction or strand it answers (the quest itself only when none fits).
+`open-hypothesis` gap. Link evidence `serves` the **quest**, and the
+direction too when you want the answer pinned to that branch: the
+quest readers (gaps, momentum, alignment, the frontier) still collect
+`serves` one hop from the quest (`gaps._live_servers`), so a
+direction-only link is invisible to them until retire-dossier slice 5
+wires `directions.quest_evidence` through.
 When you search the tree (or the literature) for prior art, phrase the
 query as the thing you expect to find, not as a question — *"subsurface
 H co-doping on Pd(111) lowers NO dissociation barrier"*, not *"does H
