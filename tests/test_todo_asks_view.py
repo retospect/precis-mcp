@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from precis import alerts as alerts_mod
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.gripe import GripeHandler
@@ -365,3 +366,57 @@ def test_reto_queue_orders_by_blocked_then_age(
     assert (rows[0].answer, rows[0].blocked) == ("ruling", 2)
     body = asks_view.render_reto_queue(store).body
     assert "[ruling]" in body and "blocks 2" in body
+
+
+def test_meta_ask_blocks_counts_the_slice_once(handler: TodoHandler, hub: Hub) -> None:
+    """td648492: ``meta.ask.blocks`` already writes the blocked-by link —
+    the slice counts once, not link + meta = 2."""
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    ask = _ask(handler, blocks=f"td{t['plain']}")
+
+    assert _row(asks_view.asks_model(store), ask).blocked == 1
+    assert "blocks 1" in asks_view.render_reto_queue(store).body
+
+
+def test_a_done_blocked_src_drops_out_of_the_count(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """td648492: a terminal-STATUS src no longer waits on the answer."""
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    ask = _ask(handler, blocks=f"td{t['plain']}")
+    assert _row(asks_view.asks_model(store), ask).blocked == 1
+
+    handler.tag(id=t["plain"], add=["STATUS:done"])
+    assert _row(asks_view.asks_model(store), ask).blocked == 0
+
+
+def test_an_unclaimed_waiting_for_reto_row_is_in_the_queue(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """td648492: a bare ``waiting-for:reto`` row waits on Reto — the queue
+    keeps it though ``default_rows()`` folds it behind ``?all=1``."""
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    handler.tag(id=t["plain"], add=["waiting-for:reto"])
+
+    assert t["plain"] not in {
+        r.ref_id for r in asks_view.asks_model(store).default_rows().rows
+    }
+    assert t["plain"] in {r.ref_id for r in asks_view.reto_queue(store)}
+
+
+def test_a_resolved_alert_leaves_the_model(hub: Hub, store: Store) -> None:
+    """td648492: ``resolved_at`` set with no STATUS tag — a tagged resolved
+    alert would sit on the asks list and the queue forever."""
+    alert = store.insert_ref(kind="alert", slug=None, title="DB lagging")
+    store.add_tag(alert.id, Tag.open("alert-state:open"), set_by="system")
+    store.add_tag(alert.id, Tag.open("for-reto:review"))
+
+    assert _row(asks_view.asks_model(store), alert.id).kind == "alert"
+    assert alert.id in {r.ref_id for r in asks_view.reto_queue(store)}
+
+    assert alerts_mod.resolve_alert(store, alert.id, resolved_by="test")
+    assert all(r.ref_id != alert.id for r in asks_view.asks_model(store).rows)
+    assert alert.id not in {r.ref_id for r in asks_view.reto_queue(store)}

@@ -29,10 +29,11 @@ every row starts with its handle so it is a ``get``.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.response import Response
+from precis.todo import blocker_terminal_sql
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -81,7 +82,7 @@ class AskRow:
     """One thing that waits on the human."""
 
     klass: str
-    #: ``todo`` | ``gripe``.
+    #: ``todo`` | ``gripe`` | ``alert``.
     kind: str
     ref_id: int | None
     handle: str
@@ -102,7 +103,8 @@ class AskRow:
     context: str = ""
     #: From a ``for-reto:<answer>`` tag: ruling | spec | review | other.
     answer: str = ""
-    #: Open rows blocked-by this one (or the slice ``meta.ask.blocks`` names).
+    #: Open rows blocked-by this one — ``meta.ask.blocks`` already writes
+    #: that link, so the slice it names is counted, not added on top.
     blocked: int = 0
     created_at: datetime | None = None
 
@@ -308,16 +310,25 @@ def _reto_answer(tags: list[str]) -> str:
 
 
 def _blocked_counts(store: Store, ids: list[int]) -> dict[int, int]:
-    """Open refs that carry a ``blocked-by`` link to each of ``ids``."""
+    """Open refs that carry a ``blocked-by`` link to each of ``ids`` —
+    retired, resolved and terminal-STATUS srcs no longer wait."""
     if not ids:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT l.dst_ref_id, COUNT(DISTINCT l.src_ref_id)
               FROM links l JOIN refs s ON s.ref_id = l.src_ref_id
              WHERE l.dst_ref_id = ANY(%s) AND l.relation = 'blocked-by'
                AND s.retired_at IS NULL
+               AND s.resolved_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = s.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open'
+                   ) NOT IN {blocker_terminal_sql()}
              GROUP BY l.dst_ref_id
             """,
             (ids,),
@@ -388,6 +399,9 @@ def _ref_rows(store: Store) -> list[AskRow]:
             SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at
               FROM refs r
              WHERE r.kind IN ('todo', 'gripe', 'alert') AND r.retired_at IS NULL
+               -- only alerts ever stamp resolved_at: a resolved alert
+               -- leaves the list even without a terminal STATUS tag
+               AND r.resolved_at IS NULL
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
@@ -450,10 +464,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
             )
         )
     blocked = _blocked_counts(store, [r.ref_id for r in rows if r.ref_id])
-    return [
-        replace(r, blocked=blocked.get(r.ref_id or 0, 0) + (r.blocks is not None))
-        for r in rows
-    ]
+    return [replace(r, blocked=blocked.get(r.ref_id or 0, 0)) for r in rows]
 
 
 def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
@@ -529,8 +540,14 @@ def render_asks(store: Store) -> Response:
 
 def reto_queue(store: Store) -> list[AskRow]:
     """Everything that waits on Reto (showstoppers and asks across todos,
-    gripes and alerts), most blocked first, then oldest first."""
-    rows = list(asks_model(store).default_rows().rows)
+    gripes and alerts — plus a bare ``waiting-for:reto`` row, a DECISION
+    ``default_rows()`` drops while Reto is exactly who it waits on), most
+    blocked first, then oldest first."""
+    rows = [
+        r
+        for r in asks_model(store).rows
+        if r.klass == SHOWSTOPPER or r.is_ask or "waiting-for:reto" in r.reasons
+    ]
     rows.sort(
         key=lambda r: (
             -r.blocked,
@@ -550,7 +567,7 @@ def render_reto_queue(store: Store) -> Response:
         if rows
         else "# reto-queue — nothing waits on you"
     ]
-    now = datetime.now().astimezone()
+    now = datetime.now(UTC)
     for i, r in enumerate(rows, 1):
         needs = r.answer or r.ask_kind or "decision"
         out.append("")
