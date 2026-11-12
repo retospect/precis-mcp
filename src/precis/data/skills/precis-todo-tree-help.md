@@ -296,17 +296,17 @@ no executor, tier, schedule or parent is needed.
 ## Answer an ask-user todo
 
 ```python
-get(kind="todo", id=42)  # read the current details and exact ask-user tag
-edit(
-    kind="todo", id=42, mode="replace",
-    body="Existing details retained here.\n\nAnswer: use CSV for the export.",
-)
-tag(kind="todo", id=42, remove=["ask-user:which-format"])  # copy the exact tag; bare may be "ask-user"
+put(kind="todo", id=42, text="answer: use CSV for the export")
+tag(kind="todo", id=42, remove=["ask-user:which-format"], add=["STATUS:done"])  # copy the exact tag; bare may be "ask-user"
 ```
 
-Replace the complete `body=` with the existing details plus the answer, or
-change one span with `mode='find-replace'` / `'insert'` (`find=`, `text=`). Record the answer before removing the
-ask-user tag, which releases the human-reply wait.
+`put` with `id=` + `text=` appends a comment; a comment starting
+`answer:` is the recorded reply the ask readers check (the release
+`release-review-wait:` gate, the deploy approval — `precis-work-help`,
+gr645663). Record it before removing the ask tag, which closes the row
+and releases the human-reply wait. Keeping the wording in the details
+body (`edit(mode='replace', body=…)`) is fine on top of the comment,
+not instead of it.
 
 ## Waiting, blocked, and asks
 

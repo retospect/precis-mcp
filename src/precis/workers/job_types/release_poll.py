@@ -256,8 +256,9 @@ _LAND_TD_RE = re.compile(r"td(\d+)")
 
 #: The dedupe tag on the review-wait ask — one OPEN ask per LANDED todo:
 #: ``release-review-wait:td<id>`` where id is the land's todo, and
-#: answering the ask clears that one land. An ask closed without an
-#: ``answer:`` comment holds nothing — the gate refiles it.
+#: answering the ask clears that one land — an ``answer:`` comment, or
+#: an ``answer:`` line in its details body (gr645663). An ask closed
+#: without one holds nothing — the gate refiles it.
 _REVIEW_WAIT_TAG_PREFIX = "release-review-wait"
 
 #: Todo statuses that close a review-wait ask for dedupe and blocker
@@ -1284,9 +1285,10 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # is hopeless to this same gate — but the sha-keyed mint needs no
 # root, so it answers instead.)
 # An answered ask
-# (``release-review-wait:td<land>`` with an ``answer:`` comment) clears
-# that one land; one closed without the comment holds nothing — the
-# gate refiles it and the blocker names the live ask's id. "Fix
+# (``release-review-wait:td<land>`` carrying an ``answer:`` comment or
+# an ``answer:`` line in its details body, gr645663) clears that one
+# land; one closed without either holds nothing — the gate refiles it
+# and the blocker names the live ask's id. "Fix
 # reviewed" is not gated:
 # ``plan_dispatch._review_fix`` mints no reviewer for a fix today
 # (td574946 S5 adds the narrow re-review and tightens this gate).
@@ -1590,9 +1592,12 @@ def _root(store: Any, todo_id: int) -> tuple[int, str]:
 
 def _answered_wait_ask(store: Any, ask_key: str) -> bool:
     """``True`` when the ``release-review-wait:<ask_key>`` ask carries
-    an ``answer:`` comment (the ``answer:`` convention —
-    ``plans.release`` ~296, ``handlers.todo`` ~66); it clears that one
-    land."""
+    an ``answer:`` — a comment starting ``answer:`` (the ``answer:``
+    convention — ``plans.release`` ~296, ``handlers.todo`` ~66), or a
+    line starting ``answer:`` in its details body:
+    ``precis-todo-tree-help``'s ask close writes it there
+    (``edit(mode='replace', body='…\\nAnswer: …')``) and it counts the
+    same (gr645663). Either clears that one land."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -1602,8 +1607,16 @@ def _answered_wait_ask(store: Any, ask_key: str) -> bool:
               JOIN chunks c ON c.ref_id = r.ref_id
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN' AND t.value = %s
-               AND c.chunk_kind = 'todo_comment' AND c.retired_at IS NULL
-               AND lower(ltrim(c.text)) LIKE 'answer:%%'
+               AND c.retired_at IS NULL
+               AND (
+                 (c.chunk_kind = 'todo_comment'
+                  AND lower(ltrim(c.text)) LIKE 'answer:%%')
+                 OR (c.chunk_kind = 'todo_body'
+                     AND EXISTS (
+                       SELECT 1
+                         FROM unnest(string_to_array(c.text, chr(10))) AS u(ln)
+                        WHERE lower(ltrim(u.ln)) LIKE 'answer:%%'))
+               )
              LIMIT 1
             """,
             (f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}",),
@@ -1741,7 +1754,8 @@ def _file_review_wait_ask(
     ``release-review-wait:<ask_key>`` tag over still-answerable todos
     inside one locked transaction — same shape as
     :func:`_file_stuck_ask`. Answering it clears that one land; one
-    closed without an ``answer:`` comment is refiled. ``land`` names the
+    closed without an ``answer:`` (comment or body line, gr645663) is
+    refiled. ``land`` names the
     land in the text (``td<N>`` or the sha12), ``job_id`` the landed job
     when one claims it.
 
@@ -1763,8 +1777,9 @@ def _file_review_wait_ask(
             f"pass and cut while the {land} engine land is "
             f"uncleared; reviewer td{rid} cannot settle it on its own. "
             "This ask is the only write the gate makes; answering it "
-            "executes nothing — 'acknowledged' and 'false alarm' both "
-            "just close it, which clears this one land."
+            "executes nothing — a comment starting `answer:` "
+            "('acknowledged' or 'false alarm') just closes it, which "
+            "clears this one land."
         )
     else:
         what = f"the {land} engine land{job}"
@@ -1778,9 +1793,9 @@ def _file_review_wait_ask(
             f"pass and cut while the {land} engine land{job} has no "
             f"reviewer covering it — fix, revert and "
             f"plain lands mint none.{why} This ask is the only write the "
-            "gate makes; answering it executes nothing — 'acknowledged' "
-            "and 'false alarm' both just close it, which clears this one "
-            "land."
+            "gate makes; answering it executes nothing — a comment "
+            "starting `answer:` ('acknowledged' or 'false alarm') just "
+            "closes it, which clears this one land."
         )
     context = (
         f"{what} holds every release pass and cut until cleared — "
@@ -2113,8 +2128,9 @@ def _engine_verdicts(
     satisfied > waiting > hopeless — a waiting land files its ask once
     the NEWER of the land and its newest covering reviewer is
     :data:`REVIEW_WAIT_AFTER` old, a hopeless one at once. An ask
-    closed without an ``answer:`` comment does not dedupe — the next
-    filing pass refiles it — and blocker lines name the live ask's id.
+    closed without an ``answer:`` (comment or body line, gr645663)
+    does not dedupe — the next filing pass refiles it — and blocker
+    lines name the live ask's id.
     ``file_asks`` limits the mint-and-ask writes to the pass
     (``release_cut`` asks for nothing). Any exception anywhere returns a
     single fail-closed blocker.

@@ -80,12 +80,12 @@ chat for "things the owner still has to do".
 
 ## Close an item once the person answered
 
-Record the answer in the item's details body, then release it. Use
-`edit` for the update: `put` with an `id=` on a todo does not update,
-it creates a fresh todo.
+Record the answer as a comment, then release it — `put` with `id=` +
+`text=` on a todo appends a comment (it never rewrites the details
+body; that is `edit`'s job):
 
 ```python
-edit(kind="todo", id=<N>, mode="replace", body="Answer: lift the tags on td1, td2; leave the rest.")
+put(kind="todo", id=<N>, text="answer: lift the tags on td1, td2; leave the rest.")
 tag(kind="todo", id=<N>, remove=["waiting-for:<user>"])   # real work → re-enters doable
 tag(kind="todo", id=<N>, add=["STATUS:done"])              # pure decision → done
 ```
@@ -93,6 +93,11 @@ tag(kind="todo", id=<N>, add=["STATUS:done"])              # pure decision → d
 Removing the tag is the resume edge for an item that is work the
 factory or a session now carries on; `STATUS:done` is for an item that
 was only a decision.
+
+Answer `ask-user` rows the same way — a comment starting `answer:`
+plus `STATUS:done`, not a body edit alone: the readers that clear an
+ask (the release `release-review-wait:` gate, the deploy approval)
+check the comment (`precis-todo-tree-help`, gr645663).
 
 ## What does not belong on a queue
 

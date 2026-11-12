@@ -2927,6 +2927,56 @@ def test_an_answered_wait_ask_clears_the_land(
     assert res.minted is not None
 
 
+def test_a_wait_ask_answered_in_its_body_clears_the_land(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645663: ``precis-todo-tree-help``'s ask close records the answer
+    in the ask's details body (``edit(mode='replace', body='…\\nAnswer:
+    …')``), not as an ``answer:`` comment — that clears the land too:
+    the ask stays deduped and the next pass mints."""
+    _fake_github(monkeypatch)
+    _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
+    rid = _reviewer(store, 42)
+    # The reviewer has sat open since the land: the 24 h clock (the
+    # newer of land and reviewer) is due.
+    _created_at(store, rid, NOW - timedelta(hours=25))
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    [ask_id] = _review_wait_asks(store)
+    # The documented body close: details retained, answer a later line.
+    store.chunks.replace_body_chunk(
+        ask_id,
+        "Existing details retained here.\n\nAnswer: acknowledged",
+        chunk_kind="todo_body",
+    )
+    _close(store, ask_id)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert _review_wait_asks(store) == [ask_id]
+
+
+def test_a_wait_ask_body_without_an_answer_line_does_not_clear(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr645663: the body read is line-level — the ask's own filed body
+    (which mentions answering) does not self-answer, and a closed ask
+    whose body holds no ``answer:`` line is still refiled."""
+    _fake_github(monkeypatch)
+    use_lanes(
+        monkeypatch,
+        L.Lane("code-only", "claude_p", "s", 1, frozenset({"code"}), vendor="x"),
+    )
+    _engine_land(store, 42, paths=["scripts/ship"])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    [first] = _review_wait_asks(store)
+    _close(store, first)  # gate-written body — mentions answering, no answer: line
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None and res.blocker is not None
+    asks = _review_wait_asks(store)
+    assert len(asks) == 2 and first in asks
+
+
 def test_a_terminal_unlanded_fix_asks_at_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
