@@ -42,7 +42,7 @@ shape with four first-class extensions:
 Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
-                              |'active'|'doing'|'done'|'work'|'asks')
+                              |'active'|'doing'|'done'|'work'|'asks'|'reto-queue')
     get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch')
 
 ``view='comments'`` is selectable: ``args={'comment': K}`` reads one
@@ -60,7 +60,9 @@ neighbourhood never sees that column (gr541348).
 human in three classes (showstopper / decision / discussion), grouped by
 quest then thread — ``ask-user`` todos, ``waiting-for:reto``, gripes
 tagged ``needs:ruling`` or ``discussion`` (:mod:`precis.todo.asks_view`);
-the web ``/asks`` shows the same. A question for the owner is a todo
+the web ``/asks`` shows the same. A row tagged ``for-reto:<ruling|spec|
+review|other>`` waits on Reto specifically; ``view='reto-queue'`` lists
+those and the asks flat, most blocked first, then oldest (gr648249). A question for the owner is a todo
 tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
 ``context``; validated on put and edit, ``blocks='td<id>'`` writes a
 blocked-by link from that slice and makes the row a showstopper); answer
@@ -267,6 +269,8 @@ class TodoView(StrEnum):
     # Dark-factory step 1b (td540847): the asks list in three classes,
     # grouped by quest (:mod:`precis.todo.asks_view`).
     ASKS = "asks"
+    # gr648249: everything waiting on Reto, most blocked first.
+    RETO_QUEUE = "reto-queue"
     # td574946 S1: the rescue queue — every live node carrying an open
     # ``rescue:<class>`` tag, grouped by class.
     RESCUE = "rescue"
@@ -385,6 +389,7 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.WORK: lambda store, args, ps: work_view.render_work(store),
     TodoView.ASKS: lambda store, args, ps: asks_view.render_asks(store),
+    TodoView.RETO_QUEUE: lambda store, args, ps: asks_view.render_reto_queue(store),
     TodoView.RESCUE: lambda store, args, ps: views.render_rescue(store),
 }
 

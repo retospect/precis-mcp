@@ -28,7 +28,8 @@ every row starts with its handle so it is a ``get``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.response import Response
@@ -65,6 +66,10 @@ _TAGS = (
     "discussion",
     "showstopper",
 )
+#: ``for-reto:<answer>`` marks a row that waits on Reto specifically (not a
+#: generic needs-spec an agent can write); ``<answer>`` is what he must give.
+RETO_TAG = "for-reto:"
+RETO_ANSWERS: tuple[str, ...] = ("ruling", "spec", "review", "other")
 #: Ancestor hops when walking ``parent_id``.
 _MAX_HOPS = 20
 _QUESTION_CAP = 160
@@ -95,12 +100,21 @@ class AskRow:
     options: tuple[str, ...] = ()
     blocks: int | None = None
     context: str = ""
+    #: From a ``for-reto:<answer>`` tag: ruling | spec | review | other.
+    answer: str = ""
+    #: Open rows blocked-by this one (or the slice ``meta.ask.blocks`` names).
+    blocked: int = 0
+    created_at: datetime | None = None
 
     @property
     def is_ask(self) -> bool:
         """An ask-user todo or a ruling-tagged row: a question, not a
         status line (``waiting-for:reto``) or a shape discussion."""
-        return "ask-user" in self.reasons or "needs:ruling" in self.reasons
+        return (
+            "ask-user" in self.reasons
+            or "needs:ruling" in self.reasons
+            or bool(self.answer)
+        )
 
 
 @dataclass(frozen=True)
@@ -283,6 +297,34 @@ def _ask_blocks(ask: dict[str, Any] | None) -> int | None:
     return parsed[2] if parsed and parsed[0] == "todo" and not parsed[1] else None
 
 
+def _reto_answer(tags: list[str]) -> str:
+    """The answer kind of a ``for-reto:<answer>`` tag, ``""`` when absent;
+    an unknown suffix reads as ``other``."""
+    for t in tags:
+        if t.startswith(RETO_TAG):
+            a = t[len(RETO_TAG) :]
+            return a if a in RETO_ANSWERS else "other"
+    return ""
+
+
+def _blocked_counts(store: Store, ids: list[int]) -> dict[int, int]:
+    """Open refs that carry a ``blocked-by`` link to each of ``ids``."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.dst_ref_id, COUNT(DISTINCT l.src_ref_id)
+              FROM links l JOIN refs s ON s.ref_id = l.src_ref_id
+             WHERE l.dst_ref_id = ANY(%s) AND l.relation = 'blocked-by'
+               AND s.retired_at IS NULL
+             GROUP BY l.dst_ref_id
+            """,
+            (ids,),
+        ).fetchall()
+    return {int(r[0]): int(r[1]) for r in rows}
+
+
 def _classify(
     kind: str, tags: list[str], ask: dict[str, Any] | None = None
 ) -> tuple[str, tuple[str, ...]] | None:
@@ -310,6 +352,10 @@ def _classify(
     if "needs:ruling" in tags:
         classes.append(DECISION)
         reasons.append("needs:ruling")
+    answer = _reto_answer(tags)
+    if answer:
+        classes.append(DECISION)
+        reasons.append(RETO_TAG + answer)
     if "showstopper" in tags:
         classes.append(SHOWSTOPPER)
         reasons.append("showstopper")
@@ -339,13 +385,14 @@ def _ref_rows(store: Store) -> list[AskRow]:
     with store.pool.connection() as conn:
         cands = conn.execute(
             """
-            SELECT r.ref_id, r.kind, r.title, r.meta->'ask'
+            SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at
               FROM refs r
-             WHERE r.kind IN ('todo', 'gripe') AND r.retired_at IS NULL
+             WHERE r.kind IN ('todo', 'gripe', 'alert') AND r.retired_at IS NULL
                AND EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
                       AND (t.value = ANY(%s) OR t.value LIKE 'ask-user:%%'
+                           OR t.value LIKE 'for-reto:%%'
                            OR t.value LIKE 'rescue:%%'))
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2
@@ -359,7 +406,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
         ).fetchall()
     tags_by_ref = _open_tags(store, [int(c[0]) for c in cands])
     rows: list[AskRow] = []
-    for ref_id, kind, title, ask_meta in cands:
+    for ref_id, kind, title, ask_meta, created in cands:
         rid = int(ref_id)
         tags = tags_by_ref.get(rid, [])
         ask = ask_meta if isinstance(ask_meta, dict) else None
@@ -398,9 +445,15 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 else (),
                 blocks=blocks,
                 context=str((ask or {}).get("context") or ""),
+                answer=_reto_answer(tags),
+                created_at=created,
             )
         )
-    return rows
+    blocked = _blocked_counts(store, [r.ref_id for r in rows if r.ref_id])
+    return [
+        replace(r, blocked=blocked.get(r.ref_id or 0, 0) + (r.blocks is not None))
+        for r in rows
+    ]
 
 
 def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
@@ -466,6 +519,55 @@ def render_asks(store: Store) -> Response:
             ("get(kind='todo', id=N)", "a row with its comment timeline"),
             ("get(kind='gripe', id=N)", "a gripe row"),
             ("search(kind='todo', view='work')", "the whole tree these sit in"),
+        ]
+    )
+    return Response(body=body)
+
+
+# ── the Reto queue ────────────────────────────────────────────────
+
+
+def reto_queue(store: Store) -> list[AskRow]:
+    """Everything that waits on Reto (showstoppers and asks across todos,
+    gripes and alerts), most blocked first, then oldest first."""
+    rows = list(asks_model(store).default_rows().rows)
+    rows.sort(
+        key=lambda r: (
+            -r.blocked,
+            r.created_at.timestamp() if r.created_at else float("inf"),
+            r.ref_id or 0,
+        )
+    )
+    return rows
+
+
+def render_reto_queue(store: Store) -> Response:
+    """``search(kind='todo', view='reto-queue')`` — the prioritized queue,
+    read top to bottom: context, options (recommended first), impact."""
+    rows = reto_queue(store)
+    out = [
+        f"# reto-queue — {len(rows)} waiting, most blocked first"
+        if rows
+        else "# reto-queue — nothing waits on you"
+    ]
+    now = datetime.now().astimezone()
+    for i, r in enumerate(rows, 1):
+        needs = r.answer or r.ask_kind or "decision"
+        out.append("")
+        out.append(f"{i}. {r.handle} [{needs}] — {r.title}")
+        if r.context:
+            out.append(f"   context: {r.context}")
+        if r.question and r.question != r.title:
+            out.append(f"   ask: {r.question}")
+        for n, opt in enumerate(r.options, 1):
+            out.append(f"   option {n}{' (recommended)' if n == 1 else ''}: {opt}")
+        age = f"{(now - r.created_at).days}d old" if r.created_at else "age unknown"
+        out.append(f"   impact: blocks {r.blocked} · {age} · {r.klass}")
+    body = "\n".join(out)
+    body += render_next_section(
+        [
+            ("get(kind='todo', id=N)", "a row with its comment timeline"),
+            ("search(kind='todo', view='asks')", "the same rows grouped by quest"),
         ]
     )
     return Response(body=body)

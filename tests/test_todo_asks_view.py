@@ -342,3 +342,26 @@ def test_default_rows_hide_waiting_for_and_discussion(
     assert t["plain"] not in default  # bare waiting-for:reto
     assert t["shape"] not in default  # discussion
     assert {r.ref_id for r in full.rows} - default == {t["plain"], t["shape"]}
+
+
+def test_reto_queue_orders_by_blocked_then_age(
+    handler: TodoHandler, hub: Hub, store: Store
+) -> None:
+    """gr648249: ``for-reto:<answer>`` rows join the queue; most blocked first."""
+    assert TodoView("reto-queue") is TodoView.RETO_QUEUE
+    gripe_h = GripeHandler(hub=hub)
+    old = id_of(gripe_h.put(text="Spec the lane rule.", tags=["for-reto:spec"]).body)
+    hot = id_of(gripe_h.put(text="Pick a database.", tags=["for-reto:ruling"]).body)
+    plain = id_of(
+        gripe_h.put(text="Agent-writable needs-spec.", tags=["needs-spec"]).body
+    )
+    for text in ("Slice A.", "Slice B."):
+        sl = id_of(handler.put(text=text, meta={"llm_tier": None}).body)
+        store.add_link(src_ref_id=sl, dst_ref_id=hot, relation="blocked-by")
+    rows = asks_view.reto_queue(store)
+    ids = [r.ref_id for r in rows]
+    assert ids == [hot, old]
+    assert plain not in ids
+    assert (rows[0].answer, rows[0].blocked) == ("ruling", 2)
+    body = asks_view.render_reto_queue(store).body
+    assert "[ruling]" in body and "blocks 2" in body

@@ -151,6 +151,13 @@ To raise one: write a question for the owner (next section), or tag
 `waiting-for:reto` on the slice you hold when you cannot continue (a
 showstopper). On a gripe, tag it `needs:ruling` and comment the question.
 
+Triage marks an item that waits on Reto specifically with
+`for-reto:<ruling|spec|review|other>` (agents write plain needs-spec;
+this tag is Reto's alone). `search(kind="todo", view="reto-queue")` lists
+every such row plus the asks across todos, gripes and alerts, most
+blocked first then oldest, each with context, options (recommended
+first) and impact.
+
 ## How do I ask the owner a question?
 ## Where does a question for Reto go, and how is it answered?
 
