@@ -3757,7 +3757,7 @@ class JobHandler(NumericRefHandler):
             meta["origin"] = "agent"
         else:
             meta["origin"] = "background"
-        # The rest of the derived mint stamps (gr595539) — lane /
+        # The rest of the derived mint stamps (gr595539) — share_key /
         # task_kind / consequence / size / submitter — the same helper
         # the worker mint door runs, on a short read connection (the
         # insert tx hasn't opened yet).

@@ -2854,6 +2854,9 @@ def submit(ctx: Any, spec: Any) -> Any:
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     # Leaving the lane-full park (gr611299): the lane wait marks must not
     # outlive it, or a later quota park of this job would read as one.
+    # ``meta.lane`` is the EXECUTION lane — the fair-share axis the mint
+    # stamped rides ``meta.share_key`` (gr595539, td652988 review); the
+    # two meanings collided under ``meta.lane``.
     ctx.set_meta(
         lane=lane.name,
         adapter=adapter.name,

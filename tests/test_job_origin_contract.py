@@ -11,11 +11,13 @@ else in ``src/`` fails the AST scan below; a new minter belongs in
 ``mint_background_job``.
 
 gr595539 adds the rest of the mint-time matrix through the same two
-doors (``_mint.job_mint_marks``): ``meta.lane`` — the share key the
-claim order will read — ``meta.task_kind``/``meta.consequence`` for a
-``run_slice`` chain job, ``meta.size`` off the type's declared size
-parameter, and ``meta.submitter`` when the mint runs inside a bound
-MCP session.
+doors (``_mint.job_mint_marks``): ``meta.share_key`` — the fair-share
+axis the claim order will read — ``meta.task_kind``/``meta.consequence``
+for a ``run_slice`` chain job, ``meta.size`` off the type's declared
+size parameter, and ``meta.submitter`` when the mint runs inside a
+bound MCP session. ``meta.lane`` is NOT minted: on a ``run_slice`` row
+it is the execution lane ``submit`` records after its pick (td652988
+review).
 """
 
 from __future__ import annotations
@@ -427,12 +429,14 @@ def test_worker_put_inside_revision_context_still_inherits(
     assert _meta(store, int(m.group(1)))["origin"] == "recurring"
 
 
-# ── gr595539: lane / task_kind / consequence / size / submitter ────────
+# ── gr595539: share_key / task_kind / consequence / size / submitter ──
 
 
-def test_mint_stamps_lane_and_size(store: Store) -> None:
-    """Every minted row carries ``meta.lane``; a type with a declared
-    size parameter stamps ``meta.size = {name, value}`` off params."""
+def test_mint_stamps_share_key_and_size(store: Store) -> None:
+    """Every minted row carries ``meta.share_key``; a type with a
+    declared size parameter stamps ``meta.size = {name, value}`` off
+    params. ``meta.lane`` stays off the row — it is the execution lane
+    a ``run_slice`` stamps at submit, not a mint mark (td652988)."""
     with store.tx() as conn:
         ref = mint_background_job(
             store,
@@ -450,16 +454,17 @@ def test_mint_stamps_lane_and_size(store: Store) -> None:
             title="t",
         )
     meta = _meta(store, int(ref.id))
-    assert meta["lane"] == "embed_batch"
+    assert meta["share_key"] == "embed_batch"
     assert meta["size"] == {"name": "limit", "value": 10}
+    assert "lane" not in meta
     bare_meta = _meta(store, int(bare.id))
-    assert bare_meta["lane"] == "plan_tick"
+    assert bare_meta["share_key"] == "plan_tick"
     assert "size" not in bare_meta
 
 
-def test_mint_lane_discriminates_on_params_pass(store: Store) -> None:
+def test_mint_share_key_discriminates_on_params_pass(store: Store) -> None:
     """A ``params.pass`` sub-queue shares the claim lane — the stamped
-    lane is ``<job_type>:<pass>``, the claim's own ``_share_key``."""
+    key is ``<job_type>:<pass>``, the claim's own ``_share_key``."""
     with store.tx() as conn:
         ref = mint_background_job(
             store,
@@ -470,7 +475,7 @@ def test_mint_lane_discriminates_on_params_pass(store: Store) -> None:
             params={"pass": "small", "limit": 25},
         )
     meta = _meta(store, int(ref.id))
-    assert meta["lane"] == "derived_drain:small"
+    assert meta["share_key"] == "derived_drain:small"
     assert meta["size"] == {"name": "limit", "value": 25}
 
 
@@ -489,9 +494,13 @@ def test_mint_size_folds_a_list_param(store: Store) -> None:
     assert _meta(store, int(ref.id))["size"] == {"name": "ref_ids", "value": 3}
 
 
-def _mint_run_slice(store: Store, task_class: str | None) -> dict[str, Any]:
-    """A run_slice job under a todo carrying ``meta.task_class`` (or
-    none) — returns the job's stamped meta."""
+def _mint_run_slice(
+    store: Store, task_class: str | None, parent_id: int | None = None
+) -> dict[str, Any]:
+    """A run_slice job whose ``params.todo_id`` is a todo carrying
+    ``meta.task_class`` (or none) — returns the job's stamped meta.
+    ``parent_id`` defaults to the same todo; pass another ref to pin the
+    differently-parented cases."""
     todo_meta = {"task_class": task_class} if task_class else {}
     todo = store.insert_ref(kind="todo", slug=None, title="slice", meta=todo_meta)
     with store.tx() as conn:
@@ -502,38 +511,60 @@ def _mint_run_slice(store: Store, task_class: str | None) -> dict[str, Any]:
             executor="ssh_node",
             title="t",
             params={"todo_id": int(todo.id), "effort": "high"},
-            parent_id=int(todo.id),
+            parent_id=int(todo.id) if parent_id is None else parent_id,
         )
     return _meta(store, int(ref.id))
 
 
 def test_run_slice_mint_stamps_recipe_marks(store: Store) -> None:
-    """A chain job's lane is the recipe's lane_class for the parent
-    todo's task_class; task_kind/consequence ride the same row."""
+    """A chain job's share key is the recipe's lane_class for the
+    executed todo's task_class; task_kind/consequence ride the same
+    row. ``meta.lane`` stays off the row — submit stamps the execution
+    lane there."""
     meta = _mint_run_slice(store, "review")
-    assert meta["lane"] == "review"
+    assert meta["share_key"] == "review"
     assert meta["task_kind"] == "code.review"
     assert meta["consequence"] == "high"
     assert meta["size"] == {"name": "effort", "value": "high"}
+    assert "lane" not in meta
 
 
 def test_run_slice_mint_defaults_for_an_unreciped_class(store: Store) -> None:
-    """A task_class with no recipe keeps itself as the lane and reads
-    ``unknown.<class>``/``medium`` — the route_log unknown-source
+    """A task_class with no recipe keeps itself as the share key and
+    reads ``unknown.<class>``/``medium`` — the route_log unknown-source
     convention."""
     meta = _mint_run_slice(store, "exotic_lane")
-    assert meta["lane"] == "exotic_lane"
+    assert meta["share_key"] == "exotic_lane"
     assert meta["task_kind"] == "unknown.exotic_lane"
     assert meta["consequence"] == "medium"
 
 
 def test_run_slice_mint_defaults_task_class_to_code(store: Store) -> None:
-    """No ``meta.task_class`` on the parent → the run_slice default
-    ``code``, same as the job's own submit path."""
+    """No ``meta.task_class`` on the executed todo → the run_slice
+    default ``code``, same as the job's own submit path."""
     meta = _mint_run_slice(store, None)
-    assert meta["lane"] == "code"
+    assert meta["share_key"] == "code"
     assert meta["task_kind"] == "code.implement"
     assert meta["consequence"] == "high"
+
+
+def test_run_slice_mint_class_comes_from_params_todo_id(store: Store) -> None:
+    """The class lives on the todo the job EXECUTES, not its parent
+    (td652988 review): a run_slice job parented to a coordinator job —
+    which carries no ``task_class`` — still stamps the recipe row of
+    the todo ``params.todo_id`` names, and a job parented to a
+    different todo stamps ITS ``params.todo_id``, not the parent's."""
+    coordinator = store.insert_ref(kind="job", slug=None, title="coord", meta={})
+    meta = _mint_run_slice(store, "review", parent_id=int(coordinator.id))
+    assert meta["share_key"] == "review"
+    assert meta["task_kind"] == "code.review"
+    assert meta["consequence"] == "high"
+    other_todo = store.insert_ref(
+        kind="todo", slug=None, title="other", meta={"task_class": "docs"}
+    )
+    meta = _mint_run_slice(store, "review", parent_id=int(other_todo.id))
+    assert meta["share_key"] == "review"
+    assert meta["task_kind"] == "code.review"
 
 
 def test_mint_stamps_no_submitter_outside_a_session(store: Store) -> None:
@@ -572,8 +603,9 @@ def test_mint_stamps_submitter_inside_a_session(
 
 
 def test_put_stamps_the_mint_marks(hub: Hub, store: Store) -> None:
-    """The put door derives the same matrix — lane (and size when the
-    type declares one) land on the row through ``JobHandler.put`` too."""
+    """The put door derives the same matrix — share_key (and size when
+    the type declares one) land on the row through ``JobHandler.put``
+    too."""
     meta = _meta(store, _put_job(hub))
-    assert meta["lane"] == "graph_garden"
+    assert meta["share_key"] == "graph_garden"
     assert "size" not in meta

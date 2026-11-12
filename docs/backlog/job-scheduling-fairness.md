@@ -218,7 +218,7 @@ users, fairness across lanes within a class.
 | job_type and `params.pass` | yes | — | folds into lane |
 | parent job, `dispatched_from_todo`, `retry_of` | yes | — | logged |
 | submitter (MCP session_id + client) | no, only in `tool_calls` | `meta.submitter` | logged |
-| lane class (triage/brief/code/review/validate) | spec only, for `run_slice` (me568185) | `meta.lane` | share key, inner |
+| lane class (triage/brief/code/review/validate) | spec only, for `run_slice` (me568185) | `meta.share_key` | share key, inner |
 | task_kind, consequence | spec only, for `run_slice` | stamp | logged |
 | size parameter | unnamed in `params` | `meta.size` `{name, value}` | logged, footprint key |
 | predicted footprint / runtime | no | from the footprint table (gr595536) | admission |
@@ -229,8 +229,12 @@ are share keys; everything else is logged for the footprint table, the
 pass-rate table and the per-run features row, and is promoted to a share key
 only when the data shows a lane starving on that axis.
 
-`lane` = lane class for chain jobs, else `job_type[:pass]` (today's slice-5
-share key).
+`share_key` = lane class for chain jobs, else `job_type[:pass]` (today's slice-5
+share key). It is stamped as `meta.share_key`, never `meta.lane`: on a
+`run_slice` row `meta.lane` is the *execution* lane `submit` records after its
+pick — the name `plans.lanes` live counts/backoffs, the `plan_dispatch` ladder
+and the work boards read. A chain job's class resolves off `params.todo_id`
+(the todo the job executes), not `parent_id` (td652988 review, td653075).
 
 **Deficit (gr595541).** Each lane has a share in `service_config` (default
 equal). Deficit = share − the fraction of lane-seconds this host gave the
@@ -265,9 +269,9 @@ so `meta.size` is one input and not the footprint key; and S3 retires the
 - A lane that received 0 % of a 60-minute window while another lane in its
   class ran continuously is claimed next regardless of prio once both have
   candidates.
-- 100 % of jobs minted after the stamp slice carry `meta.lane` and
+- 100 % of jobs minted after the stamp slice carry `meta.share_key` and
   `meta.submitter` where a session exists; the contract test refuses a mint
-  without origin and lane.
+  without origin and share_key.
 
 ## Explicitly NOT in scope
 

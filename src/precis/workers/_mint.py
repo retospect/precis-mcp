@@ -18,8 +18,9 @@ background. ``origin=`` exists for exactly one caller — a bounded retry
 re-minting under its failed parent's class
 (``job_types/graph_garden._on_failed``) — not for picking a lane.
 
-gr595539 adds the rest of the mint-time stamps — ``meta.lane`` (the
-fair-share axis: the chain job's ``task_recipes`` ``lane_class``, else
+gr595539 adds the rest of the mint-time stamps — ``meta.share_key``
+(the fair-share axis: a ``run_slice`` chain job's ``task_recipes``
+``lane_class`` for the todo ``params.todo_id`` executes, else
 ``<job_type>[:<params.pass>]``), ``meta.task_kind``/``meta.consequence``
 (run_slice's recipe row), ``meta.size`` (the type's named size
 parameter, the ``(job_type, meta.size)`` footprint-table key of
@@ -27,6 +28,14 @@ parameter, the ``(job_type, meta.size)`` footprint-table key of
 ``meta.submitter`` (the bound MCP session + client). Both doors call
 :func:`job_mint_marks` so the row carries the same matrix whichever way
 it was minted.
+
+``meta.lane`` is deliberately absent from the mint stamps: on a
+``run_slice`` row it is the *execution* lane ``submit`` records after
+its pick — read as a lane name by ``plans.lanes``' live counts,
+backoffs and ``freed_lane``, the ``plan_dispatch`` ladder and the work
+boards. Minting the lane class under that key had a queued slice pose
+as a slot-holder on a lane named after its class, and submit's own
+stamp destroyed the fairness mark (td652988 review, td653075).
 """
 
 from __future__ import annotations
@@ -198,16 +207,20 @@ def _submitter_mark() -> dict[str, Any] | None:
     return {"session_id": sid, "client": client}
 
 
-def _task_class_of(conn: Any, parent_id: int | None) -> str:
-    """The parent todo's ``meta.task_class`` (``code`` default) — a
-    chain job's lane-class selector. A non-todo parent (coordinator
-    job, build artifact) carries no task_class and reads as the
-    default, same as ``run_slice``'s own submit path."""
-    if parent_id is None:
+def _task_class_of(conn: Any, ref_id: int | None) -> str:
+    """The ``meta.task_class`` of the todo a chain job executes (``code``
+    default) — its lane-class selector. ``ref_id`` is the executed
+    todo: a ``run_slice`` runs ``params.todo_id``, so that id wins over
+    ``parent_id`` — a coordinator-parented or differently parented
+    slice still stamps the class of its real target (td652988 review).
+    A non-todo ref (coordinator job, build artifact) or a missing one
+    carries no task_class and reads as the default, same as
+    ``run_slice``'s own submit path."""
+    if ref_id is None:
         return _DEFAULT_TASK_CLASS
     row = conn.execute(
         "SELECT meta->>'task_class' FROM refs WHERE ref_id = %s",
-        (parent_id,),
+        (ref_id,),
     ).fetchone()
     if row and row[0]:
         return str(row[0])
@@ -224,13 +237,16 @@ def job_mint_marks(
     """The derived mint stamps every job row carries (gr595539) — merge
     the result into the job's ``meta`` before insert.
 
-    * ``lane`` — the fair-share axis the claim order keys on next
+    * ``share_key`` — the fair-share axis the claim order keys on next
       (``job-scheduling-fairness.md``): a ``run_slice`` chain job's
-      ``task_recipes`` ``lane_class`` for its parent todo's
-      ``task_class`` (the class itself when the recipe has none or
-      reads ``'none'``), else ``<job_type>[:<params.pass>]`` mirroring
-      ``executors._common._share_key_of`` so the stamped lane is the
-      key the claim already shares capacity on.
+      ``task_recipes`` ``lane_class`` for the ``task_class`` of the
+      todo it executes — ``params.todo_id``, not ``parent_id`` — (the
+      class itself when the recipe has none or reads ``'none'``), else
+      ``<job_type>[:<params.pass>]`` mirroring
+      ``executors._common._share_key_of`` so the stamped key is the one
+      the claim already shares capacity on. Named ``share_key``, never
+      ``lane``: ``meta.lane`` is the execution lane ``run_slice.submit``
+      stamps once it has picked one.
     * ``task_kind`` / ``consequence`` — ``run_slice`` only, off the same
       recipe row; ``unknown.<class>`` / ``medium`` when the class has
       no recipe (the ``route_log`` unknown-source convention).
@@ -246,8 +262,19 @@ def job_mint_marks(
     marks: dict[str, Any] = {}
     p = params if isinstance(params, dict) else {}
     if job_type == "run_slice":
-        task_class = _task_class_of(conn, parent_id)
-        lane = task_class
+        # The class lives on the todo the job EXECUTES — params.todo_id,
+        # not parent_id: a coordinator-parented or differently parented
+        # slice still stamps the recipe row of its real target.
+        todo_id = p.get("todo_id")
+        ref_id = (
+            int(todo_id)
+            if isinstance(todo_id, int)
+            and not isinstance(todo_id, bool)
+            and todo_id > 0
+            else parent_id
+        )
+        task_class = _task_class_of(conn, ref_id)
+        share_key = task_class
         recipe = conn.execute(
             "SELECT task_kind, lane_class, consequence FROM task_recipes "
             "WHERE source = %s",
@@ -256,15 +283,15 @@ def job_mint_marks(
         if recipe is not None:
             marks["task_kind"] = str(recipe[0])
             if recipe[1] and str(recipe[1]) != "none":
-                lane = str(recipe[1])
+                share_key = str(recipe[1])
             marks["consequence"] = str(recipe[2])
         else:
             marks["task_kind"] = f"unknown.{task_class}"
             marks["consequence"] = "medium"
-        marks["lane"] = lane
+        marks["share_key"] = share_key
     else:
         params_pass = p.get("pass")
-        marks["lane"] = (
+        marks["share_key"] = (
             f"{job_type}:{params_pass}" if params_pass is not None else job_type
         )
     size_key = _SIZE_PARAMS.get(job_type)
