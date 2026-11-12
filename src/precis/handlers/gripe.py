@@ -418,13 +418,17 @@ def _referenced_handles(text: str) -> list[str]:
 class _CreatedGripe(NamedTuple):
     """A raw gripe insert, pre-ack. Create variants that take over the
     reply (theme-keeper tag line, observation close) need the ``ref_id``
-    :meth:`_render_create_ack` alone would not hand back."""
+    :meth:`_render_create_ack` alone would not hand back. ``status`` is
+    the STATUS tag the insert actually filed — the ``STATUS:open``
+    default, or the caller's ``STATUS:<v>`` that displaced it
+    (gr648139: the ack must name the filed value, not the default)."""
 
     ref_id: int
     readings: list[str]
     has_thread: bool
     short_title: str | None
     title_src_len: int | None
+    status: str = "STATUS:open"
 
 
 class _Window(NamedTuple):
@@ -1841,6 +1845,7 @@ class GripeHandler(NumericRefHandler):
             self._render_create_ack(
                 created.ref_id,
                 has_thread=created.has_thread,
+                status=created.status,
             ),
             created.readings,
         )
@@ -2042,6 +2047,14 @@ class GripeHandler(NumericRefHandler):
             and any(t.lower().startswith("thread:") for t in tags or ()),
             short_title=short,
             title_src_len=len(first_line(text)) if short is not None else None,
+            # The ack names the STATUS actually filed: the definer's
+            # ``STATUS:open`` default unless a caller ``STATUS:<v>``
+            # displaced it (the last one wins — the add loop applies
+            # them in order under replace_prefix).
+            status=next(
+                (str(t) for t in reversed(parsed_extra_tags) if t.prefix == "STATUS"),
+                "STATUS:open",
+            ),
         )
 
     @staticmethod
@@ -2885,14 +2898,19 @@ class GripeHandler(NumericRefHandler):
         ref_id: int,
         *,
         has_thread: bool = False,
+        status: str = "STATUS:open",
     ) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +
         # uppercase STATUS axis + TOON Next: trailer. Previous inline-
         # prose breadcrumb was harder to paste and bunched two
         # very different actions onto one line.
+        # ``status`` is the filed STATUS tag (gr648139): a caller
+        # ``STATUS:<v>`` on put displaces the open default, and the ack
+        # must say so — claiming STATUS:open either way reads as the
+        # requested status having been silently dropped.
         from precis.utils.next_block import render_next_section
 
-        body = f"created {self.kind} id={ref_id} (STATUS:open)."
+        body = f"created {self.kind} id={ref_id} ({status})."
         thread_hint: list[tuple[str, str]] = (
             []
             if has_thread

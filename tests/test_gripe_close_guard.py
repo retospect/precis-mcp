@@ -256,6 +256,24 @@ def test_create_already_closed_refused(hub: Hub) -> None:
         h.put(text="born closed", tags=["STATUS:done"])
 
 
+def test_create_status_tag_honoured_and_named_in_ack(hub: Hub) -> None:
+    """gr648139: ``put(tags=['STATUS:triaged'])`` files the gripe under
+    that status, and the ack names the filed value — not the
+    ``STATUS:open`` default, which read as the tag being dropped."""
+    h = GripeHandler(hub=hub)
+    resp = h.put(text="status-on-create gripe", tags=["STATUS:triaged"])
+    assert "(STATUS:triaged)" in resp.body
+    gid = next(r.id for r in h.store.list_refs(kind="gripe"))
+    statuses = [str(t) for t in h.store.tags_for(gid) if str(t).startswith("STATUS:")]
+    assert statuses == ["STATUS:triaged"]
+
+
+def test_create_ack_names_open_default(hub: Hub) -> None:
+    h = GripeHandler(hub=hub)
+    resp = h.put(text="plain gripe, no status requested")
+    assert "(STATUS:open)" in resp.body
+
+
 def test_delete_without_id_names_the_delete_call(hub: Hub) -> None:
     """M3 burn-down (gr494831): delete without id= refuses with next=."""
     h = GripeHandler(hub=hub)
