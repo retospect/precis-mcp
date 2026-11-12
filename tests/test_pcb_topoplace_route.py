@@ -2180,6 +2180,7 @@ def test_build_wires_capacity_honours_rotation() -> None:
     assert hit > 0
 
 
+@pytest.mark.timeout(900)  # CI worst >300s macos-3.12 (gr647533) x3
 @pytest.mark.nightly(
     reason="84 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
@@ -2209,13 +2210,15 @@ def test_build_wires_rate_printed() -> None:
     d, _inst, _nets = synth_design(seed=0, n_parts=100)
     mesh = build_mesh(d, d.pose0)
 
+    built: list = []
+
     def wire_wall() -> float:
         t0 = time.monotonic()
-        build_wires(mesh, d, 4, negotiate=1, shove=False)
+        built.append(build_wires(mesh, d, 4, negotiate=1, shove=False))
         return time.monotonic() - t0
 
-    w = build_wires(mesh, d, 4, negotiate=1, shove=False)
     dt = min(wire_wall(), wire_wall())
+    w = built[-1]
     rate = 1.0 / dt
     print(
         f"\nwires: {len(w.branches)} branches in {dt * 1e3:.0f} ms -> {rate:.1f} evals/s"
