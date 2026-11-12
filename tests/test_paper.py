@@ -460,7 +460,8 @@ class TestOverview:
         self, store: Store, handler: PaperHandler
     ) -> None:
         """gr635810: the overview (and so its ``view='meta'`` alias)
-        shows the context_sentence pass state — the written sentence,
+        shows the context_sentence pass state — the written sentence
+        with its ``context_sentence_ok`` stamp (when the pass wrote it),
         else the ``no_abstract``/``failed`` stamp with version + ``at``
         — so a cleared stamp's re-do is verifiable without prod SQL."""
         ref_id = _seed_paper(store, slug="ctxa")
@@ -471,6 +472,19 @@ class TestOverview:
         assert "context: This paper measures nitrate." in body
         assert "context_sentence_failed" not in body
         assert "context_sentence_no_abstract" not in body
+        # A legacy sentence written before the ok stamp existed shows no
+        # stamp line — the card degrades, it doesn't invent a time.
+        assert "context_sentence_ok" not in body
+
+        # td652030: the success stamp the pass now writes beside the
+        # sentence renders like the failure stamps — version + ``at``.
+        store.update_ref(
+            ref_id,
+            meta_patch={"context_sentence_ok": {"v": 1, "at": "2026-11-12T04:30:00Z"}},
+        )
+        body = handler.get(id="ctxa").body
+        assert "context: This paper measures nitrate." in body
+        assert "context_sentence_ok: v1 at 2026-11-12T04:30:00.000000Z" in body
 
         ref_id = _seed_paper(store, slug="ctxb")
         store.update_ref(

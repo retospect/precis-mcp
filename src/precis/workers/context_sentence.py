@@ -109,8 +109,9 @@ approved grounding payload (per-source, mirroring how
 ``precis:sourceContext`` when present at mint time; ``precis.export.latex``
 renders it under the paper-title line in a hub footnote. Never a search/
 hit feature — see the "explicitly NOT in scope" section of the spec. The
-paper card does surface the sentence/stamp state, read-only, so an
-operator can verify a stamp's re-do without prod SQL (gr635810).
+paper card does surface the sentence and every stamp state, read-only —
+the success stamp's ``at`` says when the pass last wrote the sentence —
+so an operator can verify a stamp's re-do without prod SQL (gr635810).
 """
 
 from __future__ import annotations
@@ -133,6 +134,7 @@ __all__ = [
     "META_FAILED_KEY",
     "META_KEY",
     "META_NO_ABSTRACT_KEY",
+    "META_OK_KEY",
     "NO_CONTEXT",
     "TransientFailure",
     "backfill_candidate_ref_ids",
@@ -146,7 +148,9 @@ __all__ = [
     "usable_context",
 ]
 
-#: ``refs.meta`` key the finished sentence is written to.
+#: ``refs.meta`` key the finished sentence is written to — a bare string,
+#: never a stamp dict: the frozen-payload/footnote consumers read it as
+#: text. The pass time and version ride in :data:`META_OK_KEY` beside it.
 META_KEY = "context_sentence"
 
 #: ``refs.meta`` key stamped when a paper converged on "no sentence" (both
@@ -180,6 +184,17 @@ _PASS_VERSION = 1
 #: permanently masthead-only paper converges instead of churning the
 #: claim set every sweep (gr514381).
 META_NO_ABSTRACT_KEY = "context_sentence_no_abstract"
+
+#: ``refs.meta`` key stamped when the pass WROTE a sentence — the success
+#: half of the outcome record (gr635810 asks for state plus timestamp on
+#: every outcome, not just the failure stamps). Written as
+#: ``{"v": _PASS_VERSION, "at": <utc iso>}`` in the same ``meta_patch``
+#: as :data:`META_KEY`, so the card shows when — and at which pass
+#: version — the displayed sentence was produced. It is deliberately NOT
+#: in ``_claim``'s gate and NOT in ``register_retry_stamps``: the
+#: sentence's own presence already excludes re-claims, so clearing this
+#: stamp would re-open nothing.
+META_OK_KEY = "context_sentence_ok"
 
 #: Both stamps are operator-clearable via
 #: ``edit(kind='paper', id=…, args={'clear_stamp': '<key>'})`` — forcing
@@ -1063,7 +1078,8 @@ def run_context_sentence_pass(
     masthead-thin stamps :data:`META_NO_ABSTRACT_KEY` before any model
     call; the stamp is versioned and self-healing so a later-arriving
     abstract re-runs the chain on the next sweep, and a written sentence
-    clears both stamp keys (gr514381).
+    clears both stamp keys while stamping :data:`META_OK_KEY` with the
+    pass time (gr514381, gr635810).
 
     Two outcomes converge a paper WITHOUT a model verdict and so stay out
     of ``failed``, which counts verdicts: a content-free context block
@@ -1139,7 +1155,13 @@ def run_context_sentence_pass(
                     )
                 failed += 1
                 continue
-            store.update_ref(ref_id, meta_patch={META_KEY: sentence})
+            store.update_ref(
+                ref_id,
+                meta_patch={
+                    META_KEY: sentence,
+                    META_OK_KEY: {"v": _PASS_VERSION, "at": _utc_stamp()},
+                },
+            )
             stamped = [
                 key
                 for key, present in (

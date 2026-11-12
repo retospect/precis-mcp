@@ -25,6 +25,7 @@ from precis.workers.context_sentence import (
     META_FAILED_KEY,
     META_KEY,
     META_NO_ABSTRACT_KEY,
+    META_OK_KEY,
     NO_CONTEXT,
     TransientFailure,
     _claim,
@@ -771,6 +772,12 @@ class TestRunPass:
             ref.meta.get(META_KEY)
             == "Computational study; DFT-calculated properties only."
         )
+        # ``{"v", "at"}`` — gr635810 stamps the success time too, so the
+        # card shows when (and at which pass version) the sentence was
+        # written, same shape as the failure stamps.
+        stamp = ref.meta.get(META_OK_KEY)
+        assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
+        assert _stamp_at(stamp) is not None
         assert len(client.calls) == 1
 
     def test_persistent_lint_failure_writes_nothing_and_stamps_failed(
@@ -789,6 +796,7 @@ class TestRunPass:
         assert result == {"claimed": 1, "ok": 0, "failed": 1}
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert META_KEY not in (ref.meta or {})
+        assert META_OK_KEY not in (ref.meta or {})
         stamp = ref.meta.get(META_FAILED_KEY)
         # ``{"v", "at"}`` — gr635810 stamped the failure time so the card
         # (and the stamp cohort listing) can show when the verdict landed.
@@ -806,6 +814,7 @@ class TestRunPass:
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert META_KEY not in (ref.meta or {})
         assert META_FAILED_KEY not in (ref.meta or {})
+        assert META_OK_KEY not in (ref.meta or {})
 
     def test_a_masthead_is_stamped_without_spending_a_model_call(
         self, store: Any
@@ -825,8 +834,10 @@ class TestRunPass:
         stamp = meta.get(META_NO_ABSTRACT_KEY)
         assert isinstance(stamp, dict) and stamp.get("v") == _PASS_VERSION
         assert META_KEY not in meta
-        # NOT the terminal stamp: no model ever gave a verdict here.
+        # NOT the terminal stamp: no model ever gave a verdict here —
+        # and no success stamp either.
         assert META_FAILED_KEY not in meta
+        assert META_OK_KEY not in meta
 
     def test_an_unusable_paper_converges_at_the_current_version(
         self, store: Any

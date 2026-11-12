@@ -8556,15 +8556,18 @@ class PaperHandler(Handler):
         """Extra one-line ``meta`` fields shown on the default overview.
 
         A paper shows its ``context_sentence`` pass state (gr635810):
-        the written sentence, else each ``context_sentence_*`` stamp
-        with its version + ``at`` — so the card answers "did the pass
-        run, what did it conclude" without prod SQL, and a cleared
-        stamp's re-do is verifiable. Sibling kinds with typed meta
-        fields (cfp's ``deadline``/``opens_on``) override."""
+        the written sentence with its ``context_sentence_ok`` stamp,
+        else each failure stamp — ``context_sentence_no_abstract`` /
+        ``context_sentence_failed`` — with its version + ``at``; every
+        outcome carries a timestamp so the card answers "did the pass
+        run, what did it conclude, when" without prod SQL, and a
+        cleared stamp's re-do is verifiable. Sibling kinds with typed
+        meta fields (cfp's ``deadline``/``opens_on``) override."""
         from precis.workers.context_sentence import (
             META_FAILED_KEY,
             META_KEY,
             META_NO_ABSTRACT_KEY,
+            META_OK_KEY,
             _stamp_at,
             _stamp_version,
         )
@@ -8574,7 +8577,7 @@ class PaperHandler(Handler):
         sentence = meta.get(META_KEY)
         if isinstance(sentence, str) and sentence.strip():
             lines.append(f"context: {sentence}")
-        for key in (META_NO_ABSTRACT_KEY, META_FAILED_KEY):
+        for key in (META_NO_ABSTRACT_KEY, META_FAILED_KEY, META_OK_KEY):
             stamp = meta.get(key)
             if stamp is None:
                 continue
