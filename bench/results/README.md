@@ -165,7 +165,10 @@ A quest tick reaches the same log without a shell: its `read` field takes a
 `runner.default_results_dir()`, `PRECIS_BENCH_RESULTS`-overridable) and the
 next tick's Requested reads renders a bounded page of the same row blocks —
 `"section"` selecting an arm or task id, `"page"` windowing the rows
-(gr618517).
+(gr618517). The tick prompt's `read` docs list the held stems inline
+(`held: …`), so the address is aimable from context rather than only after
+a refused guess (gr647524 — a "(none held)" listing means the reader is
+there and the missing piece is the file).
 
 The reserved section `calls` instead pages the run's raw MCP-log records:
 the `tool_calls` ledger rows its dispatches wrote, correlated by the

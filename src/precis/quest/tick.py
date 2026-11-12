@@ -1321,6 +1321,30 @@ def _requested_reads_section(store: Store, quest: Ref) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _bench_runs_listing() -> str:
+    """The held ``bench:<stem>`` addresses — the run address book rendered
+    inside the ``read`` docs so the channel is aimable from context, not
+    only discoverable through a refused guess (gr647524: qu604835 filed
+    needs-gripes for a raw-benchmark-log reader that already exists —
+    gr618517/gr624301 — because no real stem ever reached its prompt, and
+    "never invent a handle" rightly barred it from making one up).
+    ``(none held)`` when the results dir holds nothing — the reader then
+    reads as present-with-no-data, so a true need names the missing FILE
+    (a data source), not the tool. Any lookup fault degrades to
+    ``unavailable`` — a prompt section must never sink the tick."""
+    try:
+        from precis.bench import raw as bench_raw
+        from precis.bench import runner as bench_runner
+
+        stems = bench_raw.list_results_stems(bench_runner.default_results_dir())
+    except Exception:
+        return "unavailable"
+    listing = ", ".join(stems[:_READ_SECTION_NAMES_MAX]) or "(none held)"
+    if len(stems) > _READ_SECTION_NAMES_MAX:
+        listing += f", +{len(stems) - _READ_SECTION_NAMES_MAX} more"
+    return listing
+
+
 def _skill_injection_section(stmt: str) -> str:
     """Bimodal skill injection (docs/backlog/skill-question-targets-and-
     injection.md §2): embed the quest's striving statement against the
@@ -2141,6 +2165,7 @@ def build_tick_prompt(
         servers="\n".join(servers),
         literature=literature,
         requested_reads=_requested_reads_section(store, quest),
+        bench_runs=_bench_runs_listing(),
         skill_injection=_skill_injection_section(stmt),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
         narrative_word_target=narrative_budget.config_from_meta(
@@ -2508,7 +2533,7 @@ until it lands). \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
 chunk, `[td<id>]` todo, `[st<id>]` structure, a `web:<id>` fetched page \
-or a `bench:<stem>` benchmark run's raw results log \
+or a `bench:<stem>` benchmark run's raw results log (held: {bench_runs}) \
 from the context above; the finding claims, abstract snippets and served \
 titles are otherwise all you see, so use this when the detail lives \
 deeper than the snippet. A bare read returns the body's front page — add \
@@ -2754,7 +2779,7 @@ exist, say so in `needs` instead of guessing around it. \
 `read` (0–{read_cap}) pulls a held item's text into the NEXT tick's \
 context — name a `[fi<id>]` finding, `[pa<id>]` paper, `[pc<id>]` paper \
 chunk, `[td<id>]` todo, `[st<id>]` structure, a `web:<id>` fetched page \
-or a `bench:<stem>` benchmark run's raw results log \
+or a `bench:<stem>` benchmark run's raw results log (held: {bench_runs}) \
 from the context above; the finding claims, abstract snippets and served \
 titles are otherwise all you see, so use this when the detail lives \
 deeper than the snippet. A bare read returns the body's front page — add \

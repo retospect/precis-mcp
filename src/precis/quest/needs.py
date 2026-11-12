@@ -149,12 +149,41 @@ class Need:
 #: gr646528)``, whose decorated key escaped the open marker gripe's dedup).
 _HANDLE_CITATION = re.compile(r"\b(?:gripe|gr\d+|qu\d+|td\d+)\b")
 
+#: Lazily-built companion to :data:`_HANDLE_CITATION` for the rest of the
+#: handle registry — ``pc123456``, ``ql789012``, ``me345678`` (any
+#: registered record/chunk code + ≥3 digits). The model cites the
+#: logbook/gap line where it saw the need, and that line can name any
+#: handle kind; the ≥3-digit floor keeps real tool tokens like
+#: ``co2``/``v2``/``f1`` (and alloy tags like ``al99``) intact — every
+#: prod handle id is far longer (gr647524).
+_OTHER_HANDLE_RE: re.Pattern[str] | None = None
+
+
+def _other_handle_re() -> re.Pattern[str]:
+    global _OTHER_HANDLE_RE
+    if _OTHER_HANDLE_RE is None:
+        from precis.utils import handle_registry
+
+        codes = sorted(
+            {
+                *handle_registry.KIND_CODES.values(),
+                *handle_registry.CHUNK_CODES.values(),
+            }
+            - {"gr", "qu", "td"}
+        )
+        _OTHER_HANDLE_RE = re.compile(
+            rf"(?<![a-z0-9])(?:{'|'.join(codes)})\d{{3,}}(?![a-z0-9])"
+        )
+    return _OTHER_HANDLE_RE
+
 
 def tool_key(tool: str) -> str:
     """Normalise a tool name for dedup/tagging: lowercase, drop handle
-    citations (:data:`_HANDLE_CITATION`), every run of non-alphanumerics
+    citations (:data:`_HANDLE_CITATION` plus the rest of the handle
+    registry at :func:`_other_handle_re`), every run of non-alphanumerics
     becomes one ``-``, capped to a tag-safe length."""
-    cleaned = _HANDLE_CITATION.sub(" ", tool.lower())
+    cleaned = _other_handle_re().sub(" ", tool.lower())
+    cleaned = _HANDLE_CITATION.sub(" ", cleaned)
     return re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")[:60]
 
 
@@ -237,6 +266,10 @@ def _open_need_gripes(store: Store, quest_id: int) -> dict[str, int]:
     for gripe_id, text in rows:
         first = (text or "").splitlines()[0]
         key = first[len(_MARKER_PREFIX) :].strip().partition(" ")[2].strip()
+        # Re-key stored markers through today's tool_key: a gripe filed
+        # before handle-citation stripping keeps its decorated marker, but
+        # still owns the stripped key for dedup (gr647524's siblings).
+        key = tool_key(key)
         if key:
             out.setdefault(key, int(gripe_id))
     return out
@@ -444,7 +477,7 @@ def open_tool_gripes(store: Store, quest_id: int) -> list[tuple[int, str]]:
     for gripe_id, text in rows:
         first = (text or "").splitlines()[0]
         key = first[len(_MARKER_PREFIX) :].strip().partition(" ")[2].strip()
-        out.append((int(gripe_id), key))
+        out.append((int(gripe_id), tool_key(key) or key))
     return out
 
 

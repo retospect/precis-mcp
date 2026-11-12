@@ -148,6 +148,30 @@ class TestParseNeeds:
         )
         assert needs_mod.tool_key("xrd scanner gr1") == "xrd-scanner"
 
+    def test_tool_key_strips_other_handle_codes(self) -> None:
+        """gr647524 — the citation can name any handle the context showed
+        (``pc``/``ql``/``me`` chunk refs, not just ``gr``/``qu``/``td``);
+        the ≥3-digit floor keeps handle-shaped tool tokens intact."""
+        assert (
+            needs_mod.tool_key("raw-benchmark-log-reader (gr618517/gr624301)")
+            == "raw-benchmark-log-reader"
+        )
+        assert (
+            needs_mod.tool_key("raw-benchmark-log-reader-gr618517-gr624301 (gr646528)")
+            == "raw-benchmark-log-reader"
+        )
+        assert (
+            needs_mod.tool_key("raw-benchmark-log-reader (gripe gr646528)")
+            == "raw-benchmark-log-reader"
+        )
+        assert (
+            needs_mod.tool_key("raw log reader (ql123456, pc789012)")
+            == "raw-log-reader"
+        )
+        assert needs_mod.tool_key("token-F1 scorer") == "token-f1-scorer"
+        assert needs_mod.tool_key("co2 reduction lane") == "co2-reduction-lane"
+        assert needs_mod.tool_key("al99 alloy lookup") == "al99-alloy-lookup"
+
 
 # ── the tick prompts carry the contract ───────────────────────────────
 
@@ -340,6 +364,49 @@ class TestNeedGripeFiling:
         assert len(gripes) == 1
         comments = _gripe_comments(store, gripes[0].id)
         assert len(comments) == 1 and "still needed" in comments[0]
+
+    def test_stored_decorated_marker_rekeys_for_dedup(self, store: Any) -> None:
+        """gr647524 — prod already holds gripes whose first line carries a
+        decorated key filed before handle-citation stripping
+        (``xrd-scanner-gr618517-gr624301``). ``_open_need_gripes`` re-keys
+        them through today's ``tool_key``, so a later plainer
+        re-declaration bumps the old gripe."""
+        from precis.store.types import ChunkInsert, Tag
+
+        qid = _mk_quest(store)
+        decorated = "xrd-scanner-gr618517-gr624301"
+        with store.tx() as conn:
+            ref = store.insert_ref(
+                kind="gripe", slug=None, title="quest needs x", meta={}, conn=conn
+            )
+            store.chunks.insert_chunks(
+                ref.id,
+                [
+                    ChunkInsert(
+                        ord=0,
+                        text=f"quest-need: qu{qid} {decorated}\nolder filing",
+                        meta={"chunk_kind": "gripe_body"},
+                    )
+                ],
+                conn=conn,
+            )
+            store.add_tag(
+                ref.id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            store.add_link(
+                src_ref_id=ref.id,
+                dst_ref_id=qid,
+                relation="blocks",
+                set_by="system",
+                conn=conn,
+            )
+        out = needs_mod.apply_needs(store, qid, [_need("xrd scanner")])
+        assert out.gripes == (int(ref.id),)
+        assert _gripe_comments(store, ref.id)
 
     def test_different_tool_files_a_second(self, store: Any) -> None:
         qid = _mk_quest(store)

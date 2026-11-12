@@ -4932,6 +4932,32 @@ class TestBenchRead:
         )
         assert "bench:<run-stem>" in prompt
 
+    def test_prompt_lists_held_bench_stems(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr647524 — the `bench:` read is aimable only when a real stem
+        reaches the context: the read docs name the held runs, so the
+        reader reads as present instead of a capability to file a need
+        for. Both bodies carry the listing."""
+        stem = _bench_results("20261110Z-abc1234-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving after the raw log")
+        assert f"held: {stem}" in build_tick_prompt(store, _qref(store, qid))
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+        prompt = build_tick_prompt(
+            store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
+        )
+        assert f"held: {stem}" in prompt
+
+    def test_prompt_says_none_held_when_the_dir_is_empty(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """An empty results dir still answers — the reader exists and the
+        missing piece is the file, not the tool."""
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving with no runs on disk")
+        assert "held: (none held)" in build_tick_prompt(store, _qref(store, qid))
+
 
 def _ledger_rows(store: Any, tag: str | None, ts: str | None = None) -> None:
     """``tool_calls`` rows as a bench run's dispatches would write them —
