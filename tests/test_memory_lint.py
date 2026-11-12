@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1803,3 +1804,30 @@ def test_unknown_option_fails_before_work(
     assert res.returncode == 2
     assert "unknown argument: --ref" in res.stderr
     assert res.stdout == ""
+
+
+def test_graph_mode_reports_snapshot_provenance_and_flags_stale_exports(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, mem, cache, nodes = graph_setup
+    body = nodes / "me1.md"
+    body.write_text("# Alpha\n\nbody\n", encoding="utf-8")
+    log = nodes / "me2.md"
+    log.write_text("# memory_consolidation_log\n\n2020-01-01 old\n", encoding="utf-8")
+
+    fresh = _run(lint_repo, home, cache=cache, nodes=nodes)
+    assert "snapshot generated ~" in fresh.stdout, fresh.stdout
+    assert "STALE/UNKNOWN" not in fresh.stdout, fresh.stdout
+    assert "cached log may predate" not in fresh.stdout, fresh.stdout
+
+    # An old file mtime is stale even though the directory mtime is fresh.
+    old = time.time() - 3 * 86400
+    for f in (body, log):
+        os.utime(f, (old, old))
+    stale = _run(lint_repo, home, cache=cache, nodes=nodes)
+    assert "STALE/UNKNOWN snapshot" in stale.stdout, stale.stdout
+    assert "candidate discovery" in stale.stdout, stale.stdout
+    assert "NOT live verification" in stale.stdout, stale.stdout
+    assert "cached log may predate" in stale.stdout, stale.stdout
+    assert "✓ clean" not in stale.stdout, stale.stdout
+    assert "DUE (last 2020-01-01)" in stale.stdout, stale.stdout

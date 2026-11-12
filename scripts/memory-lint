@@ -258,11 +258,32 @@ fi
 # ident/label_of name a file in findings: the file name in file mode, the
 # handle (+ title) in graph mode.
 SCAN_DIR="$MEMDIR"
+SNAP_STALE=0
 if (( GRAPH )); then
     SCAN_DIR=""
     if compgen -G "$NODEDIR/*.md" >/dev/null; then
         SCAN_DIR="$NODEDIR"
-        echo "memory-lint: graph mode — node bodies from $NODEDIR (exported $(date -u -r "$NODEDIR" +%Y-%m-%dT%H:%MZ)); checks 2, 3b, 5, 6 run over them"
+        # Provenance: a directory mtime moves on any rename/unlink, so it is
+        # not generation time. The export rewrites every file in one swap, so
+        # the NEWEST file mtime is the best generation stamp on disk (no stamp
+        # file is recorded; "unknown" if none can be read).
+        snap_epoch=0
+        while IFS= read -r f; do
+            m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+            if [[ "$m" =~ ^[0-9]+$ ]] && (( m > snap_epoch )); then snap_epoch=$m; fi
+        done < <(find "$NODEDIR" -maxdepth 1 -type f \( -name '*.md' -o -name '_sections.tsv' \) 2>/dev/null)
+        if (( snap_epoch > 0 )); then
+            snap_age_h=$(( ($(date -u +%s) - snap_epoch) / 3600 ))
+            snap_when=$(date -u -d "@$snap_epoch" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -r "$snap_epoch" +%Y-%m-%dT%H:%MZ)
+            if (( snap_age_h >= ${MEMORY_LINT_SNAPSHOT_MAX_AGE_H:-24} )); then SNAP_STALE=1; fi
+            echo "memory-lint: graph mode — node bodies from $NODEDIR (snapshot generated ~$snap_when, ${snap_age_h}h old: newest file mtime, no generation stamp is recorded); checks 2, 3b, 5, 6 run over them"
+        else
+            SNAP_STALE=1
+            echo "memory-lint: graph mode — node bodies from $NODEDIR (snapshot generation time UNKNOWN); checks 2, 3b, 5, 6 run over them"
+        fi
+        if (( SNAP_STALE )); then
+            echo "memory-lint: STALE/UNKNOWN snapshot — findings below are candidate discovery from cached bodies, NOT live verification; live corrections or pass records may not be exported yet. Recheck each finding live (get(kind='memory', id=<handle>), a bounded few) before correcting it, and before claiming the graph clean or reconsolidation DUE"
+        fi
     else
         echo "memory-lint: graph mode — no node cache yet — scripts/hooks/session-start-memory.sh writes it"
     fi
@@ -792,7 +813,7 @@ if [[ -n "$SCAN_DIR" ]]; then
 fi
 
 if (( problems == 0 )) && (( GRAPH )); then
-    echo "memory-lint: ✓ clean (graph mode, no hygiene findings)"
+    if (( SNAP_STALE )); then echo "memory-lint: no findings in the STALE/UNKNOWN cached snapshot (not a live-verified clean)"; else echo "memory-lint: ✓ clean (graph mode, no hygiene findings)"; fi
 elif (( problems == 0 )); then
     echo "memory-lint: ✓ clean (links resolve, no landed threads lingering)"
 else
@@ -1081,6 +1102,7 @@ if [[ -z "$last" ]]; then
 elif [[ "$last" == "$today" ]]; then
     echo "reconsolidation: done today ($last) — skip the heavy pass"
 elif (( GRAPH )); then
+    (( SNAP_STALE )) && echo "reconsolidation: cached log may predate a live pass (snapshot STALE/UNKNOWN) — read the live memory_consolidation_log node before running the heavy pass"
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…, args={'superseded_by': …}) / promote-to-doc) + delete(kind='memory', args={'superseded_by': …}) any landed thread flagged above. Procedure: the reconsolidate skill; record the pass as a dated entry at the top of the memory_consolidation_log node"
 else
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Append a dated line to memory_consolidation_log.md"
