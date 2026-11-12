@@ -315,6 +315,7 @@ Corpus-pipeline services documenting against this skill:
 | `paper_glossary` | per-paper glossary → `card_glossary` chunk |
 | `card_describe` | LLM narrative `card_description` per non-text ref (structure first, gr497688) |
 | `context_sentence` | one method/evidence sentence per grounding paper |
+| `gen_abstract` | labelled generated `card_gen_abstract` for papers with no abstract (default-off; gr635825) |
 | `classify_topics` | paper→topic-dossier cascade (`topic:` tags) |
 | `watch_poll` | S2 citing-paper poll → stubs |
 | `citer_watch` | daily OpenAlex cited-by watch for held papers; mints stub papers for new citing works (capped per day) and writes a digest memory; dark unless service_config enables it |

@@ -93,7 +93,7 @@ from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     resolve_live_slug_ref,
 )
-from precis.ingest.cards import rewrite_cards
+from precis.ingest.cards import GENERATED_LABEL, rewrite_cards
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
@@ -8633,8 +8633,17 @@ class PaperHandler(Handler):
             # gr520232: a Marker-ingested paper often has the abstract
             # only as leading body text — show it, labelled so it never
             # reads as the publisher's meta.
-            preview = self.store.chunks.abstract_previews([ref.id]).get(ref.id)
-            if preview:
+            generated = self._generated_abstract(ref)
+            preview = (
+                None
+                if generated
+                else self.store.chunks.abstract_previews([ref.id]).get(ref.id)
+            )
+            if generated:
+                lines.append("")
+                lines.append(f"_no abstract on file — {GENERATED_LABEL}:_")
+                lines.append(_excerpt(generated, limit=500))
+            elif preview:
                 lines.append("")
                 lines.append("_no abstract on file — leading body text:_")
                 lines.append(_excerpt(str(preview), limit=500))
@@ -9025,6 +9034,20 @@ class PaperHandler(Handler):
             ]
         return out
 
+    def _generated_abstract(self, ref: Ref) -> str | None:
+        """Text of the ref's labelled generated abstract chunk
+        (``card_gen_abstract``, ``workers/gen_abstract.py``), or ``None``.
+        Callers use it only when no publisher abstract is on file."""
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'card_gen_abstract' AND retired_at IS NULL "
+                "LIMIT 1",
+                (ref.id,),
+            ).fetchone()
+        text = str(row[0] or "").strip() if row else ""
+        return text or None
+
     def _render_view(
         self, ref: Ref, view: str, *, args: dict[str, Any] | None = None
     ) -> Response:
@@ -9045,6 +9068,28 @@ class PaperHandler(Handler):
         if view == "abstract":
             abstract = (ref.meta or {}).get("abstract")
             if not abstract:
+                generated = self._generated_abstract(ref)
+                if generated:
+                    # gr635825: the labelled generated summary — never
+                    # presented as the publisher's abstract.
+                    slug = ref.slug or "???"
+                    body = (
+                        f"# {slug} - abstract\n_{title_md(ref.title)}_\n\n"
+                        f"_{GENERATED_LABEL}_\n\n{generated}"
+                    )
+                    body += render_next_section(
+                        [
+                            (
+                                f"get(id='{_pa(ref)}', view='toc')",
+                                "see the TOC",
+                            ),
+                            (
+                                f"get(id='{_pa(ref)}~0..5')",
+                                "read the first 6 chunks to check the source text",
+                            ),
+                        ]
+                    )
+                    return Response(body=body)
                 # Empty result still teaches the next call shape:
                 # the paper's body is reachable via TOC + chunk
                 # ranges even when the publisher's abstract metadata

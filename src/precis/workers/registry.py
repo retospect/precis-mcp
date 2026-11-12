@@ -1233,6 +1233,24 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # precis.workers.gen_abstract (gr635825): a LABELLED generated
+        # abstract (card_gen_abstract chunk) for papers with no publisher
+        # abstract, built from the body prose only; replaces the
+        # context_sentence summary for such papers. Default-OFF
+        # (`service prio` / --only gen_abstract / enable env); the
+        # publisher abstract always wins when one is later filled.
+        name="gen_abstract",
+        label="Generated abstract (no-abstract papers)",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_GEN_ABSTRACT_ENABLED",
+        uses_model=True,
+        cost_sources=("gen_abstract",),
+        one_line="Labelled generated card_gen_abstract per paper with no abstract.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="paper_rank",
         label="Paper reading-priority rank",
         category="discovery",

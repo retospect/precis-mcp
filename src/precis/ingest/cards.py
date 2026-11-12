@@ -24,6 +24,10 @@ from psycopg.types.json import Jsonb
 #: metadata, so they must be rewritten when the metadata is repaired.
 CARD_KINDS = ("card_title", "card_authors", "card_abstract", "card_combined")
 
+#: The label every reader prints next to a ``card_gen_abstract`` chunk
+#: (``workers/gen_abstract.py``; gr635825).
+GENERATED_LABEL = "generated summary — not the published abstract"
+
 
 def combined_card_text(
     title: str, author_names: list[str], abstract: str, keywords: list[str]
@@ -110,6 +114,11 @@ def ensure_abstract_card(conn: Any, ref_id: int, *, set_by: str, abstract: str) 
     ).fetchone()
     if existing:
         return False
+    # A publisher abstract supersedes the labelled generated one (gr635825).
+    conn.execute(
+        "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_gen_abstract'",
+        (ref_id,),
+    )
     row = conn.execute(
         "SELECT min(ord) FROM chunks WHERE ref_id = %s", (ref_id,)
     ).fetchone()
@@ -124,4 +133,10 @@ def ensure_abstract_card(conn: Any, ref_id: int, *, set_by: str, abstract: str) 
     return True
 
 
-__all__ = ["CARD_KINDS", "combined_card_text", "ensure_abstract_card", "rewrite_cards"]
+__all__ = [
+    "CARD_KINDS",
+    "GENERATED_LABEL",
+    "combined_card_text",
+    "ensure_abstract_card",
+    "rewrite_cards",
+]

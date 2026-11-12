@@ -794,12 +794,16 @@ def _unpack_search_row(row: tuple) -> tuple[ChunkRow, Ref, float]:
 #: owns a fixed negative ord: ``card_combined`` −1 (the ingest-time
 #: summary card), ``card_glossary`` −1000 (``workers/paper_glossary.py``,
 #: written there not through :meth:`ChunkStore._replace_card_chunk`),
-#: ``card_description`` −2 (``workers/card_describe.py``). A new card
+#: ``card_description`` −2 (``workers/card_describe.py``),
+#: ``card_gen_abstract`` −1002 (``workers/gen_abstract.py``; paper cards own
+#: −2..−5 at ingest and −1001 is ``ensure_abstract_card``'s next slot after
+#: the glossary, hence −1002). A new card
 #: kind takes the next free negative slot here.
 _CARD_KIND_ORD: dict[str, int] = {
     "card_combined": -1,
     "card_glossary": -1000,
     "card_description": -2,
+    "card_gen_abstract": -1002,
 }
 
 

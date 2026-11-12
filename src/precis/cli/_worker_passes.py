@@ -977,6 +977,34 @@ def build_ref_passes(
 
         ref_passes.append(_context_sentence_pass)
 
+    # gen_abstract — a labelled generated `card_gen_abstract` chunk for
+    # papers with no publisher abstract (gr635825), from body prose only.
+    # Default-OFF (`service prio` / --only gen_abstract). MEDIUM tier: a
+    # one-shot summary of a few thousand chars. See workers/gen_abstract.py.
+    if _register("gen_abstract"):
+        from precis.utils.llm.router import DispatchClient as _GaDispatchClient
+        from precis.utils.llm.router import Tier as _GaTier
+        from precis.workers.gen_abstract import GEN_ABSTRACT_MAX_TOKENS
+        from precis.workers.runner import BatchResult as _GaBatchResult
+
+        _gen_abstract_client = _GaDispatchClient(
+            tier=_GaTier.MEDIUM,
+            max_tokens=GEN_ABSTRACT_MAX_TOKENS,
+            source="gen_abstract",
+            log_call=True,
+            log_blobs=False,
+        )
+
+        def _gen_abstract_pass(batch_size: int) -> _GaBatchResult:
+            from precis.workers.gen_abstract import run_gen_abstract_pass
+
+            r = run_gen_abstract_pass(
+                store, client=_gen_abstract_client, batch_size=min(batch_size, 8)
+            )
+            return _GaBatchResult.from_dict("gen_abstract", r)
+
+        ref_passes.append(_gen_abstract_pass)
+
     # paper_rank — deterministic five-signal reading-priority score per
     # `kind='paper'` ref, written to `meta.paper_rank` (feynman PaperRank
     # port; docs/backlog/feynman-paperrank-pass.md). Pure Python/SQL, no
