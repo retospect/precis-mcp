@@ -121,7 +121,7 @@
       const row = rows.get(edge.source) || 0;
       rows.set(edge.source, row + 1);
       const y = Number.isFinite(nd.rel_energy) ? py(nd.rel_energy) : 26;
-      return `<text class="pw-filter-cut" x="${xScale(x) + half + 5}" y="${y + 15 * row}" fill="#d9534f" font-size="14"><title>${esc(edge.source + '→' + edge.target + ': ' + reason)}</title>⊣</text>`;
+      return `<text class="pw-filter-cut" x="${xScale(x) + half + 5}" y="${y + 15 * row}" style="fill:rgb(var(--text-danger))" font-size="14"><title>${esc(edge.source + '→' + edge.target + ': ' + reason)}</title>⊣</text>`;
     }).join('');
   }
 
