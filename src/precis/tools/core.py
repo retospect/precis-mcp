@@ -690,6 +690,26 @@ def _coerce_text_body(
     return text
 
 
+def _coerce_str_arg(
+    value: str | dict[str, Any] | list[Any] | None,
+) -> str | None:
+    """Re-serialize a dict/list a client bridge put in a documented-``str`` slot.
+
+    Same coercion ``text=`` rides (gr330034/gr261385): some MCP client
+    bridges auto-parse a JSON-shaped string argument before the tool's
+    pydantic schema sees it, so the declared ``str`` field fails with
+    ``Input should be a valid string … input_type=list`` (gr650516:
+    ``get(kind='provenance', view='verify', q='[{"doi": …}]')`` was
+    uncallable from such a client). ``q`` is a string on every kind, so a
+    container here is always the bridge's auto-parse — re-serializing
+    restores the literal the caller authored. No ``$ref`` passthrough:
+    that handle envelope is ``text=``-only.
+    """
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return value
+
+
 def _ctx_session(ctx: Context | None) -> object | None:
     """The live MCP session behind ``ctx``, or ``None``.
 
@@ -952,7 +972,12 @@ def get(
     # the wire so FastMCP's pydantic layer admits it.
     id: str | int | list[str | int] | None = None,
     view: str | None = None,
-    q: str | None = None,
+    # str is the documented contract every kind's get() parses against;
+    # dict/list is ALSO accepted because some MCP client bridges
+    # auto-parse a JSON-shaped string value before this schema ever sees
+    # it — ``_coerce_str_arg`` re-serializes it back (gr650516, same root
+    # as ``text=``'s gr330034/gr261385).
+    q: str | dict[str, Any] | list[Any] | None = None,
     args: dict[str, Any] | None = None,
     # every kind (see precis-fisheye-help): the eye ladder's rung —
     # kwd|summary|verbatim|fisheye|fisheye+1hop|fisheye+2hop, any of them
@@ -1017,7 +1042,12 @@ def get(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
+        payload: dict[str, Any] = {
+            "kind": kind,
+            "id": id,
+            "view": view,
+            "q": _coerce_str_arg(q),
+        }
         if args is not None:
             trace_filters = (
                 kind == "agentlog"
@@ -1090,7 +1120,11 @@ def search(
     # Round-2 picky N-1, 2026-05-30. Handlers already gate the empty-q
     # case (degrade to list view when ``tags=`` is supplied, raise
     # ``BadInput`` otherwise) so the validation moves cleanly.
-    q: str | None = None,
+    # dict/list is also accepted: some MCP client bridges auto-parse a
+    # JSON-shaped string value before this schema sees it —
+    # ``_coerce_str_arg`` re-serializes it back (gr650516, same root as
+    # ``text=``'s gr330034/gr261385).
+    q: str | dict[str, Any] | list[Any] | None = None,
     kind: str | None = None,
     scope: str | None = None,
     page_size: int | None = None,
@@ -1300,6 +1334,9 @@ def search(
 
     Full docs: get(kind='skill', id='precis-search-help').
     """
+    # A bridge-coerced dict/list q restores to the JSON string the
+    # caller authored before anything downstream reads it (gr650516).
+    q = _coerce_str_arg(q)
     # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
     from precis.errors import BadInput

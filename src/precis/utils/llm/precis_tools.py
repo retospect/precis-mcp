@@ -45,7 +45,11 @@ def _json_schema_for(pinfo: dict[str, Any], *, description: str = "") -> dict[st
     schema: dict[str, Any]
     if pinfo.get("is_list") or ann.startswith("list["):
         schema = {"type": "array", "items": {"type": "string"}}
-    elif "dict" in ann:
+    elif ann.startswith("dict"):
+        # startswith, not membership: a ``str | dict | list | None`` union
+        # (``text=``/``q=`` after gr330034/gr650516) tolerates a bridge-coerced
+        # container but the *documented* contract stays the string — advertise
+        # that, or the model would be told to send raw dicts.
         schema = {"type": "object", "additionalProperties": True}
     elif ann.startswith("bool"):
         schema = {"type": "boolean"}
