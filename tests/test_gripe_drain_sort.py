@@ -87,6 +87,31 @@ def test_drain_order_is_the_default_on_both_surfaces(store: Store, hub: Hub) -> 
     assert _positions(search_body, titles) == sorted(_positions(search_body, titles))
 
 
+def test_factory_gripe_outranks_an_equal_severity_plain_one(store: Store) -> None:
+    """Reto 2026-11-12: ``cluster:dark-factory`` / ``thread:factory``
+    score x3 in the live SQL — ahead of a plain gripe of equal score
+    even when the plain one is older and sized small."""
+    plain = _seed(store, "factory-plain", days=20, size="s")
+    cluster = _seed(
+        store, "factory-cluster", days=1, source_tags=("cluster:dark-factory",)
+    )
+    thread = _seed(store, "factory-thread", days=1, source_tags=("thread:factory",))
+    for ref_id in (plain, cluster, thread):
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || '{\"dispatch_score\": 4}'::jsonb "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+    rows = _rows(store, status_filter="all")
+    by_id = {r["ref_id"]: r for r in rows}
+    assert by_id[plain]["score"] == pytest.approx(4.0)
+    assert by_id[cluster]["score"] == pytest.approx(12.0)
+    assert by_id[thread]["score"] == pytest.approx(12.0)
+    order = [r["ref_id"] for r in rows]
+    assert order.index(plain) > max(order.index(cluster), order.index(thread))
+
+
 def test_sort_values_reorder_the_same_queue(store: Store, hub: Hub) -> None:
     """Every ``sort=`` name works on both surfaces: ``oldest``/
     ``newest`` by filing age, ``size`` the ladder, ``source`` human <

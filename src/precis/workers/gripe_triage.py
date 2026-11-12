@@ -1582,7 +1582,10 @@ def _score_of(v: Verdict, g: ClaimedGripe, when: datetime) -> float:
     ``dispatch_score`` SQL recomputes from the stamped inputs
     (:func:`precis.utils.dispatch_score.gripe_score`), evaluated at the
     write moment for the recommend-nudge below."""
-    return _dscore.gripe_score(v.severity, g.dup_count, g.age_days(when), prio=None)
+    factory = any(f"OPEN:{t}" in g.tags for t in _dscore.FACTORY_TAGS)
+    return _dscore.gripe_score(
+        v.severity, g.dup_count, g.age_days(when), prio=None, factory=factory
+    )
 
 
 # ── write-back ────────────────────────────────────────────────────────────

@@ -16,6 +16,11 @@ The score (higher = hotter) is:
       × prio_multiplier(prio)        — a set ``prio`` is a multiplier,
                                        never the sort key itself
       × SHOWSTOPPER_MULT             — a ``showstopper`` tag heats it
+      × FACTORY_MULT                 — ``cluster:dark-factory`` /
+                                       ``thread:factory`` heats it
+                                       (Reto 2026-11-12: factory-
+                                       throughput gripes ×3, below the
+                                       release class score of 32)
 
 * **severity-path** — the triage tick's judgement, recomputed live so
   age and parked dups never go stale:
@@ -79,6 +84,12 @@ AGE_FACTOR_CAP = 4.0
 #: A ``showstopper`` tag multiplies the score by this — a stopped lane's
 #: work drains hot.
 SHOWSTOPPER_MULT = 2.0
+#: Open tags that mark a gripe as dark-factory throughput work.
+FACTORY_TAGS = ("cluster:dark-factory", "thread:factory")
+#: A :data:`FACTORY_TAGS` tag multiplies the score by this — gripes that
+#: speed up the factory drain first (Reto 2026-11-12). Stays under the
+#: release class (:data:`RELEASE_SCORE`).
+FACTORY_MULT = 3.0
 #: A candidate whose brief file set overlaps an in-flight land's keeps
 #: this fraction of its score until that land finishes (td603849).
 OVERLAP_DEMOTE = 0.01
@@ -108,6 +119,7 @@ def gripe_score(
     *,
     prio: int | None = None,
     showstopper: bool = False,
+    factory: bool = False,
     stamped: float | None = None,
 ) -> float:
     """The Python twin of :func:`score_sql` — used where a caller holds
@@ -125,6 +137,8 @@ def gripe_score(
     score = base * prio_multiplier(prio)
     if showstopper:
         score *= SHOWSTOPPER_MULT
+    if factory:
+        score *= FACTORY_MULT
     return score
 
 
@@ -149,6 +163,8 @@ def age_days(created_at: datetime, now: datetime | None = None) -> float:
 
 # ── SQL ────────────────────────────────────────────────────────────────
 
+_FACTORY_TAGS_SQL = ", ".join(f"'{t}'" for t in FACTORY_TAGS)
+
 #: ``refs r`` fragment — every consumer interpolates the SAME expression
 #: so the queue can't fork across surfaces. Correlated subqueries match
 #: the shapes ``gripe_order`` already runs per row.
@@ -171,7 +187,13 @@ COALESCE(
                        WHERE xrt.ref_id = r.ref_id
                          AND xt.namespace IN ('OPEN', 'FLAG')
                          AND xt.value = 'showstopper')
-          THEN {SHOWSTOPPER_MULT} ELSE 1.0 END"""
+          THEN {SHOWSTOPPER_MULT} ELSE 1.0 END
+  * CASE WHEN EXISTS (SELECT 1 FROM ref_tags frt JOIN tags ft
+                                ON ft.tag_id = frt.tag_id
+                       WHERE frt.ref_id = r.ref_id
+                         AND ft.namespace = 'OPEN'
+                         AND ft.value IN ({_FACTORY_TAGS_SQL}))
+          THEN {FACTORY_MULT} ELSE 1.0 END"""
 
 
 def score_sql() -> str:
@@ -227,6 +249,8 @@ __all__ = [
     "CLAIM_BAND_META_KEY",
     "DEFAULT_SCORE",
     "DISPATCH_META_KEY",
+    "FACTORY_MULT",
+    "FACTORY_TAGS",
     "OVERLAP_DEMOTE",
     "RELEASE_CLAIM_BAND",
     "RELEASE_SCORE",

@@ -27,7 +27,12 @@ import yaml
 
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
-from precis.utils.dispatch_score import gripe_score, recommended_rung
+from precis.utils.dispatch_score import (
+    FACTORY_MULT,
+    gripe_score,
+    recommended_rung,
+    score_sql,
+)
 from precis.utils.llm.router import LlmResult, Tier
 from precis.workers import gripe_triage
 from precis.workers.gripe_triage import Thread, ThreadIndex
@@ -1442,6 +1447,22 @@ class TestScore:
         assert gripe_score(None, 0, 0, stamped=7.5) == 7.5
         assert gripe_score(4, 0, 0, stamped=99.0) == 4.0  # severity wins
         assert gripe_score(4, 0, 0, showstopper=True) == 8.0
+
+    def test_factory_tag_triples_the_score(self) -> None:
+        """Reto 2026-11-12: factory-throughput gripes x3 — below the
+        release class score."""
+        assert FACTORY_MULT == 3.0
+        assert gripe_score(4, 0, 0, factory=True) == 12.0
+        assert gripe_score(None, 0, 0, factory=True) == 3.0
+        # stacks with the other multipliers
+        assert gripe_score(4, 0, 0, showstopper=True, factory=True) == 24.0
+        assert gripe_score(4, 0, 0, prio=1, factory=True) == pytest.approx(48.0)
+
+    def test_sql_fragment_carries_the_factory_clause(self) -> None:
+        sql = score_sql()
+        assert "'cluster:dark-factory', 'thread:factory'" in sql
+        assert "ft.namespace = 'OPEN'" in sql
+        assert f"THEN {FACTORY_MULT} ELSE 1.0 END" in sql
 
     def test_recommended_rung(self) -> None:
         assert recommended_rung(40.0) == "urgent"
