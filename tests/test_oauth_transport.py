@@ -288,6 +288,7 @@ def test_oauth_capability_is_identical_at_wire_and_dispatch(
         ("get", {"id": "learning:/activity"}, True),
         ("get", {"kind": "skill", "id": "precis-learning-help"}, True),
         ("get", {"kind": "skill", "id": "precis-oauth-help"}, True),
+        ("get", {"kind": "profile", "id": "me"}, True),
         ("get", {"kind": "paper", "id": "pa42"}, full),
         ("get", {"kind": "memory", "id": "me42"}, full),
         ("get", {"kind": "email", "id": 42}, full),
@@ -464,4 +465,120 @@ def test_oauth_context_keeps_pat_and_oauth_namespaces_separate(
     with pytest.raises(Denied, match="invalid authenticated"):
         with user_scope(alice.id, 12, oauth=identity):
             pass
+    assert current_principal() is None
+
+
+@pytest.mark.parametrize("grant_scope", ["learning", "mcp:full"])
+def test_whoami_over_oauth_wire_names_user_connection_and_scope(
+    store: Store,
+    oauth_config: OAuthConfig,
+    runtime_with_store,
+    monkeypatch: pytest.MonkeyPatch,
+    grant_scope: str,
+) -> None:
+    """The whoami read answers for any OAuth connection, full or narrow."""
+    alice = _user(store, "alice")
+    raw, identity = _grant(store, oauth_config, alice.id, (grant_scope,))
+    app = _app(store, oauth_config, runtime_with_store, monkeypatch)
+
+    async def exercise():
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+            session = await _initialize(client, raw)
+            response = await _call(
+                client,
+                raw,
+                session,
+                2,
+                arguments={"kind": "profile", "id": "me"},
+            )
+            assert response.status_code == 200, response.text
+            result = response.json()["result"]
+            assert not result.get("isError", False), result
+            body = result["content"][0]["text"]
+            assert f"user: al (login: alice, id: {alice.id})" in body
+            assert "credential: OAuth connection 'Test app'" in body
+            assert f"(client: precis-claude, grant: {identity.grant_id})" in body
+            assert f"scopes: {grant_scope}" in body
+            if grant_scope == "mcp:full":
+                assert "permission: full MCP (all verbs)" in body
+            else:
+                assert "permission: learning calls, learning help, whoami" in body
+            assert f"writes recorded as: oauth:{identity.grant_id}" in body
+            assert "revision actor: user:al" in body
+            assert "client: oauth-test/1" in body
+
+    asyncio.run(exercise())
+    assert current_principal() is None
+
+
+def test_oauth_write_records_user_principal_and_client(
+    store: Store,
+    oauth_config: OAuthConfig,
+    runtime_with_store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write over the OAuth connector lands tied to the account (gr633675):
+    the revision actor is the user's ``user:<abbrev>``, the writer stamp
+    carries the OAuth principal and the MCP client's own declaration, and
+    the ``written:`` line a later get renders names the user."""
+    alice = _user(store, "alice")
+    raw, identity = _grant(store, oauth_config, alice.id, ("mcp:full",))
+    app = _app(store, oauth_config, runtime_with_store, monkeypatch)
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+            session = await _initialize(client, raw)
+            created = await _call(
+                client,
+                raw,
+                session,
+                2,
+                verb="put",
+                arguments={
+                    "kind": "memory",
+                    "text": "oauth attribution probe",
+                    "title": "oauth attribution probe",
+                },
+            )
+            assert created.status_code == 200, created.text
+            result = created.json()["result"]
+            assert not result.get("isError", False), result
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT r.target_id, r.actor, r.writer FROM revisions r"
+                    " JOIN refs f ON f.ref_id = r.target_id"
+                    " WHERE r.target_kind = 'ref' AND f.kind = 'memory'"
+                    " ORDER BY r.revision_id DESC LIMIT 1"
+                ).fetchone()
+            assert row is not None
+            target_id, actor, writer = row
+            assert actor == "user:al"
+            assert writer["actor"] == "user:al"
+            assert writer["principal"] == f"oauth:{identity.grant_id}"
+            assert writer["client"] == "oauth-test/1"
+            assert store.first_last_writer("ref", int(target_id)) is not None
+            got = await _call(
+                client,
+                raw,
+                session,
+                3,
+                arguments={"kind": "memory", "id": int(target_id)},
+            )
+            assert got.status_code == 200, got.text
+            body = got.json()["result"]["content"][0]["text"]
+            assert "written: user:al, oauth-test" in body, body
+
+    asyncio.run(exercise())
     assert current_principal() is None

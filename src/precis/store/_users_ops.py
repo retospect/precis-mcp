@@ -157,6 +157,15 @@ class WebUsersMixin:
             row = conn.execute(sql, (normalize_login(abbrev),)).fetchone()
         return _row_to_user(row) if row else None
 
+    def get_web_user_by_id(self, user_id: int) -> WebUser | None:
+        """The account with this ``web_users.id`` (the whoami read,
+        :mod:`precis.whoami`). Disabled accounts still resolve — the
+        session's attribution must stay readable after disable."""
+        sql = f"SELECT {_USER_COLS} FROM web_users WHERE id = %s"
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, (int(user_id),)).fetchone()
+        return _row_to_user(row) if row else None
+
     def get_web_user_by_feed_token(self, digest: str) -> WebUser | None:
         """Resolve a ``/podcast?t=`` credential by its SHA-256 digest.
 

@@ -40,8 +40,10 @@ actor; an OAuth credential never becomes the install principal.
 Read `get(kind='skill', id='precis-learning-help')` for those calls. It may be
 offered instead of full access by the deployment owner.
 
-This guide and the exact learning-help read are available to OAuth callers
-without extra view/args fields. A learning-only token cannot elevate itself
+This guide, the exact learning-help read and
+`get(kind='profile', id='me')` — the session's own user, connection label
+and permission scope — are available to OAuth callers without extra
+view/args fields. A learning-only token cannot elevate itself
 by asking for another kind or supplying an owner. Scope refusals mean
 reconnect with an available permission; do not retry with the infrastructure
 token.

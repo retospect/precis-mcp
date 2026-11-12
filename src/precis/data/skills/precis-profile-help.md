@@ -40,11 +40,16 @@ put(kind='profile', name='ul-bernal', owner='<login>',
     sponsor_line='Funded by …', default=True)
 get(kind='profile')                    # your profiles (all, for agents)
 get(kind='profile', id='ul-bernal')    # by id, pf<N> handle, or name
+get(kind='profile', id='me')           # whoami — your session's user,
+                                       # credential label, permission scope
 edit(kind='profile', id=pf7, palette={'accent': '#003726'})
 delete(kind='profile', id=pf7)
 ```
 
 `edit` merges `palette`/`fonts` per key and replaces the other fields.
+`id='me'` is reserved for the whoami read (gr633675): it answers which
+account, credential and scope this MCP session writes as — never a
+branding-profile lookup.
 
 **ACL — owner-only.** Profiles are private to their `owner` login: a
 call carrying another user's identity can't read or write them — through

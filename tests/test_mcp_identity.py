@@ -461,9 +461,14 @@ def test_personal_token_learning_and_exact_help_exception(
     help_args = {"kind": "skill", "id": "precis-learning-help"}
     body = call("get", help_args)
     assert isinstance(body, str) and "private study activity" in body
+    whoami_args = {"kind": "profile", "id": "me"}
+    body = call("get", whoami_args)
+    assert isinstance(body, str) and "whoami" in body and "user: al" in body
     for arguments in (
         {"kind": "skill", "id": "precis-overview"},
         {"kind": "skill", "id": "toc"},
+        {"kind": "profile"},
+        {**whoami_args, "view": "raw"},
         {**help_args, "view": "verbatim"},
         {**help_args, "args": {}},
         {**help_args, "args": {"have": "PRIVATE_SCOPE_SENTINEL"}},

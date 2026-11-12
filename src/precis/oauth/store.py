@@ -112,3 +112,15 @@ def revalidate_identity(
             next="reconnect this application from /account/connections",
         )
     return str(row[6])
+
+
+def grant_label(store: Store, grant_id: int) -> str | None:
+    """The owner-given label of one connection (the whoami read).
+
+    ``None`` for a missing grant — the label is a nicety on the whoami
+    render, never a reason to fail the read."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT label FROM mcp_oauth_grants WHERE id = %s", (int(grant_id),)
+        ).fetchone()
+    return str(row[0]) if row else None

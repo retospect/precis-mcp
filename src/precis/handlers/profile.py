@@ -17,8 +17,10 @@ Surface (see ``precis-profile-help``):
   merge per key, everything else replaces — and re-validates.
 - ``get(kind='profile')`` lists the acting user's profiles (all of them
   when no user identity is present); ``get(id=N|'pf<N>'|'<name>')``
-  renders one. ``eye``/``find_in_ref``/``search``/``tag``/``link`` apply
-  the same owner check (gr490266).
+  renders one. ``get(id='me')`` is the whoami read (:mod:`precis.whoami`,
+  gr633675): the session's authenticated user, credential label and
+  permission scope — not a branding profile lookup. ``eye``/``find_in_ref``/
+  ``search``/``tag``/``link`` apply the same owner check (gr490266).
 - ``delete`` soft-retires.
 
 Owner-only read + owner-checked write (ruling 3): when the call carries
@@ -310,6 +312,18 @@ class ProfileHandler(NumericRefHandler):
         view: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, str) and id.strip().lower() == "me":
+            # The whoami read (gr633675): 'me' is reserved — a branding
+            # profile named 'me' is shadowed, by design; the session
+            # identity is the only 'me' the wire should resolve.
+            if view is not None:
+                raise Unsupported(
+                    f"get(kind='profile', id='me') takes no view= (got {view!r})",
+                    next="drop view= and re-issue: get(kind='profile', id='me')",
+                )
+            from precis import whoami
+
+            return Response(body=whoami.render(self.store))
         if id is None:
             # gr572708: the bare get IS the listing — view= is never
             # consulted, so refuse it instead of a silent index render

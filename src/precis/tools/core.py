@@ -498,6 +498,8 @@ def _dispatch_as_user(
 
 def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
     """Apply PAT's private-learning boundary or an OAuth app's capabilities."""
+    from precis.whoami import CALL as WHOAMI
+
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
     if oauth is not None:
@@ -516,6 +518,7 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
         return verb == "get" and payload in (
             {"kind": "skill", "id": "precis-learning-help"},
             {"kind": "skill", "id": "precis-oauth-help"},
+            WHOAMI,
         )
     if verb in {
         "get",
@@ -530,12 +533,13 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
         # routing. Malformed/mixed learning calls refuse in dispatch_learning;
         # they cannot fall through to a non-learning handler or batch.
         return True
-    # This one public, read-only document lets a personal client discover
-    # its permitted surface without opening skill search, toc or other views.
-    return verb == "get" and payload == {
-        "kind": "skill",
-        "id": "precis-learning-help",
-    }
+    # These two public, read-only documents let a personal client discover
+    # its permitted surface and its own identity without opening skill
+    # search, toc or other views.
+    return verb == "get" and payload in (
+        {"kind": "skill", "id": "precis-learning-help"},
+        WHOAMI,
+    )
 
 
 def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
@@ -550,8 +554,9 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
                 next="review the connection at /account/connections and reconnect with the required permissions",
             )
         raise Denied(
-            "personal MCP tokens permit learning calls and learning help only",
-            next="get(kind='learning'); get(kind='skill', id='precis-learning-help')",
+            "personal MCP tokens permit learning calls, learning help and whoami only",
+            next="get(kind='learning'); get(kind='skill', id='precis-learning-help'); "
+            "get(kind='profile', id='me')",
         )
 
 

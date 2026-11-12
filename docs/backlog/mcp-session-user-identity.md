@@ -40,8 +40,9 @@ Per-user MCP tokens exist; only the `learning` kind accepts them.
   `require_user` (re-checks account and token on every call, so revocation
   bites mid-session); no env, config or literal login supplies an owner.
 - Scope gate: `src/precis/tools/core.py::_personal_call_allowed` lets a
-  personal principal call only `learning` and `get skill precis-learning-help`;
-  every other kind refuses.
+  personal principal call only `learning`, `get skill precis-learning-help`
+  and `get(kind='profile', id='me')` (the whoami read, gr633675); every
+  other kind refuses.
 
 Ruling (Reto, 2026-10-06): the owner is Reto, but the identity is never
 hardcoded; the binding is a per-user credential the user manages on their own
@@ -76,10 +77,11 @@ owns the per-kind adoption work below.
 Orchestrator proposal, inside Reto's ruling (not yet reviewed by Reto):
 
 1. **Widen the manual-token scope gate.** `_personal_call_allowed` admits only
-   `learning` for personal API tokens; per-user kinds beyond it (mailbox,
+   `learning`, the learning-help read and the whoami read for personal API
+   tokens; per-user kinds beyond it (mailbox,
    library link, per-user vault names) need an allow-list decision per kind.
    Such a token calling anything else is refused by `_require_personal_scope` ("personal MCP
-   tokens permit learning calls and learning help only"). An anonymous call
+   tokens permit learning calls, learning help and whoami only"). An anonymous call
    to a per-user feature already refuses naming `/account`
    (`user_context.py::_require_account`).
 2. **Client carriage snippet.** The token travels in the `Authorization`
