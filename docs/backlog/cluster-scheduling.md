@@ -268,6 +268,11 @@ Items 1 and 2 ship independently (static defaults for the cap).
 The claim key and the mint-time matrix live in `job-scheduling-fairness.md`
 ("The mint-time matrix and the deficit key").
 
+The build spec for this pillar — the `admit()`/`spawn()` entry point, gate
+admission, the admission loop, run metrics and the predictor, slices S1–S8 of
+gr647996 — is `load-based-scheduling.md`; where it differs from the bullets
+above, it wins.
+
 ## Pillar 4 — monitorable (law 6's observability)
 
 - **§D** — shipped through Phase 2. Remaining: Phase 3 (brief lane, surface

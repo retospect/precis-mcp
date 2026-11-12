@@ -240,7 +240,11 @@ ageing (D3) and the prio-1 override stay. This replaces D4's fewest-running
 pick; the `max_running` caps stay.
 
 Reservation and backfill once footprints exist: `cluster-scheduling.md`
-Pillar 3b.
+Pillar 3b. The footprint predictor and the admission loop that consume these
+stamps are `load-based-scheduling.md` (gr647996). Two of its rulings
+override this file: the predictor extracts features from `params` itself,
+so `meta.size` is one input and not the footprint key; and S3 retires the
+`max_running` caps once footprint admission holds.
 
 ## Acceptance criteria
 
