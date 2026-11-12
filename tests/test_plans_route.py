@@ -64,6 +64,35 @@ def test_no_deny_path_means_no_route(text: str) -> None:
     assert route.coordinator_route(text, _DENY) is None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'scripts/test tests/test_pcb_examples_route.py -m "slow or not slow"',
+        "3. `scripts/test --typecheck` clean.",
+        "run scripts/test -k quota_refusal and report",
+    ],
+)
+def test_harness_run_as_a_command_never_routes(text: str) -> None:
+    """td647606: an acceptance line that RUNS the harness names no write
+    target — every slice brief carries one."""
+    assert route.coordinator_route("fix the flood in wires.py\n" + text, _DENY) is None
+
+
+def test_file_set_alone_is_judged() -> None:
+    """td647606: a declared write set is the builder's whole target —
+    harness mentions elsewhere in the brief don't route, a harness path
+    inside it does."""
+    brief = (
+        "Goal: GND routes.\n\n"
+        "File set: src/precis/pcb/topoplace/wires.py, tests/test_wires.py\n\n"
+        "Acceptance: scripts/test passes; see scripts/ship for the land.\n"
+    )
+    assert route.coordinator_route(brief, _DENY) is None
+    harness = brief.replace("tests/test_wires.py", "scripts/test")
+    why = route.coordinator_route(harness, _DENY)
+    assert why is not None and "scripts/test" in why
+
+
 def test_handle_only_report_is_graph_only() -> None:
     why = route.coordinator_route("gr630346 me123456 td999", _DENY)
     assert why is not None and "graph" in why

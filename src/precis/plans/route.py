@@ -20,7 +20,11 @@ Two signals:
   ``STRICT_DENY`` by default). Any path-shaped token counts, backticks
   and code spans included: a plain-prose mention of ``scripts/ship`` is
   the td643078 shape. Case folds like the lane's own write check
-  (``human_only_hits``: the slice hosts' filesystems fold case).
+  (``human_only_hits``: the slice hosts' filesystems fold case). Two
+  narrowings (td647606): a brief with a ``File set:`` line is judged on
+  that write set alone, and a harness path run as a command
+  (``scripts/test tests/x.py``, ``scripts/test --typecheck``) is not a
+  write target.
 - ``graph-only`` — every non-empty token is a well-formed graph handle
   (``td<id>``/``gr<id>``/``me<id>``/…), bare punctuation, graph
   vocabulary or grammar glue, and at least one handle appears. A
@@ -72,6 +76,19 @@ _LAND_MECHANISM = (
     re.compile(r"\bwith `?scripts/ship`?\s+--\w+", re.IGNORECASE),
     re.compile(r"\bas a normal slice \([^)]*\)", re.IGNORECASE),
 )
+
+#: A deny path RUN as a command, not written: the token followed by a
+#: flag, a test path or a quoted argument (``scripts/test
+#: tests/test_x.py -m slow``, ``scripts/test --typecheck``) — every
+#: slice brief's acceptance names the harness this way (td647606).
+_RUN_INVOCATION = re.compile(
+    r"`?\bscripts/[\w.-]+`?(?=\s+(?:--?\w|tests/|[\"']))", re.IGNORECASE
+)
+
+#: A brief's declared write set (``File set: a.py, b.py``, through the
+#: next blank line). When present it is the builder's whole write
+#: target, so only it is judged for deny paths (td647606).
+_FILE_SET = re.compile(r"^\s*File set:(.*?)(?:\n\s*\n|\Z)", re.MULTILINE | re.DOTALL)
 
 #: Characters a handle may be wrapped in inside prose.
 _HANDLE_WRAP = ".,;:()[]{}`'\"*_#<>|"
@@ -255,7 +272,9 @@ def coordinator_route(text: str | None, deny_paths: Iterable[str]) -> str | None
     if not text or not text.strip():
         return None
     body = strip_direct_head(text)
-    hit = deny_path_hit(body, deny_paths)
+    file_set = _FILE_SET.search(body)
+    judged = file_set.group(1) if file_set else _RUN_INVOCATION.sub(" ", body)
+    hit = deny_path_hit(judged, deny_paths)
     if hit is not None:
         token, glob = hit
         return f"names deny path `{token}` (matched `{glob}`)"
