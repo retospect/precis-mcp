@@ -3169,6 +3169,135 @@ def test_soak_debt_check_refuses_on_a_red_soak_and_caches_the_row(
     assert "waived_by" not in prod.row
 
 
+def _soak_stubs(
+    rig: Rig, digest: str, *, digest_rc: int = 0, rerun_rc: int = 0
+) -> tuple[Path, Path]:
+    """Stub ``ci-failed``/``ci-rerun`` beside the round script copy: the
+    first prints ``digest`` and exits ``digest_rc``; the second logs its
+    argv and exits ``rerun_rc``. Returns (digest call log, rerun log)."""
+    calls, reruns = rig.root / "ci-failed.calls", rig.root / "ci-rerun.calls"
+    (rig.root / "digest.txt").write_text(digest, encoding="utf-8")
+    for name, body in (
+        (
+            "ci-failed",
+            f'echo "$@" >> "{calls}"\ncat "{rig.root}/digest.txt"\nexit {digest_rc}\n',
+        ),
+        ("ci-rerun", f'echo "$@" >> "{reruns}"\nexit {rerun_rc}\n'),
+    ):
+        path = rig.root / name
+        path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        path.chmod(0o755)
+    return calls, reruns
+
+
+#: What `scripts/ci-failed` prints for a soak leg that died on the API
+#: outage after a full pass (r281, gr639737): no `failed ids` roll-up.
+_INFRA_DIGEST = (
+    "== soak (3.13, 4) ==\n"
+    "  Error: Process completed with exit code 1.\n"
+    "  Attempt 5 of 5 failed with error: Unexpected token '<', \"<!DOCTYPE\"\n"
+)
+_TEST_DIGEST = (
+    "== soak (3.13, 4) ==\n"
+    "  failed ids (1):\n"
+    "    tests/test_x.py::test_y\n"
+    "  FAILED tests/test_x.py::test_y - assert 1 == 2\n"
+)
+
+
+def _red_soak_leg(rig: Rig, *legs: str) -> None:
+    (rig.gh_dir / rig.shas["c2"]).write_text(
+        _soak_rows(*((leg, "completed", "failure") for leg in legs)),
+        encoding="utf-8",
+    )
+
+
+def test_an_infra_only_soak_red_reruns_the_legs_and_does_not_refuse(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr639737: the red soak leg's log names no failed test, so the cut
+    proceeds, the failed legs are rerun, and the why is recorded."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)")
+    calls, reruns = _soak_stubs(rig, _INFRA_DIGEST)
+    assert mod._soak_debt_check(rig.root) == ""
+    assert calls.read_text().split() == ["4242", "--job-prefix", "soak", "-n", "0"]
+    assert reruns.read_text().split() == ["4242"]
+    assert "infra-only" in capsys.readouterr().out
+    assert prod.row is not None
+    assert prod.row["infra_rerun"]["run_id"] == "4242"
+    log = (mod._state_dir() / "soak.log").read_text(encoding="utf-8")
+    assert "infra-only" in log
+
+
+def test_a_soak_red_with_a_failed_test_still_refuses_and_never_reruns(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)")
+    _calls, reruns = _soak_stubs(rig, _TEST_DIGEST)
+    block = mod._soak_debt_check(rig.root)
+    assert "soak red on last gated main" in block
+    assert not reruns.exists()
+    assert prod.row is not None and "infra_rerun" not in prod.row
+
+
+@pytest.mark.parametrize(
+    "digest,digest_rc",
+    [
+        ("ci-failed: no failed-job log lines\n", 0),
+        (_INFRA_DIGEST, 1),
+        ("== soak (3.13, 4) ==\n  (log unreadable: exit 1: 502)\n", 0),
+        ("== soak (3.13, 7) ==\n  Error: Process completed\n", 0),
+    ],
+    ids=["no-logs", "digest-failed", "log-unreadable", "red-leg-missing"],
+)
+def test_an_unprovable_infra_soak_red_still_refuses(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, digest: str, digest_rc: int
+) -> None:
+    """Anything short of 'every red soak leg digested, none names a failed
+    test' stays a refusal — a real failure is never read as infra."""
+    mod = _published(rig, monkeypatch, _Prod())
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)")
+    _calls, reruns = _soak_stubs(rig, digest, digest_rc=digest_rc)
+    assert "soak red on last gated main" in mod._soak_debt_check(rig.root)
+    assert not reruns.exists()
+
+
+def test_a_soak_red_after_the_infra_rerun_refuses(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One infra rerun per run: the same run red again is a refusal, and
+    the refusal keeps the rerun stamp so the next read cannot loop."""
+    stamp = {"run_id": "4242", "at": "2026-11-12T00:00:00Z", "why": "x"}
+    prod = _Prod(
+        row=_soak_row(rig.shas["c2"], jobs=["soak (3.13, 4)"], infra_rerun=stamp)
+    )
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)")
+    _calls, reruns = _soak_stubs(rig, _INFRA_DIGEST)
+    assert "soak red on last gated main" in mod._soak_debt_check(rig.root)
+    assert not reruns.exists()
+    assert prod.row is not None and prod.row["infra_rerun"] == stamp
+
+
+def test_an_infra_soak_red_whose_rerun_fails_to_fire_refuses(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = _published(rig, monkeypatch, _Prod())
+    monkeypatch.setenv("LGM_SHA", rig.shas["c2"])
+    _red_soak_leg(rig, "soak (3.13, 4)")
+    _calls, reruns = _soak_stubs(rig, _INFRA_DIGEST, rerun_rc=1)
+    assert "soak red on last gated main" in mod._soak_debt_check(rig.root)
+    assert reruns.exists()
+
+
 def test_a_waived_row_lets_the_check_pass_with_a_note(
     rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

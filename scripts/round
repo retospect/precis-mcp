@@ -556,6 +556,70 @@ def _soak_log(state: Path, line: str) -> None:
         pass
 
 
+#: ``ci-failed`` digest markers: a job section header, the roll-up that
+#: names a failed test id, and a job log it could not read.
+_SOAK_SECTION_RE = re.compile(r"^== (.+) ==$", re.MULTILINE)
+_SOAK_FAILED_IDS_RE = re.compile(r"^\s+failed ids \(\d+\):", re.MULTILINE)
+
+
+def _soak_infra_only(root: Path, run_id: str, jobs: list[str]) -> bool:
+    """True only when ``scripts/ci-failed`` digested every red ``soak*``
+    leg of ``run_id`` and none names a FAILED/ERROR test id (gr639737):
+    the leg is red from infrastructure (an API outage, a runner kill),
+    not from a test. Anything unreadable or partial is False — a real
+    failure must never be mistaken for infra."""
+    legs = [j for j in jobs if j.startswith("soak")]
+    if not run_id.isdigit() or not legs:
+        return False
+    cp = _NETWORK["run_command"](
+        [str(_HERE / "ci-failed"), run_id, "--job-prefix", "soak", "-n", "0"],
+        cwd=root,
+        timeout=420,
+        report=False,
+    )
+    out = cp.stdout
+    if cp.returncode != 0 or "(log unreadable" in out:
+        return False
+    if _SOAK_FAILED_IDS_RE.search(out):
+        return False
+    seen = set(_SOAK_SECTION_RE.findall(out))
+    return all(leg in seen for leg in legs)
+
+
+def _soak_infra_rerun(
+    root: Path, sha: str, run_id: str, jobs: list[str]
+) -> dict[str, Any] | None:
+    """Re-fire the failed soak legs when their logs carry no failed test
+    (gr639737) and record why; None = not infra, or the rerun did not
+    fire — the refusal stands. The rerun leaves the legs pending, which
+    the next read treats as no veto; ``infra_rerun`` on the debt row
+    keeps this to once per run, so a leg that goes red again blocks."""
+    if not _soak_infra_only(root, run_id, jobs):
+        return None
+    cp = _NETWORK["run_command"](
+        [str(_HERE / "ci-rerun"), run_id], cwd=root, timeout=120, report=False
+    )
+    if cp.returncode != 0:
+        print(
+            f"scripts/round: soak red on {sha[:9]} is infra-only but the rerun "
+            f"did not fire (exit {cp.returncode}) — the refusal stands",
+            file=sys.stderr,
+        )
+        return None
+    shown = ", ".join(jobs[:6])
+    info = {"run_id": run_id, "at": _now(), "why": "no FAILED test in red soak logs"}
+    _write_soak_red(
+        {"sha": sha, "run_id": run_id, "jobs": jobs, "at": _now(), "infra_rerun": info}
+    )
+    line = (
+        f"soak red on {sha[:9]} run {run_id} is infra-only (no FAILED test line "
+        f"in {shown}) — failed legs rerun, not a veto"
+    )
+    print(f"scripts/round: {line}")
+    _soak_log(_state_dir(), line)
+    return info
+
+
 def _soak_debt_check(root: Path) -> str:
     """Why `cut`/`open` refuse on a red soak, or "" — the read happens at
     cut time on the last gated main sha (the previous release head), not
@@ -612,9 +676,17 @@ def _soak_debt_check(root: Path) -> str:
         _soak_log(_state_dir(), line)
         return ""
     jobs, run_id = sv["red_jobs"](rows)
-    written = _write_soak_red(
-        {"sha": sha, "run_id": run_id, "jobs": jobs, "at": _now()}
-    )
+    prior_rerun = (row or {}).get("infra_rerun")
+    if str((row or {}).get("sha") or "") != sha:
+        prior_rerun = None
+    if not (isinstance(prior_rerun, dict) and prior_rerun.get("run_id") == run_id):
+        fired = _soak_infra_rerun(root, sha, run_id, jobs)
+        if fired is not None:
+            return ""
+    record = {"sha": sha, "run_id": run_id, "jobs": jobs, "at": _now()}
+    if isinstance(prior_rerun, dict) and prior_rerun.get("run_id") == run_id:
+        record["infra_rerun"] = prior_rerun  # one rerun per run, ever
+    written = _write_soak_red(record)
     if written is None or written[0] != 0:
         print("scripts/round: soak debt row not recorded — the refusal stands")
     shown = ", ".join(jobs[:6])
