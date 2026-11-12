@@ -169,6 +169,45 @@ def _both_live_claim_hubs(store: Store, a_ref_id: int, b_ref_id: int) -> bool:
 _TAXON_HIERARCHY_RELATIONS: frozenset[str] = frozenset({"specialises", "generalises"})
 
 
+def _contract_required_key_next(
+    key: str,
+    *,
+    child_id: int | None,
+    child_handle: str,
+    target_raw: str | None = None,
+) -> str:
+    """The ``next=`` recovery call for a start-node contract refusal.
+
+    ``child_id=None`` is a ``put`` still minting the child: the fix is
+    the same put with the key in its ``meta=`` kwarg — naming the call
+    matters (gr635830: the caller re-worded ``text`` five times because
+    the old hint never said where ``meta`` goes; node keys are not read
+    from the text). A stored child takes ``edit`` when the key is
+    editable (``pointer``, the boundary keys); a mint-only key
+    (``dimension_kind``, ``si_vector``, …) can't be patched — the fix is
+    a fresh put that carries it, since ``edit`` refuses those keys.
+    """
+    if child_id is None:
+        link = f", link='{target_raw}', rel='specialises'" if target_raw else ""
+        return (
+            "same put with the key in meta= (node keys aren't read from "
+            f"text): put(kind='taxon', text='<name> — <definition>', "
+            f"meta={{{key!r}: '<value>'}}{link})"
+        )
+    from precis.taxonomy.nodes import EDITABLE_KEYS
+
+    if key in EDITABLE_KEYS | {"canonical_unit", "display_unit"}:
+        return (
+            f"edit(kind='taxon', id='{child_handle}', "
+            f"meta={{{key!r}: '<value>'}}), then re-link"
+        )
+    return (
+        f"{key!r} is set at mint and not editable — {child_handle} can't "
+        f"gain it: put a fresh taxon with meta={{{key!r}: '<value>'}} "
+        "under the parent instead"
+    )
+
+
 def _taxon_endpoint(
     store: Store, ref_id: int | None, kind: str | None, meta: dict[str, Any] | None
 ) -> tuple[str, str, str, dict[str, Any]]:
@@ -265,7 +304,12 @@ def guard_taxon_hierarchy(
                     raise BadInput(
                         f"{child[0]} {child[1]!r} needs {key!r}: the new start "
                         f"node {parent[1]!r} requires it of everything beneath it",
-                        next=f"set meta {key!r} on {child[0]} first, or drop the contract",
+                        next=[
+                            _contract_required_key_next(
+                                key, child_id=child_id, child_handle=child[0]
+                            ),
+                            "or drop 'contract' from the new start node's meta=",
+                        ],
                     )
         return
     if child_id is not None and store.taxon_would_cycle(child_id, parent_id):
@@ -284,9 +328,11 @@ def guard_taxon_hierarchy(
                 raise BadInput(
                     f"{child[0]} {child[1]!r} needs {key!r}: start node "
                     f"{s_h} {s_n!r} requires it of everything beneath it",
-                    next=(
-                        f"put the node with meta={{{key!r}: ...}} "
-                        "(or set it before linking)"
+                    next=_contract_required_key_next(
+                        key,
+                        child_id=child_id,
+                        child_handle=child[0],
+                        target_raw=target.raw,
                     ),
                 )
 

@@ -526,6 +526,61 @@ class TestContract:
             rel="generalises",
         )
 
+    def test_contract_put_hint_names_meta_kwarg_and_call(self, store: Any) -> None:
+        # gr635830: the create-time refusal must spell out that the key
+        # rides in the put's meta= kwarg — the old "put the node with
+        # meta={...}" prose never said where meta goes, so the caller
+        # kept re-wording text= and re-failing.
+        root = _start(store, "hint vocab", ["pointer"])
+        with pytest.raises(BadInput) as ei:
+            _mk(store, "hint keyless", under=root)
+        nxt = ei.value.next
+        hints = [nxt] if isinstance(nxt, str) else list(nxt or [])
+        assert any(
+            "put(kind='taxon'" in h and "'pointer'" in h and f"link='taxon:{root}'" in h
+            for h in hints
+        ), hints
+        ok = _mk(store, "hint keyed", under=root, meta={"pointer": "p.py::S"})
+        assert store.taxon_parents(ok) == [(root, None)]
+
+    def test_contract_link_hint_names_edit_for_editable_key(self, store: Any) -> None:
+        root = _start(store, "edit vocab", ["pointer"])
+        loose = _mk(store, "edit loose")
+        with pytest.raises(BadInput) as ei:
+            _link(store, loose, root)
+        assert f"edit(kind='taxon', id='tn{loose}'" in str(ei.value)
+        # following the hint fixes the node; re-linking then works
+        _handler(store).edit(id=loose, meta={"pointer": "p.py::S"})
+        _link(store, loose, root)
+        assert store.taxon_parents(loose) == [(root, None)]
+
+    def test_contract_link_hint_mint_only_key_names_reput(self, store: Any) -> None:
+        root = _start(store, "mint vocab", ["dimension_kind"])
+        loose = _mk(store, "mint loose")
+        with pytest.raises(BadInput) as ei:
+            _link(store, loose, root)
+        msg = str(ei.value)
+        assert "dimension_kind" in msg and "not editable" in msg
+        assert f"tn{loose}" in msg
+        # edit really can't patch it — the hint's re-put reading is real
+        with pytest.raises(BadInput, match="cannot be edited"):
+            _handler(store).edit(id=loose, meta={"dimension_kind": "count"})
+
+    def test_new_start_hint_offers_fix_and_contract_drop(self, store: Any) -> None:
+        loose = _mk(store, "sstart loose")
+        with pytest.raises(BadInput) as ei:
+            _mk(
+                store,
+                "sstart root",
+                meta={"start": True, "contract": {"required_keys": ["pointer"]}},
+                under=loose,
+                rel="generalises",
+            )
+        hints = ei.value.next
+        assert isinstance(hints, list) and len(hints) == 2
+        assert f"edit(kind='taxon', id='tn{loose}'" in hints[0]
+        assert "contract" in hints[1]
+
 
 class TestPathAndIntegrity:
     def test_two_parents_two_axes_two_chains_with_ledes(self, store: Any) -> None:
