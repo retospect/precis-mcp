@@ -159,6 +159,21 @@ def test_add_chunks_positions_and_hierarchy(store: Store) -> None:
     ]
 
 
+def test_add_chunks_unknown_chunk_kind_raises_badinput(store: Store) -> None:
+    """gr638519: an unregistered ``chunk_kind`` is a clean BadInput, not a
+    raw ``chunks_chunk_kind_fkey`` ForeignKeyViolation."""
+    from precis.errors import BadInput
+
+    proj = _project(store)
+    ref, _title = store.drafts.create_draft(
+        name="nt", title="Title", project_ref_id=proj
+    )
+    before = _order(store, ref.id)
+    with pytest.raises(BadInput, match="unknown chunk_kind 'paper'"):
+        store.drafts.add_chunks(ref_id=ref.id, chunk_kind="paper", text="x")
+    assert _order(store, ref.id) == before
+
+
 def test_add_chunks_unknown_anchor_raises_notfound(store: Store) -> None:
     """A typo'd / stale `at=` anchor surfaces as a typed NotFound.
 

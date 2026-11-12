@@ -757,6 +757,17 @@ class DraftStore(_AbbrevMixin):
             except psycopg.errors.UniqueViolation as exc:
                 last_exc = exc
                 continue
+            except psycopg.errors.ForeignKeyViolation as exc:
+                # gr638519: an unregistered ``chunk_kind=`` (e.g. 'paper')
+                # tripped ``chunks_chunk_kind_fkey`` and escaped as
+                # ``[error:Internal] ForeignKeyViolation``. The savepoint
+                # already rolled back, so the tx is still usable for the
+                # did-you-mean lookup.
+                if getattr(exc.diag, "constraint_name", None) != (
+                    "chunks_chunk_kind_fkey"
+                ):
+                    raise
+                raise self._unknown_chunk_kind(conn, chunk_kind) from exc
         else:  # pragma: no cover - astronomically unlikely
             raise RuntimeError(
                 f"could not mint a unique handle in {_HANDLE_RETRIES} tries"
@@ -783,6 +794,26 @@ class DraftStore(_AbbrevMixin):
             depth=0,
             meta=meta,
             kind=kind,
+        )
+
+    @staticmethod
+    def _unknown_chunk_kind(conn: psycopg.Connection, chunk_kind: str) -> BadInput:
+        """``BadInput`` for a ``chunk_kind`` missing from ``chunk_kinds``,
+        naming the closest registered spellings."""
+        import difflib
+
+        slugs = [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT slug FROM chunk_kinds WHERE deprecated_at IS NULL"
+            ).fetchall()
+        ]
+        close = difflib.get_close_matches(chunk_kind, slugs, n=3)
+        pool = close or ["paragraph", "heading", "item"]
+        hint = f" — did you mean {', '.join(repr(c) for c in pool)}?"
+        return BadInput(
+            f"unknown chunk_kind {chunk_kind!r}{hint}",
+            next=f"retry with chunk_kind={pool[0]!r} (nothing was written)",
         )
 
     # -- lookups -------------------------------------------------------------
