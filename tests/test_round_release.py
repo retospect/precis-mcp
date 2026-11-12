@@ -3223,8 +3223,14 @@ def test_an_infra_only_soak_red_reruns_the_legs_and_does_not_refuse(
     _red_soak_leg(rig, "soak (3.13, 4)")
     calls, reruns = _soak_stubs(rig, _INFRA_DIGEST)
     assert mod._soak_debt_check(rig.root) == ""
-    assert calls.read_text().split() == ["4242", "--job-prefix", "soak", "-n", "0"]
-    assert reruns.read_text().split() == ["4242"]
+    assert calls.read_text(encoding="utf-8").split() == [
+        "4242",
+        "--job-prefix",
+        "soak",
+        "-n",
+        "0",
+    ]
+    assert reruns.read_text(encoding="utf-8").split() == ["4242"]
     assert "infra-only" in capsys.readouterr().out
     assert prod.row is not None
     assert prod.row["infra_rerun"]["run_id"] == "4242"
