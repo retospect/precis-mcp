@@ -49,12 +49,15 @@ replace, so a doubled tick converges.
 
 A second claim arm — :func:`_claim_backfill` — fills only the batch
 slots the open arm leaves: live gripes already past ``open`` (triaged,
-needs_spec, fixing, parked, …) that lack ``meta.dispatch.severity``.
-The 0294 migration converted their machine band prios to static
-``meta.dispatch_score`` bridge values; without a severity input the
-live score can never recompute over age and parked dups. A backfill
-row rides the same batch call but takes only the severity stamp —
-its STATUS, tags and comments are untouched (gr604593).
+needs_spec, fixing, parked, …) that lack ``meta.dispatch.severity``
+or a ``fix:*`` tag. The 0294 migration converted their machine band
+prios to static ``meta.dispatch_score`` bridge values; without a
+severity input the live score can never recompute over age and parked
+dups, and a gripe filed straight into ``STATUS:triaged`` never saw the
+verdict that writes ``fix:{class}`` — the tag ``gripe_dispatch``
+mints on (gr652790). A backfill row rides the same batch call but
+takes only the missing stamps — its STATUS, other tags and comments
+are untouched (gr604593).
 
 Gripe text is untrusted: title, body and parent titles sit inside a
 ``--- gripe <nonce> ---`` … ``--- end gripe <nonce> ---`` quoted block
@@ -819,11 +822,13 @@ class ClaimedGripe:
     #: ``precis`` default the tick may correct (gr543639). A filer-set
     #: project is never overridden.
     project: str | None = None
-    #: Claimed by the severity backfill arm (:func:`_claim_backfill`),
-    #: not the open arm — the write stamps only
-    #: ``meta.dispatch.severity`` and never touches STATUS or tags
-    #: (gr604593: a triaged gripe's 0294 bridge score is static until a
-    #: severity input lands).
+    #: Claimed by the backfill arm (:func:`_claim_backfill`), not the
+    #: open arm — the write supplies only the missing inputs
+    #: (``meta.dispatch.severity``, ``fix:{class}`` when absent) and
+    #: never touches STATUS or comments (gr604593: a triaged gripe's
+    #: 0294 bridge score is static until a severity input lands;
+    #: gr652790: a hand-filed triaged gripe never got the fix tag
+    #: ``gripe_dispatch`` mints on).
     backfill: bool = False
 
     def age_days(self, now: datetime) -> float:
@@ -924,7 +929,7 @@ def _stamp_claims(conn: Any, ids: list[int]) -> dict[int, str]:
     return {int(r[0]): str(r[1]) for r in rows}
 
 
-#: The statuses the severity backfill arm may hold — every non-terminal
+#: The statuses the backfill arm may hold — every non-terminal
 #: gripe STATUS minus ``open`` (the primary arm's cohort). Local
 #: literal: the terminals mirror ``_numeric_ref._BROWSE_TERMINALS``
 #: inverted; a worker keeps its don't-depend-on-what-it-watches
@@ -943,17 +948,20 @@ _BACKFILL_STATUSES: tuple[str, ...] = (
 
 
 def _claim_backfill(store: Store, limit: int) -> list[tuple[int, str]]:
-    """Claim up to ``limit`` already-triaged gripes for severity
-    backfill, in ONE short transaction.
+    """Claim up to ``limit`` already-triaged gripes for backfill, in
+    ONE short transaction.
 
     Eligible: live ``kind='gripe'`` at any non-open, non-terminal
-    STATUS, lacking ``meta.dispatch.severity`` — the 0294 migration
-    converted their machine band prios to static
+    STATUS, lacking ``meta.dispatch.severity`` OR a ``fix:*`` tag. The
+    0294 migration converted their machine band prios to static
     ``meta.dispatch_score`` bridge values, and without a stamped
     severity the live ``dispatch_score`` can never recompute over age
-    and parked dups (gr604593 review). Under the miss cap and holding
-    no live lease, ordered oldest first. Called with only the batch
-    slots :func:`_claim_batch` leaves, so open triage always wins.
+    and parked dups (gr604593 review); a gripe filed straight into
+    ``STATUS:triaged`` skips the verdict that writes ``fix:{class}``,
+    which ``gripe_dispatch`` requires to mint (gr652790). Under the
+    miss cap and holding no live lease, ordered oldest first. Called
+    with only the batch slots :func:`_claim_batch` leaves, so open
+    triage always wins.
     """
     if limit <= 0:
         return []
@@ -965,7 +973,13 @@ def _claim_backfill(store: Store, limit: int) -> list[tuple[int, str]]:
                          AND s.namespace = 'STATUS'
                          AND s.value = ANY(%s)
              WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-               AND (r.meta->'dispatch'->>'severity' IS NULL)
+               AND (r.meta->'dispatch'->>'severity' IS NULL
+                    OR NOT EXISTS (
+                      SELECT 1 FROM ref_tags ft
+                        JOIN tags f ON f.tag_id = ft.tag_id
+                       WHERE ft.ref_id = r.ref_id
+                         AND f.namespace IN ('OPEN', 'FLAG')
+                         AND f.value LIKE 'fix:%%'))
                AND (r.meta->'pipeline'->>'claimed_at' IS NULL
                     OR (r.meta->'pipeline'->>'claimed_at')::timestamptz
                        < now() - %s * interval '1 minute')
@@ -2001,18 +2015,24 @@ def _write_verdict(
 def _write_backfill(
     store: Store, g: ClaimedGripe, v: Verdict, when: datetime
 ) -> str | None:
-    """The severity-only write for a backfill-claimed gripe.
+    """The missing-inputs write for a backfill-claimed gripe.
 
-    Stamps ``meta.dispatch.severity`` from the verdict and drops the
-    lease — nothing else moves: the gripe keeps its STATUS, its
-    triage tags and its comments (a triaged/fixing/parked gripe was
-    already judged once; this tick supplies only the score input the
-    0294 bridge left missing, so its live ``dispatch_score`` resumes
-    recomputing over age and parked dups). Same lease ownership guard
-    as :func:`_write_verdict`, except the cohort check is "still
+    Stamps ``meta.dispatch.severity`` when absent, adds
+    ``fix:{v.fix}`` when the gripe carries no ``fix:*`` tag, and drops
+    the lease — nothing else moves: the gripe keeps its STATUS, its
+    other tags and its comments (a triaged/fixing/parked gripe was
+    already judged once; this tick supplies only what its filing
+    skipped — the score input the 0294 bridge left missing, so its
+    live ``dispatch_score`` resumes recomputing over age and parked
+    dups, and the fix class ``gripe_dispatch`` mints on, gr652790).
+    A present severity or ``fix:*`` tag is never overwritten — either
+    may be a human's call. Same lease ownership guard as
+    :func:`_write_verdict`, except the cohort check is "still
     non-terminal" — a gripe that closed mid-call is skipped, never
     re-stamped. Returns ``'backfilled'`` or ``None`` on the stale skip.
     """
+    from precis.store.types import Tag
+
     stamp = when.strftime("%Y-%m-%dT%H:%M:%SZ")
     with store.tx() as conn:
         row = conn.execute(
@@ -2042,10 +2062,25 @@ def _write_backfill(
         meta["pipeline"].pop("triage_misses", None)
         meta["pipeline"].pop("last_missed_at", None)
         dispatch = meta.get(_dscore.DISPATCH_META_KEY)
-        meta[_dscore.DISPATCH_META_KEY] = {
-            **(dispatch if isinstance(dispatch, dict) else {}),
-            "severity": v.severity,
-        }
+        if not isinstance(dispatch, dict) or dispatch.get("severity") is None:
+            meta[_dscore.DISPATCH_META_KEY] = {
+                **(dispatch if isinstance(dispatch, dict) else {}),
+                "severity": v.severity,
+            }
+        has_fix = conn.execute(
+            """
+            SELECT 1 FROM ref_tags rt
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE rt.ref_id = %s AND t.namespace IN ('OPEN', 'FLAG')
+               AND t.value LIKE 'fix:%%'
+             LIMIT 1
+            """,
+            (g.ref_id,),
+        ).fetchone()
+        if has_fix is None:
+            store.add_tag(
+                g.ref_id, Tag.open(f"fix:{v.fix}"), set_by="system", conn=conn
+            )
         conn.execute(
             "UPDATE refs SET meta = %s WHERE ref_id = %s",
             (Jsonb(meta), g.ref_id),
@@ -2528,8 +2563,8 @@ def run_gripe_triage_pass(
                 log.exception("gripe_triage: miss write failed for gr%d", g.ref_id)
             continue
         if g.backfill:
-            # Backfill rows take only the severity stamp — no STATUS
-            # move, no tag churn, no reto/dispute accounting.
+            # Backfill rows take only the missing-inputs write — no
+            # STATUS move, no tag churn, no reto/dispute accounting.
             try:
                 written = _write_backfill(store, g, v, when)
                 if written is None:

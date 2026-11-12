@@ -1751,7 +1751,9 @@ class TestSeverityBackfill:
     0294 bridge ``meta.dispatch_score`` — a static number that never
     recomputes over age or parked dups. The backfill claim arm stamps
     ``meta.dispatch.severity`` so the live score takes over; the write
-    touches nothing else."""
+    touches nothing else — except (gr652790) a missing ``fix:*`` tag,
+    which ``gripe_dispatch`` mints on and a hand-filed
+    ``STATUS:triaged`` gripe never got."""
 
     def _triaged_bridge(self, store: Store, title: str = "already triaged") -> int:
         """A gripe as the migration left it: ``STATUS:triaged`` +
@@ -1783,6 +1785,80 @@ class TestSeverityBackfill:
         assert _status(store, gid) == "triaged"
         assert _prio(store, gid) == 3
         assert _comments(store, gid) == []
+        # gr652790: the bridge gripe also lacked a fix tag — the
+        # backfill write supplies it.
+        assert "fix:code" in _open_tag_values(store, gid)
+
+    def test_fix_tag_backfilled_when_severity_already_stamped(
+        self, store: Store
+    ) -> None:
+        """gr652790's stranded shape: a prior backfill stamped
+        severity but no ``fix:*`` tag exists, so gripe_dispatch can
+        never mint the gripe. It stays backfill-eligible on the fix
+        tag alone, the verdict supplies the class — and the stamped
+        severity is never re-judged."""
+        gid = _gripe(
+            store,
+            "triaged, scored, no fix tag",
+            age_days=30,
+            status="triaged",
+            meta={"dispatch_score": 6.0, "dispatch": {"severity": 2}},
+        )
+        _light(store)
+        r = _run(store, llm=_llm({"verdicts": [_verdict(gid, severity=5)]}))
+        assert r.ok == 1
+        assert "fix:code" in _open_tag_values(store, gid)
+        assert _meta(store, gid)["dispatch"]["severity"] == 2  # never re-stamped
+        assert _status(store, gid) == "triaged"
+        assert _comments(store, gid) == []
+
+    def test_fix_tag_backfilled_when_severity_missing_too(self, store: Store) -> None:
+        """A hand-filed ``STATUS:triaged`` gripe — no severity, no fix
+        tag — gets both stamps from the one verdict."""
+        gid = self._triaged_bridge(store)
+        _light(store)
+        r = _run(store, llm=_llm({"verdicts": [_verdict(gid, fix="skill")]}))
+        assert r.ok == 1
+        assert "fix:skill" in _open_tag_values(store, gid)
+        assert _meta(store, gid)["dispatch"]["severity"] == 3
+
+    def test_existing_fix_tag_is_never_overwritten(self, store: Store) -> None:
+        """A filer- or earlier-triage-chosen ``fix:*`` survives — the
+        backfill adds the class only when none is present."""
+        gid = self._triaged_bridge(store)
+        store.add_tag(gid, Tag.open("fix:infra"), set_by="agent")
+        _light(store)
+        r = _run(store, llm=_llm({"verdicts": [_verdict(gid, fix="code")]}))
+        assert r.ok == 1
+        opens = _open_tag_values(store, gid)
+        assert "fix:infra" in opens and "fix:code" not in opens
+        # The missing severity is still the claim's business.
+        assert _meta(store, gid)["dispatch"]["severity"] == 3
+
+    def test_reto_verdict_tags_fix_reto(self, store: Store) -> None:
+        """A backfill verdict may land any ``_FIX_TYPES`` class —
+        ``fix:reto`` included; the hold tags, not the write, keep it
+        out of dispatch."""
+        gid = self._triaged_bridge(store)
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm({"verdicts": [_verdict(gid, fix="reto", ask=_ask())]}),
+        )
+        assert r.ok == 1
+        assert "fix:reto" in _open_tag_values(store, gid)
+
+    def test_fully_classified_triaged_gripe_is_not_claimed(self, store: Store) -> None:
+        """Severity + fix tag both present → nothing to backfill."""
+        gid = _gripe(
+            store,
+            "triaged and classified",
+            age_days=30,
+            status="triaged",
+            meta={"dispatch": {"severity": 3}},
+        )
+        store.add_tag(gid, Tag.open("fix:code"), set_by="agent")
+        assert gid not in [i for i, _ in gripe_triage._claim_backfill(store, 10)]
 
     def test_open_arm_wins_the_whole_batch(self, store: Store) -> None:
         """Backfill fills only the slots the open arm leaves — a full
