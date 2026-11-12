@@ -83,7 +83,10 @@ def seed_lane(name: str) -> Lane:
 
 
 def _account_of(
-    lane: Lane, rank: int, entitlement: dict[str, Any] | None = None
+    lane: Lane,
+    rank: int,
+    entitlement: dict[str, Any] | None = None,
+    pools: tuple[str, ...] = (),
 ) -> Account:
     """The ``llm_account`` row that derives back to ``lane``."""
     # Lane health fields (gr588221): carried when both sides grew them —
@@ -115,7 +118,7 @@ def _account_of(
         entitlement=entitlement or {},
         privacy={},
         promo_expiry=None,
-        pools=(),
+        pools=pools,
         updated_at=datetime.now(UTC),
         lane_rank=rank,
         **health,
@@ -126,17 +129,23 @@ def use_lanes(
     monkeypatch: pytest.MonkeyPatch,
     *table: Lane,
     entitlements: dict[str, dict[str, Any]] | None = None,
+    pools: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[Lane, ...]:
     """Stand ``table`` (default :data:`SEED_LANES`) as the lane table:
     patch ``accounts.list_accounts`` to return rows that derive to it —
     rank = position. ``entitlements`` maps a lane name to its account
-    row's ``entitlement`` (e.g. ``rung_caps`` for spend caps, gr599486).
-    Returns the lanes for lookups."""
+    row's ``entitlement`` (e.g. ``rung_caps`` for spend caps, gr599486);
+    ``pools`` maps a lane name to its row's ``llm:<account>:<window>``
+    pool keys (td572037). Returns the lanes for lookups."""
     from precis.utils.llm import accounts
 
     lanes = table or SEED_LANES
     ents = entitlements or {}
-    rows = [_account_of(lane, i, ents.get(lane.name)) for i, lane in enumerate(lanes)]
+    acct_pools = pools or {}
+    rows = [
+        _account_of(lane, i, ents.get(lane.name), acct_pools.get(lane.name, ()))
+        for i, lane in enumerate(lanes)
+    ]
     monkeypatch.setattr(accounts, "list_accounts", lambda store: list(rows))
     return lanes
 

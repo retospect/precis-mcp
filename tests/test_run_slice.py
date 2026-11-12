@@ -32,6 +32,8 @@ pytestmark = pytest.mark.skipif(
 from precis.plans import lanes
 from precis.plans.lanes import ANY_CLASS, Lane, ladder, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.utils.llm import accounts
+from precis.utils.llm.quota import quota_retry_at
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types._slice_adapters import (
@@ -3092,17 +3094,49 @@ def _codex_and_sub() -> tuple[Lane, Lane]:
     return codex, sub
 
 
+def _pool_failures(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
+    """Capture ``accounts.record_pool_failure`` calls as
+    ``{key: {parked_until, reason_class}}`` — the ``_Store`` fake carries
+    no ``external_rate_limits`` rows (td572037)."""
+    recorded: dict[str, dict[str, Any]] = {}
+
+    def record(
+        store: Any,
+        key: str,
+        *,
+        reason_class: str,
+        retry_at: datetime,
+        notice: Any = None,
+    ) -> bool:
+        pool = recorded.setdefault(key, {})
+        until = pool.get("parked_until")
+        if until is None or until <= retry_at:
+            pool["parked_until"] = retry_at
+        pool["reason_class"] = reason_class
+        return True
+
+    monkeypatch.setattr(accounts, "record_pool_failure", record)
+    return recorded
+
+
+_CLAUDE_SUB_POOLS = ("llm:claude-sub:5h", "llm:claude-sub:7d")
+
+
 def test_poll_quota_window_parks_without_an_attempt_and_switches_vendor(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """gr565359 / jo565344: a claude-sub 429 is the lane's window, not the
-    task's verdict: no attempt, lease back, relaunch now on codex."""
+    task's verdict: no attempt, lease back, relaunch now on codex.
+    td572037: the same outage feeds the lane's pools — their
+    ``parked_until`` reads the parsed reset although the job's own
+    ``not_before`` is now."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
     assert ctx.meta_set["lane"] == "claude-sub"
     codex, sub = _codex_and_sub()
-    use_lanes(monkeypatch, codex, sub)
+    pools = _pool_failures(monkeypatch)
+    use_lanes(monkeypatch, codex, sub, pools={"claude-sub": _CLAUDE_SUB_POOLS})
     _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is False
@@ -3114,6 +3148,14 @@ def test_poll_quota_window_parks_without_an_attempt_and_switches_vendor(
     )
     assert "pid" not in handle and handle["outage"] == "quota"
     assert handle["not_before"] <= datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # The pools take the outage's horizon — the parsed 11am reset —
+    # although the job relaunches at once on the other vendor.
+    expected = quota_retry_at(str(_QUOTA_RESULT["result"]))
+    assert expected is not None and expected > datetime.now(UTC)
+    for key in _CLAUDE_SUB_POOLS:
+        until = pools[key]["parked_until"]
+        assert abs((until - expected).total_seconds()) < 90
+        assert pools[key]["reason_class"] == "quota"
     assert pctx.meta_set["exclude_vendor"] == "anthropic"
     assert pctx.meta_set["compute_handle"] is handle
     assert pctx.meta_set["compute_handle_released"] is False
@@ -3224,6 +3266,101 @@ def test_poll_quota_window_past_the_park_cap_is_a_failed_attempt(
     assert pctx.status == "failed"
     assert "attempt:1" in store.tag_strings(42)
     assert any("counting it as a failed attempt" in t for k, t in pctx.chunks)
+
+
+def test_poll_quota_window_past_the_park_cap_still_records_the_pool(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572037: the window past the park cap is a failed attempt for the
+    todo, but the account's pools still record the outage."""
+    store = _Store()
+    store.add_todo(42, "t")
+    pools = _pool_failures(monkeypatch)
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    ctx, handle = _submit(store, seams)
+    handle["outage_parks"] = run_slice.OUTAGE_PARK_CAP
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "attempt:1" in store.tag_strings(42)
+    expected = quota_retry_at(str(_QUOTA_RESULT["result"]))
+    assert expected is not None
+    for key in _CLAUDE_SUB_POOLS:
+        until = pools[key]["parked_until"]
+        assert abs((until - expected).total_seconds()) < 90
+
+
+def test_poll_quota_window_still_parks_when_the_pool_write_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572037: the account names pools but the store has no pool rows —
+    the real ``record_pool_failure`` fails on the DB-less fake, and the
+    park decision is untouched."""
+    store = _Store()
+    store.add_todo(42, "t")
+    use_lanes(
+        monkeypatch, seed_lane("claude-sub"), pools={"claude-sub": _CLAUDE_SUB_POOLS}
+    )
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 1, json.dumps(_QUOTA_RESULT) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert "pid" not in handle and handle["outage"] == "quota"
+    assert "STATUS:open" in store.tag_strings(42)
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+_CODEX_LIMIT_LOG = "\n".join(
+    (
+        json.dumps({"type": "thread.started", "thread_id": "t1"}),
+        json.dumps({"type": "turn.started"}),
+        json.dumps(
+            {
+                "type": "turn.failed",
+                "error": {"message": "You've hit your usage limit. Try again later."},
+            }
+        ),
+    )
+)
+
+
+def test_poll_codex_usage_limit_death_parks_with_no_attempt(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td572037: codex's own usage-limit death — a ``turn.failed`` event
+    and no agent_message — is the lane's window, not a failed attempt:
+    the park takes the outage horizon and the weekly pool records it."""
+    codex = Lane(
+        "codex", "codex_exec", "codex", 1, frozenset({"code"}), vendor="openai"
+    )
+    pools = _pool_failures(monkeypatch)
+    use_lanes(monkeypatch, codex, pools={"codex": ("llm:codex:weekly",)})
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams, lane="codex")
+    assert handle is not None and ctx.meta_set["lane"] == "codex"
+    _finish(handle, 1, _CODEX_LIMIT_LOG + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(
+        t.startswith("attempt:") or t.startswith("claimed-by:") for t in tags
+    )
+    assert "pid" not in handle and handle["outage"] == "quota"
+    due = datetime.strptime(handle["not_before"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    # The outage horizon — no reset clause parses, so the two-hour quota
+    # backoff — and the pool's parked_until is the same instant.
+    assert due > datetime.now(UTC)
+    until = pools["llm:codex:weekly"]["parked_until"]
+    assert abs((until - due).total_seconds()) < 2
+    assert pools["llm:codex:weekly"]["reason_class"] == "quota"
 
 
 def test_poll_plain_error_is_still_a_failed_attempt(seams: dict[str, Any]) -> None:

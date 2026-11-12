@@ -653,18 +653,35 @@ class Adapter:
                 message = ""
             if message:
                 return message, False
+            # A dead turn reports no agent_message; its ``turn.failed`` /
+            # ``error`` event text is the vendor's own failure wording —
+            # surfaced as the result so ``run_slice._lane_outage`` can
+            # class a usage-limit death as the lane's window, not the
+            # task's attempt (td572037).
+            errors: list[str] = []
             for line in reversed(log_text.strip().splitlines()):
                 try:
                     event = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(event, dict) or event.get("type") != "item.completed":
+                if not isinstance(event, dict):
                     continue
-                item = event.get("item")
-                if isinstance(item, dict) and item.get("type") == "agent_message":
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        return text, False
+                etype = event.get("type")
+                if etype == "item.completed":
+                    item = event.get("item")
+                    if isinstance(item, dict) and item.get("type") == "agent_message":
+                        text = item.get("text")
+                        if isinstance(text, str) and text.strip():
+                            return text, False
+                elif etype == "turn.failed":
+                    err = event.get("error")
+                    msg = err.get("message") if isinstance(err, dict) else None
+                    errors.append(str(msg) if msg else line.strip())
+                elif etype == "error":
+                    msg = event.get("message")
+                    errors.append(str(msg) if msg else line.strip())
+            if errors:
+                return "\n".join(reversed(errors)), True
             return None, True
         raise KeyError(self.name)
 
