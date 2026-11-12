@@ -519,14 +519,15 @@ class BylineSearch:
             # honest continuation, re-running the same deterministic
             # ranking with a wider window. Echo the cohort arg: a
             # follow-up that dropped ``min_quartile`` would silently
-            # widen. Nothing is offered once the window is at the
-            # search cap (page_size=100).
+            # widen. The doubling clamps at the 100-row search cap
+            # (tools/core.py refuses above it); nothing is offered once
+            # the window is at the cap (page_size=100).
             quartile_arg = f", 'min_quartile': {min_quartile!r}" if min_quartile else ""
             if page_size < 100:
                 nav.append(
                     (
                         f"search(kind='paper', args={{{field!r}: {q!r}"
-                        f"{quartile_arg}}}, page_size={page_size * 2})",
+                        f"{quartile_arg}}}, page_size={min(100, page_size * 2)})",
                         "see more matching papers (raise page_size)",
                     )
                 )

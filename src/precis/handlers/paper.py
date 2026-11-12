@@ -3612,13 +3612,14 @@ class PaperHandler(Handler):
         next_ops: list[tuple[str, str]] = []
         # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
         # row would advertise a call that errors. Raising ``page_size``
-        # is the one honest continuation; at the 100-row search cap
-        # nothing is offered.
+        # is the one honest continuation; the doubling clamps at the
+        # 100-row search cap (tools/core.py refuses above it), and at the
+        # cap itself nothing is offered.
         if offset + len(rows) < total and page_size < 100:
             next_ops.append(
                 (
                     f"search(kind='{kind}', args={{{args_bit}}}, "
-                    f"page_size={page_size * 2})",
+                    f"page_size={min(100, page_size * 2)})",
                     "see more entries (raise page_size)",
                 )
             )
@@ -3812,13 +3813,14 @@ class PaperHandler(Handler):
         next_ops: list[tuple[str, str]] = []
         # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
         # row would advertise a call that errors. Raising ``page_size``
-        # is the one honest continuation; at the 100-row search cap
-        # nothing is offered.
+        # is the one honest continuation; the doubling clamps at the
+        # 100-row search cap (tools/core.py refuses above it), and at the
+        # cap itself nothing is offered.
         if offset + len(rows) < total and page_size < 100:
             next_ops.append(
                 (
                     f"search(kind='{kind}', args={{'stamp': {stamp!r}}}, "
-                    f"page_size={page_size * 2})",
+                    f"page_size={min(100, page_size * 2)})",
                     "see more entries (raise page_size)",
                 )
             )
@@ -10150,13 +10152,14 @@ class PaperHandler(Handler):
         next_ops: list[tuple[str, str]] = []
         # The verb refuses ``page=`` (gr530420, gr634204): a "next page"
         # row would advertise a call that errors. Raising ``page_size``
-        # is the one honest continuation; at the 100-row search cap
-        # nothing is offered.
+        # is the one honest continuation; the doubling clamps at the
+        # 100-row search cap (tools/core.py refuses above it), and at the
+        # cap itself nothing is offered.
         if offset + len(refs) < total and page_size < 100:
             next_ops.append(
                 (
                     f"search(kind='{kind}', tags={normalized_tags!r}, "
-                    f"page_size={page_size * 2})",
+                    f"page_size={min(100, page_size * 2)})",
                     "see more entries (raise page_size)",
                 )
             )

@@ -1273,6 +1273,20 @@ class TestSearch:
         assert "page=" not in body
         assert "page_size=4" in body
 
+    def test_search_tags_only_page_size_doubling_clamps_at_cap(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The doubling hint must clamp at the 100-row search cap
+        (``tools/core.py`` refuses anything above it): a ``page_size``
+        in 51..99 advertises ``page_size=100``, never an over-cap value."""
+        for i in range(52):
+            rid = _seed_paper(store, slug=f"cap-{i}", blocks=["beta"])
+            store.add_tag(rid, Tag.open("studytype:review"), set_by="system")
+        body = handler.search(tags=["studytype:review"], page_size=51).body
+        assert " of 52" in body
+        assert "page_size=100" in body
+        assert "page_size=102" not in body
+
     def test_search_tags_only_no_matches(
         self, store: Store, handler: PaperHandler
     ) -> None:

@@ -198,6 +198,25 @@ def test_handler_title_has_more_offers_page_size_not_page(store: Store) -> None:
     assert "page_size=20" in out.body
 
 
+def test_handler_title_page_size_doubling_clamps_at_cap(store: Store) -> None:
+    """The doubling hint must clamp at the 100-row search cap
+    (``tools/core.py`` refuses anything above it): a ``page_size`` in
+    51..99 advertises ``page_size=100``, never an over-cap value, and
+    at the cap itself no raise is offered."""
+    for i in range(52):
+        _seed_paper(
+            store,
+            slug=f"cap-{i}",
+            title=f"High throughput catalyst screening volume {i}",
+            authors=["A. Researcher"],
+        )
+    out = _handler(store).search(title="catalyst screening", page_size=51)
+    assert "page_size=100" in out.body
+    assert "page_size=102" not in out.body
+    at_cap = _handler(store).search(title="catalyst screening", page_size=100)
+    assert "raise page_size" not in at_cap.body
+
+
 # ── ranking: text first, not merely a held PDF (gr453860) ─────────
 
 

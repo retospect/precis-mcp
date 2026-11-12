@@ -158,6 +158,20 @@ class TestCountAndPaging:
         assert "page=" not in body
         assert "page_size=4" in body
 
+    def test_page_size_doubling_clamps_at_cap(
+        self, papers: PaperHandler, memories: MemoryHandler, store: Store
+    ) -> None:
+        """The doubling hint must clamp at the 100-row search cap
+        (``tools/core.py`` refuses anything above it): a ``page_size``
+        in 51..99 advertises ``page_size=100``, never an over-cap value."""
+        mem = id_of(memories.put(text="cites many").body)
+        for i in range(52):
+            _link(store, mem, _paper(store, f"cap-{i}"))
+        body = papers.search(linked_from="memory", page_size=51).body
+        assert " of 52" in body, body
+        assert "page_size=100" in body
+        assert "page_size=102" not in body
+
 
 def test_args_dict_reaches_the_handler(
     runtime_with_store: PrecisRuntime, store: Store

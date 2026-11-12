@@ -475,6 +475,19 @@ class TestStampSearch:
         assert sum(h in page2 for h in handles) == 1
         assert {h for h in handles if h in body or h in page2} == handles
 
+    def test_page_size_doubling_clamps_at_cap(
+        self, papers: PaperHandler, store: Store
+    ) -> None:
+        """The doubling hint must clamp at the 100-row search cap
+        (``tools/core.py`` refuses anything above it): a ``page_size``
+        in 51..99 advertises ``page_size=100``, never an over-cap value."""
+        for i in range(52):
+            self._stamped(store, f"cap-{i}", "s2_enriched_at")
+        body = papers.search(stamp="s2_enriched_at", page_size=51).body
+        assert " of 52" in body, body
+        assert "page_size=100" in body
+        assert "page_size=102" not in body
+
     def test_unstamped_ref_excluded_and_retired_excluded(
         self, papers: PaperHandler, store: Store
     ) -> None:
