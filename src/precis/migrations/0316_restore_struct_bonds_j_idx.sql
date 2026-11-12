@@ -1,0 +1,114 @@
+-- 0316_restore_struct_bonds_j_idx.sql
+--
+-- Review fix (td653055 on 0312 / gr575086): restore the full btree on
+-- struct_bonds.j — the covering index for struct_bonds_j_fkey
+-- (j -> struct_atoms.id, ON DELETE CASCADE). 0312's "~10 MB child,
+-- bounded" note priced ONE probe, not the fan-out: the RI trigger
+-- fires once per deleted parent row. Prod sizes on 2026-11-12:
+-- struct_bonds 233,187 rows (~68 MB total, ~35 MB heap); struct_atoms
+-- 1,605,123 rows across 13,372 structure refs; the largest is ref
+-- 506116 (kind 'structure') with 20,420 atoms / 29,424 bonds, and the
+-- max atoms-per-ref is 23,649.
+--
+-- Probe plans measured on prod (scripts/prod-psql --explain; the
+-- post-drop shape via a predicate no remaining index can serve —
+-- the surviving struct_bonds indexes pkey(id), i_idx(i), ref_i_idx
+-- (ref_id,i), ref_id_fk_idx(ref_id) none carry j, and the dropped
+-- struct_bonds_ref_j_idx was partial so it could never serve an
+-- unqualified RI probe anyway, per 0136's own rationale):
+--
+--   SELECT 1 FROM struct_bonds WHERE j = 1174201
+--     -> Index Only Scan using struct_bonds_j_idx (cost 0.42..2.65)
+--   EXPLAIN ANALYZE SELECT image FROM struct_bonds WHERE j + 0 = 1174201
+--     -> Parallel Seq Scan on struct_bonds (cost 1000..7017,
+--        actual 48.3 ms; serial-only would be ~3x)
+--
+-- The periodic job that fires it: `precis maintenance run`'s
+-- _purge_soft_deleted issues one `DELETE FROM refs WHERE retired_at
+-- IS NOT NULL AND retired_at < now() - '30 days' AND NOT EXISTS
+-- (measures)` in a single transaction. Each refs row cascades to
+-- struct_atoms (probe: ref_id_fk_idx, kept), and each atom delete
+-- probes `struct_bonds WHERE j = $1` — for ref 506116 that is ~20.4k
+-- seq scans x ~48 ms ≈ 16 minutes inside one statement: the 0200
+-- stall (statement_timeout pile-up, locks held for the duration) the
+-- invariants.md DROP INDEX rule exists to catch. RI probes are
+-- engine-internal — no call-site rewrite can bound them — so the
+-- index comes back. idx_scan=0 held only because no structure ref
+-- was purged inside the 15-day stats window; the tombstone purge
+-- makes a structure-ref delete a when-not-if.
+--
+-- The rest of 0312 stands — the invariants.md evidence for every
+-- periodic job touching the dropped-index tables, EXPLAINed on prod
+-- 2026-11-12 (all plans ride kept indexes; none name a dropped one):
+--
+--   * _purge_soft_deleted driving SELECT: Parallel Seq Scan on refs
+--     (est 8,364 tombstones >=30d) + Nested Loop Anti Join resolved by
+--     BitmapOr over measures_{subject,measurand,experiment}_idx.
+--   * Per deleted refs row, the RI probes into the 0312 tables:
+--     struct_atoms.ref_id -> struct_atoms_ref_id_fk_idx (index-only,
+--     est 21,242 rows on ref 506116); struct_bonds.ref_id ->
+--     struct_bonds_ref_id_fk_idx (29,822); chunk_embeddings
+--     (ref_id,kind) -> chunk_embeddings_ref_id_kind_idx;
+--     paper_authors.ref_id -> paper_authors_pkey (ref_id leading);
+--     paper_bib_entries.ref_id -> ref_marker_uniq (ref_id leading).
+--     Second level per atom: struct_bonds.i -> struct_bonds_i_idx
+--     (kept), struct_bond_atoms.atom_id -> atom_idx,
+--     struct_measures.anchor_atom_id -> anchor_atom_idx; per bond:
+--     struct_bond_atoms.bond_id -> pkey leading,
+--     struct_measures.anchor_bond_id -> anchor_bond_idx; per run:
+--     struct_frames.run_id -> run_idx, struct_neb_runs
+--     {fs,is}_run_id -> {fs,is}_run_idx (SET NULL probes). Only the
+--     j-side probe loses its index — restored below.
+--   * agentlog.gc_stale_logs (sweeper-cadence trace deletes
+--     `DELETE FROM refs WHERE ref_id = ANY(...)`): driving SELECT is
+--     Index Scan on refs_kind_idx (est 5,727 agentlog refs); trace
+--     refs carry no struct children, so their cascade probes probe
+--     empty on the kept indexes.
+--   * _cache_ops cached-ref replacement (`DELETE FROM refs WHERE
+--     ref_id = %s`): driving SELECT is a Nested Loop
+--     ref_identifiers_pkey -> refs_ref_id_kind_key; cached provider
+--     refs likewise carry no struct children.
+--   * bib_parse worker's versioned delete (`paper_bib_entries WHERE
+--     ref_id = %s AND parse_version < %s`): Index Scan on
+--     ref_marker_uniq + filter.
+--   * chunk_embeddings re-tag/rewrite deletes (`chunk_id = ANY(...)`,
+--     cards.py / bib_retag.py / _memory_process.py): Index Only Scan
+--     on chunk_embeddings_pkey. The dropped partial HNSW indexes were
+--     vector indexes — never probe-serving; their only consumer is
+--     the router's "partial" ANN route, which falls back to the
+--     global index + post-filter by design (0312's degrade argument
+--     stands).
+--   * paper_authors reparse deletes (`ref_id = %s`, paper.py /
+--     _refs_ops.py): Index Only Scan on the pkey.
+--   * Structure retirement (`UPDATE struct_{atoms,bonds} SET
+--     retired_version WHERE ref_id = %s AND retired_version IS
+--     NULL`): Index Scan on ref_id_fk_idx + filter — an UPDATE, so it
+--     fires no RI probe at all.
+--   * find_papers_by_author (the trgm claim, interactive rather than
+--     periodic): prod already plans it as a Parallel Seq Scan on
+--     paper_authors — the OR across lower(family), full_name,
+--     concat_ws(family,given) and name_raw legs can't be driven by
+--     the full_name GIN, so it was never picked. The drop changes
+--     nothing.
+--   * parts: no DELETE or UPDATE exists; writes are `INSERT ... ON
+--     CONFLICT (lcsc)` (pkey); catalog reads plan as bitmapAnd over
+--     parts_description_tsv_idx + parts_jlcpcb_assemblable_basic_
+--     stock_idx with `params->>'_category' ILIKE` as a Filter — a
+--     whole-column params index (prod's is a hand-created GIN, never
+--     in a migration) cannot serve ->>/ILIKE predicates.
+--
+-- Plain CREATE INDEX in the migration transaction, same precedent as
+-- 0208 (CONCURRENTLY cannot run there; ~230k rows builds in ~1s in
+-- the deploy's single-writer window). IF NOT EXISTS keeps it
+-- idempotent on DBs that applied neither 0312 nor this file.
+--
+-- Forward-only (ADR 0005).
+
+BEGIN;
+
+CREATE INDEX IF NOT EXISTS struct_bonds_j_idx
+    ON struct_bonds (j);
+
+COMMIT;
+
+-- End of 0316_restore_struct_bonds_j_idx.sql

@@ -69,14 +69,6 @@ UNINDEXED_FKS: frozenset[str] = frozenset(
         # leading chunk_id (one row per embedder). A second 3.9M-row btree
         # would only add write cost on the embedding path.
         "chunk_embeddings.chunk_embeddings_chunk_ref_fkey",
-        # 0312 dropped its covering index (struct_bonds_j_idx) as dead
-        # weight (gr575086): the probe is dormant — nothing DELETEs
-        # struct_atoms or UPDATEs its pkey id (atoms retire via
-        # retired_version); atom deletes only cascade off the rare
-        # `DELETE FROM refs` paths, and the child is ~10 MB so a rare
-        # probe seq-scan is bounded. Re-index if a live atom-delete
-        # path ever lands.
-        "struct_bonds.struct_bonds_j_fkey",
         "chunk_summaries.chunk_summaries_summarizer_fkey",
         "chunk_tags.chunk_tags_set_by_fkey",
         "chunks.chunks_set_by_fkey",
