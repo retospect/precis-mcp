@@ -2604,6 +2604,7 @@ def _nano_fixture_graph() -> tuple[
     "assertions still gate on the Linux + macOS CI legs",
 )
 @pytest.mark.slow  # 116s in the 2026-09-26 gate profile
+@pytest.mark.timeout(900)  # CI worst >300s macos-3.12 (gr647744) x3
 @pytest.mark.nightly(
     reason="85 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
