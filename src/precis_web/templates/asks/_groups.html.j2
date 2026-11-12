@@ -38,6 +38,12 @@
             <a href="/r/{{ r.kind }}/{{ r.ref_id }}" class="text-xs text-fg-faint hover:text-success-strong shrink-0 font-mono">{{ r.handle }}</a>
             <div class="min-w-0 flex-1 text-sm text-fg break-words">{{ r.title | linkify_refs }}</div>
             <span class="shrink-0 text-[11px] font-mono text-fg-faint">{{ r.reasons | join(' ') }}</span>
+            {% if r.created_at or r.updated_at %}
+            <span class="shrink-0 whitespace-nowrap text-[11px] text-fg-faint">
+              {%- if r.created_at %}<span title="filed {{ r.created_at | abs_ts }}">filed {{ r.created_at | ago }}</span>{% endif %}
+              {%- if r.updated_at %}{% if r.created_at %} · {% endif %}<span title="updated {{ r.updated_at | abs_ts }}">updated {{ r.updated_at | ago }}</span>{% endif %}
+            </span>
+            {% endif %}
           </summary>
           {# px-4 + ml-5 lands the body under the handle (caret w-3 + gap). #}
           <div class="px-4 pb-2 ml-5">

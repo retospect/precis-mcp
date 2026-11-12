@@ -45,6 +45,12 @@
         {{ s.title }}
       </a>
       {% if s.year %}<span class="text-xs text-fg-faint shrink-0">{{ s.year }}</span>{% endif %}
+      {% if s.created_at or s.updated_at %}
+      <span class="shrink-0 whitespace-nowrap text-xs text-fg-faint">
+        {%- if s.created_at %}<span title="filed {{ s.created_at | abs_ts }}">filed {{ s.created_at | ago }}</span>{% endif %}
+        {%- if s.updated_at %}{% if s.created_at %} · {% endif %}<span title="updated {{ s.updated_at | abs_ts }}">updated {{ s.updated_at | ago }}</span>{% endif %}
+      </span>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

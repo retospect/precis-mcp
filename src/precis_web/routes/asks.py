@@ -308,7 +308,8 @@ def _load_asks(
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT r.ref_id, r.title, r.created_at, r.meta->>'anchor',
+            SELECT r.ref_id, r.title, r.created_at, r.updated_at,
+                   r.meta->>'anchor',
                    array_agg(t.value ORDER BY t.value) AS ask_tags,
                    r.meta->'ask'
               FROM refs r
@@ -324,15 +325,15 @@ def _load_asks(
                          AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) NOT IN ('done', 'won''t-do')
-             GROUP BY r.ref_id, r.title, r.created_at, r.meta->>'anchor',
-                      r.meta->'ask'
+             GROUP BY r.ref_id, r.title, r.created_at, r.updated_at,
+                      r.meta->>'anchor', r.meta->'ask'
              ORDER BY r.created_at DESC
              LIMIT %s OFFSET %s
             """,
             (limit, offset),
         ).fetchall()
     out: list[dict[str, Any]] = []
-    for ref_id, title, created_at, anchor, ask_tags, ask_meta in rows:
+    for ref_id, title, created_at, updated_at, anchor, ask_tags, ask_meta in rows:
         raw_tags = [str(t) for t in (ask_tags or [])]
         questions = [
             q for q in (_ask_value(store, int(ref_id), t) for t in raw_tags) if q
@@ -378,6 +379,7 @@ def _load_asks(
                 "handle": handle,
                 "title": title,
                 "created_at": created_at,
+                "updated_at": updated_at,
                 "questions": questions,
                 "tags": raw_tags,
                 "source_link": source_link,
@@ -426,6 +428,8 @@ def class_groups(
                 handle=handle_registry.try_format("todo", rid) or f"todo:{rid}",
                 title=str(a.get("title") or ""),
                 reasons=("ask-user",),
+                created_at=a.get("created_at"),
+                updated_at=a.get("updated_at"),
             )
         )
     if first_page:

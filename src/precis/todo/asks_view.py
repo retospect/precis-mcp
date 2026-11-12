@@ -107,6 +107,7 @@ class AskRow:
     #: that link, so the slice it names is counted, not added on top.
     blocked: int = 0
     created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     @property
     def age_days(self) -> float:
@@ -411,7 +412,8 @@ def _ref_rows(store: Store) -> list[AskRow]:
     with store.pool.connection() as conn:
         cands = conn.execute(
             """
-            SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at
+            SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at,
+                   r.updated_at
               FROM refs r
              WHERE r.kind IN ('todo', 'gripe', 'alert') AND r.retired_at IS NULL
                -- only alerts ever stamp resolved_at: a resolved alert
@@ -435,7 +437,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
         ).fetchall()
     tags_by_ref = _open_tags(store, [int(c[0]) for c in cands])
     rows: list[AskRow] = []
-    for ref_id, kind, title, ask_meta, created in cands:
+    for ref_id, kind, title, ask_meta, created, updated in cands:
         rid = int(ref_id)
         tags = tags_by_ref.get(rid, [])
         ask = ask_meta if isinstance(ask_meta, dict) else None
@@ -476,6 +478,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 context=str((ask or {}).get("context") or ""),
                 answer=_reto_answer(tags),
                 created_at=created,
+                updated_at=updated,
             )
         )
     blocked = _blocked_counts(store, [r.ref_id for r in rows if r.ref_id])

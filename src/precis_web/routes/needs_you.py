@@ -66,6 +66,8 @@ async def index(request: Request) -> HTMLResponse:
                 "id": r.id,
                 "title": title or getattr(r, "slug", None) or f"#{r.id}",
                 "year": getattr(r, "year", None),
+                "created_at": getattr(r, "created_at", None),
+                "updated_at": getattr(r, "updated_at", None),
             }
         )
 

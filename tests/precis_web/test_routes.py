@@ -6942,6 +6942,56 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("path", ["/asks", "/needs-you"])
+def test_queue_items_show_filed_and_updated_times(
+    client, runtime, monkeypatch, path
+) -> None:
+    """gr636260: every item carries its created and last-updated times —
+    the same filed/updated pair a gripe row shows (relative in the row,
+    absolute UTC on hover): the answerable ask, the folded row and, on
+    /needs-you, each needs-triage paper."""
+    import datetime as _dt
+
+    from precis.todo.asks_view import AskRow, AsksModel
+    from precis_web.routes import asks as asks_mod
+    from precis_web.routes import needs_you as needs_you_mod
+
+    filed = _dt.datetime(2026, 11, 1, 9, 30, tzinfo=_dt.UTC)
+    updated = _dt.datetime(2026, 11, 3, 14, 0, tzinfo=_dt.UTC)
+    ask = {**_ASK_14634, "created_at": filed, "updated_at": updated}
+    monkeypatch.setattr(asks_mod, "_load_asks", lambda store, **kw: [ask])
+    monkeypatch.setattr(needs_you_mod, "_load_asks", lambda store, **kw: [ask])
+    model = AsksModel(
+        rows=(
+            AskRow(
+                klass="decision",
+                kind="gripe",
+                ref_id=88,
+                handle="gr88",
+                title="Ruling on lane rule",
+                reasons=("needs:ruling",),
+                created_at=filed,
+                updated_at=updated,
+            ),
+        )
+    )
+    monkeypatch.setattr(asks_mod, "asks_model", lambda store: model)
+    runtime.store.papers[2].created_at = filed
+    runtime.store.papers[2].updated_at = updated
+
+    resp = client.get(path)
+    assert resp.status_code == 200
+    # The answerable ask row and the folded gripe row each carry the pair.
+    assert resp.text.count('title="filed 2026-11-01 09:30 UTC"') >= 2
+    assert resp.text.count('title="updated 2026-11-03 14:00 UTC"') >= 2
+    if path == "/needs-you":
+        # The needs-triage paper row shows it too — one more pair.
+        i = resp.text.index("Ballistic carbon nanotube")
+        li = resp.text[resp.text.rindex("<li", 0, i) : resp.text.index("</li>", i)]
+        assert 'title="filed 2026-11-01 09:30 UTC"' in li
+        assert 'title="updated 2026-11-03 14:00 UTC"' in li
+
+
+@pytest.mark.parametrize("path", ["/asks", "/needs-you"])
 def test_ask_row_leads_with_copyable_handle(client, monkeypatch, path) -> None:
     """gr594941: the row led with a bare ``#<id>`` — no handle an agent
     could paste into ``get`` — and repeated it on the source chip. The
