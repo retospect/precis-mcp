@@ -44,6 +44,9 @@ BOARD_NAMES = sorted(
 )
 BOARD_MARKS = {
     "usbc_attiny": [
+        # Local 23s; at esp32c3's >6.7x macos-latest slowdown (gr647743)
+        # that lands ~160s vs the 300s default — thin runner margin.
+        pytest.mark.timeout(900),
         pytest.mark.xfail(
             strict=True,
             raises=AssertionError,
@@ -55,6 +58,7 @@ BOARD_MARKS = {
         ),
     ],
     "esp32c3": [
+        pytest.mark.timeout(900),  # CI worst >300s macos-latest (gr647743) x3
         pytest.mark.xfail(
             strict=True,
             raises=AssertionError,
