@@ -7075,10 +7075,12 @@ def test_the_tick_lock_connection_shows_in_pg_stat_activity(
     real_load = pd._load
 
     def _spy(s: Any) -> Any:
+        # pg_stat_activity is cluster-wide: a parallel worker's tick on
+        # its own test DB would show here too, so scope to this one.
         with s.pool.connection() as c:
             rows = c.execute(
                 "SELECT application_name FROM pg_stat_activity"
-                " WHERE application_name = %s",
+                " WHERE application_name = %s AND datname = current_database()",
                 (pd.TICK_LOCK_APP_NAME,),
             ).fetchall()
             names.extend(r[0] for r in rows)

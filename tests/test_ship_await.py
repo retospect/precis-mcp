@@ -122,6 +122,66 @@ def test_await_dead_pid_ends_the_wait(tmp_path: Path) -> None:
     assert "SHIP_STATUS: error" in proc.stdout
 
 
+def test_await_permission_denied_pid_is_alive_not_dead(tmp_path: Path) -> None:
+    """gr626879: an observer that may not signal the ship's pid (another
+    user, or outside its sandbox) gets EPERM from ``kill -0`` — that is a
+    LIVE process. The wait keeps going (124 at --timeout) instead of ending
+    in a false ``SHIP_STATUS: error``. pid 1 is foreign to any non-root
+    caller; under root it is simply alive — both must keep waiting."""
+    log = tmp_path / "ship.log"
+    log.write_text("partial\n", encoding="utf-8")
+    state = tmp_path / "ship.state"
+    _state(state, pid=1, log=log, status="running")
+    proc = _await(state, "--timeout", "0")
+    assert proc.returncode == 124, proc.stdout + proc.stderr
+    assert "SHIP_STATUS" not in proc.stdout
+
+
+def test_await_interrupted_record_never_reads_as_shipped(tmp_path: Path) -> None:
+    """A signalled run records exit 143 + error + ``interrupted=1``: the
+    wait relays 143, says it was interrupted, and prints no shipped token."""
+    state = tmp_path / "ship.state"
+    _state(state, status="done", exit_code=143, ship_status="SHIP_STATUS: error")
+    with state.open("a", encoding="utf-8") as fh:
+        fh.write("interrupted=1\n")
+    proc = _await(state)
+    assert proc.returncode == 143
+    assert "SHIP_STATUS: error" in proc.stdout
+    assert "shipped" not in proc.stdout.replace("nothing landed", "")
+    assert "killed by a signal" in proc.stdout
+
+
+def test_await_exit_zero_with_error_token_does_not_exit_zero(tmp_path: Path) -> None:
+    """Whatever wrote the record, exit 0 never rides under a non-shipped token."""
+    state = tmp_path / "ship.state"
+    _state(state, status="done", exit_code=0, ship_status="SHIP_STATUS: error")
+    proc = _await(state)
+    assert proc.returncode == 1
+    assert "SHIP_STATUS: shipped" not in proc.stdout
+
+
+def test_await_dead_pid_needs_the_land_receipt_to_say_shipped(tmp_path: Path) -> None:
+    """A run killed before its exit trap, with no token in its log: the
+    prose 'landed on main' is not a receipt; the post-CAS banner is."""
+    state = tmp_path / "ship.state"
+    prose = tmp_path / "prose.log"
+    prose.write_text("▶ gate\nnote: nothing has landed on main yet\n", encoding="utf-8")
+    _state(state, pid=999999999, log=prose, status="running")
+    proc = _await(state)
+    assert proc.returncode == 1
+    assert "SHIP_STATUS: error" in proc.stdout
+
+    landed = tmp_path / "landed.log"
+    landed.write_text(
+        "▶ gate\n\x1b[1m▶ shipped — landed on main:\x1b[0m\nabc123 work\n",
+        encoding="utf-8",
+    )
+    _state(state, pid=999999999, log=landed, status="running")
+    proc = _await(state)
+    assert proc.returncode == 0
+    assert "SHIP_STATUS: shipped" in proc.stdout
+
+
 def test_await_timeout_exits_124_with_log_path(tmp_path: Path) -> None:
     """A run still going at --timeout: 124 and the log path to tail."""
     log = tmp_path / "ship.log"

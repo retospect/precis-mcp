@@ -319,6 +319,10 @@ ORIG_ARGV=("$@")
 # it watches.
 if [[ "${1:-}" == "--await" ]]; then
     shift
+    # The only transcript text that proves a land: the `say` banners printed
+    # AFTER the CAS push (final report; release forward-merge). A bare
+    # 'landed on main' substring also matches prose that is not a receipt.
+    _land_receipt='▶ (shipped — landed on main|release fix landed):'
     AWAIT_TIMEOUT=""
     AWAIT_LOG=""
     while (( $# )); do
@@ -354,7 +358,7 @@ if [[ "${1:-}" == "--await" ]]; then
                 if [[ "$tok" == "SHIP_STATUS: shipped" ]]; then exit 0; fi
                 exit 1
             fi
-            if grep -qE 'landed on main|release fix landed' "$AWAIT_LOG" 2>/dev/null; then
+            if grep -qE "$_land_receipt" "$AWAIT_LOG" 2>/dev/null; then
                 echo "SHIP_STATUS: shipped"
                 exit 0
             fi
@@ -373,6 +377,8 @@ if [[ "${1:-}" == "--await" ]]; then
     # Bare form — the per-worktree record the writers below maintain.
     SHIP_STATE="${PRECIS_SHIP_STATE_FILE:-${TMPDIR:-/tmp}/precis-ship-state-$(printf '%s' "$WORKTREE" | cksum | awk '{print $1}')}"
     _await_field() { grep "^$1=" "$SHIP_STATE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+    # shellcheck source=scripts/lib/lock-holder.sh
+    source "${WORKTREE}/scripts/lib/lock-holder.sh"
     # Appear grace: a ship launched this instant needs a beat to write its
     # running record — an idle worktree still fails fast.
     _await_t0=$SECONDS
@@ -392,7 +398,11 @@ if [[ "${1:-}" == "--await" ]]; then
         if [[ "$_st" == "done" ]]; then break; fi
         # No live pid: the run died before its exit trap wrote `done`, or the
         # record is corrupt — either way there is nothing left to wait on.
-        if [[ -z "$_pid" ]] || ! kill -0 "$_pid" 2>/dev/null; then break; fi
+        # lock_pid_alive, not a bare `kill -0`: a pid owned by another user or
+        # outside this observer's sandbox answers EPERM, which means ALIVE
+        # (gr626879) — reading it as dead ended the wait with a false error
+        # while the escalated ship was still running.
+        if [[ -z "$_pid" ]] || ! lock_pid_alive "$_pid"; then break; fi
         _el=$(( SECONDS - START ))
         if (( _el >= AWAIT_TIMEOUT )); then
             _lg="$(_await_field log)"
@@ -412,20 +422,26 @@ if [[ "${1:-}" == "--await" ]]; then
     if [[ -z "$_sstat" && -n "$_lg" && -f "$_lg" ]]; then
         _sstat="$(grep -o 'SHIP_STATUS: .*' "$_lg" 2>/dev/null | tail -1 || true)"
     fi
+    # No finished record and no token in the transcript (a run killed before
+    # its exit trap): shipped only on the land receipt. A recorded exit 0 is
+    # not evidence here — it is how a signalled run once recorded itself.
     if [[ -z "$_sstat" ]]; then
-        if [[ "$_exit" == "0" ]] \
-            || { [[ -n "$_lg" && -f "$_lg" ]] \
-                && grep -qE 'landed on main|release fix landed' "$_lg"; }; then
+        if [[ -n "$_lg" && -f "$_lg" ]] && grep -qE "$_land_receipt" "$_lg"; then
             _sstat="SHIP_STATUS: shipped"
         else
             _sstat="SHIP_STATUS: error"
         fi
     fi
     echo "$_sstat"
+    if [[ "$(_await_field interrupted)" == "1" ]]; then
+        echo "scripts/ship --await: the run was killed by a signal before it finished (exit ${_exit}) — nothing landed unless the log holds a 'landed on main' receipt; verify origin/main"
+    fi
     # The failure block: the log's first ✖ line and the 10 lines after it.
     if [[ -n "$_lg" && -f "$_lg" ]]; then
         awk '/✖/{p=1} p&&c<11{print;c++}' "$_lg"
     fi
+    # Never exit 0 under a token that is not shipped.
+    if [[ "$_sstat" != "SHIP_STATUS: shipped"* && "$_exit" == "0" ]]; then exit 1; fi
     if [[ "$_exit" =~ ^[0-9]+$ ]]; then exit "$_exit"; fi
     if [[ "$_sstat" == "SHIP_STATUS: shipped" ]]; then exit 0; fi
     exit 1
@@ -489,7 +505,7 @@ _ship_state_start() {
 }
 _ship_state_finish() {
     # Runs inside an EXIT trap — it must never die and mask the real rc.
-    local _rc="${1:-1}" _tok
+    local _rc="${1:-1}" _tok _intr=0
     [[ -f "$SHIP_STATE" ]] || return 0
     # Only the pid that owns the running record may close it: the quiet
     # wrapper's pid differs from the inner run's, and a refused sibling or
@@ -497,6 +513,16 @@ _ship_state_finish() {
     # (gr564499). The lock holder's own finish always matches — it claimed
     # the record with its pid at acquire.
     [[ "$(_ship_state_field pid)" == "$$" ]] || return 0
+    # A signal-killed bash runs its EXIT trap with the status of the last
+    # command that finished (0 after a clean step), not 128+signal
+    # (gr626879: a TERMed ship recorded exit=0 / shipped with no land). A
+    # clean run reaches the last line of this script and sets _SHIP_FINISHED
+    # there — rc 0 without it is an interrupted run. 143: the quiet wrapper
+    # forwards INT/TERM/HUP to this process as TERM.
+    if [[ "$_rc" == "0" && "${_SHIP_FINISHED:-0}" != "1" ]]; then
+        _rc=143
+        _intr=1
+    fi
     if [[ "$_rc" == "0" ]]; then
         _tok="shipped"
     elif [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null || true)" ]] \
@@ -514,6 +540,7 @@ _ship_state_finish() {
         printf 'status=done\n'
         printf 'exit=%s\n' "$_rc"
         printf 'ship_status=SHIP_STATUS: %s\n' "$_tok"
+        if [[ "$_intr" == "1" ]]; then printf 'interrupted=1\n'; fi
     } > "${SHIP_STATE}.tmp" 2>/dev/null \
         && mv "${SHIP_STATE}.tmp" "$SHIP_STATE" 2>/dev/null || true
     return 0
@@ -3249,3 +3276,7 @@ fi
 if [[ -n "${SHIP_STATUS_NOTE:-}" ]]; then
     printf 'SHIP_STATUS: shipped — %s\n' "$SHIP_STATUS_NOTE"
 fi
+
+# Reached only by a run that ran to the end: _ship_state_finish treats rc 0
+# without this as a signal-killed run (gr626879). Keep it the LAST statement.
+_SHIP_FINISHED=1

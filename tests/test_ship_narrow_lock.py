@@ -402,6 +402,56 @@ def test_await_follows_the_lock_holder_not_a_refused_sibling(rig: Rig) -> None:
     assert "SHIP_STATUS: shipped" in proc.stdout
 
 
+@pytest.mark.parametrize("quiet", [False, True], ids=["verbose", "quiet-wrapper"])
+def test_sigterm_mid_gate_never_awaits_as_shipped(rig: Rig, quiet: bool) -> None:
+    """gr626879: SIGTERM to a ship waiting on its gate must not leave a
+    ``done / exit=0 / shipped`` record. A signal-killed bash runs its EXIT
+    trap with the last command's status (0), which the state writer took
+    for success; --await then replayed ``SHIP_STATUS: shipped`` / exit 0
+    with nothing merged. The run must read as interrupted (143), distinct
+    from a landed ship, and origin/main must not move."""
+    wt = rig.worktree("termed", {"tm.txt": "tm\n"})
+    state = rig.root / "ship.state"
+    main0 = rig.origin_ref("main")
+    p, log = rig.ship(
+        wt,
+        "--quick",
+        hold=True,
+        PRECIS_SHIP_STATE_FILE=str(state),
+        PRECIS_SHIP_VERBOSE="0" if quiet else "1",
+    )
+    rig.wait_lint_started(wt)
+    p.terminate()
+    p.wait(timeout=60)
+    # The wrapper forwards TERM to the inner run, which dies asynchronously.
+    end = time.monotonic() + 60
+    while "status=done" not in (
+        state.read_text(encoding="utf-8") if state.exists() else ""
+    ):
+        assert time.monotonic() < end, "no done record after SIGTERM"
+        time.sleep(0.1)
+    rig.release()  # let the orphaned fake gate finish; nothing to merge
+    record = state.read_text(encoding="utf-8")
+    assert "exit=0" not in record, record
+    assert "SHIP_STATUS: shipped" not in record, record
+    assert "exit=143" in record and "interrupted=1" in record, record
+    proc = subprocess.run(
+        [_BASH, "scripts/ship", "--await", "--timeout", "8"],
+        cwd=wt,
+        env={**os.environ, "PRECIS_SHIP_STATE_FILE": str(state)},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert proc.returncode == 143, proc.stdout + proc.stderr
+    assert "SHIP_STATUS: shipped" not in proc.stdout
+    assert "SHIP_STATUS: error" in proc.stdout
+    assert rig.origin_ref("main") == main0
+    assert "tm.txt" not in _tree_files(rig)
+    assert not rig.lockdir().exists()
+
+
 def test_quick_lost_race_forward_merges_and_lands(rig: Rig) -> None:
     wt = rig.worktree("q", {"q.txt": "q\n"})
     p, log = rig.ship(wt, "--quick", hold=True)
