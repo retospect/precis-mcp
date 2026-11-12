@@ -293,6 +293,7 @@ _ID_JUNK_KEEP_KINDS = frozenset(
         "time",
         "provenance",
         "random",
+        "handle",
         # providers — URL or free-text query ids
         "web",
         "websearch",

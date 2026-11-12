@@ -227,6 +227,7 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "math",
     "provenance",
     "random",
+    "handle",
     # web/document providers, addressed by URL or query, not a stored pk
     "web",
     "websearch",

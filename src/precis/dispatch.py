@@ -981,6 +981,11 @@ def boot(
 
     _gated(TimeHandler)
 
+    # Handle — numeric id <-> spoken word handle converter. No deps.
+    from precis.handlers.handle import HandleHandler
+
+    _gated(HandleHandler)
+
     # Provenance — Crossref-backed retraction / amendment check.
     # Works with or without a store: when the parent paper is in
     # the store, write-through persists notice refs and STATUS tags;

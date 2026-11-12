@@ -76,6 +76,7 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
         "math",
         "provenance",
         "random",
+        "handle",
     }
 )
 

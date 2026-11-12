@@ -129,6 +129,7 @@ _OPAQUE = {
     "calc": ("precis.handlers.calc", "CalcHandler"),
     "math": ("precis.handlers.math", "MathHandler"),
     "random": ("precis.handlers.random", "RandomHandler"),
+    "handle": ("precis.handlers.handle", "HandleHandler"),
     "time": ("precis.handlers.time", "TimeHandler"),
     "provenance": ("precis.handlers.provenance", "ProvenanceHandler"),
     "estimate": ("precis_estimate.handler", "EstimateHandler"),

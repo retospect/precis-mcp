@@ -298,6 +298,7 @@ DOMAINS: dict[str, Domain] = {
                 "time",
                 "math",
                 "random",
+                "handle",
             }
         ),
         families=frozenset({"pcb"}),
