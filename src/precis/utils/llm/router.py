@@ -282,6 +282,9 @@ _SUBSCRIPTION_BULK_WORK: frozenset[str] = frozenset(
         "bib_parse",
         # BIG-tier bulk (a per-card describe pass).
         "card_describe",
+        # MEDIUM-tier bulk (a labelled generated abstract per abstract-less
+        # paper — corpus-wide, so just as un-sized for a flat plan).
+        "gen_abstract",
         # Keyword/embedding-side high-volume helpers — they do not ride
         # route() today, but the label costs nothing if they ever do.
         "chunk_keywords",

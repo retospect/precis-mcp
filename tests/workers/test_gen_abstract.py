@@ -16,6 +16,7 @@ from precis.workers.gen_abstract import (
     body_input,
     clean_summary,
     run_gen_abstract_pass,
+    write_gen_abstract,
 )
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -143,4 +144,64 @@ def test_publisher_abstract_supersedes_generated(store: Any) -> None:
             conn, ref_id, set_by="system", abstract="The published abstract."
         )
         conn.commit()
+    assert _gen(store, ref_id) == []
+
+
+def test_write_skips_when_publisher_abstract_landed(store: Any) -> None:
+    """``write_gen_abstract`` re-checks under the refs row lock: an
+    abstract fill that committed between claim and write (a ``meta``
+    abstract, a minted ``card_abstract``, or both) supersedes the pending
+    generated chunk instead of being re-superseded by it."""
+    ref_id = _seed(store)
+    with store.pool.connection() as conn:
+        assert ensure_abstract_card(
+            conn, ref_id, set_by="system", abstract="The published abstract."
+        )
+        conn.commit()
+    assert write_gen_abstract(store, ref_id, text=_SUMMARY, model="m") is False
+    assert _gen(store, ref_id) == []
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = \'{"abstract": "Published."}\' WHERE ref_id = %s',
+            (ref_id,),
+        )
+        conn.commit()
+    assert write_gen_abstract(store, ref_id, text=_SUMMARY, model="m") is False
+    assert _gen(store, ref_id) == []
+
+
+def test_write_skips_when_ref_is_gone(store: Any) -> None:
+    """A ref retired/deleted between claim and write reads as superseded —
+    no orphan chunk."""
+    ref_id = _seed(store)
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM refs WHERE ref_id = %s", (ref_id,))
+        conn.commit()
+    assert write_gen_abstract(store, ref_id, text=_SUMMARY, model="m") is False
+    assert _gen(store, ref_id) == []
+
+
+def test_fill_mid_generation_supersedes_the_pending_write(store: Any) -> None:
+    """End-to-end race: the publisher abstract lands while the model call
+    is in flight — the pass counts it skipped and writes no gen chunk."""
+
+    class _FillingClient(_Client):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    'UPDATE refs SET meta = \'{"abstract": "Published."}\' '
+                    "WHERE ref_id = %s",
+                    (ref_id,),
+                )
+                ensure_abstract_card(
+                    conn, ref_id, set_by="system", abstract="Published."
+                )
+                conn.commit()
+            return super().complete(messages)
+
+    ref_id = _seed(store)
+    r = run_gen_abstract_pass(store, _FillingClient())
+    assert r["claimed"] == 1
+    assert r["ok"] == 0
+    assert r["skipped"] == 1
     assert _gen(store, ref_id) == []

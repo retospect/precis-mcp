@@ -21,8 +21,11 @@ Contract:
   prose is never sent to the model — the ref is benched instead — and the
   prompt lets the model decline with :data:`NO_SUMMARY`.
 * **The publisher abstract wins.** The claim excludes any ref that has an
-  abstract, and :func:`precis.ingest.cards.ensure_abstract_card` deletes
-  the generated chunk when a real ``card_abstract`` is minted later.
+  abstract, :func:`precis.ingest.cards.ensure_abstract_card` deletes
+  the generated chunk when a real ``card_abstract`` is minted later, and
+  :func:`write_gen_abstract` rechecks under the ``refs`` row lock so a
+  fill that lands mid-generation is never re-superseded by the pending
+  write.
 * **Replaces** the retired ``context_sentence`` as the "what is this paper"
   summary for abstract-less papers.
 
@@ -252,9 +255,35 @@ def generate_abstract(client: Any, *, title: str, block: str) -> tuple[str, str]
     )
 
 
-def write_gen_abstract(store: Store, ref_id: int, *, text: str, model: str) -> None:
+def _publisher_abstract_on_file(conn: Connection, ref_id: int) -> bool:
+    """Recheck predicate for :func:`write_gen_abstract`, run under the
+    ``refs`` row lock: a non-blank ``meta.abstract`` or a ``card_abstract``
+    chunk means the publisher abstract won while generation ran."""
+    row = conn.execute(
+        "SELECT btrim(coalesce(meta->>'abstract', '')) <> '' OR EXISTS ("
+        "SELECT 1 FROM chunks a WHERE a.ref_id = refs.ref_id "
+        "AND a.chunk_kind = 'card_abstract') "
+        "FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    return row is None or bool(row[0])
+
+
+def write_gen_abstract(store: Store, ref_id: int, *, text: str, model: str) -> bool:
     """DELETE+INSERT the ref's one generated-abstract chunk and clear its
-    attempt lease in the same transaction. ``meta`` marks it generated."""
+    attempt lease in the same transaction. ``meta`` marks it generated.
+
+    Returns ``False`` — writing nothing but the lease clear — when a
+    publisher abstract landed while generation ran. The claim's
+    ``FOR UPDATE SKIP LOCKED`` is released at the claim commit, so an
+    abstract fill can commit between claim and write
+    (:func:`precis.ingest.cards.ensure_abstract_card` then deletes the
+    generated chunk — an unlocked insert here would recreate the very
+    chunk it removed, leaving a generated summary parked next to the
+    published abstract). The ``refs`` row lock serialises with the meta
+    write; under READ COMMITTED the recheck then reads its committed
+    state. A gone ref reads as superseded too.
+    """
     meta = {
         "generated": True,
         "generator": _SOURCE,
@@ -263,11 +292,21 @@ def write_gen_abstract(store: Store, ref_id: int, *, text: str, model: str) -> N
         "label": GENERATED_LABEL,
     }
     with store.pool.connection() as conn:
-        store.chunks._replace_card_chunk(
-            conn, ref_id=ref_id, chunk_kind=CHUNK_KIND, text=text, meta=meta
-        )
+        conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
+        superseded = _publisher_abstract_on_file(conn, ref_id)
+        if superseded:
+            log.info(
+                "gen_abstract: ref_id=%s gained a publisher abstract "
+                "mid-generation — not writing the generated one",
+                ref_id,
+            )
+        else:
+            store.chunks._replace_card_chunk(
+                conn, ref_id=ref_id, chunk_kind=CHUNK_KIND, text=text, meta=meta
+            )
         ref_lease.clear_attempt(store, ref_id, _LEASE_NS, conn=conn)
         conn.commit()
+    return not superseded
 
 
 def _bench(store: Store, ref_id: int, attempts: int) -> None:
@@ -302,7 +341,8 @@ def run_gen_abstract_pass(
 ) -> dict[str, Any]:
     """One pass: claim abstract-less papers, generate, write. Returns the
     ``{claimed, ok, failed}`` counts (plus ``skipped`` for refs whose body
-    had no usable prose, ``deferred`` when dispatch is paused)."""
+    had no usable prose or that gained a publisher abstract mid-generation,
+    ``deferred`` when dispatch is paused)."""
     idle: dict[str, Any] = {"claimed": 0, "ok": 0, "failed": 0, "skipped": 0}
     if not store.dsn:
         return idle
@@ -328,11 +368,13 @@ def run_gen_abstract_pass(
 
             def _write(
                 ref_id: int = ref_id, text: str = text, model: str = model
-            ) -> None:
-                write_gen_abstract(store, ref_id, text=text, model=model)
+            ) -> bool:
+                return write_gen_abstract(store, ref_id, text=text, model=model)
 
-            retry_locked(_write, label=f"gen_abstract ref_id={ref_id}")
-            ok += 1
+            if retry_locked(_write, label=f"gen_abstract ref_id={ref_id}"):
+                ok += 1
+            else:
+                skipped += 1
         except DispatchError as exc:
             if exc.paused:
                 reason = "cli_unavailable" if exc.cli_unavailable else str(exc)

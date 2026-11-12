@@ -8790,9 +8790,16 @@ def test_subscription_cap_exhaustion_falls_through(
         {"tier": Tier.SMALL},
         {"tier": Tier.MEDIUM, "source": "card_describe"},
         {"tier": Tier.MEDIUM, "source": "card_describe:figures"},
+        {"tier": Tier.MEDIUM, "source": "gen_abstract"},
         {"tier": Tier.MEDIUM, "work_class": "chunk_keywords"},
     ],
-    ids=["small-tier", "bulk-source", "bulk-source-prefix", "bulk-work-class"],
+    ids=[
+        "small-tier",
+        "bulk-source",
+        "bulk-source-prefix",
+        "bulk-source-gen-abstract",
+        "bulk-work-class",
+    ],
 )
 def test_subscription_rung_refuses_bulk_work(
     monkeypatch: pytest.MonkeyPatch, req_kwargs: dict[str, Any]
