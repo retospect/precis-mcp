@@ -453,6 +453,7 @@ def test_plaza_family_via_to_via_clearance_survives_coordinate_rounding():
         ([32, 32], "rim"),
     ],
 )
+@pytest.mark.timeout(1800)  # CI worst >300s macos-3.13 (gr647742); grid4 ~2.3x, x2.5
 @pytest.mark.nightly(
     reason="32 s at run 42354225792 (me580555, gate-s2): tests >=30 s run on the nightly FULL shape (the gate's soak also deselects -m 'not nightly'), off the 5-minute gate"
 )
