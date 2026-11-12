@@ -45,6 +45,7 @@ that host, :func:`validate_submit` refuses any other (or no) node, and
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -165,17 +166,53 @@ def parse_bounce_scope(log_text: str) -> str | None:
     return None
 
 
-def _record_deploy_scope(store: Any, todo_id: Any, scope: str, prev: str) -> str:
+#: ``app_settings`` key holding the worker shas still running because
+#: every deploy since their start bounced no worker (JSON list, newest first).
+UNBOUNCED_KEY = "release.unbounced_workers"
+
+
+def _carry_unbounced(store: Any, scope: str | None, prev: str) -> list[str]:
+    """Worker shas that may still heartbeat after this deploy: A→B→C with
+    consecutive none/web deploys leaves workers on A, so ``prev`` joins
+    the set carried from earlier unbounced deploys. A full (or
+    unrecorded) scope restarted the workers: the set resets. Persisted
+    under :data:`UNBOUNCED_KEY`."""
+    from precis import settings
+
+    shas: list[str] = []
+    if scope in UNBOUNCED_WORKER_SCOPES and prev:
+        settings.invalidate(UNBOUNCED_KEY)
+        try:
+            old = json.loads(settings.get_str(UNBOUNCED_KEY, store=store) or "[]")
+        except ValueError:
+            old = []
+        for s in [prev, *(old if isinstance(old, list) else [])]:
+            if isinstance(s, str) and len(s) >= 7 and s not in shas:
+                shas.append(s)
+    settings.set_setting(UNBOUNCED_KEY, json.dumps(shas), store=store)
+    return shas
+
+
+def _record_deploy_scope(
+    store: Any, todo_id: Any, scope: str, prev: str, workers: list[str]
+) -> str:
     """Stamp the classifier verdict on the plan root's
-    ``meta.release.deploy_scope`` (``{scope, prev}``), the record
+    ``meta.release.deploy_scope`` (``{scope, prev, workers}``), the record
     ``release_confirm`` already reads (gr645561): it accepts a worker still
-    on ``prev`` when the scope left the workers alone. One note."""
+    on ``prev`` or on any earlier unbounced sha in ``workers`` when the
+    scope left the workers alone. One note."""
     rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
     if rel is None:
         return "bounce scope not recorded: no release on the plan root"
     root = _release.plan_root(store, todo_id)
     store.stamp_ref_meta(
-        root, {"release": {**rel, "deploy_scope": {"scope": scope, "prev": prev}}}
+        root,
+        {
+            "release": {
+                **rel,
+                "deploy_scope": {"scope": scope, "prev": prev, "workers": workers},
+            }
+        },
     )
     return f"bounce scope {scope} recorded on td{root} (prev {prev[:9] or '-'})"
 
@@ -217,6 +254,12 @@ def poll(ctx: Any, handle: Any) -> bool:
         ctx.set_meta(
             release_deploy={"rN": rn, "head": head, "prev": prev, "scope": scope}
         )
+        try:
+            workers = _carry_unbounced(ctx.store, scope, prev)
+        except Exception as exc:  # best-effort like the prod-head write
+            log.warning("%s: unbounced worker shas failed", NAME, exc_info=True)
+            lines.append(f"unbounced worker shas not carried: {type(exc).__name__}")
+            workers = [prev] if prev else []
         if scope is not None and prev:
             try:
                 lines.append(
@@ -225,6 +268,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                         ((ctx.meta or {}).get("params") or {}).get("todo_id"),
                         scope,
                         prev,
+                        workers,
                     )
                 )
             except Exception as exc:  # best-effort like the prod-head write

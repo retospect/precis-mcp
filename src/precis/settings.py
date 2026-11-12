@@ -330,6 +330,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "DB-only — no env fallback.",
         ),
         SettingSpec(
+            key="release.unbounced_workers",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="Worker shas still running because every deploy since "
+            "their start bounced no worker (bounce_scope none/web), as a "
+            "JSON list newest first; written by release_deploy, reset by "
+            "a full or unrecorded scope; release_confirm accepts them. "
+            "DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="release.ci_verdicts",
             type="str",
             env_var=None,

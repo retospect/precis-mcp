@@ -4053,7 +4053,7 @@ def test_probe_accepts_an_unbounced_worker_when_the_deploy_bounced_none(
         store, checkout, monkeypatch, deploy_log=_scope_line("none")
     )
     rel = _meta(store, mint.root_id)["release"]
-    assert rel["deploy_scope"] == {"scope": "none", "prev": PREV}
+    assert rel["deploy_scope"] == {"scope": "none", "prev": PREV, "workers": [PREV]}
     store.record_heartbeat("node-a", meta={"code_sha": PREV + "9" * 28})
     ctx = Ctx(store, params)
     handle = rcf.submit(ctx, None)
@@ -4083,10 +4083,33 @@ def test_release_deploy_poll_records_the_bounce_scope(
     assert rd.poll(ctx, handle) is True
     assert ctx.status == "succeeded", ctx.failures
     rel = _meta(store, mint.root_id)["release"]
-    assert rel["deploy_scope"] == {"scope": "web", "prev": PREV}
+    assert rel["deploy_scope"] == {"scope": "web", "prev": PREV, "workers": [PREV]}
     assert rel["rN"] == "r7" and rel["sha"] == SHA  # the cut's facts survive
     assert ctx.stamped["release_deploy"]["scope"] == "web"
     assert any("bounce scope web recorded" in t for _k, t in ctx.chunks)
+
+
+def test_consecutive_unbounced_deploys_keep_the_original_worker_sha(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A→B→C with none then web deploys: workers still run A, and C's
+    deploy_scope accepts A as well as B; a full deploy resets the set."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    a, b = "a" * 12, "b" * 12
+
+    def deploy(prev: str, scope: str) -> dict[str, Any]:
+        mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+        ctx, handle = _deploy_handle(store, mint)
+        _exit(checkout, 0, f"RELEASE_DEPLOYED: r7 {SHA} {prev}\n{_scope_line(scope)}")
+        assert rd.poll(ctx, handle) is True, ctx.failures
+        return _meta(store, mint.root_id)["release"]
+
+    deploy(a, "none")
+    rel = deploy(b, "web")
+    assert rel["deploy_scope"]["workers"] == [b, a]
+    assert rcf.unbounced_shas(rel) == [b, a]
+    assert rcf.unbounced_shas(deploy(SHA2, "full")) == []
+    assert deploy(SHA, "none")["deploy_scope"]["workers"] == [SHA]
 
 
 def test_release_deploy_poll_without_a_scope_line_records_nothing(

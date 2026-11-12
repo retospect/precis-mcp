@@ -200,16 +200,21 @@ def _same_sha(a: str | None, b: str) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
-def unbounced_prev_sha(rel: dict[str, Any]) -> str | None:
-    """The previous prod sha a worker may still report because the
-    deploy's recorded bounce scope restarted no worker, else ``None``
+def unbounced_shas(rel: dict[str, Any]) -> list[str]:
+    """The prod shas a worker may still report because every deploy since
+    it started recorded a bounce scope that restarted no worker (the
+    previous prod sha plus the earlier unbounced ones), else ``[]``
     (:func:`precis.workers.job_types.release_deploy._record_deploy_scope`
     writes ``meta.release.deploy_scope``)."""
     ds = rel.get("deploy_scope")
     if not isinstance(ds, dict) or ds.get("scope") not in _rd.UNBOUNCED_WORKER_SCOPES:
-        return None
-    prev = str(ds.get("prev") or "")
-    return prev if len(prev) >= 7 else None
+        return []
+    out: list[str] = []
+    for s in [ds.get("prev"), *(ds.get("workers") or [])]:
+        s = str(s or "")
+        if len(s) >= 7 and s not in out:
+            out.append(s)
+    return out
 
 
 def _http_get(url: str) -> Any:
@@ -336,7 +341,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     end) and is a problem only past it; a heartbeat written *after* the
     deploy finish at another sha is still rolling: it waits too
     (gr645561). A worker still on the previous prod sha attests when the
-    deploy's bounce scope restarted no worker (:func:`unbounced_prev_sha`). The web is
+    deploy's bounce scope restarted no worker (:func:`unbounced_shas`). The web is
     optional: ``release.health_url`` unset attests nothing and is not a
     problem. Any problem or any waiting host makes ``ok`` false."""
     rn = str(rel.get("rN") or "")
@@ -347,7 +352,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     deployed_at = _deployed_at(store, rn) if sha is not None else None
     deadline = deployed_at + _CONFIRM_WINDOW if deployed_at is not None else None
 
-    prev_sha = unbounced_prev_sha(rel)
+    prev_shas = unbounced_shas(rel)
     problems: list[str] = []
     waiting: list[str] = []
     unbounced: list[str] = []
@@ -360,7 +365,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
             )
         for host, ts, code_sha in live:
             reported = code_sha[:12] if code_sha else "no code_sha"
-            if prev_sha is not None and _same_sha(code_sha, prev_sha):
+            if any(_same_sha(code_sha, p) for p in prev_shas):
                 # The deploy restarted no worker (bounce scope none/web):
                 # the previous sha is where this worker stays.
                 unbounced.append(host)
@@ -420,10 +425,10 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         workers = f"workers: {len(live)} live ({hosts})"
     short = sha[:12] if sha else "unset"
     note = ""
-    if unbounced and prev_sha is not None:
+    if unbounced and prev_shas:
         note = (
             f"; unbounced: {', '.join(unbounced)} still at the previous prod "
-            f"sha {prev_sha[:12]} (deploy bounced no worker)"
+            f"sha {', '.join(p[:12] for p in prev_shas)} (deploy bounced no worker)"
         )
     if noncohort:
         note += "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)

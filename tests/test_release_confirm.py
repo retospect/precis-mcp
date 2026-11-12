@@ -532,8 +532,23 @@ def test_an_unbounced_range_still_holds_other_shas_to_the_release(
     ev = rcf.gather_evidence(store, rel, now=_past_window())
     assert ev.problems == [f"worker node-a reports {third[:12]}, release is {SHA[:12]}"]
     short = {**REL, "deploy_scope": {"scope": "none", "prev": "beef"}}
-    assert rcf.unbounced_prev_sha(short) is None
-    assert rcf.unbounced_prev_sha(REL) is None
+    assert rcf.unbounced_shas(short) == []
+    assert rcf.unbounced_shas(REL) == []
+
+
+def test_an_older_unbounced_worker_sha_is_accepted(store: Store) -> None:
+    """A→B→C with none/web deploys: workers stay on A, ``deploy_scope``
+    carries A beside prev B."""
+    R.record_prod_head(store, SHA, [])
+    older = "ab" * 20
+    _beat(store, "node-a", older)
+    rel = {
+        **REL,
+        "deploy_scope": {"scope": "web", "prev": SHA2, "workers": [SHA2, older]},
+    }
+    ev = rcf.gather_evidence(store, rel, now=datetime.now(UTC))
+    assert ev.ok and ev.unbounced == ("node-a",)
+    assert rcf.unbounced_shas(rel) == [SHA2, older]
 
 
 def test_an_unbounced_worker_with_a_pre_deploy_heartbeat_is_accepted(
