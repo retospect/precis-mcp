@@ -23,23 +23,25 @@ scope: write
 
 # precis-gripe-loop-help — the gripe-fix loop, end to end
 
+**For one fix, prefer the factory** — `put(mode='plan', args={'template':
+'gripe-fix', 'gripe_id': <N>})`; [[precis-factory-submit-help]] is the
+recipe. The tmux wave below is the legacy manual form (Reto 2026-11-05):
+the coordinator's state model still holds — the factory reads the same
+tags, comments and links.
+
 A wave is a set of gripes fixed by builders (one per tree), coordinated
 by one session. The gripe keeps what a todo must not have: open filing,
 dedupe, flood control, triage verdicts, severity, the `resolved:` close
 gate and the never-close mark. Everything about *doing* the work — the
 brief, who builds it, where the builder stopped, the review verdict, the
-landed sha — lives on one **code todo** per accepted gripe, minted under
-the `Code work from gripes` root (`td559473`) and linked `fixes` to the
-gripe. A second coordinator (or the same one after a crash) resumes from
-the todo tree alone. This is phase 1 of the design:
+landed sha — lives on one **code todo** per accepted gripe under the
+`Code work from gripes` root (`td559473`), linked `fixes` to the gripe.
+A second coordinator (or the same one after a crash) resumes from the
+todo tree alone — phase 1 of `docs/backlog/gripe-todo-unify.md`.
 
-```python
-get(kind="md", id="docs/backlog/gripe-todo-unify.md")
-```
-
-Loop state the old wave kept on the gripe — `batch:` tags, the
-`gripe_brief`/`gripe_handoff`/`gripe_review` chunks, `meta.fix.*` — is
-still readable, nothing writes it for new work;
+Loop state the old wave kept on the gripe (`batch:` tags, the
+`gripe_brief`/`gripe_handoff`/`gripe_review` chunks, `meta.fix.*`) is
+still readable, nothing writes it for new work —
 `src/precis/handlers/_gripe_fix.py` has the field map and the queue
 derivation (`/queue`, `/batch` still render pre-phase-1 gripes).
 
@@ -57,14 +59,12 @@ derivation (`/queue`, `/batch` still render pre-phase-1 gripes).
 | 7 deployed | nothing by hand — gripe-validate closes a check-less gripe; a `meta.fix.check` line on the todo makes the `gripe_autoclose` pass run it in prod and own the close | gripe `done` |
 | 8 close: harvest | `get(kind='todo', id=T, view='scratch')` → `put(id=T, text='harvest: none\|me<N> — …')` | — |
 
-A red attempt is not a queue either: the todo goes back to `open` (the
-claim drops, `attempt:<n>` bumps, the `handoff:` comment says why) and
-one `work:` mirror line on the gripe says the attempt failed. Mirror
-lines are the only loop prose the gripe takes — `work: parked behind
-gr<M> (td<U>)`, `work: attempt N failed on <lane> — <first line>`,
-`work: asks Reto: td<ask>` — and never a `work:` line that starts with
-`resolved:`: the close gate owns that word, land-notify writes the real
-one.
+A red attempt is no queue either: the todo goes back to `open` (claim
+drops, `attempt:<n>` bumps, the `handoff:` says why) plus one `work:`
+line on the gripe. `work:` mirrors are the only loop prose the gripe
+takes — `work: parked behind gr<M> (td<U>)`, `work: attempt N failed on
+<lane> — <first line>`, `work: asks Reto: td<ask>` — and never
+`work: resolved:…`: the close gate owns that word.
 
 ## Step 1 — which gripes go into a wave?
 
@@ -108,18 +108,16 @@ has_auto_run_signal`), so nothing mints a billed `plan_tick` under it;
 
 `meta.task_class` is informational in phase 1 — nothing reads it on a
 plain code todo yet (`src/precis/plans/lanes.py::pick_lane` reads it in
-the plan shape; `templates.py` stamps it on generated nodes), so the
-coordinator picks the vendor by hand; automatic routing on it is phase
-2. The vocabulary: `code` (cheapest lane with fit), `design` (a spec
-pass first), `review` (a different vendor than the builder), `verify`,
+the plan shape), so the coordinator picks the vendor by hand; automatic
+routing is phase 2. The vocabulary: `code` (cheapest lane with fit),
+`design` (a spec pass first), `review` (a different vendor), `verify`,
 `docs`. Risk tags (`risk:spend`, `risk:migration`, `risk:prod-write`,
-`risk:public-surface`, `risk:read-only-verb`) are informational too —
-no code reads `risk:*` today and none blocks a claim — but they still
+`risk:public-surface`, `risk:read-only-verb`) are informational too, but
 steer the brief: `risk:spend` carries the $25 cap and the paid-fetch
 rule, `risk:prod-write` sends write-path testing to the dev DB,
-`risk:read-only-verb` pins the verb read-only with a test in the slice.
-In the plan shape `risk:migration` and `risk:public-surface` insert an
-`answer` gate between build and land — that insertion is phase 2.
+`risk:read-only-verb` pins the verb read-only with a test. In the plan
+shape `risk:migration` and `risk:public-surface` insert an `answer` gate
+between build and land.
 
 A two-pass fix — design, then build — mints two children of T the same
 way, the build `blocked-by` the design, and T carries no brief of its
@@ -263,13 +261,11 @@ above.
 
 ## Step 6 — land: the subject moves both handles
 
-Nothing is recorded by hand at land. The squash subject ends with the
-handle list `(gr<N>, td<T>)`; `scripts/lib/land_notify.py` reads it and
-posts `landed: <sha>` + `STATUS:done` on the todo and `resolved: <sha>
-(main, release pending)` + `STATUS:auto_verify` (or `user_verify`) on
-the gripe — that is why the builder's brief names the subject it must
-end with. A commit that touches a gripe without finishing it names it
-`refs gr<N>` inside the same tail: a `landed (partial)` comment, no
+Nothing is recorded by hand at land. The squash subject ends
+`(gr<N>, td<T>)`; `scripts/lib/land_notify.py` reads it and posts
+`landed: <sha>` + `STATUS:done` on the todo and `resolved: <sha> (main,
+release pending)` + `STATUS:auto_verify` (or `user_verify`) on the gripe.
+`refs gr<N>` in the same tail writes a `landed (partial)` comment, no
 status move. Never a second `resolved:` and never a hand `STATUS:done`
 on a gripe land-notify already moved (gr542762).
 
@@ -451,6 +447,7 @@ carries it).
 
 ## See also
 
+- [[precis-factory-submit-help]] — submit a gripe fix to the dark factory
 - [[precis-gripe-help]] — filing, comments, STATUS lifecycle, closing
 - [[precis-work-help]] — the todo tree, `meta.ask`, leases
 - [[precis-fleet-help]] — live agent rows: host, tree, ctx%, attach line

@@ -290,17 +290,25 @@ factory keeps the machinery and adds an owner to every branch.
   **deletes the branch and its worktree or container**, instead of
   ship's reset to `main`: the slice is done, so the branch has no owner
   left. Human trees keep the reset.
-- **Review after land, non-blocking, from another lane.** The reviewer
-  (lane table `exclude=` the builder's vendor) reads the slice's squash
-  diff on `main` against the brief and writes a `review` chunk: `LAND`
-  (clean), `FIX` (with the list) or `REVERT` (with why). `FIX` mints a
-  fix slice in the same batch; `REVERT` mints a revert slice, the
-  original slice requeues with the verdict in its handoff. Landing never
-  waits on the review; attribution per slice stays. Reto reviews only
-  what authority marks Reto-only (harness diffs, migrations,
-  `safe_fetch.py`, authority, loosened tests); those are the one class
-  that still waits before land, as decision rows in the asks list with
-  the diff handle.
+- **Review before land, gating it, from another lane (gr570506, Reto
+  2026-11-12 — supersedes "review after land, non-blocking").** The
+  squash commit to `main` is the LAST step: the builder's clean exit
+  pushes `slice/<id>` to origin and holds the `land_slice` mint as
+  `meta.pending_land` on the build todo, which closes; the reviewer
+  (`meta.preland_review`, lane table `exclude=` the builder's vendor)
+  releases, reads `git diff origin/main...origin/slice/<id>` against
+  the brief and posts `review: LAND|FIX — <list>|REVERT — <why>`.
+  `LAND` mints the held land; `FIX`/`REVERT` send the branch back to
+  the builder with the findings as its handoff (nothing is on main to
+  fix or revert). The sha-in-prod gate and validate wait on the land's
+  `landed:` stamp as before. Pull requests are banned for builders —
+  `gh pr` sits in the lane's `deny_exec`; the squash merge is the only
+  path to main. Reto reviews only what authority marks Reto-only
+  (harness diffs, migrations, `safe_fetch.py`, authority, loosened
+  tests); those are the one class that still waits before land, as
+  decision rows in the asks list with the diff handle. A reviewer of
+  work that already landed keeps the old grammar and `FIX`/`REVERT`
+  mint tasks.
 - **The batch gate is the release pass, and it loops** (step 4):
   previous release done, new shas on `main` → cut `release/r<N>` at the
   head, run the full gate once for the whole batch. Red → the fixer
@@ -525,7 +533,8 @@ c215f56fd); **review after land** as a `reviewer` generator node in
 gripe-fix and slice-tree, verdict `review: LAND|FIX|REVERT` handled by
 the tick, FIX mints a fix task, REVERT a revert task and resets the
 sha-in-prod gate, dispatch ordered by `(prio, id)` across all roots
-(152d3a055, a77bec3f7); the **dark release pass** — `scripts/release
+(152d3a055, a77bec3f7) — reversed 2026-11-12 (gr570506): the review now
+gates the land itself, see "Branches" above; the **dark release pass** — `scripts/release
 --cut-only` returns after the push, `ci_verdict_poll` parks itself while
 CI runs, an `answer` gate keeps the deploy Reto's, `release_deploy`
 refuses unless the answer names its release, a red verdict re-cuts on

@@ -87,7 +87,7 @@ def _assert_plan_hygiene(store: Store, mint: PlanMint) -> None:
         }, key
 
 
-def test_registry_has_the_seven_templates() -> None:
+def test_registry_has_the_eight_templates() -> None:
     assert sorted(TEMPLATES) == [
         "gripe-fix",
         "gripe-fix-direct",
@@ -96,8 +96,11 @@ def test_registry_has_the_seven_templates() -> None:
         "release-pass",
         "route-loop",
         "slice-tree",
+        "spec-build",
     ]
     assert TEMPLATES["gripe-fix"].required == ("gripe_id",)
+    assert TEMPLATES["spec-build"].required == ("section",)
+    assert TEMPLATES["spec-build"].optional == ("lane",)
     assert TEMPLATES["release-pass"].required == ()
 
 
@@ -127,7 +130,9 @@ def test_gripe_fix_direct_shape(handler: TodoHandler, store: Store) -> None:
     assert f"gr{gripe}" in body and "the widget leaks" in body
     assert "no triage and no brief" in body
     assert _meta(store, mint.ids["validate"])["task_class"] == VALIDATE_TASK_CLASS
-    assert _meta(store, mint.ids["review"])["task_class"] == "review"
+    review = _meta(store, mint.ids["review"])
+    assert review["task_class"] == "review"
+    assert review["preland_review"] is True
     # td564019 cut 1: the validate may run on an MCP-less lane too, so its
     # body carries the gripe report as the build's does.
     validate = _body(store, mint.ids["validate"])
@@ -188,6 +193,9 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     review = _meta(store, mint.ids["review"])
     assert review["generate"] == {"role": "reviewer", "from": f"td{mint.ids['build']}"}
     assert review["task_class"] == "review"
+    # gr570506 (Reto 2026-11-12): gripe fixes are reviewed BEFORE landing —
+    # the reviewer gates the squash, it does not read it after.
+    assert review["preland_review"] is True
     # Only the build is plain ``code`` work; the other sessions work through
     # the precis MCP and carry a class the MCP-less codex lane does not fit.
     assert "task_class" not in _meta(store, mint.ids["build"])
@@ -201,6 +209,13 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     # no-tests rule without repeating the ``review: LAND`` line.
     assert "(read-only, tests not run)" in _body(store, mint.ids["review"])
     assert "run no tests" in _body(store, mint.ids["review"])
+    # Pre-land brief (gr570506): the reviewer reads the pushed branch diff,
+    # not a landed squash — LAND lets the held land_slice mint.
+    assert "Review BEFORE land" in _body(store, mint.ids["review"])
+    assert "git fetch -q origin" in _body(store, mint.ids["review"])
+    assert f"git diff origin/main...origin/slice/{mint.ids['build']}" in _body(
+        store, mint.ids["review"]
+    )
     assert _meta(store, mint.ids["gate"])["gate"] == {
         "kind": "sha-in-prod",
         "args": {"sha": "0000000"},
@@ -361,6 +376,90 @@ def test_slice_tree_shape(store: Store) -> None:
     body = _body(store, mint.ids["review"])
     assert "child todo" in body and "review: REVERT" in body
     _assert_plan_hygiene(store, mint)
+
+
+# --- spec-build ------------------------------------------------------------
+
+
+def test_spec_build_shape(store: Store) -> None:
+    """gr570506 (Reto 2026-11-12): the factory's second input — a spec
+    section builds with the same-commit spec retirement, gated by a
+    pre-land review."""
+    mint = TEMPLATES["spec-build"].mint(
+        store, None, section="docs/backlog/seams.md~Held land"
+    )
+    assert set(mint.ids) == {"root", "build", "review"}
+    assert _kinds(store, mint) == {
+        "root": "phase",
+        "build": "task",
+        "review": "generator",
+    }
+    assert _blocked_by(store, mint) == {("review", "build")}
+    build = _meta(store, mint.ids["build"])
+    assert build["op"] == "run_slice"
+    body = _body(store, mint.ids["build"])
+    assert "docs/backlog/seams.md~Held land" in body
+    assert "SAME commit" in body
+    assert "redirect" in body
+    review = _meta(store, mint.ids["review"])
+    assert review["generate"] == {
+        "role": "reviewer",
+        "from": f"td{mint.ids['build']}",
+    }
+    assert review["preland_review"] is True
+    assert review["task_class"] == "review"
+    rbody = _body(store, mint.ids["review"])
+    assert "Review BEFORE land" in rbody
+    assert f"origin/slice/{mint.ids['build']}" in rbody
+    _assert_plan_hygiene(store, mint)
+
+
+def test_spec_build_lane_pins_the_build(store: Store) -> None:
+    mint = TEMPLATES["spec-build"].mint(
+        store, None, section="docs/backlog/x.md", lane="devin"
+    )
+    assert _meta(store, mint.ids["build"])["op"] == {
+        "type": "run_slice",
+        "params": {"lane": "devin"},
+    }
+
+
+@pytest.mark.parametrize(
+    "section",
+    ["", "   ", "src/precis/x.py", "docs/backlog/x.txt", "docs/backlog/x.md~"],
+)
+def test_spec_build_rejects_a_non_md_section(store: Store, section: str) -> None:
+    """``section`` must be an md spec address — ``<path>.md`` or
+    ``<path>.md~<Heading>`` — else the mint refuses with a next-step."""
+    with pytest.raises(BadInput):
+        TEMPLATES["spec-build"].mint(store, None, section=section)
+
+
+def test_spec_build_accepts_whole_file_and_section(store: Store) -> None:
+    """Both md spellings mint: a whole-file spec deletes the file, a
+    ``~Heading`` section retires to a redirect line."""
+    whole = TEMPLATES["spec-build"].mint(store, None, section="docs/backlog/x.md")
+    part = TEMPLATES["spec-build"].mint(store, None, section="docs/backlog/y.md~Part")
+    assert "whole-file spec is deleted" in _body(store, whole.ids["build"])
+    assert "replaced by one line redirecting" in _body(store, part.ids["build"])
+
+
+def test_put_mode_plan_spec_build(handler: TodoHandler, store: Store) -> None:
+    resp = handler.put(
+        mode="plan",
+        template="spec-build",
+        section="docs/backlog/x.md~H",
+    )
+    assert "spec-build" in resp.body
+    root = id_of(resp.body)
+    tree = handler.get(id=root, view="tree").body
+    # Root and build share the ``Build <section>`` title — the build is
+    # the one carrying ``meta.op``.
+    matches = re.findall(r"td(\d+) \S+ Build docs/backlog/x\.md~H", tree)
+    builds = [i for i in matches if "op" in _meta(store, int(i))]
+    assert len(builds) == 1, tree
+    op = _meta(store, int(builds[0]))["op"]
+    assert (op.get("type") if isinstance(op, dict) else op) == "run_slice"
 
 
 def test_release_pass_shape(store: Store) -> None:
@@ -642,6 +741,8 @@ def test_put_mode_plan_refuses_missing_argument(handler: TodoHandler) -> None:
         handler.put(mode="plan", template="gripe-fix")
     with pytest.raises(BadInput, match="board"):
         handler.put(mode="plan", template="pcb-pipeline")
+    with pytest.raises(BadInput, match="section"):
+        handler.put(mode="plan", template="spec-build")
 
 
 def test_put_mode_plan_refuses_free_text(handler: TodoHandler) -> None:

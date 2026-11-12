@@ -373,6 +373,51 @@ def test_validate_submit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert off is not None and "PRECIS_FACTORY=off" in off
 
 
+def test_validate_submit_admits_a_closed_todo_carrying_pending_land(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr570506: the pre-land defer closes the build done and stamps
+    ``meta.pending_land``; the land the tick mints on `review: LAND`
+    then finds a closed todo — admitted only while the stamp is there."""
+    store = _Store()
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    store.add_todo(
+        44,
+        status="done",
+        meta={"pending_land": {"todo_id": 44, "branch": "slice/44"}},
+    )
+    store.add_todo(45, status="done")
+    assert land_slice.validate_submit(store, params={"todo_id": 44}) is None
+    closed = land_slice.validate_submit(store, params={"todo_id": 45})
+    assert closed is not None and "is closed" in closed
+
+
+def test_record_land_clears_pending_land() -> None:
+    """The ``landed:`` record discharges the hold — a lingering stamp
+    would read a post-land review as pre-land."""
+    store = _Store()
+    store.add_todo(
+        46,
+        status="done",
+        meta={"pending_land": {"todo_id": 46, "branch": "slice/46"}},
+    )
+    wrote = land_slice._record_land(store, 46, "abc1234def", "feat(x): y")
+    assert "pending_land cleared" in wrote
+    assert "landed comment" in wrote
+    assert not store.refs[46].meta.get("pending_land")
+    assert store.comments(46)[-1].startswith("landed: abc1234de")
+
+
+def test_record_land_without_pending_land_changes_nothing() -> None:
+    """An ordinary land (builder minted it, todo still doing) writes the
+    landed comment + STATUS:done and touches no hold key."""
+    store = _Store()
+    store.add_todo(47, status="doing")
+    wrote = land_slice._record_land(store, 47, "abc1234def", "feat(x): y")
+    assert "pending_land cleared" not in wrote
+    assert "landed comment" in wrote and "STATUS:done" in wrote
+
+
 # ── subject ────────────────────────────────────────────────────────
 
 

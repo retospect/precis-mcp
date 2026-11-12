@@ -62,6 +62,9 @@ DENY_BASH: tuple[str, ...] = (
     "scripts/round",
     "scripts/host-ops/play",
     "pkill -f",
+    # gr570506 (Reto 2026-11-12): no pull requests, ever — the factory's
+    # squash merge is the only path to main.
+    "gh pr",
 )
 
 

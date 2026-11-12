@@ -2280,6 +2280,27 @@ def _todo_status(store: Any, todo_id: int) -> str:
     return "open"
 
 
+def _pending_land(store: Any, todo_id: int) -> bool:
+    """``meta.pending_land`` set on ``todo_id`` — its clean build is done
+    with the land held for a pre-land review (gr570506), so a ``done``
+    target with no ``landed:`` comment is NOT a dead land."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    return bool(
+        ref is not None
+        and isinstance((ref.meta or {}).get(_templates.PENDING_LAND_KEY), dict)
+    )
+
+
+def _pending_targets(plan: _Plan, n: _Node) -> list[_Node]:
+    """The reviewer ``n``'s targets whose land it gates — the build todos
+    carrying ``meta.pending_land`` (gr570506, pre-land review)."""
+    return [
+        t
+        for t in _review_targets(plan, n)
+        if isinstance(t.meta.get(_templates.PENDING_LAND_KEY), dict)
+    ]
+
+
 def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     """The reviewer ``n``'s land targets when EVERY one closed with no
     ``landed:`` comment — the review has nothing left to judge
@@ -2318,7 +2339,9 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     dead = [
         tid
         for tid, status in pairs
-        if status in BLOCKER_TERMINAL_STATUSES and _landed_sha(store, tid) is None
+        if status in BLOCKER_TERMINAL_STATUSES
+        and _landed_sha(store, tid) is None
+        and not _pending_land(store, tid)
     ]
     return dead if pairs and len(dead) == len(pairs) else []
 
@@ -2362,6 +2385,73 @@ def _close_dead_chain(
         res.notes.append(
             f"td{n.id}: {starved} dead-chain node(s) closed won't-do with it"
         )
+
+
+def _mint_preland_land(
+    store: Any, w: _Writer, res: PassResult, n: _Node, t: _Node
+) -> int:
+    """The pre-land LAND (gr570506): mint the ``land_slice`` the build's
+    clean exit held back — the params ``run_slice`` stamped in
+    ``meta.pending_land``, the usual ``land_slice:td<id>`` idem key.
+    ``meta.pending_land`` STAYS stamped until ``land_slice`` itself lands
+    (``_record_land`` clears it): it is the marker keeping the done,
+    not-yet-landed target out of ``_dead_land_targets`` while the land
+    is in flight, and the stamp ``land_slice`` reads to admit a closed
+    todo. Returns the job id."""
+    params = dict(t.meta[_templates.PENDING_LAND_KEY])
+    job_id = _mint_job(
+        store, t, "land_slice", "ssh_node", params, idem_key=f"land_slice:td{t.id}"
+    )
+    w.comment(
+        t,
+        f"plan_dispatch: review td{n.id} LAND — the held land mints now "
+        f"(job:{job_id}); pre-land review (gr570506).",
+    )
+    res.notes.append(
+        f"td{t.id}: pre-land LAND — land_slice job:{job_id} minted (review td{n.id})"
+    )
+    return job_id
+
+
+def _review_back_to_builder(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    kind: str,
+    rest: str,
+) -> None:
+    """A pre-land FIX/REVERT (gr570506, Reto 2026-11-12: "if it says no,
+    the work goes back to the builder"). Nothing landed, so no fix or
+    revert task mints: each held target's ``meta.pending_land`` clears,
+    it reopens with the findings as its ``handoff:`` — the next build's
+    brief — and the reviewer stays open for the rebuild (its
+    ``blocked-by`` edge re-arms while the target is open and releases
+    when the next build defers again)."""
+    targets = _pending_targets(plan, n)
+    for t in targets:
+        w.stamp_meta(t, {_templates.PENDING_LAND_KEY: None})
+        claims = _claims(t)
+        if claims:
+            w.remove_tags(t, claims)
+        # The rejected build burns no attempt (``_review_revert``'s
+        # floor): the rebuild dispatches on a fresh budget.
+        ended = [j for j in plan.jobs(t) if j.status in _JOB_ENDED]
+        if ended:
+            w.stamp_meta(t, {"rearmed_after_job": ended[-1].id})
+        w.comment(
+            t,
+            f"handoff: review: {kind} — {rest}\n\n(review td{n.id}, "
+            "pre-land: the branch is still on origin — rebuild on it "
+            "from the brief with this finding in mind)",
+        )
+        if t.status != "open":
+            w.set_status(t, "open")
+    res.notes.append(
+        f"td{n.id}: review {kind} pre-land — back to the builder: "
+        + ", ".join(f"td{t.id}" for t in targets)
+    )
 
 
 def _step_reviews(
@@ -2437,9 +2527,26 @@ def _step_reviews(
         kind, rest = verdict
         record["verdict"] = kind
         marker = _templates.REVIEW_READONLY_MARKER
+        pending = _pending_targets(plan, n)
+        preland = bool(pending) and len(pending) == len(_review_targets(plan, n))
         if kind == "LAND":
+            for t in pending:
+                _mint_preland_land(store, w, res, n, t)
             w.set_status(n, "done")
             res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
+        elif preland:
+            # gr570506 (Reto 2026-11-12): a FIX/REVERT on a branch that
+            # has not landed sends the work back to the builder — nothing
+            # is on main to fix or revert — and the reviewer stays open
+            # for the rebuild it then re-gates.
+            _review_back_to_builder(store, plan, w, res, n, kind, rest)
+            w.stamp_meta(n, {"rearmed_after_job": newest.id})
+            if n.status != "open":
+                w.set_status(n, "open")
+            res.notes.append(
+                f"td{n.id}: review {kind} for {handle} {marker}; "
+                "pre-land — back to the builder, reviewer stays open"
+            )
         elif kind == "FIX":
             fix_id, cap_ask = _review_fix(
                 store, plan, w, res, n, handle, rest, now, lane_table

@@ -798,17 +798,13 @@ def _signal_group(pgid: int, sig: int) -> None:
     os.killpg(pgid, sig)
 
 
-def _mint_land(
-    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool = False
-) -> int:
-    """Mint the ``land_slice`` job for the slice (idem key
-    ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
-    the claimant holds the worktree). ``checked`` sets
-    ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
-    ``--checked`` when the builder's test evidence is missing (gr573563).
-    Returns its id."""
-    from precis.workers._mint import mint_job_once
-
+def _land_params(
+    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool
+) -> dict[str, Any]:
+    """The ``land_slice`` params for this run's slice — what
+    :func:`_mint_land` mints with, and what ``meta.pending_land`` holds
+    while a pre-land review gates the mint (:data:`PENDING_LAND_KEY`,
+    gr570506)."""
     meta = ctx.meta or {}
     run_params = meta.get("params") or {}
     params: dict[str, Any] = {
@@ -823,6 +819,22 @@ def _mint_land(
     node = run_params.get("target_node") or os.environ.get("PRECIS_NODE")
     if node:
         params["target_node"] = str(node)
+    return params
+
+
+def _mint_land(
+    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool = False
+) -> int:
+    """Mint the ``land_slice`` job for the slice (idem key
+    ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
+    the claimant holds the worktree). ``checked`` sets
+    ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
+    ``--checked`` when the builder's test evidence is missing (gr573563).
+    Returns its id."""
+    from precis.workers._mint import mint_job_once
+
+    meta = ctx.meta or {}
+    params = _land_params(ctx, todo_id, tree, lane, checked)
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
     if meta.get(_CLAIM_BAND_KEY) == _RELEASE_CLAIM_BAND:
         # The waiver gripe's land claims in the same band as its build.
@@ -841,6 +853,61 @@ def _mint_land(
             meta_extra=extra,
         )
     return int(job_id)
+
+
+def _preland_reviewer(store: Any, todo_id: int) -> int | None:
+    """The open pre-land reviewer gating td<todo_id>'s land (gr570506, Reto
+    2026-11-12): a live todo ``meta.generate = {role: 'reviewer', from:
+    'td<id>'}`` carrying ``meta.preland_review`` (:data:`PRELAND_REVIEW_KEY`)
+    — else ``None``, and a clean exit mints ``land_slice`` as before."""
+    from precis.plans.templates import PRELAND_REVIEW_KEY
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ref_id FROM refs
+             WHERE kind = 'todo' AND retired_at IS NULL
+               AND meta->'generate'->>'role' = 'reviewer'
+               AND meta->'generate'->>'from' = %s
+               AND meta->%s = 'true'::jsonb
+            """,
+            (f"td{todo_id}", PRELAND_REVIEW_KEY),
+        ).fetchall()
+    for (rid,) in rows:
+        if _todo_status(store, int(rid)) not in TERMINAL_TODO_STATUSES:
+            return int(rid)
+    return None
+
+
+def _defer_land_for_review(
+    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool, reviewer: int
+) -> str:
+    """Hold the land behind the pre-land review td<reviewer> (gr570506):
+    push the slice branch to origin (the reviewer's worktree reads the
+    diff off it; a reaped worktree loses nothing), stamp the land's
+    params as ``meta.pending_land`` and close the todo — the tick
+    releases the reviewer, which gates the ``land_slice`` mint on its
+    LAND verdict. Returns the push note for the job summary."""
+    from precis.plans.templates import PENDING_LAND_KEY
+    from precis.workers.job_types import land_slice as _ls
+
+    note = _ls._push_branch(tree, slice_branch(todo_id))
+    if "FAILED" in note:
+        raise RuntimeError(note)
+    ctx.store.stamp_ref_meta(
+        todo_id,
+        {PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked)},
+    )
+    _append_comment(
+        ctx.store,
+        todo_id,
+        f"run_slice: {note}; the land is held for the pre-land review "
+        f"td{reviewer} — the tick mints land_slice on its `review: LAND` "
+        "verdict (gr570506).",
+    )
+    close_todo(ctx.store, todo_id, str(lane) if lane else None)
+    return note
 
 
 def _process_identity(pid: int) -> tuple[str, int] | None:
@@ -1088,8 +1155,10 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
         "closes it on your verdict.",
         "",
         "You are read-only: run no tests, no typecheck, no lint and no "
-        "`uv` or `scripts/test` command — read the squash diff "
-        "(`git show <sha>`) and the files. End your verdict line with "
+        "`uv` or `scripts/test` command — read the diff the Review target "
+        "section names (a `git show <sha>` squash after land, a "
+        "`git diff origin/main...origin/slice/<id>` branch before it) and "
+        "the files. End your verdict line with "
         f"`{REVIEW_READONLY_MARKER}`.",
         "",
         "The rest of your final message: what you checked, in a line or two.",
@@ -1178,6 +1247,8 @@ def _review_target(store: Any, meta: Any) -> str | None:
     that touch the same files are named (gr568824) — a finding a
     follow-up already fixed is not a finding. ``None`` for any other
     node."""
+    from precis.plans.templates import PENDING_LAND_KEY
+
     if _generate_role(meta) != "reviewer":
         return None
     m = _TD_FROM_RE.fullmatch(str((meta.get("generate") or {}).get("from") or ""))
@@ -1214,11 +1285,25 @@ def _review_target(store: Any, meta: Any) -> str | None:
                 *(f"- `{line}`" for line in followups),
             ]
     else:
-        lines.append(
-            f"td{target_id} has no `landed:` comment yet: nothing is on main to "
-            "review. End with `no-op: nothing landed yet` as the first line of "
-            "your final message."
+        pending = (ref.meta or {}).get(PENDING_LAND_KEY)
+        branch = (
+            str(pending.get("branch"))
+            if isinstance(pending, dict) and pending.get("branch")
+            else f"slice/{target_id}"
         )
+        if pending:
+            lines.append(
+                "Pre-land review (gr570506): nothing is on main yet — the "
+                f"diff is td{target_id}'s branch, pushed to origin. Run "
+                f"`git fetch -q origin`, then read `git diff origin/main..."
+                f"origin/{branch}`."
+            )
+        else:
+            lines.append(
+                f"td{target_id} has no `landed:` comment yet: nothing is on "
+                "main to review. End with `no-op: nothing landed yet` as the "
+                "first line of your final message."
+            )
     text = (body or "").strip()
     if latest:
         text = f"{text}\n\n{latest.strip()}".strip()
@@ -1460,7 +1545,9 @@ def render_brief(
         "that message after you exit.",
         f"{n + 4}. Stop. Do not land, push, comment `landed:` or tag this "
         "todo done: once you exit cleanly, the lander lands every commit "
-        "on the branch, so commit only work fit to land.",
+        "on the branch, so commit only work fit to land. Never open a pull "
+        "request (`gh pr create` and friends): the factory's squash merge "
+        "is the only path to main (gr570506).",
         "",
         "Nothing to commit on purpose? Say so as the FIRST line of your final "
         "message: `validated: <why>` when the check you were asked for passed, "
@@ -4508,14 +4595,34 @@ def poll(ctx: Any, handle: Any) -> bool:
         checked = (
             committed is not None and committed.startswith(WORKER_COMMITTED)
         ) or not tests_ran(result)
-        try:
-            land_job = _mint_land(ctx, todo_id, tree, lane, checked=checked)
-        except Exception as exc:
-            log.warning("run_slice: land_slice mint for td%d failed", todo_id)
-            nothing = f"exited clean but the land_slice mint failed ({exc})"
+        preland = _preland_reviewer(ctx.store, todo_id)
+        if preland is not None:
+            # gr570506 (Reto 2026-11-12): the review gates the land — the
+            # squash onto main is the LAST step, minted by the tick on the
+            # reviewer's LAND verdict, not here.
+            try:
+                note = _defer_land_for_review(
+                    ctx, todo_id, tree, lane, checked, preland
+                )
+            except Exception as exc:
+                log.warning("run_slice: pre-land defer for td%d failed", todo_id)
+                nothing = f"exited clean but the pre-land defer failed ({exc})"
+            else:
+                ctx.set_meta(preland_review=preland)
+                summary.append(
+                    f"Land: held for the pre-land review td{preland} "
+                    f"({note}); td{todo_id} closed — the tick mints "
+                    "land_slice on a LAND verdict (gr570506)."
+                )
         else:
-            ctx.set_meta(land_job=land_job)
-            summary.append(f"Land: land_slice job:{land_job} minted.")
+            try:
+                land_job = _mint_land(ctx, todo_id, tree, lane, checked=checked)
+            except Exception as exc:
+                log.warning("run_slice: land_slice mint for td%d failed", todo_id)
+                nothing = f"exited clean but the land_slice mint failed ({exc})"
+            else:
+                ctx.set_meta(land_job=land_job)
+                summary.append(f"Land: land_slice job:{land_job} minted.")
     if commits:
         summary += ["", *commits[:20]]
     ctx.append_chunk("job_summary", "\n".join(summary))

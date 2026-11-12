@@ -122,6 +122,7 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |
 | Run a job under a todo | set `meta.executor`; `minter` mints a `kind='job'` | `precis-minter-help`, `precis-job-help` |
 | Hand-submit a fix job (lane OFF; sessions fix gripes) | `put(kind='job', job_type='fix_gripe', link='gripe:42', rel='fixes')` | `precis-fix-gripe-help` |
+| Submit code work to the dark factory | `put(kind='todo', mode='plan', args={'template': 'gripe-fix', 'gripe_id': N})`; wait `get(kind='todo', id=N, args={'wait': 900})` | `precis-factory-submit-help` |
 | Read raw worker_logs (no Bash/SQL) | `get(kind='job', id='/logs?handler=<name>&since=24&level=WARNING')` | `precis-job-observe-help` |
 
 ## Authoring artifacts — models & files

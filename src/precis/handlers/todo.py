@@ -88,6 +88,7 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -114,7 +115,13 @@ from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
-from precis.todo import asks_view, guards, views, work_view
+from precis.todo import (
+    TERMINAL_TODO_STATUSES,
+    asks_view,
+    guards,
+    views,
+    work_view,
+)
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import (
     EditOp,
@@ -211,6 +218,13 @@ class _PutState:
 _PUT_STATE: RequestState[_PutState] = RequestState("precis_todo_put", _PutState())
 #: Chunk kind of an appended comment (migration 0195; the gripe_comment shape).
 _COMMENT_KIND = "todo_comment"
+
+#: ``get(kind='todo', id=N, args={'wait': <seconds>})``: poll cadence and
+#: the per-call cap of the one-shot wait a submitting session blocks on
+#: until the node reaches a terminal STATUS (gr570506 — the factory is
+#: pull-only; the wait IS the submitter's notification channel).
+_WAIT_POLL_S = 5.0
+_WAIT_CAP_S = 3600.0
 
 
 def _mint_held(tags: list[str] | None) -> bool:
@@ -606,6 +620,11 @@ class TodoHandler(NumericRefHandler):
         comment: int | str | None = None,
         comments: int | str | None = None,
         last: int | None = None,
+        # ``args={'wait': <seconds>}`` — the one-shot wait: block until
+        # the todo's STATUS turns terminal, then render the card (the
+        # factory is pull-only, so a submitting session's notification
+        # is this wait, gr570506).
+        wait: int | float | str | None = None,
         **_kw: Any,
     ) -> Response:
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
@@ -618,9 +637,23 @@ class TodoHandler(NumericRefHandler):
                     next="get(kind='todo', id=<N>, view='comments', "
                     "args={'comments': 5})",
                 )
+            if wait is not None:
+                raise BadInput(
+                    "args={'wait': <seconds>} waits on one todo — pass a "
+                    "single numeric id=",
+                    next="get(kind='todo', id=<N>, args={'wait': 900})",
+                )
             return super().get(id=id, view=view, q=q, **_kw)
         readings: list[str] = []
         single = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if wait is not None:
+            if not single:
+                raise BadInput(
+                    "args={'wait': <seconds>} waits on one todo — pass a "
+                    "single numeric id=",
+                    next="get(kind='todo', id=<N>, args={'wait': 900})",
+                )
+            readings += self._wait_terminal(id, wait)
         if view in _TODO_GET_VIEW_ALIASES and single and q is None:
             canon = _TODO_GET_VIEW_ALIASES[view]
             shown = f"view={canon!r}" if canon is not None else "the default view"
@@ -764,6 +797,55 @@ class TodoHandler(NumericRefHandler):
                 ),
             )
         return interpreted(resp, readings)
+
+    def _wait_terminal(self, raw_id: Any, wait: Any) -> list[str]:
+        """``args={'wait': <seconds>}`` (gr570506): poll the todo's STATUS
+        tag until it turns terminal or the budget runs out — a plan is
+        pull-only, so a session that submitted a factory node learns its
+        outcome by waiting here, then reading the card. Returns the
+        ``wait:`` reading lines; a gone ref lets the normal render raise
+        its NotFound."""
+        try:
+            seconds = float(wait)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"args['wait']={wait!r} is not a number of seconds",
+                next="get(kind='todo', id=<N>, args={'wait': 900})",
+            ) from None
+        if not 0 < seconds <= _WAIT_CAP_S:
+            raise BadInput(
+                f"args['wait']={wait!r}: pass 0 < seconds <= {int(_WAIT_CAP_S)}",
+                next="re-issue the get to keep waiting past the cap",
+            )
+        try:
+            ref_id = self._coerce_id(raw_id)
+        except BadInput:
+            raise BadInput(
+                f"args['wait'] needs a single numeric todo id, got {raw_id!r}",
+                next="get(kind='todo', id=<N>, args={'wait': 900})",
+            ) from None
+        deadline = time.monotonic() + seconds
+        while True:
+            ref = self.store.get_ref(kind="todo", id=ref_id)
+            if ref is None:
+                return []  # the render below raises the usual NotFound
+            status = next(
+                (
+                    str(t.value)
+                    for t in self.store.tags_for(ref_id)
+                    if t.prefix == "STATUS"
+                ),
+                "open",
+            )
+            waited = seconds - (deadline - time.monotonic())
+            if status in TERMINAL_TODO_STATUSES:
+                return [f"wait: td{ref_id} reached STATUS:{status} after {waited:.0f}s"]
+            if time.monotonic() >= deadline:
+                return [
+                    f"wait: td{ref_id} still STATUS:{status} after "
+                    f"{waited:.0f}s — re-issue the same get to keep waiting"
+                ]
+            time.sleep(min(_WAIT_POLL_S, max(0.0, deadline - time.monotonic())))
 
     # ── search: tree-aware view router ────────────────────────────
 

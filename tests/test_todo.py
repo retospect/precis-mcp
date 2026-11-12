@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, Gone, NotFound
 from precis.handlers import _comment_timeline as tl
+from precis.handlers import todo as todo_mod
 from precis.handlers.todo import TodoHandler
 from precis.runtime import PrecisRuntime
 
@@ -798,6 +800,89 @@ def test_tree_view_miss_names_the_real_kind(handler: TodoHandler) -> None:
     with pytest.raises(NotFound) as ei2:
         handler.get(id=99999, view="tree")
     assert "id='/recent'" in str(ei2.value.next)
+
+
+# ── get: args={'wait': <seconds>} (gr570506) ────────────────────────
+
+
+def test_get_wait_on_a_terminal_todo_returns_its_status(
+    handler: TodoHandler,
+) -> None:
+    """gr570506: ``args={'wait': s}`` is the pull-only submitter's
+    notification — a todo already terminal answers at once with a
+    ``wait:`` reading naming the status it reached, then the card."""
+    r = handler.put(text="finish the report")
+    assert r.ref_id is not None
+    handler.tag(id=r.ref_id, add=["STATUS:done"])
+    out = handler.get(id=r.ref_id, wait=60)
+    assert f"wait: td{r.ref_id} reached STATUS:done" in out.body
+    assert "finish the report" in out.body
+
+
+def test_get_wait_blocks_until_the_status_turns_terminal(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A node that closes mid-wait is caught on a later poll — the wait
+    is the whole point (the factory has no push to the submitter)."""
+    monkeypatch.setattr(todo_mod, "_WAIT_POLL_S", 0.05)
+    r = handler.put(text="finish the report")
+    assert r.ref_id is not None
+    tid = r.ref_id
+    closer = threading.Timer(0.1, lambda: handler.tag(id=tid, add=["STATUS:done"]))
+    closer.start()
+    try:
+        out = handler.get(id=tid, wait=10)
+    finally:
+        closer.join()
+    assert f"wait: td{tid} reached STATUS:done" in out.body
+
+
+def test_get_wait_times_out_with_a_reissue_hint(handler: TodoHandler) -> None:
+    """A still-open todo waits out the budget, then says
+    ``still STATUS:open`` and to re-issue — a reading, not an error."""
+    r = handler.put(text="finish the report")
+    assert r.ref_id is not None
+    out = handler.get(id=r.ref_id, wait=0.2)
+    assert f"wait: td{r.ref_id} still STATUS:open" in out.body
+    assert "re-issue" in out.body
+
+
+def test_get_wait_on_a_missing_todo_raises_not_found(
+    handler: TodoHandler,
+) -> None:
+    """A gone id ends the wait at once and falls through to the usual
+    ``NotFound`` — no polling a ref that isn't there."""
+    with pytest.raises(NotFound):
+        handler.get(id=99999, wait=10)
+
+
+@pytest.mark.parametrize("bad", ["abc", "soon", object()])
+def test_get_wait_refuses_a_non_number(handler: TodoHandler, bad: Any) -> None:
+    r = handler.put(text="finish the report")
+    with pytest.raises(BadInput, match="not a number of seconds"):
+        handler.get(id=r.ref_id, wait=bad)
+
+
+@pytest.mark.parametrize("bad", [0, -5, 3601, "7200"])
+def test_get_wait_refuses_out_of_range_seconds(handler: TodoHandler, bad: Any) -> None:
+    """The one-shot wait is capped at an hour; over the cap the caller
+    re-issues."""
+    r = handler.put(text="finish the report")
+    with pytest.raises(BadInput, match="0 < seconds"):
+        handler.get(id=r.ref_id, wait=bad)
+
+
+def test_get_wait_needs_a_single_numeric_id(handler: TodoHandler) -> None:
+    """``wait`` polls one ref's STATUS tag — a list view, a bare get and
+    a multi-id get all refuse instead of waiting on the wrong thing."""
+    with pytest.raises(BadInput, match="single numeric id"):
+        handler.get(id="/recent", wait=10)
+    with pytest.raises(BadInput, match="single numeric id"):
+        handler.get(wait=10)
+    r = handler.put(text="finish the report")
+    assert r.ref_id is not None
+    with pytest.raises(BadInput, match="single numeric id"):
+        handler.get(id=[r.ref_id, r.ref_id + 1], wait=10)
 
 
 def test_list_recent(handler: TodoHandler) -> None:

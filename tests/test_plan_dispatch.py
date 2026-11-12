@@ -5806,6 +5806,43 @@ def _reviewed_landed(store: Store, verdict: str) -> T.PlanMint:
     return mint
 
 
+def _reviewed_pending(store: Store, verdict: str) -> T.PlanMint:
+    """The pre-land shape (gr570506): the build's clean exit pushed its
+    branch, stamped ``meta.pending_land`` and closed done; the review
+    session ran, posted ``verdict`` and left its claim."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(
+        store,
+        build,
+        f"run_slice: branch push of slice/{build}: on origin; the land is "
+        f"held for the pre-land review td{review} — the tick mints "
+        "land_slice on its `review: LAND` verdict (gr570506).",
+    )
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "worktree": f"/tmp/slice-td{build}",
+                "branch": f"slice/{build}",
+                "lane": "claude-sub",
+            }
+        },
+    )
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.stamp_ref_meta(review, {"preland_review": True})
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    if verdict:
+        _todo_comment(store, review, verdict)
+    return mint
+
+
 def _blocked_by_ids(store: Store, src: int) -> list[int]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -6135,6 +6172,151 @@ def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
     assert _status(store, mint.root_id) == "open"
     assert res.dispatched == 1
     assert len(_jobs_under(store, fix)) == 1
+
+
+# ── pre-land review (gr570506) ─────────────────────────────────────
+
+
+def test_pending_land_build_lets_the_review_dispatch(store: Store) -> None:
+    """gr570506: a done build whose land is held for review has no
+    ``landed:`` comment — ``meta.pending_land`` is the stamp that keeps
+    the dead-chain close off it while the review gates the squash."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _status(store, review) == "open"
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["job_type"] == "run_slice"
+    assert not any("won't-do" in n for n in res.notes)
+
+
+def test_preland_review_land_mints_the_held_land(store: Store) -> None:
+    """LAND on a held land mints the deferred ``land_slice`` with the
+    params ``run_slice`` stamped — and the stamp stays until the lander
+    writes ``landed:`` (it is what the dead-chain check reads)."""
+    mint = _reviewed_pending(store, "review: LAND")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    land_jobs = [
+        (jid, m)
+        for jid, m in _jobs_under(store, build)
+        if m.get("job_type") == "land_slice"
+    ]
+    assert len(land_jobs) == 1
+    params = land_jobs[0][1]["params"]
+    assert params["todo_id"] == build
+    assert params["branch"] == f"slice/{build}"
+    assert params["worktree"] == f"/tmp/slice-td{build}"
+    assert params["lane"] == "claude-sub"
+    # The hold is NOT discharged by the mint — land_slice._record_land
+    # clears it when the squash is on main.
+    assert isinstance(_meta(store, build).get("pending_land"), dict)
+    assert _children(store, mint.root_id) == [build, review]
+
+
+def test_preland_review_land_keeps_the_chain_alive_while_land_runs(
+    store: Store,
+) -> None:
+    """Between the LAND verdict and the lander's ``landed:`` comment the
+    todo is done, pending-stamped and landless — a later pass must not
+    read it as a dead land and close the gate/validate chain won't-do."""
+    mint = _reviewed_pending(store, "review: LAND")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert _status(store, review) == "done"
+    res2 = pd.run_pass(store)
+    assert _status(store, build) == "done"
+    assert not any("dead" in n for n in res2.notes)
+
+
+def test_preland_review_fix_sends_the_branch_back_to_the_builder(
+    store: Store,
+) -> None:
+    """A FIX on a branch that has not landed reopens the builder with the
+    findings as its handoff — no fix task mints (nothing is on main) —
+    and the reviewer stays open to re-gate the rebuild."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    comments = _todo_comments(store, build)
+    assert any("a.py misses the empty case" in c and "handoff:" in c for c in comments)
+    # No fix task, no revert task: nothing is on main to remediate.
+    assert _children(store, mint.root_id) == [build, review]
+    assert _status(store, review) == "open"
+    assert not any(v.startswith("claimed-by:") for v in _open_tags(store, build))
+
+
+def test_preland_review_revert_sends_the_branch_back_to_the_builder(
+    store: Store,
+) -> None:
+    """Pre-land REVERT == FIX shape: the branch is still on origin, so
+    "revert" is a rebuild — the builder reopens, no revert task mints."""
+    mint = _reviewed_pending(store, "review: REVERT — breaks the API")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    assert _children(store, mint.root_id) == [build, review]
+    assert _status(store, review) == "open"
+    comments = _todo_comments(store, build)
+    assert any("breaks the API" in c for c in comments)
+
+
+def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:
+    """After a pre-land FIX the reopened build re-dispatches; when its
+    rebuild defers the land again (fresh ``pending_land``), the reviewer's
+    blocked-by edge releases it for the new cycle."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert _status(store, build) == "open"
+    # The reopened build dispatches a fresh run_slice job in the SAME
+    # pass (reviews step before dispatch step).
+    assert res.dispatched >= 1
+    # The rebuild's clean exit defers again: succeeded job, done todo,
+    # a fresh pending_land stamp.
+    newest_run = [
+        jid for jid, m in _jobs_under(store, build) if m.get("job_type") == "run_slice"
+    ][-1]
+    _set_job_status(store, newest_run, "succeeded")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    res3 = pd.run_pass(store)
+    assert res3.dispatched >= 1
+    review_jobs = _jobs_under(store, review)
+    assert len(review_jobs) >= 2
+
+
+def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
+    """``run_slice._preland_reviewer`` — the lookup the build's clean
+    exit runs: a live todo ``generate={role: reviewer, from: td<id>}``
+    carrying ``meta.preland_review`` gates the land; a done one does
+    not, and neither does a post-land reviewer (no stamp)."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    # The minted reviewer is the post-land shape — no stamp, no gate.
+    assert run_slice._preland_reviewer(store, build) is None
+    store.stamp_ref_meta(review, {"preland_review": True})
+    assert run_slice._preland_reviewer(store, build) == review
+    _mark_done(store, review)
+    assert run_slice._preland_reviewer(store, build) is None
 
 
 def _land(store: Store, task: int, sha: str) -> None:

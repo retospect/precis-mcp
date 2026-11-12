@@ -250,6 +250,20 @@ def _generate(role: str, source: str) -> dict[str, Any]:
 #: ``meta.task_class`` of a reviewer node (``run_slice`` picks its lane by it).
 REVIEW_TASK_CLASS = "review"
 
+#: ``meta.preland_review`` on a reviewer generator: the review GATES the
+#: land (gr570506, Reto 2026-11-12: "the squash commit to main is the LAST
+#: step"). ``run_slice`` pushes the build's branch to origin, stamps the
+#: held ``land_slice`` params as :data:`PENDING_LAND_KEY` on the build
+#: todo and closes it — the tick releases this reviewer, mints the held
+#: land on a LAND verdict, and sends FIX/REVERT back to the builder.
+PRELAND_REVIEW_KEY = "preland_review"
+#: ``meta.pending_land`` on a build todo whose land waits on a pre-land
+#: reviewer: the params ``run_slice._mint_land`` would have minted
+#: ``land_slice`` with (todo_id, worktree, branch, lane?, checked?,
+#: target_node?). ``plan_dispatch`` clears the stamp when the verdict
+#: disposes of it (LAND mints, FIX/REVERT reopens the builder).
+PENDING_LAND_KEY = "pending_land"
+
 #: The verdict lines a reviewer posts; ``plan_dispatch`` parses them.
 REVIEW_GRAMMAR = (
     "`review: LAND` (clean) | `review: FIX — <the list of findings>` | "
@@ -263,15 +277,32 @@ REVIEW_GRAMMAR = (
 REVIEW_READONLY_MARKER = "(read-only, tests not run)"
 
 
-def _reviewer(target_id: int) -> dict[str, Any]:
-    """A reviewer generator over the land of ``td<target_id>``."""
-    return {**_generate("reviewer", f"td{target_id}"), "task_class": REVIEW_TASK_CLASS}
+def _reviewer(target_id: int, *, preland: bool = False) -> dict[str, Any]:
+    """A reviewer generator over ``td<target_id>``'s diff — of its landed
+    squash by default; gated pre-land when ``preland`` (:data:`PRELAND_REVIEW_KEY`,
+    gr570506: the squash onto main is the LAST step)."""
+    meta = {**_generate("reviewer", f"td{target_id}"), "task_class": REVIEW_TASK_CLASS}
+    if preland:
+        meta[PRELAND_REVIEW_KEY] = True
+    return meta
 
 
-def _reviewer_brief(target_id: int, *, slices: bool = False) -> str:
+def _reviewer_brief(
+    target_id: int, *, slices: bool = False, preland: bool = False
+) -> str:
     """The reviewer's brief (the node body ``run_slice`` puts in the session
-    brief): read the landed squash diff against the brief, post one verdict."""
-    if slices:
+    brief): read the diff against the brief, post one verdict — the landed
+    squash by default; the pushed branch when ``preland`` (gr570506)."""
+    if preland:
+        intro = "Review BEFORE land, from another lane than the builder's."
+        what = (
+            f"td{target_id}'s branch is pushed as `origin/slice/{target_id}`: "
+            f"`git fetch -q origin`, then `git diff origin/main...origin/slice/"
+            f"{target_id}` against td{target_id}'s brief chunk "
+            f"(`get(kind='todo', id={target_id})`)."
+        )
+    elif slices:
+        intro = "Review after land, from another lane than the builder's."
         what = (
             f"Each child todo of td{target_id} is a slice that landed on main: "
             "its `landed: <sha>` comment names the squash commit. For each, "
@@ -279,15 +310,16 @@ def _reviewer_brief(target_id: int, *, slices: bool = False) -> str:
             "(`get(kind='todo', id=<child>)`)."
         )
     else:
+        intro = "Review after land, from another lane than the builder's."
         what = (
             f"td{target_id} landed on main: its `landed: <sha>` comment names "
             "the squash commit. Read `git show <sha>` against td"
             f"{target_id}'s brief chunk (`get(kind='todo', id={target_id})`)."
         )
     return (
-        "Review after land, from another lane than the builder's. "
-        f"{what} Judge whether the diff does what the brief asked, and "
-        "nothing it should not.\n\n" + _REVIEWER_BRIEF_TAIL
+        f"{intro} {what} Judge whether the diff does what the brief asked, "
+        "and nothing it should not.\n\n"
+        + (_PRELAND_REVIEWER_BRIEF_TAIL if preland else _REVIEWER_BRIEF_TAIL)
     )
 
 
@@ -304,6 +336,25 @@ _REVIEWER_BRIEF_TAIL = (
     "no land, and do not tag this todo done. The plan tick reads the "
     "verdict: LAND closes this review, FIX mints the fix slice, REVERT "
     "mints the revert slice and requeues the build."
+)
+
+
+#: The pre-land variant (gr570506): the squash has not landed — LAND lets
+#: the held ``land_slice`` mint, FIX/REVERT send the branch back to the
+#: builder (no revert task: nothing is on main to revert).
+_PRELAND_REVIEWER_BRIEF_TAIL = (
+    "Post exactly one comment on this todo, "
+    "`put(kind='todo', id=<this todo>, text=...)`, as one of: "
+    f"{REVIEW_GRAMMAR}. The text after the dash is what the rebuild is "
+    "briefed with: name files and the concrete problem.\n\n"
+    "You are read-only: run no tests, no typecheck, no lint and no "
+    "`uv` command; read the branch diff and the files. End your "
+    f"verdict line with `{REVIEW_READONLY_MARKER}`.\n\n"
+    "Mint nothing yourself: no child todos, no fix, no revert, no commit, "
+    "no land, and do not tag this todo done. The plan tick reads the "
+    "verdict: LAND mints the held land_slice (the squash onto main is "
+    "the last step), FIX or REVERT sends the branch back to the builder "
+    "with your findings as its handoff — nothing is on main to revert."
 )
 
 
@@ -464,7 +515,9 @@ def _gripe_report(store: Store, gid: int, handle: str, title: str) -> str:
 #: ``precis.plans.route`` strips through it when it classifies a build
 #: brief, so the head's own ``scripts/ship --quick`` mention never reads
 #: as the fix's deny-path target (gr645163).
-DIRECT_HEAD_END = "a reviewer reads the land afterwards from another lane."
+DIRECT_HEAD_END = (
+    "a reviewer gates the land from another lane — the land mints on its LAND verdict."
+)
 
 
 def _direct_build_body(handle: str, report: str) -> str:
@@ -519,15 +572,18 @@ def mint_gripe_fix(
     """triage -> brief -> build -> gate sha-in-prod -> validate, under a phase
     root that is ``related-to`` the gripe (the gripe keeps the ticket state).
 
-    A reviewer generator over the build's land is blocked-by the build only:
-    the review is non-blocking, so the gate and the validate do not wait on
-    it (dark-factory.md § "Branches").
+    A reviewer generator is blocked-by the build only and GATES the land
+    (gr570506, Reto 2026-11-12: gripe fixes are reviewed BEFORE landing —
+    the build's clean exit pushes its branch and holds the land_slice
+    mint on the verdict; the sha-in-prod gate and the validate wait on
+    the land's own ``landed:`` stamp as before).
 
     ``direct`` (the ``gripe-fix-direct`` template, td564019, Reto 2026-11-04:
     "the codex chain should run indep of claude") drops triage and brief:
     the build is the first node, its body carries the gripe's text verbatim
     (the lane may have no MCP), and no Claude step stands between the mint
-    and a vendor-lane build. Review and validate still follow the land.
+    and a vendor-lane build. Review and validate still follow the build —
+    the review before the land, the validate after it.
     ``lane`` pins the build's lane (``meta.op.params.lane``); unset, the
     class pick applies (``code`` -> the free vendor lanes first).
 
@@ -595,9 +651,9 @@ def mint_gripe_fix(
     def _tail(m: _Minter) -> None:
         m.node(
             "review",
-            f"Review the {handle} fix after land",
-            _reviewer(m.ids["build"]),
-            body=_reviewer_brief(m.ids["build"]),
+            f"Review the {handle} fix before land",
+            _reviewer(m.ids["build"], preland=True),
+            body=_reviewer_brief(m.ids["build"], preland=True),
             blocked_by=("build",),
         )
         m.node(
@@ -674,6 +730,78 @@ def mint_gripe_fix(
         _tail(m)
 
     return _run(store, parent_id, build, related_to=gripe.id)
+
+
+# -- spec-build --------------------------------------------------------------
+
+
+#: A spec section address: ``<path>.md`` (a whole-file spec) or
+#: ``<path>.md~<Heading>`` (one section — the factory's second input,
+#: gr570506). ``docs/backlog/<slug>.md`` is the usual home.
+_MD_SECTION_RE = re.compile(r"^\S+\.md(?:~.+)?$")
+
+
+def mint_spec_build(
+    store: Store,
+    parent_id: int | None = None,
+    *,
+    section: Any,
+    lane: str | None = None,
+) -> PlanMint:
+    """build -> pre-land review, for one spec section (gr570506, Reto
+    2026-11-12): a spec section is a factory input — the build implements
+    it and, in the SAME commit, retires the section to a redirect naming
+    the code that now implements it (acceptance tests carry the what —
+    the living spec — docstrings and comments the why, so spec and
+    implementation cannot drift). ``section`` is a repo-relative md
+    address: ``'docs/backlog/<slug>.md~<Heading>'`` retires one section,
+    ``'<path>.md'`` retires the whole file (deleted by the same commit).
+    The reviewer gates the squash onto main (:data:`PRELAND_REVIEW_KEY`);
+    ``lane`` pins the build (``meta.op.params.lane``), unset the class
+    pick applies. The submitter waits on the outcome with
+    ``get(kind='todo', id=<build>, args={'wait': <seconds>})`` — the
+    factory is pull-only, the wait is the notification."""
+    section = str(section).strip()
+    if not section or _MD_SECTION_RE.fullmatch(section) is None:
+        raise BadInput(
+            f"section={section!r} is not an md spec address",
+            next="args={'template': 'spec-build', 'section': "
+            "'docs/backlog/<slug>.md~<Heading>'}",
+        )
+    build_op: Any = "run_slice"
+    if lane:
+        build_op = {"type": "run_slice", "params": {"lane": str(lane)}}
+
+    def build(m: _Minter) -> None:
+        m.node("root", f"Build {section}", _phase())
+        b = m.node(
+            "build",
+            f"Build {section}",
+            _task(build_op),
+            body=(
+                f"The spec section `{section}` is this build's brief — read "
+                "it in your worktree and implement what it specifies. In the "
+                "SAME commit retire the spec: a `~<Heading>` section is "
+                "replaced by one line redirecting to the code that now "
+                "implements it (`<module>::<symbol>` and its acceptance "
+                "test); a whole-file spec is deleted. Acceptance tests carry "
+                "the what — the living spec — and docstrings and comments "
+                "the why; update them and one hop out (callers and callees) "
+                "so it all still reads right (Reto 2026-11-12). The land "
+                "(land_slice, `scripts/ship --quick`) squash-merges onto "
+                "main; a reviewer gates it from another lane — the land "
+                "mints on its LAND verdict."
+            ),
+        )
+        m.node(
+            "review",
+            f"Review the {section} build before land",
+            _reviewer(b, preland=True),
+            body=_reviewer_brief(b, preland=True),
+            blocked_by=("build",),
+        )
+
+    return _run(store, parent_id, build)
 
 
 # -- slice-tree --------------------------------------------------------------
@@ -1427,7 +1555,7 @@ TEMPLATES: dict[str, Template] = {
             "gripe-fix",
             ("gripe_id",),
             "triage -> brief -> build -> sha-in-prod gate -> validate "
-            "(+ a non-blocking review of the land), for one gripe",
+            "(+ a pre-land review gating the land), for one gripe",
             mint_gripe_fix,
             optional=("lane",),
         ),
@@ -1436,8 +1564,16 @@ TEMPLATES: dict[str, Template] = {
             ("gripe_id",),
             "build (the gripe's text in the body; no triage, no brief, no "
             "Claude step before a vendor lane) -> sha-in-prod gate -> validate "
-            "(+ a non-blocking review of the land); 'lane' pins the build",
+            "(+ a pre-land review gating the land); 'lane' pins the build",
             mint_gripe_fix_direct,
+            optional=("lane",),
+        ),
+        Template(
+            "spec-build",
+            ("section",),
+            "build a spec section -> pre-land review; the same commit "
+            "retires the section to a redirect (reflexive spec, gr570506)",
+            mint_spec_build,
             optional=("lane",),
         ),
         Template(

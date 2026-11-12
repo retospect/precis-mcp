@@ -242,6 +242,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /limits, /delta, /builds, /throughput, /cadence, /facts |
 | `precis-fix-gripe-help` | `fix_gripe` job recipe (lane OFF since 2026-10-02; hand-submit only) |
 | `precis-gripe-loop-help` | The builder-wave loop on the gripe: `edit(mode='fix')` for batch/brief/assign/handoff/verdict/landed, `/queue` + `/batch` views |
+| `precis-factory-submit-help` | Submit code work to the dark factory — plan node shapes, `gripe-fix`/`spec-build` templates, pre-land review, the `wait` arg |
 | `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |
 | `precis-nursery-help` | Per-minute SQL-only review tier — incoherence + worker-health, `critical` pages |
 | `precis-health-digest-help` | Hourly slow-rot liveness digest — curated/derived checks, daily/on-degradation push |

@@ -34,7 +34,12 @@ from precis.plans.lanes import ANY_CLASS, Lane, ladder, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.llm import accounts
 from precis.utils.llm.quota import quota_retry_at
-from precis.workers.job_types import get_job_type, known_job_types, run_slice
+from precis.workers.job_types import (
+    get_job_type,
+    known_job_types,
+    land_slice,
+    run_slice,
+)
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types._slice_adapters import (
     DENY_BASH,
@@ -146,6 +151,9 @@ class _Store:
             for c in self.chunks.list_chunks_for_ref(ref_id)
             if c.chunk_kind == "todo_comment"
         ]
+
+    def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any]) -> None:
+        self.refs[ref_id].meta.update(updates)
 
 
 class _Ctx:
@@ -272,6 +280,22 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return 777
 
     monkeypatch.setattr(run_slice, "_mint_land", fake_mint_land)
+    # gr570506: the pre-land review gate — ``_preland_reviewer`` reads a
+    # live reviewer todo off the DB; the fake store has no pool, so the
+    # seam returns ``calls["preland"]`` (``None`` = the mint-as-before
+    # path every existing land test takes).
+    calls["preland"] = None
+    monkeypatch.setattr(
+        run_slice, "_preland_reviewer", lambda store, todo_id: calls["preland"]
+    )
+    calls["push"] = []
+    calls["push_note"] = "branch push of {branch}: on origin"
+
+    def fake_push_branch(tree: Path, branch: str) -> str:
+        calls["push"].append((Path(tree), branch))
+        return calls["push_note"].format(branch=branch)
+
+    monkeypatch.setattr(land_slice, "_push_branch", fake_push_branch)
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "_process_alive", lambda pid, **kw: calls["alive"])
@@ -2717,6 +2741,87 @@ def test_poll_running_then_success(seams: dict[str, Any]) -> None:
     assert "claimed-by:lane-claude-sub" in store.tag_strings(42)
     assert "STATUS:doing" in store.tag_strings(42)
     assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_success_with_a_preland_reviewer_defers_the_land(
+    seams: dict[str, Any],
+) -> None:
+    """gr570506: a live pre-land reviewer gates the squash — a clean exit
+    pushes the branch, stamps ``meta.pending_land`` and closes the todo;
+    no ``land_slice`` mints here (the tick mints it on `review: LAND`)."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77  # the reviewer td gating this build's land
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+
+    seams["porcelain"] = " M a.py\n"
+    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "Landed abc1234."}
+    _finish(handle, 0, "noise\n" + json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+
+    # The branch went to origin; no land_slice was minted by the build.
+    assert seams["push"] == [(Path(handle["worktree"]), "slice/42")]
+    assert seams["lands"] == []
+    assert "land_job" not in pctx.meta_set
+    # The todo is done, holding the exact land params for the tick.
+    assert "STATUS:done" in store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" not in store.tag_strings(42)
+    pending = store.refs[42].meta["pending_land"]
+    assert pending["todo_id"] == 42
+    assert pending["branch"] == "slice/42"
+    assert pending["worktree"] == handle["worktree"]
+    assert pending["lane"] == "claude-sub"
+    assert pctx.meta_set["preland_review"] == 77
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "held for the pre-land review td77" in summary
+    assert any("held for the pre-land review td77" in c for c in store.comments(42))
+
+
+def test_poll_success_with_a_preland_reviewer_mints_checked_hold(
+    seams: dict[str, Any],
+) -> None:
+    """The deferred ``land_slice`` params carry ``checked`` the same way
+    a direct mint does — no green ``tests:`` marker in the hand-off."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done."}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert store.refs[42].meta["pending_land"]["checked"] is True
+    assert seams["lands"] == []
+
+
+def test_poll_success_with_a_failed_preland_push_fails_the_attempt(
+    seams: dict[str, Any],
+) -> None:
+    """A branch-push failure on the defer path fails the attempt (the
+    work never reaches origin), it does not mint a land."""
+    store = _Store()
+    store.add_todo(42, "t", body="b")
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["push_note"] = "branch push FAILED: non-fast-forward"
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done."}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert seams["lands"] == []
+    assert "pending_land" not in store.refs[42].meta
+    assert "STATUS:open" in store.tag_strings(42)
+    assert "attempt:1" in store.tag_strings(42)
 
 
 @pytest.mark.parametrize(

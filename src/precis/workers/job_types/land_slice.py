@@ -198,7 +198,7 @@ from typing import Any
 
 from precis.plans import lanes as _lanes
 from precis.plans.logbook import log_plan_event
-from precis.plans.templates import PENDING_SHA
+from precis.plans.templates import PENDING_LAND_KEY, PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
@@ -1168,6 +1168,13 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
         note = NO_DIFF_NOTE if sha is None else f"landed: {sha[:9]} — {subject}"
         _rs._append_comment(store, todo_id, note)
         wrote.append("landed comment")
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+        # The pre-land hold (gr570506) is discharged: the landed: comment
+        # is the record now, and the stamp must not read a post-land
+        # review as pre-land.
+        store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
+        wrote.append("pending_land cleared")
     if _rs._todo_status(store, todo_id) != "done":
         _close_todo(store, todo_id)
         wrote.append("STATUS:done")
@@ -1370,6 +1377,25 @@ def _cleanup(tree: Path, branch: str) -> list[str]:
 # ── Submit gate ────────────────────────────────────────────────────
 
 
+def _todo_rejection(store: Any, params: dict[str, Any]) -> str | None:
+    """``_rs._todo_rejection`` plus the pre-land exception (gr570506): a
+    build closed ``done`` with ``meta.pending_land`` stamped is the
+    deferred land — the tick minted this job on the reviewer's LAND
+    verdict, so a closed todo is what the land expects, not a refusal."""
+    reason = _rs._todo_rejection(store, params.get("todo_id"))
+    if reason is None or "is closed" not in reason:
+        return reason
+    todo_id = params.get("todo_id")
+    ref = (
+        store.get_ref(kind="todo", id=todo_id)
+        if store is not None and isinstance(todo_id, int)
+        else None
+    )
+    if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+        return None
+    return reason
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
@@ -1380,7 +1406,7 @@ def validate_submit(
             "land_slice: the factory is off (PRECIS_FACTORY=off); next: unset it "
             "on the worker host to land slices"
         )
-    reason = _rs._todo_rejection(store, params.get("todo_id"))
+    reason = _todo_rejection(store, params)
     return reason.replace("run_slice:", "land_slice:", 1) if reason else None
 
 
@@ -1543,7 +1569,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     if _rs.factory_off():
         ctx.record_failure("land_slice: the factory is off (PRECIS_FACTORY=off)")
         return None
-    reason = _rs._todo_rejection(ctx.store, todo_id)
+    reason = _todo_rejection(ctx.store, params)
     if reason is not None:
         ctx.record_failure(reason.replace("run_slice:", "land_slice:", 1))
         return None
