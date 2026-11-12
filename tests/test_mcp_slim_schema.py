@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -190,15 +189,13 @@ def test_description_says_unknown_args_key_fails(verb: str) -> None:
     assert "BadInput" in desc, desc
 
 
-def test_title_on_a_text_kind_points_at_text(mcp_runtime: None) -> None:
+def test_title_on_a_text_kind_folds_into_text(mcp_runtime: None) -> None:
     """``title=`` is core for put, but todo takes its title in ``text=``
-    (Fable dogfood 2026-10-08)."""
+    (Fable dogfood 2026-10-08) — gr635829 folds the near-miss onto
+    text's first line instead of refusing."""
     out = _call("put", {"kind": "todo", "title": "x"})
-    assert "[error:BadInput]" in out, out
-    assert "todo: the title is the first line of text=" in out, out
-    # ``text`` itself must not be listed as an args= key; a key that merely
-    # ends in "text" (the route-loop's ``context``) may.
-    assert not re.search(r"(?<![a-z_])text: ", out), out
+    assert "[error" not in out, out
+    assert "created todo" in out, out
 
 
 def test_edit_title_top_level_no_deprecation_note(
@@ -217,15 +214,16 @@ def test_edit_title_top_level_no_deprecation_note(
     assert "deprecated" not in out
 
 
-def test_edit_title_on_a_text_kind_points_at_text(
+def test_edit_title_on_a_text_kind_folds_into_text(
     mcp_runtime: None, store: Store
 ) -> None:
-    """A kind whose edit has no ``title=`` param refuses the now-advertised
-    key with the same text= hint put gives (gr592766)."""
+    """A kind whose edit has no ``title=`` param folds the advertised
+    key onto ``text=`` — todo's retitle slot — like put does (gr635829)."""
     ref = store.insert_ref(kind="todo", slug=None, title="retitle me")
     out = _call("edit", {"kind": "todo", "id": ref.id, "title": "x"})
-    assert "[error:BadInput]" in out, out
-    assert "todo: the title is the first line of text=" in out, out
+    assert "[error" not in out, out
+    after = store.get_ref(kind="todo", id=ref.id)
+    assert after is not None and after.title == "x"
 
 
 def test_legacy_top_level_json_string_list_is_parsed(

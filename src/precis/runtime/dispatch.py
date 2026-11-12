@@ -664,6 +664,81 @@ def _alias_parent_id(
     kw["parent_id"] = kw.pop("parent")
 
 
+def _fold_title_kwarg(
+    handler: Handler,
+    verb: str,
+    accepted: set[str] | frozenset[str],
+    kw: dict[str, Any],
+    top: dict[str, Any] | None = None,
+) -> None:
+    """Fold the ``title`` near-miss onto ``text``'s first line (gr635829).
+
+    ``title=`` is a put/edit core param the slim schema advertises on
+    every kind, so callers generalise it onto kinds whose title IS the
+    first line of ``text=`` (todo, taxon, concept, …) — the prod ledger
+    showed ``put(kind='taxon', title=…, text=…)`` refused 5× in one
+    session, retried verbatim under the "title is the first line of
+    text=" hint. On a kind whose handler declares ``text`` but not
+    ``title`` the kwarg has exactly one reading: ``title`` alone becomes
+    the whole ``text``; a ``text`` that already opens with it makes the
+    kwarg redundant — it drops and the caller's text stands verbatim;
+    otherwise it is prepended as ``text``'s new first line. Either way
+    both values land — nothing collapses into one slot silently. A
+    handler that declares ``title`` itself (memory, gripe, finding, …)
+    or tolerates extra kwargs keeps it untouched.
+
+    On ``edit`` the wrapper's default ``mode='find-replace'`` would
+    misroute a folded retitle (todo's title is replace-only) — it can
+    never be read as caller intent
+    (:data:`_EDIT_MODE_WRAPPER_DEFAULT`), so where the kind declares a
+    ``'replace'`` edit mode and no ``find=`` rides along, the fold
+    lands there. A supplied ``find=`` keeps the mode: the folded text
+    is the replacement.
+
+    ``kw`` is the dict the gate is about to check (``extras`` at the
+    ``args=`` gate, ``clean`` at the top-level gate); ``top`` carries
+    the already-promoted top-level kwargs the title merges into when
+    ``kw`` holds no ``text`` of its own (the :func:`_alias_parent_id`
+    contract).
+    """
+    method = getattr(handler, verb, None)
+    if (
+        getattr(method, TOLERATES_EXTRA_KWARGS_ATTR, False)
+        or "title" not in kw
+        or "title" in accepted
+        or "text" not in accepted
+    ):
+        return
+    raw = kw.pop("title")
+    title = str(raw).strip()
+    if not title:
+        return
+    target = kw
+    if "text" not in kw and top is not None and top.get("text") is not None:
+        target = top
+    text = target.get("text")
+    if text is not None and not isinstance(text, str):
+        kw["title"] = raw  # can't take a first line — the gate refuses
+        return
+    if text is None or not text.strip():
+        target["text"] = title
+    elif not text.lstrip().startswith(title):
+        target["text"] = f"{title}\n{text}"
+    if verb == "edit" and "replace" in (handler.spec.edit_modes or ()):
+        holder = kw if kw.get("mode") is not None else top
+        find = (
+            kw.get("find")
+            if kw.get("find") is not None
+            else (top.get("find") if top is not None else None)
+        )
+        if (
+            holder is not None
+            and holder.get("mode") == _EDIT_MODE_WRAPPER_DEFAULT
+            and find is None
+        ):
+            holder["mode"] = "replace"
+
+
 def _fold_get_full_flag(
     cls: type[Handler],
     method: Any,
@@ -3863,6 +3938,9 @@ class DispatchMixin(RuntimeShape):
                 # spelling of the parenting kwarg (``parent`` is the
                 # todo link rel's name) — alias it before the gate.
                 _alias_parent_id(accepted, verb, kind, extras, args)
+                # gr635829: ``args={'title': …}`` is the same near-miss
+                # one layer down — fold it onto text='s first line.
+                _fold_title_kwarg(handler, verb, accepted, extras, args)
                 unknown = self._unknown_extras(method, extras)
                 if unknown:
                     # Core params are top-level on the slim schema; list
@@ -3907,6 +3985,12 @@ class DispatchMixin(RuntimeShape):
         # every kind, before the strictness gate below would refuse the
         # other spelling outright.
         _alias_prose_field(type(handler), verb, kind, clean)
+
+        # ``title=`` near-miss (gr635829): on kinds whose title is the
+        # first line of text=, fold it there before the strictness gate.
+        _fold_title_kwarg(
+            handler, verb, _handler_accepted_kwargs(type(handler), verb), clean
+        )
 
         self._validate_mode(handler, verb, kind, clean)
 
