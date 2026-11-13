@@ -1918,6 +1918,57 @@ def _close_title_fix_todos(
     return closed
 
 
+def close_resolved_title_fix_todos(
+    store: Store, *, dry_run: bool = True, limit: int | None = None
+) -> list[int]:
+    """Auto-close open title-fix todos whose paper title is no longer junk.
+
+    An async enrich/Crossref pass (or a human edit) can fix the title after
+    the todo was filed; nothing re-checked it, so triage burned cycles on
+    papers that were already correct (gr658659). Closes (``STATUS:done`` +
+    ``auto_resolved`` event) every open todo whose paper is retired,
+    human-verified, or carries a title that is neither placeholder, PII nor
+    garbage. Returns the paper ref_ids whose todos were (or, dry-run, would
+    be) closed.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT r.ref_id, r.title, "
+            "       (r.retired_at IS NOT NULL OR r.human_verified_at IS NOT NULL) "
+            "  FROM refs t "
+            "  JOIN refs r ON r.kind = 'paper' "
+            "             AND r.ref_id::text = t.meta->>'paper_ref_id' "
+            " WHERE t.kind = 'todo' AND t.retired_at IS NULL "
+            "   AND t.meta->>'source' = %s "
+            "   AND NOT EXISTS ("
+            "        SELECT 1 FROM ref_tags rt JOIN tags tg USING (tag_id) "
+            "         WHERE rt.ref_id = t.ref_id AND tg.namespace = 'STATUS' "
+            "           AND tg.value = 'done') "
+            " ORDER BY r.ref_id",
+            (TITLE_FIX_SOURCE,),
+        ).fetchall()
+    resolved: list[tuple[int, str]] = []
+    for ref_id, title, settled in rows:
+        t = (title or "").strip()
+        if settled or not (is_placeholder_title(t) or is_pii(t) or is_garbage_title(t)):
+            resolved.append((int(ref_id), t))
+    if limit:
+        resolved = resolved[:limit]
+    if dry_run:
+        return [r[0] for r in resolved]
+    for ref_id, t in resolved:
+        with store.tx() as conn:
+            _close_title_fix_todos(
+                store, ref_id, conn=conn, how="title-no-longer-junk", new_title=t
+            )
+    if resolved:
+        log.info(
+            "close_resolved_title_fix_todos: closed todos for %d paper(s)",
+            len(resolved),
+        )
+    return [r[0] for r in resolved]
+
+
 def _stamp_title_repair_failed(
     store: Store, ref_id: int, *, reasons: list[str]
 ) -> None:

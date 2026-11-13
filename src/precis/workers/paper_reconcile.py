@@ -127,6 +127,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             from precis.corpus_layout import corpus_roots_from_env
             from precis.ingest.paper_hygiene import (
                 bodiless_extract_per_pass,
+                close_resolved_title_fix_todos,
                 collapse_superseded_chains,
                 heal_bodiless_pdfs,
                 heal_drifted_cards,
@@ -211,6 +212,15 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 sum(1 for o in repaired if o.action == "failed"),
                 len(repaired),
             )
+            # gr658659: close todos whose title enrichment already fixed.
+            stale_closed = close_resolved_title_fix_todos(
+                store, dry_run=False, limit=limit
+            )
+            if stale_closed:
+                log.info(
+                    "paper_reconcile: auto-closed title-fix todos for %d paper(s)",
+                    len(stale_closed),
+                )
             raised = raise_junk_title_papers(
                 store,
                 dry_run=False,
@@ -283,6 +293,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 + len(bodiless_judged)
                 + len(repaired)
                 + len(raised)
+                + len(stale_closed)
                 + uploads_swept
             )
             return BatchResult(

@@ -6,6 +6,7 @@ from typing import Any
 
 from precis.identity import PLACEHOLDER_TITLE
 from precis.ingest.paper_hygiene import (
+    close_resolved_title_fix_todos,
     collapse_superseded_chains,
     heal_drifted_cards,
     is_filename_like_title,
@@ -1360,6 +1361,19 @@ class TestRaiseJunkTitlePapers:
         self._stamp(store, rid)
         assert raise_junk_title_papers(store, dry_run=True) == [rid]
         assert self._todos(store, rid) == []
+
+    def test_closes_todo_once_title_is_fixed(self, store: Store) -> None:
+        """gr658659: enrichment fixed the title after the todo was filed."""
+        rid = self._old(store, slug="anon24s", title="__")
+        self._stamp(store, rid)
+        raise_junk_title_papers(store, dry_run=False)
+        assert close_resolved_title_fix_todos(store, dry_run=False) == []
+        store.update_paper_fields(rid, title="A Real Title")
+        assert close_resolved_title_fix_todos(store, dry_run=True) == [rid]
+        assert close_resolved_title_fix_todos(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        assert any("done" in str(t) for t in store.tags_for(todo[0]))
+        assert close_resolved_title_fix_todos(store, dry_run=False) == []
 
     def test_skips_fixable_and_young_papers(self, store: Store) -> None:
         good = self._old(store, slug="good24", title="A Real Title")
