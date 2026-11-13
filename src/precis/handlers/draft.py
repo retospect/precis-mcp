@@ -406,6 +406,93 @@ def _coerce_authoring(v: bool | str) -> bool:
     )
 
 
+#: The ``draft_refresh`` scanner's opt-in subdict under ``ref.meta``
+#: (gr662152): ``enabled`` is the flag
+#: :func:`precis.workers.draft_refresh_scan._opted_in_drafts` gates on,
+#: ``staleness_days`` overrides its 14-day section-staleness default.
+_DRAFT_REFRESH_META_KEYS = frozenset({"enabled", "staleness_days"})
+
+
+def _coerce_on_off(v: Any, what: str) -> bool:
+    """A ref.meta flag value → bool: a real bool, or a string from the
+    same on/off synonym sets ``_coerce_authoring`` accepts. ``what``
+    names the flag in the refusal."""
+    if isinstance(v, bool):
+        return v
+    key = str(v).strip().lower()
+    if key in _AUTHORING_ON:
+        return True
+    if key in _AUTHORING_OFF:
+        return False
+    raise BadInput(
+        f"{what} must be a boolean, got {v!r}",
+        next="meta={'draft_refresh': {'enabled': False}}",
+    )
+
+
+def _coerce_staleness_days(v: Any) -> int:
+    """``draft_refresh.staleness_days`` → a positive int (a bool or a
+    non-numeric value refuses; a digit string coerces)."""
+    days: int | None = None
+    if isinstance(v, int) and not isinstance(v, bool):
+        days = v
+    elif isinstance(v, str):
+        try:
+            days = int(v.strip())
+        except ValueError:
+            days = None
+    if days is None or days < 1:
+        raise BadInput(
+            f"draft_refresh.staleness_days must be a positive int, got {v!r}",
+            next="meta={'draft_refresh': {'staleness_days': 14}}",
+        )
+    return days
+
+
+def _coerce_draft_refresh_meta(raw: Any, current: Any) -> dict[str, Any] | None:
+    """Validate + merge a ref-level ``meta={'draft_refresh': …}`` patch —
+    the missing opt-out door from gr662152 (the scanner's opt-in subdict
+    could be set at ``put`` or by hand, but the ref-level
+    ``edit(meta=…)`` allowlist took only ``pronunciation``, so once a
+    draft was in there was no MCP way back out).
+
+    Returns the MERGED subdict to store: a merge inside the key, not the
+    wholesale replace ``patch_ref_meta`` applies per top-level key, so
+    ``{'enabled': False}`` opts out WITHOUT dropping a custom
+    ``staleness_days``. ``raw=None`` returns ``None`` — the outer
+    clear-a-key convention pops the whole subdict (a full opt-out).
+    Inside the dict, ``enabled`` takes a bool or an on/off string,
+    ``staleness_days`` a positive int; a subkey set to ``None`` pops it
+    (``{'staleness_days': None}`` resets to the default). Unknown keys,
+    an empty dict and wrong types are refused — this is the scanner's
+    config contract, not a free-form bag."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise BadInput(
+            "meta['draft_refresh'] must be a non-empty dict like "
+            "{'enabled': False} — None clears the whole subdict",
+            next="edit(kind='draft', id=<slug>, "
+            "meta={'draft_refresh': {'enabled': False}})",
+        )
+    merged = dict(current) if isinstance(current, dict) else {}
+    for key, val in raw.items():
+        if key not in _DRAFT_REFRESH_META_KEYS:
+            raise BadInput(
+                f"meta['draft_refresh'] has no key {key!r} — accepts "
+                f"{sorted(_DRAFT_REFRESH_META_KEYS)}",
+                next="edit(kind='draft', id=<slug>, "
+                "meta={'draft_refresh': {'enabled': False}})",
+            )
+        if val is None:
+            merged.pop(key, None)  # clear-a-key: reset to the default
+        elif key == "enabled":
+            merged[key] = _coerce_on_off(val, "draft_refresh.enabled")
+        else:
+            merged[key] = _coerce_staleness_days(val)
+    return merged
+
+
 def _coerce_word_target(
     raw: dict[str, Any], what: str = "word_target"
 ) -> tuple[int, int] | None:
@@ -643,8 +730,14 @@ class DraftHandler(Handler):
     #: Narrow by design: everything else in ref.meta is either internal
     #: (``authoring_enabled``) or already has its own dedicated edit
     #: kwarg (``title=``, ``authors=``) and shouldn't gain a second,
-    #: untyped door through here.
-    _REF_META_EDITABLE_KEYS: ClassVar[frozenset[str]] = frozenset({"pronunciation"})
+    #: untyped door through here. ``draft_refresh`` joined for gr662152
+    #: (the scanner opt-in had no edit door) but stays typed: the value
+    #: goes through ``_coerce_draft_refresh_meta``, which validates the
+    #: subdict and merges it — unlike ``pronunciation``'s wholesale
+    #: replace.
+    _REF_META_EDITABLE_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"pronunciation", "draft_refresh"}
+    )
 
     # ── link: placement + the narrow generic-link allowlist ─────────
 
@@ -3192,11 +3285,21 @@ class DraftHandler(Handler):
                     ),
                 )
             ref = self._resolve_draft_any(id)
+            meta_patch = dict(meta)
+            # ``draft_refresh`` is a validated subdict MERGE (gr662152 —
+            # the scanner opt-in had no edit door), not the wholesale
+            # replace ``pronunciation`` takes: ``{'enabled': False}``
+            # must opt out without dropping a custom ``staleness_days``.
+            if "draft_refresh" in meta_patch:
+                meta_patch["draft_refresh"] = _coerce_draft_refresh_meta(
+                    meta_patch["draft_refresh"],
+                    (ref.meta or {}).get("draft_refresh"),
+                )
             self.store.drafts.patch_ref_meta(
-                ref.id, meta, source={"actor": "draft-edit"}
+                ref.id, meta_patch, source={"actor": "draft-edit"}
             )
             return Response(
-                body=f"updated {ref.slug or ref.id} meta: {', '.join(sorted(meta))}"
+                body=f"updated {ref.slug or ref.id} meta: {', '.join(sorted(meta_patch))}"
             )
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the

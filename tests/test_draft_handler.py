@@ -3209,6 +3209,114 @@ def test_edit_meta_at_chunk_handle_still_routes_to_term_attrs(
     assert "pronunciation" not in leaf.meta
 
 
+# ── edit meta={'draft_refresh': …}: the scanner opt-in door (gr662152) ──
+
+
+def test_edit_meta_draft_refresh_opts_out_preserving_staleness(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr662152: ``edit(kind='draft', id=<slug>,
+    meta={'draft_refresh': {'enabled': False}})`` is the missing opt-out
+    door — the ``draft_refresh_scan`` cadence gates on
+    ``meta.draft_refresh.enabled``. It's a MERGE inside the subdict (not
+    ``pronunciation``'s wholesale replace), so a custom
+    ``staleness_days`` survives the toggle."""
+    proj = _proj(hub)
+    draft.put(
+        id="nt",
+        title="T",
+        project=proj,
+        meta={"draft_refresh": {"enabled": True, "staleness_days": 30}},
+    )
+    r = draft.edit(id="nt", meta={"draft_refresh": {"enabled": False}})
+    assert "draft_refresh" in r.body
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert ref.meta["draft_refresh"] == {"enabled": False, "staleness_days": 30}
+
+    # Toggling back on, and setting days alone, both merge too.
+    draft.edit(id="nt", meta={"draft_refresh": {"enabled": True, "staleness_days": 7}})
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert ref.meta["draft_refresh"] == {"enabled": True, "staleness_days": 7}
+
+
+def test_edit_meta_draft_refresh_subkey_none_pops_to_default(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A subkey set to ``None`` pops it — ``{'staleness_days': None}``
+    resets to the scanner's 14-day default without touching the flag."""
+    proj = _proj(hub)
+    draft.put(
+        id="nt",
+        title="T",
+        project=proj,
+        meta={"draft_refresh": {"enabled": True, "staleness_days": 30}},
+    )
+    draft.edit(id="nt", meta={"draft_refresh": {"staleness_days": None}})
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert ref.meta["draft_refresh"] == {"enabled": True}
+
+
+def test_edit_meta_draft_refresh_none_pops_whole_subdict(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``meta={'draft_refresh': None}`` — the outer clear-a-key
+    convention — deletes the whole subdict: a full opt-out (the scan
+    only looks at ``enabled == true``)."""
+    proj = _proj(hub)
+    draft.put(
+        id="nt",
+        title="T",
+        project=proj,
+        meta={"draft_refresh": {"enabled": True, "staleness_days": 30}},
+    )
+    draft.edit(id="nt", meta={"draft_refresh": None})
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert "draft_refresh" not in ref.meta
+
+
+def test_edit_meta_draft_refresh_validates_subdict(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The ``draft_refresh`` key is allowlisted but stays TYPED — an
+    unknown subkey, a non-dict / empty value, a non-bool ``enabled`` or
+    a bad ``staleness_days`` are refused, never silently stored."""
+    proj = _proj(hub)
+    draft.put(
+        id="nt", title="T", project=proj, meta={"draft_refresh": {"enabled": True}}
+    )
+
+    def ref_meta() -> dict[str, Any]:
+        ref = hub.live_store.get_ref(kind="draft", id="nt")
+        assert ref is not None
+        return dict(ref.meta["draft_refresh"])
+
+    with pytest.raises(BadInput, match="enabeld"):
+        draft.edit(id="nt", meta={"draft_refresh": {"enabeld": False}})
+    with pytest.raises(BadInput, match="non-empty dict"):
+        draft.edit(id="nt", meta={"draft_refresh": "yes"})
+    with pytest.raises(BadInput, match="non-empty dict"):
+        draft.edit(id="nt", meta={"draft_refresh": {}})
+    with pytest.raises(BadInput, match="boolean"):
+        draft.edit(id="nt", meta={"draft_refresh": {"enabled": "maybe"}})
+    with pytest.raises(BadInput, match="positive int"):
+        draft.edit(id="nt", meta={"draft_refresh": {"staleness_days": 0}})
+    with pytest.raises(BadInput, match="positive int"):
+        draft.edit(id="nt", meta={"draft_refresh": {"staleness_days": True}})
+
+    # Every refusal left the stored subdict untouched.
+    assert ref_meta() == {"enabled": True}
+
+    # An on/off string coerces, as does a digit string for days.
+    draft.edit(id="nt", meta={"draft_refresh": {"enabled": "off"}})
+    assert ref_meta() == {"enabled": False}
+    draft.edit(id="nt", meta={"draft_refresh": {"staleness_days": "21"}})
+    assert ref_meta() == {"enabled": False, "staleness_days": 21}
+
+
 def test_put_converts_markdown_bullets_to_a_structured_list(
     draft: DraftHandler, hub: Hub
 ) -> None:

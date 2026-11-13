@@ -62,6 +62,7 @@ call)
 | `sub=` | regex substitute over a draft/section, dry-run by default, `apply=True` commits |
 | `review=` | record a checker's sign-off (`'human'` or a worker name) |
 | `authoring=` | `'on'`/`'off'` — let review personas author fixes inline |
+| `meta=` | ref-level meta patch — `{'draft_refresh': {'enabled': false}}` toggles the section-refresh scanner opt-in (merges; `None` clears the subdict); `pronunciation` is the audio lexicon ([[precis-audio-help]]) |
 | `authors=` | replace the byline — grammar below |
 | `title=` | rename (both `refs.title` and the heading, atomically) |
 | `scaffold=` | append a document class's section skeleton |
