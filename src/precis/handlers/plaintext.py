@@ -726,7 +726,7 @@ class PlaintextHandler(Handler):
 
         scope_ref_id: int | None = None
         if scope is not None:
-            scope_ref = self.ensure_ingested(scope)
+            scope_ref = self.ensure_ingested(scope, missing_ok=True)
             if scope_ref is None:
                 raise NotFound(
                     f"{self._KIND} file {scope!r} not found",
@@ -1624,30 +1624,68 @@ class PlaintextHandler(Handler):
         self.store.add_tag(ref.id, Tag.open(f"mirror:{alias}"), set_by="system")
         self.store.add_tag(ref.id, Tag.closed("SPACE", "repo-dev"), set_by="system")
 
-    def ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
-        path = self._resolve_path(slug, must_exist=False)
+    def _path_for_slug(self, slug: str) -> Path:
+        """Slug → on-disk path, including the lossy-encoding fallback.
+
+        ``_resolve_path`` reconstructs a path by pure string transform
+        (split the slug on ``--``, rejoin with ``/``, append a probed
+        extension) — it can't always invert the (lossy) path→slug
+        encoding: a real filename containing a char
+        ``_normalize_segment`` folds to ``-`` (a stray ``.``, a space,
+        …) round-trips to a *different* literal path. When that
+        reconstruction misses, consult the same disk-scan map the
+        suggester/index draw from — anything an agent can see listed
+        there must also resolve here (gr311326: the NotFound
+        suggester's own ``options=`` listed ids that 404'd on direct
+        get because this reconstruction missed).
+
+        Shared by :meth:`ensure_ingested` and the renderers' on-disk
+        checks so "is the file there?" can't disagree between ingest
+        and display — ``_file_on_disk``/``_render_raw`` probing only
+        the string-transform path reported an existing lossy-named
+        file absent (gr659000 review).
+        """
         alias, _flat = self._split_alias(slug)
         root = self._root_of(alias)
-        if not path.exists():
-            # ``_resolve_path`` reconstructs a path by pure string
-            # transform (split the slug on ``--``, rejoin with ``/``,
-            # append a probed extension) — it can't always invert the
-            # (lossy) path->slug encoding: a real filename containing a
-            # char ``_normalize_segment`` folds to ``-`` (a stray ``.``,
-            # a space, …) round-trips to a *different* literal path.
-            # Before giving up, consult the same disk-scan map the
-            # suggester/index draw from — anything an agent can see
-            # listed there must also resolve here (gr311326: the
-            # NotFound suggester's own options= listed ids that 404'd
-            # on direct get because this reconstruction missed).
-            slug_map, _truncated = self._list_file_slugs_on_disk()
-            real_rel = slug_map.get(slug)
-            if real_rel is not None:
-                path = (root / real_rel).resolve()
+        path = self._resolve_path(slug, must_exist=False)
+        if path.exists():
+            return path
+        slug_map, _truncated = self._list_file_slugs_on_disk()
+        real_rel = slug_map.get(slug)
+        if real_rel is not None:
+            return (root / real_rel).resolve()
+        return path
+
+    def ensure_ingested(
+        self, slug: str, *, force: bool = False, missing_ok: bool = False
+    ) -> Ref | None:
+        """Ingest the file for *slug* when it is newer than the stored ref.
+
+        Returns ``None`` when nothing is readable — no file under this
+        root AND no live ref. When the file is absent but a live ref
+        exists, ``missing_ok`` picks the outcome:
+
+        - ``False`` (default — reconcile semantics): the ref is retired,
+          mirroring the missing file. Only callers that sweep a root
+          they own (``cli/mirror_links``) should run this: the retire
+          is destructive.
+        - ``True`` (interactive read paths): the ref comes back as-is
+          and the renderer serves its stored blocks. A file's absence
+          under *this* root doesn't prove deletion — prod refs are
+          written by workers whose workspaces live on other hosts, and
+          ``meta['path']`` is relative to whatever root ingested them
+          (gr659000: a read-only ``get`` probe soft-retired live tex
+          refs whose files weren't on the probing host).
+        """
+        path = self._path_for_slug(slug)
+        alias, _flat = self._split_alias(slug)
+        root = self._root_of(alias)
         ref = self.store.get_ref(kind=self._KIND, id=slug)
 
         if not path.exists():
             if ref is not None:
+                if missing_ok:
+                    return ref
                 self.store.retire_ref(ref.id)
             return None
 
@@ -1793,8 +1831,13 @@ class PlaintextHandler(Handler):
         Wraps :meth:`ensure_ingested` so every read/write entry point
         can guard against bogus slugs with one call, without each
         site re-inventing the error shape.
+
+        ``missing_ok=True``: a live ref whose file isn't under this
+        root still resolves — reads serve the stored blocks, writes
+        then fail honestly at ``_resolve_path(must_exist=True)``
+        (gr659000).
         """
-        ref = self.ensure_ingested(slug)
+        ref = self.ensure_ingested(slug, missing_ok=True)
         if ref is None:
             self._raise_file_not_found(slug)
         assert ref is not None  # _raise_file_not_found never returns
@@ -1873,6 +1916,17 @@ class PlaintextHandler(Handler):
         except OSError:
             return ""
 
+    def _file_on_disk(self, ref: Ref) -> bool:
+        """True when the ref's backing file resolves under a live root.
+
+        Uses the same slug→path resolution reads go through
+        (:meth:`_path_for_slug`, lossy-filename fallback included);
+        ``False`` means the file was deleted here or was ingested
+        under another host's root (gr659000) — either way the stored
+        blocks are what the renderers serve.
+        """
+        return self._path_for_slug(ref.slug or "").exists()
+
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
         n_blocks = self.store.chunks.count_chunks(ref.id)
@@ -1893,6 +1947,13 @@ class PlaintextHandler(Handler):
         ]
         if meta.get("mtime_iso"):
             lines.append(f"mtime:       {meta['mtime_iso']}")
+        if not self._file_on_disk(ref):
+            # Off-disk ref (foreign workspace or deleted file): the
+            # stored blocks are being served, so say so — silently
+            # presenting a stale mirror would mislead (gr659000).
+            lines.append(
+                "on disk:     no — serving stored blocks (file absent under this root)"
+            )
 
         # Block-preview pane — subclasses can inject headings / TOC.
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
@@ -2023,10 +2084,26 @@ class PlaintextHandler(Handler):
         return Response(body=body)
 
     def _render_raw(self, ref: Ref) -> Response:
-        path = self._resolve_path(ref.slug or "", must_exist=False)
-        if not path.exists():
+        path = self._path_for_slug(ref.slug or "")
+        if path.exists():
+            return Response(body=path.read_text(encoding="utf-8"))
+        # The file isn't under this root — either it was deleted here
+        # or it was ingested on another host whose workspace isn't
+        # mounted (``meta['path']`` is relative to that other root, so
+        # it can't locate the file either — gr659000). The stored
+        # blocks are the full ingest body: joining them on a blank
+        # line reproduces the source — byte-exact when the parser's
+        # chunk gaps were blank lines, within a few bytes otherwise.
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if not blocks:
             return Response(body=f"{ref.slug}: file no longer on disk")
-        return Response(body=path.read_text(encoding="utf-8"))
+        return Response(
+            body=(
+                f"{ref.slug}: file not on disk under this root — "
+                f"reconstructed from {len(blocks)} stored block(s)\n\n"
+                + "\n\n".join(b.text for b in blocks)
+            )
+        )
 
     def _render_line_range(self, ref: Ref, line_start: int, line_end: int) -> Response:
         """Render every block that intersects 1-indexed

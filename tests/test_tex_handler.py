@@ -121,6 +121,28 @@ def test_overview_for_missing_file_raises(handler: TexHandler) -> None:
         handler.get(id="nonexistent")
 
 
+def test_off_disk_tex_ref_serves_stored_blocks(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """gr659000: a tex ref whose file isn't under this root (ingested
+    on another host, or deleted here) still reads — overview + /raw
+    serve the stored blocks — and the read must not retire the ref.
+    """
+    p = _write(
+        tex_root,
+        "intro.tex",
+        "\\section{Introduction}\n\nFirst paragraph body.\n",
+    )
+    handler.get(id="intro")
+    p.unlink()
+    out = handler.get(id="intro")
+    assert "on disk:" in out.body
+    assert handler.store.get_ref(kind="tex", id="intro") is not None
+    raw = handler.get(id="intro/raw")
+    assert "reconstructed" in raw.body
+    assert "First paragraph body." in raw.body
+
+
 def test_get_block_by_pos(handler: TexHandler, tex_root: Path) -> None:
     _write(
         tex_root,
@@ -431,6 +453,114 @@ def test_toc_marks_missing_input_target(handler: TexHandler, tex_root: Path) -> 
     assert "not found" in out.body
 
 
+# ── gr659000: /toc expands stored children whose files are off-disk ──
+#
+# Prod refs are written by workers whose workspaces live on other
+# hosts. A ``\input{}`` child that isn't under *this* root still has
+# a live stored ref — the TOC must walk its stored sections rather
+# than report "not found". The child's resolution order keeps the
+# disk authoritative (a real ``intro.tex`` outranks its stored ref)
+# and matches the ingest-recorded ``meta['path']`` as well as the
+# reconstructed slug.
+
+
+def test_toc_expands_stored_input_child_off_disk(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """The child's file is gone from this root but its stored ref is
+    live: the marker says ``stored`` and its sections still inline."""
+    _write(
+        tex_root,
+        "main.tex",
+        r"\section{Top}" + "\n\n" + r"\input{chapters/intro}" + "\n",
+    )
+    child = _write(
+        tex_root,
+        "chapters/intro.tex",
+        r"\section{Introduction}" + "\n\n" + "Intro body.\n",
+    )
+    handler.get(id="main", view="toc")  # ingest both
+    child.unlink()
+    body = handler.get(id="main", view="toc").body
+    assert "not found" not in body
+    assert r"⤷ \input{chapters/intro} → chapters--intro" in body
+    assert "stored — file not on disk" in body
+    assert r"\section{Introduction}" in body
+    assert handler.store.get_ref(kind="tex", id="chapters--intro") is not None
+
+
+def test_toc_expands_stored_child_when_parent_also_off_disk(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """The prod gr659000 shape: BOTH files are off-disk — the parent's
+    ``meta['path']`` still locates the child's ingest-recorded relpath
+    so the TOC renders the whole stored tree."""
+    main = _write(
+        tex_root,
+        "proj/main.tex",
+        r"\section{Top}" + "\n\n" + r"\input{tex/intro}" + "\n",
+    )
+    child = _write(
+        tex_root,
+        "proj/tex/intro.tex",
+        r"\section{Stored Intro}" + "\n",
+    )
+    handler.get(id="proj--main", view="toc")  # ingest both
+    main.unlink()
+    child.unlink()
+    body = handler.get(id="proj--main", view="toc").body
+    assert "not found" not in body
+    assert "proj--tex--intro" in body
+    assert r"\section{Stored Intro}" in body
+
+
+def test_toc_resolves_stored_child_by_meta_path(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """A stored child whose slug isn't the relpath's slug encoding
+    still resolves: ``meta['path']`` is the authoritative ingest-time
+    relpath (the path→slug encoding is lossy)."""
+    from precis.store.types import ChunkInsert
+
+    _write(tex_root, "main.tex", r"\input{chapters/intro}" + "\n")
+    ref = handler.store.insert_ref(
+        kind="tex",
+        slug="legacy-intro",
+        title="Intro",
+        meta={"path": "chapters/intro.tex", "ext": ".tex"},
+    )
+    handler.store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text=r"\section{Legacy Intro}",
+                slug="legacy-intro",
+                meta={"section_level": 0, "section_title": "Legacy Intro"},
+            )
+        ],
+    )
+    body = handler.get(id="main", view="toc").body
+    assert "not found" not in body
+    assert "legacy-intro" in body
+    assert r"\section{Legacy Intro}" in body
+
+
+def test_toc_on_disk_child_wins_over_stored_ref(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """An on-disk ``intro.tex`` must outrank a stored ref claiming the
+    same slug — the extensionless ``\\input{intro}`` candidate
+    slug-matches it, which must not shadow the real file."""
+    _write(tex_root, "main.tex", r"\input{intro}" + "\n")
+    stored = _write(tex_root, "intro.tex", r"\section{Old}" + "\n")
+    handler.get(id="main", view="toc")  # ingest both
+    stored.write_text(r"\section{Fresh}" + "\n", encoding="utf-8")
+    body = handler.get(id="main", view="toc").body
+    assert r"\section{Fresh}" in body
+    assert "stored — file not on disk" not in body
+
+
 def test_toc_breaks_input_cycles(handler: TexHandler, tex_root: Path) -> None:
     """``a.tex`` includes ``b.tex`` includes ``a.tex`` — the walker
     must terminate with a cycle marker, not recurse forever."""
@@ -682,10 +812,10 @@ def test_toc_residual_db_error_names_the_child(
 
     real_ensure_ingested = TexHandler.ensure_ingested
 
-    def boom(self, slug, *, force=False):
+    def boom(self, slug, *, force=False, missing_ok=False):
         if slug == "broken":
             raise RuntimeError("connection reset by peer")
-        return real_ensure_ingested(self, slug, force=force)
+        return real_ensure_ingested(self, slug, force=force, missing_ok=missing_ok)
 
     monkeypatch.setattr(TexHandler, "ensure_ingested", boom)
 

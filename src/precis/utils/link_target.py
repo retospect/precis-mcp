@@ -518,7 +518,10 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
             views=handler._SUPPORTED_VIEWS,
             aliases=handler._aliases,
         )
-        handler.ensure_ingested(slug)
+        # ``missing_ok=True``: resolving a link target is a read —
+        # a live ref whose file isn't under this root must not be
+        # retired by the probe (gr659000).
+        handler.ensure_ingested(slug, missing_ok=True)
         return
     if kind not in ("part", "skill"):
         return

@@ -258,6 +258,74 @@ def test_overview_for_missing_file_raises(handler: PlaintextHandler) -> None:
         handler.get(id="nonexistent")
 
 
+# ── gr659000: off-disk refs serve stored blocks, never retire on read ──
+#
+# Prod refs are written by workers whose workspaces live on other
+# hosts; a read probe on a host where the file isn't mounted used to
+# soft-retire the live ref and report NotFound. Reads now serve the
+# stored blocks instead. Only explicit deletes and reconcile sweeps
+# (``ensure_ingested`` default) retire on a missing file.
+
+
+def test_get_serves_stored_blocks_for_off_disk_ref(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    p = _write(pt_root, "doc.txt", "alpha para\n\nbeta para\n")
+    handler.get(id="doc")
+    p.unlink()
+    out = handler.get(id="doc")
+    assert "on disk:" in out.body
+    assert "alpha para" in out.body
+    assert handler.store.get_ref(kind="plaintext", id="doc") is not None
+
+
+def test_raw_reconstructs_body_from_stored_blocks(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    p = _write(pt_root, "doc.txt", "alpha para\n\nbeta para\n")
+    handler.get(id="doc")
+    p.unlink()
+    out = handler.get(id="doc/raw")
+    assert "reconstructed from 2 stored block(s)" in out.body
+    assert "alpha para\n\nbeta para" in out.body
+
+
+def test_block_get_and_search_scope_for_off_disk_ref(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    p = _write(pt_root, "doc.txt", "needle alpha\n\nhay beta\n")
+    handler.get(id="doc")
+    p.unlink()
+    assert "needle alpha" in handler.get(id="doc~0").body
+    out = handler.search(q="needle", scope="doc")
+    assert "needle" in out.body
+    assert handler.store.get_ref(kind="plaintext", id="doc") is not None
+
+
+def test_edit_on_off_disk_ref_fails_without_retiring(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    p = _write(pt_root, "doc.txt", "alpha para\n")
+    handler.get(id="doc")
+    p.unlink()
+    with pytest.raises(NotFound, match="not found on disk"):
+        handler.edit(id="doc", mode="find-replace", find="alpha", text="gamma")
+    assert handler.store.get_ref(kind="plaintext", id="doc") is not None
+
+
+def test_ensure_ingested_default_still_retires_missing_file(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Reconcile sweeps keep the mirror semantic: a file gone from a
+    root the caller owns retires its ref (``cli/mirror_links`` relies
+    on this)."""
+    p = _write(pt_root, "doc.txt", "alpha para\n")
+    handler.get(id="doc")
+    p.unlink()
+    assert handler.ensure_ingested("doc") is None
+    assert handler.store.get_ref(kind="plaintext", id="doc") is None
+
+
 # ── gr311326: suggester options= must all resolve ───────────────────
 #
 # ``file_slug_from_path`` strips the file's (one true) extension
@@ -309,6 +377,22 @@ def test_ensure_ingested_falls_back_to_disk_scan_for_lossy_slug(
     _write(pt_root, "my notes.txt", "hello there")
     out = handler.get(id="my-notes")
     assert "my-notes" in out.body
+
+
+def test_lossy_slug_file_still_reports_on_disk(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """gr659000 review: the renderers' on-disk check must share
+    ``ensure_ingested``'s lossy-slug fallback. ``'my notes.txt'`` is
+    really on disk — its slug ``'my-notes'`` just doesn't
+    string-rebuild to it — so the overview must not print the
+    "on disk: no" marker and ``/raw`` must serve the file verbatim,
+    not the stored-blocks reconstruction."""
+    _write(pt_root, "my notes.txt", "hello there")
+    out = handler.get(id="my-notes")
+    assert "on disk:" not in out.body
+    raw = handler.get(id="my-notes/raw")
+    assert raw.body == "hello there"
 
 
 def test_get_block_by_slug_and_pos(handler: PlaintextHandler, pt_root: Path) -> None:

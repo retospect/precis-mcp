@@ -72,16 +72,19 @@ class _InputResolution:
     Three outcomes ``_toc_walk`` renders differently:
 
     - ``ref`` set: resolved + ingested (or already current) — walk
-      recurses into it.
+      recurses into it. ``stored_only=True`` marks the sub-case where
+      the file isn't under this root but a live stored ref still
+      carries the sections to walk (gr659000).
     - ``pending=True``: resolved to a real file but the ingest budget
       is exhausted — rendered as a "not yet indexed" marker.
-    - neither: the target didn't resolve to a file under ``root`` at
-      all — rendered as the pre-existing "not found" marker.
+    - neither: the target didn't resolve to a file under ``root`` nor
+      to a live stored ref — rendered as the "not found" marker.
     """
 
     ref: Ref | None
     child_slug: str | None
     pending: bool = False
+    stored_only: bool = False
 
 
 class TexHandler(PlaintextHandler):
@@ -270,8 +273,12 @@ class TexHandler(PlaintextHandler):
                 if resolution.ref is None:
                     lines.append(f"{indent}⚠ \\input{{{input_arg}}} → not found")
                     continue
+                stored_note = (
+                    " (stored — file not on disk)" if resolution.stored_only else ""
+                )
                 lines.append(
-                    f"{indent}⤷ \\input{{{input_arg}}} → {resolution.ref.slug}"
+                    f"{indent}⤷ \\input{{{input_arg}}} → "
+                    f"{resolution.ref.slug}{stored_note}"
                 )
                 self._toc_walk(
                     resolution.ref,
@@ -318,53 +325,71 @@ class TexHandler(PlaintextHandler):
         the ``\\input`` line still appears in the source);
         ``pending=True`` if the target resolves to a real file but the
         per-walk ingest *budget* is exhausted (gr311327); ``ref`` set
-        otherwise.
+        otherwise — ``stored_only=True`` when the file isn't under
+        this root but a live stored ref still supplies its sections
+        (gr659000).
 
         Path resolution mirrors LaTeX:
 
         - Try the literal target first, then with ``.tex`` appended.
         - Resolve **relative to the parent file's directory** (not the
-          ``PRECIS_ROOT``), matching how ``pdflatex`` searches.
+          ``PRECIS_ROOT``), matching how ``pdflatex`` searches. The
+          parent's directory comes from its ingest-recorded
+          ``meta['path']`` when present — a ref whose file lives on
+          another host still locates its siblings the way the
+          ingesting host laid them out.
         - Apply the same ``Path.resolve()`` + ``relative_to(self.root)``
           gate every other read/write goes through.
         """
         cleaned = target.strip()
         if not cleaned:
             return _InputResolution(ref=None, child_slug=None)
-        parent_path = self._resolve_path(parent_ref.slug or "", must_exist=False)
-        parent_dir = parent_path.parent
+        meta_path = (parent_ref.meta or {}).get("path")
+        if isinstance(meta_path, str) and meta_path:
+            alias, _flat = self._split_alias(parent_ref.slug or "")
+            parent_dir = (self._root_of(alias) / meta_path).resolve().parent
+        else:
+            parent_dir = self._resolve_path(
+                parent_ref.slug or "", must_exist=False
+            ).parent
 
         candidates: list[str] = [cleaned]
         if not cleaned.lower().endswith(".tex"):
             candidates.append(cleaned + ".tex")
 
+        from precis.utils.md_parse import file_slug_from_path, is_valid_file_slug
+
+        # Pass 1: on-disk candidates. Stored refs are consulted only
+        # after every candidate missed the disk (pass 2 below) — an
+        # extensionless ``\input{intro}`` slug-matches the stored ref
+        # for ``intro.tex``, which must not shadow the real file.
+        missed: list[tuple[str, str]] = []  # (rel path, slug) per disk miss
         for cand in candidates:
             try:
                 abs_path = (parent_dir / cand).resolve()
             except OSError:
                 continue
             try:
-                abs_path.relative_to(self.root)
+                rel = abs_path.relative_to(self.root)
             except ValueError:
                 # Resolved outside root — refuse silently in the TOC
                 # walker. A future refinement could surface this as a
                 # warning marker.
                 continue
-            if not abs_path.is_file():
-                continue
-            # Convert back to a slug under our root + ingest lazily.
-            try:
-                rel = abs_path.relative_to(self.root)
-            except ValueError:
-                continue
-            from precis.utils.md_parse import file_slug_from_path, is_valid_file_slug
 
             # ``file_slug_from_path`` strips the extension itself — don't
             # pre-strip via ``_strip_ext`` first, or a stem with a further
             # ``.`` gets double-stripped and the slug can't resolve
             # (gr311326).
-            child_slug = file_slug_from_path(str(rel))
+            try:
+                child_slug = file_slug_from_path(str(rel))
+            except ValueError:
+                continue
             if not is_valid_file_slug(child_slug):
+                continue
+
+            if not abs_path.is_file():
+                missed.append((str(rel), child_slug))
                 continue
 
             if not self._is_toc_child_fresh(child_slug, abs_path):
@@ -376,7 +401,10 @@ class TexHandler(PlaintextHandler):
                 budget.remaining -= 1
 
             try:
-                child_ref = self.ensure_ingested(child_slug)
+                # ``missing_ok=True``: /toc is a read — a file that
+                # vanishes between the is_file() probe and ingest must
+                # serve its stored ref, not retire it (gr659000).
+                child_ref = self.ensure_ingested(child_slug, missing_ok=True)
             except PrecisError:
                 # Already a typed, agent-facing error — surface as-is.
                 raise
@@ -396,5 +424,24 @@ class TexHandler(PlaintextHandler):
                     ),
                 ) from exc
             return _InputResolution(ref=child_ref, child_slug=child_slug)
+
+        # Pass 2: off-disk children. Nothing readable under this root,
+        # but a live stored ref (file ingested on another host, or
+        # deleted here — gr659000) still carries the sections the TOC
+        # expands. Match the ingest-recorded ``meta['path']`` as well
+        # as the reconstructed slug: the path→slug encoding is lossy,
+        # so the recorded relpath is the authoritative identity.
+        for rel_str, child_slug in missed:
+            stored = self.store.get_ref(kind=self._KIND, id=child_slug)
+            if stored is None:
+                stored = self.store.find_ref_by_meta(
+                    kind=self._KIND, key="path", value=rel_str
+                )
+            if stored is not None:
+                return _InputResolution(
+                    ref=stored,
+                    child_slug=stored.slug or child_slug,
+                    stored_only=True,
+                )
 
         return _InputResolution(ref=None, child_slug=None)

@@ -133,6 +133,16 @@ search(kind="markdown", q="deadline")  # all files
 search(kind="markdown", q="deadline", scope="notes/meeting.md")
 ```
 
+## The file isn't on this machine — can I still read it?
+
+Yes. A ref whose backing file isn't under this root (ingested on
+another host, or deleted here) still answers `get`/`search`/find from
+its stored blocks: the overview marks `on disk: no`, and `/raw`
+reconstructs the body by joining the stored blocks on blank lines.
+Writes still need the real file — `edit` and block-level `delete`
+report "not found on disk". A read never retires the ref; only
+`delete(confirm='delete-file-<slug>')` retires it.
+
 ## How do I create or rewrite a file?
 ## Write to a file (create / append / replace / delete)
 ## What modes does write support?

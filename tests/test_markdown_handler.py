@@ -327,13 +327,37 @@ def test_unchanged_file_keeps_ref(handler: MarkdownHandler, md_root: Path) -> No
     assert out1.body == out2.body
 
 
-def test_deleted_file_soft_deletes_ref(handler: MarkdownHandler, md_root: Path) -> None:
+def test_deleted_file_is_served_from_stored_blocks(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """A file absent under this root doesn't prove deletion — prod
+    refs are written by workers whose workspaces live on other hosts
+    (gr659000). Reads serve the stored blocks and must not retire the
+    ref; only an explicit ``delete()`` retires it.
+    """
+    p = _write(md_root, "ephemeral.md", "# X\n\nstored body text\n")
+    handler.get(id="ephemeral")
+    p.unlink()
+    out = handler.get(id="ephemeral")
+    assert "on disk:" in out.body
+    raw = handler.get(id="ephemeral/raw")
+    assert "stored body text" in raw.body
+    assert handler.store.get_ref(kind="markdown", id="ephemeral") is not None
+    # Explicit file-level delete still retires.
+    handler.delete(id="ephemeral", confirm="delete-file-ephemeral")
+    assert handler.store.get_ref(kind="markdown", id="ephemeral") is None
+
+
+def test_ensure_ingested_default_still_retires_missing_file(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """Reconcile sweeps keep the mirror semantic: a file gone from a
+    root the caller owns retires its ref (``cli/mirror_links`` relies
+    on this)."""
     p = _write(md_root, "ephemeral.md", "# X\n")
     handler.get(id="ephemeral")
     p.unlink()
-    with pytest.raises(NotFound):
-        handler.get(id="ephemeral")
-    # Soft-deleted refs are filtered out by get_ref.
+    assert handler.ensure_ingested("ephemeral") is None
     assert handler.store.get_ref(kind="markdown", id="ephemeral") is None
 
 

@@ -107,6 +107,9 @@ or `\include{path}`, it resolves the target relative to the parent's
 directory, ingests it lazily, and inlines its sections at the right
 indent. Cycles terminate with a `⇺` marker. Targets outside
 `PRECIS_ROOT` show as `not found`. `\subfile{...}` is not followed.
+A target whose file isn't on this machine still expands when a live
+ref holds its stored blocks (ingested on another host, or since
+deleted) — the marker reads `→ <slug> (stored — file not on disk)`.
 
 ```text
 # TOC: main
