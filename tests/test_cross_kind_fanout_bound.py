@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,37 @@ def _patch_invoke(monkeypatch: pytest.MonkeyPatch, rt: PrecisRuntime, fn) -> Non
     monkeypatch.setattr(
         type(rt), "_cross_kind_invoke_search_hits", lambda self, h, k, kw: fn(k)
     )
+
+
+def _frozen_clock(
+    monkeypatch: pytest.MonkeyPatch, start: float = 1000.0
+) -> dict[str, float]:
+    """Replace ``search_mod.time`` with a controllable clock.
+
+    ``search.py`` calls ``time.monotonic()`` through its module-global
+    ``time`` name, so swapping that name freezes the fan-out's clock
+    without touching the real ``time`` module the pool internals (and
+    other threads) still use. Mutate ``clock["t"]`` to advance it.
+    """
+    clock = {"t": start}
+
+    class _Clock:
+        @staticmethod
+        def monotonic() -> float:
+            return clock["t"]
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(search_mod, "time", _Clock())
+    return clock
+
+
+def _serial_fan_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the shared executor down to one worker so submission order
+    is execution order — a deterministic queue for floor-window tests."""
+    monkeypatch.setattr(search_mod, "CROSS_KIND_MAX_WORKERS", 1)
+    monkeypatch.setattr(search_mod, "_cross_kind_pool", None)
 
 
 def test_fan_out_concurrency_never_exceeds_cap(
@@ -178,3 +210,209 @@ def test_deadline_cancels_the_query_on_the_server(
     assert running == 0, "kind's query still running on the server after deadline"
     assert errors and "statement timeout" in str(errors[0]).lower()
     assert kinds[0] in out
+
+
+def test_starved_kind_runs_lexical_instead_of_timing_out(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664954: a kind dequeued inside the min-start floor used to
+    report TimeoutError without trying — cheap kinds vanished from the
+    merge purely on queue position. Inside the smaller lexical floor it
+    now runs lexical-only and is collected for the footer."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:3]
+    clock = _frozen_clock(monkeypatch)
+    _serial_fan_out(monkeypatch)
+    seen: dict[str, dict[str, Any]] = {}
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
+        seen[kind] = dict(kw)
+        clock["t"] += 11.0  # each kind leaves the next ~1 s of the 12 s budget
+        return []
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    fallback: set[str] = set()
+    out = rt._cross_kind_fan_out(
+        kinds, {"q": "x"}, deadline_at=1012.0, lexical_fallback=fallback
+    )
+
+    # kinds[0] dequeued with the whole budget: full legs, no degrade.
+    assert "mode" not in seen[kinds[0]]
+    # kinds[1] dequeued at ~1 s remaining — inside the lexical floor
+    # window — so it ran lexical-only and is marked for the footer.
+    assert seen[kinds[1]]["mode"] == "lexical"
+    assert fallback == {kinds[1]}
+    # kinds[2] saw a past deadline: still an honest TimeoutError.
+    assert isinstance(out[kinds[2]], TimeoutError)
+
+
+def test_dispatch_merges_and_names_lexical_fallback_kinds(
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr664954 end-to-end: a wildcard search whose tail kinds only
+    reach a worker inside the deadline's last slice still merges their
+    lexical hits and names the degrade in a footer — the old behaviour
+    dropped them to TimeoutError."""
+    from precis.embedder import MockEmbedder
+    from precis.utils.search_merge import SearchHit
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    kinds = rt._cross_kind_kinds()
+    assert len(kinds) >= 3
+
+    class _ProductionStubEmbedder(MockEmbedder):
+        @property
+        def is_production(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        rt.hub, "embedder", _ProductionStubEmbedder(dim=store.embedding_dim())
+    )
+    # No up-front leg skips — every kind keeps its hybrid legs, so the
+    # floor-window degrade is what the second kind exercises.
+    monkeypatch.setattr(
+        type(rt), "_cross_kind_slow_semantic_kinds", lambda self, ks, d: []
+    )
+    clock = _frozen_clock(monkeypatch)
+    _serial_fan_out(monkeypatch)
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
+        clock["t"] += 11.0
+        if kind == kinds[0]:
+            return [
+                SearchHit(
+                    score=0.9,
+                    kind=kind,
+                    title="alpha xyzzy",
+                    preview="p",
+                    ref_id=None,
+                    slug=None,
+                )
+            ]
+        if kind == kinds[1]:
+            return [
+                SearchHit(
+                    score=0.8,
+                    kind=kind,
+                    title="beta xyzzy",
+                    preview="p",
+                    ref_id=None,
+                    slug=None,
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    out = rt._dispatch_cross_kind("*", {"q": "xyzzy"})
+
+    assert "beta xyzzy" in out.body  # the salvaged kind's hits merge
+    assert f"semantic leg skipped for {kinds[1]}" in out.body
+    assert "ran lexical-only this turn" in out.body
+
+
+def test_starved_explicit_list_keeps_the_timeout(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``lexical_fallback=None`` — the explicit kind-list path — keeps
+    the old contract: a kind that cannot fit the full legs reports the
+    timeout rather than degrading silently (caller intent, same as the
+    up-front leg skip)."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:3]
+    clock = _frozen_clock(monkeypatch)
+    _serial_fan_out(monkeypatch)
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
+        clock["t"] += 11.0
+        return []
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    out = rt._cross_kind_fan_out(kinds, {"q": "x"}, deadline_at=1012.0)
+    assert out[kinds[0]] == []
+    assert isinstance(out[kinds[1]], TimeoutError)
+
+
+def test_starved_semantic_mode_keeps_the_timeout(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``mode='semantic'`` is the caller asking for the leg knowingly —
+    a late-dequeued kind reports the timeout rather than answering
+    lexical-only."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:2]
+    clock = _frozen_clock(monkeypatch)
+    _serial_fan_out(monkeypatch)
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
+        clock["t"] += 11.0
+        return []
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    fallback: set[str] = set()
+    out = rt._cross_kind_fan_out(
+        kinds,
+        {"q": "x", "mode": "semantic"},
+        deadline_at=1012.0,
+        lexical_fallback=fallback,
+    )
+    assert out[kinds[0]] == []
+    assert isinstance(out[kinds[1]], TimeoutError)
+    assert fallback == set()
+
+
+def test_checkout_budget_caps_every_statement(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr664954: inside a CHECKOUT_BUDGET scope the pool applies a
+    transaction-local statement_timeout to every checkout — a non-ANN
+    straggler statement can no longer hold a fan-out worker past the
+    call deadline."""
+    from precis.store.pool import CHECKOUT_BUDGET
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    token = CHECKOUT_BUDGET.set((time.monotonic() + 60.0, 4000.0))
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+            ).fetchone()
+        assert row is not None and int(row[0]) == 4000
+    finally:
+        CHECKOUT_BUDGET.reset(token)
+    # Outside the scope a checkout keeps the ambient default — the
+    # scope's cap must not leak into it.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+        ).fetchone()
+    assert row is not None and int(row[0]) != 4000
+
+
+def test_checkout_budget_bounds_the_pool_wait(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A saturated pool used to hold a fan-out worker on the pool's
+    unbounded checkout wait — inside the budget it fails fast instead."""
+    from psycopg_pool import PoolTimeout
+
+    from precis.store.pool import CHECKOUT_BUDGET
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    held = [store.pool.getconn() for _ in range(int(store.pool.max_size))]
+    token = CHECKOUT_BUDGET.set((time.monotonic() - 1.0, 4000.0))  # past
+    try:
+        t0 = time.perf_counter()
+        with pytest.raises(PoolTimeout), store.pool.connection():
+            pass
+        assert time.perf_counter() - t0 < budget(2.0)
+    finally:
+        CHECKOUT_BUDGET.reset(token)
+        for conn in held:
+            store.pool.putconn(conn)

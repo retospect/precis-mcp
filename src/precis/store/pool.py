@@ -33,6 +33,7 @@ from __future__ import annotations
 import atexit
 import os
 import re
+import time
 import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -238,6 +239,20 @@ def _close_at_exit(pool: ConnectionPool) -> None:
 #: thread/context, or ``None``. Read by :meth:`PrecisPool.connection`.
 _PINNED: ContextVar[Connection | None] = ContextVar("precis_pinned_conn", default=None)
 
+#: Bounded-call scope for pool use inside one request — the cross-kind
+#: fan-out sets it per worker — as ``(deadline_monotonic_s,
+#: per_statement_cap_ms)``. While set, a :meth:`PrecisPool.connection`
+#: checkout that did not name its own ``timeout`` waits at most the
+#: remaining budget (instead of the pool's unbounded default, which let
+#: a saturated pool hold a fan-out worker for the whole call), and every
+#: statement the checkout runs is capped server-side by a
+#: transaction-local ``statement_timeout`` — a non-ANN straggler
+#: statement dies at the call deadline like the ANN scan already did
+#: (gr664954). ``None`` = unbounded, the default everywhere else.
+CHECKOUT_BUDGET: ContextVar[tuple[float, float] | None] = ContextVar(
+    "precis_checkout_budget", default=None
+)
+
 
 @contextmanager
 def pin_connection(conn: Connection) -> Iterator[None]:
@@ -278,7 +293,26 @@ class PrecisPool(ConnectionPool):
                 apply_revision_context(pinned, clear=True)
                 yield pinned
             return
+        budget = CHECKOUT_BUDGET.get()
+        if timeout is None and budget is not None:
+            # The scope's deadline, not the pool's unbounded wait — a
+            # saturated pool must not hold a bounded call's worker
+            # hostage (gr664954).
+            timeout = max(0.0, budget[0] - time.monotonic())
         with super().connection(timeout=timeout) as conn:
+            if budget is not None:
+                # Transaction-local (is_local=true), like the SET LOCAL
+                # ROLE below — pgbouncer transaction mode must not see
+                # it leak to another client. Each statement this
+                # checkout runs is capped at the smaller of the scope's
+                # per-statement cap and its remaining budget, so a
+                # checkout taken late in the call cannot overrun the
+                # deadline on any single statement.
+                cap_ms = int(min(budget[1], (budget[0] - time.monotonic()) * 1000))
+                conn.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    (str(max(cap_ms, 1)),),
+                )
             # Tier-2: ``SET LOCAL ROLE`` opens the transaction the caller's
             # statements then run in — same seam apply_revision_context uses.
             # Runs BEFORE the context so the writes after it are already
