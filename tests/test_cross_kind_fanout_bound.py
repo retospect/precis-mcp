@@ -178,3 +178,80 @@ def test_deadline_cancels_the_query_on_the_server(
     assert running == 0, "kind's query still running on the server after deadline"
     assert errors and "statement timeout" in str(errors[0]).lower()
     assert kinds[0] in out
+
+
+def test_fan_out_pins_pool_checkouts_to_the_call_deadline(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr664970: each fanned job carries the shared call deadline into
+    its pool checkouts, so a straggler can't hold a shared worker on a
+    default 30 s checkout long after its results were discarded."""
+    from precis.store.pool import POOL_CHECKOUT_DEADLINE
+
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:2]
+    deadline_at = time.monotonic() + 5.0
+    seen: dict[str, float | None] = {}
+
+    def fake(k: str) -> list:
+        seen[k] = POOL_CHECKOUT_DEADLINE.get()
+        return []
+
+    _patch_invoke(monkeypatch, rt, fake)
+    rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10}, deadline_at=deadline_at)
+    assert set(seen) == set(kinds)
+    assert all(dl == deadline_at for dl in seen.values())
+
+
+def test_checkout_deadline_fails_fast_past_the_deadline(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr664970: a checkout in a context whose deadline already passed
+    raises PoolTimeout immediately — it must not wait the pool's 30 s
+    default (or take a free conn) for work whose results are discarded."""
+    from psycopg_pool import PoolTimeout
+
+    from precis.store.pool import POOL_CHECKOUT_DEADLINE
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    token = POOL_CHECKOUT_DEADLINE.set(time.monotonic() - 0.01)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(PoolTimeout):
+            with store.pool.connection():
+                pass
+        assert time.monotonic() - t0 < budget(1.0)
+    finally:
+        POOL_CHECKOUT_DEADLINE.reset(token)
+
+
+def test_checkout_deadline_bounds_a_waiting_checkout(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The bound shrinks the wait, not just the past-deadline case: a
+    checkout with seconds left may not queue for the pool's full 30 s
+    default — the straggler fails at its call deadline and frees the
+    executor worker."""
+    from precis.store.pool import POOL_CHECKOUT_DEADLINE
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+    checkouts: list[float | None] = []
+    orig_getconn = store.pool.getconn
+
+    def spy(timeout: float | None = None):
+        checkouts.append(timeout)
+        return orig_getconn(timeout=timeout)
+
+    token = POOL_CHECKOUT_DEADLINE.set(time.monotonic() + 2.0)
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store.pool, "getconn", spy)
+            with store.pool.connection():
+                pass
+    finally:
+        POOL_CHECKOUT_DEADLINE.reset(token)
+    assert checkouts and all(t is not None and 0 < t <= 2.0 for t in checkouts)

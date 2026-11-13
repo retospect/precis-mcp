@@ -241,6 +241,24 @@ _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
 #: started, so pool contention or a stalled probe could spend the
 #: budget before the first kind was even submitted.
 CROSS_KIND_DEADLINE_S = 12.0
+#: Slice of that deadline the ANN route probe may spend (gr664970).
+#: The probe is an up-front optimization whose whole cost is one pool
+#: checkout plus the cached gate reads; letting it wait the entire
+#: remaining budget meant a contended pool (or a stalled read) left the
+#: fan-out nothing — every kind came back TimeoutError and the whole
+#: call raised Internal (the 2026-11-13 all-kinds collapse). The slice
+#: is ONE absolute deadline covering checkout and reads together — a
+#: per-step slice lets a waited checkout stack full-slice reads on top.
+#: Over this slice it fails open — no leg skip is claimed — and the
+#: kinds keep the rest of the deadline.
+CROSS_KIND_PROBE_BUDGET_S = 1.5
+#: Bound on the probe watchdog's ``cancel_safe`` send — and so on the
+#: ``join`` that reaps a fired watchdog before the probe's connection
+#: goes back to the pool (gr664970 review: ``Timer.cancel`` stops only
+#: a callback that has not started; one already running must finish
+#: first, else its cancel lands on the next borrower's statement — but
+#: an unbounded send, the 30 s default, would hold the checkout for it).
+CROSS_KIND_PROBE_REAP_S = 1.0
 #: Per-kind server-side statement cap inside the fan-out (gr519679).
 #: Without it one kind's runaway query (a global-route ANN scan over the
 #: paper-dominated index measures 10-30 s on prod) can hold a pooled
@@ -2751,9 +2769,11 @@ class SearchMixin(RuntimeShape):
         # contributes its lexical hits, the footer below names the skip,
         # and an explicit kind list keeps the full legs (caller intent).
         # td649559: the probe and the fan-out share one call deadline —
-        # the probe's pool checkout and gate read draw from the same
-        # budget (its statement timeout is the remaining budget) instead
-        # of running unbounded before the fan-out's clock starts.
+        # the probe's checkout and gate reads draw from a capped slice
+        # of it (one absolute probe deadline — the checkout wait, the
+        # statement cap and the cancel watchdog all measure against the
+        # same instant, gr664970) instead of running unbounded before
+        # the fan-out's clock starts.
         route_skipped: list[str] = []
         deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
         if (
@@ -3233,39 +3253,89 @@ class SearchMixin(RuntimeShape):
         a guaranteed cancel. One probe covers every kind:
         :func:`ann_route_plan`'s gate read is cached per database.
 
-        td649559: the probe shares ``deadline_at`` with the fan-out.
-        The pool checkout waits at most the remaining budget and the
-        probe's statements run under a transaction-local
-        ``statement_timeout`` of the remaining budget, so pool
-        contention or a stalled gate read cannot push the call past the
-        tool latency budget before the fan-out begins. Fails open to
-        ``[]`` — an exhausted budget or probe error keeps the old
-        cancel-at-the-cap path rather than refusing a whole search.
+        td649559: the probe shares ``deadline_at`` with the fan-out —
+        bounded to :data:`CROSS_KIND_PROBE_BUDGET_S`, not the whole
+        remainder (gr664970: a checkout waiting the full remainder on a
+        contended pool, or a gate read running it, left the fan-out
+        nothing — every kind came back TimeoutError). The slice is ONE
+        absolute deadline for the whole probe, not a per-step budget:
+        the checkout waits only what the slice has left, the statement
+        cap is what is left after that (a cap reusing the whole slice
+        lets a waited checkout plus two stalled reads spend ~3x it),
+        and a watchdog cancels whatever is still in flight when the
+        deadline lands — ``statement_timeout`` is per-statement, so a
+        second stalled read could otherwise spend a whole new cap past
+        the deadline. The per-kind loop stops issuing reads past it.
+        A fired watchdog is joined before the connection returns to
+        the pool: ``Timer.cancel`` stops only a callback that has not
+        started, and one already running would deliver its
+        ``cancel_safe`` to the NEXT borrower of the connection
+        (gr664970 review). Fails open to ``[]`` — an exhausted slice or
+        probe error keeps the old cancel-at-the-cap path rather than
+        refusing a whole search.
         """
         from precis.store._chunks_ops import _ANN_GLOBAL_KINDS, ann_route_plan
 
         store = self.hub.store
         if store is None:
             return []
-        remaining_s = deadline_at - time.monotonic()
-        if remaining_s <= 0:
+        probe_deadline = min(deadline_at, time.monotonic() + CROSS_KIND_PROBE_BUDGET_S)
+        wait_s = probe_deadline - time.monotonic()
+        if wait_s <= 0:
             return []
         try:
-            with store.pool.connection(timeout=remaining_s) as conn:
-                with conn.transaction():
-                    # Transaction-local, so the capped setting cannot
-                    # leak to the next checkout of this pooled connection.
-                    conn.execute(
-                        "SELECT set_config('statement_timeout', %s, true)",
-                        (str(int(remaining_s * 1000)),),
-                    )
-                    return [
-                        k
-                        for k in kinds
-                        if (plan := ann_route_plan(conn, k, None))["route"] == "global"
-                        and plan["kind"] is not None
-                        and plan["kind"] not in _ANN_GLOBAL_KINDS
-                    ]
+            with store.pool.connection(timeout=wait_s) as conn:
+
+                def cancel_in_flight() -> None:
+                    # A cancel delivered on an idle backend is dropped and
+                    # a dead conn has nothing to cancel — the statement
+                    # cap remains the backstop, so a watchdog error must
+                    # not mask the probe's own failure mode. The send is
+                    # bounded (the 30 s default is not): the join below
+                    # waits on this callback before the checkout ends.
+                    try:
+                        conn.cancel_safe(timeout=CROSS_KIND_PROBE_REAP_S)
+                    except Exception:
+                        pass
+
+                watchdog = threading.Timer(
+                    max(probe_deadline - time.monotonic(), 0.0), cancel_in_flight
+                )
+                watchdog.start()
+                try:
+                    with conn.transaction():
+                        # Transaction-local, so the capped setting cannot
+                        # leak to the next checkout of this pooled
+                        # connection. The cap is what the slice has LEFT
+                        # after the checkout, not the whole slice again.
+                        stmt_ms = max(
+                            int((probe_deadline - time.monotonic()) * 1000), 1
+                        )
+                        conn.execute(
+                            "SELECT set_config('statement_timeout', %s, true)",
+                            (str(stmt_ms),),
+                        )
+                        out = []
+                        for k in kinds:
+                            if time.monotonic() >= probe_deadline:
+                                raise TimeoutError("cross-kind probe deadline spent")
+                            plan = ann_route_plan(conn, k, None)
+                            if (
+                                plan["route"] == "global"
+                                and plan["kind"] is not None
+                                and plan["kind"] not in _ANN_GLOBAL_KINDS
+                            ):
+                                out.append(k)
+                        return out
+                finally:
+                    watchdog.cancel()
+                    # … and reap it: cancel() stops only a callback that
+                    # has not started — a fired watchdog keeps running
+                    # and its cancel_safe() could land AFTER the pool
+                    # return, on the next borrower's unrelated statement
+                    # (gr664970 review). The callback's own bounded send
+                    # caps this wait.
+                    watchdog.join()
         except Exception:
             log.exception("cross-kind ANN route probe failed; full fan-out kept")
             return []
@@ -3290,7 +3360,10 @@ class SearchMixin(RuntimeShape):
         reading it as zero matches. Kinds without a handler are absent
         from the result. Threads cannot be killed: a straggler finishes in
         the background, but the process-wide executor caps how many can
-        exist across all searches.
+        exist across all searches — and each job pins its pool checkouts
+        to ``deadline_at`` (``POOL_CHECKOUT_DEADLINE``), so a straggler
+        can't hold a shared worker queueing for connections after its
+        results were discarded (gr664970).
 
         ``kind_overrides`` maps a kind to ``search_hits`` kwargs merged
         over ``base_kwargs`` — the wildcard fan-out uses it to run a
@@ -3303,7 +3376,7 @@ class SearchMixin(RuntimeShape):
         """
         from concurrent.futures import wait
 
-        from precis.store.pool import _PINNED
+        from precis.store.pool import _PINNED, POOL_CHECKOUT_DEADLINE
 
         jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
         out: dict[str, list[SearchHit] | Exception] = {}
@@ -3315,6 +3388,11 @@ class SearchMixin(RuntimeShape):
         def run(handler: Handler, k: str) -> list[SearchHit] | Exception:
             # A worker must not share a pinned (atomic-scope) connection.
             _PINNED.set(None)
+            # … and its pool checkouts may not outwait the call deadline:
+            # the default 30 s checkout would let a straggler hold this
+            # shared worker through repeated waits long after its results
+            # were discarded, starving the next call's fan-out (gr664970).
+            POOL_CHECKOUT_DEADLINE.set(deadline_at)
             remaining_ms = int((deadline_at - time.monotonic()) * 1000)
             min_start = min(CROSS_KIND_MIN_START_MS, int(CROSS_KIND_DEADLINE_S * 100))
             if remaining_ms < min_start:

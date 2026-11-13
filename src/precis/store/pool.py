@@ -33,6 +33,7 @@ from __future__ import annotations
 import atexit
 import os
 import re
+import time
 import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -238,6 +239,17 @@ def _close_at_exit(pool: ConnectionPool) -> None:
 #: thread/context, or ``None``. Read by :meth:`PrecisPool.connection`.
 _PINNED: ContextVar[Connection | None] = ContextVar("precis_pinned_conn", default=None)
 
+#: Monotonic deadline (``time.monotonic()``) past which pool checkouts in
+#: this context may not wait — set by the cross-kind fan-out so a
+#: straggler outliving its call deadline stops queueing for connections
+#: (a default 30 s checkout could hold a shared executor worker through
+#: repeated waits after its results were already discarded, starving the
+#: next call to an all-TimeoutError fan-out — gr664970). ``None`` = no
+#: bound.
+POOL_CHECKOUT_DEADLINE: ContextVar[float | None] = ContextVar(
+    "precis_pool_checkout_deadline", default=None
+)
+
 
 @contextmanager
 def pin_connection(conn: Connection) -> Iterator[None]:
@@ -278,6 +290,15 @@ class PrecisPool(ConnectionPool):
                 apply_revision_context(pinned, clear=True)
                 yield pinned
             return
+        deadline = POOL_CHECKOUT_DEADLINE.get()
+        if deadline is not None:
+            # A fan-out straggler's checkout may not outwait its call
+            # deadline — its results are discarded anyway, and the wait
+            # would hold a shared executor worker (gr664970).
+            timeout = min(
+                timeout if timeout is not None else self.timeout,
+                max(deadline - time.monotonic(), 0.0),
+            )
         with super().connection(timeout=timeout) as conn:
             # Tier-2: ``SET LOCAL ROLE`` opens the transaction the caller's
             # statements then run in — same seam apply_revision_context uses.
