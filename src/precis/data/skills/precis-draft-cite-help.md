@@ -56,6 +56,13 @@ meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
 `get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
 
+**A retitled hub drifts every cite of it.** A `[fi<id>]` cite pins the
+hub's wording at write time; a later hub reword marks each citing chunk
+*drifted* (`view='hygiene'` quotes old and new) and **blocks export**
+until the passage is rewritten to the hub's current sentence — a
+whole-chunk `mode='replace'` re-pins even when the prose still stands.
+The reword side: [[precis-taproot-hub-edit-help]].
+
 ## Cite a software / dataset record — the one whole-ref exception
 
 A **record** — a paper ref typed `record_type` `software` or `dataset`

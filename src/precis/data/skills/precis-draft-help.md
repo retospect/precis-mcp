@@ -162,6 +162,12 @@ edit(kind="draft", id="nanotrans", scaffold="paper")
 # → scaffold: Abstract, Introduction, Related Work, Methods, Results, Discussion, Conclusion
 ```
 
+`put`'s declared params stop at `text`/`title`/`meta`/`args` —
+`chunk_kind`, `at` and the other draft params ride `args=`:
+`put(kind='draft', id='<slug>', text='…', args={'chunk_kind':
+'paragraph', 'at': {'after': 'dc12'}})`. Top-level still lands, with a
+deprecation note.
+
 **Fork** deep-copies every chunk (live and retired), hierarchy, and every
 link touching it, into a NEW draft; source is never touched. `project=`
 is required — an existing project todo *or* a title string that mints
@@ -178,6 +184,11 @@ digest — Summary, Key Points, Details, References). Unknown class →
 `dc<id>`/`¶handle` inside it. Never overwrites or reorders — only
 appends; re-scaffolding an already-scaffolded draft adds a second copy,
 so scaffold once, early.
+
+Place a section at the FRONT with `args={'at': {'before':
+'dc<first-section-heading>'}}`; an `after` anchor on the intro paragraph
+makes the heading a sibling of that paragraph — at the document end when
+it is the last root-level chunk.
 
 ## Length budgets & section styles (heading chunks)
 
@@ -306,9 +317,10 @@ container/item shape — bullet text inside a paragraph reaches them as one
 run-on line with literal hyphens. Structured, each item is also its own
 addressable `dc` handle: citable, editable, reviewable.
 
-Two bullets minimum, and *every* line must be a bullet or a continuation
-of the one above it, so a paragraph that merely opens with a dash stays
-prose. Converted something you meant as prose?
+A ulist needs at least two items (nested ones count), and *every* line
+must be a bullet or a continuation of the one above it — a one-bullet
+paragraph, or one that merely opens with a dash, stays literal text, no
+container minted. Converted something you meant as prose?
 `edit(kind='draft', id='dc<container>', list_kind='normal')` dissolves it
 back to paragraphs.
 
@@ -360,6 +372,10 @@ A chunk read shows the addressed chunk alone — when it has children, the
 footer counts them and names the `dc<N>-0..K` span that reads the whole
 subtree inline (children are contiguous in reading order).
 
+Reading order is each chunk's `pos` key, not the order calls went in —
+see where a chunk actually landed with `get(id='dc<id>',
+view='fisheye')`.
+
 Navigate the outline first (cheap), then pull verbatim only for the
 region you act on. `view=` rungs each strictly contain the previous:
 `kwd` (ancestor path + bookmark) → `summary` (gloss) → `verbatim` (full
@@ -381,7 +397,18 @@ registers on the draft instead of silently stalling.
 
 ## Edit, review & retire a chunk
 
-See [[precis-draft-review-help]].
+See [[precis-draft-review-help]]. Three traps:
+
+- `edit(id='dc<id>', args={'move': {'into': 'dc…'}})` reparents the whole
+  chunk — a list container moves with its items, a heading with its
+  subtree. `delete(id='dc<id>', mode='cascade')` retires it with its
+  children (`'promote'` lifts them).
+- `edit(find=…, text='')` deletes a span, but a strict client can strip
+  the empty `text=''` before it reaches the server; the reliable door is
+  a whole-chunk `mode='replace'` rewrite minus the span.
+- An aborted call or "connection closed" does not mean the write failed —
+  it usually landed. `get(id='dc<id>')` and read back before retrying; a
+  blind retry can double-apply.
 
 ## Cite and cross-reference in prose
 
@@ -443,7 +470,13 @@ unsupported claims.
 
 ## Export the draft
 
-See [[precis-draft-export-help]]. A `doc_type='poster'` draft is branded
+See [[precis-draft-export-help]]. A **drifted cite** — a `[fi<id>]`
+whose hub was reworded after the citing chunk was written — **blocks
+export**; rewrite the passage to the hub's current sentence (a
+whole-chunk `mode='replace'` re-pins even when the prose still stands).
+Undefined-abbreviation warnings are advisory — define the token
+(`chunk_kind='term'`) or silence it (`edit(not_abbrev=[…])`). A
+`doc_type='poster'` draft is branded
 by a `kind='profile'` profile — `meta.workspace.poster.profile` pins one,
 else the draft owner's default — see [[precis-profile-help]].
 

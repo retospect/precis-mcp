@@ -383,7 +383,9 @@ put(
 
 `supporters` is a list of `{paper, role, source_handle}`: `paper` is the
 supporting paper (its `pa<id>` handle, cite_key, or pub_id — a patent
-handle also resolves); `role` defaults `corroborates`; **`source_handle`
+handle also resolves); `role` is `establishes`|`corroborates` only —
+`primary` is not a role and is refused, omit it (the default is
+`corroborates`); **`source_handle`
 is the grounding `[pc<id>]` paper chunk and you should always supply
 it** — it lands on the edge as `src_chunk_id`, so the edge cites the
 passage (`pc<id>`), not just the paper (`pa<id>`). List the same paper's
