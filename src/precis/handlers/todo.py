@@ -208,6 +208,14 @@ class _PutState:
     #: ``meta.llm_tier='opus'`` (auto-dispatch armed) — the create ack
     #: announces it so the arming is never silent.
     stamped_default_tier: bool = False
+    #: True when the caller passed ``manual=True`` on a parented create and
+    #: that flag — not a caller-chosen tier/executor/schedule — is what
+    #: kept the leaf inert (gr660003): gated on the would-stamp predicate
+    #: plus ``guards.has_auto_run_signal`` so the "will not auto-run" ack
+    #: is never a false receipt on a leaf the caller armed themselves
+    #: (td660679). The ack says so, since an unstamped parented leaf is
+    #: otherwise easy to mistake for a forgotten auto-run signal.
+    manual_no_stamp: bool = False
     #: ``waiting-for:mint`` stamped because the put landed inside a live
     #: plan subtree — unconditional, no session-signal inference
     #: (td603429); the ack says so, since the hold keeps the child out of
@@ -526,7 +534,10 @@ class TodoHandler(NumericRefHandler):
             "Task / action item. Numeric id assigned on create. "
             "Status tracked via STATUS:open|doing|blocked|done|won't-do|paused|"
             "auto-timeout. Optional parent_id wires the todo into the "
-            "hierarchical todo tree (see precis-todo-tree-help)."
+            "hierarchical todo tree (see precis-todo-tree-help); a parented "
+            "create stamps meta.llm_tier='opus' by default so the child "
+            "auto-runs — pass manual=True to skip the stamp on a hand-written "
+            "item (a backlog/review note) that must stay inert."
         ),
         supports_get=True,
         supports_search=True,
@@ -972,6 +983,14 @@ class TodoHandler(NumericRefHandler):
         prio: int | None = None,
         meta: dict[str, Any] | None = None,
         body: str | None = None,
+        # manual=True (create only, see precis-todo-tree-help, gr660003):
+        # a parented create defaults to stamping meta.llm_tier='opus' so a
+        # generated child actually runs (dispatch only mints a plan_tick
+        # under an llm_tier-set todo). For a hand-written backlog/review
+        # item the operator never meant to auto-run, that default silently
+        # arms billed opus compute — manual=True suppresses the stamp. An
+        # explicit meta.llm_tier / meta.executor still wins over the flag.
+        manual: bool | None = None,
         # Executor-dispatch config (see precis-job-help / workers/dispatch.py):
         # declared at the top-level put() verb schema (tools/core.py) for the
         # 'job' kind's submit path, but a strict-schema MCP client sends every
@@ -1017,6 +1036,7 @@ class TodoHandler(NumericRefHandler):
             others = (
                 mode, link, unlink, rel, auto_refresh_days,
                 parent_id, prio, meta, body, executor, job_type, params,
+                manual,
             )  # fmt: skip
             if text is not None and text.strip() and all(o is None for o in others):
                 ref = self._resolve_live_ref(self._coerce_id(id))
@@ -1238,7 +1258,7 @@ class TodoHandler(NumericRefHandler):
         # ``plan_tick`` dispatch candidate; stamping ``llm_tier`` there
         # both defeats the parking and silently bills opus for a leaf
         # that never should have run.
-        stamped_default_tier = (
+        stampable_default_tier = (
             id is None
             and parent_int is not None
             and not llm_tier_opt_out
@@ -1255,6 +1275,16 @@ class TodoHandler(NumericRefHandler):
             # hand-added one gets no second dispatcher (gr542301)
             and not (isinstance(meta, dict) and "op" in meta)
         )
+        # ``manual=True`` (gr660003) opts a hand-written backlog/review
+        # item out of the stamp — the same opt-out as
+        # ``meta={'llm_tier': None}`` as a first-class kwarg. Gate the
+        # actual stamp on it, and gate the "suppressed" receipt on the
+        # un-``manual`` predicate plus ``has_auto_run_signal``: the ack
+        # may only claim "will not auto-run" when the flag is what kept
+        # the leaf inert — a caller who armed it themselves (explicit
+        # tier, ``executor=``, an ``executor:<runner>`` tag) must not get
+        # that receipt on a leaf that will run (td660679 review).
+        stamped_default_tier = stampable_default_tier and not manual
         # The flag rides ``_PutState`` so the create ack surfaces the stamp
         # — the default silently arms billed compute (dispatch mints a
         # plan_tick for any llm_tier-set leaf), and a write receipt must
@@ -1315,6 +1345,9 @@ class TodoHandler(NumericRefHandler):
             prio=prio,
             body=body.strip() if isinstance(body, str) and body.strip() else None,
             stamped_default_tier=stamped_default_tier,
+            manual_no_stamp=bool(manual)
+            and stampable_default_tier
+            and not guards.has_auto_run_signal(tags, meta),
             mint_hold=mint_hold,
         )
         with _PUT_STATE.bind(state):
@@ -2957,7 +2990,13 @@ class TodoHandler(NumericRefHandler):
                 " meta.llm_tier='opus' stamped (parented default) — the"
                 " dispatcher will auto-run this leaf as a plan_tick; run"
                 f" edit(kind={self.kind!r}, id={ref_id},"
-                " meta={'llm_tier': None}) to park it instead."
+                " meta={'llm_tier': None}) to park it instead, or pass"
+                " manual=True on a create to skip the stamp."
+            )
+        elif state.manual_no_stamp:
+            body += (
+                " manual=True: no meta.llm_tier stamped (parented default"
+                " suppressed) — the dispatcher will not auto-run this leaf."
             )
         if state.mint_hold:
             body += (

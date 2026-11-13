@@ -418,6 +418,103 @@ def test_tag_meta_llm_tier_still_validates_values(
     assert "llm_tier" in r.body or "meta=" in r.body
 
 
+# ── put: manual=True skips the parented default stamp (gr660003) ────
+
+
+def test_put_parented_manual_true_skips_default_tier_stamp(
+    handler: TodoHandler,
+) -> None:
+    """gr660003: a hand-written backlog/review item minted under a parent
+    with ``manual=True`` must NOT get the parented default
+    ``meta.llm_tier='opus'`` — without the flag such an item is armed for a
+    billed plan_tick the operator never meant to run. The ack announces the
+    suppression so an unstamped parented leaf is never mistaken for a
+    forgotten auto-run signal."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+    assert root.ref_id == root_id
+
+    r = handler.put(
+        text="Backlog: review the Fable cut by hand.", parent_id=root_id, manual=True
+    )
+    leaf_id = r.ref_id
+    assert leaf_id is not None
+
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None
+    assert "llm_tier" not in ref.meta
+    assert "manual=True: no meta.llm_tier stamped" in r.body
+    # control: without the flag the parented default still arms opus
+    armed = handler.put(text="armed child", parent_id=root_id)
+    armed_id = armed.ref_id
+    assert armed_id is not None
+    armed_ref = handler.store.get_ref(kind="todo", id=armed_id)
+    assert armed_ref is not None and armed_ref.meta.get("llm_tier") == "opus"
+
+
+def test_put_parented_manual_true_keeps_an_explicit_tier(
+    handler: TodoHandler,
+) -> None:
+    """``manual=True`` only suppresses the *default* stamp — a caller who
+    names an explicit tier in the same call keeps it (the flag is not an
+    error, and the declared kwarg-beats-bag precedent holds). And since
+    the leaf IS armed, the ack must not claim the suppression receipt —
+    a "will not auto-run" line here would be a false write receipt on a
+    leaf that will dispatch (td660679 review)."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+
+    r = handler.put(
+        text="review on the cheap tier",
+        parent_id=root_id,
+        manual=True,
+        meta={"llm_tier": "sonnet"},
+    )
+
+    rid = r.ref_id
+    assert rid is not None
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("llm_tier") == "sonnet"
+    assert "no meta.llm_tier stamped" not in r.body
+    assert "will not auto-run" not in r.body
+
+
+def test_put_parented_manual_true_with_executor_gets_no_inert_ack(
+    handler: TodoHandler,
+) -> None:
+    """The same false-receipt hole via ``meta.executor`` (td660679):
+    the leaf dispatches through the executor path regardless of the
+    suppressed default stamp, so the ack earns no "will not auto-run"
+    claim."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+
+    r = handler.put(
+        text="hand it to the inproc runner",
+        parent_id=root_id,
+        manual=True,
+        executor="claude_inproc",
+    )
+
+    rid = r.ref_id
+    assert rid is not None
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("executor") == "claude_inproc"
+    assert "llm_tier" not in ref.meta
+    assert "no meta.llm_tier stamped" not in r.body
+    assert "will not auto-run" not in r.body
+
+
+def test_put_manual_on_comment_append_refused(handler: TodoHandler) -> None:
+    """``manual=`` is a create-only kwarg: a comment-append put (id=N +
+    text=) carrying it keeps the old refusal instead of silently dropping
+    the flag."""
+    handler.put(text="a leaf")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="not supported"):
+        handler.put(id=tid, text="a comment", manual=True)
+
+
 # ── edit: meta={'params': ...} retunes a recurring in place (gr504853) ──
 
 

@@ -96,9 +96,12 @@ stamp when it happens). `dispatch` mints a `plan_tick` job for any
 `llm_tier`-set todo, so the child above can start a real (billed)
 planner run before you've finished setting it up. Pass
 `meta={"llm_tier": None}` — or any explicit tier you want — to opt
-out deliberately; a bare `parent_id=` write does not opt out.
-Cancel a job already dispatched: `tag(kind='job', id=<job_id>,
-add=['STATUS:cancel_requested'])` (`precis-job-ops-help`).
+out deliberately, or `manual=True` on the create to suppress the
+default stamp in one flag (gr660003: the right shape for a hand-written
+backlog/review item that must stay inert); a bare `parent_id=` write
+does not opt out. Cancel a job already dispatched:
+`tag(kind='job', id=<job_id>, add=['STATUS:cancel_requested'])`
+(`precis-job-ops-help`).
 
 ## Attach a details body to a todo
 

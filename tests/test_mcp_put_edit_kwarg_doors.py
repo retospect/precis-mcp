@@ -801,6 +801,50 @@ def test_put_todo_executor_dispatch_meta_skips_the_default_llm_tier_stamp(
     assert live.meta.get("executor") == "claude_inproc"
 
 
+def test_put_todo_manual_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """gr660003: ``put(kind='todo', parent_id=…, manual=True)`` through the
+    real MCP callable suppresses the parented default
+    ``meta.llm_tier='opus'`` stamp — pins both halves of the gr262482
+    pattern (verb-level declaration + dispatch-payload forwarding) for the
+    flag a hand-written backlog/review item relies on to stay inert. A
+    strict-schema client stripping ``manual=`` would leave the leaf armed
+    for a billed plan_tick, exactly the gr660003 report."""
+    parent_out = tools_core.put(kind="todo", text="strategic root")
+    assert not _is_error(parent_out), _body(parent_out)
+    parent_id = store.list_refs(kind="todo", limit=1)[0].id
+
+    out = tools_core.put(
+        kind="todo",
+        text="a manual review item",
+        parent_id=parent_id,
+        manual=True,
+    )
+
+    assert not _is_error(out), _body(out)
+    assert "manual=True: no meta.llm_tier stamped" in _body(out)
+    children = [
+        r for r in store.list_refs(kind="todo", limit=5) if r.parent_id == parent_id
+    ]
+    assert len(children) == 1, children
+    live = store.get_ref(kind="todo", id=children[0].id)
+    assert live is not None
+    assert "llm_tier" not in live.meta
+    # control: the parented default still stamps without the flag
+    out2 = tools_core.put(kind="todo", text="an armed child", parent_id=parent_id)
+    assert not _is_error(out2), _body(out2)
+    armed = [
+        r
+        for r in store.list_refs(kind="todo", limit=5)
+        if r.parent_id == parent_id and r.id != children[0].id
+    ]
+    assert len(armed) == 1, armed
+    live2 = store.get_ref(kind="todo", id=armed[0].id)
+    assert live2 is not None and live2.meta.get("llm_tier") == "opus"
+
+
 def test_command_profile_put_structure_text_as_coerced_dict_funnels_through(
     mounted_runtime: PrecisRuntime,
     store: Store,

@@ -1888,6 +1888,16 @@ def put(
     # priority was uncallable over MCP (operators fell back to raw
     # ``UPDATE refs SET prio=…``).
     prio: int | None = None,
+    # todo create (see precis-todo-tree-help, gr660003): a parented
+    # put defaults to stamping meta.llm_tier='opus' so a generated child
+    # actually runs (dispatch only mints a plan_tick under an llm_tier-set
+    # todo). manual=True suppresses that stamp for a hand-written
+    # backlog/review item the operator never meant to auto-run — without it
+    # the leaf is armed for billed opus compute the moment it lands. An
+    # explicit meta.llm_tier / executor= still wins over the flag. Declared
+    # at the verb level (the gr262482 pattern) so strict-schema MCP clients
+    # don't strip it.
+    manual: bool | None = None,
     # job retry (see precis-job-help): re-run a failed job —
     # put(kind='job', id=<failed>, mode='retry'[, model='sonnet']). model=
     # swaps the parent todo's meta.llm_tier so the re-minted tick runs on
@@ -2242,6 +2252,7 @@ def put(
                 "requires": requires,
                 "parent_id": parent_id,
                 "prio": prio,
+                "manual": manual,
                 "model": model,
                 "placement": placement,
                 "origin": origin,
