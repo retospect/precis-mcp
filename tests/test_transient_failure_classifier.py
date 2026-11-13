@@ -61,6 +61,12 @@ def test_clock_format_matches_glibc_strftime_i_directive() -> None:
         ("Your credit balance is too low to access the API", 2.0),
         ("HTTPStatusError: 502 Bad Gateway from upstream", 0.5),
         ("service unavailable, please retry", 0.5),
+        # The gated ``claude -p`` pre-flight refusal is a transport-class
+        # blip, not a task failure (gr657599).
+        (
+            "precis MCP not connected (status=failed) after 36s — pass not started",
+            0.5,
+        ),
         # Content-class failures must NOT classify as transient.
         ("AssertionError: expected 3 rows, got 4", None),
         ("plan_tick verdict: failed (hit split-cap 3 times)", None),

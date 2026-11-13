@@ -780,15 +780,29 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
     # pauses (the streak cap would then bubble a real child-failed for
     # what is a deliberate pause). The wake_runner re-queues this job at
     # the horizon; the parent's re-mint gate sees a live job meanwhile.
-    if resume_reason == "paused" and recovery_retry_reason is None:
+    # A pre-flight MCP-gate refusal (``mcp-not-ready``) is the same
+    # window — the pass never started, $0, nothing minted — so the job
+    # parks at the gate horizon rather than bubbling a hard failure that
+    # parks the parent for hours on a 36s blip (gr657599).
+    if resume_reason in ("paused", "mcp-not-ready") and recovery_retry_reason is None:
+        if resume_reason == "paused":
+            note = (
+                f"runner: tick paused — {(outcome.stderr or 'window pause')[:400]}; "
+                "parked until the window clears or /budget resumes"
+            )
+        else:
+            note = (
+                "runner: precis MCP gate refused the tick "
+                f"({(outcome.stderr or 'mcp not ready')[:400]}) — the pass "
+                "never started; parked to re-run once the server is back"
+            )
         with store.pool.connection() as conn:
             parked = _park_job_until(
                 store,
                 conn,
                 ref_id,
                 getattr(outcome, "retry_at", None),
-                f"runner: tick paused — {(outcome.stderr or 'window pause')[:400]}; "
-                "parked until the window clears or /budget resumes",
+                note,
             )
             if parked:
                 _set_meta(conn, ref_id, wall_seconds=outcome.duration_s)
@@ -961,13 +975,14 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
             # bubbles immediately, same as before; a *repeat*
             # streak-exhaustion after the decompose attempt also bubbles
             # (the guardrail is one attempt per parent, not a loop).
-            # ``no-precis-tools`` is an environment outage, not task width:
-            # a decompose tick would burn the same broken env (the 2026-08-15
-            # container-DSN outage ran 18 orphaned ticks this way). Skip the
-            # decompose attempt and park explicitly below instead.
+            # An ``_ENV_OUTAGE_REASONS`` reason is an environment outage,
+            # not task width: a decompose tick would burn the same broken
+            # env (the 2026-08-15 container-DSN outage ran 18 orphaned
+            # ticks this way). Skip the decompose attempt and park
+            # explicitly below instead.
             if (
                 resume_reason is not None
-                and resume_reason != "no-precis-tools"
+                and resume_reason not in _ENV_OUTAGE_REASONS
                 # A fenced tick gets no auto-decompose: splitting a scout
                 # pass is worker-side design, not a recovery the boxed
                 # agent can use — a fenced streak past the cap bubbles
@@ -999,8 +1014,9 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 _set_status(store, ref_id, _FAILED, conn=conn)
                 conn.commit()
                 return
-            if resume_reason == "no-precis-tools":
-                # N consecutive ticks that made zero successful precis calls:
+            if resume_reason in _ENV_OUTAGE_REASONS:
+                # N consecutive env-outage ticks (zero successful precis
+                # calls, or a pre-flight gate that never let one start):
                 # the planner is stuck on tooling, not on the task. Park the
                 # parent durably (dispatch excludes ``halt``/``halt:*``) so
                 # it stops re-minting claude-tier spend into a dead env; the
@@ -1017,11 +1033,10 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                     store,
                     ref_id,
                     _JOB_EVENT_KIND,
-                    f"runner: {streak} consecutive no-precis-tools ticks "
-                    f"(cap {cap}) — zero successful precis tool calls; an "
-                    f"environment/tooling outage, not task width. Parked the "
-                    f"parent halt:planner-stuck; remove the tag once the tick "
-                    f"env authenticates again.",
+                    f"runner: {streak} consecutive {resume_reason} ticks "
+                    f"(cap {cap}) — an environment/tooling outage, not task "
+                    f"width. Parked the parent halt:planner-stuck; remove "
+                    f"the tag once the tick env recovers.",
                     conn=conn,
                 )
             elif resume_reason is not None:
@@ -1034,6 +1049,25 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                     f"(auto-decompose already attempted for this parent). "
                     f"The task likely needs splitting into smaller subtasks.",
                     conn=conn,
+                )
+            # Transient classification — mirror of ``record_failure`` /
+            # the fix_gripe arm (gr456240): a tick that hard-fails on
+            # retryable wording (rate / budget / transport, including the
+            # MCP-gate refusal text) stamps ``meta.retry_after`` so the
+            # sweeper's unpark phase re-arms the parked parent on the real
+            # backoff instead of the 12h·2ᴺ cool-down. plan_tick
+            # hand-rolls its finalization, so it had the identical gap
+            # (gr657599).
+            backoff_hours = _classify_transient_backoff_hours(outcome.stderr or "")
+            if backoff_hours is not None:
+                _set_meta(
+                    conn,
+                    ref_id,
+                    failure_class="transient",
+                    retry_after=(
+                        datetime.now(UTC) + timedelta(hours=backoff_hours)
+                    ).isoformat(),
+                    error=(outcome.stderr or "")[:_ERROR_META_CAP],
                 )
             _set_status(store, ref_id, _FAILED, conn=conn)
             conn.commit()
@@ -1382,6 +1416,17 @@ def _maybe_record_review_pass(
 #: plan_tick's wall-clock timeout sentinel exit code (set by
 #: ``PlanTickOutcome`` on ``subprocess.TimeoutExpired``).
 _TIMEOUT_EXIT_CODE = 124
+
+
+#: Resume reasons that mean a dead tick *environment*, not task width:
+#: ``no-precis-tools`` (the pass ran but zero precis verbs succeeded) and
+#: ``mcp-not-ready`` (the ``_claude_subprocess`` readiness gate refused —
+#: the pass never started). A decompose tick would burn the same broken
+#: env (the 2026-08-15 container-DSN outage ran 18 orphaned ticks that
+#: way), so a streak past the cap skips auto-decompose and parks the
+#: parent ``halt:planner-stuck`` for an operator instead of looping
+#: (gr657599).
+_ENV_OUTAGE_REASONS: frozenset[str] = frozenset({"no-precis-tools", "mcp-not-ready"})
 
 
 def _resume_reason(outcome: Any, raw_stream: str) -> str | None:
@@ -1871,6 +1916,19 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
             _set_status(store, ref_id, _FAILED, conn=conn)
             error_text = outcome.error or f"exit={outcome.exit_code}"
             _set_meta(conn, ref_id, error=error_text[:_ERROR_META_CAP])
+            # Same transient mirror as plan_tick's failure arm (gr657599):
+            # a retryable cause stamps ``meta.retry_after`` so any parked
+            # parent re-arms on the real backoff, not the 12h·2ᴺ cool-down.
+            backoff_hours = _classify_transient_backoff_hours(error_text)
+            if backoff_hours is not None:
+                _set_meta(
+                    conn,
+                    ref_id,
+                    failure_class="transient",
+                    retry_after=(
+                        datetime.now(UTC) + timedelta(hours=backoff_hours)
+                    ).isoformat(),
+                )
             # Parentless (cadence-minted, like draft_refresh) — a no-op
             # for the common case; harmless when a caller ever gives a
             # doctor_tick job a parent todo.

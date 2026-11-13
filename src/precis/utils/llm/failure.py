@@ -132,7 +132,15 @@ _PATTERNS: tuple[tuple[FailureClass, re.Pattern[str]], ...] = (
             r"|gateway time.?out|temporarily unavailable|connection reset by peer"
             r"|connection refused|connection (?:error|failed|aborted)"
             r"|\btimed? ?out\b|HTTP Error 50[0-9]|name or service not known"
-            r"|remote end closed|network is unreachable|econnrefused",
+            r"|remote end closed|network is unreachable|econnrefused"
+            # The gated ``claude -p`` pre-flight refusal (``_claude_subprocess``
+            # waits for the required MCP servers to come up ``connected`` and
+            # fails closed: "precis MCP not connected (status=failed) after
+            # 36s — pass not started"). A local ``precis serve`` blip, not a
+            # task failure — classified here so every stamped ``retry_after``
+            # re-arms on the short transport horizon instead of the 12h·2ᴺ
+            # parked-leaf cool-down (gr657599).
+            r"|mcp not connected",
             re.IGNORECASE,
         ),
     ),

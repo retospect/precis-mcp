@@ -358,19 +358,26 @@ def defer_on_pause(ctx: Any, result: Any, *, label: str) -> bool:
     ``_common.MAX_PAUSE_PARKS`` times — the caller then handles
     ``result.error`` normally, so a never-lifting pause still fails.
 
+    A pre-flight MCP-gate refusal (``mcp_not_ready`` — the
+    ``_claude_subprocess`` readiness gate failed closed and the pass
+    never started) is the same wait-for-window (gr657599).
+
     A ``timed_out`` result is deliberately NOT a park: it is
     ``paused=True`` too, but nothing rolls off — re-running the
     identical call re-burns the same wall-clock ceiling (quest_tick's
     ``pause_kind == "timeout"`` ruling), so it keeps failing.
     """
-    if not getattr(result, "paused", False) or getattr(result, "timed_out", False):
+    if getattr(result, "timed_out", False):
+        return False
+    mcp_wait = getattr(result, "mcp_not_ready", False)
+    if not getattr(result, "paused", False) and not mcp_wait:
         return False
     defer = getattr(ctx, "defer", None)
     if defer is None:
         return False
     wake_at = getattr(result, "retry_at", None)
     when = wake_at.isoformat() if wake_at is not None else "the default backoff"
-    err = getattr(result, "error", None) or "paused"
+    err = getattr(result, "error", None) or ("mcp not ready" if mcp_wait else "paused")
     return bool(
         defer(
             wake_at,

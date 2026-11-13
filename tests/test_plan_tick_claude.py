@@ -15,6 +15,7 @@ and ``route`` is a scripted fake, so no ``claude`` binary and no store.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -330,6 +331,31 @@ def test_run_claude_breaker_pause_is_resumable(
     outcome, _ = _run_claude(monkeypatch, result=res)
     assert outcome.exit_code == 1
     assert outcome.resume_reason == "paused"
+
+
+def test_run_claude_mcp_gate_refusal_parks_on_gate_horizon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-flight MCP-gate refusal (``mcp_not_ready`` — the
+    ``_claude_subprocess`` gate failed closed and the pass never started)
+    maps to the ``mcp-not-ready`` resumable signal carrying the short gate
+    horizon, not a hard failure — gr657599: one 36s blip parked a planner
+    14.7h when it bubbled as a real failure."""
+    res = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="claude-opus-5-5",
+        tier=Tier.FRONTIER,
+        error="precis MCP not connected (status=failed) after 36s — pass not started",
+        mcp_not_ready=True,
+    )
+    outcome, _ = _run_claude(monkeypatch, result=res)
+    assert outcome.exit_code == 1
+    assert outcome.resume_reason == "mcp-not-ready"
+    assert outcome.retry_at is not None
+    slack = outcome.retry_at - datetime.now(UTC)
+    assert timedelta(seconds=0) < slack <= pt._MCP_GATE_RETRY_DELAY
 
 
 # ── params.envelope: the fenced tick pins claude_agent or refuses ──────
@@ -727,6 +753,20 @@ def test_claude_exit_budget() -> None:
 
 def test_claude_exit_paused_wins_over_error() -> None:
     assert pt._claude_exit(_res(error="capped", paused=True)) == (1, "paused")
+
+
+def test_claude_exit_mcp_not_ready_is_a_window_pause() -> None:
+    """A pre-flight gate refusal (``mcp_not_ready`` — the pass never
+    started) gets its own resumable signal, checked before the generic
+    error arm so the gate's error text doesn't read as a hard failure
+    (gr657599)."""
+    assert pt._claude_exit(
+        _res(
+            error="precis MCP not connected (status=failed) after 36s "
+            "— pass not started",
+            mcp_not_ready=True,
+        )
+    ) == (1, "mcp-not-ready")
 
 
 def test_claude_exit_other_error_subtype_fails() -> None:

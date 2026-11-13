@@ -41,6 +41,7 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -59,8 +60,6 @@ from precis.utils.llm.router import (
 from precis.workers.envelope import ENVELOPES
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from precis.store.store import Store
 
 log = logging.getLogger(__name__)
@@ -105,6 +104,18 @@ _DEFAULT_MAX_TURNS: int = 60
 #: same handling as ``--max-turns`` / timeout). Override via
 #: ``PRECIS_PLAN_TICK_MAX_USD``.
 _DEFAULT_MAX_USD: float = 5.00
+
+
+#: Park horizon for a pre-flight MCP-gate refusal
+#: (``LlmResult.mcp_not_ready`` — the ``_claude_subprocess`` readiness gate
+#: failed closed and the pass never started: zero turns, $0, no minted
+#: work). Mirrors ``halt_policy.INFRA_RETRY_DELAY`` — the horizon a
+#: declared infra halt already retries on: a local ``precis serve`` blip
+#: clears in seconds-to-minutes and a parked probe costs nothing, so the
+#: short horizon is safe; a persistent outage stays bounded by
+#: ``executors/_common.MAX_PAUSE_PARKS`` and the resume-streak cap
+#: (gr657599).
+_MCP_GATE_RETRY_DELAY: timedelta = timedelta(minutes=15)
 
 
 DESCRIPTION: str = (
@@ -822,6 +833,14 @@ def _run_claude_tick(
 
     _agentlog.stamp_result_meta(store, log_id=agentlog_id, res=result)
     exit_code, resume_reason = _claude_exit(result, fenced=fenced)
+    if result.paused:
+        retry_at = getattr(result, "retry_at", None)
+    elif getattr(result, "mcp_not_ready", False):
+        # The gate names no retry instant — park on the short infra
+        # horizon, not PAUSE_BACKOFF's 2h (gr657599).
+        retry_at = datetime.now(UTC) + _MCP_GATE_RETRY_DELAY
+    else:
+        retry_at = None
     return PlanTickOutcome(
         exit_code=exit_code,
         # The full stream-json stdout (``raw_text``) for the executor's transcript
@@ -830,7 +849,7 @@ def _run_claude_tick(
         stderr=result.error or "",
         duration_s=duration,
         resume_reason=resume_reason,
-        retry_at=getattr(result, "retry_at", None) if result.paused else None,
+        retry_at=retry_at,
     )
 
 
@@ -880,7 +899,11 @@ def _claude_exit(result: Any, *, fenced: bool = False) -> tuple[int, str | None]
     """Map a router ``LlmResult`` from the claude tick → ``(exit_code, resume_reason)``.
 
     A breaker / quota-window pause → a resumable ``'paused'`` (retry when the
-    window clears, bounded by the executor's per-parent streak cap). A transport
+    window clears, bounded by the executor's per-parent streak cap). A
+    pre-flight MCP-gate refusal (``mcp_not_ready`` — the pass never started)
+    → ``'mcp-not-ready'``, another wait-for-window: the executor parks the
+    SAME job at the gate horizon instead of bubbling a hard failure that
+    would park the parent for hours (gr657599). A transport
     timeout → resumable ``'timeout'``. A recovered exhaustion (``max_turns`` / a
     ``budget``-class reason, surfaced on ``terminal_reason`` because
     ``call_claude_agent`` swallows the recoverable non-zero exit) → the matching
@@ -903,6 +926,12 @@ def _claude_exit(result: Any, *, fenced: bool = False) -> tuple[int, str | None]
     """
     if result.paused and not result.timed_out:
         return 1, "paused"
+    if getattr(result, "mcp_not_ready", False):
+        # The subprocess readiness gate refused before a single model turn
+        # ran — an env window, not task failure. Check it before the
+        # generic error arm so the gate's own error text doesn't read as a
+        # hard failure (gr657599).
+        return 1, "mcp-not-ready"
     if result.error is not None:
         if result.timed_out or "timed out" in result.error.lower():
             return 1, "timeout"

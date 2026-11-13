@@ -13,7 +13,7 @@ text, and the executor's resume-vs-bubble decision end to end.
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from precis.store.store import Store
 from precis.store.types import Tag
@@ -542,3 +542,169 @@ def test_paused_tick_without_retry_at_parks_on_backoff(store: Store) -> None:
     meta = row[0]
     ts = int(meta["wake_when"]["payload"]["ts"])
     assert ts > int(time.time())
+
+
+# ── gr657599: a pre-flight MCP-gate refusal parks the job, not the parent ──
+
+_MCP_GATE_TEXT = "precis MCP not connected (status=failed) after 36s — pass not started"
+
+
+def _run_mcp_gate(store: Store, job_id: int) -> None:
+    spec = _FakeSpec(
+        PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr=_MCP_GATE_TEXT,
+            duration_s=0.5,
+            resume_reason="mcp-not-ready",
+            retry_at=None,
+        )
+    )
+    ci._run_plan_tick(store, job_id, spec)
+
+
+def _mark_parked_out(store: Store, job_id: int) -> None:
+    """Spend the job's park budget (``meta.pause_parks``) so
+    ``_park_job_until`` refuses — exercising the past-cap fallthrough into
+    the resume-streak machinery."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
+            "|| jsonb_build_object('pause_parks', 6) WHERE ref_id = %s",
+            (job_id,),
+        )
+        conn.commit()
+
+
+def test_mcp_gate_refusal_parks_until_retry(store: Store) -> None:
+    """The ``_claude_subprocess`` readiness gate refuses before a single
+    model turn runs: zero turns, $0, nothing minted. That's a
+    wait-for-window like the quota pause, not a task failure — the SAME
+    job parks at ``STATUS:waiting_time`` instead of bubbling a
+    child-failed that would park the parent for hours on a seconds-long
+    blip (gr657599: one 36s refusal orphaned a planner 14.7h)."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+    _run_mcp_gate(store, job_id)
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:waiting_time" in job_tags
+    assert "STATUS:failed" not in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("child-failed:") for t in parent_tags)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    meta = row[0]
+    assert meta["pause_parks"] == 1
+    assert int(meta["wake_when"]["payload"]["ts"]) > int(time.time())
+
+
+def test_mcp_gate_streak_past_cap_parks_planner_stuck(
+    store: Store, monkeypatch
+) -> None:
+    """A persistent gate outage is an env outage, not task width: once the
+    job's park budget is spent the streak machinery takes over, and past
+    the cap the parent parks ``halt:planner-stuck`` — the same durable
+    park a no-precis-tools streak earns, with no auto-decompose minted
+    into the dead env."""
+    monkeypatch.setenv("PRECIS_PLAN_TICK_RESUME_CAP", "1")
+    parent_id = _mk_parent(store)
+
+    # tick 1: park budget spent → falls to the streak → resumed.
+    job1 = _mk_job(store, parent_id)
+    _mark_parked_out(store, job1)
+    _run_mcp_gate(store, job1)
+    job_tags = {str(t) for t in store.tags_for(job1)}
+    assert "STATUS:succeeded" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert not any(t.startswith("halt") for t in parent_tags)
+
+    # tick 2: streak 2 > cap 1 → halt:planner-stuck, NOT decompose.
+    job2 = _mk_job(store, parent_id)
+    _mark_parked_out(store, job2)
+    _run_mcp_gate(store, job2)
+    job_tags = {str(t) for t in store.tags_for(job2)}
+    assert "STATUS:failed" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert "halt:planner-stuck" in parent_tags
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s AND kind = 'job'",
+            (parent_id,),
+        ).fetchall()
+    decompose_jobs = [r for r in rows if (r[0].get("params") or {}).get("decompose")]
+    assert decompose_jobs == []
+
+
+def test_defer_on_pause_parks_mcp_gate_refusal() -> None:
+    """The shared plugin-dispatch park helper treats a pre-flight gate
+    refusal as the same wait-for-window — every ``defer_on_pause`` caller
+    (meditation, draft_refresh, survey_extract, …) gets the fix, not just
+    plan_tick's hand-rolled arm (gr657599)."""
+    from precis.utils.llm.router import LlmResult, Tier
+    from precis.workers.job_types import defer_on_pause
+
+    calls: list[tuple[object, str]] = []
+
+    class _Ctx:
+        def defer(self, wake_at: object, reason: str) -> bool:
+            calls.append((wake_at, reason))
+            return True
+
+    res = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.FRONTIER,
+        error=_MCP_GATE_TEXT,
+        mcp_not_ready=True,
+    )
+    assert defer_on_pause(_Ctx(), res, label="t") is True
+    assert len(calls) == 1 and "MCP" in calls[0][1]
+    # A plain error result still declines the park.
+    plain = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.FRONTIER,
+        error="boom",
+    )
+    assert defer_on_pause(_Ctx(), plain, label="t") is False
+
+
+def test_transient_stderr_stamps_retry_after_on_failure(store: Store) -> None:
+    """A plan_tick that hard-fails on transient wording (here the gate
+    text reaching the generic failure arm — e.g. the gate flag stripped
+    by an older router) stamps ``meta.retry_after`` + ``failure_class``
+    so the sweeper's unpark phase re-arms the parked parent on the real
+    backoff instead of the 12h·2ᴺ cool-down — the missing middle step in
+    gr657599's escalation path."""
+    parent_id = _mk_parent(store)
+    job_id = _mk_job(store, parent_id)
+    spec = _FakeSpec(
+        PlanTickOutcome(
+            exit_code=1,
+            stdout="",
+            stderr=_MCP_GATE_TEXT,
+            duration_s=0.5,
+        )
+    )
+    ci._run_plan_tick(store, job_id, spec)
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    parent_tags = {str(t) for t in store.tags_for(parent_id)}
+    assert f"child-failed:{job_id}" in parent_tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    meta = row[0]
+    assert meta["failure_class"] == "transient"
+    retry_after = datetime.fromisoformat(meta["retry_after"])
+    assert datetime.now(UTC) < retry_after <= datetime.now(UTC) + timedelta(minutes=30)
