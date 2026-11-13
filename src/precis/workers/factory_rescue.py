@@ -462,7 +462,9 @@ def enter_rescue(
 # stall: ``waiting-for:``, ``halt``, paused, an open ask, ``rescue:`` or
 # a live ``blocked-by`` target exempt a node — and so does a job-less
 # node at a non-``open`` STATUS or under a ``claimed-by:`` lease, a
-# hand-worked node the dispatch tick could never mint for (gr659982).
+# hand-worked node the dispatch tick could never mint for (gr659982),
+# and a live job parked on ``not_before`` — a run_slice outage park or
+# a land_slice deferral — whose owning poll owns the wake (gr643076).
 # Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
 # or ``dry_run``) it lists ``would_rescue`` and writes nothing.
@@ -752,6 +754,39 @@ def _job_log_at(j: Any) -> datetime | None:
     return max(stamps) if stamps else None
 
 
+#: The ``not_before`` stamp shape every parking plugin writes on
+#: ``meta.compute_handle`` (run_slice's ``_NOT_BEFORE_FMT``; land_slice,
+#: ci_rerun and release_confirm's ``_TS_FMT``).
+_PARK_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _job_parked_until(j: Any) -> datetime | None:
+    """When a parked job's silence clock restarts — the ``not_before``
+    stamp on its compute handle — or ``None``.
+
+    A plugin that defers parks the live job: ``not_before`` on the
+    handle, no process, the owning poll resubmitting at the stamp —
+    run_slice's outage park (a lane's quota window closed on the
+    session), land_slice's refusal deferral, ci_rerun's settle. Silence
+    until then is the park doing its work, not a stall (gr643076: a
+    quota park to 11:00Z was rescued at 05:10Z on 306 min of engineered
+    silence). The stamp joins the signal set the way ``unblocked_at``
+    does: a future one holds the node; a past one re-zeros the deadline
+    at the relaunch instant, so the first slow signal after a long park
+    is not a stall either. An unreadable stamp adds nothing — the poll
+    itself reads one as due-now, so the job is judged like any other."""
+    handle = j.meta.get("compute_handle")
+    if not isinstance(handle, dict):
+        return None
+    raw = handle.get("not_before")
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(str(raw), _PARK_TS_FMT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _node_signals(
     n: Any,
     jobs: list[Any],
@@ -761,8 +796,9 @@ def _node_signals(
     """``(newest ts, its label, the log lines)`` — the newest signal of a
     node is the latest of its created_at, its tag set times, its newest
     comment chunk, its newest event, per child job its created_at,
-    STATUS stamp, newest chunk and session-log mtime
-    (:func:`_job_log_at`), and ``unblocked_at`` — when its
+    STATUS stamp, newest chunk, session-log mtime
+    (:func:`_job_log_at`) and park relaunch instant
+    (:func:`_job_parked_until`, gr643076), and ``unblocked_at`` — when its
     newest ``blocked-by`` predecessor finished (the idle clock starts
     when the node became dispatchable, not when it was created)."""
     signals: list[tuple[str, datetime]] = []
@@ -787,6 +823,9 @@ def _node_signals(
         log_at = _job_log_at(j)
         if log_at is not None:
             signals.append((f"job jo{j.id} log mtime", log_at))
+        parked_at = _job_parked_until(j)
+        if parked_at is not None:
+            signals.append((f"job jo{j.id} parked until", parked_at))
     label, ts = max(signals, key=lambda s: s[1])
     lines = [f"signals for td{n.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
     return ts, label, lines
@@ -948,6 +987,21 @@ def _stage_for(
         return "stalled", "gate", j, "stage gate silent past its deadline"
     live = next((x for x in reversed(jobs) if x.status not in pd._JOB_TERMINAL), None)
     if live is not None:
+        parked_at = _job_parked_until(live)
+        if parked_at is not None and parked_at > now:
+            # The live job is parked into the future — a run_slice
+            # outage park or a land_slice refusal deferral: no process,
+            # the owning poll resubmits at the stamp. Its silence until
+            # then is deliberate — a wait, like a lane park (gr643076).
+            handle = live.meta.get("compute_handle") or {}
+            outage = str(handle.get("outage") or "")
+            why = f" ({outage} outage park)" if outage else " (deferred)"
+            return (
+                "parked",
+                "parked",
+                live,
+                f"job jo{live.id} parked until {_iso(parked_at)}{why}",
+            )
         if live.status == "queued":
             return (
                 "stalled",

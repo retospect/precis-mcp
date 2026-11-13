@@ -751,6 +751,116 @@ def test_running_build_with_a_stale_persisted_stamp_is_rescued(
     assert "log mtime" in comment
 
 
+def test_running_build_parked_on_an_outage_is_not_rescued(store: Store) -> None:
+    """gr643076: a run_slice whose lane's quota window closed parks the
+    live job — ``meta.compute_handle.not_before`` at the window's reset,
+    no process, the owning poll resubmitting there — and stays silent
+    BY CONSTRUCTION. An 11 h park crosses the 5 h build deadline while
+    still deliberate; a quota park to 11:00Z was rescued at 05:10Z on
+    306 min of engineered silence. The pass must hold the node while
+    the relaunch instant is still ahead."""
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "compute_handle": {
+                "not_before": (NOW + timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "outage": "quota",
+                "outage_parks": 1,
+            }
+        },
+    )
+    _age(store, job, timedelta(hours=6))  # every real signal is stale
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("parked until" in note for note in res.notes)
+
+
+def test_running_build_park_lapsed_measures_from_relaunch(store: Store) -> None:
+    """The stamp re-zeros the clock at the relaunch instant: once
+    ``not_before`` passes, silence is measured from it — a relaunch a
+    few minutes overdue is a wait inside the deadline, not a stall."""
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "compute_handle": {
+                "not_before": (NOW + timedelta(hours=4, minutes=50)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "outage": "quota",
+                "outage_parks": 1,
+            }
+        },
+    )
+    _age(store, job, timedelta(hours=6))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_running_build_park_long_overdue_still_rescues(store: Store) -> None:
+    """The stamp is a re-zero, not an exemption: a relaunch overdue past
+    the stage deadline rescues on the clock the park restarted — a dead
+    poll is a stall."""
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="running",
+        meta_extra={
+            "compute_handle": {
+                "not_before": (NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "outage": "quota",
+                "outage_parks": 1,
+            }
+        },
+    )
+    _age(store, job, timedelta(hours=7))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == [(task, "stalled", "build")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_land_parked_on_a_refusal_is_not_rescued(store: Store) -> None:
+    """The same ``not_before`` covers a land_slice refusal deferral: the
+    handle parks while ship's backoff runs and the poll owns the wake
+    — the land stage's deadline does not rescue the wait."""
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        job_type="land_slice",
+        status="running",
+        meta_extra={
+            "compute_handle": {
+                "not_before": (NOW + timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        },
+    )
+    _age(store, job, timedelta(hours=7))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=6, minutes=1))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
 def test_gate_not_open_is_judged_at_72_hours(store: Store) -> None:
     root = _root(store)
     build = _node(store, root, title="build", status="done")
