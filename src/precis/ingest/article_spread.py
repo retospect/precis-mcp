@@ -176,6 +176,13 @@ _BIO_RE = re.compile(
     re.IGNORECASE,
 )
 _ACK_RE = re.compile(r"^\s*(?:(?:I|We)\s+(?:thank|are grateful)|Acknowledge?ments?\b)")
+#: The splice signal's acknowledgement opener: :data:`_ACK_RE` plus the
+#: all-caps heading of 1990 Nature letters (pa453293 — ``ACKNOWLEDGEMENTS.``).
+#: Detector-local, so the trim and boundary readers keep their case-sensitive
+#: opener.
+_SPLICE_ACK_RE = re.compile(
+    r"^\s*(?:(?:I|We)\s+(?:thank|are grateful)|(?i:acknowledge?ments?)\b)"
+)
 _RECEIVED_RE = re.compile(
     r"\bReceived\b.{0,80}\b(?:accepted|revised)\b", re.IGNORECASE | re.DOTALL
 )
@@ -894,7 +901,7 @@ def detect_issue_splice(
     mid-body:
 
     * **repeated acknowledgements** — acknowledgement openers
-      (:data:`_ACK_RE` on a chunk's first line) at two or more ords; a
+      (:data:`_SPLICE_ACK_RE` on a chunk's first line) at two or more ords; a
       genuine article has exactly one;
     * **mid-stream restart** — a chunk this far past the front matter
       opening on a non-standard title header (:func:`_header_kind` ==
@@ -937,7 +944,7 @@ def detect_issue_splice(
         ord_ = int(getattr(chunk, "ord", 0) or 0)
         lines = _head_lines(getattr(chunk, "text", "") or "")
         head = lines[0] if lines else ""
-        if _ACK_RE.match(head):
+        if _SPLICE_ACK_RE.match(head):
             ack_ords.append(ord_)
         if ord_ < start_ord + _SPLICE_MIDSTREAM_MIN_ORD:
             continue

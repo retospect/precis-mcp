@@ -1007,6 +1007,21 @@ class TestDetectIssueSplice:
         assert splice.toc_ord is None
         assert splice.signal_count == 2
 
+    def test_uppercase_acknowledgements_count(self) -> None:
+        """gr658690 / pa453293: the 1990 letter heads its acknowledgement
+        ``ACKNOWLEDGEMENTS.`` in capitals; the opener must still count."""
+        chunks = [
+            _c(
+                c.ord,
+                c.text.replace("Acknowledgements.", "ACKNOWLEDGEMENTS."),
+                c.chunk_kind,
+            )
+            for c in _spliced_issue_chunks()
+        ]
+        splice = detect_issue_splice(chunks)
+        assert splice is not None
+        assert splice.ack_ords == (2, 6, 10)
+
     def test_acks_plus_contents_cluster_fires(self) -> None:
         splice = detect_issue_splice(_issue_with_toc_chunks())
         assert splice is not None
