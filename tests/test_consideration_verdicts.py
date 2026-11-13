@@ -918,3 +918,342 @@ def test_novel_for_quest_scope_points_at_ledger(
     assert "view='links'" not in out
     assert _pc(store, rejected) not in out
     assert _pc(store, kept) in out
+
+
+# ── review td662210 FIX: canonical-merge reconciliation ──────────────────
+
+
+def _merge(store: Store, old: int, new: int) -> None:
+    """The dedup/supersede link-migration step of a canonical merge."""
+    with store.tx() as conn:
+        store.migrate_links(old, new, conn=conn)
+
+
+def test_merge_loser_later_verdict_beats_the_twin(store: Store) -> None:
+    """Canonical-identity dedup: the survivor's pre-existing twin edge
+    must NOT keep its verdict when the loser carries the LATER judgment
+    — the canonical pair resolves to the latest judgment, whatever side
+    it was judged on (review td662210)."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m1", title="M1", text=f"{_Q} m1.")
+    dup = _mk_paper(store, slug="cv-m2", title="M1", text=f"{_Q} m1.")
+    _judge(store, scope, surv, verdict="not-useful", reason="first run: out")
+    _judge(
+        store,
+        scope,
+        dup,
+        verdict="useful",
+        depth="fulltext",
+        reason="second run: on-axis after all",
+    )
+    _merge(store, dup, surv)
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1
+    assert edges[0].dst_ref_id == surv
+    assert edges[0].meta["verdict"] == "useful"
+    found = store.consideration_exclusions(scope)
+    assert surv not in found.excluded
+    # Both judgments survive, re-pointed to the canonical source.
+    hist = _history(store, scope)
+    assert len(hist) == 2
+    assert {j["source_ref_id"] for j in hist} == {surv}
+
+
+def test_merge_survivor_later_verdict_keeps_exclusion_off(
+    store: Store,
+) -> None:
+    """The symmetric order: the loser's earlier not-useful must not
+    resurrect over the survivor's later useful judgment."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m3", title="M3", text=f"{_Q} m3.")
+    dup = _mk_paper(store, slug="cv-m4", title="M4", text=f"{_Q} m4.")
+    _judge(store, scope, dup, verdict="not-useful", reason="first run: out")
+    _judge(
+        store,
+        scope,
+        surv,
+        verdict="useful",
+        depth="fulltext",
+        reason="second run: on-axis",
+    )
+    _merge(store, dup, surv)
+    found = store.consideration_exclusions(scope)
+    assert surv not in found.excluded
+    current = store.scoped_considerations(scope)
+    assert [v.verdict for v in current] == ["useful"]
+    assert len(_history(store, scope)) == 2
+
+
+def test_merge_later_not_useful_on_loser_still_excludes(store: Store) -> None:
+    """Judgment order cuts the other way too: a later not-useful on the
+    loser beats an earlier useful on the survivor."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m5", title="M5", text=f"{_Q} m5.")
+    dup = _mk_paper(store, slug="cv-m6", title="M6", text=f"{_Q} m6.")
+    _judge(store, scope, surv, verdict="useful", reason="first run: in")
+    _judge(store, scope, dup, verdict="not-useful", reason="second run: out")
+    _merge(store, dup, surv)
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1
+    assert edges[0].meta["verdict"] == "not-useful"
+    # The two sources had different content, so the carried pin is stale
+    # on the canonical ref — it excludes nothing, but the CURRENT
+    # verdict on the edge is still the latest judgment's.
+    found = store.consideration_exclusions(scope)
+    assert [(v.dst_ref_id, v.stale) for v in found.stale] == [(surv, "source")]
+    assert surv not in found.excluded
+
+
+def test_merge_identical_source_stays_valid_no_false_reconsideration(
+    store: Store,
+) -> None:
+    """The false-reconsideration regression: identical records deduped —
+    the judgment's ref pin still matches (ref shas are content-derived),
+    so the exclusion persists and nothing queues as edge-lost on the
+    retired endpoint."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m7", title="Same", text=f"{_Q} same.")
+    dup = _mk_paper(store, slug="cv-m8", title="Same", text=f"{_Q} same.")
+    _judge(store, scope, dup, reason="lithium-only, question is sodium")
+    _merge(store, dup, surv)
+    found = store.consideration_exclusions(scope)
+    assert found.stale == ()
+    assert surv in found.excluded
+    # Nothing lingers on the retired endpoint as a false edge-lost
+    # reconsideration — scoped or unscoped.
+    assert store.consideration_reconsiderations(scope_ref_id=scope) == []
+    assert surv not in {v.dst_ref_id for v in store.consideration_reconsiderations()}
+    hist = _history(store, scope)
+    assert len(hist) == 1
+    assert hist[0]["source_ref_id"] == surv
+
+
+def test_merge_changed_source_goes_stale(store: Store) -> None:
+    """A canonical merge onto genuinely different content IS a material
+    source change: the carried verdict goes stale and queues
+    reconsideration rather than excluding."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m9", title="Winner", text=f"{_Q} m9.")
+    dup = _mk_paper(store, slug="cv-m10", title="Different", text=f"{_Q} m10.")
+    _judge(store, scope, dup, reason="out")
+    _merge(store, dup, surv)
+    found = store.consideration_exclusions(scope)
+    assert surv not in found.excluded
+    assert [(v.dst_ref_id, v.stale) for v in found.stale] == [(surv, "source")]
+    assert len(_history(store, scope)) == 1
+
+
+def test_merge_collapses_conflicting_endpoint_edges(store: Store) -> None:
+    """Two pairs can collapse onto different chunk endpoints of the
+    canonical pair, leaving two live ``considered`` edges — the write
+    door never leaves that state, so the merge keeps only the edge the
+    latest judgment grounds."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m11", title="M11", text=f"{_Q} m11.")
+    dup = _mk_paper(store, slug="cv-m12", title="M12", text=f"{_Q} m12.")
+    # Loser judged first, ref-level; survivor judged later at its chunk.
+    _judge(store, scope, dup, verdict="not-useful", reason="first: out")
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=surv,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "useful",
+            "depth": "passages",
+            "reason": "second: the passage fits",
+        },
+    )
+    _merge(store, dup, surv)
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1
+    assert edges[0].meta["verdict"] == "useful"
+    assert edges[0].dst_chunk_id is not None
+    found = store.consideration_exclusions(scope)
+    assert surv not in found.excluded
+
+
+def test_merge_chunk_grounded_verdict_restamps_source_pin(
+    store: Store,
+) -> None:
+    """A passage judgment re-grounded onto the canonical ref's
+    identical-text chunk re-pins ``source_sha`` onto that twin: the
+    judged text IS the canonical endpoint, so the verdict stays valid
+    (chunk shas are id-derived — keeping the dead pin would read
+    stale)."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m13", title="M13", text="shared passage.")
+    dup = _mk_paper(store, slug="cv-m14", title="M14", text="shared passage.")
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=dup,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "passages",
+            "reason": "the passage is off-axis",
+        },
+    )
+    _merge(store, dup, surv)
+    (edge,) = store.links_for(scope, relation="considered", direction="out")
+    surv_chunk = store.chunks.list_chunks_for_ref(surv)[0].id
+    assert edge.dst_chunk_id == surv_chunk
+    found = store.consideration_exclusions(scope)
+    assert found.stale == ()
+    assert surv in found.excluded
+
+
+def test_merge_body_move_keeps_passage_verdict_valid(store: Store) -> None:
+    """The real dedup order: ``move_body`` lands the donor's chunks on
+    the survivor (deleting the donor's) BEFORE ``migrate_links`` runs.
+    The judgment's chunk pin must re-anchor onto the copy inside that
+    move — a pin left on the deleted chunk id would read the verdict
+    stale against the copy's id-derived sha (review td662210)."""
+    from precis.ingest.body_ops import move_body
+
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = store.insert_ref(kind="paper", slug="cv-m22", title="M22")
+    dup = _mk_paper(store, slug="cv-m23", title="M23", text="the moved passage.")
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=dup,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "passages",
+            "reason": "the passage is off-axis",
+        },
+    )
+    with store.tx() as conn:
+        move_body(src_ref_id=dup, dst_ref_id=surv.id, conn=conn)
+        store.migrate_links(dup, surv.id, conn=conn)
+    (edge,) = store.links_for(scope, relation="considered", direction="out")
+    surv_chunk = store.chunks.list_chunks_for_ref(surv.id)[0].id
+    assert edge.dst_chunk_id == surv_chunk
+    found = store.consideration_exclusions(scope)
+    assert found.stale == ()
+    assert surv.id in found.excluded
+    hist = _history(store, scope)
+    assert hist[0]["source_ref_id"] == surv.id
+    assert hist[0]["source_chunk_id"] == surv_chunk
+
+
+def test_merge_scope_side_history_follows_and_goes_stale(
+    store: Store,
+) -> None:
+    """Scope-side merge (memory consolidation): the loser's judgments
+    re-point onto the consolidated scope, and the carried verdict goes
+    honestly stale — the consolidated question differs from what was
+    judged — instead of stranding on the retired scope as a false
+    edge-lost orphan."""
+    old_scope = _mk_memory(store, title="old q", text="the old question")
+    new_scope = _mk_memory(store, title="new q", text="the consolidated question")
+    src = _mk_paper(store, slug="cv-m15", title="M15", text=f"{_Q} m15.")
+    _judge(store, old_scope, src, reason="out")
+    _merge(store, old_scope, new_scope)
+    # The judgment and its edge moved; the old scope's ledger is empty.
+    assert store.scoped_considerations(old_scope) == []
+    hist = _history(store, new_scope)
+    assert len(hist) == 1
+    assert hist[0]["scope_ref_id"] == new_scope
+    found = store.consideration_exclusions(new_scope)
+    assert src not in found.excluded
+    assert [(v.dst_ref_id, v.stale) for v in found.stale] == [(src, "scope")]
+    # No edge-lost false reconsideration under the retired scope's pair.
+    unscoped = store.consideration_reconsiderations()
+    assert not any(v.stale == "edge-lost" and v.dst_ref_id == src for v in unscoped)
+
+
+def test_merge_withdrawn_pair_stays_withdrawn(store: Store) -> None:
+    """A deliberate withdrawal rides the merge too: the re-pointed
+    history rows keep ``withdrawn_at``, so no exclusion and no reopen
+    queue entry appears on the canonical source."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m16", title="M16", text=f"{_Q} m16.")
+    dup = _mk_paper(store, slug="cv-m17", title="M17", text=f"{_Q} m17.")
+    _judge(store, scope, dup, reason="out")
+    store.remove_link(src_ref_id=scope, dst_ref_id=dup, relation="considered")
+    _merge(store, dup, surv)
+    found = store.consideration_exclusions(scope)
+    assert surv not in found.excluded
+    assert found.stale == ()
+    assert store.scoped_considerations(scope) == []
+    hist = _history(store, scope)
+    assert len(hist) == 1
+    assert hist[0]["source_ref_id"] == surv
+    assert hist[0]["withdrawn_at"] is not None
+
+
+def test_merge_losers_orphan_suppressed_by_canonical_edge(
+    store: Store,
+) -> None:
+    """The exact false-reconsideration the review named: the loser's
+    orphan judgment (its edge died to a chunk cascade) re-points onto
+    the canonical pair, where the live edge suppresses it — pre-fix it
+    stayed on the retired ref and queued ``edge-lost`` forever."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m18", title="M18", text=f"{_Q} m18.")
+    dup = _mk_paper(store, slug="cv-m19", title="M19", text=f"{_Q} m19.")
+    dup_chunk = store.chunks.list_chunks_for_ref(dup)[0].id
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=dup,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "passages",
+            "reason": "first: the passage is off-axis",
+        },
+    )
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (dup_chunk,))
+    # Sanity: a live edge-lost orphan on the legacy pair before merge.
+    assert [
+        (v.dst_ref_id, v.stale)
+        for v in store.consideration_reconsiderations(scope_ref_id=scope)
+    ] == [(dup, "edge-lost")]
+    _judge(
+        store,
+        scope,
+        surv,
+        verdict="useful",
+        depth="fulltext",
+        reason="second: on-axis",
+    )
+    _merge(store, dup, surv)
+    found = store.consideration_exclusions(scope)
+    assert found.stale == ()
+    assert surv not in found.excluded
+    assert [v.verdict for v in store.scoped_considerations(scope)] == ["useful"]
+    assert len(_history(store, scope)) == 2
+
+
+def test_merge_withdrawn_later_verdict_does_not_resurrect(
+    store: Store,
+) -> None:
+    """Resolution reads UNWITHDRAWN judgments only: a later useful the
+    owner deliberately withdrew stays withdrawn, and the loser's
+    earlier standing not-useful still governs the canonical pair."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    surv = _mk_paper(store, slug="cv-m20", title="M20", text=f"{_Q} m20.")
+    dup = _mk_paper(store, slug="cv-m21", title="M21", text=f"{_Q} m20.")
+    _judge(store, scope, dup, verdict="not-useful", reason="first: out")
+    _judge(store, scope, surv, verdict="useful", reason="second: in")
+    store.remove_link(src_ref_id=scope, dst_ref_id=surv, relation="considered")
+    _merge(store, dup, surv)
+    # The canonical pair's live edge is the migrated not-useful; its
+    # content pin differs (different title/text), so it queues 'source'
+    # rather than excluding — but the withdrawn useful never comes back
+    # as an orphan either.
+    found = store.consideration_exclusions(scope)
+    assert len(found.verdicts) == 1
+    assert found.verdicts[0].verdict == "not-useful"
+    assert [v.stale for v in found.stale] == ["source"]
+    hist = _history(store, scope)
+    assert len(hist) == 2
+    by_verdict = {j["verdict"]: j for j in hist}
+    assert by_verdict["useful"]["withdrawn_at"] is not None
+    assert by_verdict["not-useful"]["withdrawn_at"] is None

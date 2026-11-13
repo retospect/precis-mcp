@@ -56,6 +56,15 @@ exclusions across every search leg (dispatch facet, gr662069);
 inspect/reconsider access on the kinds in
 :data:`CONSIDERATION_LEDGER_KINDS`. Global search, direct lookup and
 other memories' scopes are untouched.
+
+Canonical merges reconcile through
+:meth:`ConsiderationMixin.migrate_considerations`, called from
+``LinksMixin.migrate_links`` after its edges re-point: judgments follow
+their pair onto the canonical refs, the canonical pair's edge resolves
+to the pair's LATEST unwithdrawn judgment (never whichever twin
+happened to pre-exist), and duplicate live ``considered`` edges of the
+pair collapse to one — the write door's ref-pair granularity carried
+across dedup (review td662210).
 """
 
 from __future__ import annotations
@@ -430,6 +439,269 @@ class ConsiderationMixin:
                 (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, link_id),
             )
         return int(row[0])
+
+    def migrate_considerations(
+        self,
+        c: Connection,
+        *,
+        old_ref_id: int,
+        new_ref_id: int,
+    ) -> int:
+        """Reconcile the judgment ledger across a canonical ref merge.
+
+        Runs inside ``LinksMixin.migrate_links``'s transaction after its
+        edges re-point and the originals delete. Without this pass the
+        merge is lossy in three ways (review td662210):
+
+        * judgment rows keep naming the retired endpoint — the canonical
+          pair's ledger, exclusions and reconsider queue can't see them,
+          and each unwithdrawn row reads as an ``edge-lost`` orphan (its
+          edge is gone and no live edge names its recorded pair): a
+          false reconsideration for a pair the merge just resolved;
+        * a conflict-collapsed edge keeps the pre-existing twin's
+          verdict block whatever the judgment order — the canonical
+          pair's current verdict must resolve to the LATEST unwithdrawn
+          judgment, the same ref-pair rule the write door applies;
+        * two live ``considered`` edges can survive at different chunk
+          endpoints of the canonical pair — the write door never leaves
+          that state, so the merge collapses to the one the latest
+          judgment grounds.
+
+        Mechanics: every judgment naming the loser re-points its ref
+        pins onto the canonical ref and re-grounds its chunk pins
+        through the same identical-text rule the edge copies used
+        (``_reground_link_chunk``) — withdrawn rows included, so the
+        whole ledger stays under the canonical pair. Chunk-grounded
+        judgments whose donor body moved first (``move_body`` deletes
+        the donor chunks) arrive already re-pointed onto the copy by
+        ``body_ops._repoint_consideration_pins`` — they land in the
+        resolve set through the canonical-ref scan below rather than
+        the loser one. Then per canonical pair the latest unwithdrawn
+        judgment's verdict block replaces the surviving edge's judgment
+        keys (a chunk ``source_sha`` re-stamps onto the canonical text
+        twin so an identical passage doesn't read stale; ref-level pins
+        are content-derived and need no re-stamp — a real content
+        change still goes stale), its ``link_id`` points at that edge,
+        and every other live ``considered`` edge of the pair drops —
+        superseded, its judgments kept in the ledger and suppressed by
+        the live edge exactly as a re-judgment leaves them. Returns the
+        number of judgment rows re-pointed.
+
+        The garden merge (:mod:`precis.graph.garden.apply`) is a
+        different door — it snapshots links for undo, so a consideration
+        reconcile there needs the undo record too; until that path grows
+        the same pass, a garden merge keeps the carried verdicts its
+        edge dedup leaves but never re-resolves judgment order.
+        """
+        legacy = {
+            (int(s), int(d))
+            for s, d in c.execute(
+                "SELECT DISTINCT scope_ref_id, source_ref_id "
+                "FROM considerations "
+                "WHERE scope_ref_id = %s OR source_ref_id = %s",
+                (old_ref_id, old_ref_id),
+            ).fetchall()
+        }
+        # Resolve pairs = canonical form of every judged pair touching
+        # EITHER merge endpoint — rows already on the canonical ref
+        # (judged it before the merge, or re-pointed by the body move)
+        # resolve identically, and the rewrite is a no-op on a pair the
+        # merge never disturbed.
+        pairs = {
+            (
+                new_ref_id if s == old_ref_id else s,
+                new_ref_id if d == old_ref_id else d,
+            )
+            for s, d in {
+                (int(a), int(b))
+                for a, b in c.execute(
+                    "SELECT DISTINCT scope_ref_id, source_ref_id "
+                    "FROM considerations "
+                    "WHERE scope_ref_id = ANY(%s) "
+                    "   OR source_ref_id = ANY(%s)",
+                    (
+                        [old_ref_id, new_ref_id],
+                        [old_ref_id, new_ref_id],
+                    ),
+                ).fetchall()
+            }
+        }
+        if not pairs:
+            return 0
+        # Serialize against concurrent re-judgments on either side of the
+        # merge BEFORE reading the rows: the write door takes the same
+        # per-pair key, so a judgment that raced the re-point commits
+        # ahead of the row fetch below and is seen (review td662210).
+        for scope_ref, source_ref in sorted(legacy | pairs):
+            lock_consideration_pair(c, scope_ref, source_ref)
+
+        # Deferred: _links_ops already lazy-imports this module the other
+        # way; keep the cycle out of module scope.
+        from precis.store._links_ops import _reground_link_chunk
+
+        rows = c.execute(
+            "SELECT consideration_id, scope_ref_id, scope_chunk_id,"
+            "       source_ref_id, source_chunk_id "
+            "FROM considerations "
+            "WHERE scope_ref_id = %s OR source_ref_id = %s "
+            "ORDER BY consideration_id",
+            (old_ref_id, old_ref_id),
+        ).fetchall()
+        for cid, s_ref, s_chunk, d_ref, d_chunk in rows:
+            s_ref, d_ref = int(s_ref), int(d_ref)
+            pairs.add(
+                (
+                    new_ref_id if s_ref == old_ref_id else s_ref,
+                    new_ref_id if d_ref == old_ref_id else d_ref,
+                )
+            )
+            new_scope_chunk = _reground_link_chunk(
+                c,
+                s_chunk,
+                endpoint_ref_id=s_ref,
+                old_ref_id=old_ref_id,
+                new_ref_id=new_ref_id,
+            )
+            new_source_chunk = _reground_link_chunk(
+                c,
+                d_chunk,
+                endpoint_ref_id=d_ref,
+                old_ref_id=old_ref_id,
+                new_ref_id=new_ref_id,
+            )
+            c.execute(
+                "UPDATE considerations "
+                "SET scope_ref_id = %s, scope_chunk_id = %s,"
+                "    source_ref_id = %s, source_chunk_id = %s "
+                "WHERE consideration_id = %s",
+                (
+                    new_ref_id if s_ref == old_ref_id else s_ref,
+                    new_scope_chunk,
+                    new_ref_id if d_ref == old_ref_id else d_ref,
+                    new_source_chunk,
+                    cid,
+                ),
+            )
+
+        for scope_ref, source_ref in sorted(pairs):
+            self._resolve_merged_consideration_pair(c, scope_ref, source_ref)
+        return len(rows)
+
+    def _resolve_merged_consideration_pair(
+        self, c: Connection, scope_ref_id: int, source_ref_id: int
+    ) -> None:
+        """Settle one canonical pair after a merge: the surviving edge
+        carries the pair's latest unwithdrawn judgment and the rest of
+        its live ``considered`` edges drop (review td662210)."""
+        latest = c.execute(
+            "SELECT consideration_id, link_id, scope_chunk_id,"
+            "       source_chunk_id, verdict, reason, reading_depth,"
+            "       passages, scope_sha, source_sha, actor, model, run,"
+            "       prompt, checked_at "
+            "FROM considerations "
+            "WHERE scope_ref_id = %s AND source_ref_id = %s"
+            "  AND withdrawn_at IS NULL "
+            "ORDER BY recorded_at DESC, consideration_id DESC LIMIT 1",
+            (scope_ref_id, source_ref_id),
+        ).fetchone()
+        edges = c.execute(
+            "SELECT link_id, src_chunk_id, dst_chunk_id, meta FROM links "
+            "WHERE src_ref_id = %s AND dst_ref_id = %s"
+            "  AND relation = 'considered' ORDER BY link_id",
+            (scope_ref_id, source_ref_id),
+        ).fetchall()
+        if latest is None or not edges:
+            return
+        (
+            j_id,
+            j_link,
+            j_scope_chunk,
+            j_source_chunk,
+            verdict,
+            reason,
+            depth,
+            passages,
+            scope_sha,
+            source_sha,
+            actor,
+            model,
+            run,
+            prompt,
+            checked_at,
+        ) = latest
+
+        def _rank(e: Any) -> tuple[int, int, int]:
+            # Prefer the edge at the judgment's canonical endpoints —
+            # staleness computes against the endpoint the edge actually
+            # grounds — then the edge the judgment was written on, then
+            # the lowest id for determinism.
+            return (
+                0 if (e[1] == j_scope_chunk and e[2] == j_source_chunk) else 1,
+                0 if j_link is not None and int(e[0]) == int(j_link) else 1,
+                int(e[0]),
+            )
+
+        s_lid, s_schunk, s_dchunk, s_meta = min(edges, key=_rank)
+        if j_source_chunk is not None and j_source_chunk == s_dchunk:
+            # The surviving edge grounds the canonical text twin of the
+            # judged chunk: re-stamp the pin so an identical passage
+            # doesn't read stale ('chunk:<id>' shas are id-derived).
+            # De-grounded or endpoint-mismatched judgments keep their
+            # own pin and go honestly stale.
+            source_sha = _target_sha(c, source_ref_id, s_dchunk)
+        meta = {
+            k: v
+            for k, v in dict(s_meta or {}).items()
+            if k not in CONSIDER_JUDGMENT_KEYS and k not in CONSIDERED_STAMPED_KEYS
+        }
+        meta.update(
+            {
+                "verdict": verdict,
+                "reason": reason,
+                "depth": depth,
+                "checked_at": checked_at.astimezone(UTC).isoformat(),
+                "scope_sha": scope_sha,
+                "source_sha": source_sha,
+            }
+        )
+        for key, value in (
+            ("passages", passages),
+            ("actor", actor),
+            ("model", model),
+            ("run", run),
+            ("prompt", prompt),
+        ):
+            if value:
+                meta[key] = value
+        jcount = c.execute(
+            "SELECT count(*) FROM considerations "
+            "WHERE scope_ref_id = %s"
+            "  AND scope_chunk_id IS NOT DISTINCT FROM %s"
+            "  AND source_ref_id = %s"
+            "  AND source_chunk_id IS NOT DISTINCT FROM %s",
+            (scope_ref_id, s_schunk, source_ref_id, s_dchunk),
+        ).fetchone()
+        meta["judgments"] = int(jcount[0]) if jcount else 0
+        # Guard on real change: the links act trigger records a 'revise'
+        # on every UPDATE, and the resolve set includes pairs the merge
+        # never disturbed — identical-meta writes must stay no-ops.
+        c.execute(
+            "UPDATE links SET meta = %s WHERE link_id = %s"
+            "  AND meta IS DISTINCT FROM %s",
+            (Jsonb(meta), s_lid, Jsonb(meta)),
+        )
+        # The judgment the surviving edge now carries points at it;
+        # older rows keep their dead-edge ids as the audit trail.
+        c.execute(
+            "UPDATE considerations SET link_id = %s "
+            "WHERE consideration_id = %s AND link_id IS DISTINCT FROM %s",
+            (s_lid, j_id, s_lid),
+        )
+        c.execute(
+            "DELETE FROM links WHERE src_ref_id = %s AND dst_ref_id = %s"
+            "  AND relation = 'considered' AND link_id <> %s",
+            (scope_ref_id, source_ref_id, s_lid),
+        )
 
     def consideration_history(
         self,

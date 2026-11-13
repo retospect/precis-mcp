@@ -953,6 +953,10 @@ class LinksMixin:
     # so a deliberate withdrawal differs from a chunk-cascade edge loss.
     withdraw_considerations: Any
     withdraw_consideration_pair: Any
+    # Provided by ConsiderationMixin — re-points the ``considered``
+    # judgment ledger onto the canonical refs and resolves each merged
+    # pair's current verdict (``migrate_links``'s post-delete pass).
+    migrate_considerations: Any
     # Provided by GroundingsMixin — endpoint groundings for the
     # slice-2b definition-only link-time refusal.
     grounding_set: Any
@@ -2334,6 +2338,15 @@ class LinksMixin:
            v0; a conflict-skipped copy leaves its act unbound, so the
            pre-existing twin edge keeps its own stamp.
         2. DELETE the original rows touching ``old_ref_id``.
+        3. Reconcile the ``considered`` ledger:
+           :meth:`ConsiderationMixin.migrate_considerations` re-points
+           every judgment naming ``old_ref_id`` onto the canonical refs,
+           resolves each merged pair's current verdict to its latest
+           unwithdrawn judgment (a conflict-collapsed edge must not keep
+           an older twin's verdict), and collapses duplicate live
+           ``considered`` edges of a canonical pair — otherwise the
+           stranded rows would read as ``edge-lost`` false
+           reconsiderations (review td662210).
 
         Returns the number of old rows deleted (the migrated count;
         deduped duplicates collapse into existing survivor edges).
@@ -2476,6 +2489,11 @@ class LinksMixin:
             "AND (NOT %(preserve_supersedes)s OR relation <> 'supersedes')",
             {"old": old_ref_id, "preserve_supersedes": preserve_supersedes},
         )
+        # Post-delete so the reconcile reads the final live-edge state:
+        # judgments re-point onto the canonical refs and each merged
+        # pair's surviving edge carries its latest judgment (review
+        # td662210). A no-op when the loser was never judged.
+        self.migrate_considerations(conn, old_ref_id=old_ref_id, new_ref_id=new_ref_id)
         return cur.rowcount or 0
 
     def unlink_ref(

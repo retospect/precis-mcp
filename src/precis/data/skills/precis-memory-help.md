@@ -628,6 +628,12 @@ Rules that bite:
   even when the edge is already gone (an `edge-lost` orphan). A
   re-judgment retires the older orphans of its pair, so withdrawing
   later never resurrects them.
+- Canonical merges (dedup, supersede) reconcile the ledger: judgments
+  follow their pair onto the canonical refs and the merged pair's
+  current verdict is its LATEST judgment — whichever side it was judged
+  on. A verdict judged against different content goes stale on the
+  canonical ref (real reconsideration); an identical-content merge keeps
+  it valid.
 
 Inspect the ledger — current verdicts, the reopen queue, and the
 append-only judgment history (page it with `args={'limit': 20,
