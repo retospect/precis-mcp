@@ -450,7 +450,9 @@ def enter_rescue(
 # (td639132). It finds the plan nodes
 # that went silent past their stage deadline and sends each to RESCUE —
 # never dispatched, a cancelled newest job, queued/build/land/review
-# overrunning, a sha-in-prod gate that never opens, a root closed under
+# overrunning (a queued job only once its ``(job_type, executor)``
+# queue stops draining — a still-moving queue is a wait, gr625325), a
+# sha-in-prod gate that never opens, a root closed under
 # an open node, a land's post-land write that never landed (recoverable
 # when the build's ``landed:`` comment names the sha — the pass fills
 # the gate itself first, gr576154, but never a ``landed:`` comment older
@@ -476,7 +478,11 @@ TICK_SILENT_AFTER = timedelta(minutes=30)
 _TICK_PASS_NAMES: tuple[str, ...] = ("plan_tick", "plan_dispatch")
 
 #: Per-stage stall deadlines. Release stages are deliberately absent —
-#: ``release_poll::watch_stuck`` owns them.
+#: ``release_poll::watch_stuck`` owns them. The ``queued`` deadline is a
+#: QUEUE-liveness bound, not a per-job age bound: a queued job is silent
+#: by construction, so it rescues only when the queue itself has not
+#: moved in the window (:func:`_queue_moved_at`, gr625325) — a draining
+#: queue makes any wait inside it a hold.
 STAGE_DEADLINES: dict[str, timedelta] = {
     "idle": timedelta(minutes=20),
     "queued": timedelta(minutes=30),
@@ -781,6 +787,68 @@ def _node_signals(
     label, ts = max(signals, key=lambda s: s[1])
     lines = [f"signals for td{n.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
     return ts, label, lines
+
+
+def _queue_moved_at(store: Store, job_type: str, executor: str) -> datetime | None:
+    """When the queue ``(job_type, executor)`` last drained — the newest
+    durable CLAIM stamp of a same-cohort job: ``meta.last_claimed_at``
+    (re-stamped on every successful claim — the stamp that keeps the
+    clock honest through a yield → re-queue → re-claim, gr625325 review),
+    ``meta.started_at`` (the first claim, set-if-absent at the
+    lease-identity stamp — covers jobs claimed before
+    ``last_claimed_at`` shipped), or a ``meta.reclaims[].at`` reclaim
+    instant.
+
+    A queued job's own signals stop at mint — sitting queued IS its
+    state — so the queue's drain is the liveness signal (gr625325: 195
+    validate chains unblocked by one deploy minted 148 queued jobs; 32
+    ``run_slice`` waits filed twelve moot showstopper asks). The cohort
+    is both keys: claims draw per executor, and another type's drain
+    does not shorten this type's backlog. The current STATUS row cannot
+    stand in for a claim: a STATUS write is DELETE+INSERT, so a
+    completion or cancellation re-dates the row (a mass-cancel reads as
+    a fresh drain while nothing was claimed), and a yield/re-queue puts
+    the row back on a claimable value — erasing the stamp of the claim
+    that just happened and making a live queue read as dead. Only the
+    meta claim stamps survive both rewrites. ``None`` — the queue never
+    moved, or a job too malformed to name its queue — falls back to the
+    plain deadline, so a lone queued job still rescues on schedule."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT max(ts) FROM (
+                SELECT precis_try_timestamptz(r.meta->>'last_claimed_at') AS ts
+                  FROM refs r
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND r.meta->>'job_type' = %s
+                   AND r.meta->>'executor' = %s
+                UNION ALL
+                SELECT precis_try_timestamptz(r.meta->>'started_at') AS ts
+                  FROM refs r
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND r.meta->>'job_type' = %s
+                   AND r.meta->>'executor' = %s
+                UNION ALL
+                SELECT precis_try_timestamptz(rc.elem->>'at')
+                  FROM refs r
+                  JOIN LATERAL jsonb_array_elements(
+                         COALESCE(r.meta->'reclaims', '[]'::jsonb)
+                       ) AS rc(elem) ON TRUE
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND r.meta->>'job_type' = %s
+                   AND r.meta->>'executor' = %s
+            ) claims
+            """,
+            (
+                job_type,
+                executor,
+                job_type,
+                executor,
+                job_type,
+                executor,
+            ),
+        ).fetchone()
+    return row[0] if row is not None else None
 
 
 def _gate_kind(n: Any) -> str | None:
@@ -1093,6 +1161,22 @@ def _judge_node(
     deadline = STAGE_DEADLINES[stage]
     if now - newest <= deadline:
         return
+    if stage == "queued" and j is not None:
+        # gr625325: the queue itself is the clock — a same-(job_type,
+        # executor) job CLAIMED inside the window (``meta.last_claimed_at``
+        # / ``meta.started_at`` or a reclaim, never a STATUS rewrite)
+        # means the queue is draining and this job is a wait, not a
+        # stall. Only a queue that hasn't moved is a stall.
+        jt = str(j.meta.get("job_type") or "")
+        ex = str(j.meta.get("executor") or "")
+        moved = _queue_moved_at(store, jt, ex) if jt and ex else None
+        if moved is not None and now - moved <= deadline:
+            res.held += 1
+            res.notes.append(
+                f"td{n.id}: queue moving — {jt} last claimed {_iso(moved)} "
+                f"(executor {ex}); a wait, not a stall"
+            )
+            return
     branch = head_sha = None
     head = _branch_head(plan, n)
     if head is not None:

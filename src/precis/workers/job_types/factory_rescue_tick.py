@@ -4,7 +4,9 @@ Dark-factory td574946, slice S2: every factory failure ends in done or
 rescue. One pass over every plan subtree finds the nodes that went
 silent — never dispatched, a cancelled newest job, queued / build /
 land / review overrunning its stage deadline
-(:data:`precis.workers.factory_rescue.STAGE_DEADLINES`), a ``sha-in-prod``
+(:data:`precis.workers.factory_rescue.STAGE_DEADLINES`; a queued job
+only once its queue stops draining — same-type claims inside the
+window are a wait, not a stall, gr625325), a ``sha-in-prod``
 gate that never opens, a root closed under an open node, a land's
 post-land write that never landed — and sends each to RESCUE through
 :func:`precis.workers.factory_rescue.enter_rescue` (one ``rescue:<class>``

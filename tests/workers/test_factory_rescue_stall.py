@@ -26,6 +26,7 @@ from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
 from precis.workers import factory_rescue as fr
 from precis.workers._mint import mint_background_job
+from precis.workers.executors._common import claim_executor_jobs
 from precis.workers.job_types import get_job_type, known_job_types
 from tests._lane_rows import use_lanes
 
@@ -246,6 +247,21 @@ def _age(store: Store, ref_id: int, by: timedelta) -> None:
         )
 
 
+def _stamp_tags(store: Store, ref_id: int, at: datetime) -> None:
+    """Set a ref's tag set times to an explicit instant — a queue claim
+    stamped between ``NOW`` and the pass's ``now`` (gr625325)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = %s WHERE ref_id = %s", (at, ref_id)
+        )
+
+
+def _job_meta(store: Store, ref_id: int) -> dict[str, Any]:
+    ref = store.get_ref(kind="job", id=ref_id)
+    assert ref is not None
+    return dict(ref.meta)
+
+
 # ── the deadline cases ────────────────────────────────────────────
 
 
@@ -302,6 +318,244 @@ def test_queued_job_deadline_is_30_minutes(store: Store) -> None:
     res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
     assert res.rescued == [(task, "stalled", "queued")]
     assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_queued_job_on_a_moving_queue_is_a_wait(store: Store) -> None:
+    """gr625325: a job still ``STATUS:queued`` while its queue drains is a
+    wait, not a stall — same-(``job_type``, ``executor``) jobs claimed
+    inside the window. The post-deploy unblock queued 148 jobs; the
+    30 min silence rule filed twelve showstopper asks, every one moot."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    other = _node(store, root)
+    _job(
+        store,
+        other,
+        status="running",
+        # Claimed 11 min before the pass — inside the 30 min window.
+        meta_extra={"started_at": (NOW + timedelta(minutes=20)).isoformat()},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("a wait, not a stall" in note for note in res.notes)
+
+
+def test_queued_job_on_a_stalled_queue_is_rescued(store: Store) -> None:
+    """The same queued job rescues once the queue itself has not moved in
+    the window — the last same-type claim is older than the deadline."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    other = _node(store, root)
+    other_job = _job(
+        store,
+        other,
+        status="running",
+        meta_extra={"started_at": (NOW - timedelta(minutes=15)).isoformat()},
+    )
+    _age(store, other_job, timedelta(minutes=45))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_queued_job_other_type_drain_does_not_hold(store: Store) -> None:
+    """gr625325's cohort is the queue the job actually waits in: another
+    job_type (or executor) draining does not shorten this queue, so a
+    dead ``run_slice`` claim path still rescues on schedule."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    other = _node(store, root)
+    _job(
+        store,
+        other,
+        job_type="fetch_oa",
+        status="running",
+        meta_extra={"started_at": (NOW + timedelta(minutes=20)).isoformat()},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+
+
+def test_queued_job_a_terminal_stamp_is_not_a_claim(store: Store) -> None:
+    """gr625325 review: the drain clock reads durable claim stamps, not
+    the current STATUS row — a STATUS write is DELETE+INSERT, so a
+    sibling completed or cancelled inside the window re-dates its row
+    without anything being claimed (a mass-cancel or a fail-cascade
+    would read as a fresh drain on a dead queue). Only the claim's own
+    stamp — ``meta.started_at``, here older than the deadline — counts,
+    so the queued job still rescues on schedule."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    finished = _node(store, root)
+    finished_job = _job(
+        store,
+        finished,
+        status="succeeded",
+        # Claimed ~41 min before the pass; the STATUS:succeeded row is
+        # stamped inside the window (below) but a completion is not a
+        # claim.
+        meta_extra={"started_at": (NOW - timedelta(minutes=10)).isoformat()},
+    )
+    cancelled = _node(store, root)
+    cancelled_job = _job(store, cancelled, status="cancelled")  # never claimed
+    # Fresh terminal STATUS rows inside the window — drain evidence under
+    # the STATUS-stamp read, noise under the claim-stamp read. They also
+    # keep the siblings' own idle clocks inside their deadlines.
+    _stamp_tags(store, finished_job, NOW + timedelta(minutes=15))
+    _stamp_tags(store, cancelled_job, NOW + timedelta(minutes=15))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_queued_job_a_yielded_claim_still_counts(store: Store) -> None:
+    """gr625325 review: a claim followed by a yield puts the row back on
+    a claimable STATUS — the claim's tag evidence is gone — but
+    ``meta.started_at`` survives the rewrite, so a queue whose claimer
+    keeps claiming and yielding still reads as moving."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    yielded = _node(store, root)
+    _job(
+        store,
+        yielded,
+        status="yielded",
+        meta_extra={"started_at": (NOW + timedelta(minutes=20)).isoformat()},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_queued_job_a_reclaim_counts_as_movement(store: Store) -> None:
+    """A stale-running row reclaimed inside the window is the same claim
+    path working — the reclaim's ``meta.reclaims[].at`` stamp holds the
+    queue even when the job's first claim is hours old."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    running = _node(store, root)
+    _job(
+        store,
+        running,
+        status="running",
+        meta_extra={
+            "started_at": (NOW - timedelta(hours=2)).isoformat(),
+            "reclaims": [
+                {"at": (NOW + timedelta(minutes=20)).isoformat(), "why": "stale lease"}
+            ],
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_queued_job_a_reclaim_from_queued_still_counts(store: Store) -> None:
+    """gr625325 review: a job claimed once hours ago, yielded/re-queued,
+    then claimed AGAIN inside the window provides recent movement
+    evidence. The re-claim keeps the first ``started_at`` (set-if-absent)
+    and appends no ``reclaims`` — only ``meta.last_claimed_at``,
+    re-stamped on every claim, records it. Without that read the queue
+    looks dead and the wait files a moot ask."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    reclaimed = _node(store, root)
+    _job(
+        store,
+        reclaimed,
+        status="running",
+        meta_extra={
+            # First claimed 2 h ago; claimed a second time 11 min before
+            # the pass — ``started_at`` alone reads as a dead queue.
+            "started_at": (NOW - timedelta(hours=2)).isoformat(),
+            "last_claimed_at": (NOW + timedelta(minutes=20)).isoformat(),
+        },
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("a wait, not a stall" in note for note in res.notes)
+
+
+def test_every_claim_re_stamps_last_claimed_at(store: Store) -> None:
+    """The writer side of the review finding: the claim itself must
+    leave the durable stamp. A real ``claim_executor_jobs`` claim on a
+    re-queued job — ``lease_until`` dropped, the FIRST ``started_at``
+    still set, exactly the wake_runner's yield/re-queue shape — stamps
+    ``meta.last_claimed_at`` afresh while ``started_at`` stays put, and
+    the queue-drain read then holds a queued sibling as a wait."""
+    root = _root(store)
+    other = _node(store, root)
+    other_job = _job(store, other, job_type="fetch_oa", status="queued")
+    # Mint the stalled-task job second: the claim order takes the oldest
+    # ``queued_since`` first, so ``other_job`` is the row each limit=1
+    # claim picks.
+    task = _node(store, root)
+    task_job = _job(store, task, job_type="fetch_oa", status="queued")
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(conn, executor="ssh_node", limit=1)
+        conn.commit()
+
+    assert [r[0] for r in claimed] == [other_job]
+    meta = _job_meta(store, other_job)
+    assert meta["last_claimed_at"] == meta["started_at"]
+
+    # Yield → re-queue: the STATUS tag is still a claimable value, the
+    # wake_runner's _clear_lease drops only ``lease_until``, and the
+    # first claim's ``started_at`` is preserved. Backdate both claim
+    # stamps so the second claim's stamp is the only fresh evidence.
+    old = (NOW - timedelta(hours=2)).isoformat()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = (meta - 'lease_until') || "
+            "jsonb_build_object('started_at', %s::text, "
+            "'last_claimed_at', %s::text) WHERE ref_id = %s",
+            (old, old, other_job),
+        )
+        conn.commit()
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(conn, executor="ssh_node", limit=1)
+        conn.commit()
+
+    assert [r[0] for r in claimed] == [other_job]
+    meta = _job_meta(store, other_job)
+    assert meta["started_at"] == old
+    assert datetime.fromisoformat(meta["last_claimed_at"]) > NOW - timedelta(minutes=1)
+
+    # The claim stamps are real wall-clock instants, so the pass must
+    # judge at ~now: age the stalled task's own signals past the deadline
+    # instead of passing a future ``now``.
+    _age(store, task, timedelta(minutes=45))
+    _age(store, task_job, timedelta(minutes=45))
+    res = fr.run_stall_pass(store, NOW)
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("a wait, not a stall" in note for note in res.notes)
 
 
 def test_running_build_is_judged_at_5_hours(store: Store) -> None:

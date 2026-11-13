@@ -1327,6 +1327,13 @@ def claim_executor_jobs(
     ``/todo`` dashboard to split a job's queue wait from its run time;
     absent on any job claimed before this shipped.
 
+    ``meta.last_claimed_at`` is the every-claim twin: re-stamped on EVERY
+    successful claim — fresh, re-queued (a yield → wake → re-claim keeps
+    the first ``started_at`` and appends no ``reclaims``) or a running-row
+    reclaim — so the newest claim instant is always durable
+    (gr625325 review; ``factory_rescue._queue_moved_at`` reads it as the
+    queue-drain clock).
+
     **Attempt cap (§H piece 3, generalized from ssh_node's original
     guard).** Every RE-claim of a ``STATUS:running`` row (``reclaim_
     stale_running=True`` only) bumps ``meta.attempts``. An epoch mismatch
@@ -1574,6 +1581,7 @@ def claim_executor_jobs(
         # workers import it at call time only (workers→handlers layering).
         from precis.handlers.skill import code_stamp
 
+        now_iso = datetime.now(UTC).isoformat()
         fields: dict[str, Any] = {
             "lease_boot_id": lease_boot_id,
             "lease_process": lease_process,
@@ -1599,14 +1607,23 @@ def claim_executor_jobs(
             # report as the freshest. The reclaim instant is not lost:
             # ``meta.reclaims`` below already records every one as
             # ``{at, why}``.
-            "started_at": meta.get("started_at") or datetime.now(UTC).isoformat(),
+            "started_at": meta.get("started_at") or now_iso,
+            # Wall-clock instant of THIS claim — re-stamped on EVERY
+            # successful claim, unlike ``started_at`` (gr625325 review).
+            # A re-claim from ``queued``/``yielded`` — the wake_runner's
+            # re-queue keeps the first ``started_at`` and drops only
+            # ``lease_until`` — appends no ``reclaims`` entry either, so
+            # without this key a second claim leaves no durable mark and
+            # a queue that just drained reads as stalled to
+            # ``factory_rescue._queue_moved_at``.
+            "last_claimed_at": now_iso,
         }
         if reclaim_stale_running and status_value == RUNNING:
             why = _reclaim_reason(meta, advertised_boot_ids)
             attempts = int(meta.get("attempts") or 0)
             attempts += 1
             reclaims = list(meta.get("reclaims") or [])
-            reclaims.append({"at": datetime.now(UTC).isoformat(), "why": why})
+            reclaims.append({"at": now_iso, "why": why})
             reclaims = reclaims[-_RECLAIMS_CAP:]
             fields["attempts"] = attempts
             fields["reclaims"] = reclaims
@@ -1621,6 +1638,7 @@ def claim_executor_jobs(
         meta["lease_host"] = lease_host
         meta["lease_code"] = fields["lease_code"]
         meta["started_at"] = fields["started_at"]
+        meta["last_claimed_at"] = fields["last_claimed_at"]
         # gr595536: open the run's footprint segment — the dispatch
         # thread re-baselines it at bind() and the terminal STATUS stamp
         # reads it into ``meta.footprint``.
