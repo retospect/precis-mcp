@@ -1859,8 +1859,10 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     git's 0-byte remnant failed every retry with "File exists" and spent
     the node's whole ladder. land_slice's keep-on-doubt judge decides
     (:func:`land_slice._index_lock_state`, scripts/reap-index-locks'
-    rule): provably dead is removed with a job_event line; young, held
-    open, a live git in the tree, or unjudgeable is kept and raises
+    rule): provably dead is removed with a job_event line — the judged
+    inode/mtime rides to the unlink so a lock replaced after the verdict
+    is never unlinked; young, held open, a live git in the tree,
+    unjudgeable, or a mismatched replacement is kept and raises
     :class:`_IndexLockWait`. No tree yet, or no gitdir git will name:
     nothing to clear."""
     if not tree.exists():
@@ -1873,8 +1875,9 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     if gitdir is None:
         return
     lock = gitdir / "index.lock"
-    if _ls._index_lock_state(lock, tree) == "stale":
-        _ls._reap_index_lock(ctx, lock, who=NAME)
+    state, judged = _ls._index_lock_state(lock, tree)
+    if state == "stale" and judged is not None:
+        _ls._reap_index_lock(ctx, lock, judged, who=NAME)
     if lock.exists():
         raise _IndexLockWait(
             f"index.lock {lock} is kept — a live git holds it, it is younger "

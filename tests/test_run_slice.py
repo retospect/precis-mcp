@@ -1563,6 +1563,51 @@ def test_reuse_checkout_index_lock_failure_is_an_infra_wait(
     assert "attempt:2" not in store.tag_strings(42)
 
 
+def test_submit_keeps_an_index_lock_replaced_between_judgement_and_unlink(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr650484 review: a live writer that swaps in its own
+    ``index.lock`` AFTER the stale verdict but before the unlink keeps
+    it — the judged inode/mtime rides to the unlink, the replacement
+    mismatches, and the submit waits attempt-free. The old two-fresh-
+    stats reap would have matched the replacement and unlinked a live
+    lock."""
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 600
+    )
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    real_state = land_slice._index_lock_state
+    swapped = False
+
+    def state_then_replace(
+        lock: Path, checkout: Path
+    ) -> tuple[str, os.stat_result | None]:
+        nonlocal swapped
+        verdict = real_state(lock, checkout)
+        if verdict[0] == "stale" and not swapped:
+            swapped = True
+            # The writer raced in after judgement: the dead remnant is
+            # gone and its own live lock sits at the path.
+            lock.unlink()
+            lock.write_bytes(b"live writer's lock")
+        return verdict
+
+    monkeypatch.setattr(land_slice, "_index_lock_state", state_then_replace)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert swapped  # the race actually fired
+    assert handle is None and ctx.status == "failed"
+    assert lock.exists() and lock.read_bytes() == b"live writer's lock"
+    assert seams["launch"] == []
+    assert not any(a[:1] == ["checkout"] for a, _c in seams["git"])
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert "attempt:2" not in store.tag_strings(42)
+
+
 def test_submit_unpinned_child_uses_lane_default_model(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

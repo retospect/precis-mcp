@@ -4948,7 +4948,7 @@ def test_live_index_lock_clearing_mid_wait_still_ships(
     monkeypatch.setattr(
         land_slice,
         "_index_lock_state",
-        lambda lock, checkout: next(states, "absent"),
+        lambda lock, checkout: (next(states, "absent"), None),
     )
     monkeypatch.setattr(land_slice.time, "sleep", lambda s: None)
     store = _Store()
@@ -4964,24 +4964,124 @@ def test_index_lock_state_keeps_every_doubt(
 ) -> None:
     """The keep-on-doubt ladder: absent → young → git-in-tree →
     unjudgeable → held-open all keep the lock; only the old, fully
-    disproven lock reads stale."""
+    disproven lock reads stale — and returns the stat it was judged
+    on, the identity the unlink must re-match."""
     lock = tmp_path / "index.lock"
-    assert land_slice._index_lock_state(lock, tmp_path) == "absent"
+    assert land_slice._index_lock_state(lock, tmp_path) == ("absent", None)
     lock.write_bytes(b"")
-    assert land_slice._index_lock_state(lock, tmp_path) == "live"  # young
+    state, _judged = land_slice._index_lock_state(lock, tmp_path)
+    assert state == "live"  # young
     old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 60)
     os.utime(lock, (old, old))
     monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: True)
-    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    state, _judged = land_slice._index_lock_state(lock, tmp_path)
+    assert state == "live"
     monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: None)
-    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    state, _judged = land_slice._index_lock_state(lock, tmp_path)
+    assert state == "live"
     monkeypatch.setattr(land_slice, "_git_in_tree", lambda c: False)
     monkeypatch.setattr(land_slice, "_held_open", lambda p: True)
-    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    state, _judged = land_slice._index_lock_state(lock, tmp_path)
+    assert state == "live"
     monkeypatch.setattr(land_slice, "_held_open", lambda p: None)
-    assert land_slice._index_lock_state(lock, tmp_path) == "live"
+    state, _judged = land_slice._index_lock_state(lock, tmp_path)
+    assert state == "live"
     monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
-    assert land_slice._index_lock_state(lock, tmp_path) == "stale"
+    state, judged = land_slice._index_lock_state(lock, tmp_path)
+    assert state == "stale" and judged == lock.stat()
+
+
+def test_reap_index_lock_removes_only_the_judged_inode(tmp_path: Path) -> None:
+    """The re-stat before the unlink is checked against the JUDGED
+    identity, not a fresh stat: a lock swapped out between judgement
+    and reap is a live writer's and is kept — two fresh stats would
+    have matched the replacement and unlinked it. (A recreated file
+    can recycle the inode number on some filesystems; the fresh
+    mtime_ns is what never matches — the judged file's is minutes
+    old.)"""
+    ctx = _Ctx(_Store(), {})
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 600)
+    os.utime(lock, (old, old))
+    judged = lock.stat()
+    assert land_slice._reap_index_lock(ctx, lock, judged) is True
+    assert not lock.exists()
+
+    # A writer replaced the judged remnant with its own live lock:
+    # the re-stat mismatches the judged identity and the unlink never
+    # runs — whether the filesystem recycled the inode or not.
+    lock.write_bytes(b"live writer's lock")
+    assert land_slice._reap_index_lock(ctx, lock, judged) is False
+    assert lock.exists() and lock.read_bytes() == b"live writer's lock"
+    # Only the first, genuine reap wrote a job_event.
+    reaped_events = [
+        text
+        for kind, text in ctx.chunks
+        if kind == "job_event" and "reaped stale index.lock" in text
+    ]
+    assert len(reaped_events) == 1
+
+
+def test_reap_index_lock_keeps_a_retouched_judged_lock(tmp_path: Path) -> None:
+    """Same inode, but the file moved since judgement (a writer wrote
+    to it): mtime_ns no longer matches — kept."""
+    ctx = _Ctx(_Store(), {})
+    lock = tmp_path / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 600)
+    os.utime(lock, (old, old))
+    judged = lock.stat()
+    lock.write_bytes(b"written after judgement")
+    assert land_slice._reap_index_lock(ctx, lock, judged) is False
+    assert lock.read_bytes() == b"written after judgement"
+
+
+def test_index_lock_replaced_between_judgement_and_unlink_is_kept(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through ``_clear_index_locks``: a live writer that
+    swaps in its own ``index.lock`` after the stale verdict keeps it —
+    the judged inode/mtime rides to the unlink, the replacement
+    mismatches, and the land waits attempt-free instead of removing a
+    live lock."""
+    gitdir = Path(seams["gitdir"])
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    old = time.time() - (land_slice.INDEX_LOCK_STALE_S + 600)
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    monkeypatch.setattr(land_slice.time, "sleep", lambda s: None)
+    real_state = land_slice._index_lock_state
+    swapped = False
+
+    def state_then_replace(
+        lock: Path, checkout: Path
+    ) -> tuple[str, os.stat_result | None]:
+        nonlocal swapped
+        verdict = real_state(lock, checkout)
+        if verdict[0] == "stale" and not swapped:
+            swapped = True
+            # The writer raced in after judgement: the old remnant is
+            # gone and its own live lock sits at the path.
+            lock.unlink()
+            lock.write_bytes(b"live writer's lock")
+        return verdict
+
+    monkeypatch.setattr(land_slice, "_index_lock_state", state_then_replace)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert swapped  # the race actually fired
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert lock.exists() and lock.read_bytes() == b"live writer's lock"
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "attempt:1" not in store.tag_strings(42)
 
 
 def test_already_on_main_identical_tree_finishes_green_without_ship(

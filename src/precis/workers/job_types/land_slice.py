@@ -2142,25 +2142,29 @@ def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def _index_lock_state(lock: Path, checkout: Path) -> str:
-    """``"absent" | "stale" | "live"``. ``"stale"`` only on positive
-    evidence — the same keep-on-doubt rule scripts/reap-index-locks
-    runs: mtime older than :func:`index_lock_stale_s`, no process holds
-    the file open (:func:`_held_open` answered ``False``), and no live
-    git has its cwd inside ``checkout`` (:func:`_git_in_tree` answered
-    ``False``). A young lock, one lsof or ps cannot judge, or one with a
-    live git in the tree is ``"live"`` — waited on, never removed."""
+def _index_lock_state(lock: Path, checkout: Path) -> tuple[str, os.stat_result | None]:
+    """``(state, judged)``: ``state`` is ``"absent" | "stale" | "live"``
+    and ``judged`` the stat the judgement ran on (``None`` when absent).
+    The removal path carries ``judged`` to the unlink so only the inode
+    that was judged can ever be removed — never a replacement that
+    raced in after it. ``"stale"`` only on positive evidence — the same
+    keep-on-doubt rule scripts/reap-index-locks runs: mtime older than
+    :func:`index_lock_stale_s`, no process holds the file open
+    (:func:`_held_open` answered ``False``), and no live git has its cwd
+    inside ``checkout`` (:func:`_git_in_tree` answered ``False``). A
+    young lock, one lsof or ps cannot judge, or one with a live git in
+    the tree is ``"live"`` — waited on, never removed."""
     try:
         st = lock.stat()
     except OSError:
-        return "absent"
+        return "absent", None
     if time.time() - st.st_mtime < index_lock_stale_s():
-        return "live"
+        return "live", st
     if _git_in_tree(checkout) is not False:
-        return "live"
+        return "live", st
     if _held_open(lock) is not False:
-        return "live"
-    return "stale"
+        return "live", st
+    return "stale", st
 
 
 def _lock_holders(lock: Path) -> list[str] | None:
@@ -2294,22 +2298,27 @@ def _git_in_tree(checkout: Path) -> bool | None:
     return False if saw_proc else None
 
 
-def _reap_index_lock(ctx: Any, lock: Path, *, who: str = NAME) -> bool:
-    """Remove a judged-stale ``index.lock``. The re-stat right before
-    the unlink must match the first stat's ``st_ino``/``st_mtime_ns`` —
-    a lock replaced between judgement and unlink is a live writer's,
-    never ours to remove (gr650484). ``False`` when the unlink lost a
-    race (another reaper got there first — fine either way). ``who``
-    prefixes the job_event line (run_slice reuses this reap)."""
+def _reap_index_lock(
+    ctx: Any, lock: Path, judged: os.stat_result, *, who: str = NAME
+) -> bool:
+    """Remove the ``index.lock`` the keep-on-doubt judge called stale —
+    identified by ``judged``, the stat :func:`_index_lock_state` saw.
+    The single re-stat right before the unlink must match its
+    ``st_dev``/``st_ino``/``st_mtime_ns``: a lock replaced between
+    judgement and unlink is a live writer's, never ours to remove
+    (gr650484). ``False`` when the identity no longer matches or the
+    unlink lost a race (another reaper got there first — fine either
+    way). ``who`` prefixes the job_event line (run_slice reuses this
+    reap)."""
     try:
-        st = lock.stat()
+        now = lock.stat()
     except OSError:
         return False
-    try:
-        again = lock.stat()
-    except OSError:
-        return False
-    if st.st_ino != again.st_ino or st.st_mtime_ns != again.st_mtime_ns:
+    if (
+        now.st_dev != judged.st_dev
+        or now.st_ino != judged.st_ino
+        or now.st_mtime_ns != judged.st_mtime_ns
+    ):
         return False
     try:
         lock.unlink()
@@ -2318,7 +2327,7 @@ def _reap_index_lock(ctx: Any, lock: Path, *, who: str = NAME) -> bool:
     ctx.append_chunk(
         "job_event",
         f"{who}: reaped stale index.lock {lock} "
-        f"(age {int(time.time() - st.st_mtime)}s; no live git in the "
+        f"(age {int(time.time() - judged.st_mtime)}s; no live git in the "
         "tree held it)",
     )
     return True
@@ -2341,10 +2350,14 @@ def _clear_index_locks(
     deadline = time.monotonic() + index_lock_wait_s()
     for lock, checkout in _index_lock_pairs(gitdir, tree):
         while True:
-            state = _index_lock_state(lock, checkout)
+            state, judged = _index_lock_state(lock, checkout)
             if state == "absent":
                 break
-            if state == "stale" and _reap_index_lock(ctx, lock):
+            if (
+                state == "stale"
+                and judged is not None
+                and _reap_index_lock(ctx, lock, judged)
+            ):
                 break
             if time.monotonic() >= deadline:
                 _fail(
