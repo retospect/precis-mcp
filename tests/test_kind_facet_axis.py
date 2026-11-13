@@ -4,9 +4,11 @@ Gripe sets ``cluster:``; memory/todo/quest/job left the axis unset, so
 an overflowing list there gave no one-paste narrowing call. Each fixed
 kind's axis is the grouping its tags/meta actually carry: memory's
 ``section:`` (threads/gotchas/runbooks/workflow/reference), todo's
-``project:`` workspace tag, job's ``meta.job_type`` — job's type never
-appears as a tag, so its facet line rides the meta axis and names
-``args={'job_type': …}`` as the narrowing door.
+``project:`` workspace tag, quest's ``STATUS:`` lifecycle (a
+closed-namespace axis — quest carries no open ``prefix:*`` grouping),
+job's ``meta.job_type`` — job's type never appears as a tag, so its
+facet line rides the meta axis and names ``args={'job_type': …}`` as
+the narrowing door.
 
 The lists below carry a realistic live filter (a ``topic:``/``STATUS:``
 tag), the shape an overflowing list actually arrives with — an
@@ -25,6 +27,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.job import JobHandler
 from precis.handlers.memory import MemoryHandler
+from precis.handlers.quest import QuestHandler
 from precis.handlers.todo import TodoHandler
 from precis.store import Store, Tag
 
@@ -97,6 +100,41 @@ def test_todo_overflow_names_project_groups(store: Store) -> None:
     assert "narrow: tags=['STATUS:open', 'project:alpha']" in body
 
 
+# ── quest: STATUS: closed axis ───────────────────────────────────────
+
+
+def _insert_quest(store: Store, title: str, *, status: str = "active") -> Any:
+    ref = store.insert_ref(kind="quest", slug=None, title=title, meta={})
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent")
+    return ref
+
+
+def test_quest_overflow_names_status_groups(store: Store) -> None:
+    h = QuestHandler(hub=Hub(store=store))
+    for i in range(3):
+        _insert_quest(store, f"strive {i}")
+    _insert_quest(store, "dormant 0", status="dormant")
+    # Queryless quest browse is the realistic overflow shape — a live
+    # filter tag is not needed (quest is a browse-terminal kind).
+    body = h.search(page_size=2).body
+    assert "status: STATUS:active 3 · STATUS:dormant 1" in body
+    # The narrowing door is a plain tags= paste — STATUS: is a live
+    # filter on quest.
+    assert "narrow: tags=['STATUS:active']" in body
+
+
+def test_quest_line_skips_abandoned_browse_default(store: Store) -> None:
+    """Queryless browse excludes ``STATUS:abandoned`` — the facet line's
+    groups describe that filtered set, not the tag set."""
+    h = QuestHandler(hub=Hub(store=store))
+    for i in range(3):
+        _insert_quest(store, f"strive {i}")
+    _insert_quest(store, "dormant 0", status="dormant")
+    _insert_quest(store, "abandoned 0", status="abandoned")
+    body = h.search(page_size=2).body
+    assert "STATUS:abandoned" not in body.split("narrow:", 1)[0]
+
+
 # ── job: meta.job_type axis ──────────────────────────────────────────
 
 
@@ -140,14 +178,19 @@ def test_job_line_caps_group_count(
     [
         ("memory", MemoryHandler, "sections:"),
         ("todo", TodoHandler, "projects:"),
+        ("quest", QuestHandler, "status:"),
         ("job", JobHandler, "job_types:"),
     ],
 )
 def test_page_that_fits_has_no_facet_line(store: Store, kind, handler, label) -> None:
     h = handler(hub=Hub(store=store))
-    meta = {"job_type": "graph_garden"} if kind == "job" else {}
-    _insert(store, kind, "only", meta=meta)
-    body = h.search(tags=[_FILTER[kind][0]], page_size=10).body
+    if kind == "quest":
+        _insert_quest(store, "only")
+    else:
+        meta = {"job_type": "graph_garden"} if kind == "job" else {}
+        _insert(store, kind, "only", meta=meta)
+    filter_tag = _FILTER.get(kind, (None,))[0]
+    body = h.search(tags=[filter_tag] if filter_tag else None, page_size=10).body
     assert label not in body
 
 

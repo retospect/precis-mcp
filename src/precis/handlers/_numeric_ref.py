@@ -756,7 +756,9 @@ class NumericRefHandler(Handler):
     #: the whole filtered set plus a pasteable narrowing call
     #: (:meth:`_facet_line`). ``None`` = no line. Kinds whose natural
     #: grouping lives in ``meta`` rather than a tag (job's ``job_type``)
-    #: set :attr:`facet_meta_key` instead; the two are mutually exclusive.
+    #: set :attr:`facet_meta_key`, kinds whose grouping is a closed tag
+    #: namespace (quest's ``STATUS:``) set :attr:`facet_closed_axis`;
+    #: the three are mutually exclusive.
     facet_axis: ClassVar[str | None] = None
 
     #: ``meta`` key a queryless overflowing list groups by instead of an
@@ -766,6 +768,16 @@ class NumericRefHandler(Handler):
     #: as a tag, so a tag axis can't name its groups). ``None`` = the
     #: meta axis is not used.
     facet_meta_key: ClassVar[str | None] = None
+
+    #: Closed-namespace tag axis (``'STATUS'`` → groups ``STATUS:active``
+    #: …) a queryless overflowing list groups by — the
+    #: :attr:`facet_axis` shape for kinds whose natural grouping lives in
+    #: a closed tag namespace rather than open ``prefix:*`` tags or meta
+    #: (gr639965: quest's lifecycle is the grouping every quest carries).
+    #: The store renders the group labels canonically, so the narrowing
+    #: door stays a ``tags=[…]`` paste like the open axis. ``None`` = not
+    #: used; mutually exclusive with the other two facet knobs.
+    facet_closed_axis: ClassVar[str | None] = None
 
     #: The single-id view that reads one ref completely — named on the
     #: batch footer's read-one hint (gr572710: gripe's bare get is the
@@ -2538,8 +2550,9 @@ class NumericRefHandler(Handler):
     ) -> str:
         """``clusters: a 12 · b 7 · … +3 groups (5) · (none) 40 — narrow: tags=[…, 'a']``.
 
-        Names the :attr:`facet_axis` groups (or the
-        :attr:`facet_meta_key` meta values) of the *whole* filtered set,
+        Names the :attr:`facet_axis` groups (the :attr:`facet_meta_key`
+        meta values, or the :attr:`facet_closed_axis` closed-namespace
+        labels) of the *whole* filtered set,
         biggest first, until they cover :data:`FACET_LINE_COVERAGE` of it
         or :data:`FACET_LINE_MAX_GROUPS` groups — the next narrowing call
         is one paste instead of a ``view='count'`` round trip. Empty when
@@ -2553,11 +2566,19 @@ class NumericRefHandler(Handler):
         if meta_key is not None:
             facet: tuple[str, str] = ("meta", meta_key)
             axis_label = meta_key
+            header = f"{axis_label}s"
+        elif self.facet_closed_axis is not None:
+            facet = ("axis", self.facet_closed_axis)
+            # Closed namespaces don't pluralise by rule (STATUS → status,
+            # not "statuss"), so the header keeps the namespace lowercase.
+            axis_label = self.facet_closed_axis.lower()
+            header = axis_label
         else:
             if axis is None:
                 return ""
             facet = ("open_axis", axis)
             axis_label = axis
+            header = f"{axis_label}s"
         total, groups = self.store.count_refs_facets(
             kind=self.kind,
             tags=tags,
@@ -2619,7 +2640,7 @@ class NumericRefHandler(Handler):
             narrow += f", args={narrow_args!r})"
         else:
             narrow = f"tags={[*tags, named[0][0]]!r}"
-        return f"{axis_label}s: {' · '.join(cells)} — narrow: {narrow}"
+        return f"{header}: {' · '.join(cells)} — narrow: {narrow}"
 
     def _list_row_marks(self, refs: list[Ref]) -> dict[int, str]:
         """Optional per-kind warning mark for a list/search row.

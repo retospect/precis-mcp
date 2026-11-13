@@ -1098,6 +1098,14 @@ class QuestHandler(NumericRefHandler):
     #: vector — the substrate for the alignment floor + reading calibration.
     emits_card: ClassVar[bool] = True
 
+    #: An overflowing queryless list names its ``STATUS:`` groups
+    #: (gr639965) — the lifecycle is the grouping every quest carries,
+    #: and queryless browse excludes only ``STATUS:abandoned``, so the
+    #: line contrasts the live states. Closed-namespace axis, unlike
+    #: memory's open one; the narrowing door is still a ``tags=`` paste
+    #: (``STATUS:active`` is a live filter).
+    facet_closed_axis: ClassVar[str | None] = "STATUS"
+
     #: Ref id of the most recent create, captured in ``_render_create_ack`` so
     #: the ``_create`` override can apply a create-time ``PRIO:`` to the column
     #: after the base transaction commits (the base insert doesn't take prio).
