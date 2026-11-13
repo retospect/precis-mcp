@@ -44,6 +44,7 @@ _SIZED_SITES: frozenset[str] = frozenset(
         "handlers/_paper_search.py::render",
         "handlers/_paper_search.py::run",
         "handlers/paper.py::_render_summaries",
+        "handlers/paper.py::_render_read_state_search",
         "handlers/md.py::search",
         "handlers/md.py::_render_file_outline",
         "handlers/markdown.py::_overview_body_extras",

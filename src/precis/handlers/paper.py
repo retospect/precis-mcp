@@ -4306,6 +4306,9 @@ class PaperHandler(Handler):
         suffix = "" if total <= len(rows) and page == 1 else f" of {total}"
         noun = "entry" if len(rows) == 1 else "entries"
         lines = [f"# {len(rows)} {kind} {noun} ({scope}){suffix}"]
+        ref_sizes = self.store.chunks.body_byte_counts(
+            [int(ref_id) for ref_id, _title, _year in rows]
+        )
         table_rows = []
         for ref_id, title, year in rows:
             handle = handle_registry.format_handle(kind, int(ref_id))
@@ -4315,10 +4318,11 @@ class PaperHandler(Handler):
                     "handle": handle,
                     "year": f"({year})" if year else "",
                     "preview": preview,
+                    "size": _size_cell(ref_sizes.get(int(ref_id), 0)),
                 }
             )
         lines.append(
-            render_agent_table(table_rows, schema=["handle", "year", "preview"])
+            render_agent_table(table_rows, schema=["handle", "year", "preview", "size"])
         )
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
