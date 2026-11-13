@@ -572,6 +572,120 @@ def _share_key(meta: dict[str, Any]) -> str:
     return _share_key_of(str(meta.get("job_type") or ""), params_pass)
 
 
+CLAIM_LANE_WINDOW_ENV = "PRECIS_CLAIM_LANE_WINDOW_S"
+DEFAULT_CLAIM_LANE_WINDOW_S = 3600.0
+_LANE_SHARE_KEY_PREFIX = "claim.lane_share."
+#: Per-claim deficit charge inside one batch, so a ``limit``-sized pull
+#: round-robins lanes instead of draining the biggest-deficit lane.
+_LANE_BATCH_CHARGE = 0.01
+
+#: SQL twin of :func:`_lane_of`: ``meta.share_key`` (stamped at mint),
+#: else ``job_type[:params.pass]``.
+_LANE_SQL = (
+    "COALESCE(NULLIF({r}.meta->>'share_key', ''), {r}.meta->>'job_type' ||"
+    " CASE WHEN {r}.meta->'params'->>'pass' IS NOT NULL"
+    " THEN ':' || ({r}.meta->'params'->>'pass') ELSE '' END)"
+)
+
+
+def _lane_of(meta: dict[str, Any]) -> str:
+    """The fair-share lane of a job row (``meta.share_key`` else the
+    ``job_type[:pass]`` share key)."""
+    stamped = meta.get("share_key")
+    if isinstance(stamped, str) and stamped:
+        return stamped
+    return _share_key(meta)
+
+
+def claim_lane_window_s() -> float:
+    """The sliding window, in seconds, the lane deficit is measured over."""
+    raw = os.environ.get(CLAIM_LANE_WINDOW_ENV)
+    if not raw:
+        return DEFAULT_CLAIM_LANE_WINDOW_S
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        log.warning(
+            "claim: %s=%r is not a number; using default", CLAIM_LANE_WINDOW_ENV, raw
+        )
+        return DEFAULT_CLAIM_LANE_WINDOW_S
+
+
+def lane_deficits(
+    conn: Connection, executor: str, host: str, window_s: float
+) -> dict[str, float]:
+    """``lane -> deficit`` for this host (gr595541).
+
+    ``deficit = share - fraction of lane-seconds`` the host gave the
+    lane over the last ``window_s``. Lane-seconds are the overlap of
+    each job's ``[last_claimed_at, end]`` with the window, ``end`` being
+    now for a running row, else the stamp of its current ``STATUS:`` tag
+    (a yield re-queue or terminal write). Shares are ``app_state``
+    ``claim.lane_share.<lane>`` weights (default 1), normalised over the
+    lanes in play — those with usage in the window or a claimable row
+    queued — so the default is an equal share. A lane with no usage owes
+    its full share; with no usage at all every deficit is its share.
+    """
+    lane_r = _LANE_SQL.format(r="r")
+    used: dict[str, float] = {}
+    for lane, secs in conn.execute(
+        f"""
+        SELECT {lane_r} AS lane,
+               sum(GREATEST(0, EXTRACT(EPOCH FROM (
+                     CASE WHEN t.value = %s THEN now() ELSE rt.created_at END
+                     - GREATEST((r.meta->>'last_claimed_at')::timestamptz,
+                                now() - make_interval(secs => %s))))))
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t USING (tag_id)
+         WHERE r.kind = 'job'
+           AND r.meta->>'executor' = %s
+           AND r.meta->>'lease_host' = %s
+           AND r.meta->>'last_claimed_at' IS NOT NULL
+           AND t.namespace = %s
+           AND (t.value = %s
+                OR rt.created_at >= now() - make_interval(secs => %s))
+         GROUP BY 1
+        """,
+        (RUNNING, window_s, executor, host, STATUS_NAMESPACE, RUNNING, window_s),
+    ).fetchall():
+        if lane is not None:
+            used[str(lane)] = max(0.0, float(secs or 0.0))
+    queued = conn.execute(
+        f"""
+        SELECT DISTINCT {lane_r}
+          FROM refs r
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'executor' = %s
+           AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                        WHERE rt.ref_id = r.ref_id AND t.namespace = %s
+                          AND t.value = ANY(%s))
+        """,
+        (executor, STATUS_NAMESPACE, list(CLAIMABLE)),
+    ).fetchall()
+    lanes = set(used) | {str(q[0]) for q in queued if q[0] is not None}
+    if not lanes:
+        return {}
+    weights = dict.fromkeys(lanes, 1.0)
+    for key, value in conn.execute(
+        "SELECT key, value FROM app_state WHERE key LIKE %s",
+        (f"{_LANE_SHARE_KEY_PREFIX}%",),
+    ).fetchall():
+        lane = str(key)[len(_LANE_SHARE_KEY_PREFIX) :]
+        if lane in weights:
+            try:
+                weights[lane] = max(0.0, float(str(value)))
+            except ValueError:
+                log.warning("claim: %s=%r is not a number; ignored", key, value)
+    total_w = sum(weights.values()) or 1.0
+    total_used = sum(used.values())
+    return {
+        lane: weights[lane] / total_w
+        - (used.get(lane, 0.0) / total_used if total_used > 0 else 0.0)
+        for lane in lanes
+    }
+
+
 def claim_age_step_s() -> float:
     """The claim-ageing step in seconds (``0`` = no ageing)."""
     raw = os.environ.get(CLAIM_AGE_STEP_ENV)
@@ -1350,7 +1464,7 @@ def claim_executor_jobs(
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
     2026-10-24, D4 share half; release band 2026-11-07, gr584136).**
     ``ORDER BY claim_rank ASC,
-    share_running ASC, aged_prio ASC, queued_since ASC, ref_id ASC``
+    lane_deficit DESC, aged_prio ASC, queued_since ASC, ref_id ASC``
     where ``claim_rank`` is the row's class (human 0 < agent 1 <
     recurring 2 < release 2.5 < background 3 — the release band from
     :data:`RELEASE_LEG_JOB_TYPES` ``job_type``s, not ``origin``; a
@@ -1940,7 +2054,7 @@ def claim_executor_jobs(
     reserve_block_params: tuple[Any, ...] = ()
     caps: dict[str, int] = {}
     running_by_type: dict[str, int] = {}
-    running_by_share: dict[str, int] = {}
+    lane_deficit: dict[str, float] = {}
     claim_host = default_host
     executor_cap: int | None = None
     executor_reserve: dict[str, int] = {}
@@ -1973,11 +2087,10 @@ def claim_executor_jobs(
             ).fetchone()
             if not (held and held[0]):
                 contested.add(jt)
-        # One grouped read feeds both the per-type cap counts and the
-        # D4-share-half fair-share counts (the ``params.pass`` band
-        # discriminator — :func:`_share_key_of`).
+        # One grouped read feeds the per-type cap counts; the lane
+        # deficit (gr595541) is a separate windowed read.
         running_by_type = {}
-        for jt, ps, cnt in conn.execute(
+        for jt, _ps, cnt in conn.execute(
             "SELECT r2.meta->>'job_type', r2.meta->'params'->>'pass', "
             "count(*) FROM refs r2 "
             "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
@@ -1991,8 +2104,11 @@ def claim_executor_jobs(
         ).fetchall():
             jt_s = str(jt)
             running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
-            running_by_share[_share_key_of(jt_s, ps)] = int(cnt)
         running_total = sum(running_by_type.values())
+        if claim_class_rank_enabled():
+            lane_deficit = lane_deficits(
+                conn, executor, claim_host, claim_lane_window_s()
+            )
         if executor_cap is not None and running_total >= executor_cap:
             # Lane already full under the lane lock — no fresh claim can
             # pass this cycle, so the candidate query is skipped too.
@@ -2047,51 +2163,32 @@ def claim_executor_jobs(
         class_rank=class_rank_on,
         release_freeze=True,
     )
-    # D4 share half (job-scheduling-fairness slice 5, activated by the
-    # gr506754 measurement): among candidates of the winning class, prefer
-    # the share — ``job_type`` refined by the ``params.pass`` band
-    # discriminator (:func:`_share_key_of`) — with the FEWEST running rows
-    # on this lane, *then* the aged-prio/queued_since/ref_id key. The
-    # materialize SMALL bands share one ``derived_drain`` job_type, so a
-    # job_type-granular share can't separate them: the sibling band that
-    # holds the capped lane starves the other for hours. The join feeds the
-    # ORDER BY so the overfetch window actually contains the under-running
-    # share's rows; the Python re-rank reads the same counts through
-    # ``running_by_share``. Runs only under the class order — the
-    # ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch keeps the pre-slice-2
-    # ORDER BY verbatim.
+    # Lane deficit (gr595541, replacing slice 5's fewest-running share):
+    # among candidates of the winning class, prefer the lane (``meta.
+    # share_key``, else ``job_type[:pass]``) this host owes the most —
+    # share less its fraction of lane-seconds over the sliding window
+    # (:func:`lane_deficits`) — *then* aged-prio/queued_since/ref_id. The
+    # join feeds the ORDER BY so the overfetch window holds the most-owed
+    # lane's rows; the Python re-rank reads the same dict. A lane absent
+    # from the dict sorts at 0. Runs only under the class order.
     share_join_sql = ""
-    share_col_sql = "0"
+    share_col_sql = "0::float8"
     share_order_sql = ""
     share_params: tuple[Any, ...] = ()
-    if class_rank_on and claim_host is not None:
-        share_col_sql = "COALESCE(s.n, 0)"
-        share_order_sql = "share_running ASC, "
-        share_join_sql = """
-          LEFT JOIN (
-                SELECT r2.meta->>'job_type' AS sjt,
-                       COALESCE(r2.meta->'params'->>'pass', '') AS sps,
-                       count(*) AS n
-                  FROM refs r2
-                 WHERE r2.kind = 'job' AND r2.retired_at IS NULL
-                   AND r2.meta->>'executor' = %s
-                   AND r2.meta->>'lease_host' = %s
-                   AND EXISTS (
-                         SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
-                          WHERE rt2.ref_id = r2.ref_id
-                            AND t2.namespace = %s AND t2.value = %s
-                       )
-                 GROUP BY 1, 2
-              ) s ON s.sjt = r.meta->>'job_type'
-                 AND s.sps = COALESCE(r.meta->'params'->>'pass', '')"""
-        share_params = (executor, claim_host, STATUS_NAMESPACE, RUNNING)
+    if class_rank_on and claim_host is not None and lane_deficit:
+        share_col_sql = "COALESCE(d.deficit, 0)"
+        share_order_sql = "lane_deficit DESC, "
+        share_join_sql = f"""
+          LEFT JOIN unnest(%s::text[], %s::float8[]) AS d(lane, deficit)
+                 ON d.lane = {_LANE_SQL.format(r="r")}"""
+        share_params = (list(lane_deficit), list(lane_deficit.values()))
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
                {aged_prio_sql} AS aged_prio,
-               {share_col_sql} AS share_running
+               {share_col_sql} AS lane_deficit
           FROM refs r
           CROSS JOIN LATERAL (
                 SELECT max(rt.created_at) AS qs
@@ -2248,11 +2345,11 @@ def claim_executor_jobs(
             rank, floor = 0.0, 1.5
         aged = max(prio - age / age_step, min(prio, floor)) if age_step > 0 else prio
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
-        # D4 share half: reads ``running_by_share`` as it stands NOW (the
-        # pick loop bumps it per claim), so a multi-claim batch
-        # round-robins the shares instead of draining one share's prefix.
-        share = (
-            float(running_by_share.get(_share_key(dict(r[2] or {})), 0))
+        # Lane deficit, charged per claim in this batch so a multi-claim
+        # pull round-robins lanes by what they are owed.
+        lane = _lane_of(dict(r[2] or {}))
+        deficit = (
+            lane_deficit.get(lane, 0.0) - _LANE_BATCH_CHARGE * batch_charge.get(lane, 0)
             if class_rank_on
             else 0.0
         )
@@ -2260,8 +2357,9 @@ def claim_executor_jobs(
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, rank, share, aged, r[5] or r[4], int(r[0]))
+        return (-scarcity, rank, -deficit, aged, r[5] or r[4], int(r[0]))
 
+    batch_charge: dict[str, int] = {}
     fresh_claimed = 0
     remaining = sorted(rows, key=_order_key)
     while remaining and fresh_claimed < fresh_limit:
@@ -2300,8 +2398,8 @@ def claim_executor_jobs(
         fresh_claimed += 1
         running_total += 1
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
-        share_key = _share_key(meta)
-        running_by_share[share_key] = running_by_share.get(share_key, 0) + 1
+        lane_key = _lane_of(meta)
+        batch_charge[lane_key] = batch_charge.get(lane_key, 0) + 1
     return claimed
 
 

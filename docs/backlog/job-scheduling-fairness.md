@@ -236,12 +236,17 @@ pick — the name `plans.lanes` live counts/backoffs, the `plan_dispatch` ladder
 and the work boards read. A chain job's class resolves off `params.todo_id`
 (the todo the job executes), not `parent_id` (td652988 review, td653075).
 
-**Deficit (gr595541).** Each lane has a share in `service_config` (default
+**Deficit (gr595541) — shipped.** Each lane has a share in `service_config` (default
 equal). Deficit = share − the fraction of lane-seconds this host gave the
 lane over a sliding window (1 h to start). Claim order is
 `(class_rank, deficit DESC, aged_prio, queued_since, ref_id)`. Class-bounded
 ageing (D3) and the prio-1 override stay. This replaces D4's fewest-running
-pick; the `max_running` caps stay.
+pick; the `max_running` caps stay. Built in `executors/_common.py::lane_deficits`:
+lane = `meta.share_key` else `job_type[:pass]`; lane-seconds from `last_claimed_at`
+to the current STATUS stamp (now if running) on this `lease_host`; window
+`PRECIS_CLAIM_LANE_WINDOW_S` (3600); shares are `app_state`
+`claim.lane_share.<lane>` weights (default 1, normalised over lanes in play).
+Reservation+backfill waits on the footprint table.
 
 Reservation and backfill once footprints exist: `cluster-scheduling.md`
 Pillar 3b. The footprint predictor and the admission loop that consume these
