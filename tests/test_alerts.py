@@ -708,6 +708,32 @@ def test_handler_search_rows_carry_first_raised_and_last_reported(
     assert "10m" in body
 
 
+def test_handler_recent_rows_carry_first_raised_and_last_reported(
+    hub: Hub, store: Store
+) -> None:
+    """gr648197: the skill doc promises ``/recent`` rows the same two
+    stamps — but the view used to fall through to the base preview
+    table (id|preview|tags) and carried neither an age nor a stamp.
+    It now routes through the hits table like ``/open`` and search."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(
+        store, source="s", fingerprint="fp:recent-ages", title="recent aged alert"
+    )
+    _backdate(store, aid, created_hours=5, updated_minutes=12)
+    body = handler.get(id="/recent").body
+    assert "first_raised" in body
+    assert "last_reported" in body
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT created_at, updated_at FROM refs WHERE ref_id = %s", (aid,)
+        ).fetchone()
+    assert row is not None
+    created, updated = row
+    assert created.strftime("%Y-%m-%d %H:%MZ") in body
+    assert updated.strftime("%Y-%m-%d %H:%MZ") in body
+    assert "12m" in body
+
+
 @pytest.mark.parametrize(
     ("seconds", "label"),
     [

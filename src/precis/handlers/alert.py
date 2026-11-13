@@ -20,11 +20,10 @@ the agent surface is the read / triage half:
     - get(kind='alert', id=N, view='links'/'log'/'raw')
                                            — generic numeric-ref views
     - get(kind='alert', id='/recent')     — recent alerts (open + resolved)
-    - get(kind='alert', id='/open')       — currently-open alerts only;
-                                             rows carry scaled age +
-                                             first-raised/last-reported
-                                             (minute precision, like the
-                                             /alerts web tab — gr648197)
+    - get(kind='alert', id='/open')       — currently-open alerts only.
+      Both listings (and search hits) carry a scaled age plus
+      first-raised/last-reported, minute precision, like the /alerts
+      web tab (gr648197)
     - get(kind='alert', id='/rules')      — the registered failure-id
                                              catalogue (precis.alert_ids):
                                              every rule with its meaning,
@@ -256,6 +255,8 @@ class AlertHandler(NumericRefHandler):
         return ("recent", "open", "rules", "health")
 
     def _list_view(self, view: str) -> Response | None:
+        if view in ("", "recent"):
+            return self._render_recent()
         if view == "open":
             return self._render_open()
         if view == "rules":
@@ -443,6 +444,21 @@ class AlertHandler(NumericRefHandler):
             else (f"snapshot {age:.1f}h old" if age is not None else "snapshot")
         )
         return f"check ({src}): {row['status']} — {row['detail']}"
+
+    def _render_recent(self) -> Response:
+        """Recent alerts (open + resolved), recency-ordered.
+
+        Renders through :meth:`_render_hits_table` so the rows carry the
+        same scaled age and ``first_raised``/``last_reported`` stamps as
+        ``/open`` and search hits (gr648197) — the base preview table
+        (``id | preview | tags``) carried neither.
+        """
+        refs = self.store.list_refs(kind=self.kind, limit=20)
+        if not refs:
+            return Response(body="no alerts yet", result_count=0)
+        head = f"# recent alerts ({len(refs)})"
+        body = f"{head}\n{self._render_hits_table(refs)}"
+        return Response(body=body, result_count=len(refs))
 
     def _render_open(self) -> Response:
         """Currently-open alerts, recency-ordered."""
