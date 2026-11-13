@@ -7,9 +7,8 @@ exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
 measurement protocols, deduped dispatch/harvest drift logbook entries, and
-frontier/status protocol histograms; gr593142), `environment_basis` (the
-engine-free kinetics v2 environment hash folded into the network basis),
-`atomcost` (static
+frontier/status protocol histograms; gr593142), `environment_basis` and
+`correction_policy` (engine-free hashes/tuples in the network basis), `atomcost` (static
 element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
 pareto/profile renderers + frozen data snapshots for draft export; CLI
 ``precis quest figure``), `replay` (the optimisation-benchmark read of the

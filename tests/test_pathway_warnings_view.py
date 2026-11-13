@@ -343,6 +343,32 @@ def test_warnings_view_no_warnings_no_records_is_quiet() -> None:
     assert "no messages" in body
 
 
+def test_warnings_view_shows_correction_provenance_issue() -> None:
+    from precis_pathway.toon_views import warnings_toon
+
+    base = {"results": _RESULTS_LEGACY, "warnings": [], "config": {"network": "x"}}
+    legacy = warnings_toon({**base, "autocatpath_version": "0.23.0"})
+    assert "correction provenance" not in legacy
+    ok = warnings_toon(
+        {
+            **base,
+            "autocatpath_version": "0.24.0",
+            "results": {
+                **_RESULTS_LEGACY,
+                "corrections": {"version": "t", "gas": {"enabled": False}},
+            },
+        }
+    )
+    assert ok == warnings_toon({**base, "autocatpath_version": "0.23.0"})
+    broken = warnings_toon({**base, "autocatpath_version": "0.24.0"})
+    lines = broken.splitlines()
+    assert (
+        lines[1]
+        == "correction provenance: results.corrections missing on engine 0.24.0"
+    )
+    assert lines[2] == ""
+
+
 def test_warnings_summary_line_is_compact() -> None:
     meta = {"results": _RESULTS_V2, "warnings": _WARNINGS}
     summary = _warnings_summary(meta)

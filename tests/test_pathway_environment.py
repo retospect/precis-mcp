@@ -43,6 +43,7 @@ from precis_pathway import runner
 from precis_pathway._dispatch_common import _kinetics_scalars
 from precis_pathway.handler import PathwayHandler
 from precis_pathway.toon_views import kinetics_text
+from tests.test_pathway_correction_basis import valid_corrections
 
 if TYPE_CHECKING:
     from precis.dispatch import Hub
@@ -385,7 +386,7 @@ def test_put_refuses_two_different_blocks() -> None:
 def _pw(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "config": config,
-        "results": {"network_digest": "d1"},
+        "results": {"network_digest": "d1", "corrections": valid_corrections()},
         "autocatpath_version": "0.32.0",
     }
 
