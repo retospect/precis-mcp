@@ -810,7 +810,18 @@ class IntrospectionMixin(RuntimeShape):
         if self.store is None:
             raise Unsupported("view='count' needs a store-backed deployment")
         bad = next(
-            (a for a in self._GENERIC_COUNT_UNSUPPORTED_TOP if args.get(a) is not None),
+            (
+                a
+                for a in self._GENERIC_COUNT_UNSUPPORTED_TOP
+                # ``page=1`` is the ``search`` verb's unconditional
+                # injected default (tools/core.py's payload), not a
+                # caller's paging ask — over MCP it reached every
+                # generic count and refused the call outright (gr663484).
+                # Only ``page`` past the first names a page the ref
+                # count can't serve.
+                if args.get(a) is not None
+                and not (a == "page" and args.get("page") == 1)
+            ),
             None,
         )
         if bad is not None:

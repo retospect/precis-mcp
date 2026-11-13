@@ -303,20 +303,56 @@ async def cmd_show_prompt(ctx: SlashContext) -> None:
     )
 
 
+def _status_count_head(blob: str | None) -> str:
+    """The ``view='count'`` headline, minus its ``#`` marker."""
+    for line in (blob or "").splitlines():
+        if line.strip():
+            return line.strip().removeprefix("#").strip()
+    return "(no count)"
+
+
+def _status_latest_row(blob: str | None) -> str:
+    """First data row of a bare ``get(kind=K)`` listing — the newest ref.
+
+    Listing shapes: a ``# …`` head line, a ``{col\\t…}`` schema row,
+    then one tab-separated row per ref (newest first). Empty kinds
+    render a "no <kind> entries yet" head with no table at all.
+    """
+    lines = (blob or "").strip().splitlines()
+    if not lines or lines[0].lower().startswith("no "):
+        return "(none)"
+    for line in lines[1:]:
+        line = line.strip()
+        if not line or line.startswith(("{", "Next:", "skills ")):
+            continue
+        return " — ".join(line.split("\t")[:2])
+    return "(none)"
+
+
 async def cmd_status(ctx: SlashContext) -> None:
-    """Counts per kind + the most-recent entry per kind."""
+    """Counts per kind + the most-recent entry per kind.
+
+    ``search(kind=K, view='count')`` gives the ref total; the bare
+    ``get(kind=K)`` listing gives the newest row. A tool refusal raises
+    :class:`~asa_bot.precis_client.PrecisToolError` and lands on the
+    ``error —`` line — never "(empty)" for a call that actually failed
+    (gr663484).
+    """
     kinds = ctx.positional or ["paper", "patent", "memory", "pres", "conv"]
     parts = ["**precis status** — counts + latest"]
     for k in kinds:
         try:
-            blob = await ctx.precis.call_tool(
-                "search",
-                {"kind": k, "page_size": 1, "q": "*"},
+            count_blob = await ctx.precis.call_tool(
+                "search", {"kind": k, "view": "count"}
             )
-            first_line = (blob or "").strip().split("\n", 1)[0] if blob else "(empty)"
-            parts.append(f"`{k}`: {first_line}")
+            latest_blob = await ctx.precis.call_tool("get", {"kind": k})
         except Exception as e:
             parts.append(f"`{k}`: error — {e}")
+            continue
+        parts.append(
+            f"`{k}`: {_status_count_head(count_blob)} — "
+            f"latest: {_status_latest_row(latest_blob)}"
+        )
     await ctx.send("\n".join(parts))
 
 
