@@ -23,10 +23,13 @@ KB) and skip, naming the board, where that directory is absent. The five
 net orders are production plus reversed and three seeded shuffles, applied
 by wrapping ``wires._net_order`` as ``scratch/review/g2e_cfg.py`` does.
 
-Each (board, order) the near-zero invariant does not yet hold on is a strict xfail
-listing the nets that fail, so a slice that fixes it turns the row red until
-the marker is dropped. Real-rule rows assert every counting local DRC
-finding on a clean net — none is tolerated.
+Each (board, order) the near-zero invariant does not yet hold on is gated in
+two halves: the failing signal nets must equal the ``_FAILING`` entry exactly
+— the ledger IS the assertion, so a row that gains or loses a net goes red
+— and a board with ``_GND_MISSING`` pads carries a strict xfail on the
+fanout half alone, so a fixed pad set XPASSes red until the entry is
+dropped. Real-rule rows assert every counting local DRC finding on a clean
+net — none is tolerated.
 """
 
 from __future__ import annotations
@@ -89,12 +92,15 @@ _GND_MISSING = {
 #: "guarded" is the anti-short guard's withdrawal, named by the check that
 #: fired (``track:X`` = a piece of net X closer than the widths plus
 #: clearance, here a few um); "severed" is the emit-connectivity check; the
-#: rest are no-via branches and unresolved crossings. A row that starts
-#: passing must lose its entry (and a board's ``_GND_MISSING`` its pads).
+#: rest are no-via branches and unresolved crossings. The test compares the
+#: row's failing nets to this entry exactly: a net gained or lost fails the
+#: row, so a row that starts passing must lose its entry (and a board's
+#: ``_GND_MISSING`` its pads).
 _FAILING: dict[tuple[str, str], tuple[list[str], str]] = {
     # TAZ rows last measured on main at fe360ca4c; round 3 (pass 0 ==
     # main, emit >= pass 0) was not re-measured (exports absent); a row
-    # that now XPASSes on a fixture machine should be deleted.
+    # that now passes on a fixture machine goes red until its entry is
+    # deleted.
     ("local-66", "prod"): (
         ["DEC1", "VBAT_OV", "VSTOR"],
         "unreachable ['DEC1', 'VBAT_OV', 'VSTOR']; severed ['VBAT_OV', 'VSTOR']",
@@ -138,12 +144,11 @@ _FAILING: dict[tuple[str, str], tuple[list[str], str]] = {
 }
 
 
-def _xfail_reason(board: str, order: str) -> str | None:
-    nets, why = _FAILING.get((board, order), ([], ""))
+def _gnd_xfail_reason(board: str) -> str | None:
     gnd = _GND_MISSING[board]
-    if not nets and not gnd:
+    if not gnd:
         return None
-    return f"nets not clean: {nets} ({why}); GND/plane pads without a via site: {list(gnd)}"
+    return f"GND/plane pads without a via site: {list(gnd)}"
 
 
 def _load_taz(batch_dir: str, export: str) -> tuple[Any, Any, Any, Any]:
@@ -588,31 +593,122 @@ def _pad_hit_branches(
     return out
 
 
-def _params() -> list[Any]:
+def _params(gnd_xfail: bool) -> list[Any]:
     out = []
     for board in BOARDS:
         for order in ORDERS:
             marks: list[Any] = []
-            reason = _xfail_reason(board, order)
+            reason = _gnd_xfail_reason(board) if gnd_xfail else None
             if reason is not None:
                 marks.append(pytest.mark.xfail(strict=True, reason=reason))
             out.append(pytest.param(board, order, id=f"{board}-{order}", marks=marks))
     return out
 
 
-@pytest.mark.parametrize(("board", "order"), _params())
-def test_near_zero_rules_route_every_net_and_fan_out_every_plane_pad(
+#: (board, order) -> (failing nets, missing pads): one near-zero pass per
+#: row, shared by the two halves of the split invariant below.
+_PASS_RESULTS: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+
+
+def _near_zero_result(
     board: str, order: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+) -> tuple[list[str], list[str]]:
     spec = BOARDS[board]
     if spec is not None and not (TAZ / "out" / spec[1]).is_dir():
         pytest.skip(
             f"board {board}: scratch export {spec[1]} absent (scratch/ is gitignored)"
         )
-    _set_order(monkeypatch, order)
-    failed, gnd = _near_zero_pass(board, monkeypatch)
-    assert not failed, f"{board}/{order}: nets not clean: {failed}"
+    key = (board, order)
+    if key not in _PASS_RESULTS:
+        _set_order(monkeypatch, order)
+        _PASS_RESULTS[key] = _near_zero_pass(board, monkeypatch)
+    return _PASS_RESULTS[key]
+
+
+@pytest.mark.parametrize(("board", "order"), _params(gnd_xfail=False))
+def test_near_zero_rules_failing_signal_nets_match_the_ledger(
+    board: str, order: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failing signal nets are pinned by ``_FAILING`` both ways: a row
+    that starts failing a new net fails, and a row whose nets are fixed
+    fails until the stale ledger entry is dropped. No xfail — a GND-pad
+    gap on the same board must not hide a signal-net regression."""
+    failed, _gnd = _near_zero_result(board, order, monkeypatch)
+    expected, why = _FAILING.get((board, order), ([], ""))
+    assert failed == sorted(expected), (
+        f"{board}/{order}: failing nets {failed} != ledger {sorted(expected)}"
+        + (f" ({why})" if why else "")
+    )
+
+
+@pytest.mark.parametrize(("board", "order"), _params(gnd_xfail=True))
+def test_near_zero_rules_every_plane_pad_fans_out(
+    board: str, order: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every GND/plane pad must find a fanout-via site. The strict xfail is
+    keyed on ``_GND_MISSING[board]`` alone, so a row whose pads all fan out
+    XPASSes red until the entry is dropped."""
+    _failed, gnd = _near_zero_result(board, order, monkeypatch)
     assert not gnd, f"{board}/{order}: plane pads without a via site: {gnd}"
+
+
+def test_near_zero_ledger_rows_carry_no_xfail_marks() -> None:
+    # gr556798: no (board, order) row of the ledger test may xfail — a
+    # GND-pad gap on the board must not mask a signal-net drift. The
+    # fanout half is where the marks live.
+    marks = getattr(
+        test_near_zero_rules_failing_signal_nets_match_the_ledger, "pytestmark", []
+    )
+    row_marks = [
+        row_mark
+        for mark in marks
+        if mark.name == "parametrize"
+        for row in mark.args[1]
+        for row_mark in getattr(row, "marks", ())
+    ]
+    assert not any(mark.name == "xfail" for mark in [*marks, *row_marks])
+
+
+@pytest.mark.parametrize(
+    "actual",
+    [
+        pytest.param(["DEC1", "VBAT_OV", "VSTOR", "PHANTOM"], id="gained-net"),
+        pytest.param(["DEC1", "VBAT_OV"], id="lost-net"),
+        pytest.param([], id="fixed-row"),
+    ],
+)
+def test_near_zero_ledger_assertion_fires_on_mismatch(
+    actual: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # (local-66, prod)'s ledger entry is ["DEC1", "VBAT_OV", "VSTOR"]: any
+    # drift — a gained net, a lost net or a fixed row — fails the row
+    # outright. Under the old single xfail all three looked identical.
+    def injected(*_args: Any) -> tuple[list[str], list[str]]:
+        return (actual, [])
+
+    monkeypatch.setitem(globals(), "_near_zero_result", injected)
+    with pytest.raises(AssertionError, match="!= ledger"):
+        test_near_zero_rules_failing_signal_nets_match_the_ledger(
+            "local-66", "prod", monkeypatch
+        )
+
+
+def test_near_zero_split_halves_ignore_each_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The ledger test does not look at missing pads and the fanout test
+    # does not look at failing nets — each half is gated on its own
+    # ledger. Direct calls carry no parametrize mark, so a standing
+    # finding is a hard failure here.
+    def injected(*_args: Any) -> tuple[list[str], list[str]]:
+        return (["DEC1", "VBAT_OV", "VSTOR"], ["GND[14]"])
+
+    monkeypatch.setitem(globals(), "_near_zero_result", injected)
+    test_near_zero_rules_failing_signal_nets_match_the_ledger(
+        "local-66", "prod", monkeypatch
+    )
+    with pytest.raises(AssertionError, match="without a via site"):
+        test_near_zero_rules_every_plane_pad_fans_out("local-66", "prod", monkeypatch)
 
 
 #: No warn-tier ``clearance`` finding is tolerated on a clean net. s1fix's
