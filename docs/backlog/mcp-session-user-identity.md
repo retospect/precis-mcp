@@ -65,6 +65,24 @@ Three classes of bearer secret exist or should:
    URL-embedded where the client cannot set headers. Scope is a per-token
    allow-list of kinds and verbs. Filed as gr595554.
 
+gr595554 findings (2026-11-13). The claude.ai custom connector takes a
+server URL plus optional OAuth client credentials; no documentation found
+shows a custom `Authorization` header or static bearer field for it, so the
+gripe's own fallback applies: the claude.ai chat gateway authenticates with
+an **OAuth grant** (`precis.oauth`, per-user consent, independent and
+revocable at `/account/connections`, scopes `mcp:full` or `learning`). That
+grant is the class-3 token for chat connectors; no separate static token is
+minted for claude.ai. Re-verify against Anthropic's connector docs when the
+paste is done, since the client UI changes. What remains open for class 3:
+
+- a per-grant kind/verb allow-list narrower than `mcp:full` (extends the
+  OAuth scope vocabulary and `_personal_call_allowed`);
+- folding the podcast feed credential (`precis_web/routes/podcast.py`) into
+  a labelled, digest-only, listable, URL-embeddable capability token, since
+  a feed client cannot do OAuth or set headers;
+- the ask-user todo for Reto to connect claude.ai chat via the runbook
+  (`docs/runbooks/mcp-oauth.md`).
+
 Reto authorized OAuth for multiple per-user app connections on 2026-11-10
 (gr621409), with full MCP access including writes. `precis.oauth` implements
 independent grants and per-user browser consent; manual personal tokens keep
