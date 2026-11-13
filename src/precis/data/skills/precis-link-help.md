@@ -93,7 +93,7 @@ the whole call back. `mode='remove'` takes the same id list.
 | `target` | str | required | A handle, or `kind:identifier[~selector]` (required for file-backed kinds). |
 | `rel` | str | `related-to` | Relation slug (see `precis-relations`). |
 | `mode` | str | `add` | `add` or `remove`. |
-| `reason` | str | — | The edge's why (`links.meta.reason`), on kinds whose `link` takes `meta=` (memory/finding/paper/taxon). `'.'` marks reviewed-obvious; a sentence records what the edge adds beyond what the row already shows. |
+| `reason` | str | — | The edge's why (`links.meta.reason`), on kinds whose `link` takes `meta=` (memory/finding/paper/taxon/todo — except `rel='parent'`, which is a virtual edge with nowhere to store it). `'.'` marks reviewed-obvious; a sentence records what the edge adds beyond what the row already shows. |
 
 ## Link at creation time instead
 

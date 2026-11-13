@@ -2629,6 +2629,8 @@ class TodoHandler(NumericRefHandler):
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
+        meta: dict[str, Any] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Intercept the reserved ``rel='parent'`` relation as a move.
@@ -2653,8 +2655,24 @@ class TodoHandler(NumericRefHandler):
         truth — tree views, the ON DELETE cascade, and every guard
         key off the column; a mirrored links row would duplicate
         state and need a sync trigger.
+
+        ``reason=`` is the kwarg spelling of ``meta={'reason': …}``
+        (:func:`merge_link_reason`, gr626896; gr657045 — the verb-level
+        ``link`` signature advertises it on every kind). Edge meta can
+        ride only a *stored* edge: the virtual ``rel='parent'`` move has
+        no ``links`` row to hold it, and a fan-in ``id=[...]`` fans one
+        edge shape across many ids — both refuse rather than drop it.
         """
+        from precis.utils.link_tag_ops import merge_link_reason
+
         if rel == _RESERVED_PARENT_REL:
+            if meta is not None or reason is not None:
+                raise BadInput(
+                    "meta=/reason= can't ride rel='parent' — the parent "
+                    "edge is virtual (refs.parent_id, no links row to hold it)",
+                    next="drop meta=/reason=, or record the why on a stored "
+                    "edge (e.g. rel='blocked-by')",
+                )
             if isinstance(id, list):
                 # Fan-in is for stored edges; a tree move carries the
                 # reparent guards (cycle/depth/owner) per id — one call
@@ -2665,7 +2683,15 @@ class TodoHandler(NumericRefHandler):
                     "rel='parent')",
                 )
             return self._reparent(id=id, target=target, mode=mode)
-        return super().link(id=id, target=target, mode=mode, rel=rel, **_kw)
+        meta = merge_link_reason(meta, reason, mode=mode)
+        if isinstance(id, list):
+            if meta is not None:
+                raise BadInput(
+                    "link meta requires a single todo id",
+                    next="link each todo separately with its own meta=/reason=",
+                )
+            return self._link_batch(id, target=target, mode=mode, rel=rel)
+        return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
 
     def _reparent(self, *, id: str | int, target: str | None, mode: str) -> Response:
         """Apply a ``rel='parent'`` move/detach with full tree guards."""

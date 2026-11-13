@@ -16,6 +16,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.runtime import PrecisRuntime
 
 
 def _mem(store, title: str, *, hook: str | None = None) -> int:
@@ -158,7 +159,8 @@ def test_rejects_reason_still_gated_but_copy_now_refused(hub: Hub) -> None:
 
 # ---------------------------------------------------------------------------
 # The reason= kwarg spelling — merge_link_reason folds it onto meta.reason
-# on the kinds whose link() declares meta= (memory/finding/paper/taxon).
+# on the kinds whose link() declares meta= (memory/finding/paper/taxon/todo,
+# gr657045).
 # ---------------------------------------------------------------------------
 
 
@@ -362,3 +364,119 @@ def test_eye_ring_reason_survives_edge_collapse(hub: Hub) -> None:
     out = render_eye(store, f"me{src}", "fisheye+1hop")
     assert "first why" in out
     assert "second why" in out
+
+
+# ---------------------------------------------------------------------------
+# gr657045 — link(kind='todo') takes reason= like its numeric-ref siblings;
+# the verb-level link signature always advertised it.
+# ---------------------------------------------------------------------------
+
+
+def _todo(store, title: str = "a todo") -> int:
+    return store.insert_ref(kind="todo", slug=None, title=title, meta={}).id
+
+
+def test_todo_reason_kwarg_folds_onto_meta(hub: Hub) -> None:
+    """The call the gripe ran: a todo's blocked-by edge records its why."""
+    from precis.handlers.todo import TodoHandler
+    from precis.store.types import Tag
+
+    store = hub.live_store
+    todo = _todo(store, "waits on the gripe fix")
+    with store.tx() as conn:
+        gripe = int(
+            store.insert_ref(
+                kind="gripe", slug=None, title="the blocker", meta={}, conn=conn
+            ).id
+        )
+        store.add_tag(gripe, Tag.closed("STATUS", "open"), set_by="agent", conn=conn)
+    TodoHandler(hub=hub).link(
+        id=todo,
+        target=f"gripe:{gripe}",
+        rel="blocked-by",
+        reason="the gripe names the fix this waits on",
+    )
+    links = store.links_for(todo, direction="out")
+    assert len(links) == 1
+    assert links[0].meta["reason"] == "the gripe names the fix this waits on"
+
+
+def test_todo_meta_kwarg_lands_on_the_edge(hub: Hub) -> None:
+    from precis.handlers.todo import TodoHandler
+
+    store = hub.live_store
+    todo = _todo(store)
+    other = _todo(store, "a neighbour")
+    TodoHandler(hub=hub).link(
+        id=todo, target=f"todo:{other}", rel="related-to", meta={"why": "siblings"}
+    )
+    assert store.links_for(todo, direction="out")[0].meta["why"] == "siblings"
+
+
+def test_todo_reason_kwarg_is_add_only(hub: Hub) -> None:
+    from precis.handlers.todo import TodoHandler
+
+    store = hub.live_store
+    todo = _todo(store)
+    other = _todo(store, "a neighbour")
+    with pytest.raises(BadInput, match="only applies when adding"):
+        TodoHandler(hub=hub).link(
+            id=todo, target=f"todo:{other}", mode="remove", reason="."
+        )
+
+
+def test_todo_reason_refused_on_virtual_parent_edge(hub: Hub) -> None:
+    """``rel='parent'`` re-points ``refs.parent_id`` — there is no links
+    row for edge meta to live on, so meta=/reason= refuse rather than
+    silently drop."""
+    from precis.handlers.todo import TodoHandler
+
+    store = hub.live_store
+    child = _todo(store, "child")
+    parent = _todo(store, "parent")
+    handler = TodoHandler(hub=hub)
+    with pytest.raises(BadInput, match="virtual"):
+        handler.link(id=child, target=f"todo:{parent}", rel="parent", reason=".")
+    with pytest.raises(BadInput, match="virtual"):
+        handler.link(id=child, target=f"todo:{parent}", rel="parent", meta={"a": 1})
+    # …and the move itself still works unadorned.
+    handler.link(id=child, target=f"todo:{parent}", rel="parent")
+    ref = store.get_ref(kind="todo", id=child)
+    assert ref is not None and ref.parent_id == parent
+
+
+def test_todo_reason_refused_on_fan_in(hub: Hub) -> None:
+    """``id=[...]`` fans one edge shape across ids; edge meta is per-edge."""
+    from precis.handlers.todo import TodoHandler
+
+    store = hub.live_store
+    a = _todo(store, "one")
+    b = _todo(store, "two")
+    tgt = _todo(store, "shared target")
+    with pytest.raises(BadInput, match="single todo id"):
+        TodoHandler(hub=hub).link(
+            id=[a, b], target=f"todo:{tgt}", rel="related-to", reason="."
+        )
+
+
+def test_todo_link_reason_through_dispatch(
+    hub: Hub, runtime_with_store: PrecisRuntime
+) -> None:
+    """The reported call end to end: the strictness gate passes
+    ``reason=`` through to the handler instead of refusing it."""
+    store = hub.live_store
+    todo = _todo(store, "waits")
+    other = _todo(store, "the blocker")
+    out = runtime_with_store.dispatch(
+        "link",
+        {
+            "kind": "todo",
+            "id": todo,
+            "target": f"todo:{other}",
+            "rel": "blocked-by",
+            "reason": "the blocker names what this waits on",
+        },
+    )
+    assert "linked" in out
+    links = store.links_for(todo, direction="out")
+    assert links[0].meta["reason"] == "the blocker names what this waits on"
