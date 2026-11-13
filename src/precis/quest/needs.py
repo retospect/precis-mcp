@@ -164,6 +164,28 @@ def _bench_index_hint() -> str:
     )
 
 
+def _bench_retention_hint() -> str:
+    """The bench-results retention policy, carried in-band — the tick's
+    ``read`` channel takes handles, not repo paths, so it cannot read
+    ``bench/results/README.md`` itself and the hint must quote the
+    policy (gr660413 — qu604835 could not tell whether runs absent from
+    the index still existed anywhere; the §Retention doc answered devs,
+    but a re-declared ``bench-run-retention-…`` need would file again
+    once the gripe closed)."""
+    return (
+        "bench results have no archive: results files are gitignored, "
+        "written only to the checkout that ran `scripts/bench run` "
+        "(`PRECIS_BENCH_RESULTS`-overridable), never uploaded, archived "
+        "or pruned by precis, and deleting a worktree deletes its runs — "
+        "a run exists only on the host+checkout that produced it, until "
+        "someone removes it. `bench:index` lists what this host's "
+        "results dir holds; a run absent there is gone (only its "
+        "digests survive — policy: bench/results/README.md `## "
+        "Retention`). Held runs: "
+        f"{_stem_listing(_held_bench_stems())}"
+    )
+
+
 #: Capabilities a tick already HAS under another name than the model
 #: declares — ``(needle, hint-builder)`` pairs. The needle is matched
 #: lowercase as a substring of the declared ``tool`` text AND its
@@ -190,6 +212,17 @@ _HAVE_CAPABILITIES: tuple[tuple[str, Callable[[], str]], ...] = (
     ("bench-run-index", _bench_index_hint),
     ("bench-run-search", _bench_index_hint),
     ("bench-run-list", _bench_index_hint),
+    # gr660413 — retention/lifetime documentation is its own held
+    # capability (bench/results/README.md §Retention): a need for it is
+    # answered with the policy itself plus the ``bench:index`` listing,
+    # not filed. Same family coverage as the ``-reader``/index needles
+    # above — run/results/log x retention/lifetime.
+    ("bench-run-retention", _bench_retention_hint),
+    ("bench-run-lifetime", _bench_retention_hint),
+    ("bench-results-retention", _bench_retention_hint),
+    ("bench-results-lifetime", _bench_retention_hint),
+    ("bench-log-retention", _bench_retention_hint),
+    ("bench-log-lifetime", _bench_retention_hint),
 )
 
 

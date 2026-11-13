@@ -745,3 +745,34 @@ class TestKnownCapabilityNeeds:
         assert any(
             "already exists" in t and "bench:index" in t for t in _log_texts(store, qid)
         )
+
+    def test_bench_retention_need_is_answered_not_filed(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr660413 — the exact need that filed the gripe:
+        ``bench-run-retention-lifetime-documentation-or-listing``. The
+        retention policy is a held capability (bench/results/README.md
+        §Retention), so the re-declared need is answered with the policy
+        itself plus the ``bench:index`` listing — never a fresh
+        ``needs-tool`` gripe."""
+        self._hold_run(tmp_path, "20261110Z-abc1234-quick-triage")
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store)
+        out = needs_mod.apply_needs(
+            store,
+            qid,
+            [
+                _need("bench-run-retention-lifetime-documentation-or-listing"),
+                _need("bench results retention policy"),
+            ],
+        )
+        assert out.gripes == ()
+        assert _gripes(store) == []
+        assert out.answered == (
+            "bench-run-retention-lifetime-documentation-or-listing",
+            "bench-results-retention-policy",
+        )
+        assert any(
+            "already exists" in t and "no archive" in t and "bench:index" in t
+            for t in _log_texts(store, qid)
+        )
