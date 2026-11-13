@@ -62,6 +62,13 @@ from precis.store import _resource_slots_ops as _ops
 MEM_MB = "mem_mb"
 CPU_MILLI = "cpu_milli"
 VRAM_MB = "vram_mb"
+#: Per-card VRAM ceiling — the largest single card's ``memory.total`` in
+#: MiB (``capability_probe`` publishes it alongside ``vram_mb``). NOT a
+#: reserved dimension: footprint admission *checks* a model's footprint
+#: against it (a model must fit one card, not the host's summed VRAM —
+#: td655172) while the ``gpu`` token count serializes the cards. Hence it
+#: stays out of :data:`_HOST_DIMENSIONS` and :class:`Footprint`.
+VRAM_CARD_MB = "vram_card_mb"
 GPU = "gpu"
 
 #: Host-local dimensions an ``off_host`` footprint does not reserve.
@@ -198,6 +205,7 @@ __all__ = [
     "GPU",
     "MEM_MB",
     "TTL_MARGIN_S",
+    "VRAM_CARD_MB",
     "VRAM_MB",
     "Admission",
     "Footprint",

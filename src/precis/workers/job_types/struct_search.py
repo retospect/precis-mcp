@@ -127,16 +127,19 @@ def _default_workdir(ref_id: int) -> Path:
         return Path(tempfile.mkdtemp(prefix=f"precis-search-{ref_id}-"))
 
 
-def _default_search_runner(*, spec: SearchSpec, workdir: Path) -> SearchResult:
+def _default_search_runner(
+    *, spec: SearchSpec, workdir: Path, device: str | None = None
+) -> SearchResult:
     """Run the real AGOX search. The one seam that touches AGOX/MACE — tests
     swap :data:`SEARCH_RUNNER` for a stub, mirroring
-    ``struct_relax.ML_RUNNER``."""
+    ``struct_relax.ML_RUNNER``. ``device`` is the footprint-admission card
+    binding (``cuda:<i>``); the oracle's calculator cache keys on it."""
     from precis.structure.relax import _ml_calculator
     from precis.structure.search import run_search
 
     return run_search(
         spec,
-        calculator_factory=lambda: _ml_calculator(spec.model),
+        calculator_factory=lambda: _ml_calculator(spec.model, device=device),
         workdir=workdir,
     )
 
@@ -221,8 +224,12 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
         f"(on_version={on_version}) workdir={workdir}",
     )
 
+    from precis.workers.footprint_admission import bound_device
+
     try:
-        result = SEARCH_RUNNER(spec=search_spec, workdir=workdir)
+        result = SEARCH_RUNNER(
+            spec=search_spec, workdir=workdir, device=bound_device(ctx.meta)
+        )
     except SearchUnsupported as exc:
         ctx.record_failure(
             f"struct_search: AGOX has no backend on this host ({exc}) -- the "

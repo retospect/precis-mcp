@@ -665,6 +665,49 @@ def mem_used_pct() -> float | None:
     return round(max(0.0, 100.0 - pct), 1)
 
 
+def _linux_mem_available_mb() -> int | None:
+    """``MemAvailable`` from ``/proc/meminfo`` in MiB (Linux)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key == "MemAvailable":
+                    return int(rest.strip().split()[0]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def mem_free_mb() -> int | None:
+    """This host's currently *admittable* free memory in MiB, or ``None``.
+
+    The live headroom footprint admission cross-checks an RSS reservation
+    against (td655172): the ``mem_mb`` capacity row is a static total minus
+    the OS reserve, so workloads that never reserved through the ledger
+    (LLM serving, interactive use) don't shrink it and the claim alone
+    over-admits. The measurement nets the SAME reserve —
+    ``MemAvailable`` minus :func:`mem_reserve_mb` — so live headroom can't
+    spend what the ledger protects (td655171 review): an untracked
+    consumer that eats into the reserve vetoes admissions instead of
+    silently borrowing it. A real ``0`` (available at or under the
+    reserve) is not dark: it refuses memory admissions. Linux reads
+    ``MemAvailable`` directly; macOS multiplies the sysctl total by
+    ``memory_pressure``'s free percentage. Same override discipline as
+    :func:`mem_used_pct` — ``PRECIS_MEM_PRESSURE_FREE`` pins the claim
+    gauge, never this measurement.
+    """
+    free = _linux_mem_available_mb()
+    if free is None:
+        if sys.platform != "darwin":
+            return None
+        pct = _macos_mem_free_pct()
+        total = _darwin_mem_total_mb()
+        if pct is None or total is None:
+            return None
+        free = int(total * pct / 100.0)
+    return max(0, free - mem_reserve_mb())
+
+
 #: Memory the OS keeps for itself, off the admittable ``mem_mb`` capacity.
 #: Code default mirroring deploy's ``host_memory_os_reserve: 10G``
 #: (``roles/hardening/defaults/main.yml``), which reaches no running code;
@@ -676,6 +719,27 @@ def _reserve(name: str, default: int = 0) -> int:
     """A host reserve from ``os.environ[name]``, else ``default``."""
     value = _env_slots(name)
     return default if value is None else value
+
+
+def mem_reserve_mb() -> int:
+    """The OS memory reserve kept off admittable capacity —
+    ``PRECIS_HOST_MEM_RESERVE_MB`` else :data:`DEFAULT_MEM_RESERVE_MB`.
+    The one subtraction both the static ``mem_mb`` row
+    (:func:`probe_host_capacity`) and the live headroom
+    (:func:`mem_free_mb`) apply."""
+    return _reserve("PRECIS_HOST_MEM_RESERVE_MB", DEFAULT_MEM_RESERVE_MB)
+
+
+def vram_reserve_mb() -> int:
+    """The host-wide VRAM reserve kept off admittable capacity —
+    ``PRECIS_HOST_VRAM_RESERVE_MB`` else ``0``. Same pairing as
+    :func:`mem_reserve_mb`: the ``vram_mb`` row, the live
+    :func:`vram_free_mb` scalar, and footprint admission's per-card pick
+    all subtract it — the pick reads it off the beat's
+    ``vram_reserve_mb`` stamp (THIS host's own value, carried so a
+    remote ``target_node`` claimer doesn't subtract its own env's —
+    td655172 review), never a claimer-side call."""
+    return _reserve("PRECIS_HOST_VRAM_RESERVE_MB")
 
 
 def _linux_mem_total_mb() -> int | None:
@@ -717,19 +781,22 @@ def _total_mem_mb() -> int | None:
     return total
 
 
-def _total_vram_mb() -> int | None:
-    """Summed ``memory.total`` of every NVIDIA card in MiB.
+def _nvidia_smi_query(field: str) -> list[int] | None:
+    """One ``nvidia-smi --query-gpu=<field>`` value per card, in MiB.
 
-    No ``nvidia-smi`` → ``0`` (no VRAM, retract the row). A failing call or
-    an unparseable answer (``[N/A]`` on unified-memory cards) → ``None``
-    (unknown, leave the row)."""
+    ``None`` = the answer is unknown (call failed, unparseable — leave any
+    existing row untouched); ``[]`` = definitively no NVIDIA cards (retract
+    the row). The present/absent/unknown discipline the capacity rows sync
+    with. One helper for both the static per-card totals and the live free
+    probes below.
+    """
     if shutil.which("nvidia-smi") is None:
-        return 0
+        return []
     try:
         res = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=memory.total",
+                f"--query-gpu={field}",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -739,16 +806,85 @@ def _total_vram_mb() -> int | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        log.warning("capability_probe: nvidia-smi vram query failed", exc_info=True)
+        log.warning(
+            "capability_probe: nvidia-smi %s query failed", field, exc_info=True
+        )
         return None
     if res.returncode != 0:
         return None
     try:
-        return sum(
-            int(line.strip()) for line in res.stdout.splitlines() if line.strip()
-        )
+        return [int(line.strip()) for line in res.stdout.splitlines() if line.strip()]
     except ValueError:
         return None
+
+
+def _total_vram_mb() -> int | None:
+    """Summed ``memory.total`` of every NVIDIA card in MiB.
+
+    No ``nvidia-smi`` → ``0`` (no VRAM, retract the row). A failing call or
+    an unparseable answer (``[N/A]`` on unified-memory cards) → ``None``
+    (unknown, leave the row)."""
+    cards = _nvidia_smi_query("memory.total")
+    if cards is None:
+        return None
+    return sum(cards)
+
+
+def _max_card_vram_mb() -> int | None:
+    """The largest single card's ``memory.total`` in MiB — the per-card VRAM
+    ceiling (:data:`precis.workers.admission.VRAM_CARD_MB`) a model's
+    footprint must fit (td655172: the host-wide sum admits models no single
+    card can hold). Same three-way verdict as :func:`_total_vram_mb`."""
+    cards = _nvidia_smi_query("memory.total")
+    if cards is None:
+        return None
+    return max(cards) if cards else 0
+
+
+def vram_free_per_card_mb() -> list[int] | None:
+    """Per-card ``memory.free`` in MiB, in ``nvidia-smi`` index order.
+
+    The card-level view footprint admission binds a claim to (td655172 card
+    assignment): the scalar :func:`vram_free_mb` says SOME card has
+    headroom; this list is what picks WHICH one and enforces that card's
+    own headroom and concurrency cap. Stays RAW measured free — the
+    pick nets :func:`vram_reserve_mb` off the card under test, read
+    from the ``vram_reserve_mb`` stamp the heartbeat writes alongside
+    this list (td655172 review), and the truthful per-card number is
+    what the beat
+    should record. ``None`` = unmeasurable or no cards —
+    the heartbeat then leaves the key off and admission stays unbound (the
+    pre-binding behaviour). A ``[0, …]`` entry is a real reading: that card
+    is full and must fail eligibility.
+    """
+    cards = _nvidia_smi_query("memory.free")
+    return cards or None
+
+
+def vram_free_mb() -> int | None:
+    """The largest single card's *admittable* ``memory.free`` in MiB.
+
+    The live headroom footprint admission cross-checks a VRAM reservation
+    against (td655172): the ``vram_mb`` capacity row is static, so untracked
+    consumers (an LLM server, an interactive session) don't shrink it and
+    the ledger alone over-admits. A model must fit ONE card, so this is the
+    best single card's free, never the cross-card sum (two cards with 12 GiB
+    free each can't hold a 20 GiB model) — less :func:`vram_reserve_mb`,
+    the same host-wide reserve the ``vram_mb`` row subtracts from the
+    summed total. Applying a host-wide reserve to the best card is
+    conservative (it can only under-state headroom) and is ``0`` by
+    default; the per-card list :func:`vram_free_per_card_mb` reports stays
+    raw, so the card pick applies the same subtraction to the card under
+    test from the beat's own ``vram_reserve_mb`` stamp (td655172 review).
+    ``None`` = unmeasurable or no cards — the
+    heartbeat then leaves the key untouched and admission reads as dark.
+    A real ``0`` means every card is fully used (or the reserve is
+    exhausted) and must veto GPU claims.
+    """
+    cards = vram_free_per_card_mb()
+    if not cards:
+        return None
+    return max(0, max(cards) - vram_reserve_mb())
 
 
 #: Where this process's cgroup v2 membership and the unified hierarchy live
@@ -825,9 +961,11 @@ def reset_capacity_cache() -> None:
 def probe_host_capacity() -> dict[str, int | None]:
     """Admittable host capacity as hard multi-unit rows (gr647996).
 
-    ``{mem_mb, cpu_milli, vram_mb}``: the measured total minus this host's
-    reserve, in the units :class:`precis.workers.admission.Footprint`
-    reserves. Same three-way verdict as :func:`probe_host_resources`
+    ``{mem_mb, cpu_milli, vram_mb, vram_card_mb}``: the measured total minus
+    this host's reserve, in the units :class:`precis.workers.admission.Footprint`
+    reserves — plus ``vram_card_mb``, the largest single card's total, which
+    is checked by footprint admission rather than reserved (td655172).
+    Same three-way verdict as :func:`probe_host_resources`
     (``> 0`` present, ``0`` retract, ``None`` leave). Reserves:
     ``PRECIS_HOST_MEM_RESERVE_MB`` (default :data:`DEFAULT_MEM_RESERVE_MB`),
     ``PRECIS_HOST_CPU_RESERVE_MILLI`` and ``PRECIS_HOST_VRAM_RESERVE_MB``
@@ -837,17 +975,18 @@ def probe_host_capacity() -> dict[str, int | None]:
     now = time.monotonic()
     if _capacity_cache is not None and now - _capacity_cache[0] < _CAPACITY_TTL_S:
         return dict(_capacity_cache[1])
-    from precis.workers.admission import CPU_MILLI, MEM_MB, VRAM_MB
+    from precis.workers.admission import CPU_MILLI, MEM_MB, VRAM_CARD_MB, VRAM_MB
 
     out = {
-        MEM_MB: _minus(
-            _total_mem_mb(),
-            _reserve("PRECIS_HOST_MEM_RESERVE_MB", DEFAULT_MEM_RESERVE_MB),
-        ),
+        MEM_MB: _minus(_total_mem_mb(), mem_reserve_mb()),
         CPU_MILLI: _minus(
             _available_cpu_milli(), _reserve("PRECIS_HOST_CPU_RESERVE_MILLI")
         ),
-        VRAM_MB: _minus(_total_vram_mb(), _reserve("PRECIS_HOST_VRAM_RESERVE_MB")),
+        VRAM_MB: _minus(_total_vram_mb(), vram_reserve_mb()),
+        # Per-card ceiling, NOT a reserve target: the raw largest-card
+        # total (the host-wide VRAM reserve above is about aggregate
+        # headroom; per-card fit gets its own margin from the claim).
+        VRAM_CARD_MB: _max_card_vram_mb(),
     }
     _capacity_cache = (now, out)
     return dict(out)
@@ -874,6 +1013,8 @@ __all__ = [
     "claude_auth_present",
     "claude_bin_present",
     "mem_capacity",
+    "mem_free_mb",
+    "mem_reserve_mb",
     "mem_used_pct",
     "probe_host_capacity",
     "probe_host_resources",
@@ -881,4 +1022,7 @@ __all__ = [
     "reset_capacity_cache",
     "resource_kind",
     "soft_capacity",
+    "vram_free_mb",
+    "vram_free_per_card_mb",
+    "vram_reserve_mb",
 ]

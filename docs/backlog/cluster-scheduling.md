@@ -255,6 +255,82 @@ Items 1 and 2 ship independently (static defaults for the cap).
   runaway dies instead of swapping the box. Greedy first-fit per machine;
   cross-machine bin-packing only once measurements show packing is the
   bottleneck.
+  **Shipped (gr595542, 2026-11-13; review fixes td655172):** the footprint
+  half, dark until the data exists. `model_footprint` (migration 0322)
+  holds one row per model (weights + KV at the context length; `precis
+  stats --model-footprints` lists it); at claim time
+  (`precis.workers.footprint_admission`, wired into
+  `executors/_common.py::_finish_claim`) a GPU job whose *effective* model
+  reserves `vram_mb` = footprint + margin (default margin 1 GiB,
+  `PRECIS_VRAM_MARGIN_MB`) on the reservation host, all-or-nothing with
+  its `gpu` token, and an `ssh_node` job whose exact `(job_type,
+  meta.size)` rollup key has ≥ 5 measured runs reserves `mem_mb` = p95 ×
+  1.25 (`PRECIS_RSS_MARGIN_FACTOR`) — the capacity row the heartbeat
+  publishes already carries the ~10 G OS reserve. The effective model is
+  the job's `params.model` or its job_type's declared `default_model`
+  (`struct_relax` → `mace_mp`): an omitted `params.model` used to load
+  the default at dispatch while bypassing both VRAM admission and
+  affinity. Missing model row, capacity row or samples ⇒ today's
+  token-only admission, unchanged.
+  Admission has two further gates on top of the ledger (review td655172),
+  both dark until measured: **per-card fit** — the `vram_mb` row is
+  host-wide and would admit a model larger than any single card, so the
+  claim also requires the footprint to fit the host's `vram_card_mb`
+  (largest card, published by the capacity probe) — and **live
+  headroom** — the capacity rows are static totals minus reservations,
+  which untracked consumers (LLM serving, interactive use) don't
+  decrement, so the claim cross-checks the units against the host's
+  latest measured *admittable* free (`host_heartbeat.meta` `vram_free_mb` /
+  `mem_free_mb`, written per beat — each is the measured free less the
+  measured host's own `PRECIS_HOST_*_RESERVE_MB` reserve, the same
+  subtraction the static capacity rows carry, so an untracked consumer
+  can't spend the reserve the ledger protects; td655171 review) —
+  `vram_free_mb` is the best *single
+  card's* free, never the cross-card sum, since a model must fit one card —
+  less the still-*pending* footprint holds: every held reservation
+  counts in full until the reservation itself releases (`meta.reserved`
+  is popped at refund). The measured free is aggregate, so a drop below
+  the claim-time level can't be attributed to the reserved job over an
+  untracked consumer — releasing on drops could free a hold whose job
+  had not allocated (td655171 review), and no job-attributable
+  measurement exists yet: the run's own `meta.footprint` lands at
+  terminalization, when the reservation releases anyway. The residual
+  is under-admission by at most the in-flight reservations — a
+  materialized job's units still count while the beat already shows
+  its consumption — which is the safe direction. (Earlier takes: a
+  beat+window timer dropped delayed and late-peaking holds with no
+  evidence of allocation; the drop-evidenced release that replaced it
+  still let an untracked consumer's drop free a hold.) The check runs
+  after the ledger decrement (serializing concurrent claimers) and
+  refunds on a veto.
+  When the beat carries `vram_free_cards_mb` (per-card free, nvidia-smi
+  index order — raw measured free, unlike the reserve-netted scalar)
+  and its companion `vram_reserve_mb` stamp,
+  the VRAM veto becomes a pick: the claim admits onto one
+  card whose effective free covers the units under
+  `PRECIS_GPU_CARD_MAX_JOBS` (default 2 — the "1–2 concurrent jobs per
+  card" above; unbound holds count against every card). Effective free
+  nets the host's `PRECIS_HOST_VRAM_RESERVE_MB` off the card under test
+  — read from the beat's stamp, the measured host's own setting, so a
+  remote `target_node` claimer never subtracts its own env's
+  (td655172 review; a list without the stamp leaves the claim on the
+  unbound scalar path) — the same subtraction the scalar and the
+  capacity row carry, so a
+  card-bound claim can't spend the reserve an untracked consumer is
+  already eating — and the pick stamps
+  `meta.reserved.gpu_card`, and the dispatch binds it —
+  `struct_relax` emits `--gpus device=<i>`/CDI `nvidia.com/gpu=<i>`
+  instead of all-cards, and hands the in-process rungs an explicit
+  `cuda:<i>` device (the MLIP calculator cache keys on it — env pinning
+  couldn't move an initialized context or a cached calculator). Model
+  affinity: a successful claim stamps `claim.last_model.<host>` (+`_at`)
+  in `app_state` under the effective model, and the claim re-rank prefers
+  queued jobs naming that model — a tiebreak between aged prio and queue
+  age, so warm weights win only among rows the fairness keys tied; the
+  stamp decays after 30 min (`PRECIS_MODEL_AFFINITY_TTL_MIN`). Resident
+  weights with teardown on switch/idle timeout remain optional and
+  unbuilt; sessions stay per task. The per-task memory cap is gr595537,
+  still open.
 - **Starvation protection.** Ageing (shipped), plus reservation and backfill
   once footprints exist: when the top candidate does not fit current
   headroom, stop pulling for it, let running jobs drain, backfill only tasks

@@ -189,6 +189,11 @@ def _fake_host(
         cap, "_available_cpu_milli", lambda: None if cpus is None else cpus * 1000
     )
     monkeypatch.setattr(cap, "_total_vram_mb", lambda: vram_mb)
+    # Homogeneous-cards stand-in: the per-card ceiling equals the patched
+    # total (one card), None stays unknown.
+    monkeypatch.setattr(
+        cap, "_max_card_vram_mb", lambda: None if vram_mb is None else vram_mb
+    )
 
 
 @pytest.mark.usefixtures("_no_reserve_env")
@@ -200,6 +205,7 @@ def test_capacity_is_measured_total_minus_default_reserve(
         "mem_mb": 32768 - cap.DEFAULT_MEM_RESERVE_MB,
         "cpu_milli": 8000,
         "vram_mb": 0,  # no GPU → definitively absent, row retracted
+        "vram_card_mb": 0,  # no card to fit a model on, row retracted
     }
 
 
@@ -213,6 +219,9 @@ def test_capacity_reserves_come_from_env(monkeypatch: pytest.MonkeyPatch) -> Non
         "mem_mb": 12288,
         "cpu_milli": 3000,
         "vram_mb": 22528,
+        # The per-card ceiling is raw: the host-wide VRAM reserve models
+        # aggregate headroom, per-card fit gets its margin from the claim.
+        "vram_card_mb": 24576,
     }
 
 
@@ -225,6 +234,7 @@ def test_capacity_unknown_measurement_leaves_row(
         "mem_mb": None,
         "cpu_milli": None,
         "vram_mb": None,
+        "vram_card_mb": None,
     }
 
 
@@ -234,6 +244,53 @@ def test_capacity_reserve_above_total_clamps_to_zero(
 ) -> None:
     _fake_host(monkeypatch, mem_mb=4096, cpus=2, vram_mb=0)
     assert cap.probe_host_capacity()["mem_mb"] == 0
+
+
+# ── live free probes: admittable headroom (total minus reserve) ───────────
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_live_mem_free_nets_the_os_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td655171 review: the live headroom the claim cross-checks must not
+    spend the OS reserve the static total-minus-reserve ledger protects —
+    an untracked consumer eating into it vetoes, never borrows."""
+    monkeypatch.setattr(cap, "_linux_mem_available_mb", lambda: 32768)
+    assert cap.mem_free_mb() == 32768 - cap.DEFAULT_MEM_RESERVE_MB
+    monkeypatch.setenv("PRECIS_HOST_MEM_RESERVE_MB", "4096")
+    assert cap.mem_free_mb() == 32768 - 4096
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_live_mem_free_at_or_under_reserve_reads_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Available under the reserve is a real ``0`` — vetoes memory
+    admissions, not the ``None`` that would read as dark."""
+    monkeypatch.setattr(cap, "_linux_mem_available_mb", lambda: 4096)
+    assert cap.mem_free_mb() == 0
+
+
+def test_live_mem_free_unknown_stays_dark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unmeasurable stays ``None`` — admission reads as dark, ledger only."""
+    monkeypatch.setattr(cap, "_linux_mem_available_mb", lambda: None)
+    monkeypatch.setattr(cap.sys, "platform", "linux")
+    assert cap.mem_free_mb() is None
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_live_vram_free_nets_the_host_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host-wide VRAM reserve comes off the best-card scalar too:
+    ``0`` by default (today's reading), a configured reserve is kept."""
+    monkeypatch.setattr(cap, "vram_free_per_card_mb", lambda: [1024, 81920])
+    assert cap.vram_free_mb() == 81920
+    monkeypatch.setenv("PRECIS_HOST_VRAM_RESERVE_MB", "2048")
+    assert cap.vram_free_mb() == 81920 - 2048
 
 
 def test_darwin_total_mem_from_sysctl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,6 +312,44 @@ def test_vram_sums_nvidia_smi_cards(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="81920\n81920\n"),
     )
     assert cap._total_vram_mb() == 163840
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_vram_card_ceiling_is_the_largest_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td655172: the per-card row is the biggest single card, not the
+    host-wide sum — a model must fit ONE card."""
+    monkeypatch.setattr(cap.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def _run(*a: object, **k: object) -> SimpleNamespace:
+        raw = a[0] if a else k.get("args", [])
+        parts = raw if isinstance(raw, (list, tuple)) else [raw]
+        argv = [str(x) for x in parts]
+        field = (
+            "memory.total" if any("memory.total" in x for x in argv) else "memory.free"
+        )
+        out = (
+            "24576\n81920\n"  # two cards: 24 GiB + 80 GiB
+            if field == "memory.total"
+            else "1024\n81920\n"
+        )
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(cap.subprocess, "run", _run)
+    assert cap._max_card_vram_mb() == 81920
+    assert cap._total_vram_mb() == 106496
+    # Largest single card, not the 82944 sum: a model must fit one card.
+    assert cap.vram_free_mb() == 81920
+    # …and the per-card list the claim binds a card from keeps the
+    # nvidia-smi index order (td655172 card assignment).
+    assert cap.vram_free_per_card_mb() == [1024, 81920]
+
+
+def test_vram_free_absent_without_nvidia_smi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", lambda name: None)
+    assert cap.vram_free_mb() is None
+    assert cap.vram_free_per_card_mb() is None
 
 
 def test_vram_unparseable_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:

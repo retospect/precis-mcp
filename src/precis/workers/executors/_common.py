@@ -43,6 +43,7 @@ from precis.utils import dispatch_score as _dscore
 from precis.utils import job_footprint
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
+from precis.workers import footprint_admission as _footprint_admission
 from precis.workers.executors import suspended_job_types
 from precis.workers.nursery import HOST_DARK_SILENCE_MIN
 from precis.workers.registry import SERVICES_BY_NAME
@@ -1408,7 +1409,8 @@ def claim_executor_jobs(
     **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
     2026-10-24, D4 share half; release band 2026-11-07, gr584136;
-    factory sub-priority 2026-11-13, gr657333).**
+    factory sub-priority 2026-11-13, gr657333; model affinity
+    2026-11-13, gr595542).**
     ``ORDER BY claim_rank ASC, factory_pref ASC,
     share_running ASC, aged_prio ASC, queued_since ASC, ref_id ASC``
     where ``claim_rank`` is the row's class (human 0 < agent 1 <
@@ -1452,11 +1454,67 @@ def claim_executor_jobs(
     all-unset queue collapses to ``ref_id`` ASC — the pre-6a FIFO. The
     capability-rarity term (§5.3) is layered on in 6d.
 
-    **Reserve-at-claim (slices 6c/6d).** A job's resource requirements —
-    explicit ``meta.requires`` or *derived* from its ``job_type`` via the
-    registry (:func:`effective_requires`; ``struct_relax``/``fold`` →
-    ``{"gpu": 1}``) — are reserved in this transaction before the job is
-    handed back: the conditional decrement is the lock. The reservation
+    The Python re-rank over the locked candidates adds, in key order:
+    capability scarcity (6d, ``-scarcity`` first, ahead of the SQL's own
+    ``claim_rank``/``factory_pref`` order the key then mirrors), the D4
+    share half
+    (``share_running``, re-read per pick so a batch round-robins), and —
+    gr595542 — **model affinity**, a tiebreak between ``aged_prio`` and
+    ``queued_since``: a row whose effective model (``params.model`` else
+    the job_type's declared default) matches the
+    reservation host's fresh last-used-model stamp
+    (:func:`~precis.workers.footprint_admission.last_models`, stamped by
+    :func:`~precis.workers.footprint_admission.note_model_use` at claim
+    time) sorts ahead of rows the fairness keys tied with it. It never
+    overrides class, share, prio or age — warm weights win the reload
+    race only among equals, and the stamp decays after
+    ``PRECIS_MODEL_AFFINITY_TTL_MIN`` (default 30 min) so a cold host
+    steers nothing.
+
+    **Reserve-at-claim (slices 6c/6d; footprint admission gr595542).** A
+    job's resource requirements — explicit ``meta.requires`` or *derived*
+    from its ``job_type`` via the registry (:func:`effective_requires`;
+    ``struct_relax``/``fold`` → ``{"gpu": 1}``) — are reserved in this
+    transaction before the job is handed back: the conditional decrement
+    is the lock. The reservation set is merged with the footprint units
+    :func:`precis.workers.footprint_admission.admission_units` computes —
+    a GPU job whose *effective* model (``params.model``, else the
+    job_type's declared default — ``struct_relax`` → ``mace_mp``)
+    reserves the model's learned ``vram_mb`` (footprint + margin) and a
+    science-lane (``ssh_node``) job with enough measured runs reserves
+    its predicted peak RSS as ``mem_mb`` — one all-or-nothing decrement,
+    so a job never holds its ``gpu`` token without its VRAM headroom.
+    Right after the decrement (refunding it on a veto),
+    :func:`~precis.workers.footprint_admission.admission_block` vets the
+    units against live state the static ledger can't see (td655172): the
+    footprint must fit the host's largest single card (``vram_card_mb`` —
+    the host-wide sum would admit models no card can hold), and the
+    host's latest measured *admittable* free headroom
+    (``host_heartbeat.meta``'s ``vram_free_mb``/``mem_free_mb``, per beat
+    — available less the measured host's own reserve, the same
+    subtraction the static rows carry, td655171) must cover the units less
+    the still-pending holds the beat can't have captured, so untracked
+    consumers (LLM serving, interactive use) can't over-admit or spend
+    the reserve. Holds count in
+    full until their reservations release: the measured free is
+    aggregate, so a drop can't be attributed to the reserved job over an
+    untracked consumer — releasing on drops could free a hold whose job
+    never allocated (td655171 review), and the residual under-admission
+    is the safe direction.
+    When the beat carries the per-card list (``vram_free_cards_mb`` —
+    raw free per card) the
+    vetoes become a pick: the claim admits onto one card with headroom
+    under its concurrency cap, still net of the host's
+    ``PRECIS_HOST_VRAM_RESERVE_MB`` reserve off the card under test —
+    read from the beat's own ``vram_reserve_mb`` stamp, since the
+    reservation host can be remote (``target_node``) and the claimer's
+    env would subtract the wrong host's (td655172 review) — and stamps
+    ``meta.reserved.gpu_card``, so
+    the dispatch binds execution to the admitted card rather than
+    exposing every card.
+    Both dimensions are dark until the footprint data and the host's
+    capacity rows exist; a claim that can't fit them is dropped this
+    cycle the same way a full token slot drops it. The reservation
     host is the job's ``target_node`` if pinned (the resource lives where
     the job runs — an ssh_node GPU job reserves on the GPU box), else this
     host (``reserve_host_id`` / :func:`reserve_host`). Reservation
@@ -1468,6 +1526,12 @@ def claim_executor_jobs(
     for capacity). What was actually reserved is stamped on
     ``meta.reserved`` for :func:`release_job_reservation` to refund at
     terminal. Jobs needing nothing are unaffected — the common path.
+
+    A successful claim whose job has an effective model (explicit or by
+    job_type default) also stamps the reservation host's last-used model
+    (:func:`~precis.workers.footprint_admission.note_model_use`) — the
+    write half of the pull's model-affinity sort key (gr595542; see
+    "Claim ordering" below).
 
     When ``exclude_paused`` is True, also exclude rows carrying an
     open-namespace pause tag (``ask-user:*`` / ``halt:*`` /
@@ -1616,6 +1680,10 @@ def claim_executor_jobs(
     # Only fetched when needed — a caller that never reclaims running rows
     # (``coordinator``) never re-claims, so there's nothing to classify.
     advertised_boot_ids = _advertised_boot_ids(conn) if reclaim_stale_running else {}
+    # Footprint-admission lookup cache, one per claim pass: dedupes the
+    # model-VRAM and predicted-RSS reads across the pick loop's candidates
+    # (gr595542 — same key asked again for the next row hits the dict).
+    fp_cache: dict[tuple[Any, ...], Any] = {}
 
     def _stamp_lease_identity(
         ref_id: int, meta: dict[str, Any], status_value: str | None
@@ -1718,8 +1786,10 @@ def claim_executor_jobs(
     ) -> tuple[int, str, dict[str, Any]] | None:
         """Reserve resources (if any) + stamp lease identity for one row
         already locked by the caller's ``FOR UPDATE`` select. Returns the
-        claimable tuple, or ``None`` if a live resource slot is full / the
-        reservation host is memory-pressured / the row is still within its
+        claimable tuple, or ``None`` if a live resource slot is full —
+        counted token or gr595542 footprint headroom, the decrement is
+        all-or-nothing over the merged set — / the reservation host is
+        memory-pressured / the row is still within its
         ``llm:`` affinity grace window on a non-serving host (the row's lock
         frees at commit either way, so it's retried next cycle). ``created_at``
         (the row's ``refs.created_at``) is the "queued since" signal for that
@@ -1769,9 +1839,6 @@ def claim_executor_jobs(
             release_job_reservation(conn, ref_id)
             meta.pop("reserved", None)
         requires = effective_requires(meta)
-        if not requires:
-            _stamp_lease_identity(ref_id, meta, status_value)
-            return (ref_id, title, meta)
         # The resource lives where the job runs: its target_node (an
         # ssh_node GPU job reserves on the GPU box, not the claimer), else
         # this host. Self-gate to what that host actually advertises — an
@@ -1779,13 +1846,40 @@ def claim_executor_jobs(
         # stall in the window before the probe populates the slot map).
         params = meta.get("params") or {}
         res_host = str(params.get("target_node") or default_host)
+        advertised_here = advertised.get(res_host, set())
+        # Footprint admission (gr595542): extra mem_mb/vram_mb units the
+        # claim must fit alongside its counted tokens — a GPU job whose
+        # effective model (``params.model``, else the job_type's declared
+        # default — ``struct_relax`` → ``mace_mp``) has a learned
+        # footprint reserves footprint + margin; a science-lane
+        # (ssh_node) job with enough measured runs reserves its predicted
+        # peak RSS × margin. Dark (no units) until the model row /
+        # rollup key / host capacity rows exist, so a bare queue is
+        # byte-identical to the token-only claim. The conditional
+        # decrement below refuses the claim when the headroom isn't
+        # there; ``admission_block`` vets the units against live state
+        # (per-card fit, measured free headroom) after the decrement,
+        # refunding it on a veto.
+        footprint = _footprint_admission.admission_units(
+            conn,
+            executor=executor,
+            meta=meta,
+            res_host=res_host,
+            requires=requires,
+            advertised_here=advertised_here,
+            cache=fp_cache,
+        )
+        if not requires and not footprint:
+            _footprint_admission.note_model_use(conn, meta=meta, res_host=res_host)
+            _stamp_lease_identity(ref_id, meta, status_value)
+            return (ref_id, title, meta)
         # Soft memory-pressure veto (6d-deferred): a heavy job's reservation
         # host is out of RAM headroom → skip it this round (the lock frees at
         # commit; it retries once pressure clears). Dark until a ``mem`` row
-        # with free=0 exists.
+        # with free=0 exists. Covers footprint-bearing jobs too — a predicted
+        # RSS is exactly the "heavy" signal the veto exists for.
         if res_host in pressured:
             return None
-        advertised_here = advertised.get(res_host, set())
         # An ``llm:``-prefixed requirement is a soft *affinity*, not a hard
         # host gate: the job prefers to run where its served model lives, but
         # the model is also reachable from any host over the LLM router HTTP
@@ -1863,12 +1957,48 @@ def claim_executor_jobs(
                 dropped,
             )
             return None
-        if reservable and not reserve_resource_slots(conn, res_host, reservable):
-            # A live slot is full → drop it; the lock frees at commit and
-            # the job waits for capacity on that host.
+        to_reserve = {**reservable, **footprint}
+        if to_reserve and not reserve_resource_slots(conn, res_host, to_reserve):
+            # A live slot is full (token or footprint headroom) → drop it;
+            # the lock frees at commit and the job waits for capacity on
+            # that host. All-or-nothing: a GPU job never holds its token
+            # without its VRAM, nor its VRAM without its token.
             return None
-        if reservable:
-            reserved = {"host": res_host, "slots": reservable}
+        gpu_card: int | None = None
+        if footprint:
+            # Vetted after the decrement: it row-locks the ledger, so a
+            # concurrent claimer's committed admissions are visible to the
+            # pending-headroom sum (td655172). A veto refunds in this txn;
+            # an admitted VRAM claim also carries the card index the veto
+            # picked onto the reservation below, binding the dispatch.
+            blocked, gpu_card = _footprint_admission.admission_block(
+                conn, host=res_host, units=footprint, cache=fp_cache
+            )
+            if blocked is not None:
+                release_resource_slots(conn, res_host, to_reserve)
+                # td655172: the ledger rows are static capacity minus
+                # reservations — a per-card misfit (footprint > any single
+                # card), a live-free shortfall (untracked consumers the
+                # ledger can't see, plus holds the last beat can't have
+                # captured and that stay pending until their reservations
+                # release — td655171) or every eligible card at its job
+                # cap would over-admit past the decrement. Skip this
+                # round; the lock frees at commit and the claim retries.
+                log.debug(
+                    "claim: skip job %s on %s — footprint admission "
+                    "blocked (%s, units %s)",
+                    ref_id,
+                    res_host,
+                    blocked,
+                    footprint,
+                )
+                return None
+        if to_reserve:
+            reserved: dict[str, Any] = {"host": res_host, "slots": to_reserve}
+            if gpu_card is not None:
+                # The admitted card — dispatch binds execution to it
+                # (struct_relax --gpus device=<i> / cuda:<i> in-proc).
+                reserved["gpu_card"] = gpu_card
             conn.execute(
                 "UPDATE refs SET meta = (meta - 'requires_dropped') || "
                 "jsonb_build_object('reserved', %s::jsonb) WHERE ref_id = %s",
@@ -1889,6 +2019,7 @@ def claim_executor_jobs(
                 (json.dumps(dropped), ref_id),
             )
             meta["requires_dropped"] = dropped
+        _footprint_admission.note_model_use(conn, meta=meta, res_host=res_host)
         _stamp_lease_identity(ref_id, meta, status_value)
         return (ref_id, title, meta)
 
@@ -2351,7 +2482,37 @@ def claim_executor_jobs(
             qs = qs.replace(tzinfo=UTC)
         return max(0.0, (now_utc - qs).total_seconds())
 
-    def _order_key(r: Any) -> tuple[float, float, float, float, float, Any, int]:
+    # Model affinity (gr595542): the host each model-carrying candidate
+    # would load its model on (its target_node pin, else this host — the
+    # ``_finish_claim`` reservation-host derivation), narrowed to hosts
+    # whose last-used-model stamp is still fresh. The model is the row's
+    # EFFECTIVE model — ``params.model`` else the job_type's declared
+    # default (``struct_relax`` → ``mace_mp``) — so an implicit default
+    # steers exactly like an explicit one (td655172). Read once per pass;
+    # a queue with no model-carrying rows costs no query.
+    _pref_hosts = {
+        str((dict(r[2] or {}).get("params") or {}).get("target_node") or default_host)
+        for r in rows
+        if _footprint_admission.effective_model(dict(r[2] or {}))
+    }
+    model_pref = _footprint_admission.last_models(conn, _pref_hosts)
+
+    def _row_affinity(r: Any) -> int:
+        """``0`` when the job's effective model matches the host's fresh
+        last-used-model stamp (warm weights — claim it first), else ``1``.
+        A pure tiebreak: it lands after aged prio and before queue age, so
+        it reorders only rows the fairness keys already tied."""
+        meta = dict(r[2] or {})
+        model = _footprint_admission.effective_model(meta)
+        if not model:
+            return 1
+        params = meta.get("params") or {}
+        host = str(params.get("target_node") or default_host)
+        return 0 if model_pref.get(host) == str(model) else 1
+
+    def _order_key(
+        r: Any,
+    ) -> tuple[float, float, float, float, float, int, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -2394,7 +2555,16 @@ def claim_executor_jobs(
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, rank, factory, share, aged, r[5] or r[4], int(r[0]))
+        return (
+            -scarcity,
+            rank,
+            factory,
+            share,
+            aged,
+            _row_affinity(r),
+            r[5] or r[4],
+            int(r[0]),
+        )
 
     def _oldest_background(cands: list[Any]) -> int | None:
         """Index of the oldest queued background-class row — the reserved

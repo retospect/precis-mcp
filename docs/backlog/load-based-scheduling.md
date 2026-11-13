@@ -593,7 +593,13 @@ gr647996.
 
 ### S3 (gr647996): claim path admits by footprint; claim while it fits
 
-- Status: not started.
+- Status: not started. (gr595542 has since landed the first, narrow
+  pull-side admission on the same ledger — GPU `vram_mb` per
+  `model_footprint` row and `ssh_node` RSS as `mem_mb`, plus the
+  model-affinity sort key; see `cluster-scheduling.md` Pillar 3b. S3's
+  claim-path rework onto `admission.admit()` supersedes that wiring —
+  hold rows with renewal replace the hold-less reserve — and broadens
+  RSS admission beyond the science executor.)
 - Files: `executors/_common.py` (`_finish_claim` → `admit`; fit-then-deficit
   per gr595541; lease renewal before long jobs admit; delete
   `_MAX_RUNNING_DEFAULTS`, `_EXECUTOR_CAP_DEFAULTS`, `_EXECUTOR_RESERVE_DEFAULTS`,

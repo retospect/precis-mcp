@@ -261,6 +261,7 @@ def _default_neb_runner(
     model: str,
     params: dict[str, Any],
     timeout_s: float,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Run the real edge: align the FS onto the IS (permutation +
     per-fragment MIC), then one serial CI-NEB via
@@ -286,7 +287,7 @@ def _default_neb_runner(
     deadline = time.monotonic() + timeout_s
 
     def _make_calc() -> Any:
-        return _DeadlineCalc(_ml_calculator(model), deadline, timeout_s)
+        return _DeadlineCalc(_ml_calculator(model, device=device), deadline, timeout_s)
 
     bar = ac_neb.neb_barrier(
         is_atoms,
@@ -679,6 +680,8 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
         f"n_slab={n_slab} run={run_id} cap={timeout_s:.0f}s",
     )
 
+    from precis.workers.footprint_admission import bound_device
+
     t0 = time.monotonic()
     try:
         outcome = NEB_RUNNER(
@@ -688,6 +691,7 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
             model=model,
             params=engine_params,
             timeout_s=timeout_s,
+            device=bound_device(ctx.meta),
         )
     except NebTimeout as exc:
         if exc.overrun_s is not None:

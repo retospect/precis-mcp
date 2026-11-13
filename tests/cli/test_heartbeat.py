@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -129,6 +130,38 @@ def test_collect_and_report_no_ephemeral_meta_for_named_host(monkeypatch) -> Non
     heartbeat.collect_and_report(store)  # type: ignore[arg-type]
     assert store.meta is not None
     assert "ephemeral" not in store.meta
+
+
+def test_collect_and_report_stamps_live_free_headroom(monkeypatch) -> None:
+    """td655172: the per-beat snapshot carries the measured *admittable*
+    RAM/VRAM headroom footprint admission cross-checks reservations
+    against (available less the host's reserve, td655171); absent when
+    the probe has nothing to say."""
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "melchior", raising=False)
+    monkeypatch.setattr(heartbeat, "collect_mem_free_mb", lambda: 51200)
+    monkeypatch.setattr(heartbeat, "collect_vram_free_mb", lambda: 40960)
+    monkeypatch.setattr(heartbeat, "collect_vram_free_cards_mb", lambda: [40960, 1024])
+    monkeypatch.setattr(heartbeat, "collect_vram_reserve_mb", lambda: 2048)
+    store = _EphemeralRecordingStore()
+    heartbeat.collect_and_report(cast("Any", store))
+    assert store.meta is not None
+    assert store.meta["mem_free_mb"] == 51200
+    assert store.meta["vram_free_mb"] == 40960
+    # The per-card list card-bound admission picks from (td655172) —
+    # with the host's own reserve stamped alongside so the pick never
+    # reads the claimer's env (td655172 review).
+    assert store.meta["vram_free_cards_mb"] == [40960, 1024]
+    assert store.meta["vram_reserve_mb"] == 2048
+
+    monkeypatch.setattr(heartbeat, "collect_vram_free_mb", lambda: None)
+    monkeypatch.setattr(heartbeat, "collect_vram_free_cards_mb", lambda: None)
+    store = _EphemeralRecordingStore()
+    heartbeat.collect_and_report(cast("Any", store))
+    assert store.meta is not None
+    assert "vram_free_mb" not in store.meta
+    assert "vram_free_cards_mb" not in store.meta
+    assert "vram_reserve_mb" not in store.meta
 
 
 def _fake_ps(stdout: str, returncode: int = 0):

@@ -51,6 +51,7 @@ in Å; never converted to SI here.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import logging
 import os
 import sys
@@ -1365,16 +1366,17 @@ def _dftd3_wrap(calc, *, device: str = "cpu", dtype: str = "float64"):
     return SumCalculator([calc, d3])
 
 
-#: How many distinct ``(family, dispersion)`` MLIP calculators to keep
-#: loaded. Three families × two dispersion states is the whole space, and a
-#: long-lived worker realistically touches one or two.
+#: How many distinct ``(family, dispersion, device)`` MLIP calculators to
+#: keep loaded. Three families × two dispersion states is the whole
+#: physics space; ``device`` multiplies it by the cards a footprint-bound
+#: worker gets admitted onto — realistically one or two per process.
 _ML_CALC_CACHE_MAX = 6
 
 
 @lru_cache(maxsize=_ML_CALC_CACHE_MAX)
-def _cached_ml_calculator(family: str, dispersion: bool):
-    """Build — once per ``(family, dispersion)`` — the torch-backed ASE
-    calculator, and hold it for the life of the process.
+def _cached_ml_calculator(family: str, dispersion: bool, device: str | None):
+    """Build — once per ``(family, dispersion, device)`` — the torch-backed
+    ASE calculator, and hold it for the life of the process.
 
     **Why this is cached (gr450103).** Every call constructs a full torch
     ``nn.Module`` with its weights at ``float64``. ``struct_relax`` exposes
@@ -1396,26 +1398,41 @@ def _cached_ml_calculator(family: str, dispersion: bool):
     time under a capacity-1 ``gpu`` slot). Keep it that way, or give each
     worker thread its own calculator.
 
+    ``device`` is the footprint-admission card binding (``cuda:<i>``) —
+    part of the cache key on purpose: a calculator holds the device it was
+    built on, and re-serving one across cards is exactly how a second
+    card-bound claim ended up executing on the first claim's card
+    (td655172 review, take two). ``None`` leaves the backend's own device
+    default — the unbound behaviour from before binding existed.
+
     The caller (:func:`_ml_calculator`) has already normalised ``family``
     and probed every import, so this raises no ``RelaxUnsupported`` of its
     own; an exception here is a genuine backend failure and is deliberately
     not cached (``lru_cache`` only stores successful returns).
     """
+    kwargs: dict[str, Any] = {"device": device} if device is not None else {}
     if family == "mace_mp":
         from mace.calculators import mace_mp
 
-        return mace_mp(default_dtype="float64", dispersion=dispersion)
+        return mace_mp(default_dtype="float64", dispersion=dispersion, **kwargs)
     if family == "mace_off":
         from mace.calculators import mace_off
 
-        calc = mace_off(default_dtype="float64")
-        return _dftd3_wrap(calc) if dispersion else calc
+        calc = mace_off(default_dtype="float64", **kwargs)
+        return _dftd3_wrap(calc, device=device or "cpu") if dispersion else calc
     from chgnet.model.dynamics import CHGNetCalculator
 
-    return CHGNetCalculator()
+    if not kwargs:
+        return CHGNetCalculator()
+    # The device kwarg was ``use_device`` before chgnet 0.4 renamed it to
+    # ``device``; accept whichever this installed version takes.
+    params = inspect.signature(CHGNetCalculator.__init__).parameters
+    return CHGNetCalculator(
+        **{("device" if "device" in params else "use_device"): device}
+    )
 
 
-def _ml_calculator(model: str, *, dispersion: bool = False):
+def _ml_calculator(model: str, *, dispersion: bool = False, device: str | None = None):
     """Return a cached ASE calculator for an MLIP, or raise RelaxUnsupported.
 
     The import is isolated here so a missing backend gives one clean
@@ -1435,7 +1452,7 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
     model build belongs in the cache.
     """
     family = _check_ml_backend(model, dispersion=dispersion)
-    return _cached_ml_calculator(family, dispersion)
+    return _cached_ml_calculator(family, dispersion, device)
 
 
 def _check_ml_backend(model: str, *, dispersion: bool = False) -> str:

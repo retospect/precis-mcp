@@ -285,6 +285,14 @@ class JobTypeSpec:
     #: poison failure or operator/deadline terminalization even when
     #: process identity cannot authorize ``kill``.
     release: Callable[..., Any] | None = None
+    #: Optional model the job_type loads when ``params.model`` is omitted
+    #: (td655172) — the dispatch fallback and footprint admission share
+    #: this one definition, so an implicit default never bypasses VRAM
+    #: admission or model affinity (:func:`precis.workers.footprint_
+    #: admission.effective_model` resolves it). ``struct_relax`` →
+    #: ``"mace_mp"``, matching its ``params.get("model") or "mace_mp"``
+    #: dispatch fallback exactly.
+    default_model: str | None = None
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".

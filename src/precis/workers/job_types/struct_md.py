@@ -119,6 +119,7 @@ def _default_md_runner(
     model: str | None,
     params: dict[str, Any],
     timeout_s: float,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Run the real trajectory: attach the rung's calculator, then one
     Langevin NVT via :func:`precis.structure.md.run_nvt`.
@@ -127,6 +128,12 @@ def _default_md_runner(
     GPU node and must never be imported off it; EMT is plain ASE. The
     fidelity gate upstream already refused anything outside
     :data:`_MD_FIDELITIES`. Returns :func:`run_nvt`'s normalized outcome.
+
+    ``device`` is the footprint-admission card binding (``cuda:<i>``):
+    it reaches the MLIP calculator's constructor, whose cache keys on
+    it — a card-bound run can never land on a calculator parked on
+    another card (td655172 review, take two). ``None`` keeps the
+    backend's own default. EMT is CPU-only and ignores it.
     """
     if fidelity == "emt":
         from ase.calculators.emt import EMT
@@ -143,7 +150,7 @@ def _default_md_runner(
     else:
         from precis.structure.relax import _ml_calculator
 
-        atoms.calc = _ml_calculator(model or "mace_mp")
+        atoms.calc = _ml_calculator(model or "mace_mp", device=device)
     return run_nvt(atoms, params, timeout_s=timeout_s)
 
 
@@ -246,6 +253,8 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
         f"cap={timeout_s:.0f}s",
     )
 
+    from precis.workers.footprint_admission import bound_device
+
     t0 = time.monotonic()
     try:
         outcome = MD_RUNNER(
@@ -254,6 +263,7 @@ def _dispatch(ctx: Any, _spec: Any) -> None:
             model=model,
             params=engine_params,
             timeout_s=timeout_s,
+            device=bound_device(ctx.meta),
         )
     except MdTimeout as exc:
         _fail(
