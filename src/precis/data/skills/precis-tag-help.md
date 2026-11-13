@@ -60,6 +60,12 @@ tag(
 )
 ```
 
+`PRIO:` and `prio=` are one axis on every kind (todo, gripe, quest,
+job): an integer 1..10, **lower = hotter**, any value allowed. The names
+`urgent`/`high`/`normal`/`low` are aliases for 1/3/5/8; `PRIO:4` and
+`prio=4` are as valid as `PRIO:high`. The value is stored in the `prio`
+column, not as a tag row.
+
 Pair `add=` + `remove=` in one call to flip state cleanly. With
 closed UPPERCASE prefixes the explicit `remove=` is belt-and-braces
 — see the next section.

@@ -579,6 +579,21 @@ class TestPutAccount:
         assert new_pool.cls == "llm-api"
         assert new_pool.daily_cap is None
 
+    def test_concurrency_range_is_1_to_32(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.accounts import get_account
+
+        monkeypatch.setenv("PRECIS_SOURCE", "cli")
+        h = _handler(store)
+        h.put(args={"account": {"name": "claude-sub", "concurrency": 32}})
+        a = get_account(store, "claude-sub")
+        assert a is not None
+        assert a.concurrency == 32
+        for bad in (0, 33):
+            with pytest.raises(BadInput, match="integer 1-32"):
+                h.put(args={"account": {"name": "claude-sub", "concurrency": bad}})
+
     def test_update_is_read_modify_write_not_a_patch(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -227,8 +227,8 @@ that drains. Under the header
 one line reads `N open · M older than 3d · oldest grX
 (D days) · K more past this page`. `sort=` re-groups the queue — on
 `search` and on the `/open` and `/wontfix` listings alike:
-`drain` (default) | `prio` (the human rungs first — urgent … low,
-unset reads as normal — then size, then oldest) | `oldest` | `newest`
+`drain` (default) | `prio` (hottest first — 1 … 10, lower is hotter,
+unset reads as 5 — then size, then oldest) | `oldest` | `newest`
 | `size` | `source` (human /
 agent / watchdog) | `status`; the legacy `recency` (newest-touched)
 spelling still works. A listing's next-page
@@ -414,8 +414,10 @@ runs as the `link()`/`tag()` call alone, and the reply's first line says
 so (`interpreted: … read as link(…)`). `view='full'` is the complete
 read (body + every comment), and `PRIO:medium` is read as `PRIO:normal`,
 also announced.
-A numeric `PRIO:3` is the same axis spelled as the column number —
-`PRIO:3` writes `prio=3`; `prio=3` on `tag()` is the kwarg form.
+Priority is `prio` 1..10, **lower = hotter**, on a gripe exactly as on a
+todo — every value is accepted. `urgent`/`high`/`normal`/`low` are aliases
+for 1/3/5/8. A numeric `PRIO:3` is the same axis spelled as the column
+number — `PRIO:3` writes `prio=3`; `prio=3` on `tag()` is the kwarg form.
 
 Answering a `reto:ask`: when Reto's question is fully resolved, write
 the answer and drop the ask together —

@@ -141,8 +141,8 @@ def test_prio_medium_on_comment_put_is_named_once(hub: Hub) -> None:
 
 def test_numeric_prio_tag_writes_the_column(hub: Hub) -> None:
     """gr592664: one axis, two spellings — the tag form carries the column
-    number (``PRIO:3`` is ``prio=3``, ``PRIO:8`` needs no name). A gripe
-    takes only the named rungs 1/3/5/8 (td610982)."""
+    number (``PRIO:3`` is ``prio=3``, ``PRIO:8`` needs no name); any
+    1..10 value writes on a gripe (gr632811)."""
     h = GripeHandler(hub=hub)
     h.put(text="Synthetic numeric prio gripe", tags=["PRIO:3"])
     ref = next(

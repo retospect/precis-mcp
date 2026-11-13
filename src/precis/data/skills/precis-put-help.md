@@ -260,7 +260,9 @@ put(kind="todo", text="...", tags=["PRIO:high"])
 ```
 
 `tags=` runs at creation — and on a gripe or todo comment append, where it
-lands in the same transaction (see above). Everywhere else, for
+lands in the same transaction (see above). `PRIO:` (or `prio=`) is an
+integer 1..10, lower = hotter, on every kind including gripes;
+`urgent`/`high`/`normal`/`low` are aliases for 1/3/5/8. Everywhere else, for
 retroactive tag changes use
 `tag(kind='...', id=<N>, add=[...], remove=[...])`. Closed-prefix
 axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated; open

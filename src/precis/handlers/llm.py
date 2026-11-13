@@ -100,7 +100,7 @@ _ACCOUNT_TASK_CLASSES: frozenset[str] = frozenset(
 _ACCOUNT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
 _ACCOUNT_POOL_KEY_RE = re.compile(r"^llm:[a-z0-9-]+:[a-z0-9]+$")
 _ACCOUNT_CONCURRENCY_MIN = 1
-_ACCOUNT_CONCURRENCY_MAX = 8
+_ACCOUNT_CONCURRENCY_MAX = 32
 
 #: Columns this put merges, read-modify-write (whole-row replace, never a
 #: jsonb patch) — ``name`` is the key, not a mergeable column.

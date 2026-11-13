@@ -305,53 +305,34 @@ def test_legacy_prio_and_recency_sorts_still_work(store: Store, hub: Hub) -> Non
     assert "(by recency)" in handler.search(sort="recency").body
 
 
-def test_gripe_prio_takes_only_the_named_rungs(store: Store, hub: Hub) -> None:
-    """gr604593: the gripe ``prio`` column is human-only — off-rung
-    values (the old machine band scores) refuse on both spellings and
-    both verbs; the four named rungs still write."""
+def test_gripe_prio_takes_every_value_1_to_10(store: Store, hub: Hub) -> None:
+    """gr632811: prio is 1..10 on every kind, gripes included — every
+    value writes on both spellings and both verbs; out-of-range still
+    refuses, and the names are aliases for 1/3/5/8."""
     handler = GripeHandler(hub=hub)
-    rid = _seed(store, "rung target")
-    for bad in (2, 4, 6, 7, 9, 10):
-        with pytest.raises(BadInput, match="off the named rungs"):
-            handler.put(text=f"off-rung filing prio={bad}", prio=bad)
-        with pytest.raises(BadInput, match="off the named rungs"):
-            handler.put(text=f"off-rung filing PRIO:{bad}", tags=[f"PRIO:{bad}"])
-        with pytest.raises(BadInput, match="off the named rungs"):
-            handler.tag(id=rid, prio=bad)
-        with pytest.raises(BadInput, match="off the named rungs"):
-            handler.tag(id=rid, add=[f"PRIO:{bad}"])
-    assert "STATUS:open" in {str(t) for t in store.tags_for(rid)}
-    ref = store.get_ref(kind="gripe", id=rid)
-    assert ref is not None and ref.prio is None
-    for rung in (1, 3, 5, 8):
-        assert handler.put(text=f"rung {rung} filing", prio=rung)
-        handler.tag(id=rid, prio=rung)
+    rid = _seed(store, "range target")
+    for n in range(1, 11):
+        assert handler.put(text=f"prio={n} filing", prio=n)
+        assert handler.put(text=f"PRIO:{n} filing", tags=[f"PRIO:{n}"])
+        handler.tag(id=rid, prio=n)
         ref = store.get_ref(kind="gripe", id=rid)
-        assert ref is not None and ref.prio == rung
-
-
-def test_gripe_off_rung_rejection_names_the_todo_asymmetry(
-    store: Store, hub: Hub
-) -> None:
-    """gr632810 side note: PRIO:4 lands on a todo (full 1..10 column)
-    but refuses on a gripe (judgement rungs only) — the rejection must
-    SAY the two kinds read the same spelling differently, or the
-    inconsistency reads as a bug."""
-    handler = GripeHandler(hub=hub)
-    with pytest.raises(BadInput) as put_exc:
-        handler.put(text="prio4 filing", tags=["PRIO:4"])
-    assert "rungs-only" in str(put_exc.value)
-    assert "todo" in str(put_exc.value)
-    rid = _seed(store, "asymmetry target")
-    with pytest.raises(BadInput) as tag_exc:
-        handler.tag(id=rid, add=["PRIO:4"])
-    assert "rungs-only" in str(tag_exc.value)
-    assert "todo" in str(tag_exc.value)
+        assert ref is not None and ref.prio == n
+        handler.tag(id=rid, add=[f"PRIO:{n}"])
+        ref = store.get_ref(kind="gripe", id=rid)
+        assert ref is not None and ref.prio == n
+    for bad in (0, 11):
+        with pytest.raises(BadInput, match="1..10"):
+            handler.put(text=f"bad prio={bad}", prio=bad)
+        with pytest.raises(BadInput, match="1..10"):
+            handler.tag(id=rid, prio=bad)
+    for name, n in (("urgent", 1), ("high", 3), ("normal", 5), ("low", 8)):
+        handler.tag(id=rid, add=[f"PRIO:{name}"])
+        ref = store.get_ref(kind="gripe", id=rid)
+        assert ref is not None and ref.prio == n
 
 
 def test_gripe_prio_remove_still_clears(store: Store, hub: Hub) -> None:
-    """A ``PRIO:*`` remove clears the column — clearing isn't a write,
-    so the rung rule doesn't gate it (even an off-rung spelling)."""
+    """A ``PRIO:*`` remove clears the column whatever value it names."""
     handler = GripeHandler(hub=hub)
     rid = _seed(store, "clear target", prio=3)
     handler.tag(id=rid, remove=["PRIO:7"])
