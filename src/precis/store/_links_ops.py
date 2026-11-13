@@ -952,6 +952,7 @@ class LinksMixin:
     # pair's judgment rows when a door deletes its ``considered`` edge,
     # so a deliberate withdrawal differs from a chunk-cascade edge loss.
     withdraw_considerations: Any
+    withdraw_consideration_pair: Any
     # Provided by GroundingsMixin — endpoint groundings for the
     # slice-2b definition-only link-time refusal.
     grounding_set: Any
@@ -1591,6 +1592,10 @@ class LinksMixin:
             withdrawn = [r[:4] for r in deleted if r[4] == "considered"]
             if withdrawn:
                 self.withdraw_considerations(c, withdrawn)
+            elif relation in (None, "considered"):
+                # No live edge matched (e.g. a chunk cascade already took
+                # it): the pair's orphan judgment is still withdrawable.
+                self.withdraw_consideration_pair(c, src_ref_id, dst_ref_id)
 
             # Argument-graph retraction push hook, remove side (the argument graph
             # §5/R5: "every retraction-edge add *or* remove reruns the

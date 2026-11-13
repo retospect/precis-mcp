@@ -343,6 +343,18 @@ class ConsiderationMixin:
             ),
         ).fetchone()
         assert row is not None
+        # Retire superseded reconsideration state: earlier judgments of the
+        # same scope/source ref pair whose edge is gone (orphans at an old
+        # endpoint) are replaced by this one, so withdrawing the new edge
+        # later cannot resurrect them.
+        c.execute(
+            "UPDATE considerations j SET withdrawn_at = now() "
+            "WHERE j.scope_ref_id = %s AND j.source_ref_id = %s "
+            "  AND j.consideration_id <> %s AND j.withdrawn_at IS NULL "
+            "  AND NOT EXISTS (SELECT 1 FROM links l "
+            "                   WHERE l.link_id = j.link_id)",
+            (src_ref_id, dst_ref_id, row[0]),
+        )
         if link_id is not None:
             c.execute(
                 "UPDATE links SET meta = meta || jsonb_build_object("
@@ -571,7 +583,31 @@ class ConsiderationMixin:
                 (scope_ref, scope_chunk, source_ref, source_chunk),
             )
             n += cur.rowcount or 0
+            n += self.withdraw_consideration_pair(c, scope_ref, source_ref)
         return n
+
+    def withdraw_consideration_pair(
+        self, c: Connection, scope_ref_id: int, source_ref_id: int
+    ) -> int:
+        """Withdraw a scope→source pair's judgments at ref-pair
+        granularity, independent of any live edge — the same grain
+        :data:`_SCOPED_SQL` resolves orphans at. A chunk cascade can
+        leave an orphan no live edge (hence no deleted row) can address,
+        and a re-judgment at a new endpoint leaves the old endpoint's
+        orphan behind; both retire here once no live ``considered`` edge
+        remains for the pair. No-op (0) while one still carries the
+        pair's current verdict."""
+        cur = c.execute(
+            "UPDATE considerations SET withdrawn_at = now() "
+            "WHERE scope_ref_id = %s AND source_ref_id = %s "
+            "  AND withdrawn_at IS NULL "
+            "  AND NOT EXISTS (SELECT 1 FROM links l "
+            "                   WHERE l.src_ref_id = %s "
+            "                     AND l.dst_ref_id = %s "
+            "                     AND l.relation = 'considered')",
+            (scope_ref_id, source_ref_id, scope_ref_id, source_ref_id),
+        )
+        return cur.rowcount or 0
 
     def scoped_considerations(
         self, scope_ref_id: int, *, conn: Connection | None = None

@@ -490,6 +490,50 @@ def test_withdrawal_then_rejudgment_reactivates(store: Store) -> None:
     assert by_verdict["useful"]["withdrawn_at"] is None
 
 
+def test_orphan_judgment_withdrawable_without_live_edge(store: Store) -> None:
+    """After chunk loss no live edge remains, yet the door removal still
+    withdraws the orphan judgment and it leaves the reconsider queue."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-w1", title="W1", text=f"{_Q} w1.")
+    chunk_id = store.chunks.list_chunks_for_ref(src)[0].id
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=src,
+        dst_pos=0,
+        relation="considered",
+        meta={"verdict": "not-useful", "depth": "passages", "reason": "mismatch"},
+    )
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_id,))
+    assert len(store.consideration_reconsiderations(scope_ref_id=scope)) == 1
+    store.remove_link(src_ref_id=scope, dst_ref_id=src, relation="considered")
+    assert store.consideration_reconsiderations(scope_ref_id=scope) == []
+    assert all(j["withdrawn_at"] is not None for j in _history(store, scope))
+
+
+def test_withdraw_after_rejudgment_does_not_resurrect_orphan(
+    store: Store,
+) -> None:
+    """Re-judging at a new endpoint retires the old orphan; withdrawing
+    the new edge then leaves nothing queued."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-w2", title="W2", text=f"{_Q} w2.")
+    chunk_id = store.chunks.list_chunks_for_ref(src)[0].id
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=src,
+        dst_pos=0,
+        relation="considered",
+        meta={"verdict": "not-useful", "depth": "passages", "reason": "first"},
+    )
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_id,))
+    _judge(store, scope, src, verdict="useful", depth="fulltext", reason="second")
+    store.remove_link(src_ref_id=scope, dst_ref_id=src, relation="considered")
+    assert store.consideration_reconsiderations(scope_ref_id=scope) == []
+    assert store.scoped_considerations(scope) == []
+
+
 def test_quest_link_records_considered_verdict(
     runtime_with_store: PrecisRuntime,
 ) -> None:
