@@ -9,11 +9,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from precis.identity import clean_doi
 from precis.utils.title_views import title_plain
 
 log = logging.getLogger(__name__)
 
-DOI_REGEX = re.compile(r"10\.\d{4,}/[^\s<\"}\)]+")
+# DOI suffix shape shared by both patterns: parens match only as a
+# balanced, non-empty ``(…)`` group. DOI suffixes legitimately carry
+# them (``10.53469/jrse.2026.08(03).19``, gr658687 — excluding ``)``
+# truncated that DOI to ``…(03`` and minted a corrupt ``paper_id`` at
+# ingest), while a ``)`` closing prose around the DOI
+# (``(doi:10.x/yy)``) or glued text after it (``10.x/yy)Received``) is
+# typesetting and must stay outside the match.
+_DOI_SUFFIX = r"(?:[^\s<\"}()]|\([^\s<\"}()]+\))+"
+DOI_REGEX = re.compile(rf"10\.\d{{4,}}/{_DOI_SUFFIX}")
 
 # Prefixed-DOI: the publisher's own "this article's DOI is X" typographic
 # marker. Far more reliable than a bare DOI match, which might pick up a
@@ -21,7 +30,7 @@ DOI_REGEX = re.compile(r"10\.\d{4,}/[^\s<\"}\)]+")
 # ``doi.org/X``, ``DOI: X`` forms.
 _PREFIXED_DOI_RE = re.compile(
     r"(?:\bdoi[:\s]+|(?:https?://)?(?:dx\.)?doi\.org/|\bDOI\s+)"
-    r"(10\.\d{4,}/[^\s<\"}\)]+)",
+    rf"(10\.\d{{4,}}/{_DOI_SUFFIX})",
     re.IGNORECASE,
 )
 
@@ -217,7 +226,7 @@ def body_doi_candidates(first_pages: str) -> list[str]:
         start = m.start(1)
         if doi_in_related_context(first_pages, start):
             continue
-        doi = _clean_doi(m.group(1))
+        doi = clean_doi(m.group(1))
         if doi in seen:
             continue
         seen.add(doi)
@@ -256,7 +265,7 @@ def _extract_doi(xmp: str, first_pages: str, info: dict[str, Any]) -> str | None
     if xmp:
         match = DOI_REGEX.search(xmp)
         if match:
-            return _clean_doi(match.group())
+            return clean_doi(match.group())
 
     # 3. Bare DOI in body text, but only before the References section
     if first_pages:
@@ -264,7 +273,7 @@ def _extract_doi(xmp: str, first_pages: str, info: dict[str, Any]) -> str | None
         for match in DOI_REGEX.finditer(pre_refs):
             if doi_in_related_context(pre_refs, match.start()):
                 continue
-            return _clean_doi(match.group())
+            return clean_doi(match.group())
 
     # 4. Info dict fields
     for key in ("doi", "subject", "keywords"):
@@ -272,7 +281,7 @@ def _extract_doi(xmp: str, first_pages: str, info: dict[str, Any]) -> str | None
         if val:
             match = DOI_REGEX.search(val)
             if match:
-                return _clean_doi(match.group())
+                return clean_doi(match.group())
 
     # 5. PII in title or subject → Elsevier DOI
     title = info.get("title", "")
@@ -575,11 +584,6 @@ def candidate_title_from_text(text: str, *, max_lines: int = 25) -> str:
         # First substantial line was too short / garbage — keep scanning a
         # few more lines (handles a stray short header above the title).
     return ""
-
-
-def _clean_doi(doi: str) -> str:
-    """Strip trailing punctuation from extracted DOI."""
-    return doi.rstrip(".,;:")
 
 
 # Filename → DOI patterns for archival reprints / partial-page scans where

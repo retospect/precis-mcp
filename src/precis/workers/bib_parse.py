@@ -404,7 +404,14 @@ def _extract_doi_from_text(raw_text: str) -> str | None:
     m = _DOI_IN_TEXT_RE.search(raw_text)
     if not m:
         return None
-    return m.group(0).rstrip(".,;)]")
+    from precis.identity import clean_doi
+
+    # ``\S+`` keeps balanced parens a DOI suffix legitimately carries
+    # (``10.53469/jrse.2026.08(03).19``, gr658687); ``clean_doi`` drops a
+    # trailing closer only when nothing inside the match balances it —
+    # an unconditional ``)``/``]`` rstrip truncated a suffix ending in
+    # ``)`` the same way the gripe's matcher did.
+    return clean_doi(m.group(0))
 
 
 def _local_doi_match(

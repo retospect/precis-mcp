@@ -171,6 +171,44 @@ def test_edit_paper_doi_empty_string_clears_over_the_mcp_door(
     assert "doi" not in identifiers
 
 
+def test_edit_paper_doi_with_balanced_parens_stores_verbatim_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr658687's exact reported call: ``edit(kind='paper', id='pa507337',
+    args={'doi': '10.53469/jrse.2026.08(03).19'})`` was reported to write a
+    silently truncated ``10.53469/jrse.2026.08(03`` on the bibtex readback.
+    The write path itself stores verbatim — the corrupt identifier was
+    minted at ingest by a ``)``-excluding DOI match class, and a
+    re-derivation sweep (``remediate`` / ``paper_reextract`` /
+    ``apply_resolution`` → ``pdf_sidecar._extract_doi`` →
+    ``set_ref_identifier``, a *replace*) could rewrite the truncated value
+    after a correct edit — indistinguishable from "the edit truncated it".
+    This pins the full ``args={'doi': …}`` → ``ref_identifiers`` →
+    ``view='bibtex'`` roundtrip through the real MCP callables so the
+    reported shape can't regress untested."""
+    import precis.ingest.crossref as crossref_mod
+
+    monkeypatch.setattr(crossref_mod, "lookup_crossref", lambda doi, mailto="": None)
+
+    mint_out = tools_core.put(kind="paper", title="A Parens-DOI Paper Stub")
+    m = re.search(r"paper id=(\d+)", mint_out)
+    assert m is not None, mint_out
+    ref_id = int(m.group(1))
+
+    doi = "10.53469/jrse.2026.08(03).19"
+    out = tools_core.edit(kind="paper", id=f"pa{ref_id}", args={"doi": doi})
+
+    assert f"updated paper id={ref_id}" in _body(out), _body(out)
+    assert "doi" in _body(out)
+    identifiers = store.identifiers_for_refs([ref_id]).get(ref_id, {})
+    assert identifiers.get("doi") == doi
+
+    bib = tools_core.get(kind="paper", id=f"pa{ref_id}", view="bibtex")
+    assert doi in _body(bib)
+
+
 def test_edit_paper_year_and_journal_reach_the_handler_over_the_mcp_door(
     mounted_runtime: PrecisRuntime,
     store: Store,

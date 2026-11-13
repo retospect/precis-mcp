@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
+from precis.identity import clean_doi
 from precis.ingest.pdf_sidecar import (
-    _clean_doi,
     _extract_doi,
     _pii_to_doi,
     _trim_at_references,
@@ -86,9 +86,41 @@ class TestDOIExtraction:
         assert _extract_doi(xmp, "", info) == "10.1038/real-doi"
 
     def test_clean_doi_trailing_punct(self):
-        assert _clean_doi("10.1038/s41567-024-1234-5.") == "10.1038/s41567-024-1234-5"
-        assert _clean_doi("10.1038/s41567-024-1234-5,") == "10.1038/s41567-024-1234-5"
-        assert _clean_doi("10.1038/s41567-024-1234-5") == "10.1038/s41567-024-1234-5"
+        assert clean_doi("10.1038/s41567-024-1234-5.") == "10.1038/s41567-024-1234-5"
+        assert clean_doi("10.1038/s41567-024-1234-5,") == "10.1038/s41567-024-1234-5"
+        assert clean_doi("10.1038/s41567-024-1234-5") == "10.1038/s41567-024-1234-5"
+
+    def test_prefixed_doi_with_parens_extracted_verbatim(self):
+        """gr658687: a DOI suffix legitimately carries balanced parens
+        (``10.53469/jrse.2026.08(03).19``). The old ``)``-excluding match
+        class truncated it to ``…(03`` — the corrupt identifier pa507337
+        carried from ingest."""
+        text = "https://doi.org/10.53469/jrse.2026.08(03).19\nReceived today."
+        assert _extract_doi("", text, {}) == "10.53469/jrse.2026.08(03).19"
+
+    def test_bare_doi_with_parens_extracted_verbatim(self):
+        text = "Available as 10.53469/jrse.2026.08(03).19 online."
+        assert _extract_doi("", text, {}) == "10.53469/jrse.2026.08(03).19"
+
+    def test_prose_paren_around_doi_still_closed(self):
+        """``(doi:10.x/yy)`` — the ``)`` closing the prose parenthetical is
+        typesetting, not identifier; unbalanced inside the match, it
+        never enters it."""
+        text = "(see doi:10.1016/j.foo.2020 for detail)"
+        assert _extract_doi("", text, {}) == "10.1016/j.foo.2020"
+
+    def test_clean_doi_balanced_parens_kept(self):
+        assert (
+            clean_doi("10.53469/jrse.2026.08(03).19") == "10.53469/jrse.2026.08(03).19"
+        )
+        assert clean_doi("10.1234/abc(03)") == "10.1234/abc(03)"
+
+    def test_clean_doi_unmatched_closers_stripped(self):
+        assert clean_doi("10.1016/j.foo.2020)") == "10.1016/j.foo.2020"
+        assert clean_doi("10.1234/abc]") == "10.1234/abc"
+        assert (
+            clean_doi("10.53469/jrse.2026.08(03).19)") == "10.53469/jrse.2026.08(03).19"
+        )
 
 
 class TestRelatedArticleContext:

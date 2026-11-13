@@ -795,7 +795,10 @@ def literal_cite_hint(text: str) -> str:
 #: required so a bare decimal never trips it) or a DOI.
 _BARE_ID_RE = re.compile(
     r"\barxiv\s*:?\s*(?:\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7})"
-    r"|\b10\.\d{4,9}/[^\s\])>,;]+",
+    # DOI suffix: parens match only as a balanced ``(…)`` group —
+    # suffixes legitimately carry them (``10.53469/jrse.2026.08(03).19``,
+    # gr658687) while a ``)`` closing prose around the DOI is typesetting.
+    r"|\b10\.\d{4,9}/(?:[^\s\]()>,;\]]|\([^\s\]()>,;\]]+\))+",
     re.IGNORECASE,
 )
 

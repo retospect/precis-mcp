@@ -544,6 +544,25 @@ def test_reject_reason_identifier_resolves_via_cited_ref() -> None:
     assert _reject_reason(gist, "metal-graphene hybrid.", cited_ids=cited) is None
 
 
+def test_reject_reason_doi_prose_closer_not_glued() -> None:
+    """gr658687 review: an unmatched ``)`` closing prose around a DOI is
+    typesetting, not identifier — ``(10.1234/abc)—a result`` used to
+    match ``10.1234/abc)—a`` wholesale, an id neither the chunk text
+    nor cited_ids carries, so a verifiable DOI was refused."""
+    gist = "a cited result\n\n(10.1234/abc)—a result worth citing."
+    cited = frozenset({"doi:10.1234/abc"})
+    assert _reject_reason(gist, "unrelated chunk text.", cited_ids=cited) is None
+
+
+def test_reject_reason_doi_balanced_parens_kept() -> None:
+    """The legitimate suffix shape that motivated admitting parens at
+    all: ``10.53469/jrse.2026.08(03).19`` must extract whole so it can
+    verify against chunk text / cited_ids."""
+    gist = "the journal's DOI scheme\n\n10.53469/jrse.2026.08(03).19 appeared."
+    cited = frozenset({"doi:10.53469/jrse.2026.08(03).19"})
+    assert _reject_reason(gist, "unrelated chunk text.", cited_ids=cited) is None
+
+
 def test_reject_reason_mid_sentence_let_me_draft() -> None:
     """The prod leak shape: reasoning after sentence-final punctuation."""
     gist = (
@@ -2035,6 +2054,26 @@ def test_fetch_cited_identifiers_collects_own_and_linked_refs(store: Any) -> Non
         conn.commit()
         got = fetch_cited_identifiers(conn, [cid])
     assert got[cid] == {"arxiv:2301.12345", "doi:10.1/abc"}
+
+
+def test_terminal_balanced_paren_doi_survives_audit(store: Any) -> None:
+    """gr658687 review: a DOI ending in balanced parens keeps its ``)``
+    through ``fetch_cited_identifiers`` and ``_identifier_reason``."""
+    from precis.workers.llm_summarize import _identifier_reason
+    from tests.workers._helpers import seed_chunks
+
+    doi = "10.1234/abc(03)"
+    ref_id, (cid,) = seed_chunks(store, [_PROSE])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id) "
+            "VALUES ('doi', %s, %s)",
+            (doi, ref_id),
+        )
+        conn.commit()
+        got = fetch_cited_identifiers(conn, [cid])
+    assert got[cid] == {f"doi:{doi}"}
+    assert _identifier_reason(f"see {doi} for detail", "unrelated", got[cid]) is None
 
 
 def test_summarize_dispatch_cap_gives_reasoning_headroom() -> None:

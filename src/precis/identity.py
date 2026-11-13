@@ -840,6 +840,27 @@ def normalize_doi(s: str | None) -> str | None:
     return lower or None
 
 
+#: Closing bracket → its opener, for :func:`clean_doi`'s unmatched-
+#: closer strip.
+_DOI_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
+
+
+def clean_doi(doi: str) -> str:
+    """Strip trailing punctuation from an extracted DOI.
+
+    ``.`` ``,`` ``;`` ``:`` are always prose punctuation. A closing
+    bracket is typesetting — the ``)`` in ``(doi:10.x/yy)`` — only when
+    no opener inside the match balances it; DOI suffixes legitimately
+    carry balanced parens (``10.53469/jrse.2026.08(03).19``, gr658687).
+    """
+    doi = doi.rstrip(".,;:")
+    while doi and doi[-1] in _DOI_CLOSERS:
+        if doi.count(doi[-1]) <= doi.count(_DOI_CLOSERS[doi[-1]]):
+            break
+        doi = doi[:-1].rstrip(".,;:")
+    return doi
+
+
 _ARXIV_PREFIXES = (
     "https://arxiv.org/abs/",
     "http://arxiv.org/abs/",

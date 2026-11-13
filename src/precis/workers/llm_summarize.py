@@ -85,6 +85,7 @@ from typing import Any
 import psycopg
 
 from precis.errors import BadInput
+from precis.identity import clean_doi
 from precis.liveness import drain_requested
 from precis.store.protocols import PoolStore
 from precis.utils.llm.openai_tools import HttpTransport as Transport
@@ -1432,7 +1433,17 @@ _ARXIV_ID_RE = re.compile(
     r"\barxiv:?\s*(\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?",
     re.IGNORECASE,
 )
-_DOI_ID_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'()\[\]<>…]+)")
+# Parens match only as a balanced, non-empty ``(…)`` group — the same
+# bound pdf_sidecar's ``_DOI_SUFFIX`` takes (gr658687): a DOI suffix
+# legitimately carries ``10.53469/jrse.2026.08(03).19``, but the audit
+# runs on model prose where an *unmatched* closer is typesetting
+# (``(10.1234/abc)—a result``). Admitting ``)`` wholesale glued that
+# closer plus the trailing ``—a`` into the id, which :func:`_norm_id`'s
+# *trailing*-closer strip cannot repair — the chunk text and cited_ids
+# hold ``10.1234/abc``, so a real, verifiable DOI was refused.
+_DOI_ID_RE = re.compile(
+    r"\b(10\.\d{4,9}/(?:[^\s\"'()\[\]<>…]|\([^\s\"'()\[\]<>…]+\))+)"
+)
 _PUBMED_ID_RE = re.compile(r"\b(?:pmid|pubmed)\s*[:#]?\s*(\d{6,9})\b", re.IGNORECASE)
 
 
@@ -1441,7 +1452,9 @@ def _norm_id(kind: str, value: str) -> str:
     ``cited_ids``: lowercased (``ref_identifiers`` stores DOIs lowercase),
     arXiv version suffix dropped so ``2301.12345`` and ``2301.12345v2``
     count as the same paper."""
-    v = value.strip().lower().rstrip(".,;:)]…")
+    v = value.strip().lower()
+    # DOIs keep a balanced terminal ``)`` (``…08(03)``, gr658687).
+    v = clean_doi(v.rstrip("…")) if kind == "doi" else v.rstrip(".,;:)]…")
     if kind == "arxiv":
         v = re.sub(r"v\d+$", "", v)
     return f"{kind}:{v}"
