@@ -434,6 +434,47 @@ def test_validate_submit_admits_a_closed_todo_carrying_pending_land(
     assert closed is not None and "is closed" in closed
 
 
+def test_validate_submit_refuses_a_held_build_the_coordinator_ruled_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr663909: the pre-land exception is the machine's own ``done``
+    hold only — a ``won't-do``/``auto-timeout`` set on the stamped build
+    while its land queued is a ruling the queued land must not land
+    over."""
+    store = _Store()
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    for todo_id, status in ((48, "won't-do"), (49, "auto-timeout")):
+        store.add_todo(
+            todo_id,
+            status=status,
+            meta={"pending_land": {"todo_id": todo_id, "branch": f"slice/{todo_id}"}},
+        )
+        refused = land_slice.validate_submit(store, params={"todo_id": todo_id})
+        assert refused is not None
+        assert "is closed" in refused and f"STATUS:{status}" in refused
+
+
+def test_submit_on_a_ruled_out_held_build_launches_no_ship(
+    seams: dict[str, Any],
+) -> None:
+    """The same refusal end to end: ``submit`` fails the queued land on
+    the closed todo and never launches ship; the ruling and the
+    ``pending_land`` stamp stand."""
+    store = _Store()
+    store.add_todo(
+        42,
+        status="won't-do",
+        meta={"pending_land": {"todo_id": 42, "branch": "slice/42"}},
+    )
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed"
+    failure = ctx.failure or ""
+    assert "land_slice:" in failure and "STATUS:won't-do" in failure
+    assert seams["launch"] == []
+    assert "STATUS:won't-do" in store.tag_strings(42)
+
+
 def test_record_land_clears_pending_land() -> None:
     """The ``landed:`` record discharges the hold — a lingering stamp
     would read a post-land review as pre-land."""

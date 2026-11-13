@@ -1530,18 +1530,21 @@ def _cleanup(tree: Path, branch: str) -> list[str]:
 def _todo_rejection(store: Any, params: dict[str, Any]) -> str | None:
     """``_rs._todo_rejection`` plus the pre-land exception (gr570506): a
     build closed ``done`` with ``meta.pending_land`` stamped is the
-    deferred land — the tick minted this job on the reviewer's LAND
-    verdict, so a closed todo is what the land expects, not a refusal."""
+    machine's own hold — the tick minted this job on the reviewer's LAND
+    verdict, so that ``done`` is what the land expects, not a refusal.
+    The exception ends at that hold (gr663909): a ``won't-do`` or
+    ``auto-timeout`` on the stamped build is a ruling made while the
+    land queued, and the queued land refuses like any terminal
+    todo."""
     reason = _rs._todo_rejection(store, params.get("todo_id"))
     if reason is None or "is closed" not in reason:
         return reason
     todo_id = params.get("todo_id")
-    ref = (
-        store.get_ref(kind="todo", id=todo_id)
-        if store is not None and isinstance(todo_id, int)
-        else None
-    )
-    if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+    if (
+        store is not None
+        and isinstance(todo_id, int)
+        and _rs._terminal_ruling(store, todo_id) is None
+    ):
         return None
     return reason
 
