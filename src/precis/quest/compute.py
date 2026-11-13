@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.quest.atomcost import atom_cost, dearest
+from precis.quest.correction_policy import correction_policy, policy_era
 from precis.quest.environment_basis import environment_basis
 from precis.quest.frontier import _BARRIER_ABSURD_EV, _UNTRUSTED_VALUE_SUFFIX
 from precis.quest.logbook import MEASURED_BY, append_entry
@@ -3771,13 +3772,27 @@ def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
     results = pw_meta.get("results")
     results = results if isinstance(results, dict) else {}
     version = pw_meta.get("autocatpath_version")
-    return {
+    basis: dict[str, Any] = {
         "digest": results.get("network_digest") or None,
         "template": _resolved_template(config),
         "version": str(version) if version else None,
         "environment_basis": _environment_basis(config),
         "tpd_basis": _tpd_basis(results),
     }
+    if policy_era(version) != "legacy":
+        basis["correction_policy"] = correction_policy(pw_meta)[0]
+    return basis
+
+
+def _correction_policy_issues(pw_meta: dict[str, Any] | None) -> list[str]:
+    """The plain-language correction-policy issues of a pathway on an engine
+    at 0.24 or later (or of unknown version); empty for a legacy engine."""
+    if (
+        not isinstance(pw_meta, dict)
+        or policy_era(pw_meta.get("autocatpath_version")) == "legacy"
+    ):
+        return []
+    return correction_policy(pw_meta)[1]
 
 
 def _pinned_network_basis(store: Store, quest_id: int) -> dict[str, Any] | None:
@@ -4888,6 +4903,13 @@ def harvest_measures(
             if not stashed:
                 if basis is not None:
                     measures["network_basis"] = basis  # latest harvest, display
+                    issues = _correction_policy_issues(pw_meta)
+                    for issue in issues:
+                        log.warning("pathway correction provenance: %s", issue)
+                    if issues:
+                        measures["correction_policy_issues"] = issues
+                    elif candidate_meta.get("correction_policy_issues"):
+                        measures["correction_policy_issues"] = None
                     measures["network_basis_by_key"] = _network_basis_by_key(
                         candidate_meta, measures, basis
                     )
@@ -6805,6 +6827,7 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "tier",
     "network_basis",
     "network_basis_by_key",
+    "correction_policy_issues",
     # selectivity/poisoning scalars + context — same engine, same staleness
     *_AUTOCATPATH_SELECTIVITY_KEYS,
     *_AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS,

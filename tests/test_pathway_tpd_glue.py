@@ -35,6 +35,7 @@ from precis.quest.frontier import same_network_basis
 from precis_pathway import manifest as vm
 from precis_pathway._dispatch_common import _kinetics_scalars
 from precis_pathway.toon_views import tpd_text
+from tests.test_pathway_correction_basis import valid_corrections
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -127,7 +128,10 @@ def test_corrected_matched_and_null_reference_pass_the_gate() -> None:
 
 
 def _pathway(tpd: dict[str, Any] | None) -> dict[str, Any]:
-    results: dict[str, Any] = {"network_digest": "same-topology"}
+    results: dict[str, Any] = {
+        "network_digest": "same-topology",
+        "corrections": valid_corrections(),
+    }
     if tpd is not None:
         results["kinetics_tpd"] = tpd
     return {

@@ -592,7 +592,9 @@ or enqueue the suggested calls.
   marginal 12 (off-route 3)`, plus barrier/selectivity `blocked_by` totals),
   **messages** (the flat prose, collapsed by numeric-literal template,
   capped at 25). A ~0 eV barrier carries no auto-flag — see `precis-quest-
-  help`'s trust section for the full auto-flag list.
+  help`'s trust section for the full auto-flag list. A
+  `correction provenance:` line flags a missing corrections record or a
+  config the result overrides.
 - **Step retry.** A blocker that is a fatal `neb_convergence`/
   `relax_convergence` record is re-measured automatically: the aggregate
   re-queues only that step at a fresh seed (up to 2 per step and model),

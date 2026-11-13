@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
 
+from precis.quest.correction_policy import same_correction_policy
 from precis.quest.pourbaix_map import U_RHE_WINDOW
 
 if TYPE_CHECKING:
@@ -1405,6 +1406,9 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "version",
         "quest_harvested_upto",
         "quest_autocatpath_harvested_upto",
+        # correction-policy issues the harvest stamped (list of strings):
+        # provenance prose for :func:`_provisional_reasons`, not a measure.
+        "correction_policy_issues",
         # struct_neb lane (neb-structure-builder slice 4): the idempotency
         # bookmark and the harvested run's provenance id — both numeric,
         # both bookkeeping, never a rank measure.
@@ -1636,7 +1640,13 @@ def _candidate_from_structure(
     # `atom_cost`) are display-only naming context, never a measure.
     if "kinetics_trusted" in meta:
         flags["kinetics_trusted"] = bool(meta.get("kinetics_trusted"))
-    for k in ("kinetics_note", "drc_top", "drc_note", "atom_cost_dearest"):
+    for k in (
+        "kinetics_note",
+        "drc_top",
+        "drc_note",
+        "atom_cost_dearest",
+        "correction_policy_issues",
+    ):
         if k in meta:
             flags[k] = meta.get(k)
     # Selectivity/poisoning naming context (catpath >= 0.5.2 harvests —
@@ -2010,8 +2020,16 @@ def same_network_basis(a: dict[str, Any], b: dict[str, Any]) -> bool:
     offsets (``"none"`` without one); two stamps that both carry it compare
     only when equal, so a margin measured with an offset and one without
     never rank together.  A stamp without the key predates slice 9 and is
-    compatible (the same legacy rule as ``environment_basis``)."""
+    compatible (the same legacy rule as ``environment_basis``).
+
+    ``correction_policy`` (:mod:`precis.quest.correction_policy`) names the
+    energy corrections applied; stamps that both carry it compare only when
+    the policies are equal, a present ``None`` (unknown) never compares, and
+    a stamp without the key is compatible
+    (:func:`precis.quest.correction_policy.same_correction_policy`)."""
     if a.get("version") != b.get("version"):
+        return False
+    if not same_correction_policy(a, b):
         return False
     keyed = [s["environment_basis"] for s in (a, b) if "environment_basis" in s]
     if any(e is None for e in keyed) or len(set(keyed)) > 1:
@@ -2221,6 +2239,9 @@ def _provisional_reasons(
             "measured on an older reaction network "
             f"({basis.get('template') or '?'}@{basis.get('version') or '?'})"
         )
+    issues = c.flags.get("correction_policy_issues")
+    if isinstance(issues, list) and issues:
+        reasons.append(f"correction provenance: {issues[0]}")
     if not c.converged:
         reasons.append("no converged relax")
     missing = [k for k in objective_keys if k not in merged]
@@ -2786,6 +2807,7 @@ __all__ = [
     "plot_axes_for",
     "quest_frontier",
     "render_frontier_tree",
+    "same_correction_policy",
     "same_network_basis",
     "viridis_color",
 ]

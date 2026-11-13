@@ -26,6 +26,7 @@ from precis.handlers.quest import QuestHandler
 from precis.handlers.structure import StructureHandler
 from precis.quest import atomcost as atomcost_mod
 from precis.quest import compute as compute_mod
+from precis.quest.correction_policy import correction_policy
 from precis.quest.frontier import (
     Candidate,
     ProvisionalCandidate,
@@ -46,6 +47,7 @@ from precis.quest.tick import run_quest_tick
 from precis.store import Tag
 from precis.structure import preflight as preflight_mod
 from tests._autocatpath import needs_engine
+from tests.test_pathway_correction_basis import valid_corrections
 
 
 def _mk_quest(store: Any, text: str) -> int:
@@ -8441,6 +8443,55 @@ class TestTierLadderHarvest:
             parent_id=sid,
         ).id
 
+    def _harvest_policy(self, store: Any, config: dict[str, Any]) -> dict[str, Any]:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw-policy",
+            meta={
+                "tier": "neb",
+                "warnings": [],
+                "low_confidence": False,
+                "config": config,
+                "autocatpath_version": "0.24.0",
+                "results": {
+                    "network_digest": "d1",
+                    "corrections": valid_corrections(),
+                },
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        return store.fetch_refs_by_ids({sid})[sid].meta or {}
+
+    def test_policy_is_stamped_on_every_basis(self, store: Any) -> None:
+        meta = self._harvest_policy(store, {"network": "ammonia"})
+        policy = meta["network_basis"]["correction_policy"]
+        assert policy is not None and policy["gas_enabled"] is True
+        assert meta["network_basis_by_key"]
+        for basis in meta["network_basis_by_key"].values():
+            assert basis["correction_policy"] == policy
+        assert not meta.get("correction_policy_issues")
+
+    def test_contradicting_config_stamps_issues_and_names_the_first(
+        self, store: Any
+    ) -> None:
+        meta = self._harvest_policy(
+            store, {"network": "ammonia", "corrections": {"gas": False}}
+        )
+        issues = meta["correction_policy_issues"]
+        assert len(issues) == 1 and "config.corrections.gas=False" in issues[0]
+        assert meta["network_basis"]["correction_policy"] is not None
+        c = Candidate(
+            1, "st1", "A", {}, True, flags={"correction_policy_issues": issues}
+        )
+        assert f"correction provenance: {issues[0]}" in _provisional_reasons(c, [], {})
+
     def test_screening_completion_stamps_tier_with_no_barrier(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
@@ -8595,6 +8646,7 @@ class TestTierLadderHarvest:
                     "low_confidence": False,
                     "config": {"network": "ammonia", "template": template},
                     "autocatpath_version": version,
+                    "results": {"corrections": valid_corrections()},
                 },
                 parent_id=sid,
             ).id
@@ -8611,6 +8663,13 @@ class TestTierLadderHarvest:
             "version": "0.42.0",
             "environment_basis": _LEGACY_ENV_BASIS,
             "tpd_basis": "none",
+            "correction_policy": correction_policy(
+                {
+                    "autocatpath_version": "0.42.0",
+                    "config": {"network": "ammonia"},
+                    "results": {"corrections": valid_corrections()},
+                }
+            )[0],
         }
         # basis names the neb pathway's engine and template
         assert meta["network_basis_by_key"]["barrier"] == neb_basis

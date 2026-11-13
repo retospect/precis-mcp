@@ -17,6 +17,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
+from precis.quest.correction_policy import correction_policy, policy_era
 from precis.utils import pathway_conditions
 from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
@@ -312,7 +313,10 @@ def warnings_toon(meta: dict[str, Any]) -> str:
     warns = meta.get("warnings") or []
     records, route_steps, trust_summary = _trust_context(meta)
 
-    sections = [f"warnings: {_warnings_summary(meta)}", ""]
+    sections = [f"warnings: {_warnings_summary(meta)}"]
+    if policy_era(meta.get("autocatpath_version")) != "legacy":
+        sections += [f"correction provenance: {i}" for i in correction_policy(meta)[1]]
+    sections.append("")
 
     if not records:
         sections.append("## blocking")
