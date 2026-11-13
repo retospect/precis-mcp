@@ -1498,6 +1498,66 @@ def _slice_request_refusal(request: Any, ctx: Context) -> str | None:
     return core._get_runtime().render_error(denied)
 
 
+def _capability_request_refusal(request: Any, ctx: Context) -> str | None:
+    """The capability-token boundary, checked on the raw request before the
+    SDK normalizes it (gr595554) — the twin of
+    :func:`_personal_request_refusal` / :func:`_slice_request_refusal`
+    for the ``precis_cap_`` stamps.
+
+    Pure compute over the trusted ASGI stamp — the scopes ride the
+    validated :class:`~precis.mcp_identity.CapabilityIdentity`, so no
+    store read and no thread hop. A ``tools/call`` is judged as
+    ``(tool name, arguments)`` (a ``precis`` command is parsed first,
+    like the personal path); ``resources/read`` is ``get`` on the
+    ``precis://<kind>/`` kind; prompts are skills; list/enumerate
+    requests are whole-surface reads only ``read`` covers. Everything
+    else refuses — a consumer credential reaches only what its
+    allow-list names.
+    """
+    from mcp import types
+
+    from precis.mcp_identity import SCOPE_CAPABILITY
+    from precis.tools import core
+    from precis.tools.command_parser import CommandParseError, parse_command
+
+    cap = core._asgi_scope(ctx).get(SCOPE_CAPABILITY)
+    if cap is None:
+        return None
+    verb, payload = "", {}
+    if isinstance(request, types.CallToolRequest):
+        verb, payload = request.params.name, request.params.arguments or {}
+        if verb == "precis":
+            try:
+                if set(payload) <= {"command", "text"} and isinstance(
+                    payload.get("command"), str
+                ):
+                    verb, payload = parse_command(
+                        payload["command"], text=payload.get("text")
+                    )
+            except CommandParseError:
+                verb, payload = "", {}
+    elif isinstance(request, types.ReadResourceRequest):
+        verb = "get"
+        uri = str(request.params.uri)
+        kind = uri.removeprefix("precis://").split("/", 1)[0]
+        payload = {"kind": kind}
+    elif isinstance(request, types.GetPromptRequest):
+        verb, payload = "get", {"kind": "skill"}
+    elif isinstance(
+        request,
+        (
+            types.ListPromptsRequest,
+            types.ListResourcesRequest,
+            types.ListResourceTemplatesRequest,
+        ),
+    ):
+        verb = "search"
+    denied = core._capability_refusal(cap, verb, payload)
+    if denied is None:
+        return None
+    return core._get_runtime().render_error(denied)
+
+
 def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
     """Gate every registered content request, including indirect modalities.
 
@@ -1535,8 +1595,12 @@ def _install_personal_scope_gate(fastmcp: FastMCP) -> None:
                 )
             else:
                 # Pure compute over the trusted ASGI stamps — no store
-                # read, so no thread hop.
-                refusal = _slice_request_refusal(request, ctx)
+                # read, so no thread hop. The capability check (gr595554)
+                # runs first: its stamp is exclusive with the slice
+                # grant's — one bearer resolves to exactly one class.
+                refusal = _capability_request_refusal(
+                    request, ctx
+                ) or _slice_request_refusal(request, ctx)
             if refusal is not None:
                 if isinstance(request, types.CallToolRequest):
                     from precis.tools.core import _validation_error
@@ -2205,7 +2269,8 @@ def _install_token_auth(
     """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
     ``streamable_http_app()``) with a bearer-token gate.
 
-    Every content request carries an install, slice, personal or OAuth bearer.
+    Every content request carries an install, slice, personal, OAuth or
+    capability bearer.
     Configured OAuth discovery is public. OAuth requests bind their user and
     app grant separately from API-token IDs; session ownership includes the
     grant, and dispatch rechecks live credentials and consented capabilities.
@@ -2219,6 +2284,13 @@ def _install_token_auth(
     personal data. Personal tools are scoped to learning and the exact
     learning-help read at dispatch; other content requests refuse at the
     MCP request boundary. Never applied to stdio.
+
+    ``precis_cap_`` capability tokens (gr595554) stamp a
+    :class:`~precis.mcp_identity.CapabilityIdentity` — a consumer, never a
+    personal principal — gated per call at dispatch by the token's own
+    kinds/verbs allow-list. They share the streamable-HTTP-only rule: the
+    URL-embedded carriage lives on ``/podcast/*`` (the ``feed`` scope),
+    not on the MCP endpoint, whose auth rules forbid query credentials.
 
     ``slice_dir`` (``PRECIS_MCP_SLICE_TOKEN_DIR``, the mounted
     ``/run/precis-slice-tokens`` on the shared session server) enables the
@@ -2254,6 +2326,7 @@ def _install_token_auth(
                 mcp_identity.SCOPE_USER_ID,
                 mcp_identity.SCOPE_TOKEN_ID,
                 mcp_identity.SCOPE_OAUTH_IDENTITY,
+                mcp_identity.SCOPE_CAPABILITY,
                 slice_tokens.SCOPE_SLICE_ID,
                 slice_tokens.SCOPE_AGENTLOG_ID,
                 slice_tokens.SCOPE_GRANT_SCOPE,
@@ -2301,7 +2374,11 @@ def _install_token_auth(
                 raw = header.removeprefix("Bearer ")
                 if (
                     raw.startswith(
-                        (mcp_identity.TOKEN_PREFIX, oauth_store.ACCESS_PREFIX)
+                        (
+                            mcp_identity.TOKEN_PREFIX,
+                            oauth_store.ACCESS_PREFIX,
+                            mcp_identity.CAP_TOKEN_PREFIX,
+                        )
                     )
                     and not self.ownership_supported
                 ):
@@ -2352,6 +2429,12 @@ def _install_token_auth(
                     identity = await anyio.to_thread.run_sync(
                         mcp_identity.resolve_user_token, store, raw
                     )
+                    if identity is None:
+                        capability = await anyio.to_thread.run_sync(
+                            mcp_identity.resolve_capability_token, store, raw
+                        )
+                    else:
+                        capability = None
                 except Exception:
                     # Do not attach exception messages or credentials to logs.
                     response = JSONResponse(
@@ -2379,6 +2462,27 @@ def _install_token_auth(
                         send,
                         "precis-user",
                         subject=str(identity.user_id),
+                    )
+                    return
+                if capability is not None:
+                    if personal_path is None or scope.get("path") != personal_path:
+                        response = JSONResponse(
+                            {
+                                "error": "capability tokens require streamable HTTP",
+                                "next": "connect to the streamable HTTP MCP endpoint",
+                            },
+                            status_code=403,
+                            headers={"Cache-Control": "no-store"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                    scope[mcp_identity.SCOPE_CAPABILITY] = capability
+                    await self._authorized(
+                        scope,
+                        receive,
+                        send,
+                        "precis-cap",
+                        subject=str(capability.token_id),
                     )
                     return
             headers = {"Cache-Control": "no-store"}

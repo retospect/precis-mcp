@@ -66,7 +66,10 @@ Private study activity is a non-ref exception to the corpus model:
 `precis.learning` stores owner-keyed settings and append-only self-report
 events in dedicated tables, outside chunks, embeddings and public graph
 search. `user_context` binds stable authenticated account IDs; `mcp_identity`
-stores revocable per-user bearer digests. The `learning` handler and web page
+stores revocable bearer digests — per-user tokens ("which person") and
+per-consumer capability tokens ("which thing", a `precis_cap_` bearer whose
+row carries a kinds/verbs allow-list enforced at dispatch). The `learning`
+handler and web page
 share that store. `runtime.learning` bypasses shared payload ledgers and
 continuation caches; learning events record engagement, never concept mastery.
 

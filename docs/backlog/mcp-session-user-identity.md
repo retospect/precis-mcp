@@ -50,20 +50,30 @@ account page, `/account`.
 
 ## Secret classes (2026-11-08)
 
-Three classes of bearer secret exist or should:
+Three classes of bearer secret exist:
 
 1. **Install token** (`PRECIS_MCP_TOKEN`; infra: "a legitimate client").
    Minted by `deploy/mcp-http/precis-mcp-http-ensure.sh`.
 2. **Per-user token** (`web_user_mcp_tokens`; identity: "which person").
    Minted at `/account`; scope-gated to learning by
    `tools/core.py::_personal_call_allowed`.
-3. **Client capability token**: per consumer, not per person, e.g. a
-   claude.ai chat connector or a podcast feed listener (today the per-user
-   feed credential in `quest-learning-plan.md` is this class, informally).
-   Revocable, digest-only storage, labelled, minted and listed at `/account`
-   beside the user tokens. Carried as `Authorization: Bearer`, or
-   URL-embedded where the client cannot set headers. Scope is a per-token
-   allow-list of kinds and verbs. Filed as gr595554.
+3. **Client capability token** (`web_user_capability_tokens`; consumer:
+   "which thing", gr595554 — landed): per consumer, not per person — a
+   claude.ai chat connector, a feed listener. Revocable, digest-only,
+   labelled, minted and listed at `/account` beside the user tokens as
+   `precis_cap_` (`src/precis/mcp_identity.py` —
+   `mint/list/revoke/resolve_capability_token`). Scope is a per-token
+   allow-list — `read` (the full get/search surface, the mint default),
+   `read:<kind>`, `write:<kind>`, `feed` — enforced at dispatch by
+   `tools/core.py::_require_capability_scope`; the token stamps a
+   `CapabilityIdentity`, never a personal principal, so personal kinds
+   still refuse at `require_user`. Carried as `Authorization: Bearer` on
+   the streamable-HTTP endpoint (the MCP auth rules and Anthropic's
+   connector guidance forbid query-string credentials there), or
+   URL-embedded as `?t=` on `/podcast/*` where the feed scope folds the
+   per-listener podcast credential (quest-learning-plan.md) into this
+   class. claude.ai custom connectors send a static `Authorization`
+   header (Request headers, beta) — no OAuth needed for the gateway.
 
 Reto authorized OAuth for multiple per-user app connections on 2026-11-10
 (gr621409), with full MCP access including writes. `precis.oauth` implements

@@ -823,3 +823,50 @@ def test_the_window_slides(monkeypatch: pytest.MonkeyPatch) -> None:
     clock[0] += 31
     assert tracker.locked_for("login:x") == 0.0
     assert tracker.locked_for("login:other") == 0.0
+
+
+def test_feed_scoped_capability_token_serves_the_podcast_feed(store, tmp_path) -> None:
+    """The gr595554 fold: a ``feed``-scoped ``precis_cap_`` credential is a
+    ``?t=`` listener token; the same row revoked dies mid-subscription."""
+    from datetime import datetime
+
+    from precis import audio_feed
+    from precis.mcp_identity import mint_capability_token, revoke_capability_token
+    from precis.users import hash_password
+
+    user = store.create_web_user(
+        login="reto", abbrev="rs", password=hash_password("pw")
+    )
+    source = tmp_path / "src"
+    source.mkdir()
+    audio = source / "ep.mp3"
+    audio.write_bytes(b"\x00" * 16)
+    podcast_dir = tmp_path / "feed"
+    audio_feed.publish_episode(
+        podcast_dir,
+        audio,
+        episode_id="ep",
+        title="Ep",
+        description="",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    token_id, raw = mint_capability_token(store, user.id, "phone", ("feed",))
+    _other_id, no_feed = mint_capability_token(store, user.id, "chat", ("read",))
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(
+            corpus_dir=None,
+            auth_required=True,
+            podcast_dir=podcast_dir,
+            podcast_base_url="https://host",
+        ),
+    )
+    client = TestClient(app)
+    resp = client.get(f"/podcast/feed.xml?t={raw}")
+    assert resp.status_code == 200
+    assert f"/podcast/audio/ep.mp3?t={raw}" in resp.text
+    assert client.get(f"/podcast/audio/ep.mp3?t={raw}").status_code == 200
+    # A capability token without the feed scope is not a listener token.
+    assert client.get(f"/podcast/feed.xml?t={no_feed}").status_code == 401
+    revoke_capability_token(store, user.id, token_id)
+    assert client.get(f"/podcast/feed.xml?t={raw}").status_code == 401

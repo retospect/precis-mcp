@@ -144,7 +144,7 @@ def _client(store: FakeStore, **cfg_kw) -> TestClient:
 @pytest.fixture(autouse=True)
 def _fake_token_listing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Legacy page tests fake roster writes; credential tests use real SQL."""
-    from precis.mcp_identity import list_user_tokens
+    from precis.mcp_identity import list_capability_tokens, list_user_tokens
     from precis_web.routes import account
 
     monkeypatch.setattr(
@@ -152,6 +152,15 @@ def _fake_token_listing(monkeypatch: pytest.MonkeyPatch) -> None:
         "list_user_tokens",
         lambda store, user_id: (
             [] if isinstance(store, FakeStore) else list_user_tokens(store, user_id)
+        ),
+    )
+    monkeypatch.setattr(
+        account,
+        "list_capability_tokens",
+        lambda store, user_id: (
+            []
+            if isinstance(store, FakeStore)
+            else list_capability_tokens(store, user_id)
         ),
     )
 
@@ -234,6 +243,112 @@ def test_personal_mcp_tokens_refuse_auth_off() -> None:
         assert (
             client.post(
                 "/account/mcp-tokens/revoke", data={"token_id": "1"}
+            ).status_code
+            == 503
+        )
+
+
+def test_capability_token_mint_scope_validation_and_owner_only_revoke(
+    store,
+) -> None:
+    from precis.mcp_identity import (
+        list_capability_tokens,
+        mint_capability_token,
+        resolve_capability_token,
+    )
+
+    alice = store.create_web_user(
+        login="alice", abbrev="al", password=hash_password(GOOD)
+    )
+    bob = store.create_web_user(login="bob", abbrev="bo", password=hash_password(GOOD))
+    bob_id, bob_raw = mint_capability_token(store, bob.id, "bob app", ("read",))
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+    with TestClient(app) as client:
+        auth = _auth(login="alice")
+        minted = client.post(
+            "/account/capability-tokens",
+            data={"label": "claude.ai chat", "scopes": "read,write:memory"},
+            headers=auth,
+        )
+        assert minted.status_code == 200
+        assert minted.headers["cache-control"] == "no-store"
+        match = re.search(r"precis_cap_[A-Za-z0-9_-]{43}", minted.text)
+        assert match is not None
+        raw = match.group()
+        identity = resolve_capability_token(store, raw)
+        assert identity is not None
+        assert identity.user_id == alice.id
+        assert identity.scopes == ("read", "write:memory")
+        assert bob_raw not in minted.text and "bob app" not in minted.text
+        listed = client.get("/account", headers=auth)
+        assert raw not in listed.text
+        assert "read,write:memory" in listed.text
+        bad = client.post(
+            "/account/capability-tokens",
+            data={"label": "chat", "scopes": "admin"},
+            headers=auth,
+        )
+        assert bad.status_code == 200
+        assert "unknown capability scope" in bad.text
+        defaulted = client.post(
+            "/account/capability-tokens",
+            data={"label": "plain reader", "scopes": ""},
+            headers=auth,
+        )
+        assert defaulted.status_code == 200
+        defaulted_match = re.search(r"precis_cap_[A-Za-z0-9_-]{43}", defaulted.text)
+        assert defaulted_match is not None
+        defaulted_identity = resolve_capability_token(store, defaulted_match.group())
+        assert defaulted_identity is not None
+        assert defaulted_identity.scopes == ("read",)
+        foreign = client.post(
+            "/account/capability-tokens/revoke",
+            data={"token_id": str(bob_id)},
+            headers=auth,
+        )
+        missing = client.post(
+            "/account/capability-tokens/revoke",
+            data={"token_id": str(bob_id + 999)},
+            headers=auth,
+        )
+        assert foreign.status_code == missing.status_code == 404
+        assert foreign.json() == missing.json()
+        assert resolve_capability_token(store, bob_raw) is not None
+        revoked = client.post(
+            "/account/capability-tokens/revoke",
+            data={"token_id": str(identity.token_id)},
+            headers=auth,
+            follow_redirects=False,
+        )
+        assert revoked.status_code == 303
+        assert resolve_capability_token(store, raw) is None
+        assert (
+            next(
+                t
+                for t in list_capability_tokens(store, alice.id)
+                if t.id == identity.token_id
+            ).revoked_at
+            is not None
+        )
+
+
+def test_capability_tokens_refuse_auth_off() -> None:
+    cfg = WebConfig(corpus_dir=None, auth_required=False)
+    app = create_app(runtime=SimpleNamespace(store=FakeStore()), web_config=cfg)
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/account/capability-tokens",
+                data={"label": "chat", "scopes": "read"},
+            ).status_code
+            == 503
+        )
+        assert (
+            client.post(
+                "/account/capability-tokens/revoke", data={"token_id": "1"}
             ).status_code
             == 503
         )

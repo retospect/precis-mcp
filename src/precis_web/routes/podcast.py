@@ -19,8 +19,10 @@ its own schedule, and support for HTTP Basic on those enclosure requests
 is inconsistent across clients — Basic alone would leave the phone
 silently not downloading. So a per-user feed token
 (``precis users feed-token <login>``) is accepted as ``?t=`` and is
-threaded into the enclosure URLs the feed emits; Basic still works for a
-browser hitting the feed directly. Both paths go through
+threaded into the enclosure URLs the feed emits; a ``feed``-scoped
+``precis_cap_`` capability token minted at /account (gr595554 — the
+per-listener credential's formal class) works the same way. Basic still
+works for a browser hitting the feed directly. Both paths go through
 :func:`_require_listener`, so an unauthenticated request is rejected here
 exactly as it would have been upstream.
 """
@@ -71,6 +73,15 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
     token = request.query_params.get("t")
     if token:
         if store.get_web_user_by_feed_token(feed_token_digest(token)) is not None:
+            return token
+        # The capability-token fold (gr595554): a ``precis_cap_`` credential
+        # minted at /account with the ``feed`` scope authenticates here the
+        # same way — a consumer credential carried in the URL because the
+        # client cannot set headers.
+        from precis.mcp_identity import resolve_capability_token
+
+        cap = resolve_capability_token(store, token)
+        if cap is not None and "feed" in cap.scopes:
             return token
         # A wrong token is a dead end, not a fallback to Basic: a podcast
         # app retrying a rotated URL would otherwise get a challenge it

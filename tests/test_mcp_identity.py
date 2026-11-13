@@ -19,9 +19,16 @@ from mcp.server.fastmcp import Context, FastMCP
 from precis import mcp_identity, server
 from precis.errors import BadInput, Denied, Upstream
 from precis.mcp_identity import (
+    CapabilityIdentity,
+    capability_call_allowed,
+    list_capability_tokens,
     list_user_tokens,
+    mint_capability_token,
     mint_user_token,
+    parse_capability_scopes,
+    resolve_capability_token,
     resolve_user_token,
+    revoke_capability_token,
     revoke_user_token,
 )
 from precis.store import Store
@@ -968,3 +975,419 @@ def test_sdk_owner_capability_requires_version_and_actual_validation_hook(
         StreamableHTTPSessionManager, "_handle_stateful_request", lambda *args: None
     )
     assert not server._sdk_session_ownership_supported()
+
+
+# ── client capability tokens (gr595554) ──────────────────────────────
+
+
+def _cap_ctx(identity: CapabilityIdentity) -> Context:
+    return cast(
+        Context,
+        SimpleNamespace(
+            session=object(),
+            request_context=SimpleNamespace(
+                request=SimpleNamespace(scope={mcp_identity.SCOPE_CAPABILITY: identity})
+            ),
+        ),
+    )
+
+
+def test_capability_token_only_persists_digest_and_owned_metadata(
+    store: Store,
+) -> None:
+    alice, bob = _user(store), _user(store, "bob")
+    token_id, raw = mint_capability_token(store, alice.id, "chat", ("read",))
+    other_id, other_raw = mint_capability_token(
+        store, alice.id, "phone feed", ("feed",)
+    )
+    assert re.fullmatch(r"precis_cap_[A-Za-z0-9_-]{43}", raw)
+    assert raw != other_raw and token_id != other_id
+    identity = resolve_capability_token(store, raw)
+    assert identity == CapabilityIdentity(token_id, alice.id, "chat", ("read",))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT token_sha256, scopes FROM web_user_capability_tokens WHERE id = %s",
+            (token_id,),
+        ).fetchone()
+    assert row == (hashlib.sha256(raw.encode("utf-8")).hexdigest(), ["read"])
+    tokens = list_capability_tokens(store, alice.id)
+    assert {t.label for t in tokens} == {"chat", "phone feed"}
+    assert next(t for t in tokens if t.label == "phone feed").scopes == ("feed",)
+    assert list_capability_tokens(store, bob.id) == []
+    assert raw not in repr(tokens)
+    assert not revoke_capability_token(store, bob.id, token_id)
+    assert resolve_capability_token(store, raw) is not None
+    assert revoke_capability_token(store, alice.id, token_id)
+    assert not revoke_capability_token(store, alice.id, token_id)
+    assert resolve_capability_token(store, raw) is None
+    assert resolve_capability_token(store, other_raw) is not None
+    assert next(
+        t for t in list_capability_tokens(store, alice.id) if t.id == token_id
+    ).revoked_at
+
+
+def test_capability_token_fails_closed_on_disabled_missing_and_malformed(
+    store: Store,
+) -> None:
+    alice = _user(store)
+    token_id, raw = mint_capability_token(store, alice.id, "chat", ("read",))
+    for invalid in ("", "precis_cap_short", raw + "!", "precis_user_" + raw[11:]):
+        assert resolve_capability_token(store, invalid) is None
+    store.set_web_user_disabled(alice.login, disabled=True)
+    assert resolve_capability_token(store, raw) is None
+    with pytest.raises(Denied):
+        mint_capability_token(store, alice.id, "chat", ("read",))
+    store.set_web_user_disabled(alice.login, disabled=False)
+    store.delete_web_user(alice.login)
+    assert resolve_capability_token(store, raw) is None
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("", ("read",)),
+        ("  , ", ("read",)),
+        ("read", ("read",)),
+        ("read:memory,write:memory,feed", ("read:memory", "write:memory", "feed")),
+        ("read,read", ("read",)),
+        (["read:skill", "feed"], ("read:skill", "feed")),
+    ],
+)
+def test_parse_capability_scopes_accepts_the_grammar(text, expected) -> None:
+    assert parse_capability_scopes(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "write",
+        "read:",
+        "write:",
+        "feed:x",
+        "read:MEMORY",
+        "exec:memory",
+        "read:memory:extra",
+        "*",
+        "admin",
+    ],
+)
+def test_parse_capability_scopes_refuses_unknown_entries(text) -> None:
+    with pytest.raises(BadInput):
+        parse_capability_scopes(text)
+
+
+def test_capability_call_allowed_matrix() -> None:
+    read = ("read",)
+    assert capability_call_allowed(read, "get", {"memory"})
+    assert capability_call_allowed(read, "search", {"memory", "skill"})
+    assert capability_call_allowed(read, "search", None)
+    assert not capability_call_allowed(read, "put", {"memory"})
+    assert not capability_call_allowed(read, "tag", {"memory"})
+    narrowed = ("read:memory",)
+    assert capability_call_allowed(narrowed, "get", {"memory"})
+    assert not capability_call_allowed(narrowed, "get", {"skill"})
+    assert not capability_call_allowed(narrowed, "search", None)
+    assert not capability_call_allowed(narrowed, "get", {"memory", "skill"})
+    writer = ("read", "write:memory")
+    assert capability_call_allowed(writer, "put", {"memory"})
+    assert capability_call_allowed(writer, "delete", {"memory"})
+    assert capability_call_allowed(writer, "get", {"memory"})
+    assert not capability_call_allowed(writer, "put", {"skill"})
+    feed = ("feed",)
+    assert not capability_call_allowed(feed, "get", {"skill"})
+    assert not capability_call_allowed(feed, "search", None)
+    assert not capability_call_allowed(("read",), "serve", {"memory"})
+    assert not capability_call_allowed(("read",), "", {"memory"})
+
+
+def test_capability_dispatch_gate_judges_the_normalized_payload(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dispatched = Mock(return_value=("handler reached", False))
+    monkeypatch.setattr(runtime_with_store, "dispatch_with_status", dispatched)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    identity = CapabilityIdentity(11, 7, "reader", ("read",))
+
+    def call(verb: str, arguments: dict[str, Any], cap=identity) -> Any:
+        return core._dispatch(verb, dict(arguments), _cap_ctx(cap))
+
+    assert call("get", {"kind": "skill", "id": "precis-overview"}) == "handler reached"
+    assert call("search", {"kind": "memory", "q": "x"}) == "handler reached"
+    refused = cast(Any, call("put", {"kind": "memory", "text": "x"}))
+    assert refused.isError and "[error:Denied]" in refused.content[0].text
+    assert dispatched.call_count == 2
+
+    narrow = CapabilityIdentity(12, 7, "mem reader", ("read:memory",))
+    assert call("get", {"kind": "memory", "id": "me1"}, cap=narrow) == (
+        "handler reached"
+    )
+    refused = cast(Any, call("get", {"kind": "skill", "id": "toc"}, cap=narrow))
+    assert refused.isError and "mem reader" in refused.content[0].text
+    refused = cast(Any, call("search", {"q": "whole surface"}, cap=narrow))
+    assert refused.isError and "[error:Denied]" in refused.content[0].text
+
+    writer = CapabilityIdentity(13, 7, "mem writer", ("write:memory",))
+    assert call("put", {"kind": "memory", "text": "x"}, cap=writer) == (
+        "handler reached"
+    )
+    assert call("get", {"kind": "me", "id": "me1"}, cap=writer) == "handler reached"
+    refused = cast(Any, call("delete", {"kind": "skill", "id": "x"}, cap=writer))
+    assert refused.isError and "[error:Denied]" in refused.content[0].text
+
+    feed_only = CapabilityIdentity(14, 7, "phone", ("feed",))
+    refused = cast(Any, call("get", {"kind": "skill", "id": "toc"}, cap=feed_only))
+    assert refused.isError and "[error:Denied]" in refused.content[0].text
+
+    forged = cast(
+        Any,
+        core._dispatch(
+            "get",
+            {"kind": "skill", "id": "toc"},
+            cast(
+                Context,
+                SimpleNamespace(
+                    request_context=SimpleNamespace(
+                        request=SimpleNamespace(
+                            scope={mcp_identity.SCOPE_CAPABILITY: "not-an-identity"}
+                        )
+                    )
+                ),
+            ),
+        ),
+    )
+    assert forged.isError and "[error:Denied]" in forged.content[0].text
+    assert current_principal() is None
+
+
+def test_capability_token_never_binds_a_personal_principal(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A consumer credential reaches personal kinds only to refuse at
+    ``require_user`` — the stamp never becomes an owner."""
+    alice = _user(store)
+    _token_id, _raw = mint_capability_token(store, alice.id, "chat", ("read",))
+    cap = CapabilityIdentity(15, alice.id, "chat", ("read",))
+    ctx = _cap_ctx(cap)
+    observed: list[Any] = []
+
+    def dispatch(verb, payload, *, fold=False):
+        observed.append(current_principal())
+        return ("handler reached", False)
+
+    monkeypatch.setattr(
+        runtime_with_store, "dispatch_with_status", Mock(side_effect=dispatch)
+    )
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    assert core.get(kind="memory", id="me1", ctx=ctx) == "handler reached"
+    assert observed == [None]
+    assert current_principal() is None
+
+
+def test_capability_write_stamps_cap_principal(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import principal
+
+    cap = CapabilityIdentity(16, 7, "mem writer", ("write:memory",))
+    ctx = _cap_ctx(cap)
+    seen: list[str] = []
+
+    def dispatch(verb, payload, *, fold=False):
+        seen.append(principal.current())
+        return ("handler reached", False)
+
+    monkeypatch.setattr(
+        runtime_with_store, "dispatch_with_status", Mock(side_effect=dispatch)
+    )
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    assert core.put(kind="memory", text="x", ctx=ctx) == "handler reached"
+    assert seen == ["cap:16"]
+
+
+def test_capability_token_authenticates_scopes_and_revokes_on_http(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real streamable-HTTP path: bearer resolve, session pin, per-call
+    allow-list, revocation -> 401."""
+    alice = _user(store)
+    reader_id, reader_raw = mint_capability_token(store, alice.id, "chat", ("read",))
+    _writer_id, writer_raw = mint_capability_token(
+        store, alice.id, "editor", ("read", "write:memory")
+    )
+    _feed_id, feed_raw = mint_capability_token(store, alice.id, "phone", ("feed",))
+    dispatched = Mock(return_value=("handler reached", False))
+    monkeypatch.setattr(runtime_with_store, "dispatch_with_status", dispatched)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("capability-test", json_response=True)
+    mcp.tool(**server._TOOL_KW)(server._offload_sync(core.get))
+    mcp.tool(**server._TOOL_KW)(server._offload_sync(core.put))
+    app = mcp.streamable_http_app()
+    server._install_token_auth(app, token="install", store=store)
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+            ) as client,
+        ):
+            session = await _initialize(client, reader_raw)
+            ok = await _call(
+                client,
+                session,
+                reader_raw,
+                2,
+                arguments={"kind": "memory", "id": "me1"},
+            )
+            body = _rpc_body(ok)
+            assert body["result"]["content"][0]["text"] == "handler reached"
+            refused = await client.post(
+                "/mcp",
+                headers=_headers(reader_raw, session),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "put",
+                        "arguments": {"kind": "memory", "text": "x"},
+                    },
+                },
+            )
+            body = _rpc_body(refused)
+            assert body["result"]["isError"]
+            assert "[error:Denied]" in body["result"]["content"][0]["text"]
+            assert "chat" in body["result"]["content"][0]["text"]
+            writer_session = await _initialize(client, writer_raw)
+            written = await client.post(
+                "/mcp",
+                headers=_headers(writer_raw, writer_session),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "put",
+                        "arguments": {"kind": "memory", "text": "x"},
+                    },
+                },
+            )
+            body = _rpc_body(written)
+            assert body["result"]["content"][0]["text"] == "handler reached"
+            # A feed-scoped credential authenticates but serves no verb.
+            feed_session = await _initialize(client, feed_raw)
+            refused = await _call(
+                client,
+                feed_session,
+                feed_raw,
+                5,
+                arguments={"kind": "skill", "id": "toc"},
+            )
+            body = _rpc_body(refused)
+            assert body["result"]["isError"]
+            assert "[error:Denied]" in body["result"]["content"][0]["text"]
+            # Revocation bites on the next request, mid-session.
+            revoke_capability_token(store, alice.id, reader_id)
+            revoked = await _call(
+                client,
+                session,
+                reader_raw,
+                6,
+                arguments={"kind": "memory", "id": "me1"},
+            )
+            assert revoked.status_code == 401
+
+    asyncio.run(exercise())
+    assert current_principal() is None
+
+
+def test_capability_tokens_refuse_legacy_sse_and_wrong_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    async def legacy(request):
+        return PlainTextResponse("legacy install access")
+
+    monkeypatch.setattr(
+        mcp_identity,
+        "resolve_capability_token",
+        lambda store, raw: CapabilityIdentity(1, 7, "chat", ("read",)),
+    )
+    app = Starlette(
+        routes=[Route("/sse", legacy), Route("/messages/", legacy, methods=["POST"])]
+    )
+    server._install_token_auth(app, token="install", store=object(), personal_path=None)
+    with TestClient(app) as client:
+        for method, path in (("GET", "/sse"), ("POST", "/messages/")):
+            cap = client.request(
+                method, path, headers={"Authorization": "Bearer precis_cap_test"}
+            )
+            assert cap.status_code == 403
+            assert "streamable HTTP" in cap.text
+
+
+def test_capability_boundary_refuses_modalities_outside_scope(
+    store: Store, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-tool requests honour the allow-list too: a narrowed token cannot
+    read the skill catalogue through prompts/resources."""
+    alice = _user(store)
+    _id, reader_raw = mint_capability_token(store, alice.id, "chat", ("read",))
+    _nid, narrow_raw = mint_capability_token(store, alice.id, "mem", ("read:memory",))
+    dispatched = Mock(return_value=("handler reached", False))
+    monkeypatch.setattr(runtime_with_store, "dispatch_with_status", dispatched)
+    monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
+    mcp = FastMCP("capability-modality-test", json_response=True)
+    monkeypatch.setattr(server, "mcp", mcp)
+    monkeypatch.setattr(server, "_mcp_profile", lambda: "typed")
+    server._register_tools_from_registry()
+    server._wire_modalities(runtime_with_store)
+    app = mcp.streamable_http_app()
+    server._install_token_auth(app, token="install", store=store)
+    requests: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("prompts/list", {}),
+        ("resources/list", {}),
+        ("prompts/get", {"name": "precis-learning-help"}),
+        ("resources/read", {"uri": "precis://skill/precis-learning-help"}),
+        ("resources/read", {"uri": "precis://memory/me1"}),
+    )
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+            ) as client,
+        ):
+            for credential in (reader_raw, narrow_raw):
+                session = await _initialize(client, credential)
+                for call_id, (method, params) in enumerate(requests, start=2):
+                    response = await client.post(
+                        "/mcp",
+                        headers=_headers(credential, session),
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": call_id,
+                            "method": method,
+                            "params": params,
+                        },
+                    )
+                    text = response.text
+                    wide = credential == reader_raw
+                    # Under the narrowed token only the memory URI is in
+                    # scope; a permitted read may still fail in the
+                    # handler (unknown ref) — never as a scope Denied.
+                    permitted = wide or params.get("uri", "").startswith(
+                        "precis://memory"
+                    )
+                    if permitted:
+                        assert "[error:Denied]" not in text, (method, text)
+                    else:
+                        assert "error" in response.json(), (method, text)
+                        assert "[error:Denied]" in text, (method, text)
+
+    asyncio.run(exercise())
