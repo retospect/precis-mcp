@@ -16,8 +16,11 @@ A *launch site* is, in any ``.py`` file (or python-shebang script) under
   ``os.exec*``, ``pty.spawn``;
 * ``multiprocessing.Process`` (also via ``get_context(...).Process``) and
   ``ProcessPoolExecutor``;
-* a list/tuple argv literal headed ``docker``/``podman``/``ssh`` in a scope
-  that makes none of the calls above (argv built here, run elsewhere).
+* a list/tuple literal of argv shape headed ``docker``/``podman``/``ssh``
+  in a scope that makes none of the calls above (argv built here, run
+  elsewhere). Argv shape: element 0 is the bare launcher token and
+  element 1, when literal, is one token — a marks tuple like
+  ``("docker VM disk has", ...)`` is message text, not argv (gr657330).
 
 Not a site:
 
@@ -191,6 +194,31 @@ def _verb(tokens: list[str | None]) -> str:
         elif not (t.startswith("-") or t == "compose"):
             return t
     return ""
+
+
+def _argv_shape(node: ast.List | ast.Tuple) -> bool:
+    """True when a list/tuple literal reads as process argv, not message
+    text (gr657330): element 0 is exactly the launcher token (a string
+    like ``"docker VM disk has"`` is a refusal mark, not a binary) and
+    element 1, when literal, is a single token — a subcommand, flag or
+    host, never a sentence."""
+    if not node.elts:
+        return False
+    first = node.elts[0]
+    if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+        return False
+    if first.value.split() != [first.value]:
+        return False
+    if _str_head(first.value) not in _ARGV_HEADS:
+        return False
+    if len(node.elts) < 2:
+        return True
+    second = node.elts[1]
+    return not (
+        isinstance(second, ast.Constant)
+        and isinstance(second.value, str)
+        and second.value.split() != [second.value]
+    )
 
 
 class _Scan:
@@ -435,14 +463,8 @@ class _Scan:
                 for t in ch.targets:
                     if isinstance(t, ast.Name):
                         self.mods[t.id] = self.mods[ch.value.id]
-            elif isinstance(ch, ast.List | ast.Tuple) and ch.elts:
-                first = ch.elts[0]
-                if (
-                    isinstance(first, ast.Constant)
-                    and isinstance(first.value, str)
-                    and _str_head(first.value) in _ARGV_HEADS
-                ):
-                    self._argv_lits.append((ch, stack))
+            elif isinstance(ch, ast.List | ast.Tuple) and _argv_shape(ch):
+                self._argv_lits.append((ch, stack))
             self._visit(ch, inner)
 
 
@@ -624,6 +646,18 @@ def test_scanner_flags_each_launch_form() -> None:
         assert any(k.endswith(f"::{want}") for k in _keys(src)), (
             f"{want} not flagged in:\n{src}"
         )
+
+
+def test_message_text_tuples_are_not_sites() -> None:
+    """gr657330: a marks tuple whose first string merely starts with
+    ``docker`` is message text, not argv — reordering it must not move
+    the count."""
+    src = (
+        'MARKS = (\n    "docker VM disk has",\n    "disk probe failed:",\n)\n'
+        "def f():\n    return ('docker', 'VM disk has', 'other mark')\n"
+        "def g():\n    return ['docker', 'run', img]\n"
+    )
+    assert _keys(src) == ["x.py::g::argv"]
 
 
 def test_docker_argv_run_inline_counts_once() -> None:
