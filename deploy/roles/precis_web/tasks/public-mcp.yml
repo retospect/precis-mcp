@@ -93,6 +93,8 @@
     precis_web_daemon_process: precis-mcp-public
     precis_web_daemon_source: mcp:public
     precis_web_daemon_log: /var/log/precis-mcp-public.log
+    # Respawn fast: every second here is a claude.ai call timing out.
+    precis_web_daemon_throttle: 5
     precis_web_daemon_dsn: "{{ precis_mcp_public_dsn }}"
     precis_web_daemon_env:
       PRECIS_SECRETS_FILE_DIR: "{{ precis_mcp_public_secrets_dir }}"
@@ -106,6 +108,11 @@
       # python kind: server code readable by connectors, never writable.
       PRECIS_PYTHON_ROOTS: "precis:/Users/deploy/precis-fix-repo,catpath:/Users/deploy/catpath"
       PRECIS_PYTHON_READONLY: "1"
+      # The deploy restarts this daemon once, after the venv install
+      # finishes (handler `restart precis-mcp-public`). The watchdog fired
+      # mid-install, respawned into a half-built venv and cost ~100 s
+      # (gr660587).
+      PRECIS_INSTALL_WATCHDOG: "0"
   notify: restart precis-mcp-public
 
 - name: Load the public MCP LaunchDaemon if absent

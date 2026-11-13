@@ -124,3 +124,41 @@ def test_token_generation_is_private_and_does_not_rotate_existing_token(
     assert os.stat(path).st_mode & 0o777 == 0o600
     assert first.stdout == second.stdout == first.stderr == second.stderr == ""
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_public_mcp_restarts_once_per_deploy_after_the_install() -> None:
+    """gr660587: the install watchdog fired mid-install (respawn into a
+    half-built venv, ~100 s down) and the bounce play restarted it again.
+    The role handler is now its one restart, after both installs."""
+    task_vars = next(
+        t["vars"] for t in _tasks() if t["name"].endswith("LaunchDaemon plist")
+    )
+    assert task_vars["precis_web_daemon_env"]["PRECIS_INSTALL_WATCHDOG"] == "0"
+    assert task_vars["precis_web_daemon_throttle"] == 5
+
+    handlers = yaml.safe_load((_ROLE / "handlers/main.yml").read_text(encoding="utf-8"))
+    handler = next(h for h in handlers if h["name"] == "restart precis-mcp-public")
+    assert "precis_deploy_changed" not in str(handler["when"])
+
+    installs = [
+        t
+        for t in yaml.safe_load(
+            (_ROLE / "tasks/install.yml").read_text(encoding="utf-8")
+        )
+        if t["name"].startswith("Install precis-mcp[")
+    ]
+    assert len(installs) == 2
+    for task in installs:
+        assert "restart precis-mcp-public" in task["notify"]
+
+    plays = yaml.safe_load(
+        (_ROLE.parents[1] / "redeploy-precis.yml").read_text(encoding="utf-8")
+    )
+    bounce = next(p for p in plays if p.get("name") == "Bounce all precis daemons")
+    find = next(t for t in bounce["tasks"] if "ansible.builtin.find" in t)
+    assert "com.precis.mcp-public.plist" in find["ansible.builtin.find"]["excludes"]
+
+
+def test_web_keeps_default_throttle() -> None:
+    plist = _render(precis_mcp_public_oauth_env={})
+    assert plist["ThrottleInterval"] == 30

@@ -71,7 +71,7 @@
   # promotion — the former ``external`` extra (whose absence broke the
   # dream cycle's web fetch, gr48611) is gone; every venv carries them.
   ansible.builtin.shell: |
-    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
+    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade --compile-bytecode \
       {{ '' if _precis_web_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
       --constraints /opt/precis/constraints.txt \
       --overrides /opt/precis/overrides.txt \
@@ -94,7 +94,9 @@
   # the old environment, producing 500s like "No filter named X".
   # Mirrors the precis_worker / precis_worker_agent roles, which
   # have always notified their reload handler on install changes.
-  notify: restart precis-web
+  notify:
+    - restart precis-web
+    - restart precis-mcp-public
 
 # autocatpath `pathway` kind surface (topology: autocatpath_plugin). The plugin
 # glue + migration ship in-tree with precis-mcp (src/precis_pathway, ADR 0069);
@@ -177,7 +179,7 @@
       (precis_deploy_changed | default(true) | bool)
       or (precis_force_install | default(false) | bool)
   ansible.builtin.shell: |
-    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
+    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade --compile-bytecode \
       --refresh-package autocatpath \
       --constraints /opt/precis/constraints.txt \
       --overrides /opt/precis/overrides.txt \
@@ -189,4 +191,6 @@
   changed_when: >-
     'Installed' in (precis_web_autocatpath.stdout + precis_web_autocatpath.stderr)
     or 'Updated' in (precis_web_autocatpath.stdout + precis_web_autocatpath.stderr)
-  notify: restart precis-web
+  notify:
+    - restart precis-web
+    - restart precis-mcp-public

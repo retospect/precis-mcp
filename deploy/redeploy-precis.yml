@@ -867,7 +867,12 @@
       ansible.builtin.find:
         paths: /Library/LaunchDaemons
         patterns: "com.precis.*.plist"
-        excludes: "com.precis.embedder.plist"
+        # mcp-public restarts in its own role handler right after the venv
+        # install (gr660587); bouncing it here too dropped every claude.ai
+        # session a second time per deploy.
+        excludes:
+          - "com.precis.embedder.plist"
+          - "com.precis.mcp-public.plist"
       register: precis_plists
 
     # gr162132: `kickstart -k` (next task) CANNOT load a daemon that was

@@ -17,12 +17,16 @@
     and (precis_deploy_changed is not defined
          or not (precis_deploy_changed | bool))
 
+# The public MCP restarts HERE on every deploy, not in the step-2 bounce
+# play (which excludes its plist): its install watchdog is off, so this is
+# its one restart, taken once both venv installs have finished and the plist
+# is rendered (public-mcp.yml flushes handlers). Waiting for the bounce would
+# leave it serving a swapped venv through the drain wait (gr338977, gr660587).
 - name: restart precis-mcp-public
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/reload_launchd.yml"
   vars:
     reload_unit: com.precis.mcp-public
     reload_persistent: true
-  when: >-
-    os_family == "darwin"
-    and (precis_deploy_changed is not defined
-         or not (precis_deploy_changed | bool))
+  when:
+    - os_family == "darwin"
+    - precis_mcp_public_enabled | default(false) | bool
