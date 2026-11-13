@@ -11,8 +11,10 @@ recurring todo every 10 minutes::
 
 One pass checks in order and stops at the first blocker — an idle steady
 state (main == prod) costs a single GitHub request, which matters because
-the unauthenticated api.github.com budget (60/h) is shared with
-``pr_poll`` and ``ci_verdict_poll``:
+the api.github.com budget is shared with ``pr_poll`` and
+``ci_verdict_poll`` (all send the factory token,
+:func:`precis.workers.factory_git.github_api_headers`; without one the
+budget is GitHub's unauthenticated 60/h per IP):
 
 0. Stuck watchdog (td574370): the ``release.round`` row's ``state_at``
    is judged against the ``release.stage_deadlines`` setting — the

@@ -6,8 +6,10 @@ GitHub reads under ``job_inproc`` (the ``gripe_validate`` shape). One pass:
 1. The repo: ``params.repo``, else the ``release.repo`` setting, else the
    slice checkout's ``origin`` remote (:func:`precis.plans.pr_class.resolve_repo`).
 2. ``GET /repos/<repo>/pulls?state=open`` through
-   :func:`precis.utils.safe_fetch.safe_get` (public API; ``GH_TOKEN`` sent
-   when set). GitHub unreadable (network, rate limit) ends the pass with a
+   :func:`precis.utils.safe_fetch.safe_get` (public API; ``GH_TOKEN``, else
+   the factory's vault token, is sent —
+   :func:`precis.workers.factory_git.github_api_headers`). GitHub
+   unreadable (network, rate limit) ends the pass with a
    note and nothing minted; the next tick tries again.
 3. For each open, non-draft PR that wants an intake
    (:func:`precis.plans.pr_class.needs_intake`: no plan root tagged
@@ -18,7 +20,7 @@ GitHub reads under ``job_inproc`` (the ``gripe_validate`` shape). One pass:
    ``put(kind='todo', mode='plan', args={'template': 'pr-intake', 'pr': n})``
    path, called directly: workers never import handlers). At most
    ``params.max_new`` (default :data:`MAX_NEW`) per pass, so a burst of PRs
-   spends a bounded share of the unauthenticated 60 requests/hour.
+   spends a bounded share of the hourly GitHub budget.
 
 ``params.dry_run`` reads and classifies, mints nothing. Minting is safe
 while the factory is off: a plan only runs once ``plan_dispatch`` is armed.

@@ -26,6 +26,7 @@ from precis.plans import templates as T
 from precis.plans.nodes import node_kind, validate_plan_meta
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.workers import factory_git as _fg
 from precis.workers.job_types import dep_check as dc
 from precis.workers.job_types import get_job_type, known_job_types
 from precis.workers.job_types import plan_dispatch as pd
@@ -247,6 +248,7 @@ pytestmark = [
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(_fg, "factory_git_token", lambda: None)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     psettings.invalidate()
 

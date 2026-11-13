@@ -25,6 +25,7 @@ from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.workers import factory_git as _fg
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types import release_poll as rp
 from tests._lane_rows import use_lanes
@@ -56,6 +57,7 @@ _GIT_PIN: list[str] = [MAIN_SHA]
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(_fg, "factory_git_token", lambda: None)
     monkeypatch.delenv("PRECIS_NODE", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_NO_RELEASE_WINDOWS", raising=False)
     monkeypatch.delenv("PRECIS_RELEASE_REPO", raising=False)

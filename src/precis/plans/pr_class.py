@@ -29,7 +29,8 @@ security-linked (:func:`is_security`) else 4, ``factory`` 10,
 ``harness`` 8, ``external`` 2.
 
 GitHub reads go through :func:`precis.utils.safe_fetch.safe_get` (the public
-API; ``GH_TOKEN`` from the env is sent when set). The repo is the
+API; ``GH_TOKEN`` from the env, else the factory's vault token —
+:func:`precis.workers.factory_git.github_api_headers`). The repo is the
 ``release.repo`` setting, else the slice checkout's ``origin`` remote.
 """
 
@@ -37,7 +38,6 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import os
 import re
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -450,16 +450,20 @@ def _http_get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
 
 
 def _headers() -> dict[str, str]:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GH_TOKEN", "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+    from precis.workers.factory_git import github_api_headers
+
+    return github_api_headers()
 
 
 def _get_json(url: str, params: dict[str, Any]) -> Any:
+    from precis.utils.http import VendorError
+
     try:
         resp = _http_get(url, params, _headers())
+    except VendorError as exc:
+        # Its text is the status line (plus a rate limit's quota and reset),
+        # never the request headers or body.
+        raise GitHubUnreadable(f"GET {url}: {exc}") from exc
     except Exception as exc:
         raise GitHubUnreadable(f"GET {url}: {type(exc).__name__}") from exc
     if resp.status_code != 200:

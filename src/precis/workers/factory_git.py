@@ -24,6 +24,13 @@ the host only through the lander. Resolution is env → vault
 (``secrets.get_secret`` / ``reveal_unbound``, like the OAuth token); with
 no token the env is returned unchanged and the host's own credentials, if
 any, apply.
+
+The in-process GitHub REST readers (``pr_class`` for ``pr_poll`` and
+``release_poll``, ``ci_verdict_poll``, ``upstream_watch``) send the same
+token through :func:`github_api_headers`: ``GH_TOKEN`` from the env, else
+this vault token. Without it every reader on a worker shares GitHub's
+unauthenticated 60 requests/hour for the host's IP, and one busy poller
+starves the others (the release poller's compare read 403'd on every tick).
 """
 
 from __future__ import annotations
@@ -63,6 +70,43 @@ def factory_git_token() -> str | None:
     return token.strip() if token else None
 
 
+#: Set once the unauthenticated fallback has been logged in this process.
+_unauth_logged = False
+
+
+def github_api_token() -> str | None:
+    """The token a GitHub REST read sends: ``GH_TOKEN`` from the env, else
+    :func:`factory_git_token`; ``None`` when neither resolves (logged once
+    per process). Never raises."""
+    global _unauth_logged
+    token = os.environ.get("GH_TOKEN", "").strip()
+    if not token:
+        try:
+            token = (factory_git_token() or "").strip()
+        except Exception:
+            token = ""
+    if token:
+        return token
+    if not _unauth_logged:
+        _unauth_logged = True
+        log.info(
+            "factory_git: no GH_TOKEN or %s in env or vault — GitHub API reads "
+            "are unauthenticated (60/h shared per IP)",
+            SECRET_NAME,
+        )
+    return None
+
+
+def github_api_headers() -> dict[str, str]:
+    """REST headers for api.github.com: the JSON media type, plus
+    ``Authorization: Bearer`` when :func:`github_api_token` resolves."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = github_api_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def git_auth_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """``base`` (default ``os.environ``) plus the credential wiring, or
     ``base`` unchanged (with a warning) when no token resolves. Existing
@@ -92,4 +136,10 @@ def git_auth_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-__all__ = ["SECRET_NAME", "factory_git_token", "git_auth_env"]
+__all__ = [
+    "SECRET_NAME",
+    "factory_git_token",
+    "git_auth_env",
+    "github_api_headers",
+    "github_api_token",
+]

@@ -12,7 +12,8 @@ repo falls back to the ``release.repo`` setting, then to ``git remote
 get-url origin`` of the repo checkout. Then ``GET
 https://api.github.com/repos/<owner>/<repo>/actions/runs?head_sha=<sha>``
 through :func:`precis.utils.safe_fetch.safe_get` (unauthenticated is fine
-for the public repo at 60/h; ``GH_TOKEN`` from the env is sent when set).
+for the public repo at 60/h; ``GH_TOKEN`` from the env, else the factory's
+vault token, is sent — :func:`precis.workers.factory_git.github_api_headers`).
 The newest check.yml run (on the release branch when one is known):
 
 - completed ``success``/``skipped``/``neutral`` → ``green``; any other
@@ -203,16 +204,18 @@ def resolve_target(store: Any, params: dict[str, Any]) -> dict[str, str]:
 def fetch_runs(repo: str, sha: str) -> list[dict[str, Any]] | None:
     """The workflow runs on ``sha``; ``None`` when GitHub is unreadable
     (network, rate limit, 5xx — the caller treats that as pending)."""
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GH_TOKEN", "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    from precis.utils.http import VendorError
+
+    headers = _factory_git.github_api_headers()
     try:
         resp = _http_get(
             _RUNS_URL.format(repo=repo), {"head_sha": sha, "per_page": 50}, headers
         )
     except Exception as exc:
-        log.info("%s: GitHub read failed (%s)", NAME, type(exc).__name__)
+        # A VendorError's text is the status line (plus a rate limit's quota
+        # and reset), never the request headers.
+        why = str(exc) if isinstance(exc, VendorError) else type(exc).__name__
+        log.info("%s: GitHub read failed (%s)", NAME, why)
         return None
     if resp.status_code == 404:
         raise PollError(

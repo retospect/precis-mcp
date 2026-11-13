@@ -56,7 +56,7 @@ All HTTP reads api.github.com through the SSRF-pinned client and the
 shared ``github`` limiter row (``with_backoff``) — no SSRF surface. The
 token is ``GH_TOKEN`` from the env, else the vault's
 ``PRECIS_FACTORY_GIT_TOKEN`` via
-:func:`precis.workers.factory_git.factory_git_token`; unauthenticated
+:func:`precis.workers.factory_git.github_api_token`; unauthenticated
 works too, at search API's lower limit. Upstream text (titles, comment
 bodies, release notes) is untrusted third-party content: it is quoted
 clipped as data, never followed as instructions.
@@ -66,7 +66,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -212,17 +211,9 @@ def _default_github() -> GitHubClient:
     """The real client: ``GH_TOKEN`` from the env, else the factory's
     vault token (``PRECIS_FACTORY_GIT_TOKEN``); neither → unauthenticated
     (the search API's low unauthed ceiling still serves a daily pass)."""
-    token = os.environ.get("GH_TOKEN", "").strip()
-    if not token:
-        try:
-            from precis.workers.factory_git import factory_git_token
+    from precis.workers.factory_git import github_api_token
 
-            token = (factory_git_token() or "").strip()
-        except Exception:
-            token = ""
-    if not token:
-        log.info("upstream_watch: no GitHub token (env/vault) — unauthenticated")
-    return GitHubClient(token=token or None)
+    return GitHubClient(token=github_api_token())
 
 
 def upstream_watch_enabled(store: Store, *, conn: Any = None) -> bool:

@@ -618,6 +618,32 @@ def _masked_body_prefix(resp: httpx.Response) -> str | None:
     return mask_secrets(text.replace("\x00", ""), warn=False)[:_BODY_PREFIX_LIMIT]
 
 
+def _rate_limit_note(resp: httpx.Response) -> str | None:
+    """``rate limit exceeded (remaining=0 limit=60 reset=<UTC>)`` for a
+    refusal whose body says rate limit and that carries GitHub's
+    ``X-RateLimit-*`` headers, else ``None``. Only those quota headers —
+    never the body, which names the caller's IP."""
+    try:
+        headers = resp.headers
+        remaining = headers.get("X-RateLimit-Remaining")
+    except Exception:
+        return None
+    if remaining is None or "rate limit" not in (_body_prefix(resp) or "").lower():
+        return None
+    parts = [f"remaining={remaining}"]
+    if (limit := headers.get("X-RateLimit-Limit")) is not None:
+        parts.append(f"limit={limit}")
+    if (reset := headers.get("X-RateLimit-Reset")) is not None:
+        try:
+            reset = datetime.fromtimestamp(int(reset), UTC).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except (ValueError, OverflowError, OSError):
+            pass
+        parts.append(f"reset={reset}")
+    return f"rate limit exceeded ({' '.join(parts)})"
+
+
 def redact_url(url: str | None) -> str | None:
     """``url`` with credential-named query param values masked (``REDACTED``).
 
@@ -981,9 +1007,10 @@ def with_backoff(
                     )
                 elif policy.fatal_counts_toward_breaker:
                     _trip(circuit, policy, now)
+                why = _rate_limit_note(resp) or "auth/permission failure"
                 raise VendorError(
                     service,
-                    f"HTTP {resp.status_code} — auth/permission failure, not retried",
+                    f"HTTP {resp.status_code} — {why}, not retried",
                     status=resp.status_code,
                     body=_masked_body_prefix(resp) if keep_refusal_body else None,
                 )
@@ -1343,7 +1370,18 @@ def polite_safe_get(
 def _log_refusal(service: str, resp: httpx.Response) -> None:
     """Diagnostics for a 401/403: bounded body prefix and the CDN request id
     (``x-amz-cf-id``, which the operator can quote to the CDN). Read-only —
-    nothing here feeds back into the request headers."""
+    nothing here feeds back into the request headers. A rate-limit refusal
+    logs its quota headers instead of the body, which names our IP."""
+    note = _rate_limit_note(resp)
+    if note is not None:
+        log.warning(
+            "%s refused HTTP %s url=%s %s",
+            service,
+            resp.status_code,
+            _url_of(resp),
+            note,
+        )
+        return
     body = _masked_body_prefix(resp) or ""
     log.warning(
         "%s refused HTTP %s url=%s x-amz-cf-id=%s body=%r",
