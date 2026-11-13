@@ -3512,7 +3512,9 @@ class DraftStore(_AbbrevMixin):
         existing ``meta`` dict; every other key (``authoring_enabled``,
         registry bookkeeping, …) is left untouched. gr345334: this is
         what gives ``meta={'pronunciation': {...}}`` (creation-only
-        until now, ``create_draft``'s ``meta=``) an in-place edit.
+        until now, ``create_draft``'s ``meta=``) an in-place edit;
+        gr662152 allowlisted ``meta={'draft_refresh': …}`` too — the
+        handler validates + merges that subdict before it reaches here.
 
         Logs a ``meta_patched`` ``ref_events`` row (old→new per touched
         key), mirroring :meth:`set_draft_title`'s ``title_changed`` row —

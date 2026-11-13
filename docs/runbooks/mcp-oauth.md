@@ -69,6 +69,11 @@ Setting `precis_mcp_public_enabled: false` skips management. To remove
 exposure, remove the configured MCP path mappings or the dedicated port
 mapping and unload the listener.
 
+The public daemon also exposes the `python` kind read-only: its plist env sets
+`PRECIS_PYTHON_ROOTS` (the `precis` and `catpath` server-code checkouts) and
+`PRECIS_PYTHON_READONLY=1`, which makes `put`/`edit`/`delete` on `python`
+refuse while every other kind (gripe filing, etc.) keeps its normal writes.
+
 ### Web database identity
 
 After the database ownership cutover, the web login uses `precis_ingress`;

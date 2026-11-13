@@ -1810,6 +1810,84 @@ class TestPutAcquisitionMode:
                 wants=[{"doi": "10.1234/acquire-test"}],
             )
 
+    def test_link_rel_provenance_folds_into_provenance(self, store) -> None:
+        """gr661901: the ``link=<handle>, rel='provenance'`` near-miss
+        fills ``provenance=`` — the same derived-from edge mints, once,
+        with no leftover edge on the unregistered 'provenance' rel."""
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="claim awaiting a paper",
+            body="claim body text that needs grounding",
+            wants=[{"doi": "10.1234/acq-linkfold"}],
+            link=f"memory:{mem_id}",
+            rel="provenance",
+        )
+        assert "STATUS:acquiring" in resp.body
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        out_links = store.links_for(fid, direction="out")
+        derived = [ln for ln in out_links if ln.relation == "derived-from"]
+        assert len(derived) == 1
+        assert derived[0].dst_ref_id == mem_id
+        assert all(ln.relation != "provenance" for ln in out_links)
+
+    def test_link_rel_derived_from_folds_into_provenance(self, store) -> None:
+        """gr661901: ``rel='derived-from'`` spells the same provenance
+        edge — it folds too when ``provenance=`` is absent."""
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="claim awaiting a paper",
+            body="claim body text that needs grounding",
+            wants=[{"doi": "10.1234/acq-linkfold2"}],
+            link=f"memory:{mem_id}",
+            rel="derived-from",
+        )
+        assert "STATUS:acquiring" in resp.body
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        derived = store.links_for(fid, direction="out", relation="derived-from")
+        assert len(derived) == 1
+        assert derived[0].dst_ref_id == mem_id
+
+    def test_link_rel_provenance_with_provenance_becomes_derived_from(
+        self, store
+    ) -> None:
+        """gr661901: ``provenance=`` given AND ``link=`` carrying the
+        unregistered ``rel='provenance'`` — the extra link lands as the
+        derived-from edge the caller meant instead of dying on the links
+        FK."""
+        mem_id = _seed_memory(store)
+        other_id = _seed_memory(store, text="a second research note")
+        h = _make_handler(store)
+        resp = h.put(
+            title="claim awaiting a paper",
+            body="claim body text that needs grounding",
+            wants=[{"doi": "10.1234/acq-linkfold3"}],
+            provenance=f"memory:{mem_id}",
+            link=f"memory:{other_id}",
+            rel="provenance",
+        )
+        assert "STATUS:acquiring" in resp.body
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        derived = store.links_for(fid, direction="out", relation="derived-from")
+        assert {ln.dst_ref_id for ln in derived} == {mem_id, other_id}
+
+    def test_link_with_other_rel_still_requires_provenance(self, store) -> None:
+        """gr661901: a ``link=`` carrying another rel stays the extra
+        link — it does not fill ``provenance=``, and the refusal names
+        provenance as a top-level arg."""
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="provenance") as exc:
+            h.put(
+                title="t",
+                body="b",
+                wants=[{"doi": "10.1234/acquire-test"}],
+                link=f"memory:{mem_id}",
+                rel="related-to",
+            )
+        assert "top-level arg" in str(exc.value)
+
     def test_empty_wants_rejected(self, store) -> None:
         """AC #2: empty wants= is BadInput naming the missing piece."""
         mem_id = _seed_memory(store)

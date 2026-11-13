@@ -123,6 +123,10 @@ _SEARCH_MODES = ("pattern", "lexical", "semantic", "literal")
 #: ``verbatim`` is the first word agents reach for (gr520148).
 _SEARCH_MODE_ALIASES = {"verbatim": "literal"}
 _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
+#: ``PRECIS_PYTHON_READONLY=1`` makes every write verb (put / edit /
+#: delete) refuse before touching disk — the public OAuth MCP exposes
+#: the corpus to read but must not let a connector write server code.
+_READONLY_ENV = "PRECIS_PYTHON_READONLY"
 # After the seven-verb cutover, ``put`` on a file kind is creation-only.
 # Region edits live on ``edit`` (mode='find-replace'|'append'|'insert'|
 # 'replace'); selector-deletes live on ``delete``. The three gates
@@ -2500,6 +2504,16 @@ class PythonHandler(Handler):
         return self.worktrees is not None and self.worktrees.owns(alias)
 
     def _resolve_writable(self, alias: str) -> Path:
+        if os.environ.get(_READONLY_ENV, "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            raise Unsupported(
+                f"python-kind writes are disabled on this server ({_READONLY_ENV}=1)",
+                next="reads (get/search) work; edit the repo from a local checkout",
+            )
         root = self._resolve_alias(alias)
         if alias not in self.roots:
             raise BadInput(

@@ -81,6 +81,7 @@ import collections
 import functools
 import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -97,8 +98,9 @@ import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
+from mcp.server.transport_security import DEFAULT_MAX_REQUEST_BODY_SIZE
 from mcp.shared import session as mcp_shared_session
-from mcp.types import ToolAnnotations
+from mcp.types import INVALID_REQUEST, ErrorData, JSONRPCError, ToolAnnotations
 from pydantic import ValidationError
 from pydantic_core import ErrorType
 
@@ -111,7 +113,7 @@ from precis.utils.secret_scan import mask_secrets
 from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 
 if TYPE_CHECKING:
-    from starlette.types import Scope
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # mcp 1.27.0's ``FuncMetadata.convert_result`` validates
 # ``CallToolResult.structuredContent`` against the auto-generated output
@@ -2235,7 +2237,6 @@ def _install_token_auth(
     from starlette.authentication import AuthCredentials
     from starlette.datastructures import Headers
     from starlette.responses import JSONResponse, PlainTextResponse
-    from starlette.types import ASGIApp, Receive, Send
 
     from precis import mcp_identity, principal, security_txt, slice_tokens
     from precis.oauth import store as oauth_store
@@ -2436,6 +2437,32 @@ def _install_token_auth(
 #: id the session manager forgot, ``400`` for a request that needed one.
 _SESSION_LOG_STATUSES = frozenset({400, 404})
 
+#: Bytes of the response body a session-failure log line may carry. The
+#: SDK's session errors are short JSON-RPC bodies; the cap keeps a
+#: pathological body from blowing up the line.
+_SESSION_LOG_BODY_CAP = 2048
+
+#: Chars of one client-supplied JSON-RPC method name a failure line
+#: keeps, and how many names it lists: the names are client controlled,
+#: so they are bounded as well as escaped before they reach the log
+#: (review td661882).
+_SESSION_LOG_METHOD_CAP = 80
+_SESSION_LOG_METHODS_MAX = 8
+
+#: Scope key the /mcp edge middlewares share the buffered request body
+#: under, as ``(body, complete)`` — ``complete`` is False when reading
+#: stopped before the terminal ``http.request`` message. The session-log
+#: middleware buffers every POST that passed the bearer gate so a
+#: failure line can name the JSON-RPC method; the recovery middleware
+#: reads the share instead of draining the replayed channel a second
+#: time.
+_SCOPE_MCP_BODY = "precis.mcp_body"
+
+#: ASGI methods that act on an established streamable-HTTP session — a
+#: missing ``Mcp-Session-Id`` is always a failure for them (gr660591).
+#: Other methods get the SDK's own answer (e.g. 405 with ``Allow``).
+_SESSION_SCOPED_METHODS = frozenset({"POST", "GET", "DELETE"})
+
 
 def _session_id_hash(scope: Scope) -> str:
     """sha256 hex[:8] of the request's ``Mcp-Session-Id``, ``-`` if absent.
@@ -2452,21 +2479,220 @@ def _session_id_hash(scope: Scope) -> str:
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
 
 
+def _rpc_methods(body: bytes) -> frozenset[str]:
+    """JSON-RPC ``method`` names in an /mcp POST body — batch or single.
+
+    Empty for anything that is not a JSON request message we can read (a
+    bare response, an unparseable or truncated body): none of those can
+    carry an ``initialize``. A body nested past the interpreter's limit
+    fails ``json.loads`` with ``RecursionError``, not ``ValueError`` —
+    it counts as unreadable here too (the SDK could not parse it
+    either); letting it escape would turn the refusal path — and the
+    failure-line emit — into a 500 (review td661882).
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        return frozenset()
+    messages = payload if isinstance(payload, list) else [payload]
+    return frozenset(
+        message["method"]
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("method"), str)
+    )
+
+
+def _escape_log_text(text: str, *, cap: int) -> str:
+    """Bounded single-line rendering of client-controlled log text.
+
+    Non-printable characters become their ``repr`` escapes
+    (``\\n`` → ``\\\\n``, ``\\x01`` → ``\\\\x01``), so a value carrying a
+    newline or terminal bytes cannot forge a second log line (review
+    td661882)."""
+    clipped = text[:cap]
+    if len(text) > cap:
+        clipped += "…"
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in clipped)
+
+
+def _session_log_excerpt(raw: bytes) -> str:
+    """Response body for a failure line, sanitized like the wire logs.
+
+    The SDK's 400 on a request it cannot validate echoes Pydantic's
+    ``str``, whose per-error lines carry the client's ``input_value``
+    verbatim — private tool arguments — and this logger sits outside
+    ``_PROTOCOL_PAYLOAD_FILTER``'s logger set (review td661882). A
+    JSON-RPC error body is reduced to ``code`` + ``message`` under the
+    filter's own rules: a validation dump keeps only its static first
+    line (count + model title — the location lines hold client keys),
+    ``input_value`` spans are cut and credential shapes masked.
+    Anything else logs as bounded, escaped text.
+    """
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except (ValueError, RecursionError):
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            message = error["message"]
+            if re.search(r"\b\d+ validation errors? for ", message):
+                message = message.splitlines()[0]
+            code = error.get("code")
+            text = f"{code}: {message}" if isinstance(code, int) else message
+    text = text.partition("Message was:")[0]
+    text = _mask_protocol_secrets(_strip_protocol_input_values(text))
+    return _escape_log_text(text, cap=_SESSION_LOG_BODY_CAP)
+
+
+async def _buffer_request_body(
+    receive: Receive, *, cap: int = DEFAULT_MAX_REQUEST_BODY_SIZE
+) -> tuple[bytes, bool, Receive]:
+    """Read the request body ahead of the app; return ``(body, complete,
+    replay)``.
+
+    ``replay`` hands the buffered messages back downstream, so the edge
+    may read the body and the app still receives it whole. ``complete``
+    is False when reading stopped early — the body ran past ``cap``
+    (which the SDK refuses at the same size anyway) or the channel
+    reported something else mid-body; the replay then returns the
+    buffered prefix and falls through to the live channel.
+    """
+    chunks: list[Message] = []
+    total = 0
+    complete = False
+    while True:
+        message = await receive()
+        chunks.append(message)
+        if message["type"] != "http.request":
+            break
+        total += len(message.get("body", b""))
+        if not message.get("more_body", False):
+            complete = True
+            break
+        if total >= cap:
+            break
+    pending = iter(chunks)
+
+    async def replay() -> Message:
+        try:
+            return next(pending)
+        except StopIteration:
+            return await receive()
+
+    body = b"".join(
+        message.get("body", b"")
+        for message in chunks
+        if message["type"] == "http.request"
+    )
+    return body, complete, replay
+
+
+def _install_session_recover(app: Any, *, mcp_path: str) -> None:
+    """Answer a session-id-less non-initialize request like a stale session.
+
+    The SDK answers the same request ``400 Bad Request: Missing session
+    ID`` — it admits a fresh transport, then refuses it — and claude.ai's
+    connector does not re-initialize on a 400, so a connector that drops
+    the header leaves the chat looking dead (gr660591). A stale id
+    already answers ``404`` with ``mcp-session-error: reinitialize`` and
+    clients recover from that, so a request that names no live session at
+    all gets the identical answer: from the client's side its session is
+    gone either way. An ``initialize`` POST — the one request that must
+    arrive without an id — still passes through untouched; anything else
+    (a bare ``notifications/initialized``, ``tools/call``, a GET/DELETE,
+    a body that isn't readable JSON-RPC) is answered here and never
+    reaches the SDK, which also means the SDK stops spending a fresh
+    session transport on each refusal.
+
+    Install BEFORE both :func:`_install_session_log` and
+    :func:`_install_token_auth` — innermost of the three, so its
+    synthesized 404 passes back out through the failure logger and an
+    unauthenticated caller still earns its 401 first, exactly as today.
+    """
+    from starlette.datastructures import Headers
+    from starlette.responses import Response
+
+    # Same shape the SDK's session manager produces for a stale id.
+    session_gone_body = JSONRPCError(
+        jsonrpc="2.0",
+        id="server-error",
+        error=ErrorData(code=INVALID_REQUEST, message="Session not found"),
+    ).model_dump_json(by_alias=True, exclude_none=True)
+
+    class _SessionRecoverMiddleware:
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if (
+                scope["type"] != "http"
+                or scope.get("path") != mcp_path
+                or scope.get("method") not in _SESSION_SCOPED_METHODS
+                or Headers(scope=scope).get(MCP_SESSION_ID_HEADER) is not None
+            ):
+                await self.app(scope, receive, send)
+                return
+            opens = False
+            if scope["method"] == "POST":
+                buffered = scope.get(_SCOPE_MCP_BODY)
+                if buffered is None:
+                    body, complete, receive = await _buffer_request_body(receive)
+                else:
+                    body, complete = buffered
+                opens = complete and "initialize" in _rpc_methods(body)
+            if opens:
+                await self.app(scope, receive, send)
+                return
+            await Response(
+                session_gone_body,
+                status_code=404,
+                media_type="application/json",
+                headers={
+                    "mcp-session-error": "reinitialize",
+                    "cache-control": "no-store",
+                },
+            )(scope, receive, send)
+
+    app.add_middleware(_SessionRecoverMiddleware)
+
+
 def _install_session_log(app: Any, *, mcp_path: str) -> None:
-    """Add a pure-ASGI observer logging a session-id hash on /mcp 400/404s.
+    """Add a pure-ASGI observer logging /mcp session failures.
 
     The SDK's session manager answers ``404 Session not found`` for an id
     it dropped (idle timeout, restart) and ``400`` for a resend that
     arrived without one — and neither of its own log lines carries the
     id, so a client 'Error POSTing to endpoint' can't be matched to a
-    session (gr538272). This middleware only observes: it wraps ``send``,
-    reads the status off ``http.response.start``, and never touches the
-    status or body (the MCP spec requires the 404). The idle-timeout
-    teardown itself logs inside the SDK's session task — not reachable
-    from here; what reaches our code is the 404 on the client's next
-    request.
+    session (gr538272). claude.ai's connector dropped the id outright on
+    non-initialize calls (gr660591), so the line now also carries the
+    request's JSON-RPC method and an excerpt of the error body — the
+    method is what a missing-id report needs upstream. Both are client
+    controlled and this logger sits outside the protocol payload
+    filters, so the excerpt goes through :func:`_session_log_excerpt`
+    (JSON-RPC error bodies keep ``code`` + a sanitized ``message`` —
+    an SDK validation dump reduces to its static first line instead of
+    echoing the client's ``input_value``) and the method names through
+    :func:`_escape_log_text`, which bounds them and escapes control
+    characters so a hostile name cannot forge a second line (review
+    td661882). The middleware still only observes: it buffers the POST
+    body and replays it untouched (shared with
+    :func:`_install_session_recover` under ``_SCOPE_MCP_BODY``), wraps
+    ``send`` to read the status and collect
+    the response body, and never changes either (the MCP spec requires
+    the 404). The idle-timeout teardown itself logs inside the SDK's
+    session task — not reachable from here; what reaches our code is the
+    404 on the client's next request.
+
+    Install AFTER :func:`_install_session_recover` — its synthesized
+    missing-id 404 is itself a session failure worth logging — and
+    BEFORE :func:`_install_token_auth`, so the middleware lands inside
+    the bearer gate: a buffer outside it would drain the POST body
+    before authentication, and an upload that never finishes would
+    delay an unauthenticated caller's 401 indefinitely (review
+    td661882).
     """
-    from starlette.types import Message, Receive, Send
 
     class _SessionLogMiddleware:
         def __init__(self, app: Any) -> None:
@@ -2476,22 +2702,67 @@ def _install_session_log(app: Any, *, mcp_path: str) -> None:
             if scope["type"] != "http" or scope.get("path") != mcp_path:
                 await self.app(scope, receive, send)
                 return
+            body = b""
+            if scope.get("method") == "POST":
+                body, complete, receive = await _buffer_request_body(receive)
+                scope[_SCOPE_MCP_BODY] = (body, complete)
+            state: dict[str, Any] = {"status": None, "body": bytearray(), "done": False}
+
+            def emit() -> None:
+                if state["status"] is None or state["done"]:
+                    return
+                state["done"] = True
+                try:
+                    names = sorted(_rpc_methods(body))
+                    methods = (
+                        "+".join(
+                            _escape_log_text(name, cap=_SESSION_LOG_METHOD_CAP)
+                            for name in names[:_SESSION_LOG_METHODS_MAX]
+                        )
+                        or "-"
+                    )
+                    if len(names) > _SESSION_LOG_METHODS_MAX:
+                        methods += f" (+{len(names) - _SESSION_LOG_METHODS_MAX} more)"
+                    excerpt = _session_log_excerpt(bytes(state["body"]))
+                except Exception:
+                    # Same rule as _ProtocolPayloadFilter: emit a fully
+                    # safe line or none of the client-derived parts —
+                    # never half-sanitized text, and never break the
+                    # send path over a diagnostics failure.
+                    methods, excerpt = "-", "(details unavailable)"
+                log.warning(
+                    "mcp %s %s -> %d session=%s rpc=%s body=%s",
+                    scope["method"],
+                    mcp_path,
+                    state["status"],
+                    _session_id_hash(scope),
+                    methods,
+                    excerpt,
+                )
 
             async def send_logged(message: Message) -> None:
                 if (
                     message["type"] == "http.response.start"
                     and message["status"] in _SESSION_LOG_STATUSES
                 ):
-                    log.warning(
-                        "mcp %s %s -> %d session=%s",
-                        scope["method"],
-                        mcp_path,
-                        message["status"],
-                        _session_id_hash(scope),
-                    )
+                    state["status"] = message["status"]
+                elif (
+                    message["type"] == "http.response.body"
+                    and state["status"] is not None
+                    and not state["done"]
+                ):
+                    buffered = state["body"]
+                    room = _SESSION_LOG_BODY_CAP - len(buffered)
+                    if room > 0:
+                        buffered += message.get("body", b"")[:room]
+                    if not message.get("more_body", False) or room <= 0:
+                        emit()
                 await send(message)
 
-            await self.app(scope, receive, send_logged)
+            try:
+                await self.app(scope, receive, send_logged)
+            finally:
+                emit()
 
     app.add_middleware(_SessionLogMiddleware)
 
@@ -2585,7 +2856,15 @@ def _run_network_transport(
     port stays bound across server restarts (gr459481). ``uds`` serves on
     a unix socket at that path instead (uvicorn sets it ``0o666``); the
     sandbox_run read MCP uses it so a ``--network none`` container can
-    reach its callback through a bind mount.
+    reach its callback through a bind mount. On streamable-http,
+    :func:`_install_session_recover` sits innermost and turns a
+    session-id-less non-initialize request into the same ``404`` +
+    ``mcp-session-error: reinitialize`` a stale id gets (gr660591);
+    :func:`_install_session_log` wraps it to correlate /mcp 400/404s
+    with a session-id hash, the request's JSON-RPC method and a
+    sanitized error-body excerpt. Both install BEFORE the bearer gate so
+    their request-body reads happen after authentication — an unfinished
+    upload can never delay a 401 (review td661882).
     """
     import socket
 
@@ -2603,6 +2882,9 @@ def _run_network_transport(
     app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
     from precis import slice_tokens
 
+    if transport == "streamable-http":
+        _install_session_recover(app, mcp_path=mcp.settings.streamable_http_path)
+    _install_session_log(app, mcp_path=mcp.settings.streamable_http_path)
     _install_token_auth(
         app,
         token=token,
@@ -2617,7 +2899,6 @@ def _run_network_transport(
             Path(p) if (p := os.environ.get(slice_tokens.ENV_DIR, "").strip()) else None
         ),
     )
-    _install_session_log(app, mcp_path=mcp.settings.streamable_http_path)
 
     async def _serve() -> None:
         config = uvicorn.Config(

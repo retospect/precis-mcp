@@ -53,6 +53,10 @@ grep for uncommitted edits. An explicit `wt-<tree name>` alias is usable only
 on a server that indexes that worktree. The cold-build guidance below applies
 after selecting an available root for the code you intend to read.
 
+Read-only servers: when the server sets `PRECIS_PYTHON_READONLY` (the public
+OAuth MCP does) every python write verb (put/edit/delete) refuses; reads are
+unaffected.
+
 Worktree aliases: when the server has `PRECIS_PYTHON_WORKTREES`, every git
 worktree of the main checkout is a root `wt-<tree name>` (e.g.
 `wt-validate-precis-python::pkg.mod.fn`), discovered live (about 5 s lag), no
