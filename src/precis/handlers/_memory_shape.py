@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from precis.taproot.notation import lint_authored_notation
 from precis.utils.handle_registry import CHUNK_CODES, KIND_CODES
 
 SHAPE_CODES = frozenset(
@@ -28,6 +29,7 @@ SHAPE_CODES = frozenset(
         "history-density",
         "missing-route",
         "title-shape",
+        "notation",
     }
 )
 _DATE = r"\b\d{4}-\d{2}-\d{2}\b"
@@ -114,6 +116,11 @@ _STOP = frozenset(
         "notes",
     ]
 )
+_NOTATION_LINES = 6
+_NOTATION_GRIPE = (
+    "canon doesn't fit? put(kind='gripe', link='skill:precis-notation-canon', "
+    "rel='raises-concern-about', text=...)"
+)
 _GIT_TIMEOUT = 0.05
 _GIT_MAX_SHAS = 16
 
@@ -133,6 +140,34 @@ class ShapeAudit:
     findings: tuple[ShapeFinding, ...]
     checked_codes: frozenset[str]
     git_context: tuple[str, str] | None = None
+
+
+def _notation_finding(title: str, body: str) -> ShapeFinding | None:
+    """Canon lint over the authored title/body (Reto ruling 2026-11-13).
+
+    Quoted spans, code and ``$$…$$``/multi-line math are skipped by
+    :func:`precis.taproot.notation.mask_unauthored`. Detector-only: the
+    message carries the canon's own wording and the gripe route, and
+    nothing is ever rewritten.
+    """
+    hits = lint_authored_notation(f"{title}\n{body}")
+    if not hits:
+        return None
+    lines = [
+        f"{len(hits)} spot(s) break precis-notation-canon (quoted spans, code "
+        "and $$…$$ blocks are exempt; fix by anchored edit, quotes untouched):"
+    ]
+    shown: set[str] = set()
+    for code, token, message in hits[:_NOTATION_LINES]:
+        if code in shown:
+            lines.append(f"- {token or code} ({code})")
+            continue
+        shown.add(code)
+        lines.append(f"- {token or code}: {message}")
+    if len(hits) > _NOTATION_LINES:
+        lines.append(f"- ... and {len(hits) - _NOTATION_LINES} more")
+    lines.append(_NOTATION_GRIPE)
+    return ShapeFinding("notation", "\n".join(lines))
 
 
 def _plan_label(line: str) -> bool:
@@ -378,6 +413,9 @@ def audit_shape(
                 "state one claim in at most 12 words and put the date in the gloss",
             )
         )
+    notation = _notation_finding(title, body)
+    if notation is not None:
+        findings.append(notation)
     return ShapeAudit(
         tuple(findings),
         frozenset(checked),

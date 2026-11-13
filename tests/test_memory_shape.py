@@ -109,7 +109,7 @@ def test_incident_exempts_only_grab_bag(monkeypatch, incident_tags):
         "- Slice 4a repairs lease expiration; resolved.",
         tags=iter(("section:reference", *incident_tags)),
     )
-    expected = shape.SHAPE_CODES
+    expected = shape.SHAPE_CODES - {"notation"}  # clean prose: no notation spot
     if "incident" in incident_tags:
         expected = expected - {"grab-bag"}
     assert {finding.code for finding in audit.findings} == expected
@@ -505,3 +505,26 @@ def test_locked_context_can_skip_git_without_clearing_its_flag(monkeypatch):
     assert "old-sha" not in audit.checked_codes
     assert audit.git_context is None
     lookup.assert_not_called()
+
+
+def test_notation_finding_carries_canon_wording_and_gripe_route() -> None:
+    (finding,) = [
+        f
+        for f in shape.audit_shape(
+            title="Clean title here",
+            body="Mobility is 5 x 10^4 and C60 is round.",
+            check_git=False,
+        ).findings
+        if f.code == "notation"
+    ]
+    assert "precis-notation-canon" in finding.message
+    assert "caret-exponent" in finding.message
+    assert "formula-ascii-subscript" not in finding.message  # never tags a memory
+    assert "link='skill:precis-notation-canon'" in finding.message
+    assert "rel='raises-concern-about'" in finding.message
+
+
+def test_notation_checked_even_when_clean() -> None:
+    audit = shape.audit_shape(title="Clean", body="Area is 3 cm².", check_git=False)
+    assert "notation" in audit.checked_codes
+    assert "notation" not in {f.code for f in audit.findings}

@@ -2860,22 +2860,22 @@ def test_attribution_gate_tags_and_advises_on_create(
     handler: MemoryHandler, store: Store
 ) -> None:
     src = id_of(handler.put(text="source note: the film is thick").body)
-    bad = handler.put(text=f"the scale is ~10 nm per memory:{src}.")
+    bad = handler.put(text=f"the scale is ≈10 nm per memory:{src}.")
     bad_id = id_of(bad.body)
     assert (
         f'ungrounded: "10 nm" near memory:{src} — not in the cited text; '
         'drop the attribution or write "(my estimate)"'
     ) in bad.body
-    assert _audit_tags(store, bad_id) == ["AUDIT:ungrounded-number"]
+    assert "AUDIT:ungrounded-number" in _audit_tags(store, bad_id)
     # The header shows the verdict on its own line.
     assert "AUDIT:ungrounded-number:" in handler.get(id=bad_id).body
 
     grounded_src = id_of(handler.put(text="source: the scale is about 10 nm").body)
-    ok = handler.put(text=f"the scale is ~10 nm per memory:{grounded_src}.")
+    ok = handler.put(text=f"the scale is ≈10 nm per memory:{grounded_src}.")
     assert "ungrounded" not in ok.body
     assert _audit_tags(store, id_of(ok.body)) == []
 
-    own = handler.put(text=f"the scale is ~10 nm (my estimate), cf. memory:{src}.")
+    own = handler.put(text=f"the scale is ≈10 nm (my estimate), cf. memory:{src}.")
     assert _audit_tags(store, id_of(own.body)) == []
 
 

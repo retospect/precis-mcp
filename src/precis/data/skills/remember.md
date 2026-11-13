@@ -33,6 +33,8 @@ governs: factory
 - No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
 - Name yourself on every write: `args={'writer': {'model': '<your model id>'}}`; add `'human': 'reto'` when the content is what Reto told you.
 
+Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.
+
 The graph shape (root me474312 → subject hubs → nodes, `part-of` edges, one
 type tag, gotchas `qualifies` threads) is described in the root node and in
 [[precis-memory-help]] §"Hubs, part-of and qualifies". This skill is the

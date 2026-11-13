@@ -897,3 +897,41 @@ def test_refine_claim_sentence_clean_sentence_has_no_notation_warnings(
     result = refine_claim_sentence(store, hub, _CLEAN_SENTENCE)
 
     assert result["notation"] == []
+
+
+# ── authored-prose lint (memory titles and bodies) ──────────────────────────
+
+
+def test_authored_lint_names_token_per_finding() -> None:
+    from precis.taproot.notation import lint_authored_notation
+
+    hits = lint_authored_notation("Area is 3 cm^2 here.\nThe hybrid is $sp^2$ carbon.")
+    pairs = {(code, tok) for code, tok, _ in hits}
+    assert ("caret-exponent", "cm^2") in pairs
+    assert ("tex-residue", "$sp^2$") in pairs
+
+
+def test_authored_lint_skips_quotes_code_display_math_paths_dates() -> None:
+    from precis.taproot.notation import lint_authored_notation
+
+    text = (
+        'The paper says "3 cm^2" and “4,600 rows”.\n'
+        "> quoted 5 x 10^4\n"
+        "$$\nE = a^2\n$$\n"
+        "```\nx^2 $HOME\n```\n"
+        "Inline `y^2`, src/precis/a_b.py::f, 2026-08-22, https://x.org/a^2, $25.\n"
+    )
+    assert lint_authored_notation(text) == []
+
+
+def test_authored_lint_flags_multiline_free_text_but_not_multiline_math() -> None:
+    from precis.taproot.notation import lint_authored_notation
+
+    assert lint_authored_notation("a $x^2\ny^2$ b") == []
+    assert lint_authored_notation("") == []
+
+
+def test_authored_lint_never_reports_formula_ascii_subscript() -> None:
+    from precis.taproot.notation import lint_authored_notation
+
+    assert lint_authored_notation("C60 and H2O and B3LYP stay as written.") == []

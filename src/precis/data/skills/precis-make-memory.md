@@ -45,6 +45,8 @@ maintenance: [[precis-gardener-help]].
    items concisely; retrying the same input should add nothing. An existing
    claim can still receive a missing link to genuinely new supplied evidence.
 
+Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.
+
 One call can ask several independent questions, preserving labelled results:
 
 ```python

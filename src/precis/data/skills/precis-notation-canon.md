@@ -1,19 +1,34 @@
 ---
 id: precis-notation-canon
 family: drafting
-title: precis — notation canon for authored claim sentences
-summary: unit/exponent/dash/approximation spelling rules for a taproot claim sentence or nanopub title — notation is hashed into pub_id, so drift mints a duplicate hub
+title: precis — notation canon for authored claim sentences and memory text
+summary: unit/exponent/dash/approximation spelling rules for a taproot claim sentence, nanopub title, or memory title/body — in a claim notation is hashed into pub_id, so drift mints a duplicate hub
 answers:
   - how should I spell a unit, exponent, or dash in a taproot claim sentence?
   - why did my claim get blocked at approve for notation?
   - do I have to type the canonical symbols when searching?
-applies-to: put/edit(kind='finding') claim-hub title text; taproot/notation.py::lint_notation; nanopub mint-gate title checks; search(kind='finding') query wording — see precis-search-help "Notation"
+  - how do I spell units and exponents in a memory title or body?
+  - may a memory keep TeX math?
+applies-to: put/edit(kind='finding') claim-hub title text; put/edit(kind='memory') title and body (non-blocking AUDIT:notation warning); taproot/notation.py::lint_notation; nanopub mint-gate title checks; search(kind='finding') query wording — see precis-search-help "Notation"
 status: active
 tags: [drafting, troubleshooting]
-kinds: [finding]
+kinds: [finding, memory]
 ---
 
 # precis-notation-canon — one spelling per quantity
+
+The canon governs every authored claim sentence **and memory text** (title
+and body; Reto ruling 2026-11-13): `sp²` not `$sp^2$`, `cm²` not `cm^2`,
+`×`, `≈`, `−`, letter subscripts ASCII (`E_g`). A memory is not hashed, so
+there the reasons below reduce to the second one: a machine reads it far
+more often than its author does. `put`/`edit(kind='memory')` run
+`lint_notation` over the authored text and append a non-blocking
+`AUDIT:notation` warning (the write always lands; a clean rewrite clears
+the tag; a gardener pass normalizes flagged nodes by anchored edit).
+Exceptions are listed under "Quotes are verbatim" below. If the canon does
+not fit what you are writing, file `put(kind='gripe',
+link='skill:precis-notation-canon', rel='raises-concern-about', text=…)`
+rather than improvising a spelling.
 
 Claim sentences are hashed to derive `pub_id`
 (`identity.py::normalize_text_for_hash` → NFKD-fold, lowercase,
@@ -165,8 +180,15 @@ Three carve-outs, all of which **outrank the table**:
    *superscript*, not a subscript.
 
 **Quotes are verbatim and are never normalized.** The canon governs the
-*authored claim sentence* only; rewriting a quote to match it fails the
-mint gate.
+*authored* text only — a claim sentence, a memory title or body — never a
+quoted span (text inside quotation marks, a `> ` blockquote, a fenced or
+inline code span). Rewriting a quote to match it fails the mint gate, and
+in a memory it falsifies the source.
+
+**One exception for memory text: math that only works as math.** A
+multi-line derivation may stay `$…$` / `$$…$$` KaTeX. A single-line
+quantity never qualifies: write `sp²`, not `$sp^2$`. The memory writer's
+lint skips `$$…$$` blocks and multi-line `$…$`, and flags single-line `$…$`.
 
 ## See also
 

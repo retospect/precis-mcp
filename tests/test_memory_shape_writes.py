@@ -72,6 +72,13 @@ def _tags(store: Store, ref_id: int) -> set[str]:
             [],
             "state one claim",
         ),
+        (
+            "notation",
+            _CLEAN_TITLE,
+            "The cell is 3 cm^2 wide.",
+            [],
+            "precis-notation-canon",
+        ),
     ],
 )
 def test_shape_write_advises_then_clean_rewrite_clears(
@@ -372,3 +379,51 @@ def test_changed_git_context_preserves_concurrent_old_sha_flag(
     monkeypatch.setattr(handler, "_write_body", interleaved)
     handler.edit(id=ref_id, mode="replace", text=_CLEAN_BODY)
     assert "AUDIT:old-sha" in _tags(store, ref_id)
+
+
+_GRIPE_ROUTE = (
+    "put(kind='gripe', link='skill:precis-notation-canon', rel='raises-concern-about'"
+)
+
+
+def test_notation_warning_names_every_spot_and_never_blocks(
+    handler: MemoryHandler, store: Store
+) -> None:
+    body = "Area is 3 cm^2 here.\nThe hybrid is $sp^2$ carbon."
+    ack = handler.put(title=_CLEAN_TITLE, text=body)
+    ref_id = id_of(ack.body)
+    assert "AUDIT:notation:" in ack.body
+    assert "cm^2" in ack.body and "$sp^2$" in ack.body
+    assert "caret-exponent" in ack.body and "tex-residue" in ack.body
+    assert _GRIPE_ROUTE in ack.body
+    assert "AUDIT:notation" in _tags(store, ref_id)
+    assert handler._body_text(handler._resolve_live_ref(ref_id)) == body
+
+
+def test_notation_warning_on_edit_and_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    ref_id = id_of(handler.put(title=_CLEAN_TITLE, text=_CLEAN_BODY).body)
+    ack = handler.edit(id=ref_id, mode="append", text="Mobility is 5 cm^2/Vs.")
+    assert "AUDIT:notation:" in ack.body
+    ack = handler.edit(id=ref_id, title="The sp^2 hybrid is planar")
+    assert "AUDIT:notation:" in ack.body
+    assert "AUDIT:notation" in _tags(store, ref_id)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'The paper says "area is 3 cm^2" verbatim.',
+        "> area is 3 cm^2, quoted\nThe rest is clean.",
+        "The derivation:\n$$\nE = \\frac{a^2}{b}\n$$\nholds.",
+        "Run `x^2 $HOME` here.\nSee src/precis/a_b.py and 2026-08-22.",
+        "The cell is 3 cm² wide, about ≈1 Å, 4600 rows, ×3.",
+    ],
+)
+def test_notation_exempt_and_clean_text_gets_no_warning(
+    handler: MemoryHandler, store: Store, body: str
+) -> None:
+    ack = handler.put(title=_CLEAN_TITLE, text=body)
+    assert "AUDIT:notation" not in ack.body
+    assert "AUDIT:notation" not in _tags(store, id_of(ack.body))

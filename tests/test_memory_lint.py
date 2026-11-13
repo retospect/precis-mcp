@@ -1831,3 +1831,26 @@ def test_graph_mode_reports_snapshot_provenance_and_flags_stale_exports(
     assert "cached log may predate" in stale.stdout, stale.stdout
     assert "✓ clean" not in stale.stdout, stale.stdout
     assert "DUE (last 2020-01-01)" in stale.stdout, stale.stdout
+
+
+def test_graph_mode_notation_summary_flags_unquoted_canon_breaks_only(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """Check 16: one advisory summary line, quotes and `$$` exempt, not a problem."""
+    home, mem, cache, nodes = graph_setup
+    pkg = lint_repo / "src" / "precis" / "taproot"
+    pkg.mkdir(parents=True)
+    (lint_repo / "src" / "precis" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copy(REPO_ROOT / "src/precis/taproot/notation.py", pkg / "notation.py")
+    (nodes / "me1.md").write_text(
+        "# Alpha\n\nArea is 3 cm^2 and the hybrid is $sp^2$.\n", encoding="utf-8"
+    )
+    (nodes / "me2.md").write_text(
+        '# Beta\n\nThe paper says "3 cm^2" verbatim.\n\n$$\nE = a^2\n$$\n',
+        encoding="utf-8",
+    )
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+    assert "notation → 1 node(s) break precis-notation-canon" in out, out
+    assert "me1 (" in out and "me2 (" not in out, out
+    assert "AUDIT:notation" in out, out

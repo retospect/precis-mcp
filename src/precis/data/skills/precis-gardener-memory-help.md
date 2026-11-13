@@ -99,6 +99,24 @@ across those priority walks. Its version/expiry/type checks supersede the
 generic `considered_days` skip. These candidates have distinct proposal
 keys and use the memory prompt version; the legacy prompt is unchanged.
 
+## Notation flags
+
+Memory text follows [[precis-notation-canon]] (Reto ruling 2026-11-13).
+There is no `notation` garden detector and no proposal: the flag is the
+system-owned `AUDIT:notation` tag that `put`/`edit(kind='memory')` set on
+a title/body that breaks the canon, plus `scripts/memory-lint` check 16
+(one summary line over the cached node bodies, worst nodes first).
+`search(kind='memory', tags=['AUDIT:notation'])` lists the flagged nodes.
+A gardener pass that touches a flagged node normalizes it by anchored
+edit — `edit(kind='memory', id='me…', find='<old>', text='<new>')`, one
+spot at a time — never a whole-body rewrite and never a script. Quoted
+spans, code spans and `$$…$$`/multi-line derivations are exempt and stay
+byte-identical; `C60`-style formulas are never flagged (`formula-ascii-subscript`
+is detector-only, NFKD folds `C60` to `C₆₀`, and ~23% of its matches are
+nomenclature like `B3LYP`). A clean rewrite clears the tag; a
+canon that does not fit the text is a gripe, not a spelling improvised
+in the node.
+
 ## Memory source and entity checks
 
 The opt-in `memory-review` pass also runs `source_drift` and

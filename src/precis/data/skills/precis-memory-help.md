@@ -129,6 +129,10 @@ appear as recall. Repo-dev nodes take
 and `meta={'hook': 'one line — status + resume point'}` (writable meta
 keys: `hook`, `type`, `expires`).
 
+## Notation in memory text
+
+Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.
+
 ## Check processing before testing recall
 
 ```python
@@ -615,7 +619,7 @@ ungrounded: "10 nm" near websearch:170350 — not in the cited text; drop the at
 ```
 
 Fix it by moving the handle off the figure, or mark the figure yours:
-`~10 nm (my estimate)`. Rewriting the body clears the tag when it is
+`≈10 nm (my estimate)`. Rewriting the body clears the tag when it is
 clean. If the deployment is set to reject mode, the write is refused
 instead of tagged. Citations that do not resolve are not checked. A
 parenthetical glosses the citation before it: the numbers in it are checked
@@ -944,9 +948,11 @@ Memory accepts four closed UPPERCASE axes:
   carries `retracts` / `raises-concern-about`; recomputed as edges change.
   `tag()` refuses to add or remove `STALE:` tags.
 - `AUDIT:` — write checks set `ungrounded-number`, `grab-bag`,
-  `unanchored-plan`, `old-sha`, `history-density`, `missing-route` or
-  `title-shape`. Each ack names the fix. Shape checks advise on agent
-  writes, never refuse; attribution has the separate reject option above.
+  `unanchored-plan`, `old-sha`, `history-density`, `missing-route`,
+  `title-shape` or `notation` (title/body breaks [[precis-notation-canon]];
+  quoted spans, code and `$$…$$` are skipped). Each ack names the fix.
+  Shape checks advise on agent writes, never refuse; attribution has the
+  separate reject option above.
 
 A clean rewrite clears only system-set audit flags; hand-set flags stay.
 Unavailable checks preserve their flags, including `old-sha` when Git

@@ -967,3 +967,101 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         applied.append("no-terminal-period")
 
     return s, applied
+
+
+# ── authored-prose lint: memory titles and bodies ───────────────────────────
+#
+# Memory text follows the same canon as a claim sentence (Reto ruling
+# 2026-11-13), but a memory body is mixed prose: it quotes sources, embeds
+# code and shell, and sometimes carries a derivation that only works as
+# math. :func:`mask_unauthored` blanks the spans the canon never touches so
+# :func:`lint_authored_notation` runs `lint_notation` over what the author
+# actually wrote. Detector-only: nothing here rewrites text or blocks a write.
+
+_FENCE_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", re.M | re.S)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_DISPLAY_MATH_RE = re.compile(r"\$\$.*?\$\$", re.S)
+_MULTILINE_MATH_RE = re.compile(r"\$(?=[^$\n]*\n)[^$]*?\$", re.S)
+_BLOCKQUOTE_RE = re.compile(r"^[ \t]*>.*$", re.M)
+_QUOTED_RE = re.compile(r"\"[^\"\n]*\"|“[^”\n]*”")
+_URL_RE = re.compile(r"https?://\S+")
+#: ISO dates and file/module paths are names, not quantities: ``2026-08-22``
+#: is no numeric range and ``src/precis/foo.py`` no two-denominator unit.
+_CURRENCY_RE = re.compile(r"\$\d[\d.,]*[kKM]?\b")
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}(?:-\d{2})?\b")
+_PATH_RE = re.compile(r"[\w.~-]*(?:/[\w.~:@-]*[A-Za-z_.][\w.~:@-]*)+(?:::\w+)*")
+_FOUND_SUBSTRING_RE = re.compile(r"^[a-z-]+: '(.+?)' found")
+#: Codes `lint_authored_notation` never reports. `formula-ascii-subscript` is
+#: detector-only (~23% of matches are nomenclature) and NFKD already folds
+#: `C60` to `C₆₀`, so it must not tag a memory (Reto 2026-11-13).
+_AUTHORED_SKIP_CODES = frozenset({"formula-ascii-subscript"})
+
+
+def _blank(m: re.Match[str]) -> str:
+    """Same-length blank keeping newlines, so line numbers survive."""
+    return re.sub(r"[^\n]", " ", m.group(0))
+
+
+def mask_unauthored(text: str) -> str:
+    """Blank quoted spans, code, display and multi-line math, and URLs.
+
+    A single-line ``$…$`` is *not* masked: canon wants ``sp²``, not
+    ``$sp^2$``. Only a derivation that spans lines, or a ``$$…$$`` block,
+    may stay TeX.
+    """
+    for pattern in (
+        _FENCE_RE,
+        _INLINE_CODE_RE,
+        _DISPLAY_MATH_RE,
+        _MULTILINE_MATH_RE,
+        _BLOCKQUOTE_RE,
+        _QUOTED_RE,
+        _URL_RE,
+        _CURRENCY_RE,
+        _ISO_DATE_RE,
+        _PATH_RE,
+    ):
+        text = pattern.sub(_blank, text)
+    return text
+
+
+def lint_authored_notation(text: str) -> list[tuple[str, str | None, str]]:
+    """``(code, offending token, canon message)`` for authored prose.
+
+    Runs :func:`lint_notation` line by line over :func:`mask_unauthored`
+    text so each finding can name the token that caused it; one finding
+    per (code, token). `formula-ascii-subscript` is never reported (see
+    ``_AUTHORED_SKIP_CODES``). Advisory only; ``[]`` for empty or clean input.
+    """
+    out: list[tuple[str, str | None, str]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for line in mask_unauthored(text or "").splitlines():
+        if not line.strip():
+            continue
+        for message in lint_notation(line):
+            code = message.split(":", 1)[0]
+            if code in _AUTHORED_SKIP_CODES:
+                continue
+            token: str | None = None
+            m = _FOUND_SUBSTRING_RE.match(message)
+            needle = m.group(1) if m else None
+            if code == "tex-residue":
+                needle = next((c for c in ("$", "\\") if c in line), None)
+            if needle and " " in needle and needle in line:
+                token = needle.strip()
+            elif needle:
+                # Short needles ('x', '^') recur in the line; take the first
+                # whitespace-delimited token that still trips this code.
+                for at in (i for i in range(len(line)) if line.startswith(needle, i)):
+                    lo = line.rfind(" ", 0, at) + 1
+                    hi = line.find(" ", at + len(needle))
+                    cand = line[lo : hi if hi != -1 else len(line)].strip(".,;:()")
+                    token = token or cand  # fallback: first occurrence
+                    if any(w.startswith(code + ":") for w in lint_notation(cand)):
+                        token = cand
+                        break
+            if (code, token) in seen:
+                continue
+            seen.add((code, token))
+            out.append((code, token, message))
+    return out

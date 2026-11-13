@@ -119,6 +119,8 @@
 #      the Specifications hub me568215; topical hubs relate, never parent
 #      (gr631564). Every parent in the manifest's parent column is
 #      validated; a legacy manifest without the spec column is skipped.
+#  16. notation: memory text that breaks precis-notation-canon (graph mode;
+#      one summary line, not counted as a problem; see the check's comment).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -810,6 +812,44 @@ if [[ -n "$SCAN_DIR" ]]; then
             prev="$_ln"
         done < <(grep -nE "$_home_line_re" "$tf" 2>/dev/null || true)
     done
+fi
+
+# 16. notation (graph mode, node bodies) — memory text follows the same
+#     notation canon as a claim sentence (precis-notation-canon; Reto ruling
+#     2026-11-13). Detector only, via src/precis/taproot/notation.py::
+#     lint_authored_notation, which skips quoted spans, code, `$$…$$` and
+#     multi-line math. A run prints one summary line, never one per node, and
+#     does not count toward $problems: the backlog is the gardener's, which
+#     normalizes a node by anchored edit (quotes untouched). Writers get the
+#     same finding as an AUDIT:notation tag + ack warning. No importable
+#     src/ (a throwaway checkout) prints nothing.
+if (( GRAPH )) && [[ -n "$SCAN_DIR" ]]; then
+    PYTHONPATH="$PWD/src" python3 - "$SCAN_DIR" <<'PY' 2>/dev/null || true
+import sys
+from pathlib import Path
+
+try:
+    from precis.taproot.notation import lint_authored_notation
+except Exception:
+    sys.exit(0)
+
+flagged = []
+for path in sorted(Path(sys.argv[1]).glob("me[0-9]*.md")):
+    try:
+        spots = lint_authored_notation(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    if spots:
+        flagged.append((len(spots), path.stem))
+if flagged:
+    worst = ", ".join(f"{h} ({n})" for n, h in sorted(flagged, reverse=True)[:5])
+    print(
+        f"  notation → {len(flagged)} node(s) break precis-notation-canon "
+        f"(spots in parens; worst: {worst}): normalize by "
+        "edit(kind='memory', id='me…', find='<old>', text='<new>'), quotes "
+        "untouched; flagged nodes carry AUDIT:notation after their next write"
+    )
+PY
 fi
 
 if (( problems == 0 )) && (( GRAPH )); then

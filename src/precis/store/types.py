@@ -1507,6 +1507,10 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "history-density",
             "missing-route",
             "title-shape",
+            # Memory text breaks precis-notation-canon (UTF-8 units and
+            # exponents, no TeX outside quotes or derivations). Detector
+            # only; cleared by a clean rewrite, never auto-rewritten.
+            "notation",
             # bib_parse detector (gr572843): the Crossref record an entry's
             # authors/year/pages resolved to carries a title that disagrees
             # with the title the entry prints — a bibliography line spliced

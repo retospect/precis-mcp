@@ -2155,7 +2155,7 @@ class MemoryHandler(NumericRefHandler):
                 next=(
                     "drop the attribution (remove the handle from that "
                     "sentence) or mark the figure your own: write "
-                    "'~10 nm (my estimate)'; then retry the write"
+                    "'≈10 nm (my estimate)'; then retry the write"
                 ),
             )
         return misses
