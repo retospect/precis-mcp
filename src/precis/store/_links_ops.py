@@ -1388,14 +1388,23 @@ class LinksMixin:
                 ins_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
             strip_judgment = ""
             if relation == "considered":
-                # The verdict edge pins both endpoint revisions it was
-                # judged against (gr662069) — staleness is then a lazy
-                # read, never a write back onto the edge.
+                # Serialize the pair's judgment writes before any edge
+                # write: concurrent verdicts at different chunk endpoints
+                # hit no unique-index conflict, so without the pair lock
+                # each side's supersede-DELETE (record_consideration)
+                # could miss the other's uncommitted edge and both commit
+                # live — a superseded not-useful would keep excluding
+                # beside the newer verdict (review td662210).
                 from precis.store._consideration_ops import (
                     CONSIDER_JUDGMENT_KEYS,
+                    lock_consideration_pair,
                     stamp_considered,
                 )
 
+                lock_consideration_pair(c, src_ref_id, dst_ref_id)
+                # The verdict edge pins both endpoint revisions it was
+                # judged against (gr662069) — staleness is then a lazy
+                # read, never a write back onto the edge.
                 ins_meta = stamp_considered(
                     c,
                     src_ref_id=src_ref_id,

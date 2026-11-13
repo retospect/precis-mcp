@@ -19,11 +19,14 @@
 -- depth='none' is ACQUISITION state (missing text), never a rejection:
 -- the write door refuses useful/not-useful at depth 'none'.
 --
--- `scope_sha` / `source_sha` pin `precis_target_sha` of each endpoint at
--- judgment time. A consumer treats a verdict as valid only while both
--- still match; a material change on either side leaves the edge stale
--- and queues it for reconsideration — ordinary edits never clear the
--- history itself.
+-- `scope_sha` pins the scope ref's `precis_target_sha` at judgment time:
+-- the verdict judges the whole question, so the pin tracks the ref even
+-- on a chunk-grounded edge — a retitle or an edit to any scope chunk
+-- reopens review (review td662210). `source_sha` pins the judged
+-- endpoint's sha (the grounded chunk's content, else the ref). A
+-- consumer treats a verdict as valid only while both still match; a
+-- material change on either side leaves the edge stale and queues it
+-- for reconsideration — ordinary edits never clear the history itself.
 --
 -- `link_id` is a plain id, no FK: the edge may be removed while the
 -- judgment that wrote it must stay auditable.

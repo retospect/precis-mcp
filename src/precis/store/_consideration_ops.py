@@ -17,11 +17,15 @@ be rejected for one question and useful to another, and re-judging a pair
 never collapses the earlier verdict.
 
 Validity is revision-scoped: the door stamps ``meta.scope_sha`` /
-``meta.source_sha`` (``precis_target_sha`` of each endpoint, chunk or ref)
-at judgment time. A verdict is *current* while both shas still match; a
-material change on either side leaves it stale and queues it for
-reconsideration (:meth:`ConsiderationMixin.consideration_reconsiderations`)
-— ordinary edits never clear the history itself.
+``meta.source_sha`` at judgment time. The scope pin is always the scope
+REF's ``precis_target_sha`` — the verdict judges the whole question, so
+a retitle or an edit to any scope chunk is a material change whatever
+passage grounded the edge (review td662210). The source pin tracks the
+judged endpoint (the grounded chunk's content, else the ref). A verdict
+is *current* while both shas still match; a material change leaves it
+stale and queues it for reconsideration
+(:meth:`ConsiderationMixin.consideration_reconsiderations`) — ordinary
+edits never clear the history itself.
 
 The edge's chunk endpoints are ``ON DELETE CASCADE`` (the ``links`` FKs),
 so a routine chunk replacement — body chunks are append-only, DELETE +
@@ -277,6 +281,33 @@ def _target_sha(c: Connection, ref_id: int, chunk_id: int | None) -> str | None:
     return str(row[0]) if row and row[0] is not None else None
 
 
+def lock_consideration_pair(
+    c: Connection, scope_ref_id: int, source_ref_id: int
+) -> None:
+    """Serialize judgment writes per (scope, source) ref pair.
+
+    Two concurrent ``rel='considered'`` writes at DIFFERENT chunk
+    endpoints hit no unique-index conflict, and under READ COMMITTED
+    each transaction's supersede-DELETE (in
+    :meth:`ConsiderationMixin.record_consideration`) cannot see the
+    other's uncommitted edge — both would commit live ``considered``
+    edges for the pair, letting a superseded ``not-useful`` keep
+    excluding beside the newer verdict (review td662210). Held to
+    commit, this xact-scoped advisory lock makes the later write
+    observe the earlier edge, so exactly one carries the pair's current
+    verdict. A judgment takes exactly one pair key, so there is no
+    lock-ordering hazard. Key is a single bigint via
+    ``hashtextextended`` (the ``_draft_ops`` convention) — the
+    ``(int4, int4)`` overload would collide with per-ref namespaces
+    that key on a lone id.
+    """
+    c.execute(
+        "SELECT pg_advisory_xact_lock("
+        "hashtextextended('considered-pair:' || %s || ':' || %s, 0))",
+        (scope_ref_id, source_ref_id),
+    )
+
+
 def stamp_considered(
     c: Connection,
     *,
@@ -286,9 +317,17 @@ def stamp_considered(
     dst_chunk_id: int | None,
     meta: dict[str, Any],
 ) -> dict[str, Any]:
-    """Add the door-stamped revision pins to a validated considered meta."""
+    """Add the door-stamped revision pins to a validated considered meta.
+
+    ``scope_sha`` pins the scope REF's revision even when the edge is
+    chunk-grounded: the verdict judges the whole question, so a retitle
+    or an edit to another scope chunk must reopen review — a chunk pin
+    would leave the negative verdict valid through exactly that change
+    (review td662210). ``source_sha`` pins the judged endpoint — the
+    grounded chunk's content for a passage verdict, else the ref.
+    """
     out = dict(meta)
-    out["scope_sha"] = _target_sha(c, src_ref_id, src_chunk_id)
+    out["scope_sha"] = _target_sha(c, src_ref_id, None)
     out["source_sha"] = _target_sha(c, dst_ref_id, dst_chunk_id)
     return out
 
@@ -468,9 +507,7 @@ class ConsiderationMixin:
                dr.kind AS dst_kind,
                (dr.retired_at IS NOT NULL) AS dst_retired,
                l.meta->>'scope_sha' IS NOT DISTINCT FROM
-                 CASE WHEN l.src_chunk_id IS NULL
-                      THEN precis_target_sha('ref', l.src_ref_id)
-                      ELSE precis_target_sha('chunk', l.src_chunk_id) END
+                 precis_target_sha('ref', l.src_ref_id)
                  AS scope_current,
                l.meta->>'source_sha' IS NOT DISTINCT FROM
                  CASE WHEN l.dst_chunk_id IS NULL

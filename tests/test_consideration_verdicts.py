@@ -648,3 +648,118 @@ def test_considerations_view_pages_and_shows_evidence(
     assert not is_error, out2
     assert "3–3 of 3" in out2
     assert "prompt-0" in out2 and "prompt-2" not in out2
+
+
+# ── review td662210: ref-level scope pin, per-pair write serialization ──
+
+
+def test_scope_chunk_grounded_verdict_tracks_ref_revision(store: Store) -> None:
+    """A chunk-grounded scope edge pins the scope REF's revision, not the
+    grounded chunk's content: a retitle — or an edit to ANOTHER scope
+    chunk — is a material question change and must reopen review even
+    though the grounded passage is byte-identical (review td662210)."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-s1", title="S1", text=f"{_Q} s1.")
+    store.add_link(
+        src_ref_id=scope,
+        src_pos=0,
+        dst_ref_id=src,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "abstract",
+            "reason": "off the question's axis",
+        },
+    )
+    assert src in store.consideration_exclusions(scope).excluded
+    # A retitle never touched the grounded chunk, yet the question
+    # changed: the exclusion drops and the verdict queues as 'scope'.
+    store.update_ref(scope, title="reframed question")
+    found = store.consideration_exclusions(scope)
+    assert src not in found.excluded
+    assert [v.stale for v in found.stale] == ["scope"]
+    # Re-judge valid, then change a DIFFERENT scope chunk — still a
+    # material question change (the grounded ord-0 chunk is untouched).
+    store.add_link(
+        src_ref_id=scope,
+        src_pos=0,
+        dst_ref_id=src,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "abstract",
+            "reason": "re-judged after the retitle",
+        },
+    )
+    assert src in store.consideration_exclusions(scope).excluded
+    store.chunks.insert_chunks(
+        scope, [ChunkInsert(ord=1, text="an amended constraint")]
+    )
+    found = store.consideration_exclusions(scope)
+    assert src not in found.excluded
+    assert [v.stale for v in found.stale] == ["scope"]
+
+
+def test_concurrent_pair_judgments_serialize_to_one_edge(store: Store) -> None:
+    """Two ``rel='considered'`` writes at different chunk endpoints hit no
+    unique-index conflict: without the per-pair lock each side's
+    supersede-DELETE could miss the other's uncommitted edge, both
+    commit live, and a superseded ``not-useful`` keeps excluding beside
+    the newer verdict (review td662210). Deterministic half: a foreign
+    holder of the pair advisory lock stalls the write until it lets go.
+    Burst half: concurrent judgments at both endpoints leave exactly ONE
+    live edge — one current verdict — while the history keeps every
+    judgment."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis.store._consideration_ops import lock_consideration_pair
+
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-cc", title="CC", text=f"{_Q} cc.")
+
+    # ── the pair lock is what a considered write waits on ───────────
+    done = threading.Event()
+    with store.pool.connection() as other:
+        lock_consideration_pair(other, scope, src)
+
+        def _judge_then_flag() -> None:
+            _judge(store, scope, src, reason="held behind the pair lock")
+            done.set()
+
+        t = threading.Thread(target=_judge_then_flag)
+        t.start()
+        assert not done.wait(0.5)  # blocked behind the foreign lock holder
+        other.rollback()  # releases the xact lock
+    t.join(timeout=30)
+    assert done.is_set()
+
+    # ── burst: one current verdict survives any interleaving ────────
+    start = threading.Barrier(8)
+
+    def _judge_at(i: int) -> None:
+        start.wait(timeout=10)
+        store.add_link(
+            src_ref_id=scope,
+            dst_ref_id=src,
+            dst_pos=0 if i % 2 else None,
+            relation="considered",
+            meta={
+                "verdict": "not-useful" if i % 2 else "useful",
+                "depth": "passages" if i % 2 else "fulltext",
+                "reason": f"concurrent run {i}",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_judge_at, i) for i in range(8)]
+        for f in futures:
+            f.result(timeout=30)
+
+    edges = store.links_for(scope, relation="considered", direction="out")
+    assert len(edges) == 1
+    current = store.scoped_considerations(scope)
+    assert len(current) == 1
+    # The deterministic-half judgment plus the eight burst ones — the
+    # history never collapses concurrent verdicts either.
+    assert len(_history(store, scope)) == 9

@@ -615,8 +615,11 @@ Rules that bite:
   earlier one (history keeps both), so chunk A not-useful then chunk B
   useful no longer excludes the source.
 - A material edit to the scope or the source makes the verdict stale:
-  it stops excluding and shows up in the reopen queue. History is never
-  cleared by an edit.
+  it stops excluding and shows up in the reopen queue. The scope pin
+  tracks the whole question — a retitle or an edit to any of its chunks
+  reopens review even when the verdict was grounded at one passage; the
+  source pin tracks the judged endpoint. History is never cleared by an
+  edit.
 - If a chunk-grounded edge dies with its chunk (body chunks are replaced
   on re-ingest), the judgment is not lost: it sits in the reopen queue
   as `edge-lost` until re-judged. Removing the edge through the link
