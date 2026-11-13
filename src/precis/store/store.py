@@ -64,6 +64,7 @@ from precis.store._checklist_ops import ChecklistMixin
 from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
+from precis.store._consideration_ops import ConsiderationMixin
 from precis.store._draft_ops import DraftStore
 from precis.store._drive_state_ops import DriveStateMixin
 from precis.store._email_ops import EmailAccountMixin
@@ -133,6 +134,7 @@ class Store(
     TagsMixin,
     TaxonMixin,
     LinksMixin,
+    ConsiderationMixin,
     CacheMixin,
     IdentifiersMixin,
     IntegrationLedgerMixin,

@@ -1095,6 +1095,20 @@ class MemoryHandler(NumericRefHandler):
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
+        if view == "considerations" and concrete:
+            # gr662069 (me626852): the scope's verdict ledger — current
+            # judgments, the reopen queue and the judgment history.
+            if isinstance(id, list):
+                raise BadInput(
+                    "view='considerations' requires one memory id",
+                    next="get(kind='memory', id=N, view='considerations')",
+                )
+            from precis.handlers._memory_considerations import (
+                render_considerations,
+            )
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return render_considerations(self.store, ref)
         if concrete and is_eye_view(view):
             return self.eye(id=id, extent=view, q=q)
         if concrete and q is None and view == "body":
@@ -1118,6 +1132,7 @@ class MemoryHandler(NumericRefHandler):
             legal = [
                 "argument",
                 "body",
+                "considerations",
                 "environment",
                 "members",
                 "processing",

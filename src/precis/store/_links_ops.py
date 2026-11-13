@@ -945,6 +945,9 @@ class LinksMixin:
     # edge is added or removed so the argument-graph STALE: flag stays a
     # pure function of current graph reachability.
     argument_ripple_retraction: Any
+    # Provided by ConsiderationMixin — appends one judgment row for a
+    # ``considered`` edge write inside the same transaction.
+    record_consideration: Any
     # Provided by GroundingsMixin — endpoint groundings for the
     # slice-2b definition-only link-time refusal.
     grounding_set: Any
@@ -1218,6 +1221,16 @@ class LinksMixin:
                     next="link(..., rel='rejects', meta={'reason': 'why this part was rejected'})",
                 )
 
+        if relation == "considered":
+            # Verdict admission (me626852, gr662069): verdict/reason/depth
+            # are required, stamped keys refused, checked_at normalised —
+            # before any write, and before _do resolves the endpoints.
+            from precis.store._consideration_ops import (
+                validate_considered_meta,
+            )
+
+            meta = validate_considered_meta(meta)
+
         forged = _EDGE_VALIDITY_META_KEYS & (meta or {}).keys()
         if forged:
             raise BadInput(
@@ -1292,8 +1305,14 @@ class LinksMixin:
             # Machine-edge write rule (graph-gardener-value slice 1): the
             # one gate, inside this admission. A routed write (``explains``
             # between claim hubs → ``link_claims``) returns here instead
-            # of the plain INSERT below.
-            if _machine_write_context() is not None:
+            # of the plain INSERT below. ``considered`` is exempt: the
+            # verdict edge runs its own admission
+            # (:func:`validate_considered_meta` — reason/depth/revision
+            # pins) plus an append-only judgment row, which is exactly the
+            # "what retrieval cannot recompute" record the gate exists to
+            # protect; the generic evidence-pin/annotation contract does
+            # not apply to a judgment ledger.
+            if relation != "considered" and _machine_write_context() is not None:
                 routed = _machine_edge_admission(
                     self,
                     c,
@@ -1362,6 +1381,20 @@ class LinksMixin:
             ins_meta = dict(meta or {})
             if asserted_sha is not None:
                 ins_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
+            if relation == "considered":
+                # The verdict edge pins both endpoint revisions it was
+                # judged against (gr662069) — staleness is then a lazy
+                # read, never a write back onto the edge.
+                from precis.store._consideration_ops import stamp_considered
+
+                ins_meta = stamp_considered(
+                    c,
+                    src_ref_id=src_ref_id,
+                    src_chunk_id=src_chunk_id,
+                    dst_ref_id=dst_ref_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=ins_meta,
+                )
 
             extra_params: tuple[Any, ...] = ()
             if asserted_sha is not None and not preserve_fingerprint:
@@ -1369,7 +1402,11 @@ class LinksMixin:
                 # merges only under ``merge_meta`` (unchanged semantics).
                 # When the stored sha had drifted the edge was suspect and
                 # this reviewed re-link is the clear — record actor + UTC.
-                conflict_meta = dict(meta or {}) if merge_meta else {}
+                # A re-judged ``considered`` edge is the same shape: the
+                # latest verdict's stamped meta replaces the verdict keys.
+                conflict_meta = (
+                    dict(ins_meta) if (merge_meta or relation == "considered") else {}
+                )
                 conflict_meta[ASSERTED_FINGERPRINT_META] = asserted_sha
                 meta_clause = (
                     ", meta = links.meta || %s || CASE WHEN "
@@ -1386,7 +1423,10 @@ class LinksMixin:
                     set_by,
                     datetime.now(UTC).isoformat(),
                 )
-            elif merge_meta:
+            elif merge_meta or relation == "considered":
+                # ``considered`` always merges on conflict: one edge per
+                # (scope, source) pair carries the LATEST verdict block;
+                # the per-judgment history lives in `considerations`.
                 meta_clause = ", meta = links.meta || EXCLUDED.meta"
                 if preserve_fingerprint:
                     # ``EXCLUDED.meta`` carries the fresh stamp for the
@@ -1438,6 +1478,21 @@ class LinksMixin:
                 "links INSERT returned no row — schema invariant violated"
             )
             link_id = int(row[0])
+
+            if relation == "considered":
+                # Append-only judgment history (gr662069): one row per
+                # judgment, so canonical-identity dedup on the edge never
+                # collapses two runs' verdicts.
+                self.record_consideration(
+                    c,
+                    link_id=link_id,
+                    src_ref_id=src_ref_id,
+                    src_chunk_id=src_chunk_id,
+                    dst_ref_id=dst_ref_id,
+                    dst_chunk_id=dst_chunk_id,
+                    meta=ins_meta,
+                    set_by=set_by,
+                )
 
             # Re-SELECT through the standard projection so the
             # returned Link carries the LEFT-JOIN-translated pos

@@ -339,6 +339,15 @@ Relation = Literal[
     # rejects requires links.meta.reason so the rejected candidate stays useful.
     "selects",
     "rejects",
+    # Consideration verdicts — migration 0320 (me626852, gr662069).
+    # `considered` (scope memory/question → judged source) carries the
+    # CURRENT verdict block in links.meta {verdict, reason, depth,
+    # checked_at, scope_sha, source_sha, judgments}; every judgment also
+    # lands an append-only `considerations` row. No inverse: read
+    # incoming edges via `links_for(direction='in', relation='considered')`.
+    # Keep in sync with the `relations` seed in
+    # 0320_consideration_verdicts.sql.
+    "considered",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
