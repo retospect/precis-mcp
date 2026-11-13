@@ -270,6 +270,34 @@ with), self-loops dropped, and `can_merge` with the refusal reason (a
 side past `candidate` cannot merge). It never writes. Applying is a human
 door — hand the reviewer the winner's claim page, `/nanopub/fi<winner>`.
 
+## Minting at scale — title lint, same-session dedup, waves
+
+**Title lint.** The door refuses a title over 250 characters, and one
+whose method token is a bare technique noun. Observed, not exhaustive
+(treat as a hint; not every term was re-checked): refused were bare
+"Chronoamperometry", "DEMS", "tests" and bare "Gas chromatography";
+passed were "measurements", "voltammetry", "DFT", "analysis", "mass
+spectrometry" and "Electrochemical measurements". Qualify the technique
+with what was measured. Editing a hub title does not re-run the lint.
+
+**Same-session dedup.** The dedup judge sees same-session hubs: a hub
+you minted earlier in this session is judged against, and a same-paper
+near-duplicate is refused. Attach with `dedup='attach:fi<N>'`; force
+with `dedup='force'` (both ride in `args=` on the put, e.g.
+`args={'dedup': 'force'}`). A force can still merge into a fresh own
+hub, and files a review todo.
+
+**Mint waves.** Readers only propose hubs; a single root agent mints and
+attaches from a ledger of proposals. The dedup judge consumes quota
+(each put judges up to about a dozen neighbours), so size a wave against
+the quota you have left. On exhaustion a plain put is refused; a force
+mints unjudged (`dedup_override` verdict `'unjudged'`, see force above),
+so forcing through a long outage can mint duplicates: pause the wave.
+
+**Transient errors.** "connection closed" on a put may have landed: read
+back (`search(kind='finding', ...)`) before retrying. A LockNotAvailable
+clears on one retry.
+
 ## Search before you mint — strengthen, don't duplicate
 
 **The mint door now runs this search itself.** `supporters=` mint runs
