@@ -34,8 +34,7 @@ proposal stale by itself.
 Memory judgments share [[precis-memory-help]] §"Memory reconciliation policy"
 with [[precis-make-memory]]. The proposer, consumer and sampled reviewers load
 the exact packaged section, including memory `dup_pair` candidates. Its digest
-versions memory proposer rejections independently of other kinds. Maintenance
-action restrictions and existing audited apply/undo paths still govern.
+versions memory proposer rejections independently of other kinds.
 
 ## What it scans
 
@@ -133,10 +132,9 @@ and entity checks and reviewed memory apply: [[precis-gardener-memory-help]].
   candidate — disjoint siblings are legitimate.
 
 Every proposal names its evidence (distances, shared terms, instance
-ids, run ids) so a judge can verify it without trusting the model. The
-proposer's prompt also carries an excerpt of each named ref's own text
-(memory body, else card, else title; up to 600 chars each), so it
-judges content, not titles.
+ids, run ids) for a judge to verify. The proposer's prompt also carries
+an excerpt of each named ref's text (memory body, else card, else
+title; up to 600 chars), so it judges content, not titles.
 
 ## Paper identity
 
@@ -152,21 +150,23 @@ only: a paper merge is a human decision.
 ## Scan windows and budget
 
 **Scan windows.** The wide scans (merge, tag-sweep, redundant_link,
-paper-identity, memory, memory-review, host-facts) resume from saved windows, starting past a
-cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
+paper-identity, memory, memory-review, host-facts) resume past a cursor
+saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
 `untagged:<kind>`, `redundant_link`, `paper_identity`,
 `dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`,
 `host_facts:memory`, plus
 each memory-review detector's own cursor keys). The next run
-starts where the last stopped and wraps at the end, so successive runs
-cover every kind; a run over fewer kinds carries the other cursors
-forward. The merge window shrinks as a kind grows (each window ref is
-compared with every live ref of its kind, about `scan_cap`² comparisons
-per kind). A detector skipped on its deadline keeps its old cursor.
+starts where the last stopped and wraps; a run over fewer kinds carries
+the other cursors forward. The `griped` queue scans descending, so it
+saves both band ends — `griped:gripe` (how far down it got) and
+`griped:gripe:hi` (the newest id seen): a complaint filed mid-sweep heads
+the next pass instead of waiting for the wrap. The
+merge window shrinks as a kind grows (`scan_cap`² comparisons per kind).
+A detector skipped on its deadline keeps its cursor.
 
-**Budget.** `max_proposals` is shared round-robin across the detectors
-that found candidates: each gets `max_proposals // n` first, and a
-share a detector leaves unspent goes to the others.
+**Budget.** `griped` drains `max_proposals` first — a reader complaint
+outranks self-found smells — then the rest is shared round-robin across
+detectors (`max_proposals // n` each, unspent shares redistributed);
 `meta.garden.proposals_by_detector` records the split.
 
 **Freshly reviewed targets are skipped.** A candidate whose target was
@@ -174,7 +174,9 @@ share a detector leaves unspent goes to the others.
 before the proposer — provided the node is unchanged: the consider
 act's `expected_sha` must still equal the node's content sha and the
 stamp must still read `considered` (a demote or a content edit re-opens
-it). Reviewers stamp with the structured `kg-review:<model>:
+it). `review_due` (owns its expiry checks) and `griped` (a review
+predating the complaint must not silence it) are exempt. Reviewers stamp
+with the structured `kg-review:<model>:
 <YYYY-MM-DD>:ok|fixed` reason on `edit(mode='trust')` — the stamp's
 date decides freshness (a backdated review stays old), absent it the
 act's recording time. The tick reports the drop count as
@@ -182,10 +184,8 @@ act's recording time. The tick reports the drop count as
 skip.
 
 **Review coverage.** `get(kind='taxon', id='/coverage',
-args={'days': 30})` reports per kind: live refs, how many were
-considered inside the window on their current sha, the share, and the
-breakdown by reviewing model — the answer to "how much of the graph has
-a reviewer actually looked at, and who".
+args={'days': 30})` reports per kind: live refs, the share considered in
+the window on their current sha, and the breakdown by reviewing model.
 
 ## When was a memory last gardened?
 
@@ -201,13 +201,11 @@ There is no per-memory `last_gardened_at` column. Distinguish three events:
   freshness filter. `freshly_considered` also requires the current content SHA
   and `trust_confidence='considered'`. This is general review currency, not
   proof that the gardener visited every detector for that node.
-- **Applied:** an approved garden decision with `garden.applied` records an
-  actual change. A merge decision also names its loser and winner; review the
-  payload to find all involved nodes, rather than assuming `target_id` covers
-  both.
+- **Applied:** an approved decision with `garden.applied` records an actual
+  change. A merge also names loser and winner; read the payload, not just
+  `target_id`.
 
-Content changes invalidate content-pinned review currency. An unconditional
-timestamp alone would incorrectly skip a memory edited after its review.
+Content changes invalidate content-pinned review currency.
 
 ## The ledger row
 
@@ -365,21 +363,18 @@ not by the schedule:
   (`meta.garden.skipped='cooled'`): the old "dry rest", counted in runs
   rather than days. A productive or failed run resets the streak.
 
-`watchdog:cadence/graph_garden` watches the recurring's spawn events
-(`ref_events(source='schedule')`) plus the newest job: more than one
-missed tick, a spawn with no job after it, or a newest job
-`STATUS:failed` all read stale.
+`watchdog:cadence/graph_garden` watches the spawn events
+(`ref_events(source='schedule')`) plus the newest job: a missed tick, a
+spawn with no job, or a `STATUS:failed` newest job reads stale.
 
-The proposer's model is steerable via the operation row
-`llm.op.graph_garden:propose` — a tier or chain override flips where
-judging runs without a redeploy.
+The proposer's model is steerable via `llm.op.graph_garden:propose` — a
+tier or chain override flips where judging runs without a redeploy.
 
-Job params: `pass` (a name or a list), `limit` (candidates per
-detector, default 50), `scan_cap` (refs per kind per window, default
-2000), `max_proposals` (writes per tick, default 20, shared across
-detectors), `stale_days`, `considered_days` (fresh-review skip window,
-default 30, 0 disables), `kinds`, `tag_namespaces`, `tag_kinds`,
-`exclusive_axes`.
+Job params: `pass` (name or list), `limit` (candidates per detector,
+default 50), `scan_cap` (refs per window, default 2000), `max_proposals`
+(writes per tick, default 20), `stale_days`,
+`considered_days` (fresh-review skip, default 30, 0 disables), `kinds`,
+`tag_namespaces`, `tag_kinds`, `exclusive_axes`.
 
 ## The machine-edge write rule
 
@@ -394,6 +389,13 @@ why}` annotation, and non-stance rels must join endpoints past the
 is exempt — it moves existing edges, it does not mint new ones — and a
 relink apply mints one structural edge admitted on the approved review
 row the proposal resolved under (`meta.garden_relink.review`).
+
+## Memory gripes go first
+
+Open `project:memory` gripes (a `me<id>: <problem>` filing, routed by
+triage) head each pass, newest first. Fix or decline through the review
+ledger ([[precis-fix-memory-gripe-help]]), closing with a `resolved:`
+comment, then carry on.
 
 ## If you land on a garden proposal while working
 

@@ -387,3 +387,100 @@ def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
         model=None,
     )
     assert not verdict.accept and verdict.ask is not None
+
+
+def test_griped_candidates_come_newest_gripe_first(store: Store) -> None:
+    """gr657257: the gardener works the freshest complaint first."""
+    mem = _memory(store, "A claim two readers complained about.")
+    older = _gripe(store, f"me{mem}: stale since the rename.", route=[])
+    newer = _gripe(store, f"me{mem}: contradicts its hub.", route=[])
+    found = cand.griped_candidates(store)
+    assert [c.payload["gripe"] for c in found] == [newer, older]
+    nxt: dict[str, int] = {}
+    page = cand.griped_candidates(store, scan_cap=1, next_cursors=nxt)
+    assert [c.payload["gripe"] for c in page] == [newer]
+    rest = cand.griped_candidates(store, scan_cap=1, cursors=nxt)
+    assert [c.payload["gripe"] for c in rest] == [older]
+
+
+def test_new_complaint_heads_the_next_window_mid_sweep(store: Store) -> None:
+    """gr657257 review: a complaint filed mid-sweep sits above the saved
+    low-water cursor — the high-water mark must let it head the next pass
+    instead of waiting for the wraparound."""
+    mem = _memory(store, "A claim readers keep complaining about.")
+    oldest = _gripe(store, f"me{mem}: first complaint.", route=[])
+    middle = _gripe(store, f"me{mem}: second complaint.", route=[])
+    nxt: dict[str, int] = {}
+    page = cand.griped_candidates(store, scan_cap=1, next_cursors=nxt)
+    assert [c.payload["gripe"] for c in page] == [middle]
+    newest = _gripe(store, f"me{mem}: just filed.", route=[])
+    nxt2: dict[str, int] = {}
+    rest = cand.griped_candidates(store, scan_cap=1, cursors=nxt, next_cursors=nxt2)
+    assert [c.payload["gripe"] for c in rest] == [newest]
+    last = cand.griped_candidates(store, scan_cap=1, cursors=nxt2)
+    assert [c.payload["gripe"] for c in last] == [oldest]
+
+
+def test_full_new_band_keeps_the_unprocessed_gripes_unseen(store: Store) -> None:
+    """gr657257 review: when the new band fills the scan without reaching
+    the limit, the gripe between the old mark and the band's oldest id
+    must stay ahead of the low-water cursor, not be skipped."""
+    mem = _memory(store, "A claim readers keep complaining about.")
+    oldest = _gripe(store, f"me{mem}: first complaint.", route=[])
+    nxt: dict[str, int] = {}
+    page = cand.griped_candidates(store, scan_cap=1, next_cursors=nxt)
+    assert [c.payload["gripe"] for c in page] == [oldest]
+    skipped = _gripe(store, f"me{mem}: second complaint.", route=[])
+    newest = _gripe(store, f"me{mem}: just filed.", route=[])
+    nxt2: dict[str, int] = {}
+    rest = cand.griped_candidates(store, scan_cap=1, cursors=nxt, next_cursors=nxt2)
+    assert [c.payload["gripe"] for c in rest] == [newest]
+    last = cand.griped_candidates(store, scan_cap=1, cursors=nxt2)
+    assert [c.payload["gripe"] for c in last] == [skipped]
+
+
+def test_runner_drains_griped_before_the_round_robin(
+    store: Store, monkeypatch: Any
+) -> None:
+    """gr657257: memory gripes go before every self-found smell."""
+
+    def _cand(det: str, target: int) -> cand.GardenCandidate:
+        return cand.GardenCandidate(
+            detector=det,
+            action="rewrite",
+            target_kind="ref",
+            target_id=target,
+            title=f"{det} on {target}",
+            payload={"gripe": target} if det == "griped" else {},
+        )
+
+    found = [
+        _cand("anchor_rot", 900001),
+        _cand("anchor_rot", 900002),
+        _cand("title_shape", 900003),
+        _cand("griped", 900004),
+        _cand("griped", 900005),
+    ]
+    monkeypatch.setattr(
+        runner, "run_detectors", lambda *_a, **_k: cand.DetectorRun(candidates=found)
+    )
+    asked: list[str] = []
+
+    def propose(_s: Any, c: cand.GardenCandidate) -> None:
+        asked.append(c.detector)
+        return None
+
+    runner.run_garden_tick(store, propose=propose)
+    assert asked[:2] == ["griped", "griped"]
+    assert sorted(asked[2:]) == ["anchor_rot", "anchor_rot", "title_shape"]
+
+
+def test_griped_survives_the_freshly_considered_skip(
+    store: Store, monkeypatch: Any
+) -> None:
+    """A reader's open complaint is not silenced by an earlier review."""
+    mem = _memory(store, "A reviewed claim a reader still complains about.")
+    _gripe(store, f"me{mem}: wrong after the review.", route=[])
+    monkeypatch.setattr(cand, "freshly_considered", lambda *_a, **_k: {("ref", mem)})
+    run = cand.run_detectors(store, passes=("memory",), detector_deadline_s=0)
+    assert any(c.detector == "griped" and c.target_id == mem for c in run.candidates)

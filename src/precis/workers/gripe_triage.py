@@ -120,6 +120,15 @@ rung):
   :data:`_BLOCKED_KEY` (``scripts/prod-psql "DELETE FROM app_state
   WHERE key = 'gripe_triage:blocked'"``) — resumes immediately.
 
+A memory complaint is a plain gripe (gr657257): the filer writes
+``me123: <what is wrong>`` and needs no tag or relation. The tick
+classifies it — a first line led by a ``me<id>:`` handle, or the
+verdict's ``memory`` field naming a handle the gripe's text carries
+(:func:`_memory_concern`) — and, when that memory is live, tags the
+gripe ``project:memory`` and links it ``raises-concern-about`` the
+memory. ``project:memory`` keeps it out of the coder wave; the
+gardener's ``griped`` detector takes it first, newest first.
+
 ``load_threads`` survives as a ``thread:<slug>`` prompt hint: the live
 thread slugs go into the prompt so cluster naming can reuse them.
 
@@ -245,6 +254,15 @@ _MISS_RE = re.compile(r"^\d+$")
 #: carrying ``project:<slug>`` is filer-set and never overridden.
 _DEFAULT_PROJECT = "precis"
 _PROJECT_TAG_PREFIX = "project:"
+
+#: A memory gripe (gr657257) is project ``memory``: the gardener works
+#: those first and the coder wave never mints on them. The tick, not the
+#: filer, decides — a first line led by a ``me<id>:`` handle, or the
+#: model's ``memory`` field naming a handle the gripe's own text carries.
+_MEMORY_PROJECT = "memory"
+#: ``me123: …`` — the one-line memory complaint's lead.
+_MEMORY_LEAD_RE = re.compile(r"^\s*me([0-9]{1,18})\s*:")
+_MEMORY_HANDLE_RE = re.compile(r"\bme([0-9]{1,18})\b")
 
 
 def gripe_triage_enabled(
@@ -1291,6 +1309,10 @@ For EACH gripe decide:
       recommended.
 - recommend: OPTIONAL when fix is "reto" — the one-line summary of the
   recommended option (used for the gripe's comment).
+- memory: the "me<id>" handle of the memory whose CONTENT the gripe
+  complains about (stale, thin, ungrounded, contradicted, wrong hub, too
+  big) — usually the handle leading its first line. null when the gripe
+  only cites a memory as context or evidence for another problem.
 - dups: when the gripe lists potential duplicate parents, one entry per
   parent judging "same root cause?" — {{"parent": gr<N>, "same":
   true|false|"unsure", "why": "..."}}. "same": true means the two gripes
@@ -1324,6 +1346,7 @@ per gripe shown, exactly {n} entries:
       "sha": "<evidence sha — required for verdict=fixed>",
       "reason": "<one sentence>",
       "recommend": "<only for fix=reto>",
+      "memory": "<me<id> the gripe complains about, else null>",
       "ask": {{"question": "...", "context": "...",
              "options": [{{"option": "...", "cost": "...",
                           "recommended": true}}]}},
@@ -1536,6 +1559,11 @@ class Verdict:
     #: reto-bound verdicts that never posed a question (an unsure dup
     #: at severity ≥ 4, a held owner-filed dispute).
     ask: RetoAsk | None = None
+    #: The memory ref id a memory gripe complains about (gr657257) —
+    #: ``None`` for an ordinary gripe. The write links it
+    #: ``raises-concern-about`` and tags ``project:memory`` when the
+    #: memory is live and the filer set no other project.
+    memory: int | None = None
 
     @property
     def not_a_bug(self) -> bool:
@@ -1660,6 +1688,33 @@ def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
         options=tuple(options),
         kind=kind if kind in ASK_KINDS else "ruling",
     )
+
+
+def _memory_concern(g: ClaimedGripe, raw: Any) -> int | None:
+    """The memory ``g`` complains about (gr657257), or ``None``.
+
+    A first line — title, else the body's first line — led by
+    ``me<id>:`` is the one-line memory complaint and wins outright.
+    Otherwise the model's ``memory`` field counts only when it names a
+    ``me<id>`` handle the gripe's own text carries: a handle the model
+    invented is dropped, and a gripe whose memory link is mere context
+    gets ``null`` from the model and stays ordinary. A filer-set project
+    other than ``memory`` is never reclassified."""
+    if g.project is not None and g.project != _MEMORY_PROJECT:
+        return None
+    first = g.title.strip() or next(
+        (ln for ln in g.body.splitlines() if ln.strip()), ""
+    )
+    if (lead := _MEMORY_LEAD_RE.match(first)) is not None:
+        return int(lead.group(1))
+    named = _MEMORY_HANDLE_RE.search(str(raw or "").strip())
+    if named is None:
+        return None
+    mentioned = {
+        int(m.group(1)) for m in _MEMORY_HANDLE_RE.finditer(f"{g.title}\n{g.body}")
+    }
+    rid = int(named.group(1))
+    return rid if rid in mentioned else None
 
 
 def parse_verdicts(
@@ -1787,6 +1842,7 @@ def parse_verdicts(
             project=project,
             project_why=project_why,
             ask=ask,
+            memory=_memory_concern(g, item.get("memory")),
         )
     return verdicts, sorted(set(claimed) - set(verdicts))
 
@@ -1950,6 +2006,17 @@ def _anchored(store: Store, ref_id: int, text: str) -> str:
     from precis.utils import gripe_summary
 
     return gripe_summary.anchorize(store, text, gripe=ref_id)
+
+
+def _live_memory(conn: Any, ref_id: int) -> int | None:
+    """``ref_id`` when it is a live memory ref, else ``None`` — a memory
+    gripe naming a retired or non-memory handle stays ordinary."""
+    row = conn.execute(
+        "SELECT 1 FROM refs WHERE ref_id = %s AND kind = 'memory' "
+        "AND retired_at IS NULL",
+        (ref_id,),
+    ).fetchone()
+    return ref_id if row is not None else None
 
 
 def _write_verdict(
@@ -2124,6 +2191,14 @@ def _write_verdict(
             g.ref_id, Tag.open(f"cluster:{v.cluster}"), set_by="system", conn=conn
         )
         store.add_tag(g.ref_id, Tag.open(f"size:{v.size}"), set_by="system", conn=conn)
+        # gr657257: a memory gripe names a live memory — it becomes
+        # ``project:memory`` (the gardener's queue, never the coder wave)
+        # and links the memory ``raises-concern-about`` so the open
+        # complaint shows on that memory's fisheye.
+        memory = _live_memory(conn, v.memory) if v.memory is not None else None
+        project = _MEMORY_PROJECT if memory is not None else v.project
+        if memory is not None:
+            project_why = f"it complains about memory me{memory}"
         # gr543639: settle the project axis on a defaulted gripe — the
         # model judged it from the same text it triaged. A filer-set
         # ``project:<slug>`` is never touched (``parse_verdicts``
@@ -2131,15 +2206,27 @@ def _write_verdict(
         if g.project is None:
             store.add_tag(
                 g.ref_id,
-                Tag.open(f"{_PROJECT_TAG_PREFIX}{v.project}"),
+                Tag.open(f"{_PROJECT_TAG_PREFIX}{project}"),
                 set_by="system",
                 conn=conn,
             )
-            if v.project != _DEFAULT_PROJECT:
+            if project != _DEFAULT_PROJECT:
                 comments.append(
-                    f"project: {_DEFAULT_PROJECT} -> {v.project}, because "
+                    f"project: {_DEFAULT_PROJECT} -> {project}, because "
                     f"{_one_line(project_why or reason or 'see gripe text')}"
                 )
+        if memory is not None:
+            store.add_link(
+                src_ref_id=g.ref_id,
+                dst_ref_id=memory,
+                relation="raises-concern-about",
+                set_by="system",
+                conn=conn,
+            )
+            comments.append(
+                f"{_TRIAGE_PREFIX}memory gripe on me{memory} — routed to the "
+                "gardener, which takes memory gripes first"
+            )
         if reto:
             store.add_tag(g.ref_id, Tag.open("reto:ask"), set_by="system", conn=conn)
             # gr595189: one payload, one comment — when the needs-spec

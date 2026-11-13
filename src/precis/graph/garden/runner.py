@@ -13,7 +13,9 @@ The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
 first, and whatever a detector leaves unspent goes to the others. A
 high-volume detector (dangling_edge) can no longer take the whole tick
-because it sorts first.
+because it sorts first. Reader complaints go before the round-robin
+(gr657257): the ``griped`` queue — open ``project:memory`` gripes, newest
+first — is drained against the budget before any other detector turns.
 
 ``propose=`` is the test seam: a callable ``(store, candidate) ->
 Verdict``. Default :func:`propose_llm` (one routed call per candidate).
@@ -56,6 +58,9 @@ log = logging.getLogger(__name__)
 #: proposals one tick may write.
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_PROPOSALS = 20
+#: Detectors drained ahead of the round-robin, in order (gr657257): an
+#: open reader complaint outranks every self-found smell.
+FIRST_DETECTORS: tuple[str, ...] = ("griped",)
 
 #: The evaluator's "ask" lands as a memory-review todo (gr560762); the
 #: tier follows the smell class — content smells need repo/entity
@@ -196,7 +201,8 @@ class GardenOutcome:
     skipped_rejected: int = 0
     #: Candidates dropped before the proposer because their target was
     #: considered-and-unchanged inside the review window
-    #: (:data:`~precis.graph.garden.candidates.CONSIDERED_DAYS`).
+    #: (:data:`~precis.graph.garden.candidates.CONSIDERED_DAYS`;
+    #: ``griped`` and ``review_due`` candidates are exempt).
     skipped_considered: int = 0
     rejected: int = 0
     #: Evaluator "ask" verdicts on memory-body candidates — each files a
@@ -399,7 +405,14 @@ def run_garden_tick(
         return True
 
     queues = _by_detector(candidates)
-    share = max(1, max_proposals // len(queues)) if queues else 0
+    # gr657257: memory gripes first. A reader is waiting on each one.
+    for det in FIRST_DETECTORS:
+        queue = queues.get(det)
+        while queue and out.proposals < max_proposals and not out.paused:
+            _one(queue.popleft())
+    rest = [det for det, queue in queues.items() if queue]
+    budget = max_proposals - out.proposals
+    share = max(1, budget // len(rest)) if rest else 0
     # Round-robin, one candidate per detector per turn. First pass: each
     # detector stops at its equal share of the budget. Second pass: the
     # share a quiet detector left unspent goes to the rest, same rotation.
@@ -440,6 +453,7 @@ def _replace(cand: GardenCandidate, **kw: Any) -> GardenCandidate:
 __all__ = [
     "DEFAULT_LIMIT",
     "DEFAULT_MAX_PROPOSALS",
+    "FIRST_DETECTORS",
     "GardenOutcome",
     "ProposerFn",
     "run_garden_tick",

@@ -928,6 +928,28 @@ def _todo_state(store: Store, ref: Any) -> str:
     return f"status: {status} · prio: {prio_display(prio if prio is not None else 5)}"
 
 
+#: Open memory gripes the focal memory's ``under review:`` line names.
+_UNDER_REVIEW_CAP = 3
+
+
+def _under_review(store: Store, ref_id: int) -> str:
+    """``under review: gr12 <title> · gr9 <title>`` — the open gripes that
+    raise a concern about this memory (gr657257), so a reader sees the
+    gardener has a complaint queued against it. Empty when there are none."""
+    from precis.utils.memory_hubs import open_memory_gripes
+
+    gripes = open_memory_gripes(store, [ref_id]).get(ref_id, [])
+    if not gripes:
+        return ""
+    shown = [
+        f"gr{gid} {_cap(' '.join(title.split()), 80)}".rstrip()
+        for gid, title in gripes[:_UNDER_REVIEW_CAP]
+    ]
+    more = len(gripes) - len(shown)
+    tail = f" · +{more} more" if more > 0 else ""
+    return f"under review: {' · '.join(shown)}{tail}"
+
+
 def _render_note_eye(
     store: Store,
     handle: str,
@@ -977,6 +999,8 @@ def _render_note_eye(
     lines = [_head(ref, kind, chips)]
     if kind == "todo":
         lines.append(_todo_state(store, ref))
+    if kind == "memory" and (review := _under_review(store, int(ref.id))):
+        lines.append(review)
     if body:
         lines.append(body)
     block = "\n".join(lines)

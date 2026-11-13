@@ -1413,3 +1413,45 @@ def test_skill_eye_unknown_slug_degrades_not_crashes_in_working_set(hub: Hub) ->
     ws.focus("sk:no-such-skill-slug", "verbatim")
     out = render_working_set(hub.live_store, ws)
     assert "unrenderable" in out  # marker, not an exception
+
+
+def test_memory_eye_names_open_memory_gripes_under_review(hub: Hub) -> None:
+    """gr657257: an open gripe raising a concern about the memory shows on
+    its fisheye; a closed one and a context-only link do not."""
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Export format note")
+    open_g = insert_gripe(store, "me1: still says CSV")
+    closed_g = insert_gripe(store, "old complaint, fixed", status="done")
+    cited_g = insert_gripe(store, "cites the memory as context")
+    for g in (open_g, closed_g):
+        store.add_link(
+            src_ref_id=g.id, dst_ref_id=mem.id, relation="raises-concern-about"
+        )
+    store.add_link(src_ref_id=cited_g.id, dst_ref_id=mem.id, relation="related-to")
+
+    out = render_eye(store, handle_registry.format_handle("memory", mem.id), "fisheye")
+
+    line = next(ln for ln in out.splitlines() if ln.startswith("under review:"))
+    assert f"gr{open_g.id} me1: still says CSV" in line
+    assert f"gr{closed_g.id}" not in line and f"gr{cited_g.id}" not in line
+
+
+def test_memory_eye_parked_gripe_is_not_under_review(hub: Hub) -> None:
+    """A parked gripe waits on its wake condition — the gardener's
+    ``griped`` detector excludes it, so the fisheye must not claim the
+    complaint is queued (gr657257 review)."""
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Format note")
+    parked_g = insert_gripe(store, "snoozed complaint", status="parked")
+    store.add_link(
+        src_ref_id=parked_g.id, dst_ref_id=mem.id, relation="raises-concern-about"
+    )
+    out = render_eye(store, handle_registry.format_handle("memory", mem.id), "fisheye")
+    assert "under review:" not in out
+
+
+def test_memory_eye_without_gripes_has_no_review_line(hub: Hub) -> None:
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Quiet note")
+    out = render_eye(store, handle_registry.format_handle("memory", mem.id), "fisheye")
+    assert "under review:" not in out

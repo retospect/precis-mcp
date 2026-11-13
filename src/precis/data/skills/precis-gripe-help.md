@@ -821,6 +821,22 @@ other work, if you already know the fix, skip straight to `todo`.
 If you understand why something matters
 and want it findable, use `memory`.
 
+## A memory complaint is a plain gripe
+
+Noticed a memory that is stale, thin, ungrounded, in the wrong hub, too
+big or contradicted? Do not fix it on the spot and do not drop it. File
+one string and move on, memory handle first:
+
+```python
+put(kind='gripe', text='me123: still says CSV export; the code writes JSON')
+```
+
+No tag, relation or Goal/Route block is needed for this quick form. The
+triage tick classifies it, tags `project:memory`, links the memory with
+`raises-concern-about`, and the gardener fixes or declines it first on its
+next pass, closing it with a `resolved:` comment. Until then the
+memory's fisheye carries an `under review: gr<N> …` line. Use the full form below for route disagreements.
+
 ## Tool bugs and memory confusion go to gripes
 
 A gripe reports something wrong with the **precis tool / MCP surface /

@@ -16,7 +16,10 @@ wide scans also take ``scan_cap`` (max refs inspected per kind per run).
 The wide scans are windowed per kind past a saved cursor
 (:attr:`DetectorRun.cursors`, persisted on the job's ``meta.garden``)
 and wrap at the end, so successive runs walk every kind instead of
-re-reading the oldest refs (gr504843). :func:`run_detectors` adds a
+re-reading the oldest refs (gr504843). ``griped`` is the exception: its
+queue scans descending, so it also saves the sweep's newest id —
+complaints filed mid-sweep head the next window rather than waiting for
+the wrap (gr657257). :func:`run_detectors` adds a
 per-detector wall-clock deadline plus skip-and-continue on a Postgres
 statement timeout, so one slow detector cannot zero the tick
 (gr503580 — ``untagged`` did exactly that on the first prod run).
@@ -3059,26 +3062,35 @@ GRIPED_STORY_CHARS = 1500
 GRIPED_OPEN_SCAN = 500
 
 
-def _griped_window(store: Store, *, after: int, size: int) -> tuple[list[int], int]:
-    """Open ``project:memory`` gripe ids past ``after`` (ascending), and the
-    cursor to save — the window's last id, or ``0`` when it reached the end
-    (same contract as :func:`_scan_window`)."""
+def _open_gripe_ids(store: Store, *, before: int, after: int, size: int) -> list[int]:
+    """Open ``project:memory`` gripe ids in (``after``, ``before``) — a
+    ``0`` bound is open-ended — newest first (gr657257: the gardener
+    works the freshest complaint first)."""
     with store.pool.connection() as conn:
-        ids = [
+        return [
             int(r[0])
             for r in conn.execute(
                 "SELECT r.ref_id FROM refs r WHERE r.kind = 'gripe' "
-                "AND r.retired_at IS NULL AND r.ref_id > %s "
+                "AND r.retired_at IS NULL AND (%s = 0 OR r.ref_id < %s) "
+                "AND r.ref_id > %s "
                 "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
                 "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
                 "  AND t.namespace = 'OPEN' AND t.value = 'project:memory') "
                 "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
                 "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
                 "  AND t.namespace = 'STATUS' AND t.value = ANY(%s)) "
-                "ORDER BY r.ref_id LIMIT %s",
-                (after, list(_GRIPED_CLOSED_STATUS), size),
+                "ORDER BY r.ref_id DESC LIMIT %s",
+                (before, before, after, list(_GRIPED_CLOSED_STATUS), size),
             ).fetchall()
         ]
+
+
+def _griped_window(store: Store, *, before: int, size: int) -> tuple[list[int], int]:
+    """Open ``project:memory`` gripe ids below ``before`` (``0``: no bound),
+    newest first, and the cursor to save — the window's last (oldest) id,
+    or ``0`` when it reached the end and the next run starts again at the
+    newest."""
+    ids = _open_gripe_ids(store, before=before, after=0, size=size)
     return ids, (ids[-1] if len(ids) >= size else 0)
 
 
@@ -3407,7 +3419,7 @@ def _griped_memory_target(
         store, "memory", after=saved["griped:memory"], size=scan_cap
     )
     only_gripe = saved.get("griped:gripe")
-    gids, _nxt = _griped_window(store, after=0, size=GRIPED_OPEN_SCAN)
+    gids, _nxt = _griped_window(store, before=0, size=GRIPED_OPEN_SCAN)
     stories = _gripe_story(store, gids)
     out: list[GardenCandidate] = []
     for gid in gids:
@@ -3422,6 +3434,13 @@ def _griped_memory_target(
     return out
 
 
+#: Cursor key of the high-water mark beside the low-water ``griped:gripe``
+#: cursor (gr657257): a descending scan needs both ends of the already-seen
+#: band, or a complaint filed mid-sweep sits above the cursor until the
+#: wraparound — waiting a whole sweep in violation of newest-first.
+_GRIPED_HI_KEY = "griped:gripe:hi"
+
+
 def griped_candidates(
     store: Store,
     *,
@@ -3434,29 +3453,69 @@ def griped_candidates(
     per (gripe, memory). Read-only: the route replay runs the recorded
     searches lexically and pins every named memory's sha.
 
-    A ``griped:memory`` cursor switches to the apply re-check's targeted
-    mode (:func:`_griped_memory_target`); the ordinary ``griped:gripe``
-    cursor windows open complaints like every other wide scan.
-    """
+    Newest complaint first (gr657257). The unseen set is two bands —
+    complaints filed since the sweep's newest (ids above the
+    :data:`_GRIPED_HI_KEY` mark), then the continuing window below the
+    ``griped:gripe`` low-water cursor — already in global newest-first
+    order, so a complaint filed mid-sweep heads the next pass instead of
+    waiting for wraparound. A ``griped:memory`` cursor switches to the
+    apply re-check's targeted mode (:func:`_griped_memory_target`)."""
     if limit <= 0 or scan_cap <= 0:
         return []
     saved = cursors or {}
     if "griped:memory" in saved:
         return _griped_memory_target(store, saved, scan_cap=scan_cap, limit=limit)
     key = "griped:gripe"
-    window, nxt = _griped_window(store, after=saved.get(key, 0), size=scan_cap)
-    stories = _gripe_story(store, window)
+    lo = saved.get(key, 0)
+    hi = saved.get(_GRIPED_HI_KEY, 0) if lo else 0
     out: list[GardenCandidate] = []
-    for gid in window:
-        row = stories.get(gid)
-        if row is None:
-            continue
-        out.extend(_griped_for_gripe(store, gid, *row))
-        if len(out) >= limit:
-            nxt = gid
-            break
+    nxt = lo
+    stopped = False
+    old_hi = hi
+    new_ids = _open_gripe_ids(store, before=0, after=hi, size=scan_cap) if hi else []
+    if new_ids:
+        hi = new_ids[0]
+        stories = _gripe_story(store, new_ids)
+        for gid in new_ids:
+            row = stories.get(gid)
+            if row is not None:
+                out.extend(_griped_for_gripe(store, gid, *row))
+            if len(out) >= limit:
+                # The unprocessed tail folds into the below-window: ids
+                # under ``gid`` are unseen again next pass (a decided band
+                # in between is re-scanned once, then left behind).
+                nxt = gid
+                stopped = True
+                break
+    if (
+        not stopped
+        and new_ids
+        and len(new_ids) >= scan_cap
+        and _open_gripe_ids(store, before=new_ids[-1], after=old_hi, size=1)
+    ):
+        # The new band filled the scan with ids still unseen between the
+        # old mark and its oldest id: the low-water cursor drops to that
+        # id rather than staying at ``lo`` (which would skip them).
+        nxt = new_ids[-1]
+        stopped = True
+    if not stopped and len(new_ids) < scan_cap:
+        window, nxt = _griped_window(
+            store, before=lo, size=max(1, scan_cap - len(new_ids))
+        )
+        if lo == 0 and window:
+            hi = max(hi, window[0])
+        stories = _gripe_story(store, window)
+        for gid in window:
+            row = stories.get(gid)
+            if row is not None:
+                out.extend(_griped_for_gripe(store, gid, *row))
+            if len(out) >= limit:
+                nxt = gid
+                break
     if next_cursors is not None:
         next_cursors[key] = nxt
+        # A wrapped sweep rescans from the newest — the mark resets with it.
+        next_cursors[_GRIPED_HI_KEY] = hi if nxt else 0
     return out[:limit]
 
 
@@ -4792,11 +4851,14 @@ def run_detectors(
         )
         # review_due already checks the SHA, checklist version, explicit
         # expiry and type-specific age. The legacy 30-day skip knows neither
-        # version nor expiry and would hide valid review debt.
+        # version nor expiry and would hide valid review debt. A griped
+        # candidate is a reader's open complaint (gr657257): a review that
+        # predates or missed it must not silence it.
         kept = [
             c
             for c in out.candidates
-            if c.detector == "review_due" or (c.target_kind, c.target_id) not in fresh
+            if c.detector in ("review_due", "griped")
+            or (c.target_kind, c.target_id) not in fresh
         ]
         out.skipped_considered = len(out.candidates) - len(kept)
         out.candidates = kept

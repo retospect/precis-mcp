@@ -372,6 +372,43 @@ def review_todos(store: Store, ref_ids: list[int]) -> dict[int, str]:
     return {k: ",".join(v) for k, v in out.items()}
 
 
+#: Gripe STATUS values that take a complaint off the gardener's queue —
+#: anything else still shows ``under review`` on the memory's fisheye.
+#: Mirrors ``candidates._GRIPED_CLOSED_STATUS`` (utils must not import the
+#: garden layer): ``parked`` is included even though it is not terminal —
+#: a parked gripe waits on its wake condition and the ``griped`` detector
+#: skips it, so listing it here would falsely claim it is queued.
+_GRIPE_CLOSED_STATUSES = ("done", "wontfix", "parked")
+
+
+def open_memory_gripes(
+    store: Store, ref_ids: list[int]
+) -> dict[int, list[tuple[int, str]]]:
+    """``{memory id: [(gripe id, title), …]}`` — the open gripes that
+    ``raises-concern-about`` the memory, newest first (gr657257: triage
+    links a memory gripe to its memory; the fisheye shows it is under
+    review until the gardener closes it). Memories with none are absent."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT l.dst_ref_id, g.ref_id, coalesce(g.title, '') "
+            "FROM links l JOIN refs g ON g.ref_id = l.src_ref_id "
+            "AND g.kind = 'gripe' AND g.retired_at IS NULL "
+            "WHERE l.relation = 'raises-concern-about' "
+            "AND l.dst_ref_id = ANY(%s) "
+            "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+            "ON t.tag_id = rt.tag_id WHERE rt.ref_id = g.ref_id "
+            "AND t.namespace = 'STATUS' AND t.value = ANY(%s)) "
+            "ORDER BY g.ref_id DESC",
+            (list(ref_ids), list(_GRIPE_CLOSED_STATUSES)),
+        ).fetchall()
+    out: dict[int, list[tuple[int, str]]] = {}
+    for mem, gripe, title in rows:
+        out.setdefault(int(mem), []).append((int(gripe), str(title)))
+    return out
+
+
 def supersedes_targets(store: Store, ref_ids: list[int]) -> dict[int, list[int]]:
     """``{ref id: [dst ref ids]}`` for its ``supersedes`` edges — retired
     targets included (the edge is the record, independent of the target's

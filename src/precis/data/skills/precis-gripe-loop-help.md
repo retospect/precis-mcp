@@ -67,6 +67,17 @@ takes — `work: parked behind gr<M> (td<U>)`, `work: attempt N failed on
 <lane> — <first line>`, `work: asks Reto: td<ask>` — and never
 `work: resolved:…`: the close gate owns that word.
 
+## Triage: is it a memory gripe?
+
+The triage tick decides; the filer needs no tag or relation. A gripe
+is a memory gripe when its first line starts with a handle (`me123: …`)
+or it complains about a memory's content (stale, thin, ungrounded,
+contradicted, wrong hub, too big). A gripe that only cites a memory as
+context (`related-to`, `cites`, `derived-from`) stays ordinary. The
+tick tags a memory gripe `project:memory`, adds `link='memory:<id>',
+rel='raises-concern-about'` and keeps it out of the coder wave: the
+gardener takes it, newest first ([[precis-fix-memory-gripe-help]]).
+
 ## Step 1 — which gripes go into a wave?
 
 The triage tick has already tagged most open gripes (`fix:<type>`,
@@ -319,11 +330,9 @@ close the todo `STATUS:won't-do` and say why.
 
 ## Step 8 — harvest the scratch at close
 
-A task's working notes — probes, dead ends, drafts, the tangled path
-to the answer — live in `SPACE:scratch` owned by its todo (see "Builder
-scratch" below). When the task closes, that residue is either promoted
-into one clean memory or left to dissolve; until it is harvested, the
-owner-close expiry retires it unread. The closer — the agent finishing
+A task's working notes live in `SPACE:scratch` owned by its todo (see
+"Builder scratch" below). On close that residue is promoted into one
+clean memory or left to dissolve on the owner-close expiry. The closer — the agent finishing
 the task, never a worker (the worker cannot judge what is durable) —
 makes that call in one read:
 
@@ -346,18 +355,10 @@ link(kind="memory", id=<new>, target="memory:<scratch-id>", rel="supersedes")  #
 put(kind="todo", id=T, text="harvest: me<N> — <one line: what it condenses>")
 ```
 
-The `supersedes` edge keeps the tangle readable from the clean node
-after the scratch dissolves, and scratch already sits outside every
-other space's recall — the probes drop out of recall the moment the
-clean node owns the claim. Do NOT hand-delete the scratch: the
-owner-close expiry is its retirement path, and unlinked nodes
-dissolving is the designed default, not a leak.
+The `supersedes` edge keeps the tangle readable after the scratch
+dissolves. Do NOT hand-delete scratch: the owner-close expiry retires it.
 
-Required on every gripe-fix todo — that is where multi-agent scratch
-accumulates (builders, reviewers, fix rounds) — and advisory anywhere
-else a task carries scratch. The `harvest:` line is how the next
-coordinator, and the planned gardener detector for unharvested
-scratch, see the close was read before the dissolve.
+Required on every gripe-fix todo, advisory elsewhere.
 
 ## Builder scratch — `scratch-for:td<T>`, not the shared bucket
 

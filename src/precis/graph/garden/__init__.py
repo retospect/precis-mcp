@@ -94,6 +94,10 @@ Review rows and trust acts retain the original model string.
    ``precis garden apply`` — the consumer reviews but never auto-applies
    it. ``undo_compact`` reverses it. The compaction rules live in
    ``precis-gardener-memory-help``.
+   ``griped`` (gr657257) is the reader-complaint queue: open
+   ``project:memory`` gripes naming live memories, newest first — one
+   ``rewrite`` candidate per named memory, exempt from the
+   freshly-considered skip.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate returns structured ``accept``/rationale. Memory detectors'
    body candidates receive fisheye+1hop and verbatim
@@ -106,7 +110,7 @@ Review rows and trust acts retain the original model string.
    rejected unchanged target content. Proposer refusals also persist as
    ``rejected``: unchanged candidates are asked once per prompt version
    (gr506046). Candidate-producing detectors share ``max_proposals``
-   round-robin.
+   round-robin; ``griped`` candidates drain first (gr657257).
 4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
    ``precis garden review``) — a FRONTIER-tier burn-down over open
    proposals older than a few days: one approve/reject verdict per
