@@ -996,3 +996,123 @@ def test_loop_never_rewrites_earlier_turns() -> None:
     }
     assert seen[2][-1]["tool_call_id"] == "c2"
     assert seen[2][-1]["content"] == big_result
+
+
+# ── provider-entry limiter rows (gr595548) ─────────────────────────────
+
+
+def test_polite_uses_the_entry_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A profile-pinned call parks/refuses on ``llm:<profile>:rate`` —
+    the login route — not the shared ``host:<netloc>`` row."""
+    import precis.utils.llm.openai_tools as t
+
+    seen: dict[str, Any] = {}
+
+    def fake_backoff(send: Any, **kw: Any) -> Any:
+        seen.update(kw)
+        return send()
+
+    monkeypatch.setattr(t, "call_with_backoff", fake_backoff)
+    out = t._polite(
+        lambda: "ok", "https://openrouter.example.com/v1", row="llm:or-a:rate"
+    )
+    assert out == "ok"
+    assert seen["provider"] == "llm:or-a:rate"
+    assert seen["service"] == "llm:or-a:rate"
+
+
+def test_polite_without_a_row_keeps_the_host_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No entry → byte-identical to today: the ``host:<netloc>`` row via
+    the provider sentinel default."""
+    import precis.utils.llm.openai_tools as t
+    from precis.utils.http import _UNSET
+
+    seen: dict[str, Any] = {}
+
+    def fake_backoff(send: Any, **kw: Any) -> Any:
+        seen.update(kw)
+        return send()
+
+    monkeypatch.setattr(t, "call_with_backoff", fake_backoff)
+    t._polite(lambda: "ok", "https://openrouter.example.com/v1")
+    assert seen["provider"] is _UNSET
+    assert seen["service"] == "host:openrouter.example.com"
+
+
+def test_llm_api_hold_resolves_the_entry_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The park gate reads the entry row's ``parked_until`` — a sibling
+    route's 429 park can't gate this one."""
+    import precis.utils.llm.openai_tools as t
+    from precis.utils import outbound_policy
+
+    seen: dict[str, Any] = {}
+
+    def fake_resolve_for(service: str, policy: Any, row: Any, url: Any) -> Any:
+        seen.update(service=service, row=row)
+        from types import SimpleNamespace
+
+        return SimpleNamespace(cls="llm-api", concurrency=None)
+
+    monkeypatch.setattr(outbound_policy, "resolve_for", fake_resolve_for)
+    with t._llm_api_hold("https://openrouter.example.com/v1", 1.0, row="llm:or-a:rate"):
+        pass
+    assert seen["row"] == "llm:or-a:rate"
+    assert seen["service"] == "openai-tools"
+
+
+def test_urllib_transport_carries_the_limiter_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_UrllibTransport(limiter_row=...)`` threads the entry row into
+    both the slot hold and the politeness wrapper."""
+    import precis.utils.llm.openai_tools as t
+
+    seen: dict[str, Any] = {}
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_hold(url: str, timeout_s: float, *, row: Any = None) -> Any:
+        seen["hold_row"] = row
+        yield
+
+    def fake_polite(send: Any, url: str, *, row: Any = None) -> Any:
+        seen["polite_row"] = row
+        return send()
+
+    def fake_post(
+        url: str, data: bytes, headers: dict[str, str], timeout: float
+    ) -> bytes:
+        return b'{"choices": []}'
+
+    monkeypatch.setattr(t, "_llm_api_hold", fake_hold)
+    monkeypatch.setattr(t, "_polite", fake_polite)
+    monkeypatch.setattr(t, "_post_read", fake_post)
+
+    transport = t._UrllibTransport(limiter_row="llm:or-a:rate")
+    transport.post_json(
+        "https://openrouter.example.com/v1/chat/completions",
+        {"model": "m"},
+        headers={},
+        timeout=1.0,
+    )
+    assert seen["hold_row"] == "llm:or-a:rate"
+    assert seen["polite_row"] == "llm:or-a:rate"
+
+
+def test_tool_chat_client_threads_limiter_row_to_default_transport() -> None:
+    """A client built with ``limiter_row`` lands it on the default
+    stdlib transport so every POST uses the entry's row."""
+    client = ToolChatClient(
+        url="https://openrouter.example.com/v1",
+        api_key="k",
+        model="m",
+        limiter_row="llm:or-a:rate",
+    )
+    transport = client._transport
+    assert isinstance(transport, _UrllibTransport)
+    assert transport._limiter_row == "llm:or-a:rate"

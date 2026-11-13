@@ -381,6 +381,8 @@ def account_pinned_dispatch(
         ):
             halted = True
         result = _scrubbed_result(pin, result)
+        # The pinned credential's provider entry (gr595548).
+        result = replace(result, account=pin.profile_name)
         if result.error:
             # The log line gets the SCRUBBED error — never the exception.
             log.warning(

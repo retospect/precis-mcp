@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from precis.utils.http import (
+    _UNSET,
     POLICIES,
     call_with_backoff,
     is_internal_host,
@@ -198,7 +199,7 @@ def _post_read(url: str, data: bytes, headers: dict[str, str], timeout: float) -
     return raw
 
 
-def _polite[T](send: Callable[[], T], url: str) -> T:
+def _polite[T](send: Callable[[], T], url: str, *, row: str | None = None) -> T:
     """Run ``send`` under the politeness core when ``url`` names a third
     party (OpenRouter, OpenAI-compatible hosts): the ``openai-tools``
     policy resolves to the rate-less ``llm-api`` class — no token lane,
@@ -206,13 +207,20 @@ def _polite[T](send: Callable[[], T], url: str) -> T:
     jittered backoff on 429/5xx and 401/403 never retried. A cluster or
     LAN endpoint (:func:`is_internal_host`, decided per call) goes
     straight through. Concurrency is capped by :func:`_llm_api_hold` at
-    the request-method level, outside this retry loop."""
+    the request-method level, outside this retry loop.
+
+    ``row`` is the provider-entry limiter row (``llm:<profile>:rate``)
+    for a profile-pinned call — parks, refusals and the in-process
+    breaker then key on the login route that ran, not the shared
+    ``host:<netloc>`` row, so one account's 429 can't park a sibling
+    account on the same host (gr595548). ``None`` keeps the host row."""
     if is_internal_host(url):
         return send()
     return call_with_backoff(
         send,
-        service=netloc_provider(url) or "openai-tools",
+        service=row or netloc_provider(url) or "openai-tools",
         policy=POLICIES["openai-tools"],
+        provider=row if row is not None else _UNSET,
         url=url,
     )
 
@@ -275,7 +283,9 @@ def _fallback_slot(
 
 
 @contextlib.contextmanager
-def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
+def _llm_api_hold(
+    url: str, timeout_s: float, *, row: str | None = None
+) -> Iterator[None]:
     """Hold one ``llm-api`` concurrency slot for this call, then release.
 
     Internal hosts and non-``llm-api`` resolutions pass straight through;
@@ -286,13 +296,25 @@ def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
     router/classify requeue path already catches). A ``parked_until`` on
     the provider's row gates BEFORE the hold so a long park never sleeps
     on a held slot.
-    """
+
+    ``row`` overrides the limiter row the park gate and refusal ledger
+    key on — the provider-entry row (``llm:<profile>:rate``) for a
+    profile-pinned call, so a park learned on one login route can't gate
+    a sibling route on the same host (gr595548). The concurrency
+    resource stays ``llm-api:<provider>`` — the fleet cap belongs to the
+    endpoint, not the account."""
     if is_internal_host(url):
         yield
         return
     from precis.utils import outbound_policy, rate_limit
 
-    effective = outbound_policy.resolve("openai-tools", url=url)
+    limiter_row = row or netloc_provider(url)
+    effective = outbound_policy.resolve_for(
+        "openai-tools",
+        POLICIES["openai-tools"],
+        limiter_row,
+        url,
+    )
     if effective.cls != "llm-api" or effective.concurrency is None:
         yield
         return
@@ -421,7 +443,14 @@ def _llm_api_hold(url: str, timeout_s: float) -> Iterator[None]:
 
 
 class _UrllibTransport:
-    """Default stdlib transport — one POST, JSON in / JSON out."""
+    """Default stdlib transport — one POST, JSON in / JSON out.
+
+    ``limiter_row`` names the provider-entry limiter row
+    (``llm:<profile>:rate``) the politeness wrapper and park gate key on;
+    ``None`` keeps the shared ``host:<netloc>`` row (gr595548)."""
+
+    def __init__(self, *, limiter_row: str | None = None) -> None:
+        self._limiter_row = limiter_row
 
     def post_json(
         self,
@@ -434,8 +463,12 @@ class _UrllibTransport:
         data = json.dumps(payload).encode("utf-8")
         try:
             # One llm-api slot hold covers the whole call, retries included.
-            with _llm_api_hold(url, timeout):
-                raw = _polite(lambda: _post_read(url, data, headers, timeout), url)
+            with _llm_api_hold(url, timeout, row=self._limiter_row):
+                raw = _polite(
+                    lambda: _post_read(url, data, headers, timeout),
+                    url,
+                    row=self._limiter_row,
+                )
         except urllib.error.HTTPError as exc:
             # `urlopen` raises on a 4xx/5xx *before* the body is read, so the
             # upstream's rejection reason (e.g. an OpenRouter provider's "this
@@ -479,7 +512,11 @@ class _UrllibTransport:
         """
         data = json.dumps(payload).encode("utf-8")
         # Only opening the stream is retried; once tokens flow it is not.
-        with _polite(lambda: _post_open(url, data, headers, idle_timeout), url) as resp:
+        with _polite(
+            lambda: _post_open(url, data, headers, idle_timeout),
+            url,
+            row=self._limiter_row,
+        ) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
@@ -556,6 +593,7 @@ class ToolChatClient:
         stream: bool = False,
         idle_timeout: float = 120.0,
         abort_check: Callable[[], bool] | None = None,
+        limiter_row: str | None = None,
     ) -> None:
         self._url = url.rstrip("/") + "/chat/completions"
         self._api_key = api_key
@@ -593,7 +631,15 @@ class ToolChatClient:
         #: (partial kept → ``paused`` → retry by the next worker generation).
         #: ``None`` (the default) = never aborts, today's behaviour.
         self._abort_check = abort_check
-        self._transport: HttpTransport = transport or _UrllibTransport()
+        #: The provider-entry limiter row (``llm:<profile>:rate``) for a
+        #: profile-pinned call — the streamed path's hold and (via the
+        #: default transport) every POST key their park/refusal state on
+        #: it instead of the shared ``host:<netloc>`` row, so sibling
+        #: accounts on one provider don't pool (gr595548).
+        self._limiter_row = limiter_row
+        self._transport: HttpTransport = transport or _UrllibTransport(
+            limiter_row=limiter_row
+        )
 
     def chat(
         self,
@@ -693,7 +739,7 @@ class ToolChatClient:
         # client's hard wall ceiling — not post_sse's shorter idle timeout.
         try:
             with (
-                _llm_api_hold(self._url, self._timeout),
+                _llm_api_hold(self._url, self._timeout, row=self._limiter_row),
                 contextlib.closing(
                     cast(
                         "Generator[dict[str, Any], None, None]",

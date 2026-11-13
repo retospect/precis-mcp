@@ -104,12 +104,17 @@ class Ledger:
     #: legacy path actually ran wins and ``compare`` agrees. ``None`` leaves
     #: the ranked order unchanged.
     legacy_model: str | None = None
-    #: ``(model, adapter) -> (calls, ok)`` over :data:`HEALTH_WINDOW_MIN`
-    #: minutes of ``llm_call_log`` — the offering-level failure signal the
-    #: rank demotion reads (td568209). ``budget``-class rows are excluded
-    #: (a spend-cap pause is not the offering's fault); gated rows count.
-    #: Refreshed with the 15-second ledger entry, never per call.
-    health: Mapping[tuple[str, str], tuple[int, int]] = field(default_factory=dict)
+    #: ``(model, adapter, entry) -> (calls, ok)`` over
+    #: :data:`HEALTH_WINDOW_MIN` minutes of ``llm_call_log`` — the
+    #: offering-level failure signal the rank demotion reads (td568209).
+    #: ``entry`` is the provider entry (``features->>'account'`` —
+    #: gr595548), so a sibling login route's failures can't pool into
+    #: this offering's demotion; rows predating the stamp derive the
+    #: same default :func:`_entry_default` uses. ``budget``-class rows
+    #: are excluded (a spend-cap pause is not the offering's fault);
+    #: gated rows count. Refreshed with the 15-second ledger entry,
+    #: never per call.
+    health: Mapping[tuple[str, str, str], tuple[int, int]] = field(default_factory=dict)
     #: ``model -> (capacity, free)`` summed over the ``resource_slots``
     #: ``llm:<model>`` rows this host's dispatch can acquire — its own
     #: row plus LAN-routable ``served_by`` candidates, so a remote
@@ -168,10 +173,43 @@ HEALTH_MIN_CALLS = 20
 RATE_WINDOW_MIN = 15
 
 
+#: The provider-entry name an adapter's rows fall back to when the row
+#: or offering names none — the same mapping
+#: :func:`~precis.utils.llm.router.rung_account` applies to a rung with
+#: no ``bare``/``profile`` qualifier, so a pre-stamp ``llm_call_log``
+#: row and a no-account offering read the same bucket (gr595548). A
+#: bare-``claude`` rung is the one entry this can't recover: before the
+#: stamp its rows were indistinguishable from the OAuth lane's, and
+#: they keep pooling there for the window they survive in.
+_ENTRY_DEFAULTS = {
+    Transport.CLAUDE_P.value: "claude-sub",
+    Transport.CLAUDE_AGENT.value: "claude-sub",
+    Transport.CODEX_EXEC.value: "codex",
+    Transport.LOCAL.value: "local",
+}
+
+
+def _entry_default(adapter: str) -> str:
+    """The provider entry an adapter defaults to — the ``metered`` lane
+    for hosted transports, its own login route otherwise (gr595548)."""
+    return _ENTRY_DEFAULTS.get(adapter, "metered")
+
+
 def _unhealthy_calls(o: Offering, ledger: Ledger) -> int:
     """Calls behind an all-failing offering's demotion, ``0`` when it
-    ranks normally — below the sample floor, or one success seen."""
-    calls, ok = ledger.health.get((o.model, o.adapter), (0, 0))
+    ranks normally — below the sample floor, or one success seen. The
+    health key is the offering's provider entry, not the whole adapter:
+    failures on a sibling login route (``anthropic-api`` vs
+    ``claude-sub``) don't demote this one (gr595548). The entry is
+    what the dispatch would stamp — :func:`rung_account` over the rung
+    :func:`rung_for` builds from this offering (a ``claude`` account
+    named ``anthropic-api`` rides ``--bare``; an ``openai_compat``
+    account's entry is its ``profile`` name)."""
+    from precis.utils.llm.router import rung_account
+
+    rung = rung_for(o, ledger.accounts)
+    entry = rung_account(rung) if rung is not None else _entry_default(o.adapter)
+    calls, ok = ledger.health.get((o.model, o.adapter, entry), (0, 0))
     return calls if calls >= HEALTH_MIN_CALLS and ok == 0 else 0
 
 
@@ -541,16 +579,12 @@ def offering_key(
 
 
 def rung_key(rung: Rung, model: str) -> str:
-    """Stable offering identity for a legacy rung."""
-    if rung.transport in {Transport.CLAUDE_P, Transport.CLAUDE_AGENT}:
-        account = "anthropic-api" if rung.bare else "claude-sub"
-    elif rung.transport == Transport.CODEX_EXEC:
-        account = "codex"
-    elif rung.transport == Transport.LOCAL:
-        account = "local"
-    else:
-        account = rung.profile or "metered"
-    return offering_key(rung.model or model, rung.transport.value, account)
+    """Stable offering identity for a legacy rung — the account half is
+    :func:`~precis.utils.llm.router.rung_account`, the one provider-entry
+    map the dispatch path also stamps on its route-log rows (gr595548)."""
+    from precis.utils.llm.router import rung_account
+
+    return offering_key(rung.model or model, rung.transport.value, rung_account(rung))
 
 
 def rung_for(offering: Offering, accts: Mapping[str, accounts.Account]) -> Rung | None:
@@ -743,7 +777,7 @@ _ledger_cache: dict[
         list[accounts.Account],
         list[accounts.Pool],
         tuple[Offering, ...],
-        dict[tuple[str, str], tuple[int, int]],
+        dict[tuple[str, str, str], tuple[int, int]],
         dict[str, tuple[int, int]],
         dict[tuple[str, str | None], float],
     ],
@@ -973,28 +1007,41 @@ def _build_offerings(
     return tuple(offerings) + _account_offerings(accts, catalog)
 
 
-def _health_from_store(store: Store) -> dict[tuple[str, str], tuple[int, int]]:
-    """``(model, transport) -> (calls, ok)`` over :data:`HEALTH_WINDOW_MIN`
-    minutes of ``llm_call_log`` — the offering-level failure signal the
-    rank demotion reads (td568209; the router keeps no in-memory signal,
-    and the window query rides the 15 s ledger entry so it never runs per
-    call). ``budget``-class rows are excluded — a spend-cap pause is not
+def _health_from_store(store: Store) -> dict[tuple[str, str, str], tuple[int, int]]:
+    """``(model, transport, entry) -> (calls, ok)`` over
+    :data:`HEALTH_WINDOW_MIN` minutes of ``llm_call_log`` — the
+    offering-level failure signal the rank demotion reads (td568209;
+    the router keeps no in-memory signal, and the window query rides
+    the 15 s ledger entry so it never runs per call). ``entry`` is the
+    stamped provider entry (``features->>'account'``, gr595548);
+    pre-stamp rows fall back to :func:`_entry_default`'s mapping so the
+    window's mixed old/new rows still bucket consistently.
+    ``budget``-class rows are excluded — a spend-cap pause is not
     an offering fault; gated rows count (a refused rung IS the observed
     fault). A failed read yields an empty mapping, never an exception."""
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT model, transport, count(*), "
+                "SELECT model, transport, "
+                "COALESCE("
+                "features->>'account', "
+                "CASE transport "
+                "WHEN 'claude_p' THEN 'claude-sub' "
+                "WHEN 'claude_agent' THEN 'claude-sub' "
+                "WHEN 'codex_exec' THEN 'codex' "
+                "WHEN 'local' THEN 'local' "
+                "ELSE 'metered' END), "
+                "count(*), "
                 "count(*) FILTER (WHERE NOT errored) FROM llm_call_log "
                 f"WHERE ts > now() - interval '{HEALTH_WINDOW_MIN} minutes' "
-                "AND reason_class IS DISTINCT FROM 'budget' GROUP BY 1, 2"
+                "AND reason_class IS DISTINCT FROM 'budget' GROUP BY 1, 2, 3"
             ).fetchall()
     except Exception:
         log.debug("decide: health read failed", exc_info=True)
         return {}
     return {
-        (str(model), str(transport)): (int(calls), int(ok))
-        for model, transport, calls, ok in rows
+        (str(model), str(transport), str(entry)): (int(calls), int(ok))
+        for model, transport, entry, calls, ok in rows
         if model is not None and transport is not None
     }
 

@@ -899,7 +899,7 @@ def test_all_failing_offering_is_ranked_last() -> None:
     offering behind every healthy one — but never rejects it."""
     bad = offering("bad", model="bad", price_in=1)
     healthy = offering("healthy", model="healthy", price_in=100)
-    led = ledger(bad, healthy, health={("bad", "api"): (20, 0)})
+    led = ledger(bad, healthy, health={("bad", "api", "metered"): (20, 0)})
     decision = d.decide(LlmRequest(Tier.SMALL), Requirement(Tier.SMALL), led, "on")
     assert [r.offering.key for r in decision.ranked] == ["healthy", "bad"]
     assert "unhealthy: 0 of 20 calls ok in 30 min" in decision.ranked[1].reason
@@ -907,7 +907,7 @@ def test_all_failing_offering_is_ranked_last() -> None:
     solo = d.decide(
         LlmRequest(Tier.SMALL),
         Requirement(Tier.SMALL),
-        ledger(bad, health={("bad", "api"): (20, 0)}),
+        ledger(bad, health={("bad", "api", "metered"): (20, 0)}),
         "on",
     )
     assert solo.chosen == bad
@@ -917,7 +917,11 @@ def test_offering_with_a_success_or_few_calls_is_not_demoted() -> None:
     """One success, or fewer than the window's minimum calls, ranks normally."""
     cheap = offering("cheap", model="m", price_in=1)
     pricey = offering("pricey", model="n", price_in=100)
-    for health in ({("m", "api"): (20, 1)}, {("m", "api"): (19, 0)}, {}):
+    for health in (
+        {("m", "api", "metered"): (20, 1)},
+        {("m", "api", "metered"): (19, 0)},
+        {},
+    ):
         decision = d.decide(
             LlmRequest(Tier.SMALL),
             Requirement(Tier.SMALL),
@@ -965,8 +969,8 @@ def test_loader_health_from_call_log(
     led = d.ledger_from_store(store, now=NOW)
     assert led is not None
     # The 'budget' row never counted — a spend-cap pause is no offering fault.
-    assert led.health[("sick-model", "openai_compat")] == (20, 0)
-    assert led.health[("well-model", "local")] == (1, 1)
+    assert led.health[("sick-model", "openai_compat", "metered")] == (20, 0)
+    assert led.health[("well-model", "local", "local")] == (1, 1)
     d.ledger_from_store(store, now=NOW)
     assert len(reads) == 1
     clock[0] += 16
@@ -1446,3 +1450,83 @@ def test_local_only_rejects_training_account() -> None:
         assert decision.rejected[0].filter == "privacy"
     assert run({"training_use": "no"}, "local-only").chosen is not None
     assert run({"training_use": "yes"}, "default").chosen is not None
+
+
+def test_health_demotes_only_the_failing_entry() -> None:
+    """gr595548: pass rate is learned per provider entry — an all-failing
+    ``anthropic-api`` route demotes only itself; the ``claude-sub`` login
+    on the same model+adapter ranks ahead, not pooled into the demotion."""
+    sub = offering(
+        "m@claude_p/claude-sub",
+        model="m",
+        adapter="claude_p",
+        account="claude-sub",
+        price_in=1,
+    )
+    api = offering(
+        "m@claude_p/anthropic-api",
+        model="m",
+        adapter="claude_p",
+        account="anthropic-api",
+        price_in=1,
+    )
+    decision = d.decide(
+        LlmRequest(Tier.SMALL),
+        Requirement(Tier.SMALL),
+        ledger(
+            sub,
+            api,
+            health={("m", "claude_p", "anthropic-api"): (20, 0)},
+        ),
+        "on",
+    )
+    assert [r.offering.account for r in decision.ranked] == [
+        "claude-sub",
+        "anthropic-api",
+    ]
+    assert "unhealthy" in decision.ranked[1].reason
+
+
+def test_health_from_store_groups_by_provider_entry(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``features->>'account'`` splits the window's rows per entry —
+    the gripe's OAuth-vs-API-key split — while a row with no stamp
+    derives the transport's default entry (``metered`` for hosted)."""
+    with store.pool.connection() as conn:
+        for _ in range(20):
+            conn.execute(
+                "INSERT INTO llm_call_log (source, tier, transport, model, "
+                "errored, reason_class, features) "
+                "VALUES ('h','small','openai_compat','m',true,'rate',"
+                '\'{"account": "or-b"}\'::jsonb)'
+            )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "errored, reason_class, features) "
+            "VALUES ('h','small','openai_compat','m',true,'rate',"
+            '\'{"account": "or-a"}\'::jsonb)'
+        )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "errored, reason_class) "
+            "VALUES ('h','small','openai_compat','m',true,'rate')"
+        )
+        conn.execute(
+            "INSERT INTO llm_call_log (source, tier, transport, model, "
+            "errored, reason_class) "
+            "VALUES ('h','small','claude_p','m',true,'rate')"
+        )
+    d.admit.reset_cache()
+    d._ledger_cache.clear()
+    monkeypatch.setattr(d.time, "monotonic", lambda: 10.0)
+    led = d.ledger_from_store(store, now=NOW)
+    assert led is not None
+    assert led.health[("m", "openai_compat", "or-b")] == (20, 0)
+    assert led.health[("m", "openai_compat", "or-a")] == (1, 0)
+    assert led.health[("m", "openai_compat", "metered")] == (1, 0)
+    # An unstamped claude row derives the OAuth lane — the dominant
+    # entry — matching rung_account's non-bare default.
+    assert led.health[("m", "claude_p", "claude-sub")] == (1, 0)
+    d.admit.reset_cache()
+    d._ledger_cache.clear()

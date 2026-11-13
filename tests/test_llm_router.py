@@ -1979,6 +1979,7 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
             stream: bool = False,
             idle_timeout: float = 120.0,
             abort_check: object = None,
+            limiter_row: str | None = None,
         ) -> None:
             seen["url"] = url
             seen["api_key"] = api_key
@@ -2038,6 +2039,7 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
             stream: bool = False,
             idle_timeout: float = 120.0,
             abort_check: object = None,
+            limiter_row: str | None = None,
         ) -> None:
             seen["temperature"] = temperature
             seen["extra_body"] = extra_body
@@ -8569,7 +8571,7 @@ def _profile_fakes(
     import precis.workers.llm_summarize as summ
 
     class FakeClient:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, **kw: object) -> None:
             seen.append(
                 {
                     "url": getattr(config, "url", None),
@@ -8849,7 +8851,7 @@ def test_profile_key_never_reaches_logs_or_errors(
     seen: dict[str, object] = {}
 
     class FailingClient:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, **kw: object) -> None:
             seen["api_key"] = getattr(config, "api_key", None)
 
         def complete(
@@ -8989,7 +8991,7 @@ def _profile_wire_fakes(
     resolved: list[str] = []
 
     class FakeClient:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, **kw: object) -> None:
             seen.append(
                 {
                     "url": getattr(config, "url", None),
@@ -10146,3 +10148,148 @@ def test_route_claude_p_quota_refusal_parks_pool(
         "llm:claude-sub:7d"
     ]
     assert probes.failure.call_args_list[0].kwargs["retry_at"] == reset
+
+
+# ── provider entries (gr595548): one entry per login route ────────────
+
+
+def test_rung_account_names_the_login_route() -> None:
+    """The entry is per (provider, access method, account), not per
+    provider: the two claude login routes, the codex subscription, the
+    free local pool, a named hosted profile, and the env-default
+    metered lane each get their own name so learned rate/quota/pass
+    state never pools across them."""
+    assert router.rung_account(Rung(Transport.CLAUDE_P)) == "claude-sub"
+    assert router.rung_account(Rung(Transport.CLAUDE_P, bare=True)) == "anthropic-api"
+    assert router.rung_account(Rung(Transport.CLAUDE_AGENT)) == "claude-sub"
+    assert (
+        router.rung_account(Rung(Transport.CLAUDE_AGENT, bare=True)) == "anthropic-api"
+    )
+    assert router.rung_account(Rung(Transport.CODEX_EXEC)) == "codex"
+    assert router.rung_account(Rung(Transport.LOCAL)) == "local"
+    assert router.rung_account(Rung(Transport.OPENAI_COMPAT)) == "metered"
+    assert router.rung_account(Rung(Transport.OPENAI_COMPAT, profile="or-a")) == "or-a"
+    assert router.rung_account(Rung(Transport.OPENAI_TOOLS, profile="or-b")) == "or-b"
+
+
+def test_request_account_follows_the_pinned_profile() -> None:
+    """A profile-less hosted rung dispatched under ``req.profile`` runs
+    that credential, so the entry is the request's profile — never
+    ``metered``; CLI/local rungs ignore the request profile."""
+    pinned = LlmRequest(Tier.SMALL, prompt="x", profile="or-a")
+    plain = LlmRequest(Tier.SMALL, prompt="x")
+    assert router.request_account(pinned, Rung(Transport.OPENAI_COMPAT)) == "or-a"
+    assert router.request_account(plain, Rung(Transport.OPENAI_COMPAT)) == "metered"
+    assert (
+        router.request_account(pinned, Rung(Transport.OPENAI_COMPAT, profile="or-b"))
+        == "or-b"
+    )
+    assert router.request_account(pinned, Rung(Transport.CLAUDE_P)) == "claude-sub"
+    assert router.request_account(pinned, Rung(Transport.CODEX_EXEC)) == "codex"
+
+
+def test_failover_stamps_the_winning_rungs_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fall-through result names the entry that actually ran — the
+    subscription CLI fallback, not the failed hosted primary."""
+    primary = _FakeProv(_err("hosted down"))
+    fallback = _FakeProv(_ok("fallback out"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, fallback)
+
+    prov = FailoverProvider(
+        [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
+    )
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
+
+    assert out.text == "fallback out"
+    assert out.account == "claude-sub"
+
+
+def test_failover_stamps_a_profile_rungs_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A named-profile rung's entry is the profile — two profiles on the
+    same provider host stay distinct entries."""
+    hosted = _FakeProv(_ok("profile out"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, hosted)
+
+    out = FailoverProvider([Rung(Transport.OPENAI_COMPAT, profile="or-b")]).run(
+        LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m"
+    )
+
+    assert out.account == "or-b"
+
+
+def test_failover_stamps_the_request_pinned_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile-less hosted rung dispatched under ``req.profile`` runs
+    that credential, so the result names the pinned entry — not
+    ``metered`` — and a CLI rung keeps its own route."""
+    hosted = _FakeProv(_ok("pinned out"))
+    cli = _FakeProv(_ok("cli out"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, hosted)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, cli)
+    monkeypatch.setattr(router, "resolve_profile", lambda name: None)
+
+    req = LlmRequest(tier=Tier.FRONTIER, prompt="x", profile="or-a")
+    out = FailoverProvider([Rung(Transport.OPENAI_COMPAT)]).run(req, model="m")
+    assert out.account == "or-a"
+
+    out = FailoverProvider([Rung(Transport.CLAUDE_AGENT)]).run(req, model="m")
+    assert out.account == "claude-sub"
+
+
+def test_record_dispatch_logs_the_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The attempts ledger names the entry: ``features.account`` lands
+    on the route-log row when the result carries one, and stays absent
+    for a legacy result that doesn't."""
+    records = _capture_route_log(monkeypatch)
+    req = LlmRequest(Tier.SMALL, prompt="x")
+    answer = LlmResult(
+        text="answer",
+        cost_usd=None,
+        turns_used=None,
+        model="m",
+        tier=Tier.FRONTIER,
+        account="or-a",
+    )
+    router._record_dispatch(
+        req, answer, transport=Transport.OPENAI_COMPAT, duration_ms=1
+    )
+    assert records[0].features["account"] == "or-a"
+
+    no_entry = _ok("answer")
+    router._record_dispatch(
+        req, no_entry, transport=Transport.OPENAI_COMPAT, duration_ms=1
+    )
+    assert "account" not in records[1].features
+
+
+def test_gate_result_logs_the_gated_rungs_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-dispatch refusal attributes to the rung it would have run —
+    the gated row's entry, not the provider family."""
+    records = _capture_route_log(monkeypatch)
+    req = LlmRequest(Tier.SMALL, prompt="x")
+    router._gate_result(
+        req,
+        LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.SMALL,
+            error="refused",
+            paused=True,
+        ),
+        entered=0.0,
+        transport=Transport.CLAUDE_P,
+        routed="cloud",
+        account=router.rung_account(Rung(Transport.CLAUDE_P, bare=True)),
+    )
+    assert records[0].features["account"] == "anthropic-api"
+    assert records[0].features["gated"] is True

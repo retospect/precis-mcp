@@ -338,10 +338,21 @@ class LlmClient:
     """OpenAI ``/v1/chat/completions`` client for the summarizer alias."""
 
     def __init__(
-        self, config: LlmConfig, *, transport: Transport | None = None
+        self,
+        config: LlmConfig,
+        *,
+        transport: Transport | None = None,
+        limiter_row: str | None = None,
     ) -> None:
         self._config = config
-        self._transport: Transport = transport or _UrllibTransport()
+        # ``limiter_row`` names the provider-entry limiter row
+        # (``llm:<profile>:rate``) a profile-pinned dispatch parks and
+        # counts refusals on, instead of the shared ``host:<netloc>``
+        # row — one login route's 429 must not park its siblings
+        # (gr595548).
+        self._transport: Transport = transport or _UrllibTransport(
+            limiter_row=limiter_row
+        )
 
     def complete(
         self,

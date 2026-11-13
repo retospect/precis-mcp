@@ -117,6 +117,8 @@ retry and failover walk — ``local`` whenever a ``served_by`` slot exists.
 (``llm.model.small`` → ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → default
 ``z-ai/glm-4.7-flash``) whenever a call lands on a hosted OSS transport.
 
+``features.account`` names the route.
+
 Failure semantics: every classifiable ``LlmResult.error`` carries a
 ``reason_class`` and a UTC ``retry_at`` — ``quota`` (Claude window
 exhausted, horizon = the parsed reset; wording in ``quota``), ``budget``

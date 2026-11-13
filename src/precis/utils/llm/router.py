@@ -1085,6 +1085,15 @@ class LlmResult:
     #: local primary that fell back to cloud really did spend money.
     #: ``None`` only when no rung was resolved (an early error return).
     placement: str | None = None
+    #: The provider *entry* that ran — the ``<account>`` segment of the
+    #: rung's offering key and pool rows (:func:`rung_account`), stamped
+    #: from the rung that actually ran, same as ``placement``. One entry
+    #: per (provider, access method, account): a ``--bare`` API-key rung
+    #: reads ``anthropic-api`` where its sibling OAuth rung reads
+    #: ``claude-sub`` — rate limits, parks and pass rate are learned and
+    #: stored per entry, never pooled per provider (gr595548). ``None``
+    #: when no rung was resolved.
+    account: str | None = None
     #: ``llm_call_log.request_hash`` the call was logged under (the
     #: post-replacement request :func:`_record_dispatch` actually wrote), so a
     #: caller can point a stored verdict back at its replayable prompt. ``None``
@@ -2486,7 +2495,12 @@ class FailoverProvider:
             # Stamp the rung that actually ran. Done per-iteration (not once at
             # the end) so a fall-through to a cloud rung is recorded as cloud —
             # the accounting must follow the money, not the operator's intent.
-            last = _replace(last, placement=_placement_of(rung))
+            # `account` names the rung's provider entry beside it, so the
+            # attempts ledger and the health demotion attribute the attempt to
+            # the login route that ran, not the provider (gr595548).
+            last = _replace(
+                last, placement=_placement_of(rung), account=request_account(req, rung)
+            )
             accepted = last.error is None and (
                 self._accept is None or self._accept(last)
             )
@@ -2790,6 +2804,61 @@ def _placement_of(rung: Rung) -> str:
     ``_rung_is_cloud`` and the dollar caps exclude on this string.
     """
     return "cloud" if _rung_is_cloud(rung) else "local"
+
+
+def rung_account(rung: Rung) -> str:
+    """The rung's provider *entry* — the ``<account>`` segment of its
+    offering key and its pool/limiter rows.
+
+    One entry per (provider, access method, account): the two claude
+    transports split on ``bare`` (``--bare`` = the API-key login
+    ``anthropic-api``, per-token billing; default = the Max-subscription
+    login ``claude-sub``, OAuth quota), ``codex_exec`` is the OpenAI
+    subscription CLI, ``local`` the free local pool, and a hosted rung's
+    ``llm.profiles`` name is its (endpoint, credential) entry — the
+    env-default hosted lane is ``metered``. Everything that learns or
+    meters provider state — the ``llm_call_log`` attempts ledger, the
+    rank's health demotion, ``external_rate_limits``/pool rows — keys on
+    this name so limits learned on one login route are never applied to
+    a sibling route on the same provider (gr595548).
+    """
+    if rung.transport in (Transport.CLAUDE_P, Transport.CLAUDE_AGENT):
+        return "anthropic-api" if rung.bare else "claude-sub"
+    if rung.transport is Transport.CODEX_EXEC:
+        return "codex"
+    if rung.transport is Transport.LOCAL:
+        return "local"
+    return rung.profile or "metered"
+
+
+def request_account(req: LlmRequest, rung: Rung) -> str:
+    """:func:`rung_account` for a rung dispatched under ``req`` — a hosted
+    rung with no profile of its own runs under the request's pinned
+    ``req.profile``, so that credential's entry is the one to stamp, not
+    the env-default ``metered`` (gr595548)."""
+    if (
+        req.profile
+        and not rung.profile
+        and rung.transport
+        not in (
+            Transport.CLAUDE_P,
+            Transport.CLAUDE_AGENT,
+            Transport.CODEX_EXEC,
+            Transport.LOCAL,
+        )
+    ):
+        return req.profile
+    return rung_account(rung)
+
+
+def _limiter_row(profile: ProviderProfile | None) -> str | None:
+    """The provider-entry ``external_rate_limits`` row a hosted dispatch
+    parks and counts refusals on — ``llm:<profile>:rate`` for a named
+    profile, ``None`` (the shared ``host:<netloc>`` row) for the
+    env-default lane (gr595548). The name mirrors the subscription-cap
+    pool keys (``llm:<profile>:calls``/``:tokens``) so the entry's state
+    all lives under ``llm:<profile>:``."""
+    return f"llm:{profile.name}:rate" if profile is not None else None
 
 
 def _rung_is_cloud(rung: Rung) -> bool:
@@ -3918,6 +3987,7 @@ def _gate_result(
     transport: Transport | None,
     routed: str | None = None,
     decision: dict[str, Any] | None = None,
+    account: str | None = None,
 ) -> LlmResult:
     """Log + return a gate early-out — a breaker trip, an admission refusal,
     a saturated-slot pause, an emptied chain — so a call refused *before* the
@@ -3929,9 +3999,13 @@ def _gate_result(
     ``log_call=False`` batch pass stays unlogged; ``duration_ms`` covers the
     router's own gate work only — no provider call ran. ``transport`` is the
     rung the call was gated on (``None`` when resolution produced no rung at
-    all). The row is written ``gated`` — lite, ``placement`` NULL,
-    ``features.gated = true`` — so health readers can tell it apart from a
-    call that ran."""
+    all); ``account`` is that rung's provider entry (:func:`rung_account`)
+    so the refusal lands on the right login route's ledger, not a
+    sibling's (gr595548). The row is written ``gated`` — lite,
+    ``placement`` NULL, ``features.gated = true`` — so health readers can
+    tell it apart from a call that ran."""
+    if account is not None and result.account is None:
+        result = _replace(result, account=account)
     return _replace(
         result,
         request_hash=_record_dispatch(
@@ -4119,6 +4193,7 @@ def _gated_attempt(
     paused: bool = False,
     reason_class: _failure.FailureClass | None = None,
     retry_at: datetime | None = None,
+    account: str | None = None,
 ) -> None:
     """The lite route-log row for a chosen attempt refused before
     dispatch — a breaker trip, an admission refusal, a busy/draining
@@ -4137,6 +4212,7 @@ def _gated_attempt(
             paused=paused,
             reason_class=reason_class,
             retry_at=retry_at,
+            account=account,
         ),
         transport=transport,
         duration_ms=int((time.monotonic() - entered) * 1000),
@@ -4176,6 +4252,9 @@ def _run_chosen(
     rung = _decide.rung_for(offering, ledger.accounts if ledger is not None else {})
     if rung is None:
         detail = f"adapter {offering.adapter!r} is not a transport"
+        # No rung to name the entry from — mirror rung_account's rule: an
+        # account offering's entry is its profile name.
+        acct = ledger.accounts.get(offering.account or "") if ledger else None
         _gated_attempt(
             req,
             model=offering.model,
@@ -4184,6 +4263,7 @@ def _run_chosen(
             entered=entered,
             routed=None,
             stamp=stamp,
+            account=(acct.profile if acct and acct.profile else offering.account),
         )
         return None, _fallback_stamp(stamp, "unresolved", detail)
     if (
@@ -4222,6 +4302,7 @@ def _run_chosen(
             entered=entered,
             routed=_routed_placement(rung, None),
             stamp=stamp,
+            account=request_account(req, rung),
         )
         return None, _fallback_stamp(stamp, "unresolved", host_reason)
     # The same pre-flight the legacy path runs, on the chosen rung —
@@ -4248,6 +4329,7 @@ def _run_chosen(
             paused=True,
             reason_class=_trip_class(rung.transport, bare=rung.bare),
             retry_at=_trip_retry_at(trip),
+            account=request_account(req, rung),
         )
         return None, _fallback_stamp(stamp, "gate", str(trip))
     refusal = _admit.check_dispatch(req, model=serve_model, transport=rung.transport)
@@ -4260,6 +4342,7 @@ def _run_chosen(
             entered=entered,
             routed=_routed_placement(rung, None),
             stamp=stamp,
+            account=request_account(req, rung),
         )
         return None, _fallback_stamp(stamp, "gate", refusal)
     slot = _local.acquire(serve_model)
@@ -4281,6 +4364,7 @@ def _run_chosen(
             paused=True,
             reason_class="rate",
             retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["rate"],
+            account=request_account(req, rung),
         )
         return None, _fallback_stamp(stamp, "no-slot", detail)
     call_req = req
@@ -4562,6 +4646,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=ladder[0].transport,
             routed=_placement_of(ladder[0]),
+            account=request_account(req, ladder[0]),
         )
     ladder = _placed_ladder
     # Fenced transport pin (td573740): a params.envelope-declared tick
@@ -4592,6 +4677,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 entered=entered,
                 transport=_fenced_rung.transport,
                 routed=_placement_of(_fenced_rung),
+                account=request_account(req, _fenced_rung),
             )
     # Cloud-throttle: with cloud disabled, prune the chain's
     # cloud rungs → local. A cloud-only tier (FRONTIER) prunes to empty and
@@ -4620,6 +4706,9 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=_gate_rung.transport if _gate_rung is not None else None,
             routed=_placement_of(_gate_rung) if _gate_rung is not None else None,
+            account=request_account(req, _gate_rung)
+            if _gate_rung is not None
+            else None,
         )
     # The rung the operator's intent picked, before the mechanical fallbacks
     # below can replace it — `placement_routed` is classified off this.
@@ -4669,6 +4758,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 entered=entered,
                 transport=_unavail[0][0].transport,
                 routed=_routed_placement(routed_rung, None),
+                account=request_account(req, _unavail[0][0]),
             )
     decision, _dec_obj, _dec_ledger = _decision_probe(
         req, ladder, model, _unavail if ladder else []
@@ -4790,6 +4880,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             transport=transport,
             routed=_routed_placement(routed_rung, None),
             decision=decision,
+            account=request_account(req, ladder[0]),
         )
     # Window admission (llm-catalog slice 2): refuse a doomed (context, model)
     # pairing loudly — with the numbers — after the budget gate, before spending
@@ -4814,6 +4905,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             transport=transport,
             routed=_routed_placement(routed_rung, None),
             decision=decision,
+            account=request_account(req, ladder[0]),
         )
     # Local serving slot: if this host declares `served_by` for the model,
     # hold one of its local slots for the call's duration so concurrent local
@@ -4856,6 +4948,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 transport=transport,
                 routed=routed,
                 decision=decision,
+                account=request_account(req, ladder[0]),
             )
         # Local capacity is saturated, not down. Retrying `req` unmodified
         # (no `local_url` override) sends rung 0 to the *hosted* OSS endpoint
@@ -4920,6 +5013,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     transport=nxt.transport,
                     routed=routed,
                     decision=decision,
+                    account=request_account(req, nxt),
                 )
             esc_refusal = _admit.check_dispatch(
                 req, model=nxt.model or model, transport=nxt.transport
@@ -4939,6 +5033,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     transport=nxt.transport,
                     routed=routed,
                     decision=decision,
+                    account=request_account(req, nxt),
                 )
             started = time.monotonic()
             result = _classified(FailoverProvider(ladder[1:]).run(req, model=model))
@@ -5018,6 +5113,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             transport=transport,
             routed=routed,
             decision=decision,
+            account=request_account(req, ladder[0]),
         )
     # A reserved slot that declares a direct `endpoint` (llama-swap) routes
     # the local transport there instead of the default, using the
@@ -5062,6 +5158,8 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 else _placement_of(ladder[0])
             ),
         )
+    if result.account is None:
+        result = _replace(result, account=request_account(req, ladder[0]))
     return _replace(
         result,
         request_hash=_record_dispatch(
@@ -5171,6 +5269,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             entered=entered,
             transport=ladder[0].transport,
             routed=_placement_of(ladder[0]),
+            account=request_account(req, ladder[0]),
         )
     ladder = _placed_ladder
     # Fenced-transport parity with sync route() (td573740): filter, and on
@@ -5245,6 +5344,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             transport=transport,
             routed=_routed_placement(ladder[0], None),
             decision=decision,
+            account=request_account(req, ladder[0]),
         )
 
     from precis.utils.llm import admit as _admit
@@ -5265,6 +5365,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             transport=transport,
             routed=_routed_placement(ladder[0], None),
             decision=decision,
+            account=request_account(req, ladder[0]),
         )
 
     from precis.utils.llm import local_serving as _local
@@ -5301,6 +5402,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
             transport=transport,
             routed=_routed_placement(ladder[0], slot),
             decision=decision,
+            account=request_account(req, ladder[0]),
         )
     call_req = req
     call_model = model
@@ -5332,6 +5434,8 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
                 else _placement_of(ladder[0])
             ),
         )
+    if result.account is None:
+        result = _replace(result, account=request_account(req, ladder[0]))
     return _replace(
         result,
         request_hash=_record_dispatch(
@@ -5697,6 +5801,11 @@ def _record_dispatch(
     if not req.log_call or not route_log.enabled():
         return None
     feats = _route_features(req, result)
+    if result.account is not None:
+        # The provider entry that ran (gr595548) — the attempts ledger
+        # names the login route so its learned rate/quota/pass-rate state
+        # keys per (provider, access method, account), not per provider.
+        feats["account"] = result.account
     if decision is not None:
         # Never stamp req.features: those are part of the request hash.
         decision = dict(decision)
@@ -6408,7 +6517,15 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         req.thinking if req.thinking is not None else _tier_gen_defaults(req.tier)[0]
     )
     extra_body = _extra_body_for(profile, req, model, thinking=thinking)
-    client = LlmClient(cfg)
+    # The provider-entry limiter row (gr595548) exists only for a named
+    # profile — the env-default lane keeps the shared host row and the
+    # call keeps its ``LlmClient(cfg)`` shape.
+    limiter_row = _limiter_row(profile)
+    client = (
+        LlmClient(cfg, limiter_row=limiter_row)
+        if limiter_row is not None
+        else LlmClient(cfg)
+    )
     try:
         # Only pass extra_body when there is something to send, so the bare
         # path stays unchanged; the reasoning-off pin above makes it
@@ -6594,6 +6711,10 @@ def run_oss_tool_loop(
         api_key=api_key,
         model=model,
         timeout=timeout,
+        # The provider-entry limiter row (gr595548): a profile-pinned call
+        # parks/429s on ``llm:<profile>:rate``, not the host's shared row —
+        # a sibling account on the same provider keeps its own state.
+        limiter_row=_limiter_row(profile),
         temperature=temperature,
         max_tokens=max_tokens,
         extra_body=extra_body,

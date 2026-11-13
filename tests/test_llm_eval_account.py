@@ -215,7 +215,7 @@ def test_pinned_request_hits_account_endpoint_with_account_key_and_never_routes(
     captured: dict[str, Any] = {}
 
     class _Client:
-        def __init__(self, cfg: Any) -> None:
+        def __init__(self, cfg: Any, *, limiter_row: str | None = None) -> None:
             captured["url"] = cfg.url
             captured["api_key"] = cfg.api_key
             captured["model"] = cfg.model
@@ -484,6 +484,31 @@ def test_rpm_gap_respected(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(starts) == 3
     assert starts[1] - starts[0] >= 10.0
     assert starts[2] - starts[1] >= 10.0
+
+
+def test_pinned_dispatch_logs_the_pinned_entry(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The eval wire stamps the pinned profile as the call's entry, so
+    the attempts ledger never files it under ``metered``."""
+    from precis.llm_eval import account_pin
+    from precis.utils.llm.router import LlmRequest, Tier
+
+    _seed_all(store, monkeypatch, pools=[("llm:acct-eval:calls", 60, "rolling:60")])
+    pin = account_pin.resolve_account_pin(store, _ACCOUNT, _MODEL)
+    logged: list[Any] = []
+    monkeypatch.setattr(
+        account_pin,
+        "provider_for",
+        lambda t, **kw: SimpleNamespace(
+            run=lambda req, *, model: _ok_result(req, model)
+        ),
+    )
+    monkeypatch.setattr(
+        account_pin, "record_dispatch", lambda req, res, **kw: logged.append(res)
+    )
+    account_pin.account_pinned_dispatch(pin)(LlmRequest(tier=Tier.MEDIUM, prompt="p"))
+    assert [r.account for r in logged] == [pin.profile_name]
 
 
 def test_daily_budget_refuses_up_front(
