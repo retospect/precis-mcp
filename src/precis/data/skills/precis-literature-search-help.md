@@ -2,12 +2,12 @@
 id: precis-literature-search-help
 family: paper
 title: precis — the end-to-end literature search procedure
-summary: the order of moves across kinds — skill lookup, memory first, broad hybrid paper search, refine-don't-page, verify and widen on a hit, thin-corpus escalation (Semantic Scholar, then Perplexity by need), write-back to memory
+summary: the order of moves across kinds — skill lookup, memory first, broad hybrid paper search, refine-don't-page, verify and widen on a hit, thin-corpus escalation (cache checks → websearch → perplexity-reasoning → perplexity-research → Semantic Scholar/websearch for primary DOIs → ingest → gap entry), write-back to memory
 answers:
   - how do I run a literature search for papers on a topic, start to finish?
   - what order do I search memory, the corpus, Semantic Scholar and Perplexity in?
   - what do I do when the corpus is too thin on my topic?
-  - when is Semantic Scholar the right gap-filler versus Perplexity?
+  - where do Semantic Scholar and the Perplexity tiers sit in the escalation order?
   - how do I keep the next literature search on this topic from starting cold?
 applies-to: search/get/put (kind='skill'|'memory'|'paper'|'source'|'semanticscholar'|'websearch'|'perplexity-reasoning'|'perplexity-research')
 status: active
@@ -37,8 +37,9 @@ the detail.
 4. **Refine** — more hits than a page: narrow, never page.
 5. **Verify and widen** — read the hit's chunk, then
    `extent='fisheye+1hop+recall'` for its neighbourhood.
-6. **Escalate** — thin corpus: check the paid-kind caches → Semantic
-   Scholar → Perplexity by tier → an explicit gap entry.
+6. **Escalate** — thin corpus: cache checks → websearch →
+   perplexity-reasoning → perplexity-research → Semantic Scholar/websearch
+   for primary DOIs → ingest → an explicit gap entry.
 7. **Write back** — the corpus map, ruling or gap becomes a memory, so
    step 2 finds it next time.
 
@@ -114,11 +115,11 @@ unlinked chunks — the almost-matches the ranking missed. The extent
 ladder: [[precis-fisheye-help]].
 
 ## Step 6 — thin corpus: escalate by purpose
-## When do I reach for Semantic Scholar vs Perplexity?
+## Which external rung do I reach for, in what order?
 
 The corpus is thin when a sub-topic has under ~3 citable sources, or a
 survey under ~10 ([[precis-research-help]]). Escalate in this order —
-each rung costs more than the last:
+the Perplexity rungs cost more as you climb:
 
 **(a) Check the paid-kind caches before paying.** A timed-out
 `perplexity-research` call may already have landed in the cache, and
@@ -129,9 +130,23 @@ search(kind="perplexity-research", q="<the topic>")
 get(kind="perplexity-research", id="/recent")   # also websearch / perplexity-reasoning
 ```
 
-**(b) Semantic Scholar — first when a seed paper is held or the topic
-is precise.** It returns DOIs flagged `held:` / `stub:` / `NEW`
-against the corpus, so you buy only what's missing:
+**(b) `websearch` (~$0.001, 2–5 s)** — the cheapest paid rung: a single
+fact, or the first landscape pass that names the papers worth chasing.
+
+**(c) `perplexity-reasoning` (~$0.005, 5–30 s) when the vocabulary or
+landscape is unknown** — it names the terms, groups and debates the
+corpus search then re-queries by.
+
+**(d) `perplexity-research` last** — survey-grade only: minutes per
+call, up to ~$3 on a long prompt. The cache key includes the tier, so
+each escalation is a fresh paid call; a Pro web-UI answer imports the
+same row free via `put(mode='import')`. `id=`/`q=` on the Perplexity
+kinds is the *query text*, not a ref id — a digits-only query is
+refused. Tiers and gotchas: [[precis-perplexity-help]].
+
+**(e) Resolve the primary DOIs the answer points at — Semantic Scholar
+or `websearch`.** Semantic Scholar returns DOIs flagged `held:` /
+`stub:` / `NEW` against the corpus, so you buy only what's missing:
 
 ```python
 get(kind="semanticscholar", id="<title or topic>")      # ranked hits + DOIs
@@ -146,22 +161,10 @@ out-of-band; a later `search(kind='paper', …)` reads what landed.
 Cached 30 days, 50 rows per hop; the per-call cost isn't stated in
 [[precis-paper-help]] — check before a bulk walk.
 
-**(c) `perplexity-reasoning` (~$0.005, 5–30 s) when the vocabulary or
-landscape is unknown** — it names the terms, groups and debates the
-corpus search then re-queries by. `websearch` (~$0.001, 2–5 s) covers
-a single fact.
-
-**(d) `perplexity-research` last** — survey-grade only: minutes per
-call, up to ~$3 on a long prompt. The cache key includes the tier, so
-each escalation is a fresh paid call; a Pro web-UI answer imports the
-same row free via `put(mode='import')`. `id=`/`q=` on the Perplexity
-kinds is the *query text*, not a ref id — a digits-only query is
-refused. Tiers and gotchas: [[precis-perplexity-help]].
-
-Then resolve primary DOIs, ingest the primaries, and cite them — not
-Perplexity and not the review that pointed at them. Still missing →
-an explicit gap entry ("no papers on X under condition Y") is worth
-more than dressed-up prose.
+Then ingest the primaries and cite them — not Perplexity and not the
+review that pointed at them. Still missing → an explicit gap entry
+("no papers on X under condition Y") is worth more than dressed-up
+prose.
 
 ## Step 7 — write back so memory-first has something to find
 ## Where does the result of a literature search live?

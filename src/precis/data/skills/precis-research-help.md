@@ -136,9 +136,10 @@ include it in the output.
 
 If your topic has under N citable sources in the corpus (rule of
 thumb: N=3 for sub-topics, 10 for a survey), don't paper over the
-gap with prose. The escalation order (cache check → Semantic Scholar →
-Perplexity by tier → gap entry) is [[precis-literature-search-help]]
-step 6. Either:
+gap with prose. The escalation order (cache checks → websearch →
+perplexity-reasoning → perplexity-research → Semantic Scholar/websearch
+for primary DOIs → ingest → gap entry) is
+[[precis-literature-search-help]] step 6. Either:
 
 - Mint a sibling subtask `executor:fetch` to web-search and ingest
   the missing literature (the parent will re-tick when it lands), OR
