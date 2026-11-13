@@ -248,7 +248,9 @@ def _parse_window_bound(value: Any, field: str) -> datetime | None:
 
     Same contract as the source-search primitive's parser
     (:meth:`precis.runtime.search.SearchMixin._parse_search_date`): an ISO
-    date or full ISO timestamp; a naive value is assumed UTC; ``until`` is
+    date or full ISO timestamp; a naive value is assumed UTC; an
+    offset-aware value is *normalized* to UTC so a ``Z``-labelled echo
+    downstream can't print the offset hour as UTC; ``until`` is
     exclusive. Raises :class:`BadInput` on an unparseable string.
     """
     if value is None:
@@ -263,7 +265,7 @@ def _parse_window_bound(value: Any, field: str) -> datetime | None:
                 f"{field}= must be an ISO date/timestamp, got {value!r}",
                 next=f"{field}='2026-10-01' or '2026-10-01T00:00:00Z'",
             ) from exc
-    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
 
 def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:

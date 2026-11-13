@@ -10,12 +10,25 @@ handle + a one-line citation + a cite path — with held copies first.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
+import precis.handlers.paper as paper_mod
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
-from precis.store import Store
+from precis.store import Store, Tag
+
+
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cohort tests close read-paper passes via ``put`` — stub the
+    metadata lookups the mint side shares, like test_paper_unread."""
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: {"_resolved": True}
+    )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda *_: None)
 
 
 def _seed_paper(
@@ -271,3 +284,176 @@ def test_find_papers_by_author_ranks_body_over_bodiless_pdf(store: Store) -> Non
         with_body,
         bodiless,
     ]
+
+
+# ── cohort composition (gr653528 review) ──────────────────────────
+#
+# The byline door used to pass only ``min_quartile`` through — every
+# other ref-level filter (unread, ingest/id bounds, tags, the
+# dispatch-resolved include/exclude cohorts, serves/stamp/link cohorts,
+# has_fulltext, record_type, ids/exclude, year/created windows) dropped
+# silently, and the see-more hint echoed none of it. The door now
+# materializes the cohort via ``filtered_ref_clauses`` and the
+# continuation re-issues every filter verbatim.
+
+
+def _read_note(handler: PaperHandler, slug: str) -> None:
+    """Close a read-paper pass on ``slug`` the skill's way."""
+    handler.put(id=slug, text="read-paper: setup me1; hubs fi2")
+
+
+def _set_chunk_created(store: Store, ref_id: int, ts: datetime) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = %s WHERE ref_id = %s",
+            (ts, ref_id),
+        )
+
+
+def _cohort_pair(store: Store, *, title: str = "Cohort probe study") -> tuple[int, int]:
+    a = _seed_paper(store, slug="coh-a", title=title, authors=["Cohort Author"])
+    b = _seed_paper(store, slug="coh-b", title=title, authors=["Cohort Author"])
+    return a, b
+
+
+def test_byline_honours_unread(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    _read_note(PaperHandler(hub=hub), "coh-b")
+    out = PaperHandler(hub=hub).search(title="cohort probe study", unread=True)
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+    out = PaperHandler(hub=hub).search(title="cohort probe study", unread=False)
+    assert f"pa{a}" not in out.body
+    assert f"pa{b}" in out.body
+
+
+def test_byline_honours_unread_on_author(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    _read_note(PaperHandler(hub=hub), "coh-b")
+    out = PaperHandler(hub=hub).search(author="cohort author", unread=True)
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+
+
+def test_byline_honours_ingested_window(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    _give_body(store, a)
+    _give_body(store, b)
+    _set_chunk_created(store, b, datetime(2020, 1, 1, tzinfo=UTC))
+    out = PaperHandler(hub=hub).search(
+        title="cohort probe study", ingested_after="2025-01-01"
+    )
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+
+
+def test_byline_honours_id_bounds(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    out = PaperHandler(hub=hub).search(title="cohort probe study", id_max=a)
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+    out = PaperHandler(hub=hub).search(title="cohort probe study", id_min=b)
+    assert f"pa{a}" not in out.body
+    assert f"pa{b}" in out.body
+
+
+def test_byline_honours_include_scope(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    out = PaperHandler(hub=hub).search(title="cohort probe study", include_ref_ids=[a])
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+
+
+def test_byline_empty_include_scope_is_zero_hits(hub: Hub, store: Store) -> None:
+    _cohort_pair(store)
+    out = PaperHandler(hub=hub).search(title="cohort probe study", include_ref_ids=[])
+    assert "no paper matches" in out.body
+    assert "filtered cohort" in out.body
+
+
+def test_byline_honours_exclude_scope(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    out = PaperHandler(hub=hub).search(title="cohort probe study", exclude_ref_ids=[b])
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+    out = PaperHandler(hub=hub).search(title="cohort probe study", exclude=["coh-b"])
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+
+
+def test_byline_honours_tags(hub: Hub, store: Store) -> None:
+    a, b = _cohort_pair(store)
+    store.add_tag(a, Tag.open("area-cohort"), set_by="agent")
+    out = PaperHandler(hub=hub).search(title="cohort probe study", tags=["area-cohort"])
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+
+
+def test_byline_drops_junk_inside_materialized_cohort(hub: Hub, store: Store) -> None:
+    """The default ``JUNK:junk`` verdict must hold inside the
+    materialized cohort too — a filtered byline call doesn't opt a junked
+    paper back in."""
+    a, b = _cohort_pair(store)
+    store.add_tag(b, Tag.closed("JUNK", "junk"))
+    out = PaperHandler(hub=hub).search(title="cohort probe study", unread=True)
+    assert f"pa{a}" in out.body
+    assert f"pa{b}" not in out.body
+
+
+def test_byline_hit_shape_args_refuse(hub: Hub, store: Store) -> None:
+    """Ranked-hit knobs the record listing can't express refuse rather
+    than drop silently."""
+    h = PaperHandler(hub=hub)
+    with pytest.raises(BadInput, match="not applied"):
+        h.search(title="x", q="y")
+    with pytest.raises(BadInput, match="not applied"):
+        h.search(title="x", scope="pa1")
+    with pytest.raises(BadInput, match="not applied"):
+        h.search(title="x", unique_per="paper")
+    with pytest.raises(BadInput, match="not applied"):
+        h.search(author="x", mode="semantic")
+    with pytest.raises(BadInput, match="not applied"):
+        h.search(title="x", days=7)
+
+
+def test_byline_see_more_echoes_every_filter(hub: Hub, store: Store) -> None:
+    """The continuation re-issues the whole cohort spec — a caller that
+    follows the hint verbatim must land the same filtered set, wider."""
+    ids = []
+    for i in range(11):
+        ids.append(
+            _seed_paper(
+                store,
+                slug=f"sweep-{i}",
+                title="Sweep cohort title probe",
+                authors=["Sweep Author"],
+            )
+        )
+    h = PaperHandler(hub=hub)
+    out = h.search(title="sweep cohort title probe", unread=True, page_size=10)
+    assert "page_size=20" in out.body
+    assert "'unread': True" in out.body
+    wider = h.search(title="sweep cohort title probe", unread=True, page_size=20)
+    for rid in ids:
+        assert f"pa{rid}" in wider.body
+
+
+def test_byline_see_more_names_unspellable_scope(hub: Hub, store: Store) -> None:
+    """A dispatch-resolved cohort (cited=/uncited=/hubbed=) can't respell
+    on the ``next:`` call — the hint says to re-add the scope."""
+    ids = []
+    for i in range(11):
+        ids.append(
+            _seed_paper(
+                store,
+                slug=f"sc-{i}",
+                title="Scoped cohort title probe",
+                authors=["Scoped Author"],
+            )
+        )
+    out = PaperHandler(hub=hub).search(
+        title="scoped cohort title probe",
+        include_ref_ids=ids,
+        page_size=10,
+    )
+    assert "re-add your cited=/uncited=/hubbed= scope" in out.body

@@ -50,6 +50,8 @@ from precis.store._body_predicate import (
     THIN_BODY_MAX_CHUNKS,
     body_state_sql,
     has_body_sql,
+    ingested_at_sql,
+    read_note_sql,
     unusable_body_tag_sql,
 )
 from precis.store._mappers import (
@@ -4818,6 +4820,9 @@ class RefsMixin:
         year_to: int | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
+        unread: bool | None = None,
+        ingested_after: Any = None,
+        ingested_before: Any = None,
     ) -> tuple[int, list[tuple[tuple[str | None, ...], int, FacetSpan]]]:
         """Filtered ``COUNT(*)`` + optional ``GROUP BY`` over one kind.
 
@@ -4889,6 +4894,9 @@ class RefsMixin:
             year_to=year_to,
             id_min=id_min,
             id_max=id_max,
+            unread=unread,
+            ingested_after=ingested_after,
+            ingested_before=ingested_before,
         )
         clauses.append(
             "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')"
@@ -5003,6 +5011,9 @@ class RefsMixin:
         year_to: int | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
+        unread: bool | None = None,
+        ingested_after: Any = None,
+        ingested_before: Any = None,
     ) -> int:
         """Live body-chunk (passage) count over the same filtered ref set
         :meth:`count_refs_facets` describes — the "passages" figure a
@@ -5033,6 +5044,9 @@ class RefsMixin:
             year_to=year_to,
             id_min=id_min,
             id_max=id_max,
+            unread=unread,
+            ingested_after=ingested_after,
+            ingested_before=ingested_before,
         )
         clauses.extend(
             [
@@ -5074,6 +5088,9 @@ def filtered_ref_clauses(
     year_to: int | None = None,
     id_min: int | None = None,
     id_max: int | None = None,
+    unread: bool | None = None,
+    ingested_after: Any = None,
+    ingested_before: Any = None,
 ) -> tuple[list[str], list[Any]]:
     """The ``WHERE`` clause list (+ ordered params) shared by the
     ``view='count'`` SQL and any per-kind drill into the *same* filtered
@@ -5092,6 +5109,14 @@ def filtered_ref_clauses(
     of that kind — written as two single-index ``NOT EXISTS`` probes
     (``links_src_ref_idx`` / ``links_dst_ref_idx``) so the planner never
     folds the OR into a scan of ``links``.
+
+    The read-state cohort (gr653528): ``unread=True`` keeps refs with no
+    visible ``read-paper:`` note (:func:`read_note_sql`), ``False`` keeps
+    the ones carrying it; ``ingested_after``/``ingested_before`` bound
+    the landing stamp (:func:`ingested_at_sql` — first body chunk, or
+    ``refs.created_at`` for card-only), unlike ``since``/``until`` which
+    bound ref creation. Both are tz-aware datetimes parsed at the
+    handler boundary; ``ingested_before`` is exclusive.
     """
     clauses = ["r.retired_at IS NULL", "r.kind = %s"]
     params: list[Any] = [kind]
@@ -5188,6 +5213,15 @@ def filtered_ref_clauses(
     if id_max is not None:
         clauses.append("r.ref_id <= %s")
         params.append(id_max)
+    if unread is not None:
+        frag = read_note_sql("r")
+        clauses.append(f"NOT {frag}" if unread else frag)
+    if ingested_after is not None:
+        clauses.append(f"{ingested_at_sql('r')} >= %s")
+        params.append(ingested_after)
+    if ingested_before is not None:
+        clauses.append(f"{ingested_at_sql('r')} < %s")
+        params.append(ingested_before)
     return clauses, params
 
 

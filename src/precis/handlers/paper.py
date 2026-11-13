@@ -237,6 +237,19 @@ def _junk_exclude(tags: list[str] | None) -> list[str] | None:
     return ["JUNK:junk"]
 
 
+def _iso_z(dt: datetime) -> str:
+    """An ISO timestamp for a ``next:`` continuation arg or a scope label.
+
+    UTC under the ``Z`` label — an offset-aware bound (``+02:00``)
+    printed naive-style would claim the wrong hour — and fractional
+    seconds kept, so a sub-second landing stamp doesn't round onto a
+    boundary the next window re-reads.
+    """
+    utc = dt.astimezone(UTC) if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    base = utc.strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{base}.{utc.microsecond:06d}Z" if utc.microsecond else f"{base}Z"
+
+
 @contextlib.contextmanager
 def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
     """``store.tx()`` with the body doors' DB-error mapping.
@@ -474,7 +487,7 @@ _EDIT_DOOR_ARGS = (
 _CLEARABLE_FIELDS: tuple[str, ...] = ("authors", "year")
 
 
-# ``_coerce_search_year`` / ``_embed_query_batch`` / ``_broad_args_suffix`` used
+# ``_coerce_search_year`` / ``_embed_query_batch`` / ``_hint_args_suffix`` used
 # to live here — they're pure ``search()``-only helpers, moved alongside the
 # BylineSearch / FusedBlockSearch / PaperSearchResultRenderer collaborators in
 # ``_paper_search.py`` (OPEN-ITEMS "Refactor handlers/paper.py::search()").
@@ -2764,13 +2777,41 @@ class PaperHandler(Handler):
         # cohort — the combination refuses rather than submitting an
         # unfiltered campaign (td609081).
         min_quartile: str | None = None,
+        # ``args={'unread': True|False}`` (gr653528): the read-state
+        # cohort — papers with no visible ``read-paper:`` closing note
+        # (``False`` keeps only the ones carrying it). Paper-only: the
+        # read-paper pass doesn't run on cfp/datasheet.
+        # ``args={'ingested_after'|'ingested_before': '<iso>'}`` bound
+        # the *landing* stamp — first live body chunk, ``refs.created_at``
+        # for card-only/chunkless (the ``view='ingest'`` definition) —
+        # not ``since=``/``until=`` (ref mint) or ``after=``/``before=``
+        # (publish year). With no ``q=`` a paged listing; with ``q=``
+        # they restrict hits through the include channel like
+        # ``serves=``; ``view='count'`` composes them.
+        unread: bool | None = None,
+        ingested_after: str | datetime | None = None,
+        ingested_before: str | datetime | None = None,
+        # ``args={'id_min': N}`` / ``args={'id_max': M}`` (gr653528 —
+        # the same spell the numeric-ref kinds take, gr514477): bound
+        # the ref-id range. On the no-q listing it's the keyset cursor
+        # — the listing orders by ref id newest-first and its ``next:``
+        # row re-issues the call with ``'id_max': <last id - 1>``, so a
+        # backlog deeper than the 100-row ``page_size`` cap still walks
+        # (``page=`` refuses). ``view='count'`` takes it as a SQL
+        # bound; with ``q=`` it materializes into the include channel
+        # like ``serves=``.
+        id_min: int | str | None = None,
+        id_max: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
 
-        Five shapes, checked in order: ``title=``/``author=`` (byline
+        Six shapes, checked in order: ``title=``/``author=`` (byline
         record lookup), a bare ``tags=`` with no ``q=`` (recency-ordered
-        ref listing, gr311340 — see :meth:`_render_tags_only_search`), ``good=True``
+        ref listing, gr311340 — see :meth:`_render_tags_only_search`),
+        ``args={'unread'|'ingested_after'|'ingested_before'}`` with no
+        ``q=`` (the read-state listing, gr653528 — see
+        :meth:`_render_read_state_search`), ``good=True``
         (deep-search campaign submit), else the block-hit fused search
         (single-leg or broad). This method only validates + routes; the
         actual retrieval and rendering live in
@@ -2821,6 +2862,46 @@ class PaperHandler(Handler):
                     next=f"search(kind='{kind}', q='…', args={{'min_quartile': 'Q1'}})",
                 )
             quartile_norm = candidate
+        # ``args={'unread': …}`` / ``args={'ingested_after'|
+        # 'ingested_before': …}`` (gr653528) — hoisted like ``stamp_norm``
+        # so ``view='count'``, the listing door and the q= include channel
+        # all see the same validated values.
+        if unread is not None:
+            if not isinstance(unread, bool):
+                raise BadInput(
+                    f"args={{'unread': …}} takes a boolean, got {unread!r}",
+                    next="search(kind='paper', args={'unread': true})",
+                )
+            if kind != "paper":
+                raise BadInput(
+                    f"args={{'unread': …}} is paper-only (kind={kind!r}) — "
+                    "the read-paper pass leaves notes only on papers",
+                    next="drop args={'unread': …}",
+                )
+        from precis.handlers._numeric_ref import _parse_id_range, _parse_window_bound
+
+        ingested_after_dt = _parse_window_bound(ingested_after, "ingested_after")
+        ingested_before_dt = _parse_window_bound(ingested_before, "ingested_before")
+        # ``args={'id_min'/'id_max'}`` — the ref-id bounds, validated
+        # once up front like the window bounds so every door below
+        # composes or refuses rather than silently dropping.
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=kind)
+        if (
+            ingested_after_dt is not None
+            and ingested_before_dt is not None
+            and ingested_after_dt >= ingested_before_dt
+        ):
+            raise BadInput(
+                f"ingested_after={ingested_after!r} is not before "
+                f"ingested_before={ingested_before!r}",
+                next="args={'ingested_after': '2026-11-01', "
+                "'ingested_before': '2026-11-13'}",
+            )
+        read_state = (
+            unread is not None
+            or ingested_after_dt is not None
+            or ingested_before_dt is not None
+        )
         if view is not None and view not in ("index", "ids"):
             if view == "count":
                 # The count's filtered set composes the ref-level
@@ -2952,6 +3033,12 @@ class PaperHandler(Handler):
                     )
                 if has_fulltext is not None:
                     extra_filters.append(f"has_fulltext={has_fulltext}")
+                if unread is not None:
+                    extra_filters.append("unread" if unread else "read")
+                if ingested_after_dt is not None or ingested_before_dt is not None:
+                    ilo = _iso_z(ingested_after_dt) if ingested_after_dt else "…"
+                    ihi = _iso_z(ingested_before_dt) if ingested_before_dt else "…"
+                    extra_filters.append(f"ingested [{ilo}, {ihi})")
                 return self._count_view(
                     q=q,
                     tags=tags,
@@ -2968,6 +3055,37 @@ class PaperHandler(Handler):
                     linked_from_kind=linked_from_kind,
                     linked_from_tags=from_tags,
                     lacks_kind=lacks_kind,
+                    unread=unread,
+                    ingested_after=ingested_after_dt,
+                    ingested_before=ingested_before_dt,
+                    id_min=id_lo,
+                    id_max=id_hi,
+                )
+            view_dropped: list[str] = []
+            if read_state:
+                view_dropped.append("'unread'/'ingested_after'/'ingested_before'")
+            if id_lo is not None or id_hi is not None:
+                view_dropped.append("'id_min'/'id_max'")
+            if (isinstance(title, str) and title.strip()) or (
+                isinstance(author, str) and author.strip()
+            ):
+                view_dropped.append("title=/author=")
+            if view_dropped:
+                # The remaining views render a fixed set (status/ingest)
+                # these args can't express — refuse like view='count'
+                # does for hit-shape args rather than drop them
+                # (gr653528 review: unread/ingest bounds used to ride
+                # through view='status'/'ingest' silently).
+                raise BadInput(
+                    f"{', '.join(view_dropped)} can't filter view={view!r} "
+                    f"on {kind} search — the count view and the no-q "
+                    "listing apply the cohort/range, the byline lookup "
+                    "takes title=/author=",
+                    next=(
+                        f"search(kind={kind!r}, args={{'unread': true}}) · "
+                        f"search(kind={kind!r}, view='count', "
+                        "args={'unread': true})"
+                    ),
                 )
             if view == "status":
                 return self._fetch_status_view(ids)
@@ -2990,10 +3108,18 @@ class PaperHandler(Handler):
         # Field-scoped byline lookup — ``title=`` / ``author=`` return
         # paper *records* (handle + citation), the targeted alternative to
         # the block-hit path when you know the title or an author. Routed
-        # first: it needs no q= and ignores the block-search filters —
-        # except ``min_quartile``, which narrows the record listing the
-        # same way it narrows a hit set (td609081: returning before the
-        # resolution below silently dropped it).
+        # first: it needs no q=. Every *ref-level* filter composes the
+        # same way it does on the listings — the dispatch-resolved
+        # include/exclude cohorts (``cited=``/``uncited=``/``hubbed=``),
+        # ``unread``/``ingested_*``, the id bounds, ``min_quartile``,
+        # ``tags=``, ``serves=``, ``stamp=``, ``linked_from``/``lacks``,
+        # ``has_fulltext``, ``record_type``, ``ids=``, ``exclude=`` and
+        # the year/created windows all describe a refs cohort, so they
+        # fold into one ``filtered_ref_clauses`` materialization
+        # (gr653528 review: only ``min_quartile`` used to reach the
+        # lookup; the rest — and the see-more continuation — dropped
+        # silently, returning out-of-cohort papers). Hit-shape args the
+        # record listing can't express refuse instead of dropping.
         title_q = title.strip() if isinstance(title, str) and title.strip() else None
         author_q = (
             author.strip() if isinstance(author, str) and author.strip() else None
@@ -3011,9 +3137,232 @@ class PaperHandler(Handler):
                 )
             q_byline = title_q or author_q
             assert q_byline is not None  # exactly one is set (guarded above)
+            unapplied_bl: list[str] = []
+            for label, value in (
+                ("q=", q if (isinstance(q, str) and q.strip()) else None),
+                ("scope=", scope),
+                ("mode=", mode),
+                ("queries=", queries),
+                ("answers=", answers),
+                ("per_paper=", per_paper),
+                ("unique_per=", unique_per),
+                ("good=", good or None),
+                ("args['chunk_kind']", chunk_kind),
+                ("args['group_by']", group_by),
+                ("days=", days),
+            ):
+                if value is not None and value != [] and value != "":
+                    unapplied_bl.append(label)
+            unapplied_bl.extend(
+                sorted(
+                    f"args[{k!r}]"
+                    for k, v in _kw.items()
+                    if v is not None and not str(k).startswith("__")
+                )
+            )
+            if unapplied_bl:
+                raise BadInput(
+                    f"{unapplied_bl!r} "
+                    f"{'is' if len(unapplied_bl) == 1 else 'are'} not "
+                    "applied by the byline lookup — it returns paper "
+                    "records, not ranked hits, so silently dropping "
+                    f"{'it' if len(unapplied_bl) == 1 else 'them'} would "
+                    "return papers the call didn't ask for",
+                    next=(
+                        f"search(kind='{kind}', q='…') for a block-hit "
+                        "search, or keep only ref-level filters "
+                        "(unread/ingested_*/id_min/id_max/min_quartile/"
+                        "tags/serves/stamp/linked_from/lacks/"
+                        "has_fulltext/record_type/ids/exclude/after/"
+                        "before/since/until)"
+                    ),
+                )
+            meta_eq_bl: tuple[str, str] | None = None
+            if record_type is not None:
+                rt = str(record_type).strip().lower()
+                if rt not in RECORD_TYPES:
+                    raise BadInput(
+                        f"record_type= takes 'software' or 'dataset', "
+                        f"got {record_type!r}",
+                        options=sorted(RECORD_TYPES),
+                        next="search(kind='paper', args={'record_type': 'software'})",
+                    )
+                meta_eq_bl = ("record_type", rt)
+            if has_fulltext is not None and not isinstance(has_fulltext, bool):
+                raise BadInput(
+                    f"has_fulltext must be a boolean, got {has_fulltext!r}",
+                    next="args={'has_fulltext': true} keeps only refs with body chunks",
+                )
+            bf = self._resolve_browse_filters(
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                exclude=exclude,
+                after=after,
+                before=before,
+                since=since,
+                until=until,
+            )
+            # ``ids=`` resolves onto the include channel like the
+            # listing doors — a named-set cohort, never dropped.
+            if ids:
+                wanted = resolve_exclude_paper_ids(
+                    [str(i) for i in ids], store=self.store, kind=kind
+                )
+                bf["include_ref_ids"] = sorted(
+                    (set(bf["include_ref_ids"]) & set(wanted))
+                    if bf["include_ref_ids"] is not None
+                    else wanted
+                )
+            byline_tags = Tag.normalize_filter(tags, kind=kind) if tags else None
+            # The cohort materializes only when a filter exists to
+            # describe it — a plain ``title=`` stays one trigram query,
+            # not a corpus-wide id fetch (the ``JUNK:junk`` default
+            # exclusion still applies inside the materialized cohort
+            # via ``exclude_tags``, same as the listings).
+            filters_active = (
+                byline_tags is not None
+                or link_scope
+                or stamp_norm is not None
+                or serves is not None
+                or meta_eq_bl is not None
+                or has_fulltext is not None
+                or bf["include_ref_ids"] is not None
+                or bool(bf["exclude_ref_ids"])
+                or bf["since"] is not None
+                or bf["until"] is not None
+                or bf["year_from"] is not None
+                or bf["year_to"] is not None
+                or read_state
+                or id_lo is not None
+                or id_hi is not None
+            )
             byline_include: list[int] | None = None
+            if filters_active or quartile_norm is not None:
+                cohort: set[int] | None = None
+                if filters_active:
+                    from precis.store._refs_ops import filtered_ref_clauses
+
+                    clauses, params = filtered_ref_clauses(
+                        kind=kind,
+                        tags=byline_tags,
+                        exclude_tags=_junk_exclude(tags),
+                        linked_from_kind=linked_from_kind,
+                        linked_from_tags=from_tags,
+                        lacks_kind=lacks_kind,
+                        include_ref_ids=bf["include_ref_ids"],
+                        exclude_ref_ids=bf["exclude_ref_ids"],
+                        since=bf["since"],
+                        until=bf["until"],
+                        meta_eq=meta_eq_bl,
+                        has_body=has_fulltext,
+                        year_from=bf["year_from"],
+                        year_to=bf["year_to"],
+                        unread=unread,
+                        ingested_after=ingested_after_dt,
+                        ingested_before=ingested_before_dt,
+                        id_min=id_lo,
+                        id_max=id_hi,
+                    )
+                    if stamp_norm is not None:
+                        clauses.append("r.meta ? %s")
+                        params.append(stamp_norm)
+                    if serves is not None:
+                        clauses.append(
+                            "EXISTS (SELECT 1 FROM links l WHERE "
+                            "l.dst_ref_id = %s AND l.relation = 'serves' "
+                            "AND l.src_ref_id = r.ref_id)"
+                        )
+                        params.append(self._serves_quest_id(serves))
+                    with self.store.pool.connection() as conn:
+                        cohort = {
+                            int(r[0])
+                            for r in conn.execute(
+                                "SELECT r.ref_id FROM refs r WHERE "
+                                + " AND ".join(clauses),
+                                params,
+                            ).fetchall()
+                        }
+                if quartile_norm is not None:
+                    quartiled = self._resolve_quartile_scope(quartile_norm)
+                    cohort = (cohort & quartiled) if cohort is not None else quartiled
+                byline_include = sorted(cohort) if cohort is not None else None
+            # The see-more continuation re-issues every filter verbatim
+            # (the read-state listing's discipline); the dispatch-
+            # resolved cohorts can't respell — the note names them.
+            echo_args: dict[str, Any] = {}
+            if unread is not None:
+                echo_args["unread"] = unread
+            if ingested_after_dt is not None:
+                echo_args["ingested_after"] = _iso_z(ingested_after_dt)
+            if ingested_before_dt is not None:
+                echo_args["ingested_before"] = _iso_z(ingested_before_dt)
+            if id_lo is not None:
+                echo_args["id_min"] = id_lo
+            if id_hi is not None:
+                echo_args["id_max"] = id_hi
+            if linked_from_kind is not None:
+                echo_args["linked_from"] = linked_from_kind
+            if lacks_kind is not None:
+                echo_args["lacks"] = lacks_kind
+            if stamp_norm is not None:
+                echo_args["stamp"] = stamp_norm
+            if serves is not None:
+                echo_args["serves"] = serves
+            if has_fulltext is not None:
+                echo_args["has_fulltext"] = has_fulltext
+            if meta_eq_bl is not None:
+                echo_args["record_type"] = meta_eq_bl[1]
             if quartile_norm is not None:
-                byline_include = sorted(self._resolve_quartile_scope(quartile_norm))
+                echo_args["min_quartile"] = quartile_norm
+            echo_kwargs: dict[str, Any] = {}
+            # With ``linked_from`` set the caller's ``tags=`` narrowed
+            # the *source* refs — it arrives here as ``from_tags`` (the
+            # read-state listing's echo does the same swap).
+            emit_tags = from_tags if linked_from_kind is not None else byline_tags
+            if emit_tags:
+                echo_kwargs["tags"] = list(emit_tags)
+            if ids:
+                echo_kwargs["ids"] = [str(i) for i in ids]
+            if exclude:
+                echo_kwargs["exclude"] = [str(e) for e in exclude]
+            if after is not None:
+                echo_kwargs["after"] = after
+            if before is not None:
+                echo_kwargs["before"] = before
+            if since is not None:
+                echo_kwargs["since"] = since
+            if until is not None:
+                echo_kwargs["until"] = until
+            scope_bits: list[str] = []
+            if unread is not None:
+                scope_bits.append("unread" if unread else "read")
+            if ingested_after_dt is not None or ingested_before_dt is not None:
+                ilo = _iso_z(ingested_after_dt) if ingested_after_dt else "…"
+                ihi = _iso_z(ingested_before_dt) if ingested_before_dt else "…"
+                scope_bits.append(f"ingested [{ilo}, {ihi})")
+            if id_lo is not None or id_hi is not None:
+                scope_bits.append(
+                    f"id [{id_lo if id_lo is not None else '…'}, "
+                    f"{id_hi if id_hi is not None else '…'}]"
+                )
+            if quartile_norm is not None:
+                scope_bits.append(f"min_quartile={quartile_norm}")
+            if byline_tags:
+                scope_bits.append(f"tagged {byline_tags}")
+            if linked_from_kind is not None:
+                scope_bits.append(f"linked from {linked_from_kind}")
+            if lacks_kind is not None:
+                scope_bits.append(f"no {lacks_kind} link")
+            if stamp_norm is not None:
+                scope_bits.append(f"stamped {stamp_norm!r}")
+            if serves is not None:
+                scope_bits.append(f"serves {serves}")
+            if has_fulltext is not None:
+                scope_bits.append(f"has_fulltext={has_fulltext}")
+            if meta_eq_bl is not None:
+                scope_bits.append(f"record_type={meta_eq_bl[1]}")
+            if include_ref_ids is not None or exclude_ref_ids:
+                scope_bits.append("resolved id cohort")
             return BylineSearch(store=self.store).run(
                 field="title" if title_q else "author",
                 q=q_byline,
@@ -3024,9 +3373,24 @@ class PaperHandler(Handler):
                 page_size=page_size if page_size is not None else 10,
                 kind=kind,
                 include_ref_ids=byline_include,
+                exclude_ref_ids=bf["exclude_ref_ids"],
                 min_quartile=quartile_norm,
+                cohort_label=" · ".join(scope_bits) or None,
+                echo_args=echo_args,
+                echo_kwargs=echo_kwargs,
+                scope_note=(
+                    "re-add your cited=/uncited=/hubbed= scope"
+                    if (include_ref_ids is not None or exclude_ref_ids)
+                    else None
+                ),
             )
 
+        # Dispatch-injected cohorts (cited=/uncited=/hubbed= → the id
+        # channels) have no ``args=`` respelling — the read-state
+        # listing's ``next:`` call can't carry them, so the renderer
+        # flags the scope instead of silently dropping it. Captured
+        # before the quartile fold, which re-issues as ``min_quartile``.
+        injected_scope = include_ref_ids is not None or bool(exclude_ref_ids)
         # ``args={'min_quartile': 'Qn'}`` (gr606422) — the venue-quartile
         # cohort intersects the include channel. Resolved here, ahead of
         # the no-q listing doors, so it composes into linked_from/lacks,
@@ -3039,10 +3403,14 @@ class PaperHandler(Handler):
                 and not tags
                 and stamp_norm is None
                 and not link_scope
+                and not read_state
+                and id_lo is None
+                and id_hi is None
             ):
                 raise BadInput(
                     "args={'min_quartile': …} narrows a search — it needs "
-                    "q=, tags= or a listing filter (stamp/linked_from/lacks)",
+                    "q=, tags= or a listing filter (stamp/linked_from/lacks/"
+                    "unread/ingested_after/id_min)",
                     next=f"search(kind='{kind}', q='…', args={{'min_quartile': 'Q1'}})",
                 )
             quartiled = self._resolve_quartile_scope(quartile_norm)
@@ -3052,6 +3420,72 @@ class PaperHandler(Handler):
                 else quartiled
             )
 
+        # The read-state door (gr653528) precedes both: a paged listing
+        # of the unread / ingest-windowed cohort that composes every
+        # ref-level filter at once — ``tags=``, ``linked_from``/``lacks``,
+        # ``stamp``, ``serves``, ``record_type``, ``has_fulltext``, the
+        # id channels and the browse windows — so ``unread`` plus any of
+        # them never silently drops a leg. With ``q=`` the same cohort
+        # resolves onto the include channel further below.
+        id_bounded = id_lo is not None or id_hi is not None
+        if (read_state or id_bounded) and (q is None or not q.strip()):
+            # Hit-shape args the listing can't express refuse rather
+            # than drop silently — the ``view='count'`` discipline.
+            unapplied_rs: list[str] = []
+            for label, value in (
+                ("scope=", scope),
+                ("mode=", mode),
+                ("queries=", queries),
+                ("answers=", answers),
+                ("per_paper=", per_paper),
+                ("unique_per=", unique_per),
+                ("good=", good or None),
+                ("args['chunk_kind']", chunk_kind),
+                ("args['group_by']", group_by),
+                ("days=", days),
+            ):
+                if value is not None and value != [] and value != "":
+                    unapplied_rs.append(label)
+            unapplied_rs.extend(
+                sorted(
+                    f"args[{k!r}]"
+                    for k, v in _kw.items()
+                    if v is not None and not str(k).startswith("__")
+                )
+            )
+            if unapplied_rs:
+                raise BadInput(
+                    f"{unapplied_rs!r} need a ranked search — the "
+                    "unread/ingested listing has no hits to shape",
+                    next=f"search(kind='{kind}', q='…', args={{'unread': true}})",
+                )
+            return self._render_read_state_search(
+                unread=unread,
+                ingested_after=ingested_after_dt,
+                ingested_before=ingested_before_dt,
+                id_min=id_lo,
+                id_max=id_hi,
+                min_quartile=quartile_norm,
+                injected_scope=injected_scope,
+                tags=tags,
+                from_tags=from_tags,
+                linked_from=linked_from_kind,
+                lacks=lacks_kind,
+                stamp=stamp_norm,
+                serves=serves,
+                has_fulltext=has_fulltext,
+                record_type=record_type,
+                ids=ids,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                exclude=exclude,
+                after=after,
+                before=before,
+                since=since,
+                until=until,
+                page=page,
+                page_size=page_size if page_size is not None else 25,
+            )
         # ``args={'stamp': '<meta key>'}`` (gr517627): alone, a paged
         # ids+count listing of the live refs carrying that meta stamp —
         # tags=/serves=/record_type=/has_fulltext= still narrow it (the
@@ -3270,6 +3704,20 @@ class PaperHandler(Handler):
                     next=f"search(kind='{kind}', q='…', "
                     f"args={{'min_quartile': {quartile_norm!r}}})",
                 )
+            if read_state:
+                raise BadInput(
+                    "good=True mints an async deep-search campaign — "
+                    "args={'unread'/'ingested_after'/'ingested_before'} "
+                    "apply to the inline search only",
+                    next=f"search(kind='{kind}', q='…', args={{'unread': True}})",
+                )
+            if id_lo is not None or id_hi is not None:
+                raise BadInput(
+                    "good=True mints an async deep-search campaign — "
+                    "args={'id_min'/'id_max'} apply to the inline "
+                    "search only",
+                    next=f"search(kind='{kind}', q='…', args={{'id_min': …}})",
+                )
             from precis.handlers._good_search import submit_good_search
 
             # self.hub is set at registration; a hand-constructed handler
@@ -3328,6 +3776,89 @@ class PaperHandler(Handler):
             include_ref_ids = sorted(
                 (set(include_ref_ids) & typed) if include_ref_ids is not None else typed
             )
+        # ``unread``/``ingested_after``/``ingested_before`` with a q= —
+        # the read-state cohort (gr653528) intersects the include
+        # channel, same composition discipline as serves=/linked_from=:
+        # an empty cohort means zero hits, not an unfiltered search.
+        if read_state:
+            read_cohort = self._resolve_read_state_scope(
+                unread=unread,
+                ingested_after=ingested_after_dt,
+                ingested_before=ingested_before_dt,
+                id_min=id_lo,
+                id_max=id_hi,
+            )
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & read_cohort)
+                if include_ref_ids is not None
+                else read_cohort
+            )
+        elif id_lo is not None or id_hi is not None:
+            # ``args={'id_min'/'id_max'}`` with a q= and no read-state
+            # cohort to carry the bounds SQL-side — the range
+            # materializes into the include channel like ``serves=``.
+            include_ref_ids = self._include_ids_in_range(
+                include_ref_ids, id_lo=id_lo, id_hi=id_hi
+            )
+
+        # The ranked path's trailer hints re-issue every ref-level
+        # filter verbatim (gr653528 review — the read-state listing's
+        # keyset discipline, and the byline door's echo_args echo_kwargs
+        # just above): a follow-up that dropped the cohort —
+        # ``unread``/ingest bounds/id bounds/``min_quartile``/tags —
+        # would silently widen to papers the call never asked for
+        # (read papers on an ``unread`` retro sweep). The dispatch-
+        # resolved cohorts (cited=/uncited=/hubbed= → the id channels)
+        # have no ``args=`` spelling; ``cohort_note`` names them
+        # instead, same as the listing's injected-scope note.
+        cohort_args: dict[str, Any] = {}
+        if unread is not None:
+            cohort_args["unread"] = unread
+        if ingested_after_dt is not None:
+            cohort_args["ingested_after"] = _iso_z(ingested_after_dt)
+        if ingested_before_dt is not None:
+            cohort_args["ingested_before"] = _iso_z(ingested_before_dt)
+        if id_lo is not None:
+            cohort_args["id_min"] = id_lo
+        if id_hi is not None:
+            cohort_args["id_max"] = id_hi
+        if quartile_norm is not None:
+            cohort_args["min_quartile"] = quartile_norm
+        if linked_from_kind is not None:
+            cohort_args["linked_from"] = linked_from_kind
+        if lacks_kind is not None:
+            cohort_args["lacks"] = lacks_kind
+        if stamp_norm is not None:
+            cohort_args["stamp"] = stamp_norm
+        if serves is not None:
+            cohort_args["serves"] = serves
+        if has_fulltext is not None:
+            cohort_args["has_fulltext"] = has_fulltext
+        if record_type is not None:
+            cohort_args["record_type"] = str(record_type).strip().lower()
+        if chunk_kinds is not None:
+            cohort_args["chunk_kind"] = list(chunk_kinds)
+        cohort_kwargs: dict[str, Any] = {}
+        # With ``linked_from`` set the caller's ``tags=`` narrowed the
+        # *source* refs — it arrives here as ``from_tags`` and
+        # re-issues under the same ``tags=`` spelling (the listing's
+        # echo does the same swap).
+        emit_tags = (
+            from_tags
+            if linked_from_kind is not None
+            else (Tag.normalize_filter(tags, kind=kind) if tags else None)
+        )
+        if emit_tags:
+            cohort_kwargs["tags"] = list(emit_tags)
+        if exclude:
+            cohort_kwargs["exclude"] = [str(e) for e in exclude]
+        if after is not None:
+            cohort_kwargs["after"] = after
+        if before is not None:
+            cohort_kwargs["before"] = before
+        cohort_note = (
+            "re-add your cited=/uncited=/hubbed= scope" if injected_scope else None
+        )
 
         # Everything else — validation, single-leg vs. broad (RRF-fused)
         # retrieval, title-introducer promotion, year-omitted notice — is
@@ -3355,6 +3886,9 @@ class PaperHandler(Handler):
             has_body=has_fulltext,
             chunk_kinds=chunk_kinds,
             exclude_tags=_junk_exclude(tags),
+            cohort_args=cohort_args,
+            cohort_kwargs=cohort_kwargs,
+            cohort_note=cohort_note,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
 
@@ -3499,6 +4033,365 @@ class PaperHandler(Handler):
                 params,
             ).fetchall()
         return {int(r[0]) for r in rows}
+
+    def _resolve_read_state_scope(
+        self,
+        *,
+        unread: bool | None,
+        ingested_after: datetime | None,
+        ingested_before: datetime | None,
+        id_min: int | None = None,
+        id_max: int | None = None,
+    ) -> set[int]:
+        """``args={'unread'/'ingested_after'/'ingested_before'}`` → the
+        live refs of this kind in the read-state cohort (gr653528).
+
+        Same clauses :meth:`_render_read_state_search` lists and
+        ``view='count'`` totals — resolved onto the ``include_ref_ids``
+        channel for the q=/byline paths (the composition discipline
+        ``_resolve_stamp_scope``/``_resolve_link_scope_ids`` set). The
+        ``id_min``/``id_max`` bounds ride as SQL clauses rather than a
+        materialized range so a wide ``id_max`` cursor doesn't hit the
+        ranked-path's ``_ID_RANGE_HITS_CAP``."""
+        if (
+            ingested_after is not None
+            and ingested_before is not None
+            and ingested_after >= ingested_before
+        ):
+            raise BadInput(
+                f"ingested_after={_iso_z(ingested_after)} is not "
+                f"before ingested_before={_iso_z(ingested_before)}",
+                next="args={'ingested_after': '2026-11-01', "
+                "'ingested_before': '2026-11-13'}",
+            )
+        from precis.store._refs_ops import filtered_ref_clauses
+
+        clauses, params = filtered_ref_clauses(
+            kind=self.spec.kind,
+            unread=unread,
+            ingested_after=ingested_after,
+            ingested_before=ingested_before,
+            id_min=id_min,
+            id_max=id_max,
+        )
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id FROM refs r WHERE " + " AND ".join(clauses),
+                params,
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def _include_ids_in_range(
+        self,
+        include_ref_ids: list[int] | None,
+        *,
+        id_lo: int | None,
+        id_hi: int | None,
+    ) -> list[int]:
+        """Fold an ``id_min``/``id_max`` bound into ``include_ref_ids``.
+
+        The materialization the numeric-ref kinds use for the same args
+        (gr514477, :meth:`NumericRefHandler._include_ids_in_range`): the
+        ranked and byline paths filter on the explicit id-list channel,
+        so the range becomes the live ids inside it — intersected with
+        any restriction already set. Past the cap the caller wants the
+        id-bounded listing, not a giant ``ANY()`` array.
+        """
+        from precis.handlers._numeric_ref import _ID_RANGE_HITS_CAP
+
+        kind = self.spec.kind
+        count = self.store.count_refs(kind=kind, id_min=id_lo, id_max=id_hi)
+        if count > _ID_RANGE_HITS_CAP:
+            raise BadInput(
+                f"the id range covers {count} {kind} entries — too many "
+                "to bound a ranked search",
+                next=(
+                    f"enumerate it instead: search(kind={kind!r}, "
+                    "args={'id_min': …, 'id_max': …}) — the no-q listing "
+                    "pages by ref id"
+                ),
+            )
+        in_range = (
+            {
+                r.id
+                for r in self.store.list_refs(
+                    kind=kind, id_min=id_lo, id_max=id_hi, limit=count or 1
+                )
+            }
+            if count
+            else set()
+        )
+        merged = (
+            in_range if include_ref_ids is None else in_range & set(include_ref_ids)
+        )
+        return sorted(merged)
+
+    def _render_read_state_search(
+        self,
+        *,
+        unread: bool | None,
+        ingested_after: datetime | None,
+        ingested_before: datetime | None,
+        id_min: int | None,
+        id_max: int | None,
+        min_quartile: str | None,
+        injected_scope: bool,
+        tags: list[str] | None,
+        from_tags: list[str] | None,
+        linked_from: str | None,
+        lacks: str | None,
+        stamp: str | None,
+        serves: str | None,
+        has_fulltext: bool | None,
+        record_type: str | None,
+        ids: list[str] | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        exclude: list[str] | None,
+        after: int | str | None,
+        before: int | str | None,
+        since: str | None,
+        until: str | None,
+        page: int,
+        page_size: int,
+    ) -> Response:
+        """The no-``q=`` ``args={'unread'|'ingested_after'|
+        'ingested_before'|'id_min'|'id_max'}`` door (gr653528): a paged
+        listing of the read-state / id-bounded cohort — "papers landed
+        since T that no ``read-paper:`` note closed" is a daily sweep's
+        next batch, and ``unread`` + ``tags=`` pages the unread backlog
+        through an anchor's vocabulary for the retro sweep.
+
+        Every ref-level filter composes here (no early return drops
+        one): ``tags=``/``linked_from``/``lacks`` ride
+        :func:`filtered_ref_clauses` like the count view, ``stamp`` and
+        ``serves`` add their own clause, and the id channels /
+        ``exclude=`` / year / ``since``-``until`` windows come in
+        through :meth:`_resolve_browse_filters` — same
+        SQL-side-filters discipline as :meth:`_render_stamp_search`.
+
+        Rows order by ``ref_id`` newest-first — a stable, unique,
+        monotone key, unlike ``updated_at`` (a read or stamp move the
+        row mid-walk) or a landing stamp (a bulk ingest mints many
+        chunks in one transaction, so ``created_at`` ties). The
+        ``next:`` continuation is therefore a keyset: the same call
+        with ``id_max`` moved under this page's last row, reaching
+        rows past the 100-deep ``page_size`` cap that the refused
+        ``page=`` can't — and every active filter re-issues verbatim
+        so the walk keeps the caller's cohort."""
+        kind = self.spec.kind
+        normalized_tags = Tag.normalize_filter(tags, kind=kind) if tags else None
+        meta_eq: tuple[str, str] | None = None
+        if record_type is not None:
+            rt = str(record_type).strip().lower()
+            if rt not in RECORD_TYPES:
+                raise BadInput(
+                    f"record_type= takes 'software' or 'dataset', got {record_type!r}",
+                    options=sorted(RECORD_TYPES),
+                    next=f"search(kind='{kind}', args={{'record_type': 'software'}})",
+                )
+            meta_eq = ("record_type", rt)
+        if has_fulltext is not None and not isinstance(has_fulltext, bool):
+            raise BadInput(
+                f"has_fulltext must be a boolean, got {has_fulltext!r}",
+                next="args={'has_fulltext': true} keeps only refs with body chunks",
+            )
+        bf = self._resolve_browse_filters(
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            exclude=exclude,
+            after=after,
+            before=before,
+            since=since,
+            until=until,
+        )
+        # ``ids=`` resolves onto the include channel like ``view='count'``
+        # — a named-set cohort, never dropped.
+        if ids:
+            wanted = resolve_exclude_paper_ids(
+                [str(i) for i in ids], store=self.store, kind=kind
+            )
+            bf["include_ref_ids"] = sorted(
+                (set(bf["include_ref_ids"]) & set(wanted))
+                if bf["include_ref_ids"] is not None
+                else wanted
+            )
+        from precis.store._refs_ops import filtered_ref_clauses
+
+        clauses, params = filtered_ref_clauses(
+            kind=kind,
+            tags=normalized_tags,
+            exclude_tags=_junk_exclude(tags),
+            linked_from_kind=linked_from,
+            linked_from_tags=from_tags,
+            lacks_kind=lacks,
+            include_ref_ids=bf["include_ref_ids"],
+            exclude_ref_ids=bf["exclude_ref_ids"],
+            since=bf["since"],
+            until=bf["until"],
+            meta_eq=meta_eq,
+            has_body=has_fulltext,
+            year_from=bf["year_from"],
+            year_to=bf["year_to"],
+            unread=unread,
+            ingested_after=ingested_after,
+            ingested_before=ingested_before,
+            id_min=id_min,
+            id_max=id_max,
+        )
+        if stamp is not None:
+            clauses.append("r.meta ? %s")
+            params.append(stamp)
+        if serves is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM links l WHERE l.dst_ref_id = %s "
+                "AND l.relation = 'serves' AND l.src_ref_id = r.ref_id)"
+            )
+            params.append(self._serves_quest_id(serves))
+        where = " AND ".join(clauses)
+        page_size = max(1, int(page_size))
+        offset = max(0, (int(page) - 1) * page_size)
+        with self.store.pool.connection() as conn:
+            total_row = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {where}", params
+            ).fetchone()
+            total = int((total_row or (0,))[0])
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, r.meta->>'year' "
+                f"FROM refs r WHERE {where} "
+                "ORDER BY r.ref_id DESC LIMIT %s OFFSET %s",
+                [*params, page_size, offset],
+            ).fetchall()
+        scope_bits: list[str] = []
+        if unread is not None:
+            scope_bits.append("unread" if unread else "read")
+        if ingested_after is not None or ingested_before is not None:
+            ilo = _iso_z(ingested_after) if ingested_after else "…"
+            ihi = _iso_z(ingested_before) if ingested_before else "…"
+            scope_bits.append(f"ingested [{ilo}, {ihi})")
+        if id_min is not None or id_max is not None:
+            scope_bits.append(
+                f"id [{id_min if id_min is not None else '…'}, "
+                f"{id_max if id_max is not None else '…'}]"
+            )
+        if normalized_tags:
+            scope_bits.append(f"tagged {normalized_tags}")
+        if linked_from is not None:
+            tag_note = f" tagged {from_tags}" if from_tags else ""
+            scope_bits.append(f"linked from {linked_from}{tag_note}")
+        if lacks is not None:
+            scope_bits.append(f"no {lacks} link")
+        if stamp is not None:
+            scope_bits.append(f"stamped {stamp!r}")
+        if serves is not None:
+            scope_bits.append(f"serves {serves}")
+        if has_fulltext is not None:
+            scope_bits.append(f"has_fulltext={has_fulltext}")
+        if record_type is not None:
+            scope_bits.append(f"record_type={meta_eq[1] if meta_eq else record_type}")
+        if min_quartile is not None:
+            scope_bits.append(f"min_quartile={min_quartile}")
+        scope = " · ".join(scope_bits)
+        if not rows:
+            body = f"no live {kind} entries ({scope})"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='{kind}', q='your topic')",
+                        "drop the read-state filter and search by topic instead",
+                    ),
+                ]
+            )
+            return Response(body=body, result_count=0)
+        suffix = "" if total <= len(rows) and page == 1 else f" of {total}"
+        noun = "entry" if len(rows) == 1 else "entries"
+        lines = [f"# {len(rows)} {kind} {noun} ({scope}){suffix}"]
+        table_rows = []
+        for ref_id, title, year in rows:
+            handle = handle_registry.format_handle(kind, int(ref_id))
+            preview = _excerpt(title_md(title or ""), limit=80)
+            table_rows.append(
+                {
+                    "handle": handle,
+                    "year": f"({year})" if year else "",
+                    "preview": preview,
+                }
+            )
+        lines.append(
+            render_agent_table(table_rows, schema=["handle", "year", "preview"])
+        )
+        body = "\n".join(lines)
+        next_ops: list[tuple[str, str]] = []
+        if offset + len(rows) < total:
+            # The verb refuses ``page=`` (gr530420, gr634204): the
+            # continuation is a keyset — ``id_max`` moves under this
+            # page's last (smallest) id and every active filter
+            # re-issues verbatim. The dispatch-injected cohorts can't
+            # respell (cited=/uncited=/hubbed= resolve to id lists
+            # before the handler sees them), so the note names them
+            # for the caller to re-add.
+            args_bits: list[str] = []
+            if unread is not None:
+                args_bits.append(f"'unread': {'true' if unread else 'false'}")
+            if ingested_after is not None:
+                args_bits.append(f"'ingested_after': '{_iso_z(ingested_after)}'")
+            if ingested_before is not None:
+                args_bits.append(f"'ingested_before': '{_iso_z(ingested_before)}'")
+            if id_min is not None:
+                args_bits.append(f"'id_min': {id_min}")
+            if linked_from is not None:
+                args_bits.append(f"'linked_from': {linked_from!r}")
+            if lacks is not None:
+                args_bits.append(f"'lacks': {lacks!r}")
+            if stamp is not None:
+                args_bits.append(f"'stamp': {stamp!r}")
+            if serves is not None:
+                args_bits.append(f"'serves': {serves!r}")
+            if has_fulltext is not None:
+                args_bits.append(
+                    f"'has_fulltext': {'true' if has_fulltext else 'false'}"
+                )
+            if meta_eq is not None:
+                args_bits.append(f"'record_type': {meta_eq[1]!r}")
+            if min_quartile is not None:
+                args_bits.append(f"'min_quartile': {min_quartile!r}")
+            args_bits.append(f"'id_max': {int(rows[-1][0]) - 1}")
+            kw_bits: list[str] = []
+            # With ``linked_from`` set the caller's ``tags=`` narrowed
+            # the *source* refs — it arrived here as ``from_tags``, so
+            # it re-issues under the same ``tags=`` spelling.
+            emit_tags = from_tags if linked_from is not None else normalized_tags
+            if emit_tags:
+                kw_bits.append(f"tags={emit_tags!r}")
+            if ids:
+                kw_bits.append(f"ids={list(ids)!r}")
+            if exclude:
+                kw_bits.append(f"exclude={list(exclude)!r}")
+            if after is not None:
+                kw_bits.append(f"after={after!r}")
+            if before is not None:
+                kw_bits.append(f"before={before!r}")
+            if since is not None:
+                kw_bits.append(f"since={since!r}")
+            if until is not None:
+                kw_bits.append(f"until={until!r}")
+            kw_bits.append(f"page_size={page_size}")
+            next_call = (
+                f"search(kind='{kind}', {', '.join(kw_bits)}, "
+                f"args={{{', '.join(args_bits)}}})"
+            )
+            note = "see more entries (walk back past the last id)"
+            if injected_scope:
+                note += " — re-add your cited=/uncited=/hubbed= scope"
+            next_ops.append((next_call, note))
+        next_ops.append(
+            (
+                f"get(id='{handle_registry.format_handle(kind, int(rows[0][0]))}')",
+                "open one paper from the list (paste any handle above)",
+            )
+        )
+        body += render_next_section(next_ops)
+        return Response(body=body, result_count=len(rows))
 
     def _render_link_scope_search(
         self,
@@ -3856,6 +4749,11 @@ class PaperHandler(Handler):
         meta_eq: tuple[str, str] | None = None,
         has_body: bool | None = None,
         extra_filters: list[str] | None = None,
+        unread: bool | None = None,
+        ingested_after: datetime | None = None,
+        ingested_before: datetime | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """``search(kind='paper', view='count')`` — filtered total + facets.
 
@@ -3907,6 +4805,11 @@ class PaperHandler(Handler):
             year_from=year_from,
             year_to=year_to,
             exclude_tags=_junk_exclude(tags),
+            unread=unread,
+            ingested_after=ingested_after,
+            ingested_before=ingested_before,
+            id_min=id_min,
+            id_max=id_max,
         )
         filters: list[str] = []
         if q and q.strip():
@@ -3914,9 +4817,14 @@ class PaperHandler(Handler):
         if normalized:
             filters.append(f"tags={normalized!r}")
         if since_dt is not None or until_dt is not None:
-            lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
-            hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
+            lo = _iso_z(since_dt) if since_dt else "…"
+            hi = _iso_z(until_dt) if until_dt else "…"
             filters.append(f"created [{lo}, {hi})")
+        if id_min is not None or id_max is not None:
+            filters.append(
+                f"id [{id_min if id_min is not None else '…'}, "
+                f"{id_max if id_max is not None else '…'}]"
+            )
         if year_from is not None or year_to is not None:
             ylo = year_from if year_from is not None else "…"
             yhi = year_to if year_to is not None else "…"
@@ -3957,6 +4865,11 @@ class PaperHandler(Handler):
                     year_from=year_from,
                     year_to=year_to,
                     exclude_tags=_junk_exclude(tags),
+                    unread=unread,
+                    ingested_after=ingested_after,
+                    ingested_before=ingested_before,
+                    id_min=id_min,
+                    id_max=id_max,
                 )
                 parts.append(f"  passages: {passages} live body chunks")
         else:
@@ -4113,6 +5026,19 @@ class PaperHandler(Handler):
         # channel here so the cross-kind fan-out honours it too (an
         # out-of-vocabulary value raises BadInput, same boundary).
         min_quartile: str | None = None,
+        # ``args={'unread'/'ingested_after'/'ingested_before'}``
+        # (gr653528) — the same read-state cohort :meth:`search`
+        # applies, resolved onto the include channel for the fan-out.
+        unread: bool | None = None,
+        ingested_after: str | datetime | None = None,
+        ingested_before: str | datetime | None = None,
+        # ``args={'id_min'/'id_max'}`` — same ref-id bounds: folded into
+        # the read-state cohort when one resolves, else materialized
+        # onto the include channel like ``serves=`` (the
+        # ``_ID_RANGE_HITS_CAP`` refusal redirects wide ranges to the
+        # no-q listing, same as :meth:`search`).
+        id_min: int | str | None = None,
+        id_max: int | str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -4149,6 +5075,41 @@ class PaperHandler(Handler):
                 (set(include_ref_ids) & quartiled)
                 if include_ref_ids is not None
                 else quartiled
+            )
+        if unread is not None and not isinstance(unread, bool):
+            raise BadInput(
+                f"args={{'unread': …}} takes a boolean, got {unread!r}",
+                next="search(kind='paper', q='…', args={'unread': true})",
+            )
+        if unread is not None and self.spec.kind != "paper":
+            raise BadInput(
+                f"args={{'unread': …}} is paper-only (kind={self.spec.kind!r}) — "
+                "the read-paper pass leaves notes only on papers",
+                next="drop args={'unread': …}",
+            )
+        from precis.handlers._numeric_ref import _parse_id_range, _parse_window_bound
+
+        hits_id_lo, hits_id_hi = _parse_id_range(id_min, id_max, kind=self.spec.kind)
+        if (
+            unread is not None
+            or ingested_after is not None
+            or ingested_before is not None
+        ):
+            read_cohort = self._resolve_read_state_scope(
+                unread=unread,
+                ingested_after=_parse_window_bound(ingested_after, "ingested_after"),
+                ingested_before=_parse_window_bound(ingested_before, "ingested_before"),
+                id_min=hits_id_lo,
+                id_max=hits_id_hi,
+            )
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & read_cohort)
+                if include_ref_ids is not None
+                else read_cohort
+            )
+        elif hits_id_lo is not None or hits_id_hi is not None:
+            include_ref_ids = self._include_ids_in_range(
+                include_ref_ids, id_lo=hits_id_lo, id_hi=hits_id_hi
             )
         normalized_tags = Tag.normalize_filter(tags, kind=self.spec.kind)
         resolved_exclude_ref_ids: set[int] = set(exclude_ref_ids or ())
@@ -4209,7 +5170,11 @@ class PaperHandler(Handler):
             triples, _callouts, promoted = FusedBlockSearch(
                 store=self.store, embedder=self.embedder, kind=self.spec.kind
             )._inject_title_matches(
-                triples, q=q, kind=self.spec.kind, page_size=page_size
+                triples,
+                q=q,
+                kind=self.spec.kind,
+                page_size=page_size,
+                exclude_ref_ids=sorted(resolved_exclude_ref_ids),
             )
             if resolved_exclude_ref_ids:
                 triples = [

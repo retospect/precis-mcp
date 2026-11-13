@@ -384,29 +384,19 @@ def _embed_query_batch(
     return [v for v in vecs if v is not None]
 
 
-def _broad_args_suffix(
-    queries: list[str],
-    answers: list[str],
-    per_paper: int | None,
-) -> str:
-    """Render the broad-retrieval knobs as a call-argument suffix.
+def _hint_args_suffix(args: dict[str, Any], kwargs: dict[str, Any]) -> str:
+    """Render preserved filter state as a ``search(...)``-call suffix.
 
-    The same-search steering hints (``scope=``, ``unique_per='chunk'``)
-    must echo ``queries=``/``answers=``/``per_paper=``: a follow-up that
-    dropped them would run the *single-leg* path — a different ordering
-    with duplicates and gaps, not this search narrowed. The lists are ≤8
-    short strings each (leg cap), so rendering them verbatim stays
-    compact. They are not core ``search`` params, so the hint carries
-    them inside ``args={...}`` (the slim MCP schema's form).
+    One ``args={…}`` dict — the slim MCP schema's form for anything not
+    a declared verb kwarg (the cohort's ``unread``/``ingested_*``/
+    ``id_*``/``min_quartile`` keys and the broad legs'
+    ``queries=``/``answers=``/``per_paper=`` all ride it; two ``args=``
+    dicts in one call would be ambiguous for a literal-paste agent, so
+    callers merge extras into ``args`` first) — followed by the
+    declared kwargs as ``k=v`` pairs.
     """
-    extra: dict[str, Any] = {}
-    if queries:
-        extra["queries"] = queries
-    if answers:
-        extra["answers"] = answers
-    if per_paper is not None:
-        extra["per_paper"] = per_paper
-    return f", args={extra!r}" if extra else ""
+    suffix = f", args={args!r}" if args else ""
+    return suffix + "".join(f", {k}={v!r}" for k, v in kwargs.items())
 
 
 @dataclass
@@ -434,25 +424,40 @@ class BylineSearch:
         page_size: int,
         kind: str,
         include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
         min_quartile: str | None = None,
+        cohort_label: str | None = None,
+        echo_args: dict[str, Any] | None = None,
+        echo_kwargs: dict[str, Any] | None = None,
+        scope_note: str | None = None,
     ) -> Response:
         offset = max(0, (int(page) - 1) * int(page_size))
         # Probe one past the page so the has-more trailer is exact.
         want = offset + page_size + 1
         if field == "title":
             ids = self.store.find_papers_by_title(
-                kind=kind, q=q, limit=want, include_ref_ids=include_ref_ids
+                kind=kind,
+                q=q,
+                limit=want,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
             )
         else:
             ids = self.store.find_papers_by_author(
-                kind=kind, q=q, limit=want, include_ref_ids=include_ref_ids
+                kind=kind,
+                q=q,
+                limit=want,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
             )
         has_more = len(ids) > offset + page_size
         page_ids = ids[offset : offset + page_size]
 
         if not page_ids:
             body = f"no paper matches {field}={q!r}"
-            if min_quartile:
+            if cohort_label:
+                body += f" in the filtered cohort ({cohort_label})"
+            elif min_quartile:
                 body += f" in the min_quartile={min_quartile} venue cohort"
             fallback: list[tuple[str, str]] = [
                 (
@@ -517,18 +522,27 @@ class BylineSearch:
             # The verb refuses ``page=`` (gr530420, gr634204), so "next
             # page" is not offerable — raising ``page_size`` is the one
             # honest continuation, re-running the same deterministic
-            # ranking with a wider window. Echo the cohort arg: a
-            # follow-up that dropped ``min_quartile`` would silently
-            # widen. The doubling clamps at the 100-row search cap
-            # (tools/core.py refuses above it); nothing is offered once
-            # the window is at the cap (page_size=100).
-            quartile_arg = f", 'min_quartile': {min_quartile!r}" if min_quartile else ""
+            # ranking with a wider window. Echo every active filter
+            # (``echo_args``/``echo_kwargs``, built by the handler's
+            # byline door): a follow-up that dropped the cohort —
+            # ``unread``/ingest bounds/id bounds/``min_quartile``/tags —
+            # would silently widen to papers the call never asked about
+            # (gr653528 review). ``min_quartile`` rides ``echo_args``
+            # like the rest. The doubling clamps at the 100-row search
+            # cap (tools/core.py refuses above it); nothing is offered
+            # once the window is at the cap (page_size=100).
             if page_size < 100:
+                cont_args = {field: q, **(echo_args or {})}
+                cont_kwargs = dict(echo_kwargs or {})
+                cont_kwargs["page_size"] = min(100, page_size * 2)
+                kw_bits = ", ".join(f"{k}={v!r}" for k, v in cont_kwargs.items())
+                note = "see more matching papers (raise page_size)"
+                if scope_note:
+                    note += f" — {scope_note}"
                 nav.append(
                     (
-                        f"search(kind='paper', args={{{field!r}: {q!r}"
-                        f"{quartile_arg}}}, page_size={min(100, page_size * 2)})",
-                        "see more matching papers (raise page_size)",
+                        f"search(kind='paper', args={cont_args!r}, {kw_bits})",
+                        note,
                     )
                 )
         return Response(body=body + render_next_section(nav))
@@ -612,11 +626,39 @@ class BlockSearchResult:
     #: resolved paper has no readable chunk) must say the paper
     #: exists and name it, never "not in the local corpus".
     doi_resolved_id: str | None = None
+    #: ``True`` when the DOI resolved but the resolved ref failed the
+    #: call's ref-level filters (the dispatch-resolved include/exclude
+    #: cohort, ``has_body``, tag exclusions — see the scope probe in
+    #: :meth:`FusedBlockSearch.run`). The empty-hits branch then says
+    #: "the filters excluded it", not "no matching block" — naming the
+    #: real reason the paper the caller asked for didn't return
+    #: (gr653528 review).
+    doi_scope_filtered: bool = False
     #: Stored body bytes per ref — one bulk ``octet_length`` read in
     #: ``FusedBlockSearch.run`` (the only leg holding ``store``), keyed
     #: by ref_id. The renderer's ``size`` column reads this for
     #: whole-paper rows; chunk rows size off their already-loaded text.
     ref_sizes: dict[int, int] = field(default_factory=dict)
+    #: The spellable cohort constraints the follow-up ``search(...)``
+    #: hints re-issue verbatim (gr653528 review): the ``args={…}``
+    #: keys — ``unread``/``ingested_after``/``ingested_before``/
+    #: ``id_min``/``id_max``/``min_quartile``/``serves``/``stamp``/
+    #: ``linked_from``/``lacks``/``has_fulltext``/``record_type``/
+    #: ``chunk_kind`` — and the declared-kwarg half (``tags``/
+    #: ``exclude``/``after``/``before``) as ``cohort_kwargs``. Built by
+    #: ``PaperHandler.search``; ``FusedBlockSearch.run`` passes them
+    #: through untouched. A hint that dropped them would silently widen
+    #: to papers the call never asked for — read papers on an
+    #: ``unread`` retro sweep, out-of-window landings on a daily one.
+    cohort_args: dict[str, Any] = field(default_factory=dict)
+    cohort_kwargs: dict[str, Any] = field(default_factory=dict)
+    #: Set when the call's cohort included dispatch-injected id channels
+    #: (``cited=``/``uncited=``/``hubbed=`` resolve to id lists before
+    #: the handler sees them — no ``args=`` spelling survives to
+    #: re-issue). The renderer appends it to a same-search hint's
+    #: description so the caller re-adds the scope by hand — the
+    #: read-state listing's ``injected_scope`` discipline.
+    cohort_note: str | None = None
 
 
 @dataclass
@@ -645,6 +687,7 @@ class FusedBlockSearch:
         page_size: int,
         promote_rows: bool = True,
         include_ref_ids: list[int] | None = None,
+        exclude_ref_ids: list[int] | None = None,
     ) -> tuple[list[Any], list[tuple[str, str]], set[int]]:
         """Promote near-exact title matches to the front of ``hits``.
 
@@ -664,6 +707,9 @@ class FusedBlockSearch:
         which ``PaperHandler.search_hits`` already avoids by skipping
         the introducer entirely under any scope. Filtering keeps the
         callout working for in-scope matches instead.
+        ``exclude_ref_ids`` (``exclude=`` + ``uncited=`` resolved) drops
+        matches at the trigram query too — an excluded paper must not
+        resurface via promotion (gr653528 review).
 
         ``promote_rows=False`` retains only the record callout. Capped
         paper search uses this to preserve its already-selected page:
@@ -693,7 +739,9 @@ class FusedBlockSearch:
         log = logging.getLogger("precis.handlers.paper")
 
         try:
-            matches = self.store.find_refs_by_title_similarity(kind=kind, q=q, limit=3)
+            matches = self.store.find_refs_by_title_similarity(
+                kind=kind, q=q, limit=3, exclude_ref_ids=exclude_ref_ids
+            )
             if not matches:
                 return hits, [], set()
             match_ids = [rid for rid, _sim in matches]
@@ -756,6 +804,14 @@ class FusedBlockSearch:
         has_body: bool | None = None,
         chunk_kinds: list[str] | None = None,
         exclude_tags: list[str] | None = None,
+        # The spellable cohort echo ``PaperHandler.search`` collects for
+        # the trailer hints (gr653528 review) — passed straight through
+        # to the result untouched; the renderer re-issues them in
+        # follow-up ``search(...)`` calls so a continuation can't
+        # silently widen past the caller's read-state/id/cohort bounds.
+        cohort_args: dict[str, Any] | None = None,
+        cohort_kwargs: dict[str, Any] | None = None,
+        cohort_note: str | None = None,
     ) -> BlockSearchResult:
         # Local import — paper.py imports this module lazily, so by the
         # time ``run`` executes paper.py is fully loaded; see this
@@ -804,14 +860,14 @@ class FusedBlockSearch:
         # rather than inventing a new rendering shape.
         #
         # Only takes the fast path on an otherwise-plain call (no
-        # scope=/tags=/after=/before=/exclude=/broad-retrieval knobs, and
-        # page=1) — any of those means the caller is intentionally
-        # filtering/paginating, so fall through to the real search
-        # instead of second-guessing it. ``doi_resolved_id`` is still
-        # computed either way and threaded onto the returned
-        # ``BlockSearchResult`` so the renderer's empty-hits branch can
-        # give correct guidance even when the fast path was skipped
-        # (fix 2 — belt-and-braces).
+        # scope=/tags=/after=/before=/exclude=/broad-retrieval knobs, no
+        # chunk-kind restriction, and page=1) — any of those means the
+        # caller is intentionally filtering/paginating, so fall through
+        # to the real search instead of second-guessing it.
+        # ``doi_resolved_id`` is still computed either way and threaded
+        # onto the returned ``BlockSearchResult`` so the renderer's
+        # empty-hits branch can give correct guidance even when the
+        # fast path was skipped (fix 2 — belt-and-braces).
         doi_query_match = _DOI_RE.match(q.strip())
         doi_query = doi_query_match.group(1) if doi_query_match is not None else None
         doi_resolved_slug = (
@@ -840,7 +896,65 @@ class FusedBlockSearch:
                 and not queries
                 and not answers
                 and per_paper is None
+                and not chunk_kinds
             ):
+                # The ref-level filters arriving on the id channels —
+                # the dispatch-resolved ``cited=``/``uncited=``/
+                # ``hubbed=`` cohort plus whatever ``PaperHandler``
+                # folded onto it (``unread``/``ingested_*``/``id_min``/
+                # ``id_max``/``min_quartile``/``serves=``/…), the
+                # ``has_body`` flag and the ``exclude_tags`` drop-list —
+                # must hold on the resolved ref too (gr653528 review:
+                # the fast path used to promote the paper even when the
+                # caller's cohort excluded it — a read paper on an
+                # ``unread`` sweep, an out-of-range id, an out-of-scope
+                # ``cited=`` hit). A bare-DOI ``q`` is an identifier
+                # lookup, so membership is decidable in one
+                # ``filtered_ref_clauses`` probe — the same WHERE the
+                # listings and count view share — without running the
+                # text legs a DOI can never match anyway.
+                from precis.store._refs_ops import filtered_ref_clauses
+
+                clauses, params = filtered_ref_clauses(
+                    kind=kind,
+                    include_ref_ids=(
+                        [doi_resolved_ref.id]
+                        if extra_include_ref_ids is None
+                        or doi_resolved_ref.id in extra_include_ref_ids
+                        else []
+                    ),
+                    exclude_ref_ids=list(extra_exclude_ref_ids or ()),
+                    has_body=has_body,
+                    exclude_tags=exclude_tags,
+                )
+                with self.store.pool.connection() as conn:
+                    in_scope = (
+                        conn.execute(
+                            "SELECT 1 FROM refs r WHERE " + " AND ".join(clauses),
+                            params,
+                        ).fetchone()
+                        is not None
+                    )
+                if not in_scope:
+                    return BlockSearchResult(
+                        kind=kind,
+                        q=q,
+                        mode=mode,
+                        page=page,
+                        page_size=page_size,
+                        scope=scope,
+                        hits=[],
+                        year_notice="",
+                        broad=False,
+                        broad_has_more=False,
+                        unique_per="paper" if paper_rows else "chunk",
+                        single_page_has_more=False,
+                        doi_scope_filtered=True,
+                        doi_resolved_id=doi_resolved_id,
+                        cohort_args=cohort_args or {},
+                        cohort_kwargs=cohort_kwargs or {},
+                        cohort_note=cohort_note,
+                    )
                 block = _representative_block_for_ref(self.store, doi_resolved_ref.id)
                 hits = (
                     [(block, doi_resolved_ref, float("inf"))]
@@ -866,6 +980,9 @@ class FusedBlockSearch:
                     ),
                     doi_match=True,
                     doi_resolved_id=doi_resolved_id,
+                    cohort_args=cohort_args or {},
+                    cohort_kwargs=cohort_kwargs or {},
+                    cohort_note=cohort_note,
                 )
 
         # Publish-date filter: ``after`` / ``before`` are inclusive
@@ -1224,6 +1341,7 @@ class FusedBlockSearch:
                 page_size=page_size,
                 promote_rows=not capped_body_search,
                 include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
             )
 
         # When a publish-date filter is active, count papers that match
@@ -1414,6 +1532,9 @@ class FusedBlockSearch:
             ref_sizes=self.store.chunks.body_byte_counts(
                 {ref.id for _b, ref, s in hits if s == float("inf")}
             ),
+            cohort_args=cohort_args or {},
+            cohort_kwargs=cohort_kwargs or {},
+            cohort_note=cohort_note,
         )
 
 
@@ -1440,6 +1561,22 @@ class PaperSearchResultRenderer:
         hits = result.hits
         year_notice = result.year_notice
         exclude_notice = result.exclude_notice
+
+        # Same-search continuations re-issue the caller's cohort
+        # verbatim (gr653528 review): the spellable ref-level filters
+        # the handler collected on the result — ``unread``/ingest
+        # bounds/id bounds, ``min_quartile``, the serves/stamp/link
+        # cohorts, ``has_fulltext``, ``record_type``, ``chunk_kind``,
+        # plus ``tags``/``exclude``/``after``/``before``. A hint that
+        # dropped them silently widens to papers the call never asked
+        # for — a read paper on an ``unread`` retro sweep, an
+        # out-of-window landing on a daily one. Dispatch-injected
+        # cohorts (``cited=``/``uncited=``/``hubbed=``) resolve to id
+        # lists before the handler sees them — nothing to respell —
+        # so ``cohort_note`` names them on the hint's description for
+        # the caller to re-add by hand.
+        cohort_suffix = _hint_args_suffix(result.cohort_args, result.cohort_kwargs)
+        cohort_note = f" — {result.cohort_note}" if result.cohort_note else ""
 
         if not hits:
             # Use the canonical Next: block shape rather than an
@@ -1470,6 +1607,20 @@ class PaperSearchResultRenderer:
                     if result.doi_match
                     else "open the title-matched paper — TOC reading entry point"
                 )
+                # The byline hint keeps the cohort too — minus
+                # ``chunk_kind``, the one hit-shape key the record
+                # lookup refuses.
+                bl_args = {
+                    "title": q,
+                    **{
+                        k: v for k, v in result.cohort_args.items() if k != "chunk_kind"
+                    },
+                }
+                bl_call = f"search(kind='{kind}', args={bl_args!r}"
+                bl_call += "".join(
+                    f", {k}={v!r}" for k, v in result.cohort_kwargs.items()
+                )
+                bl_call += ")"
                 return Response(
                     body=body
                     + render_next_section(
@@ -1480,8 +1631,8 @@ class PaperSearchResultRenderer:
                                 open_desc,
                             ),
                             (
-                                f"search(kind='{kind}', args={{'title': {q!r}}})",
-                                "list every paper whose title matches",
+                                bl_call,
+                                "list every paper whose title matches" + cohort_note,
                             ),
                         ]
                     )
@@ -1499,10 +1650,21 @@ class PaperSearchResultRenderer:
                 # declined the fast path but the underlying paper is
                 # still there. Never claim "not in the local corpus" for
                 # a paper we just proved IS there.
+                # ``doi_scope_filtered`` narrows it further (gr653528
+                # review): the resolved ref failed this call's ref-level
+                # filters (unread/ingest/id bounds, a dispatch-resolved
+                # cohort, has_fulltext, tag exclusions) — say the filters
+                # excluded it, not that no block matched.
+                reason = (
+                    " — the filters on this call (read-state, ingest or id "
+                    "bounds, a resolved cohort) excluded it from the results."
+                    if result.doi_scope_filtered
+                    else " — the search above just found no matching block for it."
+                )
                 return Response(
                     body=body + "\n\nThis DOI is already in the local corpus as "
-                    f"{result.doi_resolved_id!r} — the search above just "
-                    "found no matching block for it."
+                    f"{result.doi_resolved_id!r}"
+                    + reason
                     + render_next_section(
                         [
                             (
@@ -1568,8 +1730,9 @@ class PaperSearchResultRenderer:
                 body += render_next_section(
                     [
                         (
-                            f"search(kind='{kind}', q={q!r}, page_size=50)",
-                            "widen the lexical net",
+                            f"search(kind='{kind}', q={q!r}"
+                            f"{cohort_suffix}, page_size=50)",
+                            "widen the lexical net" + cohort_note,
                         ),
                         (
                             "get(kind='skill', id='precis-search-help')",
@@ -1813,20 +1976,24 @@ class PaperSearchResultRenderer:
         # extended past this page's slice), not the lexical count — and
         # echo queries=/answers=/per_paper= into every remaining hint, or
         # a caller following the trailer would land on the *single-leg*
-        # path: a different ordering with duplicates + gaps.
-        broad_suffix = (
-            _broad_args_suffix(
-                result.extra_queries, result.hyde_answers, result.per_paper_cap
-            )
-            if broad
-            else ""
-        )
+        # path: a different ordering with duplicates and gaps. They merge
+        # into the ONE ``args={…}`` the cohort keys already ride — the
+        # lists are ≤8 short strings each (leg cap), so rendering them
+        # verbatim stays compact.
+        hint_args = dict(result.cohort_args)
+        if broad:
+            if result.extra_queries:
+                hint_args["queries"] = result.extra_queries
+            if result.hyde_answers:
+                hint_args["answers"] = result.hyde_answers
+            if result.per_paper_cap is not None:
+                hint_args["per_paper"] = result.per_paper_cap
         # The same-search hints must echo the caller's scope=/mode= —
         # dropping them silently substitutes global hybrid retrieval.
         # ``unique_per`` is NOT echoed here: the one hint that changes it
         # (the chunk drill below) sets it explicitly, and an omitted knob
         # re-resolves to the same shape on the next call.
-        context_suffix = broad_suffix
+        context_suffix = _hint_args_suffix(hint_args, result.cohort_kwargs)
         if result.scope is not None:
             context_suffix += f", scope={result.scope!r}"
         if result.mode is not None:
@@ -1881,7 +2048,7 @@ class PaperSearchResultRenderer:
                     (
                         f"search(kind='{kind}', q={q!r}"
                         f"{context_suffix}, unique_per='chunk')",
-                        "see every matching chunk, one row per hit",
+                        "see every matching chunk, one row per hit" + cohort_note,
                     )
                 )
             # Round-2 picky F-9, 2026-05-30: previous wording was
@@ -1891,9 +2058,9 @@ class PaperSearchResultRenderer:
             # Spell the placeholder in pure-string form instead.
             nav.append(
                 (
-                    f"search(kind='{kind}', q='{q} <salient term>')",
+                    f"search(kind='{kind}', q='{q} <salient term>'{context_suffix})",
                     "tighten the query with a hit-specific token "
-                    "(replace <salient term> with one)",
+                    "(replace <salient term> with one)" + cohort_note,
                 )
             )
             # Discoverability: teach the broad / high-recall path

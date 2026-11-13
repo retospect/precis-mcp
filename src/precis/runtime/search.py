@@ -1188,8 +1188,10 @@ class SearchMixin(RuntimeShape):
         """Parse a ``since=`` / ``until=`` bound into a tz-aware datetime.
 
         Accepts an ISO date (``2024-01-01``) or a full ISO timestamp; a
-        naive value is assumed UTC (``refs.created_at`` is ``timestamptz``).
-        Raises ``BadInput`` on an unparseable string.
+        naive value is assumed UTC (``refs.created_at`` is ``timestamptz``)
+        and an offset-aware value is normalized to UTC so a ``Z``-labelled
+        echo can't print the offset hour as UTC. Raises ``BadInput`` on an
+        unparseable string.
         """
         if value is None:
             return None
@@ -1203,7 +1205,7 @@ class SearchMixin(RuntimeShape):
                     f"{field}= must be an ISO date/timestamp, got {value!r}",
                     next=f"{field}='2024-01-01' or '2024-01-01T00:00:00'",
                 ) from exc
-        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
     def _handle_query_hit(
         self,

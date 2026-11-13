@@ -160,6 +160,23 @@ paper's short card can lose on rank to content-dense bodies elsewhere; a
 bare author `q='Vaswani'` tends to surface *other* papers' reference-list
 lines. The byline lookup sidesteps both.
 
+Ref-level filters compose here the same way they do on the listings —
+`unread`, `ingested_after`/`ingested_before`, `id_min`/`id_max`,
+`min_quartile`, `tags=`, `serves`/`stamp`/`linked_from`/`lacks`,
+`has_fulltext`, `record_type`, `ids`/`exclude`/`after`/`before`/
+`since`/`until` and a dispatch-resolved `cited=`/`uncited=`/`hubbed=`
+scope all narrow the records returned:
+
+```python
+search(kind="paper", args={"title": "catalyst screening", "unread": True})
+```
+
+Args the record listing can't express — `q=`, `scope=`, `mode=`,
+`unique_per`, `good`, `chunk_kind`, `group_by`, `days`, ranking knobs —
+refuse instead of dropping silently. A result longer than `page_size`
+offers a widened `page_size` continuation that re-issues every active
+filter; a dispatch scope can't respell, so the hint says to re-add it.
+
 ## See a paper's full byline with identity links
 ## Fix a wrong or missing author
 
@@ -191,9 +208,13 @@ numeric like `1.523 eV`, where embeddings blur the match. Note it's the
 tokens, **not** a verbatim substring grep. Default hybrid also ranks rare
 tokens high, so either works for a unique string. Searching a DOI this way
 finds *citing* papers; use `get(kind='paper', id='<DOI>')` to fetch the
-paper itself. A bad-import stub that stays unfindable repairs in place
-(`title=`, `authors=`, `doi=`, `year=`, `journal=`):
-[[precis-paper-ref-help]].
+paper itself. A `q=` that *is* a bare DOI short-circuits to the held
+paper's record — honouring the call's ref-level filters, so on a cohort
+search (`unread`, an id bound, a `cited=`/`uncited=` scope) a filtered
+paper answers "already in the local corpus … excluded by the filters"
+rather than returning it or claiming it absent. A bad-import stub that
+stays unfindable repairs in place (`title=`, `authors=`, `doi=`, `year=`,
+`journal=`): [[precis-paper-ref-help]].
 
 ## Fix a paper record — duplicates, phantoms, stamps, attach a PDF
 ## `already belongs to ref id=N` — an identifier collision
@@ -338,6 +359,11 @@ search(kind="paper", view="ingest", args={"days": 14})              # landings p
 (non-card, non-references body chunk) vs **card-only** papers created
 (only `card_*` abstract/title chunks so far).
 
+`view='ingest'` and `view='status'` render fixed sets, so the cohort
+args they can't express — `unread`, `ingested_after`/`ingested_before`,
+`id_min`/`id_max`, `title=`/`author=` — refuse there: the no-`q` listing
+or `view='count'` is the filterable door for those.
+
 ## Which of these papers are full text, abstract-card only, or stubs?
 
 ```python
@@ -381,7 +407,8 @@ filters the memories that link, not the papers.
 
 No `q=` gives a paged listing; `view='count'` the filtered total. The
 same `args=` cohort keys compose there — `serves`, `linked_from`/`lacks`,
-`stamp`, `record_type`, `has_fulltext`, `min_quartile` — and args the
+`stamp`, `record_type`, `has_fulltext`, `min_quartile`, `unread`,
+`ingested_after`/`ingested_before`, `id_min`/`id_max` — and args the
 count can't express (`chunk_kind`, ranking/paging knobs) refuse instead
 of dropping silently.
 
@@ -432,6 +459,41 @@ stamp to re-open the pass. The per-paper state also reads off the card:
 `context_sentence_ok` stamp (version + `at` = when the pass wrote it),
 else the `context_sentence_no_abstract`/`context_sentence_failed`
 stamp with version + `at`.
+
+## List unread papers / papers ingested since a date
+## Which papers did a read-paper pass never close?
+## Sweep newly landed papers / walk the unread backlog
+
+To list papers a read-paper pass never closed (no `read-paper:` note),
+and/or bound by *ingest* time — a recurring's daily sweep or a retro
+backlog walk:
+
+```python
+search(kind="paper", args={"unread": True, "ingested_after": "2026-11-12"})
+search(kind="paper", tags=["area:nanoreactor"], args={"unread": True})
+search(kind="paper", q="photocatalysis", args={"unread": True})
+```
+
+`unread` is paper-only (`False` keeps only read papers); a hidden note
+(`delete` `args={'comment': K}`) re-opens the paper. `ingested_after`/
+`ingested_before` take ISO dates/timestamps and bound the **landing**
+stamp — first body chunk, ref-mint for card-only stubs (`since=`/
+`until=` bound ref mint, `after=`/`before=` publish year) — so a stub
+whose body lands today is in today's sweep. No `q=` gives the paged
+listing; `q=` restricts hits; `view='count'` totals.
+
+The listing orders by ref id newest-first and pages by keyset, not
+`page=`/`offset=` (both refuse): the `next:` row re-issues the same
+call with `args={'id_max': <last id − 1>}` added, so a backlog deeper
+than `page_size` (≤100) still walks — `id_min`/`id_max` on their own
+are also a plain "papers since id N" listing. Every filter on the call
+(tags, cohort args, `exclude=`, year/created windows) rides the
+continuation verbatim; a `cited=`/`uncited=`/`hubbed=` scope can't
+respell and the note says to re-add it. A `q=` ranked page's steering
+hints keep the same discipline — `see every matching chunk`, the
+tighten-the-query steer and the empty-result widen all re-issue
+`unread`/ingest/id bounds and every other active filter, so following
+a hint never widens a filtered sweep.
 
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range

@@ -189,6 +189,26 @@ class CfpHandler(PaperHandler):
         is rejected. ``search(kind='cfp')`` bare enumerates the corpus.
         """
         kw["q"] = fold_match_all_q(kw.get("q"))
+        # ``args={'unread'/'ingested_after'/'ingested_before'/
+        # 'id_min'/'id_max'}`` (gr653528) — the read-state / id-bounded
+        # cohort lives on the paper path: route there so an ingest- or
+        # id-bound browse gets the real filter and ``unread`` refuses
+        # as paper-only, rather than either dropping silently into the
+        # deadline browse.
+        if (
+            kw.get("unread") is not None
+            or kw.get("ingested_after") is not None
+            or kw.get("ingested_before") is not None
+            or kw.get("id_min") is not None
+            or kw.get("id_max") is not None
+        ):
+            if sort is not None:
+                raise BadInput(
+                    "sort= is a queryless cfp browse key — the "
+                    "unread/ingested listing orders by ref id",
+                    next="drop args={'sort': …}",
+                )
+            return super().search(**kw)
         if (
             (kw.get("q") and str(kw["q"]).strip())
             or kw.get("title")

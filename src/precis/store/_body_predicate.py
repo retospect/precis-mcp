@@ -99,10 +99,66 @@ def body_state_sql(alias: str = "r") -> str:
     )
 
 
+#: Storage-ord base of the ``paper_note`` band — the same
+#: ``handlers/paper.py::_NOTE_ORD_BASE`` / ``_links_ops`` mirror: note
+#: number K sits at ``ord = -1_000_000 + K - 1``, so K reads back as
+#: ``ord - (-1_000_000) + 1``.
+_PAPER_NOTE_ORD_BASE = -1_000_000
+
+
+def read_note_sql(alias: str = "r", *, sub_alias: str = "rn") -> str:
+    """``EXISTS (...)`` fragment: does ``<alias>`` carry a visible
+    ``read-paper:`` closing note?
+
+    The ``precis-read-paper`` pass ends by appending a ``paper_note``
+    chunk whose text opens ``read-paper:`` — the corpus's only
+    per-paper "already read" marker (gr653528: search can filter it,
+    so a sweep never re-reads). A note *hidden* via
+    ``delete(..., args={'comment': K})`` doesn't count: the hide lives
+    in ``refs.meta->'hidden_comments'`` (K ↔ ord as
+    :data:`_PAPER_NOTE_ORD_BASE`), the chunk stays live — the SQL has
+    to mask it back out. References ``<alias>.ref_id`` and
+    ``<alias>.meta``; contains no ``%``, safe inside parameterised
+    queries. Negate with ``NOT``.
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM chunks {sub_alias} "
+        f"WHERE {sub_alias}.ref_id = {alias}.ref_id "
+        f"AND {sub_alias}.retired_at IS NULL "
+        f"AND {sub_alias}.chunk_kind = 'paper_note' "
+        f"AND starts_with(lower({sub_alias}.text), 'read-paper:') "
+        f"AND NOT (COALESCE({alias}.meta->'hidden_comments', '[]'::jsonb) "
+        f"@> to_jsonb({sub_alias}.ord - ({_PAPER_NOTE_ORD_BASE}) + 1)))"
+    )
+
+
+def ingested_at_sql(alias: str = "r", *, sub_alias: str = "ig") -> str:
+    """Scalar ``COALESCE(...)`` expression: when ``<alias>`` landed in
+    the corpus.
+
+    The landing stamp — NOT ``refs.created_at``: a stub's ref row is
+    minted at fetch-queue time, its body lands whenever a later ingest
+    fills it. Same ``(ref-created, body-created)`` split
+    :meth:`Store.paper_ingest_rate` counts landings on: earliest live
+    non-``references`` body chunk (``ord >= 0``), falling back to
+    ``refs.created_at`` for card-only stubs and chunkless refs.
+    References ``<alias>.ref_id`` and ``<alias>.created_at``; contains
+    no ``%``, safe inside parameterised queries.
+    """
+    return (
+        f"COALESCE((SELECT min({sub_alias}.created_at) FROM chunks {sub_alias} "
+        f"WHERE {sub_alias}.ref_id = {alias}.ref_id "
+        f"AND {sub_alias}.retired_at IS NULL AND {sub_alias}.ord >= 0 "
+        f"AND {sub_alias}.chunk_kind <> 'references'), {alias}.created_at)"
+    )
+
+
 __all__ = [
     "THIN_BODY_MAX_CHUNKS",
     "UNUSABLE_BODY_TAGS",
     "body_state_sql",
     "has_body_sql",
+    "ingested_at_sql",
+    "read_note_sql",
     "unusable_body_tag_sql",
 ]
