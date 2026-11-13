@@ -28,3 +28,6 @@ exporter.
 Code: `src/precis/export/docx.py`, `src/precis/export/endnote.py`. To verify
 what the cluster actually runs, see
 [`cluster-deploy`](./cluster-deploy.md) (venv `direct_url.json`).
+
+Compiling the export to PDF locally (the Mac's tectonic cannot run biber):
+skill `draft-pdf-local` — `get(kind='skill', id='draft-pdf-local')`.
