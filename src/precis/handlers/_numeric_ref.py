@@ -5165,9 +5165,17 @@ class NumericRefHandler(Handler):
                 if ps is not None
                 else f"sort={sort!r}"
             )
+            # The verb refuses ``page=`` on every numeric-ref kind
+            # (gr530420, gr634204): naming it in ``next`` would
+            # advertise a call that errors. ``tags=`` is the
+            # enumeration door the shared ``search`` accepts on all
+            # these kinds (``_list_by_tags``); ``page_size`` bounds it.
             raise BadInput(
                 f"id='/{view}' on kind={self.kind!r} has no pages ({bad})",
-                next=f"search(kind={self.kind!r}, page={n}, page_size=100)",
+                next=[
+                    f"search(kind={self.kind!r}, q='<query>', page_size=100)",
+                    f"search(kind={self.kind!r}, tags=['<tag>'], page_size=100)",
+                ],
             )
         return self._list_view(view)
 
