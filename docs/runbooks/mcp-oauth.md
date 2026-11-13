@@ -119,7 +119,9 @@ port mapping separately after checking which clients still use it.
 
 For a fixed credential in Claude, select **No sign-in** and add the
 `authorization` request header with the value `Bearer YOUR_TOKEN`. Personal
-tokens authorize learning only. Use OAuth for per-user full MCP access.
+tokens authorize learning only; a client capability token (minted at
+`/account`, `precis_cap_...`) carries its own kind/verb allow-list and is the
+right credential for a chat connector that wants a scoped, non-OAuth bearer. Use OAuth for per-user full MCP access.
 
 The MCP SDK's Host/Origin checks retain localhost allowances and add the exact
 configured public resource host/origin and issuer origin. Configure proxy

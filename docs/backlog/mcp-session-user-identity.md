@@ -65,23 +65,36 @@ Three classes of bearer secret exist or should:
    URL-embedded where the client cannot set headers. Scope is a per-token
    allow-list of kinds and verbs. Filed as gr595554.
 
-gr595554 findings (2026-11-13). The claude.ai custom connector takes a
-server URL plus optional OAuth client credentials; no documentation found
-shows a custom `Authorization` header or static bearer field for it, so the
-gripe's own fallback applies: the claude.ai chat gateway authenticates with
-an **OAuth grant** (`precis.oauth`, per-user consent, independent and
-revocable at `/account/connections`, scopes `mcp:full` or `learning`). That
-grant is the class-3 token for chat connectors; no separate static token is
-minted for claude.ai. Re-verify against Anthropic's connector docs when the
-paste is done, since the client UI changes. What remains open for class 3:
+gr595554 built (2026-11-13). Class 3 is now a token kind in
+`web_user_mcp_tokens` (migration 0317: `token_class`, `allow_verbs`,
+`allow_kinds`, `feed_access`; digest-only, same revoke path):
 
-- a per-grant kind/verb allow-list narrower than `mcp:full` (extends the
-  OAuth scope vocabulary and `_personal_call_allowed`);
-- folding the podcast feed credential (`precis_web/routes/podcast.py`) into
-  a labelled, digest-only, listable, URL-embeddable capability token, since
-  a feed client cannot do OAuth or set headers;
-- the ask-user todo for Reto to connect claude.ai chat via the runbook
-  (`docs/runbooks/mcp-oauth.md`).
+- `mcp_identity.mint_capability_token` mints `precis_cap_...`; `/account`
+  mints it (`POST /account/mcp-capability-tokens`) and lists it beside the
+  user tokens with its allow-list.
+- `user_context.Capability` is the allow-list; `_personal_call_allowed`
+  applies it. Blank kinds = `get`/`search` on every kind except
+  `learning`, `email`, `profile`; named kinds restrict to exactly those, and
+  only named kinds can carry write verbs or private kinds. A capability
+  token is neither the install token nor the learning-only personal token.
+- Podcast: `?t=` on `/podcast/feed.xml` accepts a live capability token
+  minted with feed access. The legacy per-user feed credential (vault-
+  recallable, so Basic callers get enclosure URLs) still works; retiring it
+  is a follow-up once listeners re-subscribe with capability tokens.
+- Carriage is `Authorization: Bearer`. URL-embedding is built for the feed
+  only; the MCP endpoint reads the header alone (no client needing a URL
+  token for MCP has appeared).
+
+Gateway ruling (claude.ai chat). The runbook (`docs/runbooks/mcp-oauth.md`)
+documents both client modes: OAuth via **Use your own OAuth client**
+(`precis-claude`, preferred: per-user, independent revocable grants, full
+surface) and a static `authorization` header under **No sign-in** (a Claude
+beta). The header mode is exactly what a class-3 token serves, so a chat
+connector can carry a capability token (Reto's choice: scoped, no OAuth
+consent) or an OAuth grant (per-user full access). Not verified against
+Anthropic's live connector UI from this lane; the paste step re-checks.
+Still open: the ask-user todo for Reto to mint the token at `/account` and
+paste it into claude.ai chat (or connect via the OAuth runbook).
 
 Reto authorized OAuth for multiple per-user app connections on 2026-11-10
 (gr621409), with full MCP access including writes. `precis.oauth` implements

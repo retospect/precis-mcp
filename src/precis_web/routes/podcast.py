@@ -19,7 +19,10 @@ its own schedule, and support for HTTP Basic on those enclosure requests
 is inconsistent across clients — Basic alone would leave the phone
 silently not downloading. So a per-user feed token
 (``precis users feed-token <login>``) is accepted as ``?t=`` and is
-threaded into the enclosure URLs the feed emits; Basic still works for a
+threaded into the enclosure URLs the feed emits (a client capability
+token minted with feed access at ``/account`` is accepted the same way:
+digest-only, labelled, revocable — class 3 of
+``docs/backlog/mcp-session-user-identity.md``); Basic still works for a
 browser hitting the feed directly. Both paths go through
 :func:`_require_listener`, so an unauthenticated request is rejected here
 exactly as it would have been upstream.
@@ -31,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from precis import audio_feed as podcast
+from precis.mcp_identity import resolve_feed_token
 from precis.users import feed_token_digest, recall_feed_token
 from precis_web.config import WebConfig
 from precis_web.deps import get_web_config
@@ -70,7 +74,9 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
 
     token = request.query_params.get("t")
     if token:
-        if store.get_web_user_by_feed_token(feed_token_digest(token)) is not None:
+        if store.get_web_user_by_feed_token(
+            feed_token_digest(token)
+        ) is not None or resolve_feed_token(store, token):
             return token
         # A wrong token is a dead end, not a fallback to Basic: a podcast
         # app retrying a rotated URL would otherwise get a challenge it

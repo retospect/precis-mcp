@@ -78,6 +78,7 @@ of this route.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from typing import Any
 
@@ -86,7 +87,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
 from precis.errors import BadInput, Denied, Upstream
-from precis.mcp_identity import list_user_tokens, mint_user_token, revoke_user_token
+from precis.mcp_identity import (
+    list_user_tokens,
+    mint_capability_token,
+    mint_user_token,
+    revoke_user_token,
+)
 from precis.user_context import require_user, user_scope
 from precis.users import (
     MIN_PASSWORD_LENGTH,
@@ -278,6 +284,39 @@ def create_mcp_token(request: Request, label: str = Form("")) -> HTMLResponse:
         request,
         user=user,
         notice="MCP token created. Copy it now; it will not be shown again.",
+        new_mcp_token=raw,
+    )
+
+
+@router.post("/mcp-capability-tokens", response_class=HTMLResponse)
+def create_capability_token(
+    request: Request,
+    label: str = Form(""),
+    kinds: str = Form(""),
+    write: str = Form(""),
+    feed: str = Form(""),
+) -> HTMLResponse:
+    """Mint a client capability token (a consumer, not a person); shown once."""
+    user = _require_token_owner(request)
+    try:
+        _token_id, raw = mint_capability_token(
+            get_store(request),
+            user.id,
+            label,
+            kinds=[k for k in re.split(r"[\s,]+", kinds) if k],
+            write=bool(write),
+            feed=bool(feed),
+        )
+    except BadInput as exc:
+        return _render(request, user=user, error=exc.cause)
+    except Denied as exc:
+        raise HTTPException(
+            status_code=403, detail=exc.cause, headers={"Cache-Control": "no-store"}
+        ) from exc
+    return _render(
+        request,
+        user=user,
+        notice="Capability token created. Copy it now; it will not be shown again.",
         new_mcp_token=raw,
     )
 

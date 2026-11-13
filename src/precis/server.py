@@ -144,7 +144,10 @@ def _mask_protocol_secrets(text: str) -> str:
     # Personal bearer values have a known prefix; even a low-entropy token
     # must be masked when the general credential heuristic does not match.
     text = re.sub(
-        rf"\b{re.escape(mcp_identity.TOKEN_PREFIX)}[A-Za-z0-9_-]+", "[redacted]", text
+        rf"\b(?:{re.escape(mcp_identity.TOKEN_PREFIX)}|{re.escape(mcp_identity.CAP_PREFIX)})"
+        r"[A-Za-z0-9_-]+",
+        "[redacted]",
+        text,
     )
     return mask_secrets(text, warn=False)
 
@@ -2254,6 +2257,7 @@ def _install_token_auth(
                 mcp_identity.SCOPE_USER_ID,
                 mcp_identity.SCOPE_TOKEN_ID,
                 mcp_identity.SCOPE_OAUTH_IDENTITY,
+                mcp_identity.SCOPE_CAPABILITY,
                 slice_tokens.SCOPE_SLICE_ID,
                 slice_tokens.SCOPE_AGENTLOG_ID,
                 slice_tokens.SCOPE_GRANT_SCOPE,
@@ -2301,7 +2305,11 @@ def _install_token_auth(
                 raw = header.removeprefix("Bearer ")
                 if (
                     raw.startswith(
-                        (mcp_identity.TOKEN_PREFIX, oauth_store.ACCESS_PREFIX)
+                        (
+                            mcp_identity.TOKEN_PREFIX,
+                            mcp_identity.CAP_PREFIX,
+                            oauth_store.ACCESS_PREFIX,
+                        )
                     )
                     and not self.ownership_supported
                 ):
@@ -2373,11 +2381,15 @@ def _install_token_auth(
                         return
                     scope[mcp_identity.SCOPE_USER_ID] = identity.user_id
                     scope[mcp_identity.SCOPE_TOKEN_ID] = identity.token_id
+                    if identity.capability is not None:
+                        scope[mcp_identity.SCOPE_CAPABILITY] = identity.capability
                     await self._authorized(
                         scope,
                         receive,
                         send,
-                        "precis-user",
+                        "precis-capability"
+                        if identity.capability is not None
+                        else "precis-user",
                         subject=str(identity.user_id),
                     )
                     return

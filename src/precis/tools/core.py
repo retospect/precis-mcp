@@ -345,9 +345,14 @@ def _asgi_scope(ctx: Context | None) -> dict[str, Any]:
 
 def _ctx_user_scope(ctx: Context | None) -> contextlib.AbstractContextManager[None]:
     """Read only trusted transport stamps; an MCP session carries no owner."""
-    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_TOKEN_ID, SCOPE_USER_ID
+    from precis.mcp_identity import (
+        SCOPE_CAPABILITY,
+        SCOPE_OAUTH_IDENTITY,
+        SCOPE_TOKEN_ID,
+        SCOPE_USER_ID,
+    )
     from precis.oauth.store import OAuthIdentity
-    from precis.user_context import user_scope
+    from precis.user_context import Capability, user_scope
 
     scope = _asgi_scope(ctx)
     oauth = scope.get(SCOPE_OAUTH_IDENTITY)
@@ -355,7 +360,10 @@ def _ctx_user_scope(ctx: Context | None) -> contextlib.AbstractContextManager[No
         return user_scope(oauth.user_id, oauth=oauth)
     user_id, token_id = scope.get(SCOPE_USER_ID), scope.get(SCOPE_TOKEN_ID)
     if type(user_id) is int and user_id > 0 and type(token_id) is int and token_id > 0:
-        return user_scope(user_id, token_id)
+        cap = scope.get(SCOPE_CAPABILITY)
+        return user_scope(
+            user_id, token_id, capability=cap if isinstance(cap, Capability) else None
+        )
     return user_scope(None)
 
 
@@ -502,6 +510,9 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
 
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
+    cap = owner.capability if owner is not None else None
+    if cap is not None:
+        return cap.permits(verb, payload) or (verb == "get" and payload == WHOAMI)
     if oauth is not None:
         if "mcp:full" in oauth.scopes:
             return verb in {"get", "search", "put", "edit", "delete", "tag", "link"}
@@ -554,7 +565,9 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
                 next="review the connection at /account/connections and reconnect with the required permissions",
             )
         raise Denied(
-            "personal MCP tokens permit learning calls, learning help and whoami only",
+            "this token's permissions do not cover that call"
+            if owner is not None and owner.capability is not None
+            else "personal MCP tokens permit learning calls, learning help and whoami only",
             next="get(kind='learning'); get(kind='skill', id='precis-learning-help'); "
             "get(kind='profile', id='me')",
         )
@@ -935,7 +948,11 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     ``worker:<source>`` in-process stamp.
     """
     from precis import slice_tokens
-    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_TOKEN_ID
+    from precis.mcp_identity import (
+        SCOPE_CAPABILITY,
+        SCOPE_OAUTH_IDENTITY,
+        SCOPE_TOKEN_ID,
+    )
     from precis.oauth.store import OAuthIdentity
 
     scope = _asgi_scope(ctx)
@@ -960,6 +977,8 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
         return principal.for_slice(str(slice_id), role)
     token_id = scope.get(SCOPE_TOKEN_ID)
     if type(token_id) is int and token_id > 0:
+        if scope.get(SCOPE_CAPABILITY) is not None:
+            return f"capability:{token_id}"
         return f"personal:{token_id}"
     return None
 

@@ -995,3 +995,36 @@ def test_profile_shows_a_taken_discord_id_as_a_banner_not_a_500(
 def test_the_page_has_a_discord_user_id_field() -> None:
     r = _client(FakeStore()).get("/account", headers=_auth())
     assert 'name="discord_user_id"' in r.text
+
+
+def test_account_mints_capability_token_with_allow_list(store) -> None:
+    from precis.mcp_identity import resolve_user_token
+
+    alice = store.create_web_user(
+        login="alice", abbrev="al", password=hash_password(GOOD)
+    )
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+    with TestClient(app) as client:
+        auth = _auth(login="alice")
+        minted = client.post(
+            "/account/mcp-capability-tokens",
+            data={"label": "chat", "kinds": "paper, memory", "write": "1"},
+            headers=auth,
+        )
+        assert minted.status_code == 200
+        match = re.search(r"precis_cap_[A-Za-z0-9_-]{43}", minted.text)
+        assert match is not None
+        principal = resolve_user_token(store, match.group())
+        assert principal is not None and principal.user_id == alice.id
+        assert principal.capability is not None
+        assert principal.capability.kinds == frozenset({"paper", "memory"})
+        bad = client.post(
+            "/account/mcp-capability-tokens",
+            data={"label": "x", "write": "1"},
+            headers=auth,
+        )
+        assert "explicit kinds" in bad.text
+        assert match.group() not in client.get("/account", headers=auth).text

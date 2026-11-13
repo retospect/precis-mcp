@@ -107,11 +107,30 @@
     <button type="submit" class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5 hover:bg-info-solid-strong">Create token</button>
   </form>
   <p id="mcp-token-label-help" class="mb-3 text-xs text-fg-subtle">Name the client using this token so you can identify it later, for example Laptop.</p>
+  <form method="post" action="/account/mcp-capability-tokens" class="flex flex-wrap items-end gap-2 mb-1">
+    <div>
+      <label for="cap-token-label" class="block text-xs text-fg-muted mb-1">Capability token label</label>
+      <input id="cap-token-label" name="label" required maxlength="100" placeholder="Consumer, e.g. chat connector"
+             autocomplete="off" class="rounded border border-line px-2 py-1 text-sm" />
+    </div>
+    <div>
+      <label for="cap-token-kinds" class="block text-xs text-fg-muted mb-1">Kinds (blank = read surface)</label>
+      <input id="cap-token-kinds" name="kinds" placeholder="paper, memory" autocomplete="off"
+             class="rounded border border-line px-2 py-1 text-sm" />
+    </div>
+    <label class="text-xs text-fg-muted"><input type="checkbox" name="write" value="1" /> write those kinds</label>
+    <label class="text-xs text-fg-muted"><input type="checkbox" name="feed" value="1" /> podcast feed</label>
+    <button type="submit" class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5 hover:bg-info-solid-strong">Create capability token</button>
+  </form>
+  <p class="mb-3 text-xs text-fg-subtle">A capability token names a consumer, not a person: blank kinds grant get and search on every kind except learning, email and profile; named kinds restrict it to those, and only they can be written. Podcast feed lets it authenticate <code>?t=</code> on the feed URL.</p>
   {% if mcp_tokens %}
   <ul class="space-y-2">
     {% for token in mcp_tokens %}
     <li class="flex items-center gap-3 text-xs text-fg-subtle">
       <span class="font-medium text-fg-secondary">{{ token.label }}</span>
+      {% if token.capability %}
+      <span>capability: {{ token.capability.verbs | sort | join(',') }} on {{ (token.capability.kinds | sort | join(', ')) if token.capability.kinds else 'read surface' }}{% if token.capability.feed %}, feed{% endif %}</span>
+      {% endif %}
       <span>{{ token.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
       {% if token.revoked_at %}
       <span>Revoked</span>

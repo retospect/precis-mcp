@@ -6,7 +6,8 @@ environment variable or wire argument never supplies a personal owner.
 The account and optional token are rechecked for each operation so a
 long-lived MCP session cannot outlive revocation. ContextVar scopes reset
 on every exit and travel through anyio's worker-thread context copy.
-Personal API tokens permit learning and the exact learning-help read. OAuth
+Client capability tokens carry their own verb/kind allow-list
+(:class:`Capability`). Personal API tokens permit learning and the exact learning-help read. OAuth
 connections carry separately revocable app grants and explicit capabilities;
 their IDs never share the API-token namespace. Dispatch maps the live account
 to its current legacy revision actor before
@@ -21,13 +22,49 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import Denied, Upstream
 
 if TYPE_CHECKING:
     from precis.oauth.store import OAuthIdentity
     from precis.store import Store
+
+
+#: Kinds a capability token reaches only when its owner names them.
+PRIVATE_KINDS = frozenset({"learning", "email", "profile"})
+READ_VERBS = frozenset({"get", "search"})
+WRITE_VERBS = frozenset({"put", "edit", "delete", "tag", "link"})
+
+
+@dataclass(frozen=True, slots=True)
+class Capability:
+    """A client capability token's allow-list (class 3, gr595554).
+
+    ``kinds=None`` is the default read surface: every kind but
+    :data:`PRIVATE_KINDS`, read verbs only. Naming kinds restricts the
+    token to exactly those kinds, and is the only way to grant a write
+    verb or a private kind.
+    """
+
+    verbs: frozenset[str]
+    kinds: frozenset[str] | None = None
+    feed: bool = False
+
+    def permits(self, verb: str, payload: dict[str, Any]) -> bool:
+        if verb not in self.verbs:
+            return False
+        kind = payload.get("kind")
+        if kind is not None and not isinstance(kind, str):
+            return False
+        asked = {k.strip().lower() for k in (kind or "").split(",") if k.strip()}
+        from precis.learning_privacy import is_learning_call
+
+        if is_learning_call(payload):
+            asked.add("learning")
+        if self.kinds is None:
+            return verb in READ_VERBS and not asked & PRIVATE_KINDS
+        return bool(asked) and asked <= self.kinds
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +74,7 @@ class Principal:
     user_id: int
     token_id: int | None = None
     oauth: OAuthIdentity | None = None
+    capability: Capability | None = None
 
 
 _PRINCIPAL: ContextVar[Principal | None] = ContextVar("precis_user", default=None)
@@ -53,6 +91,7 @@ def user_scope(
     token_id: int | None = None,
     *,
     oauth: OAuthIdentity | None = None,
+    capability: Capability | None = None,
 ) -> Iterator[None]:
     """Bind a trusted owner; ``None`` explicitly clears any ambient owner."""
     if user_id is not None and (
@@ -66,7 +105,7 @@ def user_scope(
             next="authenticate with a personal MCP token from /account",
         )
     token = _PRINCIPAL.set(
-        Principal(user_id, token_id, oauth) if user_id is not None else None
+        Principal(user_id, token_id, oauth, capability) if user_id is not None else None
     )
     try:
         yield
