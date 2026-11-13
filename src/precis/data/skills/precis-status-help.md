@@ -82,7 +82,9 @@ is serving code the tree no longer has — restart it), or `unknown` (no
 tree to compare, so **nothing was checked** — not a claim of freshness).
 The served tree is the watched checkout when one is named, else the
 checkout the code imported from (the local run, the editable install,
-the bind-mounted dev container).
+the bind-mounted dev container). The shared session server
+serves the deployed prod clone, so a landed change is not live until
+deploy.
 
 Anything short of `none` is also said out loud as a `⚠ WARN` line under
 the Build table, and any WARN makes the verdict `Overall: WARN` instead
