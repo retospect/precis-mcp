@@ -290,7 +290,7 @@ wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`),
 (JSON `{<job_type>: <slots>}` held back inside the cap for those
 types). The view also shows live per-`job_type` occupancy for the
 capped executors. Writes go through
-`put(kind='job', mode='setting', …)` — see [[precis-job-help]].
+`put(kind='job', mode='setting', …)` — see [[precis-job-ops-help]].
 
 ## How healthy is the secrets vault? — /secrets
 

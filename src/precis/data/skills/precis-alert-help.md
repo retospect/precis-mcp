@@ -216,7 +216,7 @@ rule any producer can emit, grouped by source. The families:
 | `secret_check` (`failed:<name>`) | weekly `secret_check` cadence | the credential probe in `precis.secret_status` rejected a configured key — alert carries the name, HTTP status and key URL, never the value |
 | `plan_dispatch` (`plan-moot:<root>`) | `plan_dispatch` tick | a plan closed itself as moot — its open nodes were set to `won't-do`; the detail says why, reopen the root if the call was wrong |
 | `run_slice` (`lane-host-refusal:{lane}`) | `run_slice` launch preflight | a lane refused for a host reason (missing binary, dead login, failed trust seed); the lane backs off 30 minutes with no attempt, the detail carries the refusal's next step, and a successful launch on that lane resolves the alert |
-| `jobstarve` (`control:<executor>`) | `sweeper` | a control-class job (recurring/release-band) sat claimable past `PRECIS_CONTROL_STARVED_MINUTES` (default 15m) while bulk work holds the lane — check `claim.max_running.<job_type>` and the host's claimants ([[precis-job-help]]) |
+| `jobstarve` (`control:<executor>`) | `sweeper` | a control-class job (recurring/release-band) sat claimable past `PRECIS_CONTROL_STARVED_MINUTES` (default 15m) while bulk work holds the lane — check `claim.max_running.<job_type>` and the host's claimants ([[precis-job-ops-help]]) |
 | `nanopub_ots` · `nanopub-demote` · `nanopub_mirror` · `watch:*` · `ingest:*` · `inject_scan` · `llm_reconcile:drift` · `scheduler` · `quest_tick` · `admit:oversize` · `fetch_oa:*` · `orcid_enrich` | their owning pass | one or two conditions each — see `/rules` |
 
 The producer surface is generic (`precis.alerts.raise_alert`); a new

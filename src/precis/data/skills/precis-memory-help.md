@@ -188,7 +188,7 @@ One memory per call, at most 32 current body/header chunks. `embeddings`
 includes both the body and title/hook card; `embed:<active embedder>` from
 the processing view is accepted too. Omitted `stages` requests every stage
 and reports refusals or inapplicability separately. Only embeddings support
-this write; see [[precis-job-help]] for the stage map.
+this write; see [[precis-job-types-help]] for the stage map.
 
 `promote` queues pending work at priority 1 in the existing worker job lane;
 it does not preempt running work or invalidate completed results. Processing

@@ -60,7 +60,6 @@ _ALLOWLIST: dict[str, str] = {
         "precis-finding-help",
         "precis-gripe-help",
         "precis-hexfold-help",
-        "precis-job-help",
         "precis-measure-help",
         "precis-memory-help",
         "precis-nanopub-help",

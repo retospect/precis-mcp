@@ -291,6 +291,7 @@ completely differently. The meta keys that matter:
 | meta key | drives | symptom when wrong |
 |---|---|---|
 | `executor` | `dispatch` minting a `kind='job'` | todo never dispatches |
+| `op` | `plan_dispatch` minting a `kind='job'` on a `plan:<id>`-tagged node | todo never dispatches — the send-it-now recipe is `precis-job-help` |
 | `schedule` | a recurring's cadence (cron / `every:`) — its presence IS "recurring" | watch never fires |
 | `auto_check` | the wait-for condition on a leaf | leaf stuck "waiting" |
 | `workspace` | project `path` / `format` / `brief` | wrong output dir / no brief |

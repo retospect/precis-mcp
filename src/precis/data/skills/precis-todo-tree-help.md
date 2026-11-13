@@ -98,7 +98,7 @@ planner run before you've finished setting it up. Pass
 `meta={"llm_tier": None}` — or any explicit tier you want — to opt
 out deliberately; a bare `parent_id=` write does not opt out.
 Cancel a job already dispatched: `tag(kind='job', id=<job_id>,
-add=['STATUS:cancel_requested'])` (`precis-job-help`).
+add=['STATUS:cancel_requested'])` (`precis-job-ops-help`).
 
 ## Attach a details body to a todo
 

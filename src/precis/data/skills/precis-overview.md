@@ -238,7 +238,12 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-auto-todo-help` | Wait-for-condition leaves via `meta.auto_check` |
 | `precis-recurring-help` | `meta.schedule` format + the **Watches** umbrella |
 | `precis-minter-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
-| `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
+| `precis-job-help` | The job substrate. Submit via `args={'parent_id': …}`; the send-an-existing-todo-to-a-lane recipe |
+| `precis-job-types-help` | The non-factory `job_type` registry + memory `mode='process'` |
+| `precis-job-factory-help` | Dark-factory/PR job types — run_slice, land_slice, plan ticks, watchers |
+| `precis-job-release-help` | Release pass / release-fix job types — release_cut, poll, deploy, confirm + merge_back, digest, rerun |
+| `precis-job-ops-help` | Steer a job — cancel, retry, reprioritise, wake, extend; STATUS vocabulary |
+| `precis-job-find-help` | Read the queue + a job card; `under=`/`job_type=` listings |
 | `precis-job-observe-help` | Compute-lane job types + the `/…` fleet views: /logs, /limits, /delta, /builds, /throughput, /cadence, /facts |
 | `precis-fix-gripe-help` | `fix_gripe` job recipe (lane OFF since 2026-10-02; hand-submit only) |
 | `precis-gripe-loop-help` | The builder-wave loop on the gripe: `edit(mode='fix')` for batch/brief/assign/handoff/verdict/landed, `/queue` + `/batch` views |

@@ -124,7 +124,7 @@ the gate is downstream: check.yml runs on every push to main, and
   doable view skips the parent until the flag is cleared.
 * The nursery digest surfaces the stuck parent.
 * The parent's owner (asa-bot) decides next move — see
-  "Re-submit a failed job" in `precis-job-help`.
+  "Re-submit a failed job" in `precis-job-ops-help`.
 
 **No auto-retry.** The substrate refuses to multiply attempts
 silently; you (or asa-bot) make the retry call explicitly.

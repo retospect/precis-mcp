@@ -22,7 +22,8 @@ todo with `meta.executor` set and no live job child yet, and auto-injects
 `meta.auto_check={'type': 'child_job_succeeded'}` on the parent when you
 didn't set one, so it flips `STATUS:done` when the job succeeds.
 
-Direct `put(kind="job", parent_id=N, ...)` still works (`precis-job-help`)
+Direct `put(kind="job", args={'parent_id': N, 'job_type': ...})` still
+works (`precis-job-help`)
 but skips the auto_check injection — use it for one-off submits, not
 recurring intent.
 

@@ -161,4 +161,4 @@ the check that watches the doctor itself — and `meta.transcript` on the
 
 - [[precis-nursery-help]] — the `critical`, page-now sibling reviewer.
 - [[precis-alert-help]] — the `alert` kind (lifecycle, dedup, tab).
-- [[precis-job-help]] — the `doctor_tick` row in the job_type table.
+- [[precis-job-types-help]] — the `doctor_tick` row in the job_type table.
