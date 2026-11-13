@@ -35,6 +35,15 @@
 -- write door resolves the chunk at judgment time; `scope_sha` /
 -- `source_sha` keep the content evidence after the live chunk is gone.
 --
+-- `withdrawn_at` separates an explicit withdrawal from a lost edge. The
+-- `links.src_chunk_id`/`dst_chunk_id` FKs are ON DELETE CASCADE, so a
+-- chunk replacement deletes the `considered` edge itself: the judgment
+-- survives with `withdrawn_at` NULL and the read door reports it as
+-- `edge-lost` in the reconsider queue. An explicit removal through the
+-- link doors (remove_link / delete_links) stamps `withdrawn_at` on every
+-- judgment of the pair instead — a deliberate withdrawal leaves the
+-- queue, and a later re-judgment lands a fresh unwithdrawn row.
+--
 -- Forward-only (ADR 0005). Idempotent (`ON CONFLICT DO NOTHING`,
 -- `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
 
@@ -74,7 +83,11 @@ CREATE TABLE IF NOT EXISTS considerations (
     prompt text,
     set_by text NOT NULL REFERENCES actors(slug) ON UPDATE CASCADE,
     checked_at timestamptz NOT NULL,
-    recorded_at timestamptz NOT NULL DEFAULT now()
+    recorded_at timestamptz NOT NULL DEFAULT now(),
+    -- NULL while the pair's current verdict is live-or-lost; stamped by
+    -- the link-delete doors on an explicit withdrawal so a chunk-cascade
+    -- edge loss (reconsider, 'edge-lost') differs from a withdrawal.
+    withdrawn_at timestamptz
 );
 
 CREATE INDEX IF NOT EXISTS considerations_scope_idx

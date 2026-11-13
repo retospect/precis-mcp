@@ -98,7 +98,6 @@ from precis.utils.link_tag_ops import (
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
     link_reason_suffix,
-    merge_link_reason,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -647,6 +646,11 @@ class NumericRefHandler(Handler):
     #: ``BadInput`` that names this form, so the one shape agents try after
     #: a long singleton loop degrades instead of crashing.
     batch_ids: ClassVar[bool] = False
+
+    #: ``link`` takes ``meta=``/``reason=`` (edge meta, gr662070). Kinds
+    #: with their own ``link`` override (memory/todo/...) handle it there;
+    #: this flag opens the base ``link`` path, refused everywhere else.
+    link_meta: ClassVar[bool] = False
 
     #: Tags applied automatically on `put`-create. e.g. for todo:
     #: ``("STATUS:open",)`` so every new todo starts open.
@@ -3830,23 +3834,25 @@ class NumericRefHandler(Handler):
         ``batch_ids``) fans one target/rel across every source id in
         one transaction — see :meth:`_link_batch`.
 
-        ``meta=`` (edge metadata, add-only) lands on the link row — a
-        machine writer's admission annotation reaches the gate at
-        ``store.add_link`` through it (gr504789), and a consideration
-        verdict (``rel='considered'``, gr662069) is required there:
-        ``{'verdict': 'useful|not-useful|uncertain', 'reason': …,
-        'depth': …}``. ``reason=`` is the kwarg spelling of
-        ``meta={'reason': …}`` (:func:`merge_link_reason`, gr626896);
-        like ``meta=`` it stays single-id only.
+        ``reason=`` is the kwarg spelling of ``meta={'reason': …}``
+        (:func:`merge_link_reason`, gr626896; gripe case gr662070).
+        Edge meta is per-edge payload, so ``id=[...]`` fan-in refuses it.
+        Only kinds with ``link_meta`` take it on this path.
         """
-        if meta is not None or reason is not None:
-            if isinstance(id, list):
-                raise BadInput(
-                    "link meta=/reason= require a single id",
-                    next="link each edge separately with its own meta",
-                )
-            meta = merge_link_reason(meta, reason, mode=mode)
+        from precis.utils.link_tag_ops import merge_link_reason
+
+        if not self.link_meta and (meta is not None or reason is not None):
+            raise BadInput(
+                f"link(kind={self.kind!r}) does not accept meta=/reason=",
+                next="link without meta=/reason= (see precis-link-help)",
+            )
+        meta = merge_link_reason(meta, reason, mode=mode)
         if isinstance(id, list):
+            if meta is not None:
+                raise BadInput(
+                    "link meta requires a single id",
+                    next="link each ref separately with its own meta=/reason=",
+                )
             return self._link_batch(id, target=target, mode=mode, rel=rel)
         return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
 
@@ -3960,11 +3966,9 @@ class NumericRefHandler(Handler):
         meta: dict[str, Any] | None = None,
     ) -> Response:
         """Body of :meth:`link`. ``meta`` (edge metadata, add-only) is
-        declared on :meth:`link` itself since gr662069 — a subclass whose
-        ``link`` declares ``meta=`` and forwards it here keeps its own
-        shape (selection records, machine-edge annotations); kinds that
-        don't inherit the base's acceptance at the dispatch strictness
-        gate."""
+        reachable from a subclass ``link`` that passes it here, or from
+        the base ``link`` on kinds with ``link_meta`` (gripe); every other
+        kind's base ``link`` refuses it."""
         target = require_link_target(self.kind, target)
         validate_link_mode(mode)
         ref_id = self._coerce_id(id)

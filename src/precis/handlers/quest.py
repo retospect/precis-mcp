@@ -1035,6 +1035,12 @@ class QuestHandler(NumericRefHandler):
     #: (gr514482); the method itself keeps its scalar-id signature.
     edit_id_list: ClassVar[str] = "repeat"
 
+    #: A quest is a consideration scope (gr662069): ``link(rel='considered',
+    #: meta={'verdict': …, 'reason': …, 'depth': …})`` records a candidate
+    #: verdict on it — the lit-search relevance gate's first consumer
+    #: (gr592951). Opens the base ``link``'s meta=/reason= door (gr662070).
+    link_meta: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="quest",
         title="Quest",

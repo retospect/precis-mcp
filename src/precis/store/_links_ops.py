@@ -948,6 +948,10 @@ class LinksMixin:
     # Provided by ConsiderationMixin — appends one judgment row for a
     # ``considered`` edge write inside the same transaction.
     record_consideration: Any
+    # Provided by ConsiderationMixin — stamps ``withdrawn_at`` on a
+    # pair's judgment rows when a door deletes its ``considered`` edge,
+    # so a deliberate withdrawal differs from a chunk-cascade edge loss.
+    withdraw_considerations: Any
     # Provided by GroundingsMixin — endpoint groundings for the
     # slice-2b definition-only link-time refusal.
     grounding_set: Any
@@ -1572,9 +1576,21 @@ class LinksMixin:
             if relation is not None:
                 clauses.append("relation = %s")
                 params.append(relation)
-            sql = f"DELETE FROM links WHERE {' AND '.join(clauses)}"
-            cur = c.execute(sql, params)
-            n = cur.rowcount or 0
+            # RETURNING feeds the ``considered`` withdrawal stamp: an
+            # explicit door delete marks the pair's judgments withdrawn
+            # (review td662210) — unlike a chunk-cascade edge loss, which
+            # no door sees and which therefore stays 'edge-lost' in the
+            # reconsider queue.
+            sql = (
+                f"DELETE FROM links WHERE {' AND '.join(clauses)} "
+                "RETURNING src_ref_id, src_chunk_id, dst_ref_id, "
+                "dst_chunk_id, relation"
+            )
+            deleted = c.execute(sql, params).fetchall()
+            n = len(deleted)
+            withdrawn = [r[:4] for r in deleted if r[4] == "considered"]
+            if withdrawn:
+                self.withdraw_considerations(c, withdrawn)
 
             # Argument-graph retraction push hook, remove side (the argument graph
             # §5/R5: "every retraction-edge add *or* remove reruns the
@@ -2552,10 +2568,19 @@ class LinksMixin:
         Returns the row count."""
         if not link_ids:
             return 0
-        cur = conn.execute(
-            "DELETE FROM links WHERE link_id = ANY(%s)", (list(link_ids),)
-        )
-        return cur.rowcount or 0
+        # RETURNING feeds the ``considered`` withdrawal stamp (review
+        # td662210): a prune through this door is an explicit withdrawal,
+        # not a cascade loss — the pair's judgments leave the queue.
+        rows = conn.execute(
+            "DELETE FROM links WHERE link_id = ANY(%s) "
+            "RETURNING src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, "
+            "relation",
+            (list(link_ids),),
+        ).fetchall()
+        withdrawn = [r[:4] for r in rows if r[4] == "considered"]
+        if withdrawn:
+            self.withdraw_considerations(conn, withdrawn)
+        return len(rows)
 
     # -- s2_neighbors (the Sources/Cited tabs' store) --------------------
 

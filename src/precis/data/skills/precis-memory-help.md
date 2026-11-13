@@ -613,6 +613,11 @@ Rules that bite:
 - A material edit to the scope or the source makes the verdict stale:
   it stops excluding and shows up in the reopen queue. History is never
   cleared by an edit.
+- If a chunk-grounded edge dies with its chunk (body chunks are replaced
+  on re-ingest), the judgment is not lost: it sits in the reopen queue
+  as `edge-lost` until re-judged. Removing the edge through the link
+  door (`link(mode='remove')`) is a deliberate withdrawal instead — the
+  history row is stamped `withdrawn` and the pair leaves the queue.
 
 Inspect the ledger — current verdicts, the reopen queue, and the
 append-only judgment history (page it with `args={'limit': 20,

@@ -3,12 +3,14 @@ consideration ledger (spec me626852, gr662069).
 
 Renders the memory's ``considered`` edges in three cohorts — current
 verdicts, the stale ``REOPEN`` queue (a material scope/source change since
-judgment; reconsider by re-judging through ``rel='considered'`` or
-withdrawing the edge), and ``depth='none'`` acquisition markers — followed
-by the append-only judgment history (every run's verdict; the edge keeps
-only the latest). The history pages: ``args={'limit': N, 'offset': M}``
-windows it, and every row shows its recorded evidence — passages, prompt
-and the revision pins it was judged against.
+judgment, or an ``edge-lost`` judgment whose ``considered`` edge died in a
+chunk-replacement cascade; reconsider by re-judging through
+``rel='considered'`` or withdrawing the edge), and ``depth='none'``
+acquisition markers — followed by the append-only judgment history (every
+run's verdict; the edge keeps only the latest; a door-withdrawn judgment
+shows its ``withdrawn`` stamp). The history pages: ``args={'limit': N,
+'offset': M}`` windows it, and every row shows its recorded evidence —
+passages, prompt and the revision pins it was judged against.
 """
 
 from __future__ import annotations
@@ -60,9 +62,12 @@ def _history_row(j: dict[str, Any]) -> str:
     src_handle = _handle(j["source_kind"], j["source_ref_id"])
     provenance = ", ".join(f"{k}={j[k]}" for k in ("actor", "model", "run") if j.get(k))
     stamp = j["checked_at"].isoformat() if j.get("checked_at") else "?"
+    withdrawn = (
+        f" · withdrawn {j['withdrawn_at'].isoformat()}" if j.get("withdrawn_at") else ""
+    )
     lines = [
         f"- {stamp} {j['verdict']} · {src_handle} "
-        f"[{j['reading_depth']}]"
+        f"[{j['reading_depth']}]{withdrawn}"
         + (f" ({provenance})" if provenance else "")
         + f"\n  {j['reason']}"
     ]
@@ -77,6 +82,30 @@ def _history_row(j: dict[str, Any]) -> str:
     if pins:
         lines.append("  " + " · ".join(pins))
     return "\n".join(lines)
+
+
+def _stale_line(v: Any, titles: dict[int, str]) -> str:
+    head = (
+        f"- {v.verdict} · {_handle(v.dst_kind, v.dst_ref_id)} "
+        f"{titles.get(v.dst_ref_id) or ''}".rstrip()
+    )
+    if v.stale == "edge-lost":
+        # The edge carrying the verdict died with its chunk (a routine
+        # re-ingest cascade or graph maintenance — never a withdrawal:
+        # a door delete stamps withdrawn_at and leaves this queue).
+        note = (
+            "REOPEN — edge-lost: the considered edge carrying this "
+            "verdict was deleted by a chunk replacement or graph "
+            "maintenance, not withdrawn; re-judge through "
+            "rel='considered' to restore it"
+        )
+    else:
+        note = (
+            f"REOPEN — {v.stale} changed since the judgment; re-judge "
+            "it through rel='considered', or link(mode='remove') to "
+            "withdraw"
+        )
+    return f"{head}\n  {note}"
 
 
 def render_considerations(
@@ -123,17 +152,10 @@ def render_considerations(
                 "never exclusions:\n" + "\n".join(lines)
             )
         if stale:
-            lines = [
-                f"- {v.verdict} · {_handle(v.dst_kind, v.dst_ref_id)} "
-                f"{titles.get(v.dst_ref_id) or ''}".rstrip()
-                + f"\n  REOPEN — {v.stale} changed since the judgment; "
-                "re-judge it through rel='considered', or "
-                "link(mode='remove') to withdraw"
-                for v in stale
-            ]
+            lines = [_stale_line(v, titles) for v in stale]
             sections.append(
-                f"\nReconsider ({len(stale)}) — material change since "
-                "judgment:\n" + "\n".join(lines)
+                f"\nReconsider ({len(stale)}) — reopened for review:\n"
+                + "\n".join(lines)
             )
 
     total = store.consideration_history_count(scope_ref_id=ref.id)

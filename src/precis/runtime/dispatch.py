@@ -2920,8 +2920,10 @@ class DispatchMixin(RuntimeShape):
         reads, so a judged-out candidate never resurfaces for the same
         question while staying reachable for every other scope. Verdicts
         whose scope or source changed since judgment are NOT excluded —
-        they are reported as reopened for reconsideration — and
-        ``depth='none'`` rows are acquisition markers, never exclusions.
+        they are reported as reopened for reconsideration, as are
+        ``edge-lost`` judgments whose ``considered`` edge died in a
+        chunk-replacement cascade — and ``depth='none'`` rows are
+        acquisition markers, never exclusions.
         Refuses (never silently unfiltered) when the scope doesn't
         resolve, so a typo can't make judged-out hits look "new".
         """

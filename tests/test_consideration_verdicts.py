@@ -202,8 +202,14 @@ def test_unlink_keeps_history(store: Store) -> None:
     src = _mk_paper(store, slug="cv-p7", title="P7", text=f"{_Q} u.")
     _judge(store, scope, src)
     store.remove_link(src_ref_id=scope, dst_ref_id=src, relation="considered")
+    # An explicit door removal is a withdrawal: the pair leaves the
+    # scoped read AND the reconsider queue (unlike a cascade edge loss),
+    # and the judgment row is stamped — never deleted.
     assert store.scoped_considerations(scope) == []
-    assert len(_history(store, scope)) == 1
+    assert store.consideration_reconsiderations(scope_ref_id=scope) == []
+    hist = _history(store, scope)
+    assert len(hist) == 1
+    assert hist[0]["withdrawn_at"] is not None
 
 
 # ── the novelty facet ───────────────────────────────────────────────────
@@ -359,7 +365,10 @@ def test_rejudgment_replaces_omitted_judgment_fields(store: Store) -> None:
 def test_chunk_replacement_preserves_judgment_history(store: Store) -> None:
     """A chunk-grounded verdict survives the routine re-ingest chunk
     replacement (DELETE + INSERT): the edge cascades with its chunk, but
-    the judgment row — the auditable record — stays."""
+    the judgment row — the auditable record — stays. Its reconsideration
+    state survives independently of the live link too: the judgment sits
+    in the reopen queue as ``edge-lost`` until re-judged (review
+    td662210), distinct from an explicit withdrawal."""
     scope = _mk_memory(store, title="scope", text="the question")
     src = _mk_paper(store, slug="cv-r2", title="R2", text=f"{_Q} r2.")
     chunk_id = store.chunks.list_chunks_for_ref(src)[0].id
@@ -378,13 +387,107 @@ def test_chunk_replacement_preserves_judgment_history(store: Store) -> None:
     # Re-ingest replaces body chunks: old chunk row deleted, new one inserted.
     with store.pool.connection() as c:
         c.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_id,))
-    # The edge died with its chunk (links FK cascade — pre-existing), but
-    # the judgment history is preserved independently of the live chunk.
-    assert store.scoped_considerations(scope) == []
+    # The edge died with its chunk (links FK cascade — pre-existing). The
+    # judgment stays queued as edge-lost — never excluded, never dropped.
+    found = store.consideration_exclusions(scope)
+    assert src not in found.excluded
+    assert [v.stale for v in found.stale] == ["edge-lost"]
+    assert [v.dst_ref_id for v in found.stale] == [src]
+    assert store.scoped_considerations(scope)[0].stale == "edge-lost"
+    queue = store.consideration_reconsiderations(scope_ref_id=scope)
+    assert [v.dst_ref_id for v in queue] == [src]
+    # …and the unscoped queue sees it too.
+    assert src in {v.dst_ref_id for v in store.consideration_reconsiderations()}
     hist = _history(store, scope)
     assert len(hist) == 1
     assert hist[0]["source_chunk_id"] == chunk_id
     assert hist[0]["reason"] == "passage-level mismatch"
+    assert hist[0]["withdrawn_at"] is None
+
+
+def test_scope_chunk_replacement_queues_edge_lost(store: Store) -> None:
+    """The scope side cascades identically: a chunk-grounded scope's own
+    re-ingest deletes the edge, and the judgment reopens as edge-lost
+    rather than disappearing."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-r5", title="R5", text=f"{_Q} r5.")
+    scope_chunk = store.chunks.list_chunks_for_ref(scope)[0].id
+    store.add_link(
+        src_ref_id=scope,
+        src_pos=0,
+        dst_ref_id=src,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "abstract",
+            "reason": "off the question's axis",
+        },
+    )
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (scope_chunk,))
+    queue = store.consideration_reconsiderations(scope_ref_id=scope)
+    assert [(v.dst_ref_id, v.stale) for v in queue] == [(src, "edge-lost")]
+
+
+def test_rejudgment_after_edge_loss_restores_verdict(store: Store) -> None:
+    """Re-judging a pair whose edge was lost lands a fresh edge: the
+    orphan disappears and the new verdict block governs."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-r6", title="R6", text=f"{_Q} r6.")
+    chunk_id = store.chunks.list_chunks_for_ref(src)[0].id
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=src,
+        dst_pos=0,
+        relation="considered",
+        meta={
+            "verdict": "not-useful",
+            "depth": "passages",
+            "reason": "first run: passage mismatch",
+        },
+    )
+    with store.pool.connection() as c:
+        c.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_id,))
+    new_chunk = store.chunks.list_chunks_for_ref(src)
+    assert new_chunk == []  # the replacement's INSERT is the ingest's job
+    _judge(
+        store,
+        scope,
+        src,
+        verdict="useful",
+        depth="fulltext",
+        reason="second run: on-axis after all",
+    )
+    found = store.consideration_exclusions(scope)
+    assert found.stale == ()
+    assert src not in found.excluded  # 'useful' never excludes
+    hist = _history(store, scope)
+    assert len(hist) == 2
+
+
+def test_withdrawal_then_rejudgment_reactivates(store: Store) -> None:
+    """A withdrawn pair reactivates only through a new judgment: the
+    fresh row is unwithdrawn while the earlier rows keep their stamp."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-r7", title="R7", text=f"{_Q} r7.")
+    _judge(store, scope, src)
+    store.remove_link(src_ref_id=scope, dst_ref_id=src, relation="considered")
+    assert store.consideration_reconsiderations(scope_ref_id=scope) == []
+    _judge(
+        store,
+        scope,
+        src,
+        verdict="useful",
+        depth="fulltext",
+        reason="second look: on-axis",
+    )
+    found = store.consideration_exclusions(scope)
+    assert found.stale == ()
+    hist = _history(store, scope)
+    assert len(hist) == 2
+    by_verdict = {j["verdict"]: j for j in hist}
+    assert by_verdict["not-useful"]["withdrawn_at"] is not None
+    assert by_verdict["useful"]["withdrawn_at"] is None
 
 
 def test_quest_link_records_considered_verdict(

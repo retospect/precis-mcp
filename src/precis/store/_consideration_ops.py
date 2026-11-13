@@ -21,6 +21,18 @@ material change on either side leaves it stale and queues it for
 reconsideration (:meth:`ConsiderationMixin.consideration_reconsiderations`)
 — ordinary edits never clear the history itself.
 
+The edge's chunk endpoints are ``ON DELETE CASCADE`` (the ``links`` FKs),
+so a routine chunk replacement — body chunks are append-only, DELETE +
+INSERT — deletes a chunk-grounded ``considered`` edge out from under its
+judgment. The reconsideration state is therefore derived independently of
+the live link (:data:`ConsiderationMixin._SCOPED_SQL` unions live edges
+with *orphan* judgments — the pair's latest unwithdrawn history row whose
+edge is gone — reported ``stale='edge-lost'``). An explicit removal
+through the link-delete doors is different: ``remove_link`` /
+``delete_links`` stamp ``withdrawn_at`` on every judgment of the pair via
+:meth:`ConsiderationMixin.withdraw_considerations`, so a deliberate
+withdrawal leaves the queue while a cascade loss stays in it.
+
 ``depth='none'`` is acquisition state, not rejection: a judge that never
 saw text can only record ``uncertain`` (the door refuses useful/not-useful,
 the table CHECK backs it), and such a verdict is never consumed as an
@@ -101,8 +113,12 @@ class ScopedVerdict:
 
     ``valid`` = the recorded verdict still applies: both endpoint shas
     match and the source is live. ``stale`` names why it is queued for
-    reconsideration (``'scope'`` | ``'source'`` | ``'source-retired'``),
-    else ``None``.
+    reconsideration (``'scope'`` | ``'source'`` | ``'source-retired'`` |
+    ``'edge-lost'``), else ``None``. ``'edge-lost'`` marks an *orphan*
+    judgment — the ``considered`` edge carrying it was deleted without a
+    withdrawal stamp (a chunk-replacement cascade or graph maintenance,
+    never a door withdrawal), so the pair's latest unwithdrawn history row
+    stands in for the current verdict until it is re-judged.
     """
 
     link_id: int
@@ -125,7 +141,8 @@ class ScopedExclusions:
 
     ``excluded`` — source ref_ids carrying a *valid* ``not-useful``
     verdict; the search drops them across every leg. ``stale`` — verdicts
-    whose scope or source changed since judgment (the reconsider queue);
+    whose scope or source changed since judgment, plus ``edge-lost``
+    orphans whose edge died without a withdrawal (the reconsider queue);
     they exclude nothing. ``needs_text`` — ``depth='none'`` acquisition
     markers; also never exclusions.
     """
@@ -410,6 +427,16 @@ class ConsiderationMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    #: The scoped verdict read: live ``considered`` edges UNION orphan
+    #: judgments — the latest *unwithdrawn* history row per
+    #: (scope_chunk, source, source_chunk) pair whose edge is gone.
+    #: Orphans exist because the links chunk FKs are ``ON DELETE
+    #: CASCADE``: a routine chunk replacement deletes the edge but never
+    #: the judgment, and the judgment must stay in the reconsider queue
+    #: (review td662210). An explicit door removal stamps
+    #: ``withdrawn_at`` instead — see :meth:`withdraw_considerations` —
+    #: so a withdrawn pair surfaces no orphan. ``%(scope)s`` may be NULL
+    #: (the unscoped reconsider queue).
     _SCOPED_SQL = """
         SELECT l.link_id, l.dst_ref_id, l.dst_chunk_id, l.meta,
                dr.kind AS dst_kind,
@@ -423,11 +450,65 @@ class ConsiderationMixin:
                  CASE WHEN l.dst_chunk_id IS NULL
                       THEN precis_target_sha('ref', l.dst_ref_id)
                       ELSE precis_target_sha('chunk', l.dst_chunk_id) END
-                 AS source_current
+                 AS source_current,
+               FALSE AS edge_lost
           FROM links l
           JOIN refs dr ON dr.ref_id = l.dst_ref_id
-         WHERE l.src_ref_id = %(scope)s AND l.relation = 'considered'
-         ORDER BY l.link_id
+         WHERE (%(scope)s::bigint IS NULL OR l.src_ref_id = %(scope)s)
+           AND l.relation = 'considered'
+         UNION ALL
+        SELECT o.link_id, o.source_ref_id, o.source_chunk_id,
+               jsonb_build_object(
+                 'verdict', o.verdict,
+                 'reason', o.reason,
+                 'depth', o.reading_depth,
+                 'checked_at', o.checked_at,
+                 'judgments', o.judgments,
+                 'scope_sha', o.scope_sha,
+                 'source_sha', o.source_sha),
+               dr.kind,
+               (dr.retired_at IS NOT NULL),
+               FALSE, FALSE, TRUE
+          FROM (
+            SELECT DISTINCT ON
+                   (j.scope_ref_id, j.scope_chunk_id,
+                    j.source_ref_id, j.source_chunk_id)
+                   j.link_id, j.scope_ref_id, j.scope_chunk_id,
+                   j.source_ref_id, j.source_chunk_id,
+                   j.verdict, j.reason, j.reading_depth, j.checked_at,
+                   j.scope_sha, j.source_sha, jn.judgments
+              FROM considerations j
+              JOIN (
+                SELECT scope_ref_id, scope_chunk_id,
+                       source_ref_id, source_chunk_id,
+                       count(*) AS judgments
+                  FROM considerations
+                 WHERE %(scope)s::bigint IS NULL
+                    OR scope_ref_id = %(scope)s
+                 GROUP BY 1, 2, 3, 4
+              ) jn
+                ON jn.scope_ref_id = j.scope_ref_id
+               AND jn.scope_chunk_id IS NOT DISTINCT FROM j.scope_chunk_id
+               AND jn.source_ref_id = j.source_ref_id
+               AND jn.source_chunk_id IS NOT DISTINCT FROM j.source_chunk_id
+             WHERE (%(scope)s::bigint IS NULL OR j.scope_ref_id = %(scope)s)
+               AND j.withdrawn_at IS NULL
+             ORDER BY j.scope_ref_id, j.scope_chunk_id,
+                      j.source_ref_id, j.source_chunk_id,
+                      j.recorded_at DESC, j.consideration_id DESC
+          ) o
+          JOIN refs dr ON dr.ref_id = o.source_ref_id
+          -- Ref-pair granularity, not the dead chunk: a re-judgment
+          -- grounds on the NEW chunk (or ref-level), so matching the
+          -- orphan's exact 4-tuple could never suppress it — any live
+          -- considered edge between the same two refs carries the
+          -- pair's current verdict and resolves the orphan.
+         WHERE NOT EXISTS (
+           SELECT 1 FROM links l2
+            WHERE l2.src_ref_id = o.scope_ref_id
+              AND l2.dst_ref_id = o.source_ref_id
+              AND l2.relation = 'considered')
+         ORDER BY link_id
         """
 
     @staticmethod
@@ -435,6 +516,12 @@ class ConsiderationMixin:
         meta = r[3] or {}
         if r[5]:
             stale = "source-retired"
+        elif r[8]:
+            # An orphan judgment: the edge carrying it is gone (chunk
+            # replacement or graph maintenance, not a withdrawal) — the
+            # verdict can't pin a live endpoint sha, so it reopens as
+            # 'edge-lost' until re-judged.
+            stale = "edge-lost"
         elif not r[6]:
             stale = "scope"
         elif not r[7]:
@@ -442,7 +529,7 @@ class ConsiderationMixin:
         else:
             stale = None
         return ScopedVerdict(
-            link_id=int(r[0]),
+            link_id=int(r[0]) if r[0] is not None else 0,
             dst_ref_id=int(r[1]),
             dst_chunk_id=int(r[2]) if r[2] is not None else None,
             dst_kind=str(r[4]),
@@ -458,12 +545,42 @@ class ConsiderationMixin:
             meta=dict(meta),
         )
 
+    def withdraw_considerations(
+        self,
+        c: Connection,
+        pairs: list[tuple[int, int | None, int, int | None]],
+    ) -> int:
+        """Stamp ``withdrawn_at`` on every judgment of the given
+        (scope_ref, scope_chunk, source_ref, source_chunk) pairs — the
+        explicit-door counterpart of a cascade edge loss. Called inside
+        the ``remove_link`` / ``delete_links`` transaction after their
+        DELETE RETURNING reports ``considered`` rows. Stamping ALL rows
+        of the pair (not just the latest) keeps the whole ledger
+        withdrawn; a re-judgment lands a fresh unwithdrawn row, so the
+        pair's verdict ledger reactivates only through a new judgment.
+        Returns the number of rows stamped."""
+        n = 0
+        for scope_ref, scope_chunk, source_ref, source_chunk in pairs:
+            cur = c.execute(
+                "UPDATE considerations SET withdrawn_at = now() "
+                "WHERE scope_ref_id = %s "
+                "  AND scope_chunk_id IS NOT DISTINCT FROM %s "
+                "  AND source_ref_id = %s "
+                "  AND source_chunk_id IS NOT DISTINCT FROM %s "
+                "  AND withdrawn_at IS NULL",
+                (scope_ref, scope_chunk, source_ref, source_chunk),
+            )
+            n += cur.rowcount or 0
+        return n
+
     def scoped_considerations(
         self, scope_ref_id: int, *, conn: Connection | None = None
     ) -> list[ScopedVerdict]:
-        """Every ``considered`` edge out of one scope, with read-time
-        validity (stale = material scope/source change or a retired
-        source — queued for reconsideration, never silently cleared)."""
+        """Every ``considered`` verdict on one scope — live edges plus
+        orphan judgments whose edge died unwithdrawn — with read-time
+        validity (stale = material scope/source change, a retired
+        source, or an ``edge-lost`` cascade casualty — queued for
+        reconsideration, never silently cleared)."""
 
         def _do(c: Connection) -> list[ScopedVerdict]:
             rows = c.execute(self._SCOPED_SQL, {"scope": scope_ref_id}).fetchall()
@@ -498,19 +615,14 @@ class ConsiderationMixin:
         conn: Connection | None = None,
     ) -> list[ScopedVerdict]:
         """The reconsider queue: ``considered`` verdicts gone stale —
-        a material scope/source change (or a retired source) since the
-        judgment. History is untouched; the queue is derived, so an
-        ordinary edit never clears anything."""
-        if scope_ref_id is not None:
-            return [
-                v
-                for v in self.scoped_considerations(scope_ref_id, conn=conn)
-                if v.stale is not None
-            ]
-        sql = self._SCOPED_SQL.replace("l.src_ref_id = %(scope)s", "TRUE")
+        a material scope/source change, a retired source, or an edge
+        lost to a chunk cascade since the judgment (an explicit
+        withdrawal stamps ``withdrawn_at`` and leaves the queue).
+        History is untouched; the queue is derived, so an ordinary edit
+        never clears anything."""
 
         def _do(c: Connection) -> list[ScopedVerdict]:
-            rows = c.execute(sql).fetchall()
+            rows = c.execute(self._SCOPED_SQL, {"scope": scope_ref_id}).fetchall()
             return [v for v in (self._row_to_scoped(r) for r in rows) if v.stale]
 
         if conn is not None:
