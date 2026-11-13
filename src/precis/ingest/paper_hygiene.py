@@ -41,6 +41,14 @@ ingestion/edit bugs that the current code no longer produces:
   idempotency stamp is the whole heal — the ref falls back into
   ``_claim_batch``'s predicate and the (now title-filling) pass re-runs
   over it. No network here: this only re-arms.
+* :func:`repair_front_matter_metadata` — a paper whose title the
+  junk-title cascade repaired off chunk 0 but whose ``year``/``authors``
+  kept ingest's guesses (ingestion year, blank or ``Nature User``
+  byline): the cover page states both beside the title, and nothing
+  read them (gr658886). Mines the byline/date back out of chunk 0 —
+  year only on explicit publication-date evidence, byline only over
+  placeholders — and stamps ``meta.front_matter_v`` so the pass stays
+  cheap.
 * :func:`heal_bodiless_pdfs` — a live paper that carries a ``pdf_sha256``
   but no body chunk (``ord >= 0``): the PDF leg promoted the stub and
   wrote no text, and nothing journalled why (gr453860). The one heal
@@ -2095,6 +2103,17 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: body-split route before any registry lookup (gr658650).
 _TITLE_REPAIR_VERSION = 2
 
+#: ``meta.front_matter_v`` stamp written once :func:`_apply_front_matter`
+#: has mined a paper's chunk-0 byline/date at the current parser version —
+#: bump it when :mod:`precis.ingest.front_matter` learns to read more of
+#: the cover so the already-swept backlog gets one more pass. Deliberately
+#: separate from :data:`_TITLE_REPAIR_VERSION`: that stamp gates *network*
+#: re-resolution, while this one gates a free SQL-side re-parse — reaching
+#: the stamped-failure backlog through
+#: :func:`repair_front_matter_metadata` instead of re-burning the registry
+#: lookups the title stamp exists to prevent.
+_FRONT_MATTER_VERSION = 1
+
 #: ``meta.entry_type`` values that are articles (Crossref vocabulary —
 #: journal/conference papers and preprints). The junk-title rules are
 #: article-title rules: a dissertation's "Front Matter", a proceedings
@@ -2505,6 +2524,13 @@ def repair_junk_title_papers(
     the recovered DOI is an identifier a person removed, so the stub
     stays live and terminal-stamped for the owner queue instead.
 
+    When no leg vouches for the paper, ``_apply_front_matter`` still reads
+    the chunk-0 byline/date back into ``year``/``authors`` (gr658886) —
+    the title stays junk for the owner queue, but the metadata stops
+    being wrong. The same read reaches papers the cascade already
+    repaired through :func:`repair_front_matter_metadata`, which the
+    ``paper_reconcile`` pass runs right after this one.
+
     A successful leg also closes the paper's open ``paper-title-fix``
     todos — the repair is exactly what they asked for. Terminal outcomes —
     miss and parked alike — stamp ``meta.title_repair_v`` so tomorrow's
@@ -2659,6 +2685,66 @@ def repair_junk_title_papers(
     return outcomes
 
 
+_PLACEHOLDER_AUTHOR_WORDS = frozenset({"user", "anonymous", "unknown", "admin"})
+
+
+def _authors_are_placeholder(authors: Any) -> bool:
+    """True when *authors* is blank or only ingest placeholders
+    (``Nature User``, ``Anonymous``) — safe to overwrite from the byline."""
+    names = author_names(authors or [])
+    return all(
+        not n.strip()
+        or is_junk_author_name(n)
+        or _PLACEHOLDER_AUTHOR_WORDS & {w.lower().strip(".,") for w in n.split()}
+        for n in names
+    )
+
+
+def _apply_front_matter(store: Store, ref: Any, *, dry_run: bool) -> str:
+    """Fix a wrong ``year`` and blank/placeholder ``authors`` from the
+    paper's chunk-0 front matter (gr658886). Real stored authors are never
+    overwritten; the year is, since ingest defaults it to the ingestion
+    year — but only on explicit publication-date evidence (a month-year
+    anchored on the cover, per :func:`parse_front_matter`'s rules, never
+    an editorial ``received``/``revised`` line or a date in body text).
+
+    Stamps ``meta.front_matter_v`` either way so
+    :func:`repair_front_matter_metadata` never re-reads a chunk 0 the
+    parser already settled at this version. Returns a short detail
+    string ("" when nothing changed)."""
+    from precis.ingest.front_matter import parse_front_matter
+    from precis.ingest.metadata_resolve import _chunk0_text
+
+    fm = parse_front_matter(_chunk0_text(store, ref.id), ref.title)
+    year = fm.year if fm.year and fm.year != ref.year else None
+    authors = (
+        fm.authors if fm.authors and _authors_are_placeholder(ref.authors) else None
+    )
+    if year is None and authors is None:
+        if not dry_run:
+            with store.tx() as conn:
+                store.update_paper_fields(
+                    ref.id,
+                    meta_patch={"front_matter_v": _FRONT_MATTER_VERSION},
+                    source=TITLE_FIX_SOURCE,
+                    conn=conn,
+                )
+        return ""
+    if not dry_run:
+        with store.tx() as conn:
+            store.update_paper_fields(
+                ref.id,
+                year=year,
+                authors=authors,
+                meta_patch={"front_matter_v": _FRONT_MATTER_VERSION},
+                source=TITLE_FIX_SOURCE,
+                conn=conn,
+            )
+    return "front-matter:" + ",".join(
+        k for k, v in (("year", year), ("authors", authors)) if v
+    )
+
+
 def _repair_one(
     store: Store,
     ref: Any,
@@ -2782,15 +2868,131 @@ def _repair_one(
     if out is not None:
         return out
 
+    # No registry vouched for it — the chunk-0 byline and date still state
+    # the year and authors the title was read from (gr658886).
+    fm_detail = _apply_front_matter(store, ref, dry_run=dry_run)
+
     transient = any(r in _TRANSIENT_MISS_REASONS for r in reasons)
     if not transient and not dry_run:
         _stamp_title_repair_failed(store, rid, reasons=reasons)
+    if fm_detail:
+        reasons.append(fm_detail)
     return TitleRepairOutcome(
         rid,
         "failed",
         detail=("transient:" if transient else "terminal:")
         + (";".join(r for r in reasons if r) or "no-resolution"),
     )
+
+
+def repair_front_matter_metadata(
+    store: Store,
+    *,
+    dry_run: bool = True,
+    limit: int | None = None,
+    grace_days: int = _TITLE_FIX_GRACE_DAYS,
+) -> list[TitleRepairOutcome]:
+    """Backfill ``year``/``authors`` on papers the title-fix pipeline
+    already touched, from the same chunk-0 front matter the title came
+    off (gr658886).
+
+    The cascade repaired a batch of titles off chunk-0 cover pages but
+    left whatever ``year``/``authors`` ingest had guessed — the
+    ingestion year (1981–1987 tech reports stamped 2009) and a blank or
+    placeholder byline (``Nature User``) — because nothing read the
+    byline/date sitting beside the title. Those papers no longer have
+    junk titles, so :func:`repair_junk_title_papers` never selects them;
+    this sweep reaches them by provenance instead: a ref that carries a
+    title-fix event (``title_repaired``, or ``title_repair_failed`` — a
+    stamped failure's year and byline are just as wrong even while its
+    title still waits on a human) or a title-fix todo. Selecting on
+    events, not on ``title_repair_v``, is deliberate: it reaches the
+    stamped-failure backlog without bumping
+    :data:`_TITLE_REPAIR_VERSION`, which would re-burn the registry
+    lookups that stamp exists to prevent.
+
+    Idempotent: each selected paper is stamped ``meta.front_matter_v``
+    at :data:`_FRONT_MATTER_VERSION` once parsed, whether or not the
+    front matter yielded anything — a deterministic re-parse returns the
+    same nothing, so the stamp is what keeps the daily pass cheap.
+    SQL-only: no network, no Marker. Overwrite rules are
+    :func:`_apply_front_matter`'s: a real stored byline is never
+    touched, and the year moves only on explicit publication-date
+    evidence.
+
+    Returns one :class:`TitleRepairOutcome` per paper the parse changed
+    something on (``action='front-matter'``) or that raised; a paper
+    with nothing to fix is stamped silently.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id,
+                   coalesce(r.meta->>'entry_type', '') AS entry_type
+              FROM refs r
+             WHERE r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND r.human_verified_at IS NULL
+               AND r.created_at < now() - make_interval(days => %s)
+               AND coalesce(CASE
+                     WHEN jsonb_typeof(r.meta->'front_matter_v') = 'number'
+                     THEN (r.meta->>'front_matter_v')::int END, 0)
+                   < %s
+               AND (EXISTS (SELECT 1 FROM ref_events e
+                             WHERE e.ref_id = r.ref_id
+                               AND e.source = %s
+                               AND e.event IN ('title_repaired',
+                                               'title_repair_failed'))
+                    OR EXISTS (SELECT 1 FROM refs t
+                                WHERE t.kind = 'todo'
+                                  AND t.meta->>'source' = %s
+                                  AND t.meta->>'paper_ref_id'
+                                      = r.ref_id::text))
+             ORDER BY r.ref_id
+            """,
+            (
+                grace_days,
+                _FRONT_MATTER_VERSION,
+                TITLE_FIX_SOURCE,
+                TITLE_FIX_SOURCE,
+            ),
+        ).fetchall()
+    ref_ids = [
+        int(r[0])
+        for r in rows
+        # Same document-type gate as the repair cascade (gr515227).
+        if not r[1] or str(r[1]).strip().lower() in _ARTICLE_ENTRY_TYPES
+    ]
+    if limit:
+        ref_ids = ref_ids[:limit]
+
+    ref_map = store.fetch_refs_by_ids(ref_ids)
+    outcomes: list[TitleRepairOutcome] = []
+    clean = 0
+    for rid in ref_ids:
+        ref = ref_map.get(rid)
+        if ref is None:
+            continue
+        try:
+            detail = _apply_front_matter(store, ref, dry_run=dry_run)
+        except Exception:
+            log.exception("repair_front_matter_metadata: ref %d failed", rid)
+            outcomes.append(TitleRepairOutcome(rid, "failed", detail="error"))
+            continue
+        if detail:
+            outcomes.append(TitleRepairOutcome(rid, "front-matter", detail=detail))
+        else:
+            clean += 1
+    # Always logged, like the repair leg's summary: a silent sweep is
+    # indistinguishable from one that never ran.
+    log.info(
+        "repair_front_matter_metadata: swept %d title-touched paper(s); "
+        "%d updated, %d already clean",
+        len(ref_ids),
+        sum(1 for o in outcomes if o.action == "front-matter"),
+        clean,
+    )
+    return outcomes
 
 
 def raise_junk_title_papers(

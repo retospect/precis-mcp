@@ -25,7 +25,11 @@ the system worker at a low cadence so the corpus self-heals:
   issue (gr658690, journaled by
   :func:`~precis.ingest.paper_hygiene.flag_spliced_issue_papers`) or
   reads as 2+ OCR-concatenated articles (gr658650, detected by the
-  body's chunk-keyword divergence). All are
+  body's chunk-keyword divergence);
+  :func:`~precis.ingest.paper_hygiene.repair_front_matter_metadata`
+  backfills ``year``/``authors`` on papers the cascade already touched
+  (the chunk-0 cover states both beside the title it repaired,
+  gr658886). All are
   SQL-only except :func:`~precis.ingest.paper_hygiene.heal_bodiless_pdfs`,
   which may re-run Marker over a held PDF: that leg is capped per pass
   (``PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS``, default 5, ``0`` = judge
@@ -77,6 +81,9 @@ _REFRESH_ENV_VAR = "PRECIS_PAPER_RECONCILE_REFRESH_HOURS"
 _DEFAULT_REFRESH_HOURS = 24.0
 # Max junk-title todos filed per pass (gr477964).
 _TITLE_FIX_PER_PASS = 10
+# Max front-matter metadata sweeps per pass (gr658886) — SQL-only, no
+# network, so a backlog still drains within a couple of passes.
+_FRONT_MATTER_PER_PASS = 50
 
 
 def _due(store: Store) -> bool:
@@ -143,6 +150,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 metadata_hygiene_stats,
                 migrate_dangling_paper_links,
                 raise_junk_title_papers,
+                repair_front_matter_metadata,
                 repair_junk_title_papers,
                 requeue_stranded_fetches,
             )
@@ -245,6 +253,17 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             )
             if raised:
                 log.info("paper_reconcile: raised %d junk-title paper(s)", len(raised))
+            # Papers the cascade already concluded on (title repaired or
+            # stamped failed) still carry ingest's guessed year/byline —
+            # mine them off the same chunk-0 front matter the title came
+            # from (gr658886). SQL-only; stamps front_matter_v once read.
+            fm_repaired = repair_front_matter_metadata(
+                store,
+                dry_run=False,
+                limit=min(limit or _FRONT_MATTER_PER_PASS, _FRONT_MATTER_PER_PASS),
+            )
+            for o in fm_repaired:
+                log.info("paper_reconcile: front-matter %s", o.line())
             stats = metadata_hygiene_stats(store)
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 
@@ -310,6 +329,7 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
                 + len(bodiless_judged)
                 + len(spliced)
                 + len(repaired)
+                + len(fm_repaired)
                 + len(raised)
                 + len(stale_closed)
                 + uploads_swept

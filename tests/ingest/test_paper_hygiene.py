@@ -2357,6 +2357,240 @@ class TestRepairJunkTitlePapers:
         assert any("junk-title" in r.message for r in caplog.records)
 
 
+class TestRepairFrontMatterMetadata:
+    """gr658886: mine year/authors off the same chunk-0 cover the
+    repaired title came from."""
+
+    def _old(
+        self, store: Store, *, slug: str, title: str, year: int | None = None
+    ) -> int:
+        rid = store.insert_ref(kind="paper", slug=slug, title=title).id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days', "
+                "year = %s WHERE ref_id = %s",
+                (year, rid),
+            )
+        return rid
+
+    def _chunk0(self, store: Store, ref_id: int, text: str) -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (ref_id, text),
+            )
+
+    _COVER = (
+        "MIT Artificial Intelligence Laboratory\n"
+        "A Theory of Parsing\n"
+        "Robert C. Berwick and Amy Weinberg\n"
+        "May, 1984\n"
+    )
+
+    def test_sweep_fixes_year_and_placeholder_authors(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+        from precis.utils.authors import author_names
+
+        rid = self._old(store, slug="fm84", title="A Theory of Parsing", year=2009)
+        _legacy_authors(store, rid, [{"name": "Nature User"}])
+        self._chunk0(store, rid, self._COVER)
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        out = repair_front_matter_metadata(store, dry_run=False)
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert "year" in out[0].detail and "authors" in out[0].detail
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.year == 1984
+        names = author_names(ref.authors)
+        assert any("Berwick" in n for n in names)
+        assert any("Weinberg" in n for n in names)
+        assert _meta(store, rid).get("front_matter_v") == 1
+        # Stamped — the next pass doesn't re-read the chunk.
+        assert repair_front_matter_metadata(store, dry_run=False) == []
+
+    def test_sweep_reaches_stamped_failures(self, store: Store) -> None:
+        """A title_repair_v-stamped failure's year is just as wrong even
+        while its title still waits on a human."""
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+
+        rid = self._old(store, slug="fmfail", title="S999_1a 1..3", year=2009)
+        self._chunk0(store, rid, self._COVER)
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repair_failed")
+        out = repair_front_matter_metadata(store, dry_run=False)
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert store.fetch_refs_by_ids([rid])[rid].year == 1984
+
+    def test_sweep_leaves_pipeline_untouched_papers_alone(self, store: Store) -> None:
+        """No title-fix provenance — the sweep never reaches the paper."""
+        from precis.ingest.paper_hygiene import repair_front_matter_metadata
+
+        rid = self._old(store, slug="fmnone", title="A Theory of Parsing", year=2009)
+        self._chunk0(store, rid, self._COVER)
+        assert repair_front_matter_metadata(store, dry_run=False) == []
+        assert store.fetch_refs_by_ids([rid])[rid].year == 2009
+        assert _meta(store, rid).get("front_matter_v") is None
+
+    def test_sweep_never_overwrites_real_authors(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+        from precis.utils.authors import author_names
+
+        rid = self._old(store, slug="fmreal", title="A Theory of Parsing", year=2009)
+        _legacy_authors(store, rid, [{"name": "Jane Doe"}])
+        self._chunk0(store, rid, self._COVER)
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        out = repair_front_matter_metadata(store, dry_run=False)
+        assert [o.action for o in out] == ["front-matter"]
+        assert "year" in out[0].detail and "authors" not in out[0].detail
+        assert author_names(store.fetch_refs_by_ids([rid])[rid].authors) == ["Jane Doe"]
+
+    def test_sweep_dry_run_writes_nothing(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+
+        rid = self._old(store, slug="fmdry", title="A Theory of Parsing", year=2009)
+        self._chunk0(store, rid, self._COVER)
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        out = repair_front_matter_metadata(store, dry_run=True)
+        assert [o.action for o in out] == ["front-matter"]
+        assert store.fetch_refs_by_ids([rid])[rid].year == 2009
+        assert _meta(store, rid).get("front_matter_v") is None
+
+    def test_sweep_ignores_a_sentence_date_near_the_title(self, store: Store) -> None:
+        """gr658886 review: ``Experiments began in May 1984`` beside the
+        title is body grammar, not a cover date — the year must not move."""
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+
+        rid = self._old(store, slug="fmsent", title="A Theory of Parsing", year=2009)
+        _legacy_authors(store, rid, [{"name": "Nature User"}])
+        self._chunk0(
+            store,
+            rid,
+            "A Theory of Parsing\nExperiments began in May 1984.\n",
+        )
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        assert repair_front_matter_metadata(store, dry_run=False) == []
+        assert store.fetch_refs_by_ids([rid])[rid].year == 2009
+        assert _meta(store, rid).get("front_matter_v") == 1
+
+    def test_sweep_drops_a_name_shaped_title_from_the_byline(
+        self, store: Store
+    ) -> None:
+        """gr658886 review: with a junk stored title the byline anchor is
+        the date, and the name-shaped line under the masthead is the
+        cover title — only the real byline is stored."""
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+        from precis.utils.authors import author_names
+
+        rid = self._old(store, slug="fmmast", title="S999_1a 1..3", year=2009)
+        _legacy_authors(store, rid, [{"name": "Nature User"}])
+        self._chunk0(
+            store,
+            rid,
+            "MIT Laboratory\nParsing Systems\nJane Doe\nMay 1984\n",
+        )
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        out = repair_front_matter_metadata(store, dry_run=False)
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.year == 1984
+        assert author_names(ref.authors) == ["Jane Doe"]
+
+    def test_sweep_stores_no_authors_for_an_unbounded_run(self, store: Store) -> None:
+        """gr658886 review (td659776): a wrapped title with no masthead
+        and no title match has no byline boundary — the year still
+        fixes, but the run's second title line is not stored as an
+        author."""
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+        from precis.utils.authors import author_names
+
+        rid = self._old(store, slug="fmnowrap", title="S999_1a 1..3", year=2009)
+        _legacy_authors(store, rid, [{"name": "Nature User"}])
+        self._chunk0(
+            store,
+            rid,
+            "Parsing Systems\nEfficient Algorithms\nJane Doe\nMay 1984\n",
+        )
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        out = repair_front_matter_metadata(store, dry_run=False)
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert "year" in out[0].detail and "authors" not in out[0].detail
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.year == 1984
+        assert author_names(ref.authors) == ["Nature User"]
+
+    def test_sweep_stores_no_authors_under_a_matched_wrapped_title(
+        self, store: Store
+    ) -> None:
+        """gr658886 review (td659776): the stored title matched only the
+        first line of a wrapped cover title — the same unbounded run,
+        so the year still fixes but no title fragment is stored."""
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_front_matter_metadata,
+        )
+        from precis.utils.authors import author_names
+
+        rid = self._old(store, slug="fmmatch", title="Parsing Systems", year=2009)
+        _legacy_authors(store, rid, [{"name": "Nature User"}])
+        self._chunk0(
+            store,
+            rid,
+            "Parsing Systems\nEfficient Algorithms\nJane Doe\nMay 1984\n",
+        )
+        store.append_event(rid, source=TITLE_FIX_SOURCE, event="title_repaired")
+        out = repair_front_matter_metadata(store, dry_run=False)
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "front-matter")]
+        assert "year" in out[0].detail and "authors" not in out[0].detail
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.year == 1984
+        assert author_names(ref.authors) == ["Nature User"]
+
+    def test_failed_title_repair_still_collects_metadata(self, store: Store) -> None:
+        """In-cascade: a junk title no registry can fix still gets its
+        year/byline off the cover before the failure stamps."""
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
+
+        rid = self._old(store, slug="fmcas", title="S999_1a 1..3", year=2009)
+        self._chunk0(store, rid, self._COVER)
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_no_calling(),
+            openalex_fn=_no_calling(),
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [o.action for o in out] == ["failed"]
+        assert "front-matter:" in out[0].detail
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.year == 1984
+        meta = _meta(store, rid)
+        assert meta.get("title_repair_v") == _TITLE_REPAIR_VERSION
+        assert meta.get("front_matter_v") == 1
+
+
 def _no_calling() -> Any:
     def refuse(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("resolver should not be called")
