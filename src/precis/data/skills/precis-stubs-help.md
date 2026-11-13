@@ -113,7 +113,7 @@ set on a non-paper kind.
 ## Open a stub to see where it came up
 
 ```python
-get(kind='paper', id=<ref_id>)
+get(kind='paper', id='pa<N>')  # handle from the mint reply
 ```
 
 A stub has no body yet. `get` shows its metadata and inbound links —

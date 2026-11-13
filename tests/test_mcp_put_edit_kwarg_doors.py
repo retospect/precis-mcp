@@ -129,7 +129,7 @@ def test_edit_paper_doi_upgrades_a_title_only_stub_over_the_mcp_door(
     monkeypatch.setattr(crossref_mod, "lookup_crossref", lambda doi, mailto="": None)
 
     mint_out = tools_core.put(kind="paper", title="A Title-Only Paper Stub")
-    m = re.search(r"paper id=(\d+)", mint_out)
+    m = re.search(r"paper id=pa(\d+)", mint_out)
     assert m is not None, mint_out
     ref_id = int(m.group(1))
 
@@ -156,7 +156,7 @@ def test_edit_paper_doi_empty_string_clears_over_the_mcp_door(
     mint_out = tools_core.put(
         kind="paper", title="A Wrong-DOI Paper Stub", doi="10.1234/wrong-door-test"
     )
-    m = re.search(r"paper id=(\d+)", mint_out)
+    m = re.search(r"paper id=pa(\d+)", mint_out)
     assert m is not None, mint_out
     ref_id = int(m.group(1))
     assert store.identifiers_for_refs([ref_id]).get(ref_id, {}).get("doi") == (
@@ -193,7 +193,7 @@ def test_edit_paper_doi_with_balanced_parens_stores_verbatim_over_the_mcp_door(
     monkeypatch.setattr(crossref_mod, "lookup_crossref", lambda doi, mailto="": None)
 
     mint_out = tools_core.put(kind="paper", title="A Parens-DOI Paper Stub")
-    m = re.search(r"paper id=(\d+)", mint_out)
+    m = re.search(r"paper id=pa(\d+)", mint_out)
     assert m is not None, mint_out
     ref_id = int(m.group(1))
 
@@ -218,7 +218,7 @@ def test_edit_paper_year_and_journal_reach_the_handler_over_the_mcp_door(
     paper's 2022 year and journal). PaperHandler.edit always took both; the
     verb never declared them, so strict-schema clients had no door."""
     mint_out = tools_core.put(kind="paper", title="A Mis-Filed Supplement Stub")
-    m = re.search(r"paper id=(\d+)", mint_out)
+    m = re.search(r"paper id=pa(\d+)", mint_out)
     assert m is not None, mint_out
     ref_id = int(m.group(1))
 

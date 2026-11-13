@@ -140,7 +140,7 @@ SearchFn = Callable[["Store", str, list[int]], list[tuple[int, float | None]]]
 
 #: Parses ``id=N`` out of the ``PaperHandler.acquire`` ack (mirrors
 #: ``_good_search._ID_IN_ACK``).
-_ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
+_ID_IN_ACK = re.compile(r"\bid=(?:pa)?(\d+)\b")
 
 
 @dataclass

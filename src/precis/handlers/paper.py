@@ -2158,7 +2158,7 @@ class PaperHandler(Handler):
             apply_tag_ops(self.store, "paper", ref_id, tags=tags, untags=None)
 
         state = "minted stub" if created else "already tracked"
-        parts = [f"acquire: {state} paper id={ref_id}"]
+        parts = [f"acquire: {state} paper id=pa{ref_id}"]
         if new_authors is not None:
             if created:
                 parts.append(f"(stored {len(new_authors)} supplied authors)")

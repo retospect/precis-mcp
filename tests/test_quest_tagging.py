@@ -324,7 +324,7 @@ class TestAcquireLegBoundedNotUnconditional:
             assert "context_ref_id" not in kw  # item 5: never passed here
             rid = seed_ref(store, title=f"acquired {kw['identifier']}", kind="paper")
             minted.append(rid)
-            return Response(body=f"acquire: minted stub paper id={rid}")
+            return Response(body=f"acquire: minted stub paper id=pa{rid}")
 
         monkeypatch.setattr(PaperHandler, "acquire", _fake_acquire)
 
