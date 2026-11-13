@@ -297,6 +297,7 @@ Imports, `/recent`, and cache hits never need it.
 ## See also
 
 - [[precis-overview]] — verbs and kinds
+- [[precis-literature-search-help]] — where the Perplexity tiers sit in a lit search
 - [[precis-cache]] — TTLs, force-refresh, CACHE:* axis
 - [[precis-math-help]] — facts and world data (Wolfram)
 - [[precis-web-help]] — direct page fetch

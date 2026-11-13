@@ -29,6 +29,9 @@ wasted.
 **Question-shaped pass?** The step order (hubs first, papers the hubs
 do not rest on, one reader per paper, root converges onto hubs) is
 [[precis-read-for-question]]; this file is the quality bar it applies.
+The end-to-end move order across kinds (memory first → corpus →
+verify/widen → escalate → write back) is
+[[precis-literature-search-help]].
 
 ## The quality bar (laundry list — apply every item)
 
@@ -133,7 +136,9 @@ include it in the output.
 
 If your topic has under N citable sources in the corpus (rule of
 thumb: N=3 for sub-topics, 10 for a survey), don't paper over the
-gap with prose. Either:
+gap with prose. The escalation order (cache check → Semantic Scholar →
+Perplexity by tier → gap entry) is [[precis-literature-search-help]]
+step 6. Either:
 
 - Mint a sibling subtask `executor:fetch` to web-search and ingest
   the missing literature (the parent will re-tick when it lands), OR

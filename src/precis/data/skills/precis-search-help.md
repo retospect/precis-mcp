@@ -767,6 +767,7 @@ the local store. CQL details in `precis-patent-search-help`.
 ## See also
 
 - [[precis-overview]] — verbs and kinds
+- [[precis-literature-search-help]] — the end-to-end lit-search procedure across kinds
 - [[precis-paper-help]] — paper-specific search shape
 - [[precis-patent-search-help]] — CQL + reach= matrix
 - [[precis-tags]] — axis vocabulary

@@ -786,6 +786,7 @@ per hop.)
 
 - [[precis-overview]] — verbs and kinds
 - [[precis-search-help]] — search mechanics
+- [[precis-literature-search-help]] — the end-to-end lit-search procedure
 - [[precis-relations]] — related-to, disputes between papers
 - [[precis-tags]] — axis vocabulary
 - [[precis-paper-tag-axes]] — paper-specific axes
