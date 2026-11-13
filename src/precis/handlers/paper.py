@@ -540,7 +540,7 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
 # Identifier prefixes the gated ``acquire`` tool accepts in its
 # ``identifier=`` slot. Bare DOIs (``10....``, including doi.org URL
 # forms) and arXiv ids are inferred without a prefix.
-_ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed")
+_ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed", "pmcid")
 
 
 def _stub_authors(raw: Any) -> list[dict[str, Any]] | None:
@@ -561,16 +561,19 @@ def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
     """Parse an ``acquire`` identifier into an ``(id_kind, id_value)`` pair.
 
     Accepts prefixed forms (``doi:10.1/x``, ``arxiv:2401.00001``,
-    ``s2:<id>``, ``pubmed:<id>``) and infers bare DOIs, URL-form DOIs
-    (``https://doi.org/10.…``, ``doi.org/10.…``), and bare arXiv ids.
-    DOI and arXiv values are canonicalised through
+    ``s2:<id>``, ``pubmed:<id>``, ``pmcid:<PMC…>``) and infers bare
+    DOIs, URL-form DOIs (``https://doi.org/10.…``, ``doi.org/10.…``),
+    and bare arXiv ids. DOI and arXiv values are canonicalised through
     :func:`precis.identity.normalize_doi` / ``normalize_arxiv`` so the
     spellings callers actually paste — ``DOI:10.1/X``, another ``doi:``
     inside the value, a doi.org URL, arXiv URLs and version suffixes —
     collapse to the same ``(kind, canonical)`` pair the
     ``ref_identifiers`` collapse probe and the S2 lookup expect
-    (gr484234). Returns ``None`` when nothing recognisable is found —
-    the caller turns that into a ``BadInput`` with a usage hint.
+    (gr484234). A PMCID canonicalises to ``pmc<digits>`` —
+    ``pmcid:PMC11089570`` and ``pmcid:11089570`` are the same id, in the
+    lowercase form ``ref_identifiers`` stores (gr663681). Returns
+    ``None`` when nothing recognisable is found — the caller turns that
+    into a ``BadInput`` with a usage hint.
     """
     from precis.identity import normalize_arxiv, normalize_doi
 
@@ -585,6 +588,9 @@ def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
                 val = normalize_doi(val) or ""
             elif pfx == "arxiv":
                 val = normalize_arxiv(val) or ""
+            elif pfx == "pmcid":
+                digits = re.sub(r"^pmc", "", val, flags=re.IGNORECASE)
+                val = f"pmc{digits}" if digits.isdigit() else ""
             if not val:
                 return None
             return (pfx, val)
@@ -648,6 +654,15 @@ def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | No
         return get_paper_by_id(f"arxiv:{id_value}", propagate=True)
     if id_kind == "s2":
         return get_paper_by_id(id_value, propagate=True)
+    # S2's paper endpoint accepts ``PMID:<digits>`` / ``PMCID:<PMC…>``
+    # external ids verbatim (the ``pmid:``/``pmcid:`` prefixes the
+    # semanticscholar kind's ``_s2_path_id`` passes through). Stored
+    # pmcid values are ``pmc<digits>`` — S2 wants the ``PMC`` prefix
+    # cased up (gr663681).
+    if id_kind == "pubmed":
+        return get_paper_by_id(f"pmid:{id_value}", propagate=True)
+    if id_kind == "pmcid":
+        return get_paper_by_id(f"pmcid:{id_value.upper()}", propagate=True)
     return None
 
 
@@ -1224,7 +1239,8 @@ class PaperHandler(Handler):
         if ident is None and not (title and title.strip()):
             raise BadInput(
                 "put(kind='paper') mints a stub - pass doi=, arxiv=, "
-                "identifier= (doi:/arxiv:/s2:), citation=, or title=",
+                "identifier= (doi:/arxiv:/s2:/pubmed:/pmcid:), citation=, "
+                "or title=",
                 next="put(kind='paper', doi='10.1038/nature10352')",
             )
         return self.acquire(
@@ -1792,8 +1808,9 @@ class PaperHandler(Handler):
         (``docs/backlog/dreaming.md`` §Acquire) — never ingests inline, no
         download, no Marker, in the dream turn.
 
-        1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:`` or a bare
-           DOI/arXiv id) and best-effort enrich via S2.
+        1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:``/
+           ``pubmed:``/``pmcid:`` or a bare DOI/arXiv id) and
+           best-effort enrich via S2.
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
@@ -1830,7 +1847,7 @@ class PaperHandler(Handler):
         has_title = bool(title and title.strip())
         if not has_identifier and not has_title:
             raise BadInput(
-                "acquire requires identifier= (doi/arxiv/s2) or title=",
+                "acquire requires identifier= (doi/arxiv/s2/pubmed/pmcid) or title=",
                 next="acquire(identifier='doi:10.1/x', reason='cited 5x in cluster')",
             )
 
@@ -1842,7 +1859,8 @@ class PaperHandler(Handler):
                 raise BadInput(
                     f"acquire: unrecognised identifier {identifier!r}",
                     next=(
-                        "use 'doi:10...', 'arxiv:2401.00001', or 's2:<id>' "
+                        "use 'doi:10...', 'arxiv:2401.00001', 's2:<id>', "
+                        "'pubmed:<id>', or 'pmcid:<PMC…>' "
                         "(or pass title= for a backlog-only stub)"
                     ),
                 )
@@ -1904,6 +1922,27 @@ class PaperHandler(Handler):
                             kind_key,
                             str(val).lower() if kind_key == "doi" else str(val),
                         )
+                        if pair not in identifiers:
+                            identifiers.append(pair)
+                # S2's externalIds cluster also carries PubMed / PMC
+                # aliases — register them so a later ``pubmed:`` /
+                # ``pmcid:`` / bare ``PMC…`` lookup collapses onto this
+                # stub instead of minting a twin (gr663681).
+                external = meta.get("external_ids") or {}
+                pubmed_raw = external.get("PubMed")
+                if pubmed_raw and str(pubmed_raw).strip().isdigit():
+                    pair = ("pubmed", str(pubmed_raw).strip())
+                    if pair not in identifiers:
+                        identifiers.append(pair)
+                pmc_raw = external.get("PubMedCentral") or external.get(
+                    "PubMedCentralID"
+                )
+                if pmc_raw:
+                    pmc_digits = re.sub(
+                        r"^pmc", "", str(pmc_raw).strip(), flags=re.IGNORECASE
+                    )
+                    if pmc_digits.isdigit():
+                        pair = ("pmcid", f"pmc{pmc_digits}")
                         if pair not in identifiers:
                             identifiers.append(pair)
             elif resolver_err is not None:

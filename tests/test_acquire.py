@@ -12,7 +12,11 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers import paper as paper_mod
-from precis.handlers.paper import PaperHandler, _parse_acquire_identifier
+from precis.handlers.paper import (
+    PaperHandler,
+    _lookup_acquire_metadata,
+    _parse_acquire_identifier,
+)
 from precis.store import Store
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from tests.conftest import record_handle
@@ -64,6 +68,14 @@ def _tags(store: Store, ref_id: int) -> set[str]:
         ("arxiv:2401.00001", ("arxiv", "2401.00001")),
         ("s2:abc123", ("s2", "abc123")),
         ("pubmed:99", ("pubmed", "99")),
+        # PMCID (gr663681): PMC-prefix optional, value canonicalises to
+        # the lowercase ``pmc<digits>`` form ref_identifiers stores.
+        ("pmcid:PMC11089570", ("pmcid", "pmc11089570")),
+        ("pmcid:pmc11089570", ("pmcid", "pmc11089570")),
+        ("pmcid:11089570", ("pmcid", "pmc11089570")),
+        ("pmcid:", None),
+        ("pmcid:PMC", None),
+        ("pmcid:notanid", None),
         ("10.1038/nature10352", ("doi", "10.1038/nature10352")),
         # Canonicalisation (gr484234): DOI wrappers/case and arXiv
         # version suffixes collapse to the ref_identifiers form.
@@ -85,6 +97,45 @@ def _tags(store: Store, ref_id: int) -> set[str]:
 )
 def test_parse_acquire_identifier(raw: str, expected: tuple[str, str] | None) -> None:
     assert _parse_acquire_identifier(raw) == expected
+
+
+def test_detect_identifier_scheme_pmcid() -> None:
+    """``PMC…`` / ``pmcid:…`` forms resolve through the generic paper
+    identifier door so ``get(kind='paper', id='PMC11089570')`` finds the
+    stub an acquire minted (gr663681). Bare digits stay ``pubmed``."""
+    from precis.store._identifiers_ops import (
+        _normalise_identifier,
+        detect_identifier_scheme,
+    )
+
+    assert detect_identifier_scheme("PMC11089570") == "pmcid"
+    assert detect_identifier_scheme("pmcid:PMC11089570") == "pmcid"
+    assert detect_identifier_scheme("PMC:11089570") == "pmcid"
+    assert detect_identifier_scheme("11089570") == "pubmed"
+    assert _normalise_identifier("pmcid", "PMCID:PMC11089570") == "pmc11089570"
+    assert _normalise_identifier("pmcid", "PMC11089570") == "pmc11089570"
+    assert _normalise_identifier("pmcid", "PMC:11089570") == "pmc11089570"
+    assert _normalise_identifier("pmcid", "pmcid:11089570") == "pmc11089570"
+
+
+def test_lookup_acquire_metadata_routes_pubmed_and_pmcid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pubmed``/``pmcid`` identifiers resolve through S2's external-id
+    endpoint (``PMID:``/``PMCID:``) — the gap that made pmcid acquires
+    unverifiable (gr663681). Calls the real helper, not the autouse
+    stub — the top-level import binds the original function object,
+    unaffected by the fixture's module-attr patch."""
+    calls: list[str] = []
+
+    def _fake(paper_id: str, api_key: str = "", *, propagate: bool = False) -> dict:
+        calls.append(paper_id)
+        return {"title": "resolved"}
+
+    monkeypatch.setattr("precis.ingest.semantic_scholar.get_paper_by_id", _fake)
+    assert _lookup_acquire_metadata("pubmed", "12345678") == {"title": "resolved"}
+    assert _lookup_acquire_metadata("pmcid", "pmc11089570") == {"title": "resolved"}
+    assert calls == ["pmid:12345678", "pmcid:PMC11089570"]
 
 
 # ── guards ──────────────────────────────────────────────────────────
@@ -141,6 +192,56 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     assert second_ref is not None and second_ref.slug is not None
     assert record_handle(store, second_ref.slug) in second.body
     assert "get(id=" in second.body
+
+
+def test_acquire_pmcid_mints_stub(handler: PaperHandler, store: Store) -> None:
+    """gr663681: ``pmcid:`` identifiers queue a stub — the gripe's
+    PMC-only reference could not be put at all."""
+    r = handler.acquire(identifier="pmcid:PMC11089570")
+    assert "minted stub" in r.body
+    rid = _ref_id(r.body)
+    assert ("pmcid", "pmc11089570") in _identifiers(store, rid)
+    assert "DREAM:acquire" in _tags(store, rid)
+
+
+def test_acquire_pmcid_collapses_on_repeat(handler: PaperHandler, store: Store) -> None:
+    """Both spellings of one PMCID land on the same stub."""
+    first = _ref_id(handler.acquire(identifier="pmcid:PMC11089570").body)
+    second = handler.acquire(identifier="pmcid:11089570")
+    assert "already tracked" in second.body
+    assert _ref_id(second.body) == first
+
+
+def test_acquire_registers_pubmed_pmc_aliases_from_s2(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An S2-resolved acquire also registers the externalIds cluster's
+    PubMed / PMC aliases, so a later ``pmcid:``/``PMC…``/``pubmed:``
+    lookup collapses onto the same stub instead of minting a twin."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Resolved Paper",
+            "year": 2024,
+            "doi": "10.9/withpmc",
+            "external_ids": {
+                "DOI": "10.9/withpmc",
+                "PubMed": "99887766",
+                "PubMedCentral": "PMC11089570",
+            },
+        },
+    )
+    r = handler.acquire(identifier="doi:10.9/withpmc")
+    rid = _ref_id(r.body)
+    ids = _identifiers(store, rid)
+    assert ("doi", "10.9/withpmc") in ids
+    assert ("pubmed", "99887766") in ids
+    assert ("pmcid", "pmc11089570") in ids
+    # And the collapse works both directions: a pmcid re-acquire hits.
+    again = handler.acquire(identifier="pmcid:PMC11089570")
+    assert "already tracked" in again.body
+    assert _ref_id(again.body) == rid
 
 
 def _fetch_pin(store: Store, ref_id: int) -> tuple[int | None, str | None, str | None]:

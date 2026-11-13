@@ -142,30 +142,35 @@ class WebHandler(CacheBackedHandler):
         bookmarks) cascade-replace the older entry per
         ``put_cache_entry``'s upsert behaviour.
 
-        Repo URLs: ``slug_from_url`` ignores the query, so a
-        ``?ref=<x>`` pin would share the bare repo's slug and the
-        fetch would overwrite that snapshot in place. Any repo URL
-        carrying a query gets a suffix — ``-ref-<ref>-<hash>`` for the
-        documented pin, a short query hash for anything else — so
+        ``slug_from_url`` ignores the query, so any URL whose content
+        lives in its query string — the query-parameter APIs (NCBI
+        idconv, Crossref, OpenAlex) and every ``?id=``/``?page=`` page
+        — used to collapse onto the bare path's slug, where the second
+        distinct URL tripped ``_guard_slug_collision`` and could never
+        be fetched (gr663681). Any canonical URL carrying a query
+        therefore gets a ``-q-<sha256(query)[:8]>`` tail: same query →
+        same slug (request-hash dedup still applies), different query →
+        a different row. Tracking-param-only URLs canonicalise to an
+        empty query and keep the clean slug.
+
+        Repo URLs get a richer suffix — ``-ref-<ref>-<hash>`` for the
+        documented pin, the same ``-q-<hash>`` for anything else — so
         distinct pins keep distinct rows. The pin hash covers the full
         unsanitised ref because the readable form collapses (``v1.0``
         and ``v1-0`` both slug to ``v1-0``): without it the second pin
         would still land on the first snapshot's row.
         """
         slug = slug_from_url(key)
+        query = urlsplit(key).query
+        if not query:
+            return slug or "web-fetch"
         target = parse_repo_url(key)
-        if target is not None and urlsplit(key).query:
-            if target.ref is not None:
-                ref_slug = _SLUG_STRIP_RE.sub("-", target.ref.lower()).strip("-")
-                digest = hashlib.sha256(target.ref.encode("utf-8")).hexdigest()[:8]
-                suffix = f"ref-{ref_slug[:24] or 'x'}-{digest}"
-            else:
-                digest = hashlib.sha256(
-                    urlsplit(key).query.encode("utf-8")
-                ).hexdigest()[:8]
-                suffix = f"q-{digest}"
-            slug = f"{slug}-{suffix}"
-        return slug or "web-fetch"
+        if target is not None and target.ref is not None:
+            ref_slug = _SLUG_STRIP_RE.sub("-", target.ref.lower()).strip("-")
+            digest = hashlib.sha256(target.ref.encode("utf-8")).hexdigest()[:8]
+            return f"{slug}-ref-{ref_slug[:24] or 'x'}-{digest}"
+        digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:8]
+        return f"{slug}-q-{digest}" if slug else f"web-fetch-q-{digest}"
 
     def _recover_key(self, ref, cache):
         """Return the canonical URL stored in cache meta.
@@ -183,8 +188,9 @@ class WebHandler(CacheBackedHandler):
         hash missed but the derived slug matched a live row, and the
         base ``get`` would refresh that row in place — silently
         replacing one snapshot's body with another's. The
-        ``-ref-<x>-<hash>`` tail separates ``?ref=`` pins, so a slug
-        match on a different canonical URL is a genuine collision
+        ``-ref-<x>-<hash>`` / ``-q-<hash>`` tails separate ``?ref=``
+        pins and query-string variants, so a slug match on a
+        different canonical URL is a genuine collision
         (60-char slug truncation, a hash-tail match) rather than the
         routine case. Entries written before ``url`` was tracked in
         meta cannot be compared and keep the in-place refresh.

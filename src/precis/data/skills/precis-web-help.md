@@ -112,6 +112,10 @@ After canonicalisation the URL is the id and the slug. The same page
 served from `HTTPS://Example.COM/x?utm_source=tw` and
 `https://example.com/x` is one cache row.
 
+A surviving query string is part of the identity: `…/api?ids=A` and
+`…/api?ids=B` are different pages, so a query-bearing URL slugs with a
+`-q-<hash>` tail and each distinct query keeps its own row.
+
 ## Why did the same URL produce different cache entries?
 ## What happens to #fragments and tracking params?
 ## Per-host fragment handling — the SPA gotcha

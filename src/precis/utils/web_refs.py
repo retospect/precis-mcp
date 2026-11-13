@@ -28,6 +28,7 @@ import hashlib
 import logging
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from precis.errors import BadInput
 from precis.store.types import ChunkInsert
@@ -177,6 +178,16 @@ def _mint_stub(store: Store, *, key: str, request_hash: str, origin: str) -> int
     row — ``put_cache_entry`` refuses those with ``BadInput``).
     """
     slug = slug_from_url(key) or "web-fetch"
+    # ``-q-<sha256(query)[:8]>`` — the query-tail form
+    # ``WebHandler._slug_for`` mints (gr663681). Without it a cited
+    # ``…?ids=111`` stub held the bare path's slug and its stored URL
+    # then refused a bare-path fetch through ``_guard_slug_collision``.
+    # Repo ``?ref=`` pins get the plain ``-q-`` tail here rather than
+    # the handler's readable ``-ref-<ref>-<hash>`` — cosmetic only:
+    # refetch resolves the stub by ``request_hash``, not by slug.
+    query = urlsplit(key).query
+    if query:
+        slug = f"{slug}-q-{hashlib.sha256(query.encode('utf-8')).hexdigest()[:8]}"
     taken = store.get_cache_entry_by_slug(kind="web", slug=slug)
     if taken is not None:
         if taken[1].request_hash == request_hash:

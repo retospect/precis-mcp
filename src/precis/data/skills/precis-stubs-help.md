@@ -128,6 +128,8 @@ the finding or paper that cited it lives on the other end of a
 put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
 put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
 put(kind="paper", identifier="s2:<id>")  # or a Semantic Scholar id
+put(kind="paper", identifier="pubmed:<pmid>")  # or a PubMed id
+put(kind="paper", identifier="pmcid:PMC11089570")  # or a PMC id
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 ```
 
@@ -136,7 +138,7 @@ into this backlog; it never writes a body (paper bodies are
 import-only, via `.acatome` ingest). Idempotent: a paper already held
 or already wanted is a no-op.
 
-A **DOI / arXiv / S2 id is strongly preferred** — the stub carries the
+A **DOI / arXiv / S2 / PubMed / PMC id is strongly preferred** — the stub carries the
 id, and an explicit `put` jumps the fetch queue: the stub is pinned to
 the front (`prio=1`) so `fetch_oa` tries it on its very next pass —
 re-requesting an already-wanted stub re-pins it, including one

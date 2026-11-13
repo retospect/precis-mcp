@@ -236,6 +236,63 @@ def test_canonicalization_collapses_variants(handler: WebHandler) -> None:
     assert ref.slug == expected_slug
 
 
+# ── query-string slugs (gr663681) ────────────────────────────────────
+#
+# ``slug_from_url`` keys on host+path only, so two URLs differing only
+# in their query used to mint the same slug — and the second fetch was
+# refused by ``_guard_slug_collision`` ("Refusing to overwrite"), which
+# permanently blocked every query-parameter API (NCBI idconv, Crossref,
+# OpenAlex) after its first call. Any canonical URL carrying a query
+# now mints a ``-q-<sha256(query)[:8]>`` tail, so each distinct query
+# keeps its own cache row.
+
+
+def test_query_urls_mint_distinct_slugs(handler: WebHandler) -> None:
+    """The gr663681 case: ``?ids=A`` and ``?ids=B`` are different
+    documents and must each be fetchable."""
+    handler.get(id="https://example.com/api/convert?ids=111&format=json")
+    handler.get(id="https://example.com/api/convert?ids=222&format=json")
+    ref_a, _ = _cache_row(
+        handler, "https://example.com/api/convert?ids=111&format=json"
+    )
+    ref_b, _ = _cache_row(
+        handler, "https://example.com/api/convert?ids=222&format=json"
+    )
+    assert ref_a.id != ref_b.id
+    assert ref_a.slug.startswith("example-com-api-convert-q-")
+    assert ref_b.slug.startswith("example-com-api-convert-q-")
+    assert ref_a.slug != ref_b.slug
+
+
+def test_query_slug_tail_is_a_query_hash(handler: WebHandler) -> None:
+    """The tail is ``-q-<sha256(query)[:8]>`` — deterministic, so the
+    same URL always mints the same slug."""
+    import hashlib
+
+    url = "https://example.com/api/convert?ids=111&format=json"
+    handler.get(id=url)
+    ref, _ = _cache_row(handler, url)
+    digest = hashlib.sha256(b"ids=111&format=json").hexdigest()[:8]
+    assert ref.slug == f"example-com-api-convert-q-{digest}"
+
+
+def test_query_slug_round_trips_through_get(handler: WebHandler) -> None:
+    """A ``-q-`` slug round-trips through ``get(id=<slug>)`` like any
+    other web slug — the printed listing trailer stays honest."""
+    handler.get(id="https://example.com/api/convert?ids=111&format=json")
+    ref, _ = _cache_row(handler, "https://example.com/api/convert?ids=111&format=json")
+    resp = handler.get(id=ref.slug)
+    assert "first real paragraph" in resp.body
+
+
+def test_tracking_only_query_keeps_plain_slug(handler: WebHandler) -> None:
+    """``utm_*`` params strip at canonicalisation, so a tracking-only
+    query still mints the clean path slug — no ``-q-`` tail."""
+    handler.get(id="https://example.com/article?utm_source=newsletter")
+    ref, _ = _cache_row(handler, "https://example.com/article")
+    assert ref.slug == "example-com-article"
+
+
 # ── content_sha256 (web anchor, migration 0202) ──────────────────────
 
 
