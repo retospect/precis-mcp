@@ -205,7 +205,9 @@ objective:                        # stored now; the (T, p_total) sweep acts on i
 - Configs without a block price exactly as before (1 bar fallback with a
   warning). Every solve reports `q_over_k`, the `environment_basis` hash
   (folded into the network basis: measures compare only on an equal
-  environment) and per-step reversibility in `view='kinetics'`.
+  environment) and per-step reversibility in `view='kinetics'`, which
+  also renders the record's coverages per site class and reaction orders
+  per gas.
 
 ## Look up a stored environment point without computing
 

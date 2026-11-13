@@ -1298,13 +1298,17 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     the largest electronic barrier, so a dossier can cite ``pw<id>~<label>``.
     A barrier maximum alone cannot establish rate control of the solved cycle.
 
-    Honest v1 only: no steady-state coverages, no degree-of-rate-control — both
-    need a full microkinetic solve (site balance, reverse rates) this view does
-    not attempt; faking them would be worse than not having them. When the
-    aggregate's solve record is present (``results.kinetics_v2``, the v1
-    ``results.kinetics`` block filling what the record lacks, engine >= 0.33)
-    its environment, Q/K and per-transition reversibility follow the Eyring
-    table, read verbatim from that record (:func:`_solve_lines`).
+    Without a solve record the view is honest v1 only: no steady-state
+    coverages, no degree-of-rate-control — both need a full microkinetic
+    solve (site balance, reverse rates) this view does not attempt; faking
+    them would be worse than not having them. When the aggregate's solve
+    record is present (``results.kinetics_v2``, the v1 ``results.kinetics``
+    block filling what the record lacks, engine >= 0.33) the record leads —
+    environment, Q/K, per-site-class coverages, reaction orders per gas,
+    per-transition reversibility and degree of rate control read verbatim
+    off it (:func:`_solve_lines`), closing on pointers to ``view='tpd'``
+    and ``view='kinetics-sweep'`` — and the Eyring table follows below as
+    the per-edge rate digest and ``pw<id>~<label>`` citation source.
 
     ``T_k`` tracks the recorded environment: the kinetics solve's own T
     (:func:`precis.utils.pathway_conditions.kinetics_environment`), else the
@@ -1346,7 +1350,8 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     table = toon.dump(rows, schema=["reaction", "Ea_eV", "k_f_/s", "tau_s", "conf"])
 
     results = meta.get("results") or {}
-    v2_rec = results.get("kinetics_v2")
+    v2 = results.get("kinetics_v2")
+    v2_rec = v2 if isinstance(v2, dict) else None
     lines = []
     engine = trust_gate.kinetics_engine_version(meta)
     current_engine = _autocatpath_current_version()
@@ -1357,12 +1362,15 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
             else "current"
         )
         lines.append(f"kinetics engine {engine} ({status}; current {current_engine})")
-    if isinstance(v2_rec, dict):
+    if v2_rec is not None:
         lines += [
             *_v2_status_lines(v2_rec, results.get("target") or target),
             "",
         ]
-    lines += [
+
+    # The per-edge Eyring digest — kept below the record block as the only
+    # per-edge rate table and the pw<id>~<label> citation source.
+    eyring = [
         f"{root} → {target} — microkinetics (Eyring TST, T = {T_k:.0f} K)",
         "",
         table,
@@ -1373,44 +1381,55 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         k_rl = _eyring_rate(rl["ea"], T_k)
         tau_rl = 1.0 / k_rl if k_rl == k_rl and k_rl > 0 else float("nan")
         flag = "  [LOW CONFIDENCE]" if rl["low_confidence"] else ""
-        lines.append(
+        eyring.append(
             f"Rate-limiting step: {rl['step']} (Ea = {_ea_str(rl['ea'])} eV, "
             f"τ ≈ {_rate_str(tau_rl)} s){flag}"
         )
-        lines.append("")
+        eyring.append("")
     prefactor = _KB_EV_PER_K * T_k / _H_EV_S
-    lines.append(
+    eyring.append(
         "Barriers are electronic (NEB, no ZPE/entropy). Eyring pre-exponential "
         f"A = k_B·T/h ≈ {prefactor:.1e} /s at {T_k:.0f} K; residence times "
         "ignore reverse reactions and surface-coverage effects."
     )
     kin = results.get("kinetics")
-    v2 = results.get("kinetics_v2")
     drc_record = kin if isinstance(kin, dict) else {}
     # D8 reader flip: the v2 record answers first; the v1 block fills what
     # the record lacks (``environment_basis``, ``product`` — it holds
     # neither) through a shallow merge — a v1 value survives only where the
     # record's own is absent (``None`` fields never erase).
-    if isinstance(v2, dict):
+    if v2_rec is not None:
         merged = dict(kin) if isinstance(kin, dict) else {}
-        merged.update({k: val for k, val in v2.items() if val is not None})
-        if isinstance(v2.get("drc"), dict):
-            drc_record = v2
+        merged.update({k: val for k, val in v2_rec.items() if val is not None})
+        if isinstance(v2_rec.get("drc"), dict):
+            drc_record = v2_rec
             # A v1 source stamp cannot establish provenance for v2 values.
-            merged["drc_source"] = v2.get("drc_source")
+            merged["drc_source"] = v2_rec.get("drc_source")
         else:
             # Nor can v2 provenance label sensitivities inherited from v1.
             merged["drc_source"] = (
                 kin.get("drc_source") if isinstance(kin, dict) else None
             )
-        kin = merged
-    if isinstance(kin, dict):
-        lines += [
-            "",
-            *_solve_lines(
-                kin, product=results.get("target") or target, drc_record=drc_record
-            ),
-        ]
+        # The record leads: environment, Q/K, coverages, orders,
+        # reversibility, DRC and the view pointers, read off the record.
+        lines += _solve_lines(
+            merged,
+            product=results.get("target") or target,
+            drc_record=drc_record,
+            v2=v2_rec,
+        )
+        lines += ["", *eyring]
+    else:
+        lines += eyring
+        if isinstance(kin, dict):
+            lines += [
+                "",
+                *_solve_lines(
+                    kin,
+                    product=results.get("target") or target,
+                    drc_record=drc_record,
+                ),
+            ]
     # gr553328: the solve ran at its own environment — state it beside the
     # profile's gas pricing so the kT·ln(p/p°) difference is on the page.
     cond_note = pathway_conditions.conditions_note(meta)
@@ -1694,17 +1713,80 @@ def _environment_line(env: dict[str, Any], basis: Any) -> str:
     return "Environment: " + "; ".join(parts)
 
 
+def _coverage_lines(coverages: Any) -> list[str]:
+    """The v2 record's steady-state coverages θ, one row per site class and
+    species — ``*`` is the vacant site (ruling me568628: the header names
+    no model — MF gives DRC, KMC gives TOF and coverages). Classes rank
+    by their largest θ, species by θ then name; ``None``/non-finite
+    entries and emptied classes drop out. Nothing usable → the ``none on
+    this record`` line, never silence."""
+    classes: list[tuple[str, list[tuple[str, float]]]] = []
+    if isinstance(coverages, dict):
+        for cls, table in coverages.items():
+            if not isinstance(table, dict):
+                continue
+            species = [
+                (str(sp), float(v))
+                for sp, v in table.items()
+                if isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+            ]
+            if species:
+                species.sort(key=lambda kv: (-kv[1], kv[0]))
+                classes.append((str(cls), species))
+    if not classes:
+        return ["Coverages: none on this record"]
+    classes.sort(key=lambda c: (-c[1][0][1], c[0]))
+    rows = [
+        {"site_class": cls, "species": sp, "theta": format(v, ".3g")}
+        for cls, species in classes
+        for sp, v in species
+    ]
+    return [
+        "Coverages (θ per site class; * = vacant site):",
+        toon.dump(rows, schema=["site_class", "species", "theta"]),
+    ]
+
+
+def _order_lines(orders: Any) -> list[str]:
+    """The v2 record's reaction orders per gas (the ``order_<gas>`` scalars
+    the harvest lifts), gas-name order; ``None``/non-finite values drop
+    out. Nothing usable → the ``none on this record`` line."""
+    rows = []
+    if isinstance(orders, dict):
+        rows = [
+            {"gas": str(g), "order": f"{float(v):+.2f}"}
+            for g, v in sorted(orders.items(), key=lambda kv: str(kv[0]))
+            if isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and math.isfinite(v)
+        ]
+    if not rows:
+        return ["Reaction orders: none on this record"]
+    return [
+        "Reaction orders:",
+        toon.dump(rows, schema=["gas", "order"]),
+    ]
+
+
 def _solve_lines(
     kin: dict[str, Any],
     product: str | None = None,
     *,
     drc_record: dict[str, Any] | None = None,
+    v2: dict[str, Any] | None = None,
 ) -> list[str]:
     """The steady-state solve's environment, Q/K and per-step reversibility
     (``results_json['kinetics_v2']`` — the v1 block's fields survive the
     caller's merge where the record lacks them); empty on an older solve
     that carries none of them.  ``product`` is the pathway target — the
-    record itself holds no product field."""
+    record itself holds no product field.  ``v2`` is the raw v2 record:
+    given a dict, its coverages and reaction orders render between Q/K
+    and reversibility — read off the record, not the merge, so a null v2
+    field cannot fall through to a stale flat v1 value (v1's
+    ``{"NO@fcc": 0.61}`` belongs to a different solve) — and the pointers
+    to ``view='tpd'``/``view='kinetics-sweep'`` close the block."""
     out: list[str] = []
     env = kin.get("environment")
     if isinstance(env, dict):
@@ -1715,6 +1797,9 @@ def _solve_lines(
             f"Q/K (overall {kin.get('product') or product or 'product'} formation) = {_num_str(qk)}"
             " — 1 is equilibrium, ≪ 1 is driven forward"
         )
+    if isinstance(v2, dict):
+        out += ["", *_coverage_lines(v2.get("coverages"))]
+        out += ["", *_order_lines(v2.get("orders"))]
     z = kin.get("reversibility")
     if isinstance(z, dict) and z:
         rows = [{"transition": name, "z_rev/fwd": _num_str(v)} for name, v in z.items()]
@@ -1744,6 +1829,12 @@ def _solve_lines(
                     schema=["transition", "X_RC"],
                 )
             )
+    if isinstance(v2, dict):
+        out += [
+            "",
+            "TPD table: view='tpd'",
+            "(T, p_total) sweep and optimum: view='kinetics-sweep'",
+        ]
     return out
 
 

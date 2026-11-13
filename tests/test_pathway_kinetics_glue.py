@@ -1375,6 +1375,132 @@ def test_kinetics_view_leads_with_the_v2_solve_status():
     assert body.index("v2 solve:") < body.index("microkinetics (Eyring TST")
 
 
+# --- view='kinetics' renders the record's coverages and orders (td569597) ------
+
+
+def test_kinetics_view_renders_coverages_per_site_class():
+    """The v2 record's coverages render one row per site class and species
+    — classes by their largest theta (hcp's full vacancy leads fcc),
+    species by theta descending, ``*`` kept and named the vacant site.
+    Keys go in shortest-first, the order a jsonb read returns them
+    (gr549757's prod shape), so the view's own sort is what shows."""
+    from precis_pathway.toon_views import kinetics_text
+
+    v2 = {
+        "tof_mf": 1.0e-3,
+        "coverages": {
+            "fcc": {
+                "N": 0.348,
+                "HNO": 0.056,
+                "NOH": 0.002,
+                "HNOH": 0.347,
+                "H2NO": 0.247,
+            },
+            "hcp": {"*": 1.0, "O": 1e-6},
+        },
+    }
+    meta = {
+        "graph": _GRAPH,
+        "results": {"pathway": ["A", "B"], "target": "NH3", "kinetics_v2": v2},
+    }
+    body = kinetics_text(meta)
+    assert "* = vacant site" in body
+    section = body.split("Coverages", 1)[1]
+    assert section.index("hcp") < section.index("fcc")
+    fcc_rows = [
+        section.index(f"fcc\t{sp}\t") for sp in ("N", "HNOH", "H2NO", "HNO", "NOH")
+    ]
+    assert fcc_rows == sorted(fcc_rows)
+    for theta in ("0.348", "0.347", "0.247", "0.056", "0.002"):
+        assert theta in section
+
+
+def test_kinetics_view_renders_orders_per_gas():
+    """Reaction orders render per gas in gas-name order, signed 2 dp; a
+    ``None`` order (unsolved gas) drops its row entirely."""
+    from precis_pathway.toon_views import kinetics_text
+
+    v2 = {
+        "tof_mf": 1.0e-3,
+        "orders": {"NO": 0.5, "NH3": -0.1, "H2": None},
+    }
+    meta = {
+        "graph": _GRAPH,
+        "results": {"pathway": ["A", "B"], "target": "NH3", "kinetics_v2": v2},
+    }
+    body = kinetics_text(meta)
+    section = body.split("Reaction orders", 1)[1].split("TPD table", 1)[0]
+    assert "+0.50" in section and "-0.10" in section
+    assert section.index("NH3\t-0.10") < section.index("NO\t+0.50")
+    assert "H2" not in section
+
+
+def test_kinetics_view_leads_with_the_record():
+    """With a v2 record the record block — coverages, orders, the view
+    pointers — precedes the per-edge Eyring table; the body still opens
+    on the v2 status and the Eyring digest stays as the per-edge rate
+    table and pw<id>~<label> citation source."""
+    from precis_pathway.toon_views import kinetics_text
+
+    v2 = {
+        "tof_mf": 1.0e-3,
+        "coverages": {"fcc": {"*": 0.1, "N": 0.9}},
+        "orders": {"NO": 0.5},
+    }
+    meta = {
+        "graph": _GRAPH,
+        "results": {"pathway": ["A", "B"], "target": "NH3", "kinetics_v2": v2},
+    }
+    body = kinetics_text(meta)
+    assert body.startswith("v2 solve:")
+    eyring = body.index("microkinetics (Eyring TST")
+    assert body.index("Coverages") < eyring
+    assert body.index("Reaction orders") < eyring
+    assert "TPD table: view='tpd'" in body
+    assert "(T, p_total) sweep and optimum: view='kinetics-sweep'" in body
+    assert "A→B" in body  # the Eyring table stays
+
+
+def test_kinetics_view_says_when_coverages_and_orders_are_absent():
+    """A failed mean-field solve stores ``coverages: None``; a v1 flat
+    coverage map beside it belongs to a different solve and never leaks
+    through the merge — the view says ``none on this record`` twice."""
+    from precis_pathway.toon_views import kinetics_text
+
+    meta = {
+        "graph": _GRAPH,
+        "results": {
+            "pathway": ["A", "B"],
+            "target": "NH3",
+            "kinetics": {"tof": 1.0e-4, "coverages": {"X@fcc": 0.9}},
+            "kinetics_v2": {"tof_chain": 1.0e-9, "coverages": None},
+        },
+    }
+    body = kinetics_text(meta)
+    assert "Coverages: none on this record" in body
+    assert "Reaction orders: none on this record" in body
+    assert "X@fcc" not in body
+
+
+def test_kinetics_view_without_a_v2_record_is_unchanged():
+    """A v1-only pathway keeps today's order: the Eyring header leads —
+    no coverages block, no reaction orders, no view pointers."""
+    from precis_pathway.toon_views import kinetics_text
+
+    meta = {
+        "graph": _GRAPH,
+        "results": {
+            "pathway": ["A", "B"],
+            "target": "NH3",
+            "kinetics": {"tof": 1.0e-4, "q_over_k": 5.0},
+        },
+    }
+    body = kinetics_text(meta)
+    assert body.startswith("A → B — microkinetics (Eyring TST")
+    assert "Coverages" not in body
+    assert "view='tpd'" not in body
+
+
 # --- mf_status display (engine >= the one stamping it) ----------------------------
 
 
