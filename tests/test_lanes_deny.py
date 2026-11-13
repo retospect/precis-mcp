@@ -32,6 +32,7 @@ import pytest
 from precis import settings as psettings
 from precis.plans import lanes
 from precis.store import Store
+from precis.store.types import Tag
 from tests._policy_scan import (
     ScanIncomplete,
     gitignore_matcher,
@@ -398,3 +399,63 @@ def test_human_only_matching_is_case_insensitive() -> None:
         "Docs/Guide/CLAUDE.MD",
     ):
         assert lanes.human_only_hits([path]) == [path], path
+
+
+# ── repo: guard (td659522 step 0) ──────────────────────────────────
+
+
+def test_open_repos_setting_is_db_only() -> None:
+    spec = psettings.REGISTRY["factory.open_repos"]
+    assert spec.env_var is None and spec.default is None
+
+
+def test_repo_tags_reads_tag_objects_and_strings() -> None:
+    tags = [
+        Tag.closed("STATUS", "open"),
+        Tag.open("repo:catpath"),
+        "repo:catpath",
+        "thread:factory",
+        Tag.open("repo:precis"),
+    ]
+    assert lanes.repo_tags(tags) == ["catpath", "precis"]
+
+
+def test_repo_refusal_fails_closed() -> None:
+    # No tag and repo:precis build here; the store is not even read.
+    assert lanes.repo_refusal([], object()) is None
+    assert lanes.repo_refusal(["precis"], object()) is None
+    # A repo without a build profile is refused whatever the setting says.
+    unknown = lanes.repo_refusal(["catpath"], None)
+    assert unknown is not None and "no factory build profile" in unknown
+    both = lanes.repo_refusal(["both"], None)
+    assert both is not None and "repo:both" in both
+    two = lanes.repo_refusal(["precis", "catpath"], None)
+    assert two is not None and "2 repo: tags" in two
+
+
+def test_a_known_repo_stays_closed_without_a_readable_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lanes, "KNOWN_REPOS", ("precis", "catpath"))
+    for s in (None, object()):
+        assert lanes.open_repos(s) == frozenset({"precis"})
+        err = lanes.repo_refusal(["catpath"], s)
+        assert err is not None and "factory.open_repos" in err
+
+
+@pytest.mark.db
+def test_open_repos_lists_only_known_names(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert lanes.open_repos(store) == frozenset({"precis"})
+    psettings.set_setting("factory.open_repos", "catpath, hexfold", store=store)
+    try:
+        # Listed but profile-less: the setting alone opens nothing.
+        assert lanes.open_repos(store) == frozenset({"precis"})
+        assert lanes.repo_refusal(["catpath"], store) is not None
+        monkeypatch.setattr(lanes, "KNOWN_REPOS", ("precis", "catpath"))
+        assert lanes.open_repos(store) == frozenset({"precis", "catpath"})
+        assert lanes.repo_refusal(["catpath"], store) is None
+        assert lanes.repo_refusal(["hexfold"], store) is not None
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)

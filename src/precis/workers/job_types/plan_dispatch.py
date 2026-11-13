@@ -3485,6 +3485,16 @@ def _excluded(plan: _Plan, n: _Node) -> bool:
     return False
 
 
+def _node_repos(plan: _Plan, n: _Node) -> list[str]:
+    """The ``repo:`` values governing ``n``: its own, else the nearest
+    tagged ancestor's (the reach of :func:`_excluded`)."""
+    for node in (n, *plan.ancestors(n)):
+        repos = _lanes.repo_tags(node.open_tags)
+        if repos:
+            return repos
+    return []
+
+
 def _claims(n: _Node) -> list[str]:
     return [v for v in n.open_tags if v.startswith("claimed-by:")]
 
@@ -5217,6 +5227,13 @@ def _step_dispatch(
     deny = _lanes.deny_paths_for(w.store) + _governs.governed_skill_paths()
     for n in candidates:
         if _excluded(plan, n) or _claims(n) or plan.live_job(n):
+            continue
+        # td659522 step 0: every op on a node tagged for another repo is
+        # skipped before any routing, escalation or ask — the builder,
+        # reviewer and lander all assume a precis worktree.
+        repo_problem = _lanes.repo_refusal(_node_repos(plan, n), w.store)
+        if repo_problem is not None:
+            res.notes.append(f"td{n.id}: not dispatched — {repo_problem}")
             continue
         if n.id in held:
             res.notes.append(

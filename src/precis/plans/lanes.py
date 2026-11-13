@@ -342,6 +342,88 @@ def deny_paths_for(store: Any) -> tuple[str, ...]:
     return STRICT_DENY
 
 
+#: The repo a slice builds in when neither its todo nor an ancestor
+#: carries a ``repo:`` tag.
+DEFAULT_REPO = "precis"
+
+#: Repos ``run_slice`` has a build profile for (worktree root, gates,
+#: lander). A ``repo:`` value outside this set is refused however the
+#: setting reads: without a profile the slice would be built in a precis
+#: worktree (td659522 step 0; the catpath profile joins in step 1).
+KNOWN_REPOS: tuple[str, ...] = (DEFAULT_REPO,)
+
+_REPO_TAG = "repo:"
+
+
+def repo_tags(tags: Iterable[Any]) -> list[str]:
+    """The ``repo:<name>`` values among ``tags`` (tag objects or their
+    string form), in order, deduplicated."""
+    names = [
+        str(t)[len(_REPO_TAG) :].strip() for t in tags if str(t).startswith(_REPO_TAG)
+    ]
+    return list(dict.fromkeys(names))
+
+
+def open_repos(store: Any) -> frozenset[str]:
+    """The repos the factory may build in, resolved at call time:
+    :data:`DEFAULT_REPO` always, plus each :data:`KNOWN_REPOS` name the
+    DB-only setting ``factory.open_repos`` lists (comma-separated).
+
+    ``store is None``, an unreadable store or the row absent all return
+    the default alone. Like :func:`deny_paths_for`, the stored
+    ``app_settings`` row is the ONLY input, so a slice editing
+    ``src/precis/settings.py`` cannot open a repo for itself.
+    """
+    default = frozenset({DEFAULT_REPO})
+    if store is None:
+        return default
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s",
+                ("factory.open_repos",),
+            ).fetchone()
+    except Exception:
+        log.warning("lanes.open_repos: setting unreadable; default repo only")
+        return default
+    if row is None:
+        return default
+    listed = {part.strip() for part in str(row[0]).split(",")}
+    return default | (listed & set(KNOWN_REPOS))
+
+
+def repo_refusal(repos: Iterable[str], store: Any) -> str | None:
+    """Why a slice whose todo resolves to the ``repo:`` values ``repos``
+    may not be built, or ``None`` when it may.
+
+    No tag or ``repo:precis`` builds here. Anything else fails closed:
+    more than one value, a value without a build profile
+    (:data:`KNOWN_REPOS`), or a known repo ``factory.open_repos`` does
+    not list.
+    """
+    names = list(dict.fromkeys(repos))
+    if not names or names == [DEFAULT_REPO]:
+        return None
+    if len(names) > 1:
+        return (
+            f"the todo carries {len(names)} repo: tags "
+            f"({', '.join(names)}); next: split it into one todo per repo"
+        )
+    name = names[0]
+    if name not in KNOWN_REPOS:
+        return (
+            f"repo:{name} has no factory build profile "
+            f"(known: {', '.join(KNOWN_REPOS)}); next: build it by hand in that "
+            "repo, or retag the todo"
+        )
+    if name not in open_repos(store):
+        return (
+            f"repo:{name} is not opened for the factory; next: list it in "
+            "the DB setting factory.open_repos"
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class Lane:
     """One scheduler slot: adapter + credential pool + concurrency cap.

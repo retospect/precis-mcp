@@ -639,6 +639,13 @@ The other settings a slice host reads:
   (`PRECIS_SLICE_OPS_DIR` overrides the parent), not the service account's
   `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned
   home cache (a `sudo` bootstrap) killed every Bash hook in jo546987.
+- Slices build in the precis repo only. A todo tagged `repo:<name>` other
+  than `repo:precis` (its own tag, else its nearest tagged ancestor's) is
+  skipped by `plan_dispatch` and refused by `run_slice`'s submit gate
+  (`lanes.repo_refusal`). Another repo opens only when
+  `lanes.KNOWN_REPOS` carries a build profile for it and the DB-only
+  setting `factory.open_repos` lists it; today no other repo has a
+  profile, so the setting opens nothing (td659522).
 - The session runs `--permission-mode bypassPermissions` with the lane's
   `deny_write_paths` (`STRICT_DENY` in `src/precis/plans/lanes.py` — the
   full `FACTORY_DENY_WRITE_PATHS` plus the never-relaxable

@@ -701,6 +701,41 @@ def test_validate_submit_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     assert disabled is not None and "disabled" in disabled
 
 
+def test_validate_submit_refuses_a_todo_tagged_for_another_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td659522 step 0: a slice builds in a precis worktree, so a todo
+    tagged for another repo — itself or through its nearest tagged
+    ancestor — is refused until that repo has a build profile and the
+    DB setting opens it."""
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    use_lanes(monkeypatch, *SEED_LANES)
+    store = _Store()
+    store.add_todo(7, "untagged")
+    store.add_todo(8, "precis", tags=("repo:precis",))
+    store.add_todo(9, "engine", tags=("repo:catpath",))
+    store.add_todo(10, "both", tags=("repo:both",))
+    store.add_todo(11, "two", tags=("repo:precis", "repo:catpath"))
+    store.add_todo(12, "child of engine", parent_id=9)
+    store.add_todo(13, "glue under engine", tags=("repo:precis",), parent_id=9)
+    for ok in (7, 8, 13):
+        assert run_slice.validate_submit(store, params={"todo_id": ok}) is None
+    for refused in (9, 10, 12):
+        err = run_slice.validate_submit(store, params={"todo_id": refused})
+        assert err is not None and "no factory build profile" in err, refused
+    two = run_slice.validate_submit(store, params={"todo_id": 11})
+    assert two is not None and "2 repo: tags" in two
+    # A profiled repo still needs the setting; opened, the submit passes.
+    monkeypatch.setattr(run_slice._lanes, "KNOWN_REPOS", ("precis", "catpath"))
+    closed = run_slice.validate_submit(store, params={"todo_id": 9})
+    assert closed is not None and "factory.open_repos" in closed
+    monkeypatch.setattr(
+        run_slice._lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+    assert run_slice.validate_submit(store, params={"todo_id": 9}) is None
+    assert run_slice.validate_submit(store, params={"todo_id": 12}) is None
+
+
 # ── brief ──────────────────────────────────────────────────────────
 
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from precis import settings as psettings
 from precis.plans import lanes as L
 from precis.plans import release as R
 from precis.plans import templates as T
@@ -283,6 +284,47 @@ def test_dict_op_pins_model_and_effort_on_the_job(store: Store) -> None:
         "model": "claude-haiku-5-5",
         "effort": "low",
     }
+
+
+def test_a_node_tagged_for_another_repo_is_not_dispatched(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td659522 step 0: the tick skips a node whose ``repo:`` tag — its
+    own or its nearest tagged ancestor's — names a repo the factory has
+    no build profile for, or one ``factory.open_repos`` does not list.
+    ``repo:precis`` dispatches as before."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("glue", "Glue", {"op": "run_slice"}, body="Do it.")
+        m.node("engine", "Engine", {"op": "run_slice"}, body="Do it.")
+        eng = m.node("phase", "Engine phase", {"auto_close": True})
+        m.node("inner", "Inner", {"op": "run_slice"}, parent=eng, body="Do it.")
+
+    mint = T._run(store, None, build)
+    glue, engine, inner = (mint.ids[k] for k in ("glue", "engine", "inner"))
+    store.add_tag(glue, Tag.open("repo:precis"), set_by="system")
+    store.add_tag(engine, Tag.open("repo:catpath"), set_by="system")
+    store.add_tag(mint.ids["phase"], Tag.open("repo:catpath"), set_by="system")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert [j[1]["job_type"] for j in _jobs_under(store, glue)] == ["run_slice"]
+    assert _jobs_under(store, engine) == [] and _jobs_under(store, inner) == []
+    for held in (engine, inner):
+        assert any(
+            n.startswith(f"td{held}: not dispatched") and "repo:catpath" in n
+            for n in res.notes
+        ), held
+    # A build profile alone opens nothing; the DB setting is the switch.
+    monkeypatch.setattr(L, "KNOWN_REPOS", ("precis", "catpath"))
+    assert pd.run_pass(store).dispatched == 0
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        assert pd.run_pass(store).dispatched == 2
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+    assert len(_jobs_under(store, engine)) == 1
+    assert len(_jobs_under(store, inner)) == 1
 
 
 def test_expired_claim_is_released(store: Store) -> None:

@@ -1902,6 +1902,32 @@ def _todo_rejection(store: Any, todo_id: Any) -> str | None:
     return None
 
 
+def slice_repos(store: Any, todo_id: int) -> list[str]:
+    """The ``repo:`` values governing a slice: its todo's own, else the
+    nearest tagged ancestor's — a parent tagged for a repo covers its
+    subtree, the reach ``plan_dispatch`` gives the same tag."""
+    seen: set[int] = set()
+    cur: int | None = todo_id
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        repos = _lanes.repo_tags(store.tags_for(cur))
+        if repos:
+            return repos
+        ref = store.get_ref(kind="todo", id=cur)
+        cur = getattr(ref, "parent_id", None)
+    return []
+
+
+def _repo_rejection(store: Any, todo_id: Any) -> str | None:
+    """td659522 step 0: a slice builds in a precis worktree, so a todo
+    tagged for another repo is refused until that repo has a build
+    profile and ``factory.open_repos`` lists it."""
+    if store is None or not isinstance(todo_id, int):
+        return None
+    problem = _lanes.repo_refusal(slice_repos(store, todo_id), store)
+    return None if problem is None else f"run_slice: todo {todo_id}: {problem}"
+
+
 def validate_submit(
     store: Any,
     *,
@@ -1909,7 +1935,8 @@ def validate_submit(
     params: dict[str, Any],
 ) -> str | None:
     """Submit-time gate. Refuses while ``PRECIS_FACTORY=off``, on a
-    missing/closed todo, and on an unknown or disabled ``params.lane``.
+    missing/closed todo, on a todo tagged for a repo the factory cannot
+    build in, and on an unknown or disabled ``params.lane``.
 
     ``gripe_id`` is the link target (the todo for ``rel='builds'``); the
     slice is ``params.todo_id`` either way. ``store=None`` (tests) skips the
@@ -1922,6 +1949,9 @@ def validate_submit(
             "on the worker host to launch slices"
         )
     reason = _todo_rejection(store, params.get("todo_id"))
+    if reason is not None:
+        return reason
+    reason = _repo_rejection(store, params.get("todo_id"))
     if reason is not None:
         return reason
     reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))

@@ -559,6 +559,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "deployed.",
         ),
         SettingSpec(
+            key="factory.open_repos",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="DB-only. Comma-separated repos besides precis the factory "
+            "may build slices in (lanes.open_repos, td659522). A name "
+            "counts only when lanes.KNOWN_REPOS has a build profile for "
+            "it. Unset, absent or unreadable: a todo tagged repo:<other> "
+            "is skipped by plan_dispatch and refused by run_slice.",
+        ),
+        SettingSpec(
             key="factory.gripe_trust",
             type="str",
             env_var=None,
