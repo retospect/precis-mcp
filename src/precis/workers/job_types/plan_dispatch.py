@@ -179,7 +179,17 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    temporary lane holds still wait in ``run_slice``; answering the ask
    after enabling a lane or retargeting the class releases the node.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
-   the failure bubble left. **Re-land** (gr570187): a task whose newest
+   the failure bubble left. **Attempt-free backoff** (gr662077): a job
+   carrying ``meta.attempt_free`` burned no attempt, so the retry cap
+   never bounds its re-dispatch — td656030 re-minted ~140 jobs in 3 h,
+   each failing into the previous job's still-held ``index.lock``.
+   Identical reasons re-queue at once for the first
+   :data:`FREE_RETRY_IMMEDIATE`, then wait ``FREE_RETRY_BASE`` doubling
+   to :data:`FREE_RETRY_MAX` per consecutive same-reason failure
+   (:func:`_attempt_free_run`, :func:`_free_retry_wait`); at
+   :data:`ATTEMPT_FREE_CAP` the node is capped and parks behind a
+   coordinator ask — an ``index-lock`` run's wait IS waiting for the
+   lock's holder. **Re-land** (gr570187): a task whose newest
    job is a failed ``land_slice`` carrying ``attempt_free == "infra-land"``
    re-mints ``land_slice`` with the failed job's own params (idem
    ``land_slice:td<id>``) — no builder, no ladder rung, no review lane —
@@ -573,6 +583,28 @@ _REQUEUE_ON_CANCEL = frozenset({DEFAULT_OP, "ci_verdict_poll"})
 #: (a live git's lock in the reused slice tree, gr650484), ``"infra-land"``
 #: (the gate's own machinery killed the land, gr570187).
 ATTEMPT_FREE_KEY = "attempt_free"
+
+#: Identical ``attempt_free`` failures that re-queue before the backoff
+#: engages (gr662077): the first two — a transient lane-wait, a lock its
+#: holder released inside run_slice's own wait — dispatch at once, as
+#: they always did. From run :data:`FREE_RETRY_IMMEDIATE` + 1 the wait
+#: is ``FREE_RETRY_BASE`` doubling each run, floored at
+#: :data:`FREE_RETRY_MAX`, measured from the newest job's mint. An
+#: ``attempt_free`` failure burns no ``attempt:``, so nothing else
+#: bounds the loop — td656030 minted ~140 index-lock failures in 3 h,
+#: each landing while the previous job's git still held the lock. For an
+#: ``"index-lock"`` run the wait IS waiting for the holder: a dead git's
+#: remnant crosses land_slice's 600 s stale window mid-ladder and the
+#: next attempt reaps it; a live one gets an ever-longer window to end.
+FREE_RETRY_IMMEDIATE = 2
+FREE_RETRY_BASE = timedelta(minutes=2)
+FREE_RETRY_MAX = timedelta(minutes=30)
+
+#: Consecutive same-reason ``attempt_free`` failures that park the node
+#: behind a coordinator ask (gr662077): an infra wait that outlives the
+#: whole backoff ladder is the coordinator's call — find the git holding
+#: the lock, free the lane — not another mint's.
+ATTEMPT_FREE_CAP = 8
 
 #: ``run_slice.HUMAN_ONLY_KEY``, restated — the dependency stays
 #: one-way (a test pins the two spellings equal). The failed job lists
@@ -3709,6 +3741,46 @@ def _infra_red_lands(plan: _Plan, n: _Node) -> int:
     return count
 
 
+def _attempt_free_run(plan: _Plan, n: _Node) -> tuple[str, int]:
+    """``(reason, count)`` of the consecutive same-reason
+    ``meta.attempt_free`` failures at the tail of ``n``'s jobs
+    (gr662077). Counts only jobs past ``meta.rearmed_after_job`` — an
+    answered ask re-arms (:func:`_infra_red_lands`' rule); a voided job
+    is skipped, its outcome ignored (:func:`_no_attempt`'s rule); any
+    other outcome — a real attempt, a success, a different reason —
+    ends the run. ``("", 0)`` when the newest job is not an
+    attempt-free failure."""
+    floor = _rearm_floor(n)
+    reason = ""
+    count = 0
+    for j in reversed(plan.jobs(n)):
+        if floor is not None and j.id <= floor:
+            break
+        if _voided(j):
+            continue
+        if j.status not in ("failed", "timed-out"):
+            break
+        why = j.meta.get(ATTEMPT_FREE_KEY)
+        if not why or (reason and str(why) != reason):
+            break
+        reason = reason or str(why)
+        count += 1
+    return reason, count
+
+
+def _free_retry_wait(run: int) -> timedelta:
+    """The backoff a same-reason ``attempt_free`` run earns before its
+    next re-dispatch (gr662077): ``0`` at or below
+    :data:`FREE_RETRY_IMMEDIATE`, then :data:`FREE_RETRY_BASE` doubling
+    each run, floored at :data:`FREE_RETRY_MAX`."""
+    if run <= FREE_RETRY_IMMEDIATE:
+        return timedelta(0)
+    return min(
+        FREE_RETRY_BASE * (1 << (run - FREE_RETRY_IMMEDIATE - 1)),
+        FREE_RETRY_MAX,
+    )
+
+
 def _brief_rewritten(store: Any, todo_id: int, since: datetime) -> bool:
     """A ``brief:``/``handoff:`` comment on the task newer than ``since``
     (the re-land ask's mint): the brief changed, so a builder on the new
@@ -4185,6 +4257,12 @@ def _capped(
     if _model_rule_hit(plan, n) is not None:
         return True
     if _land_again_capped(plan, n):
+        return True
+    # A run of identical attempt-free failures at the cap parks the same
+    # way: the backoff ladder is spent, and what keeps holding the wait —
+    # a live git's lock, a lane that never frees — is the coordinator's
+    # call (gr662077).
+    if _attempt_free_run(plan, n)[1] >= ATTEMPT_FREE_CAP:
         return True
     # A mechanical signature whose brief budget is spent counts as
     # capped: the third repeat goes to the ask, not to a third same-rung
@@ -5179,6 +5257,7 @@ def _step_dispatch(
     plan: _Plan,
     w: _Writer,
     res: PassResult,
+    now: datetime,
     lane_table: tuple[_lanes.Lane, ...],
     rules: dict[str, dict[str, Any]] | None = None,
 ) -> None:
@@ -5291,7 +5370,21 @@ def _step_dispatch(
             # re-queued this pass.
             requeued_cancel = newest.id
         free_reason = newest.meta.get(ATTEMPT_FREE_KEY) if newest else None
-        if free_reason:
+        if newest is not None and free_reason:
+            # gr662077: the failure burned no attempt, so the retry cap
+            # never bounds the loop — identical infra failures back off
+            # instead of re-minting every pass (td656030 re-dispatched
+            # ~140 jobs in 3 h into its own held index.lock). At the run
+            # cap ``_capped`` above already parked the node for the ask.
+            reason, run = _attempt_free_run(plan, n)
+            left = _free_retry_wait(run) - (now - newest.created_at)
+            if left > timedelta(0):
+                res.notes.append(
+                    f"td{n.id}: attempt-free '{reason}' run "
+                    f"{run}/{ATTEMPT_FREE_CAP} — backing off, re-dispatch "
+                    f"in {int(left.total_seconds())}s"
+                )
+                continue
             res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
         if reland is not None:
             # An infra-red land re-runs ship on the same branch with the
@@ -6489,6 +6582,8 @@ def _step_hygiene(
         coord = _coordinator_hit(plan, n)
         model_rule = _model_rule_hit(plan, n)
         no_commit = _no_commit(plan, n)
+        free_reason, free_run = _attempt_free_run(plan, n)
+        free_capped = bool(free_reason) and free_run >= ATTEMPT_FREE_CAP
         lane_gap: str | None = None
         if (
             not human
@@ -6496,6 +6591,7 @@ def _step_hygiene(
             and mech_sig is None
             and coord is None
             and model_rule is None
+            and not free_capped
             and job_type == DEFAULT_OP
             and not rungs
         ):
@@ -6513,6 +6609,7 @@ def _step_hygiene(
             and not human
             and not land_capped
             and not no_commit
+            and not free_capped
             and job_type == DEFAULT_OP
             and lane_gap is None
         )
@@ -6522,6 +6619,8 @@ def _step_hygiene(
                 if rescue
                 else f"file a coordinator ask (retry cap {cap})"
                 if coord is not None or no_commit or model_rule is not None
+                else "file a coordinator ask (attempt-free loop)"
+                if free_capped
                 else f"file an ask (retry cap {cap})"
             )
             res.notes.append(f"td{n.id}: would {what}")
@@ -6631,6 +6730,44 @@ def _step_hygiene(
                 now=now,
                 block_node=True,
             )
+        elif free_capped:
+            # gr662077: the same attempt-free failure came back
+            # :data:`ATTEMPT_FREE_CAP` times — the backoff ladder is
+            # spent and the wait never lifted. Nothing on the diff and
+            # no ladder rung is at fault; what holds it — a live git's
+            # index.lock in the reused worktree, a lane that never
+            # frees — is the coordinator's to find. The ``blocked-by``
+            # edge re-arms the node on the answer.
+            ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED]
+            last = ended[-1].id if ended else 0
+            ask_id = _mint_coordinator_ask(
+                w.store,
+                plan,
+                n,
+                title=(
+                    f"td{n.id}: {free_run} identical '{free_reason}' waits — "
+                    "a coordinator call"
+                ),
+                body=(
+                    f"The plan tick stopped dispatching td{n.id} "
+                    f"({n.title.splitlines()[0] if n.title else ''}): its "
+                    f"last {free_run} jobs all failed attempt-free for the "
+                    f"same reason '{free_reason}' (newest jo{last}). The "
+                    "backoff ladder is spent and the wait never lifted — "
+                    "the newest job's event text names what holds it "
+                    "(e.g. a live git's `index.lock` in the reused slice "
+                    "worktree: find the git running in that checkout on "
+                    "the slice host and end it, or reap the tree). "
+                    f"Closing this ask `acknowledged` re-arms td{n.id} "
+                    "with a fresh retry budget."
+                ),
+                context=(
+                    f"{free_run} consecutive attempt-free '{free_reason}' "
+                    f"failures (backoff cap {ATTEMPT_FREE_CAP})"
+                ),
+                now=now,
+                block_node=True,
+            )
         else:
             ask_id = _mint_ask(
                 w.store,
@@ -6656,6 +6793,8 @@ def _step_hygiene(
             if land_capped
             else "can't finish — ladder spent"
             if no_commit
+            else f"attempt-free loop ({free_reason})"
+            if free_capped
             else "no enabled lane"
             if lane_gap
             else "retry cap hit"
@@ -6739,7 +6878,7 @@ def run_pass(
         _step_phases(plan, w, res)
         _step_ci_rerun(store, plan, w, res, now)
         _step_brief_holds(store, plan, w, res, now)
-        _step_dispatch(plan, w, res, lane_table, rules)
+        _step_dispatch(plan, w, res, now, lane_table, rules)
         _step_hygiene(plan, w, res, now, lane_table, rules)
     return res
 

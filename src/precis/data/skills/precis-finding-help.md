@@ -217,7 +217,7 @@ download queue. `provenance=` is a ref/chunk handle — required, and
 distinct from `cited_in=`: it's where *this claim* came from (a
 research note, a lit-hunt todo, the chunk that cited the not-yet-held
 paper), not a pointer into a paper the corpus already holds. Spelling it
-as `link=` + `rel='provenance'` (or `'derived-from'`) folds into
+as `link=` with `rel` set to `provenance` (or `derived-from`) folds into
 `provenance=`; a `link=` with any other `rel=` mints an extra edge and
 does not fill it.
 
