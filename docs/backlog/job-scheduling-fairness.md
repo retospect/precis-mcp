@@ -243,6 +243,15 @@ lane over a sliding window (1 h to start). Claim order is
 ageing (D3) and the prio-1 override stay. This replaces D4's fewest-running
 pick; the `max_running` caps stay.
 
+**Shipped (gr595541).** `claim_executor_jobs` reads the host's lane-seconds
+over `PRECIS_CLAIM_SHARE_WINDOW_S` (default 3600; `executors._common.
+lane_seconds_in_window`) and orders by `lane_deficit DESC` after the class
+rank; the lane is `meta.share_key`, else `job_type[:pass]`. Shares are
+weights in `app_state` `claim.share.<lane>` (default 1.0, normalised over the
+lanes among the candidates). Each claim in one batch is charged 60
+lane-seconds so a multi-claim call interleaves lanes. Reservation+backfill
+waits on the footprint table.
+
 Reservation and backfill once footprints exist: `cluster-scheduling.md`
 Pillar 3b. The footprint predictor and the admission loop that consume these
 stamps are `load-based-scheduling.md` (gr647996). Two of its rulings

@@ -562,3 +562,71 @@ def test_drain_cap_leaves_a_lane_free_of_the_deployed_drain_lanes() -> None:
     lanes = int(match.group(1))
     assert lanes >= 2
     assert 1 <= _DRAIN_CAP < lanes
+
+
+def _set_started(store: Store, ref_id: int, ago_s: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('started_at',"
+            " to_char((now() - make_interval(secs => %s)) AT TIME ZONE 'UTC',"
+            ' \'YYYY-MM-DD"T"HH24:MI:SS"Z"\')) WHERE ref_id = %s',
+            (ago_s, ref_id),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - make_interval(secs => %s)"
+            " WHERE ref_id = %s",
+            (ago_s, ref_id),
+        )
+
+
+def test_deficit_favours_lane_served_least_over_window(store: Store) -> None:
+    """gr595541: a lane that held the host for the window but is idle now
+    loses to a lane that got nothing — an instantaneous fewest-running
+    count reads both as 0 running."""
+    hog = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    _set_started(store, hog, 1800)
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (hog,),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '60 seconds' "
+            "WHERE ref_id = %s",
+            (hog,),
+        )
+    _job(store, origin="background", prio=8, queued_s_ago=7200, job_type="hog")
+    starved = _job(store, origin="background", prio=8, job_type="starved")
+    assert _claim(store, limit=1) == [starved]
+
+
+def test_deficit_outside_window_is_forgotten(store: Store) -> None:
+    """Service older than the window no longer counts: ordering falls back
+    to the aged order."""
+    old = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (old,),
+        )
+    _set_started(store, old, 20000)
+    oldest = _job(store, origin="background", prio=8, queued_s_ago=7200, job_type="hog")
+    _job(store, origin="background", prio=8, job_type="starved")
+    assert _claim(store, limit=1) == [oldest]
+
+
+def test_deficit_weight_scales_share(store: Store) -> None:
+    """A lane weighted 3:1 is owed three batch claims per one of its peer."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES ('claim.share.big', '3')"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+    big = [
+        _job(store, origin="background", prio=8, queued_s_ago=100 - i, job_type="big")
+        for i in range(4)
+    ]
+    small = _job(store, origin="background", prio=8, queued_s_ago=50, job_type="small")
+    got = _claim(store, limit=4)
+    assert got[0] == big[0]
+    assert small in got and got.index(small) >= 1
