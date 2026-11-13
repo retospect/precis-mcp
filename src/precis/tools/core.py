@@ -1320,9 +1320,8 @@ def search(
     `STATUS:` tag on kinds that carry that axis.
 
     `mode=` 'hybrid' (default) / 'lexical' (exact) / 'semantic' /
-    'verbatim' (all query words as chunk keywords; the whole query as one
-    text substring also matches on one ref or the memory corpus).
-    `angle=`+`like=` spray `n` diverse hits; `view='dreamable'`/`'stubs'` browse.
+    'verbatim' (all query words as chunk keywords). `angle=`+`like=`
+    spray `n` diverse hits; `view='dreamable'`/`'stubs'` browse.
 
     paper: one row per paper by default (`unique_per='chunk'` drills into
     per-hit rows — `scope=` implies it, and `per_paper=` caps hits per

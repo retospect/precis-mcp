@@ -119,7 +119,16 @@ def _main_root(repo: Path) -> str:
 
 
 def _landed_sha(repo: Path) -> str:
-    return _git(repo, "rev-parse", "--short=12", "HEAD").stdout.strip()
+    """HEAD's 12-char sha, amended until it carries a hex letter:
+    scripts/memory-lint drops all-digit hex runs as numbers, so a
+    digits-only sha (~0.4% of commits) would not read as cited."""
+    for n in range(50):
+        sha = _git(repo, "rev-parse", "--short=12", "HEAD").stdout.strip()
+        if any(c in "abcdef" for c in sha):
+            return sha
+        msg = _git(repo, "log", "-1", "--format=%B").stdout.strip()
+        _git(repo, "commit", "-q", "--amend", "--allow-empty", "-m", f"{msg} ({n})")
+    raise AssertionError("no lettered sha after 50 amends")
 
 
 @pytest.fixture
@@ -778,7 +787,7 @@ def test_retire_candidates_file_mode_lists_landed_and_stale_only(
     (lint_repo / "x.txt").write_text("x\n", encoding="utf-8")
     _git(lint_repo, "add", "-A")
     _git(lint_repo, "commit", "-q", "-m", "side commit")
-    side = _git(lint_repo, "rev-parse", "--short=12", "HEAD").stdout.strip()
+    side = _landed_sha(lint_repo)  # not landed: only its lettered-sha shape
     _git(lint_repo, "checkout", "-q", "main")
     (mem / "MEMORY.md").write_text(
         "## Threads\n- [a](done-thread.md)\n- [b](live-thread.md)\n", encoding="utf-8"
