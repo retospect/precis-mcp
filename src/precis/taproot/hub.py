@@ -368,8 +368,11 @@ def _enqueue_conflict_sweep(store: Store, hub_ref_id: int, *, conn: Any) -> None
     when the backfill walk reaches it. Best-effort and never a reason a
     mint fails: the enqueue runs in its own nested savepoint and any
     failure is logged. Dark unless the ``conflict_search`` service is
-    enabled (:func:`~precis.workers.conflict_search.enqueue_conflict_sweep`
-    returns ``None`` and writes nothing). Local import — ``workers.
+    enabled, and skipped when the live sweep backlog is at the mint
+    fan-out cap (gr637060) — either way
+    :func:`~precis.workers.conflict_search.enqueue_conflict_sweep`
+    returns ``None``, writes nothing, and the standing pass sweeps the
+    hub later from its watermark. Local import — ``workers.
     conflict_search`` imports :data:`HUB_ROLES` from this module."""
     from precis.workers.conflict_search import enqueue_conflict_sweep
 

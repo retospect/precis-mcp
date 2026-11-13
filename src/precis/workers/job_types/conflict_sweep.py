@@ -12,9 +12,12 @@ two doors onto it.
 
 Who mints it: :func:`precis.workers.conflict_search.enqueue_conflict_sweep`
 — from ``taproot.hub.mint_hub`` (``reason='mint'``, so a new claim is
-swept promptly) and from the nanopub approve surface (``refresh=True``
-when the ledger is missing or stale). A hand ``put(kind='job',
-job_type='conflict_sweep', params={'hub_id': <fi id>})`` works too.
+swept promptly; fan-out capped at ``PRECIS_CONFLICT_SEARCH_MINT_CAP``
+live sweeps, gr637060 — a deferred mint is covered by the standing
+``conflict_search`` pass) and from the nanopub approve surface
+(``refresh=True`` when the ledger is missing or stale). A hand
+``put(kind='job', job_type='conflict_sweep', params={'hub_id': <fi
+id>})`` works too.
 
 Outcomes: a hub that is not claimable (already swept at the current
 version without ``refresh``, leased by an in-flight sweep, or not a live
