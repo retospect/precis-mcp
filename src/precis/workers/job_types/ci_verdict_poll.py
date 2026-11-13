@@ -28,10 +28,27 @@ The newest check.yml run (on the release branch when one is known):
   (10 min, 2 min once the run is 18+ min old — gr611302); the
   wake runner re-queues the same job, which polls again. A parked job is
   live, so the tick neither closes the node nor mints a second poll (one
-  poll per node: the tick's ``plan_dispatch:td<id>`` idem key). Past the
-  park cap (six parks) the job fails "still pending"; the tick re-dispatches
-  it up to the node's ``meta.retries`` (the template sets 3), then files the
-  usual retry-cap ask.
+  poll per node: the tick's ``plan_dispatch:td<id>`` idem key).
+
+Pending splits two ways (gr656644):
+
+- A run still going (``status != completed``) is an **attempt-free
+  wait**: each park resets ``pause_parks`` first (the
+  ``run_slice.wait_parks`` / ``release_poll.placement_parks`` shape —
+  the shared six-park cap is for window pauses, not a healthy gate),
+  so the job keeps polling on the run's own clock for as long as the
+  run reports live. A soak gate runs ~60 min and ship's own CI budget
+  is 150 min, while six 2-min late-interval parks cover ~12 — counting
+  the wait against the cap spent a node retry per ~36 min and filed the
+  retry-cap ask on a GREEN gate. A run still going past
+  :data:`LIVE_STALL_ASK_AFTER` files ONE records-only ask on the plan
+  root — the no-run ladder's rung shape, deduped on
+  ``meta.ci_verdict_stall.run_asked`` — and keeps watching: a wedged
+  run pages a human without a retry ever being spent.
+- No run yet, an unreadable GitHub, or a stale pre-rerun verdict keep
+  the park cap: past six parks the job fails "still pending"; the tick
+  re-dispatches it up to the node's ``meta.retries`` (the template sets
+  3), then files the usual retry-cap ask.
 
 ``dedupe_pending`` also holds a recurring-todo arming to one poll.
 
@@ -104,10 +121,18 @@ _GH_TIMEOUT_S = 60.0
 STALL_NOTE_AFTER = timedelta(minutes=20)
 STALL_DISPATCH_AFTER = timedelta(minutes=40)
 STALL_ASK_AFTER = timedelta(minutes=90)
+#: The live-run rung's clock (gr656644), measured from the picked run's
+#: ``created_at``: a gate still going past this age is past ship's own
+#: CI budget (``PRECIS_REMOTE_CI_TIMEOUT_MIN``, 150 min) — likely wedged
+#: or queued behind dead runners — so the poll files ONE records-only
+#: ask on the plan root and keeps watching. The wait itself never fails
+#: while the run reports live, so this is the human page for a stuck
+#: gate, not a give-up.
+LIVE_STALL_ASK_AFTER = timedelta(minutes=180)
 #: The poll node's ``meta.<key>`` dedupe marker — ``{sha, noted?,
-#: dispatched?, asked?}``: one fire per rung per cut, across re-parks
-#: and re-dispatched jobs (a re-cut restamps ``meta.release`` with a
-#: new sha, which resets the ladder).
+#: dispatched?, asked?, run_asked?}``: one fire per rung per cut,
+#: across re-parks and re-dispatched jobs (a re-cut restamps
+#: ``meta.release`` with a new sha, which resets the ladder).
 STALL_META_KEY = "ci_verdict_stall"
 _COMMENT_KIND = "todo_comment"
 _ASK_CONTEXT_CAP = 600
@@ -378,27 +403,22 @@ def _stall_marker(store: Any, todo_id: int, sha: str) -> dict[str, Any] | None:
     return dict(marker)
 
 
-def _mint_no_run_ask(
+def _mint_stall_ask(
     store: Any,
     node_id: int,
     root: int,
-    target: dict[str, str],
-    mins: int,
+    *,
+    title: str,
+    context: str,
+    body: str,
     marker: dict[str, Any],
 ) -> int:
-    """The ONE ruling todo the ladder files under the plan root at 90
-    minutes (the ``_mint_rerun_ask`` shape): it RECORDS the missing run —
-    ``blocks: "nothing"``, ``acknowledged`` the only option. The poll
-    node's ``asked`` marker commits in the same transaction, so a failed
-    write leaves neither and the rung retries next tick instead of
-    filing a second ask."""
-    branch, sha = target["branch"], target["sha"]
-    where = branch or "the release branch"
-    context = (
-        f"no {WORKFLOW_FILE} run on {where} for {sha[:9]} {mins} min after "
-        "the cut — the push event was likely dropped; answering executes "
-        "nothing"
-    )
+    """The ONE ruling todo a stall rung files under the plan root (the
+    ``_mint_rerun_ask`` shape): it RECORDS the stall — ``blocks:
+    "nothing"``, ``acknowledged`` the only option. The poll node's
+    marker commits in the same transaction, so a failed write leaves
+    neither and the rung retries next tick instead of filing a second
+    ask."""
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
@@ -408,16 +428,6 @@ def _mint_no_run_ask(
         }
     }
     check_ask_meta(meta)
-    title = f"{NAME}: no {WORKFLOW_FILE} run on {where} for {sha[:9]} ({mins}m)"
-    body = (
-        f"A release cut pushed {where} at {sha[:9]}, but GitHub still "
-        f"shows no {WORKFLOW_FILE} run for it {mins} minutes later — the "
-        "push event was likely dropped (gr589270: a late event queues "
-        "minutes behind the branch, a dropped one never lands). The "
-        "verdict poll already fired its one workflow_dispatch retry and "
-        "keeps polling; this ask only records the stall — a push or a "
-        "re-cut fixes it, answering 'acknowledged' closes it."
-    )
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="todo",
@@ -444,6 +454,89 @@ def _mint_no_run_ask(
         store.stamp_ref_meta(node_id, {STALL_META_KEY: marker}, conn=conn)
         finish_mint(store, ref.id, conn=conn)
     return int(ref.id)
+
+
+def _mint_no_run_ask(
+    store: Any,
+    node_id: int,
+    root: int,
+    target: dict[str, str],
+    mins: int,
+    marker: dict[str, Any],
+) -> int:
+    """The no-run ladder's ask at 90 minutes (gr589270): a confirmed-
+    absent run past every retry is a dropped push event."""
+    branch, sha = target["branch"], target["sha"]
+    where = branch or "the release branch"
+    title = f"{NAME}: no {WORKFLOW_FILE} run on {where} for {sha[:9]} ({mins}m)"
+    context = (
+        f"no {WORKFLOW_FILE} run on {where} for {sha[:9]} {mins} min after "
+        "the cut — the push event was likely dropped; answering executes "
+        "nothing"
+    )
+    body = (
+        f"A release cut pushed {where} at {sha[:9]}, but GitHub still "
+        f"shows no {WORKFLOW_FILE} run for it {mins} minutes later — the "
+        "push event was likely dropped (gr589270: a late event queues "
+        "minutes behind the branch, a dropped one never lands). The "
+        "verdict poll already fired its one workflow_dispatch retry and "
+        "keeps polling; this ask only records the stall — a push or a "
+        "re-cut fixes it, answering 'acknowledged' closes it."
+    )
+    return _mint_stall_ask(
+        store,
+        node_id,
+        root,
+        title=title,
+        context=context,
+        body=body,
+        marker=marker,
+    )
+
+
+def _mint_live_ask(
+    store: Any,
+    node_id: int,
+    root: int,
+    target: dict[str, str],
+    run: dict[str, Any],
+    mins: int,
+    marker: dict[str, Any],
+) -> int:
+    """The live-run rung's ask (gr656644): a gate still going past
+    :data:`LIVE_STALL_ASK_AFTER` — past ship's own 150-min CI budget —
+    is likely wedged or queued behind dead runners."""
+    branch, sha = target["branch"], target["sha"]
+    where = branch or "the release branch"
+    run_id = str(run.get("id") or "")
+    status = str(run.get("status") or "unknown")
+    title = (
+        f"{NAME}: {WORKFLOW_FILE} run {run_id} still {status} {mins}m "
+        f"after the cut ({sha[:9]})"
+    )
+    context = (
+        f"{WORKFLOW_FILE} run {run_id} on {where} for {sha[:9]} is still "
+        f"{status} {mins} min after the cut — past ship's own 150-min CI "
+        "budget; the run is likely wedged; answering executes nothing"
+    )
+    body = (
+        f"A release cut pushed {where} at {sha[:9]}, and its {WORKFLOW_FILE} "
+        f"run {run_id} is still {status} {mins} minutes later (gr656644: "
+        "a live gate's wait is attempt-free — it never spends a retry — "
+        "so this ask is the human page for a stuck run). The verdict "
+        "poll keeps watching and records the verdict the moment the run "
+        "completes; this ask only records the stall — answering "
+        "'acknowledged' closes it."
+    )
+    return _mint_stall_ask(
+        store,
+        node_id,
+        root,
+        title=title,
+        context=context,
+        body=body,
+        marker=marker,
+    )
 
 
 def _no_run_stall(
@@ -535,6 +628,45 @@ def _no_run_stall(
     return actions
 
 
+def _live_run_stall(
+    ctx: Any,
+    todo_id: Any,
+    target: dict[str, str],
+    run: dict[str, Any],
+    *,
+    now: datetime,
+) -> list[str]:
+    """The gr656644 rung for a still-running gate: past
+    :data:`LIVE_STALL_ASK_AFTER` (run age from ``created_at``) ONE
+    records-only ask lands on the plan root — deduped by the node's
+    :data:`STALL_META_KEY` ``run_asked`` marker, committed with the ask —
+    while the poll keeps its attempt-free watch. ``[]`` without a poll
+    node, a run clock or a readable marker, and on any write failure
+    (the park is the verdict path; a rung fault degrades to next tick,
+    never a job failure)."""
+    if not isinstance(todo_id, int) or isinstance(todo_id, bool) or ctx.store is None:
+        return []
+    age = _run_age(run, now)
+    if age is None or age < LIVE_STALL_ASK_AFTER:
+        return []
+    try:
+        marker = _stall_marker(ctx.store, todo_id, target["sha"])
+    except Exception:
+        log.warning("%s: stall marker read failed", NAME, exc_info=True)
+        return []
+    if marker is None or "run_asked" in marker:
+        return []
+    try:
+        marker["run_asked"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        root = _release.plan_root(ctx.store, todo_id)
+        mins = int(age.total_seconds() // 60)
+        ask_id = _mint_live_ask(ctx.store, todo_id, root, target, run, mins, marker)
+    except Exception:
+        log.warning("%s: live-run stall ask failed", NAME, exc_info=True)
+        return []
+    return [f"filed the live-run stall ask td{ask_id} on plan td{root}"]
+
+
 def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     """``job_inproc`` plugin dispatcher (module docstring)."""
     del spec
@@ -598,11 +730,14 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         return
     stall: list[str] = []
     now = datetime.now(UTC)
+    live = picked is not None and str(picked.get("status") or "") != "completed"
     if runs is not None and picked is None:
         # GitHub answered and no run exists for the sha: the confirmed-
         # absent case the gr589270 ladder covers (an in-progress run or
         # an unreadable GitHub is ordinary pending, no rungs).
         stall = _no_run_stall(ctx, params.get("todo_id"), target, now=now)
+    elif live and picked is not None:
+        stall = _live_run_stall(ctx, params.get("todo_id"), target, picked, now=now)
     interval = poll_interval(_run_age(picked, now))
     note = f"{NAME}: pending on {sha[:9]} ({why}); next poll in {interval}"
     if stall:
@@ -610,6 +745,26 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     ctx.append_chunk("job_summary", note)
     defer = getattr(ctx, "defer", None)
     wake = now + interval
+    if live:
+        # gr656644: a still-running gate is an attempt-free wait, not a
+        # spent retry — reset the shared park counter (it budgets window
+        # pauses, not a healthy CI run) and park on the run's own clock;
+        # LIVE_STALL_ASK_AFTER above is the human page if it wedges. A
+        # refused or absent defer still fails attempt-free, so the tick
+        # re-queues the poll without counting a node attempt.
+        if defer is not None:
+            ctx.set_meta(pause_parks=0)
+            if defer(wake, note):
+                return
+        from precis.workers.job_types import run_slice as _rs
+
+        ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: "ci-wait"})
+        ctx.record_failure(
+            f"{NAME}: CI still pending on {sha[:9]} and the park was "
+            f"refused ({why}); re-queued attempt-free — the poll keeps "
+            "watching on the next dispatch"
+        )
+        return
     if defer is not None and defer(wake, note):
         return
     ctx.record_failure(

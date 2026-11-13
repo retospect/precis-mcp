@@ -952,6 +952,148 @@ def test_the_ask_and_its_marker_commit_together(
     assert len(gh) == 1
 
 
+# ── the live-run wait (gr656644) ────────────────────────────────────
+
+
+def _aged_run(rid: int, minutes: float, status: str = "in_progress") -> dict[str, Any]:
+    """A check.yml run created ``minutes`` ago, still ``status``."""
+    created = (datetime.now(UTC) - timedelta(minutes=minutes)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return _run(rid, status, None, created_at=created)
+
+
+def test_a_live_run_resets_the_park_counter(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr656644: a still-running gate is an attempt-free wait — each
+    park resets the shared ``pause_parks`` budget (the
+    ``wait_parks``/``placement_parks`` shape), so a ~60-min soak never
+    trips the six-park cap into a spent node retry."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_aged_run(40, 30)])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert ctx.stamped["pause_parks"] == 0
+    # Poll after poll parks the same way — no cap ever accrues.
+    for _ in range(2):
+        ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+        parks = _parks(ctx)
+        cvp._dispatch(ctx, cvp.SPEC)
+        assert ctx.failures == [] and len(parks) == 1
+        assert ctx.stamped["pause_parks"] == 0
+    assert gates.read_ci_verdicts(store) == []
+
+
+def test_a_stale_rerun_verdict_wait_keeps_the_park_cap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shared cap still bounds non-live pendings: a rerun poll
+    parked on a stale pre-rerun verdict (``completed`` status) does not
+    reset ``pause_parks`` — a rerun that never fired is a bounded
+    pending, not an attempt-free wait."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(31, "completed", "failure", run_attempt=1)])
+    ctx = _rerun_poll_ctx(store, mint.ids["poll"], before=1)
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert "pause_parks" not in ctx.stamped
+
+
+def test_a_refused_live_park_fails_attempt_free(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A park the executor refuses while the run is still going fails
+    with ``meta.attempt_free = 'ci-wait'`` — the tick re-queues the poll
+    without counting a node attempt."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_run(34, "queued", None)])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]}, defer=lambda at, note: False)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(ctx.failures) == 1 and "still pending" in ctx.failures[0]
+    assert ctx.stamped["attempt_free"] == "ci-wait"
+
+
+def test_a_young_live_run_files_no_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under LIVE_STALL_ASK_AFTER a live run just parks — no ask, no
+    marker."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_aged_run(41, 60)])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert _ruling_asks(store, mint.root_id) == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+
+
+def test_a_long_live_run_files_one_ask_and_keeps_watching(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past LIVE_STALL_ASK_AFTER the poll files ONE records-only ask on
+    the plan root — deduped on ``ci_verdict_stall.run_asked`` — and
+    keeps parking attempt-free: a wedged run pages a human without a
+    retry ever being spent."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_aged_run(42, 190)])
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert ctx.stamped["pause_parks"] == 0
+    asks = _ruling_asks(store, mint.root_id)
+    assert len(asks) == 1
+    ask_id, meta = asks[0]
+    assert meta["ask"]["options"] == ["acknowledged"]
+    assert meta["ask"]["blocks"] == "nothing"
+    assert "still in_progress" in meta["ask"]["context"]
+    tags = {str(t.value) for t in store.tags_for(ask_id)}
+    assert {"ask-user", "showstopper", f"plan:{mint.root_id}"} <= tags
+    marker = _meta(store, mint.ids["poll"])["ci_verdict_stall"]
+    assert marker["sha"] == SHA and "run_asked" in marker
+    # A second tick files no second ask and still parks, never fails.
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == [] and len(parks) == 1
+    assert len(_ruling_asks(store, mint.root_id)) == 1
+
+
+def test_a_failed_live_ask_leaves_no_marker_and_retries_next_tick(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ask and its ``run_asked`` marker commit in one transaction:
+    a stamp failure leaves neither, and the next tick files exactly
+    one."""
+    mint = _cut(store)
+    _fake_github(monkeypatch, [_aged_run(43, 190)])
+    real_stamp = store.stamp_ref_meta
+
+    def flaky_stamp(ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        marker = updates.get(cvp.STALL_META_KEY, {})
+        if isinstance(marker, dict) and "run_asked" in marker:
+            raise RuntimeError("stamp failed")
+        real_stamp(ref_id, updates, **kw)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", flaky_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    parks = _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert _ruling_asks(store, mint.root_id) == []
+    assert "ci_verdict_stall" not in _meta(store, mint.ids["poll"])
+    assert len(parks) == 1  # a rung fault still parks, never fails
+    monkeypatch.setattr(store, "stamp_ref_meta", real_stamp)
+    ctx = Ctx(store, {"todo_id": mint.ids["poll"]})
+    _parks(ctx)
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert len(_ruling_asks(store, mint.root_id)) == 1
+
+
 # ── release_cut / release_deploy (detached) ─────────────────────────
 
 
