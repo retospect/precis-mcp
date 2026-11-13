@@ -325,11 +325,13 @@ condition and parked age; `tag(add=["STATUS:open"])` unparks by hand.
 get(kind="gripe", id=42)
 # → title card + body: header + tags + title + comment count + a one-line
 #   gist of the newest comment, then the body (a long one is head+tail-
-#   clipped; the cut marker names view='body')
+#   clipped; the cut marker names view='body'). A gripe with a summary
+#   also shows it — "summary (through comment N · current|STALE): …"
 get(kind="gripe", id=42, view="body")  # the body, uncapped
+get(kind="gripe", id=42, view="summary")  # the current-state summary, uncapped
 get(kind="gripe", id=42, view="comments")  # every comment, oldest first,
                                          # paged whole (never cut mid-text)
-get(kind="gripe", id=42, view="full")  # body + comments on one bounded page
+get(kind="gripe", id=42, view="full")  # summary + body + comments on one page
 ```
 
 An invalid comment number refuses with the count and a working read.
@@ -438,6 +440,83 @@ put(
     text="retracting my earlier note — trigger is the hyphen, not the underscore",
 )
 ```
+
+## Record a pipeline-stage finding on a gripe {write}
+## Append a triage/test/code ledger entry {write}
+## Read or rebuild a gripe's current-state summary
+
+```python
+put(kind="gripe", id=42, text="suspected root cause: an12", args={"stage": "triage"})
+```
+
+`args={'stage': '<slug>'}` marks the comment as a pipeline-stage
+ledger entry (`triage`, `test`, `code`, … — lowercase letters, digits,
+`.`, `_`, `-`). It needs `text=` and an existing `id=` — a new filing
+has no ledger. After the entry commits, the put rewrites the gripe's
+**summary**: the one mutable block on top of the append-only ledger,
+recording which comment it was rebuilt through (the card marks it
+`STALE` once newer entries exist). Dead ends survive in it as one line
+each — `ruled out: X, see entry N` — so the next agent doesn't
+re-investigate. Code locations in entries and the summary are
+code-anchor handles (`an<N>`) only, never paths or snippets — a
+stage `put` whose text still names a raw `path`/`path::qual` refuses:
+mint the handle first, then write the entry naming it. The
+pipeline's own writers maintain the same contract: the triage tick
+stamps `stage='triage'` and mints `an<N>` handles for the code
+locations its verdict prose names (a path or `path::qual` in the
+suspected cause or recommendation lands as a handle), and the
+fixer's write-back `stage='code'` — minting `an<N>` handles for the
+build's touched files and changed symbols before the entry lands,
+and for any path the outcome prose itself carried —
+each followed by the rebuild. A
+stage's fold walks the new entries one at a time and `through` only
+advances past an entry the model saw whole.
+
+An anchor handle mints as an `alias` pair until gr595549's
+python-kind mechanism lands — `put(kind='alias', args={'a': 'an12',
+'b': 'src/precis/flux/parse.py::deflux_core', 'rel': 'short-for'})`.
+A handle number is never re-minted — a dead pair's `an<N>` stays
+spent, so an old ledger cite can never retarget onto new code.
+That's what `id='/match'` resolves `an<N>`/`co<N>` against: an
+anchor-only ledger entry still identifies failing code.
+
+If the rebuild fails the entry still stands — the ack names the retry:
+
+```python
+edit(kind="gripe", id=42, mode="summary")  # rebuild from the ledger
+edit(kind="gripe", id=42, mode="summary", args={"summary": "<vetted text>"})
+edit(kind="gripe", id=42, mode="summary", args={"summary": ""})  # clear
+```
+
+A hard gate runs either way: every `an<N>`/`co<N>` anchor and every
+`entry N` pointer in the summary must exist in the ledger — an invented
+one refuses naming it — and a raw `path`/`path::qual` refuses outright
+(the summary carries handles only; mint with the `alias` put first).
+`args={'through': N}` pins the coverage point on
+a manual write. `get(kind="gripe", id=42, view="summary")` reads the
+block uncapped.
+
+## A stack trace fails — which gripe owns it?
+## Match an integration failure to a gripe
+
+```python
+get(kind="gripe", id="/match", args={"trace": "<the stack trace>"})
+```
+
+Ranks open gripes by which of the trace's file/symbol tokens their
+comment ledgers already name — literal text plus each `an<N>`/`co<N>`
+handle's resolved location, all matched case-folded (`an1 ⇄
+src/App.tsx` still hits `File "src/App.tsx"`) — most hits first. Each row's `last files
+entry` is the newest *touched-files* entry's own file list — an entry
+carries a line opening with the literal `touched files:` marker (the
+fixer's write-back writes `touched files: an<N>, …`, minting the
+handles first), and only that line's payload supplies the list — the
+payload shares the marker's line, so a file named on the NEXT line
+counts as a hit but never ownership. The newest marker's payload
+decides even when it resolves to nothing (`(none resolved)` — an
+older entry's files never fill back in). A later triage or test entry
+naming a file adds hits but never replaces it: which files belong to
+that gripe. Closed gripes don't rank. No hits means file a new one.
 
 ## Triage a gripe — I've reviewed it and it's real {write}
 

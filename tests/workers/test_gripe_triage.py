@@ -458,6 +458,55 @@ class TestTick:
             for c in _comments(store, gid)
         )
 
+    def test_bug_verdict_records_suspected_cause(self, store: Store) -> None:
+        """gr595551: an ordinary bug verdict (no spec-park, no reto)
+        still lands its reason in the ledger as a stage='triage' entry."""
+        _light(store)
+        gid = _gripe(store, "plain bug")
+        _run(
+            store,
+            _llm({"verdicts": [_verdict(gid, reason="off-by-one in page_slice")]}),
+        )
+        assert any(
+            c.startswith("triage: suspected cause - off-by-one in page_slice")
+            for c in _comments(store, gid)
+        )
+
+    def test_bug_verdict_reason_mints_anchor_handles(self, store: Store) -> None:
+        """gr595551 (review FIX of td655156): the ledger's contract is
+        anchor handles only — a suspected cause naming a raw ``path``
+        or ``path::qual`` mints ``an<N>`` handles before the entry
+        lands, and ``/match`` resolves them back to the location."""
+        from precis.handlers import _gripe_summary as gs
+        from precis.handlers.alias import AliasHandler
+
+        store.upsert_kinds([AliasHandler.spec])
+        _light(store)
+        gid = _gripe(store, "path bug")
+        _run(
+            store,
+            _llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            reason="off-by-one in "
+                            "src/precis/flux/parse.py::deflux_core",
+                        )
+                    ]
+                }
+            ),
+        )
+        cause = next(
+            c for c in _comments(store, gid) if c.startswith("triage: suspected cause")
+        )
+        assert "src/precis/flux/parse.py" not in cause
+        m = re.search(r"\ban\d+\b", cause)
+        assert m is not None
+        assert gs.resolve_anchors(store, {m.group(0)}) == {
+            m.group(0): "src/precis/flux/parse.py::deflux_core"
+        }
+
     def test_project_filer_set_is_never_overridden(self, store: Store) -> None:
         """A ``project:<slug>`` the filer set stays — even when the model
         votes for something else."""
@@ -1366,7 +1415,8 @@ class TestVerdictSemantics:
             ),
         )
         assert _meta(store, gid)["dup_checked"] == [parent]
-        assert _comments(store, gid) == []
+        # only the triage stage's suspected-cause entry (gr595551)
+        assert _comments(store, gid) == ["triage: suspected cause - a real bug"]
 
     def test_invented_dup_pair_is_dropped(self, store: Store) -> None:
         gid = _gripe(store, "no parents")
@@ -1384,7 +1434,7 @@ class TestVerdictSemantics:
                 }
             ),
         )
-        assert _comments(store, gid) == []
+        assert _comments(store, gid) == ["triage: suspected cause - a real bug"]
         assert "dup_suggested" not in _meta(store, gid)
 
     def test_dup_checked_parents_not_rejudged(self, store: Store) -> None:

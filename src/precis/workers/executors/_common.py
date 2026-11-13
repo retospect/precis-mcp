@@ -2497,6 +2497,7 @@ def append_chunk(
     text: str,
     *,
     conn: Connection | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Append a chunk at the next ``ord`` for the ref.
 
@@ -2506,6 +2507,10 @@ def append_chunk(
     opens its own pool connection — uncommitted INSERTs in ``conn``
     were invisible, leading to two calls computing the same
     ``next_pos`` and a unique-constraint violation on ``(ref_id, ord)``.
+
+    ``meta`` merges under ``chunk_kind`` (e.g. the gripe pipeline's
+    ``stage`` mark, gr595551) — the caller's keys may never retag the
+    row's kind.
     """
     if conn is not None:
         row = conn.execute(
@@ -2523,7 +2528,7 @@ def append_chunk(
             ChunkInsert(
                 ord=next_pos,
                 text=mask_secrets(text),
-                meta={"chunk_kind": chunk_kind},
+                meta={**(meta or {}), "chunk_kind": chunk_kind},
             )
         ],
         conn=conn,

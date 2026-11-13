@@ -87,8 +87,14 @@ def test_gripe_writeback_success_appends_comment_and_flips_status(
 
     monkeypatch.setattr(store_mod.Store, "connect", lambda *a, **k: fake)
 
-    def _fake_append_chunk(store: Any, ref_id: int, kind: str, text: str) -> None:
-        calls["append_chunk"] = (ref_id, kind, text)
+    def _fake_append_chunk(
+        store: Any,
+        ref_id: int,
+        kind: str,
+        text: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        calls["append_chunk"] = (ref_id, kind, text, meta)
 
     import precis.workers.executors._common as common_mod
 
@@ -100,7 +106,12 @@ def test_gripe_writeback_success_appends_comment_and_flips_status(
 
     assert ok is True
     assert fake.closed is True
-    assert calls["append_chunk"] == (42, "gripe_comment", "FIXER (auto): built it")
+    assert calls["append_chunk"] == (
+        42,
+        "gripe_comment",
+        "FIXER (auto): built it",
+        {"stage": "code"},
+    )
     ref_id, tag, kwargs = calls["add_tag"]
     assert ref_id == 42
     assert (tag.prefix, tag.value) == ("STATUS", "in_review")
@@ -132,7 +143,7 @@ def test_gripe_writeback_no_status_skips_add_tag(
     import precis.workers.executors._common as common_mod
 
     monkeypatch.setattr(
-        common_mod, "append_chunk", lambda store, ref_id, kind, text: None
+        common_mod, "append_chunk", lambda store, ref_id, kind, text, **kw: None
     )
 
     ok = writeback_mod.gripe_writeback("postgresql://example/db", 42, "FIXER (auto): x")
@@ -272,7 +283,7 @@ def _run_writeback(
     monkeypatch.setattr(
         common_mod,
         "append_chunk",
-        lambda store, ref_id, kind, text: calls["appended"].append(text),
+        lambda store, ref_id, kind, text, **kw: calls["appended"].append(text),
     )
     assert writeback_mod.gripe_writeback(
         "postgresql://x/db", 7, comment, status, escalate_skill=escalate_skill
@@ -337,3 +348,142 @@ def test_work_item_carries_linked_skills() -> None:
         ["precis-gripe-help"],
     )
     assert item is not None and item.skills == ("precis-gripe-help",)
+
+
+def test_gripe_outcome_composes_the_head_only() -> None:
+    """The pure helper composes the outcome head only — the code stage's
+    ``touched files:`` / ``changed symbols:`` evidence lines belong to
+    ``gripe_writeback``, which needs a store to mint the ``an<N>``
+    anchors the ledger's anchor-only contract requires (gr595551
+    review)."""
+    report = Report(ReportStatus.OK, "t", "branch fix/gr42 built")
+    comment, _ = _gripe_outcome(report, Autonomy.REPORT, _item(), shipped=False)
+    assert comment.startswith("FIXER (auto):")
+    assert "touched files" not in comment
+    assert "changed symbols" not in comment
+
+
+def test_writeback_touched_drops_evidence_when_mint_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-soft: a mint failure (the fake store has no pool) drops the
+    evidence lines but never the outcome comment — raw paths/symbols
+    are never written as a fallback."""
+    calls: dict[str, Any] = {}
+
+    class _FakeStore:
+        def close(self) -> None:
+            pass
+
+    import precis.store.store as store_mod
+    import precis.workers.executors._common as common_mod
+
+    monkeypatch.setattr(store_mod.Store, "connect", lambda *a, **k: _FakeStore())
+    monkeypatch.setattr(
+        common_mod,
+        "append_chunk",
+        lambda store, ref_id, kind, text, **kw: calls.setdefault("text", text),
+    )
+
+    ok = writeback_mod.gripe_writeback(
+        "postgresql://example/db",
+        42,
+        "FIXER (auto): built it",
+        touched=(["src/a.py"], ["src/a.py::do_thing"]),
+    )
+
+    assert ok is True
+    assert calls["text"] == "FIXER (auto): built it"
+
+
+def test_change_evidence_names_added_and_edited_symbols(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AST-diff of both revisions names the actually-changed symbols as
+    ``path::qual`` — an added function is detected (hunk headers
+    attributed it to its predecessor) and an unchanged sibling is not
+    listed."""
+    from precis.fixer import tick as tick_mod
+
+    old_src = "def do_thing():\n    return 1\n\n\nclass Foo:\n    pass\n"
+    new_src = (
+        "def do_thing():\n    return 2\n\n\nclass Foo:\n    pass\n\n\n"
+        "def brand_new():\n    return 3\n"
+    )
+
+    class _R:
+        def __init__(self, out: str, rc: int = 0) -> None:
+            self.stdout = out
+            self.returncode = rc
+
+    def _fake_git(repo: Any, *args: str, check: bool = True) -> _R:
+        if "--name-only" in args:
+            return _R("src/a.py\n")
+        if "origin/main:src/a.py" in args:
+            return _R(old_src)
+        if "HEAD:src/a.py" in args:
+            return _R(new_src)
+        return _R("")
+
+    monkeypatch.setattr(tick_mod, "_git", _fake_git)
+    assert tick_mod._change_evidence(tmp_path) == (
+        ["src/a.py"],
+        ["src/a.py::brand_new", "src/a.py::do_thing"],
+    )
+
+
+def test_change_evidence_skips_unchanged_and_nonpy(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symbol whose span only shifted is not a change; a non-Python
+    file contributes to touched files but never to symbols."""
+    from precis.fixer import tick as tick_mod
+
+    old_src = "LIMIT = 10\n\n\ndef stable():\n    return 1\n"
+    new_src = "NEW_FLAG = True\n\n\nLIMIT = 10\n\n\ndef stable():\n    return 1\n"
+
+    class _R:
+        def __init__(self, out: str, rc: int = 0) -> None:
+            self.stdout = out
+            self.returncode = rc
+
+    def _fake_git(repo: Any, *args: str, check: bool = True) -> _R:
+        if "--name-only" in args:
+            return _R("src/a.py\nscripts/run.sh\n")
+        if "origin/main:src/a.py" in args:
+            return _R(old_src)
+        if "HEAD:src/a.py" in args:
+            return _R(new_src)
+        return _R("", rc=1)
+
+    monkeypatch.setattr(tick_mod, "_git", _fake_git)
+    files, syms = tick_mod._change_evidence(tmp_path)
+    assert files == ["src/a.py", "scripts/run.sh"]
+    assert syms == ["src/a.py::NEW_FLAG"]
+
+
+def test_change_evidence_deleted_and_added_files(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deleted file's symbols read as removed; an added file's read
+    as added — both sides of the diff contribute."""
+    from precis.fixer import tick as tick_mod
+
+    class _R:
+        def __init__(self, out: str, rc: int = 0) -> None:
+            self.stdout = out
+            self.returncode = rc
+
+    def _fake_git(repo: Any, *args: str, check: bool = True) -> _R:
+        if "--name-only" in args:
+            return _R("src/gone.py\nsrc/new.py\n")
+        if "origin/main:src/gone.py" in args:
+            return _R("def was_here():\n    pass\n")
+        if "HEAD:src/new.py" in args:
+            return _R("def is_here():\n    pass\n")
+        return _R("", rc=1)  # the missing side of each pair
+
+    monkeypatch.setattr(tick_mod, "_git", _fake_git)
+    files, syms = tick_mod._change_evidence(tmp_path)
+    assert files == ["src/gone.py", "src/new.py"]
+    assert syms == ["src/gone.py::was_here", "src/new.py::is_here"]

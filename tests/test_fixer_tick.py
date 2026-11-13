@@ -273,7 +273,7 @@ def test_run_tick_calls_gripe_writeback_once_on_ok_report_autonomy(
 
     calls: list[tuple[Any, ...]] = []
 
-    def _record_writeback(*a: Any) -> bool:
+    def _record_writeback(*a: Any, **k: Any) -> bool:
         calls.append(a)
         return True
 
@@ -311,7 +311,7 @@ def test_run_tick_calls_gripe_writeback_once_on_needs_you(
 
     calls: list[tuple[Any, ...]] = []
 
-    def _record_writeback(*a: Any) -> bool:
+    def _record_writeback(*a: Any, **k: Any) -> bool:
         calls.append(a)
         return True
 
@@ -363,7 +363,7 @@ def test_run_tick_shipped_needs_you_writeback_is_honest_and_in_review(
 
     calls: list[tuple[Any, ...]] = []
 
-    def _record_writeback(*a: Any) -> bool:
+    def _record_writeback(*a: Any, **k: Any) -> bool:
         calls.append(a)
         return True
 
@@ -402,7 +402,7 @@ def test_run_tick_skips_writeback_for_proposal_kind(
 
     calls: list[tuple[Any, ...]] = []
 
-    def _record_writeback(*a: Any) -> bool:
+    def _record_writeback(*a: Any, **k: Any) -> bool:
         calls.append(a)
         return True
 
@@ -432,7 +432,7 @@ def test_run_tick_skips_writeback_when_gripe_db_url_unset(
 
     calls: list[tuple[Any, ...]] = []
 
-    def _record_writeback(*a: Any) -> bool:
+    def _record_writeback(*a: Any, **k: Any) -> bool:
         calls.append(a)
         return True
 

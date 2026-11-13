@@ -73,6 +73,22 @@ Surface (see ``precis-gripe-help``):
   continuation can't silently revert to ``drain``.
 - ``tag`` / ``link`` / ``delete`` behave like every other
   first-class numeric ref kind via :class:`NumericRefHandler`.
+- The current-state summary (gr595551, :mod:`._gripe_summary`): the
+  comment ledger stays append-only; one mutable ``meta.summary``
+  block rides on top, rebuilt from the ledger by a small-model call.
+  ``put(id=N, text=…, args={'stage': '<slug>'})`` appends a stage
+  entry and rebuilds — the stage-entry contract is ``an<N>`` handles
+  only, so a text still naming a raw ``path``/``path::qual`` refuses
+  (mint the handle with ``put(kind='alias')`` first);
+  ``edit(id=N, mode='summary')`` rebuilds on
+  demand (``args={'summary': '<text>'}`` writes a vetted text — the
+  hard gate admits only anchors and ``entry N`` pointers that exist
+  in the ledger and no raw location at all); the card carries the
+  block marked ``stale`` when
+  the ledger moved on, ``view='summary'`` reads it uncapped, and
+  ``get(id='/match', args={'trace': '<stack trace>'})`` ranks open
+  gripes by which trace symbols/files their ledgers name once each
+  ``an<N>``/``co<N>`` anchor resolves to its recorded location.
 - The gripe-fix loop's working state lives on the gripe (gr519361,
   :mod:`._gripe_fix`): ``edit(id=N|[ids], mode='fix', args={...})`` sets
   the batch tag, host/session/tree/landed in ``meta.fix`` and appends
@@ -104,6 +120,7 @@ import psycopg.errors
 from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported, Upstream
 from precis.handlers import _comment_timeline as tl
 from precis.handlers import _gripe_fix as gf
+from precis.handlers import _gripe_summary as gs
 from precis.handlers._gripe_themes import (
     THEME_TAG_PREFIX,
     keeper_mint_match,
@@ -837,6 +854,11 @@ class GripeHandler(NumericRefHandler):
         # wake condition (gr543711); carried to the tag leg / create via
         # ``_PUT_UNTIL``.
         until: dict[str, Any] | str | None = None,
+        # ``args={'stage': '<slug>'}`` — comment-path only: the comment
+        # is a pipeline-stage ledger entry (gr595551), stamped
+        # ``meta.stage``; the put then rebuilds the mutable
+        # current-state summary (``meta.summary``).
+        stage: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``text=`` + ``body=`` join as first line + details (the todo
@@ -901,6 +923,57 @@ class GripeHandler(NumericRefHandler):
         # settled and never forward it past this point.
         if mode is not None:
             self._validate_put_mode(id=id, mode=mode)
+        # ``args={'stage': '<slug>'}`` marks a comment as a pipeline-stage
+        # ledger entry — a create is a body, not an entry, so it refuses
+        # (gr595551).
+        stage_slug: str | None = None
+        if stage is not None:
+            if id is None:
+                raise BadInput(
+                    "args={'stage': …} marks a stage entry on an existing "
+                    f"{self._sense()} — a new filing has no ledger to append to",
+                    next=(
+                        f"put(kind={self.kind!r}, id=<id>, text='<entry>', "
+                        "args={'stage': 'triage'})"
+                    ),
+                )
+            cand = str(stage).strip()
+            if not gs.STAGE_SLUG_RE.match(cand):
+                raise BadInput(
+                    f"args['stage'] {stage!r} is not a slug (lowercase "
+                    "letters, digits, '.', '_', '-')",
+                    next=(
+                        f"put(kind={self.kind!r}, id={id}, text='<entry>', "
+                        "args={'stage': 'triage'})"
+                    ),
+                )
+            stage_slug = cand
+        if stage_slug is not None and (text is None or not text.strip()):
+            raise BadInput(
+                "args={'stage': …} marks a stage entry — the entry's text "
+                "is required (the ledger row IS the text)",
+                next=(
+                    f"put(kind={self.kind!r}, id={id}, text='<entry>', "
+                    f"args={{'stage': {stage_slug!r}}})"
+                ),
+            )
+        # The stage-entry contract is anchor handles only (gr595551) —
+        # a ``path``/``path::qual`` still in the text refuses rather
+        # than landing raw; the pipeline's own writers mint before
+        # they append, the agent mints the same pairs through
+        # ``put(kind='alias')``.
+        if stage_slug is not None and (locs := gs.extract_locations(text or "")):
+            raise BadInput(
+                "a stage entry carries an<N> handles only — "
+                f"{', '.join(locs[:4])}{' …' if len(locs) > 4 else ''} "
+                "would land raw",
+                next=(
+                    "mint each location's handle first — put(kind='alias', "
+                    "args={'a': 'an<N>', 'b': '<path[::qual]>', 'rel': "
+                    "'short-for'}) — then write the entry naming the "
+                    "handles"
+                ),
+            )
         # ``put(id=N, text='...')`` appends a gripe_comment chunk —
         # the comment-append idiom for this kind. The base
         # NumericRefHandler.put rejects id-presence unconditionally
@@ -971,9 +1044,12 @@ class GripeHandler(NumericRefHandler):
             # edge/tag edit in one transaction (comment-then-close is one
             # put, not reject + re-put + tag(); gr484232). The tag edit is
             # this kind's own tag() — the same STATUS guards apply.
+            entry_meta = (
+                {gs.STAGE_META_KEY: stage_slug} if stage_slug is not None else None
+            )
             with _PUT_UNTIL.bind(until), _translate_status_check():
                 resp = self._append_then_link(
-                    lambda: self._append_comment(id=id, text=text),
+                    lambda: self._append_comment(id=id, text=text, meta=entry_meta),
                     id=id,
                     link=link,
                     unlink=unlink,
@@ -982,6 +1058,8 @@ class GripeHandler(NumericRefHandler):
                     untags=untags,
                     what=f"{self._sense()} comment",
                 )
+            if stage_slug is not None:
+                resp = self._summary_rebuild_reply(resp, id=id)
             return interpreted(resp, readings)
         # Read-scoped create (write:none, --read-only, agent_ro — the
         # dispatch carve-out is what let this put reach the handler): the
@@ -2163,6 +2241,12 @@ class GripeHandler(NumericRefHandler):
         review: str | None = None,
         findings: str | None = None,
         landed: str | None = None,
+        # ``mode='summary'`` keys (gr595551) — named so the dispatcher's
+        # args= gate admits them; read only under that mode, refused
+        # with the title door otherwise. ``summary`` the vetted text
+        # ('' clears), ``through`` the coverage point it records.
+        summary: str | None = None,
+        through: int | str | None = None,
         **kw: Any,
     ) -> Response:
         """Rewrite a gripe's title (``refs.title``), or — ``mode='fix'`` —
@@ -2185,7 +2269,15 @@ class GripeHandler(NumericRefHandler):
         }
         if isinstance(id, list):
             return self._edit_batch(
-                id, title=title, text=text, body=body, dry_run=dry_run, **fix_kw, **kw
+                id,
+                title=title,
+                text=text,
+                body=body,
+                dry_run=dry_run,
+                summary=summary,
+                through=through,
+                **fix_kw,
+                **kw,
             )
         # The edit verb injects ``verdict='approved'`` on every call
         # (``_WRAPPER_DEFAULTED_KWARGS``); drop that default so the
@@ -2197,7 +2289,30 @@ class GripeHandler(NumericRefHandler):
             return self._edit_fix(
                 id=id, dry_run=dry_run, title=title, text=text, body=body, **fix_kw
             )
+        if kw.get("mode") == "summary":
+            return self._edit_summary(
+                id=id,
+                dry_run=dry_run,
+                title=title,
+                text=text,
+                body=body,
+                summary=summary,
+                through=through,
+                **{**fix_kw, **kw},
+            )
         fix_given = sorted(k for k, v in fix_kw.items() if v is not None)
+        sum_given = [
+            k for k, v in (("summary", summary), ("through", through)) if v is not None
+        ]
+        if sum_given:
+            raise BadInput(
+                f"{', '.join(sum_given)} are gripe summary keys — they need "
+                "mode='summary'",
+                next=(
+                    f"edit(kind={self.kind!r}, id={id or '<id>'}, "
+                    f"mode='summary', args={{{', '.join(f'{k!r}: ...' for k in sum_given)}}})"
+                ),
+            )
         if fix_given:
             raise BadInput(
                 f"{', '.join(fix_given)} are gripe-fix loop keys — they need "
@@ -2289,11 +2404,133 @@ class GripeHandler(NumericRefHandler):
             body=gf.apply_patch(self.store, ref, tags, patch, dry_run=bool(dry_run))
         )
 
-    def _append_comment(self, *, id: str | int, text: str) -> Response:
+    _SUMMARY_EDIT_KEYS = ("summary", "through")
+
+    def _edit_summary(
+        self,
+        *,
+        id: str | int | None,
+        dry_run: bool | str | None,
+        title: str | None,
+        text: str | None,
+        body: str | None,
+        summary: str | None,
+        through: int | str | None,
+        **raw: Any,
+    ) -> Response:
+        """``edit(mode='summary')`` (gr595551): rebuild the current-state
+        summary from the comment ledger — the small-model fold — or write
+        a vetted text directly with ``args={'summary': '<text>'}``
+        (``args={'through': N}`` pins the coverage point, ``''`` clears).
+        Either way :func:`._gripe_summary.gate_summary` runs: anchors and
+        ``entry N`` pointers must exist in the ledger, and a raw
+        ``path``/``path::qual`` refuses — the summary carries ``an<N>``
+        handles only (mint via ``put(kind='alias')``)."""
+        if id is None:
+            raise BadInput(
+                "edit(kind='gripe', mode='summary') requires id=",
+                next="get(kind='gripe', id=<id>, view='summary') reads the "
+                "current block; then "
+                "edit(kind='gripe', id=<id>, mode='summary')",
+            )
+        prose = [k for k, v in (("title", title), ("text", text), ("body", body)) if v]
+        if prose:
+            raise BadInput(
+                f"mode='summary' takes no {', '.join(prose)}= — the ledger is "
+                "append-only; the summary text is args={'summary': …} or "
+                "the model's rebuild",
+                next=f"edit(kind='gripe', id={id}, mode='summary', "
+                "args={'summary': '<text>'})",
+            )
+        unknown = sorted(
+            k
+            for k, v in raw.items()
+            if k not in (*self._SUMMARY_EDIT_KEYS, "mode") and v is not None
+        )
+        if unknown:
+            raise BadInput(
+                f"mode='summary' does not take {unknown}",
+                options=list(self._SUMMARY_EDIT_KEYS),
+                next=f"edit(kind='gripe', id={id}, mode='summary')",
+            )
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        if summary is not None:
+            n_through: int | None = None
+            if through is not None:
+                try:
+                    n_through = int(through)
+                except (TypeError, ValueError):
+                    raise BadInput(
+                        f"args['through'] must be a comment number, got {through!r}",
+                        next=f"get(kind='gripe', id={id}, view='comments')",
+                    ) from None
+            out = gs.write_summary_text(
+                self.store, ref, summary, through=n_through, dry_run=bool(dry_run)
+            )
+        else:
+            if through is not None:
+                raise BadInput(
+                    "args['through'] rides with args['summary'] — the model's "
+                    "rebuild sets its own coverage point",
+                    next=f"edit(kind='gripe', id={id}, mode='summary', "
+                    "args={'summary': '<text>', 'through': <N>})",
+                )
+            if dry_run:
+                out = self._summary_dry_run(ref)
+            else:
+                out = gs.rebuild_summary(self.store, ref)
+        return Response(body=out)
+
+    def _summary_dry_run(self, ref: Ref) -> str:
+        """``mode='summary' --dry-run``: name what the rebuild would fold,
+        without the model call."""
+        comments = gs.ledger(self.store.chunks.list_chunks_for_ref(ref.id))
+        old = gs.summary_of(ref.meta)
+        # Same -1 "nothing folded yet" floor as rebuild_summary — a
+        # chunkless gripe's first worker-written entry is ord 0.
+        through = old.through if old else -1
+        new = [c for c in comments if c.ord > through]
+        if not comments:
+            return f"dry run: gripe id={ref.id} has no ledger entries to fold"
+        if not new:
+            return (
+                f"dry run: gripe id={ref.id} summary already current "
+                f"(through comment {through})"
+            )
+        return (
+            f"dry run: gripe id={ref.id} would fold {len(new)} entr"
+            f"{'y' if len(new) == 1 else 'ies'} "
+            f"({new[0].ord}-{new[-1].ord}) via the small model, through "
+            f"comment {new[-1].ord} (nothing written)"
+        )
+
+    def _append_comment(
+        self, *, id: str | int, text: str, meta: dict[str, Any] | None = None
+    ) -> Response:
         ref = self._resolve_live_ref(self._coerce_id(id))
         return tl.append_comment(
-            self.store, ref, kind=self.kind, comment_kind=_COMMENT_KIND, text=text
+            self.store,
+            ref,
+            kind=self.kind,
+            comment_kind=_COMMENT_KIND,
+            text=text,
+            meta=meta,
         )
+
+    def _summary_rebuild_reply(self, resp: Response, *, id: str | int) -> Response:
+        """``put(args={'stage'})``'s second half (gr595551): rebuild the
+        summary AFTER the entry committed — a rebuild fault reports on
+        the ack, it never eats the ledger write."""
+        try:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            note = gs.rebuild_summary(self.store, ref)
+        except Exception as exc:
+            log.warning("gripe summary rebuild failed for id=%s: %s", id, exc)
+            note = (
+                f"summary not rebuilt ({exc}) — retry: "
+                f"edit(kind='gripe', id={id}, mode='summary')"
+            )
+        return Response(body=f"{resp.body}\n{note}")
 
     # ── delete: soft-delete the gripe, or hide one comment ──────────
 
@@ -2384,6 +2621,10 @@ class GripeHandler(NumericRefHandler):
         queue: str | None = None,
         host: str | None = None,
         batch: str | None = None,
+        # ``args={'trace': '<stack trace>'}`` — the ``/match`` view's
+        # payload (gr595551): rank open gripes by which trace
+        # symbols/files their comment ledgers already name.
+        trace: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
@@ -2416,6 +2657,20 @@ class GripeHandler(NumericRefHandler):
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
+        if id == "/match":
+            if view is not None:
+                raise BadInput(
+                    f"id='/match' takes no view= (got {view!r})",
+                    next="get(kind='gripe', id='/match', args={'trace': '<text>'})",
+                )
+            return self._match_view(trace)
+        if trace is not None:
+            raise BadInput(
+                "args={'trace': '<stack trace>'} belongs to the '/match' "
+                "view — it ranks open gripes whose ledgers name the trace's "
+                "symbols/files",
+                next="get(kind='gripe', id='/match', args={'trace': '<text>'})",
+            )
         if id in ("/queue", "/batch"):
             if _kw.get("page") not in (None, 1) or _kw.get("page_size") is not None:
                 raise BadInput(
@@ -2505,6 +2760,14 @@ class GripeHandler(NumericRefHandler):
                         "args={'comments': 5})",
                     ],
                 )
+        if view == "summary" and id is not None:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            ledger_rows = gs.ledger(self.store.chunks.list_chunks_for_ref(ref.id))
+            head = "\n".join(self._header_lines(ref, self.store.tags_for(ref.id)))
+            return interpreted(
+                Response(body=gs.render_summary_view(ref, head, ledger_rows)),
+                readings,
+            )
         if view in ("comments", "body", "full"):
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(
@@ -2528,7 +2791,7 @@ class GripeHandler(NumericRefHandler):
                 readings,
             )
         if view is not None and view not in _BASE_VIEWS:
-            views = [*_BASE_VIEWS, "body", "comments", "full", "fix"]
+            views = [*_BASE_VIEWS, "body", "comments", "full", "fix", "summary"]
             near = difflib.get_close_matches(view, views, n=1)
             lead = f"nearest is view={near[0]!r}. " if near else ""
             raise Unsupported(
@@ -2583,6 +2846,9 @@ class GripeHandler(NumericRefHandler):
             *self._header_lines(ref, tags),
             f"title: {title}",
             *self._dup_lines(ref),
+            # gr595551: the mutable current-state summary rides on top
+            # of the ledger, marked stale when comments moved past it.
+            *gs.card_lines(ref, comments),
             f"comments: {len(comments)} · {reads}",
         ]
         # gr519361: a gripe in the fix loop shows its batch, derived queue,
@@ -2654,12 +2920,41 @@ class GripeHandler(NumericRefHandler):
         if len(body or "") > _BODY_HEAD_CHARS * tl.CUT_SLACK:
             return False
         head = "\n".join(self._header_lines(ref, tags))
-        budget = _FULL_VIEW_CHARS - len(head) - len(body or "")
+        summary = "\n".join(gs.card_lines(ref, comments))
+        budget = _FULL_VIEW_CHARS - len(head) - len(summary) - len(body or "")
         if comments and budget < _MIN_COMMENT_PAGE:
             return False
         hidden = tl.hidden_comments(ref)
         used = sum(len(tl._comment_piece(c, hidden, c.ord)) for c in comments)
         return used <= budget
+
+    def _match_view(self, trace: str | None) -> Response:
+        """``get(id='/match', args={'trace': '<stack trace>'})`` —
+        gr595551's integration-failure ticket: the trace's file/symbol
+        tokens scored against each open gripe's comment ledger; the
+        newest touched-files entry says which files belong to which
+        gripe."""
+        if trace is None or not str(trace).strip():
+            raise BadInput(
+                "id='/match' needs args={'trace': '<the stack trace>'}",
+                next="get(kind='gripe', id='/match', args={'trace': '<paste>'})",
+            )
+        refs = self.store.list_refs(
+            kind=self.kind,
+            exclude_tags=sorted(_OPEN_EXCLUDED_TAGS),
+            order_by="updated_desc",
+            limit=2000,
+        )
+        tag_rows = self.store.ref_tags_bulk([r.id for r in refs])
+        statuses = {
+            r.id: next((v for ns, v in tag_rows.get(r.id, []) if ns == "STATUS"), None)
+            for r in refs
+        }
+        text = str(trace).strip()
+        rows = gs.match_rows(self.store, refs, statuses, text)
+        return Response(
+            body=gs.render_match(rows, n_open=len(refs), trace_chars=len(text))
+        )
 
     def _fix_list_view(
         self,
@@ -2812,7 +3107,13 @@ class GripeHandler(NumericRefHandler):
                 section = (
                     f"no comments — put(kind='gripe', id={ref.id}, text='...') adds one"
                 )
-            return f"{head}\n\n{body_shown}" + (f"\n\n{section}" if section else "")
+            summary = "\n".join(gs.card_lines(ref, cblocks)).strip("\n")
+            top = (
+                f"{head}\n\n{summary}\n\n{body_shown}"
+                if summary
+                else f"{head}\n\n{body_shown}"
+            )
+            return top + (f"\n\n{section}" if section else "")
         # view == "comments"
         w = self._comment_window(ref, cblocks, comment, comments)
         section = tl.render_comment_view(

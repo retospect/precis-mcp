@@ -56,7 +56,14 @@ transaction**; a short write transaction per gripe then replaces the
 tags, stamps the score inputs and ``pipeline.triaged_at``, and clears
 ``claimed_at``.
 Crashed claims age out after :data:`_CLAIM_MINUTES`; every write is a
-replace, so a doubled tick converges.
+replace, so a doubled tick converges. The comments the write appends
+carry ``meta.stage='triage'``; the verdict's prose fields mint
+``an<N>`` code-anchor handles for their code locations before the
+entries land — the ledger's contract is anchors only, never a raw
+path or symbol (:func:`_anchored`) — and the append is followed by a
+fail-soft rebuild of the gripe's current-state summary (gr595551,
+:mod:`precis.handlers._gripe_summary`) — the stage that wrote the
+ledger entries rewrites the summary for the next agent.
 
 A second claim arm — :func:`_claim_backfill` — fills only the batch
 slots the open arm leaves: live gripes already past ``open`` (triaged,
@@ -1889,16 +1896,56 @@ def _next_ord(conn: Any, ref_id: int) -> int:
     return int(row[0])
 
 
-def _add_comment(conn: Any, store: Store, ref_id: int, text: str, pos: int) -> int:
-    """One ``gripe_comment`` chunk at ``pos``; returns the next ord."""
+def _add_comment(
+    conn: Any, store: Store, ref_id: int, text: str, pos: int, *, stage: str
+) -> int:
+    """One ``gripe_comment`` chunk at ``pos``; returns the next ord.
+
+    ``stage`` stamps ``chunks.meta['stage']`` (gr595551): the ledger
+    records which pipeline stage appended the entry, and the summary
+    fold's prompt marks it."""
     from precis.store.types import ChunkInsert
 
     store.chunks.insert_chunks(
         ref_id,
-        [ChunkInsert(ord=pos, text=text, meta={"chunk_kind": _COMMENT_KIND})],
+        [
+            ChunkInsert(
+                ord=pos,
+                text=text,
+                meta={"chunk_kind": _COMMENT_KIND, "stage": stage},
+            )
+        ],
         conn=conn,
     )
     return pos + 1
+
+
+def _fold_summary(store: Store, ref_id: int) -> None:
+    """gr595551: the stage that appended entries rewrites the gripe's
+    mutable current-state summary — one small-model call folding the
+    new ledger entries in. Fail-soft: the ledger write already
+    committed, so a rebuild fault leaves the summary marked stale on
+    the card (``edit(mode='summary')`` retries), never fails the tick.
+    A gripe with nothing newer than ``through`` costs no model call —
+    the fold returns 'already current' first. The handler stays behind
+    the :mod:`precis.utils.gripe_summary` seam — workers may not import
+    ``precis.handlers`` (the layering contract)."""
+    from precis.utils import gripe_summary
+
+    gripe_summary.fold(store, ref_id)
+
+
+def _anchored(store: Store, ref_id: int, text: str) -> str:
+    """Model prose → the ledger-safe version: its raw code locations
+    (``path`` / ``path::qual``) mint to ``an<N>`` handles first — the
+    ledger's anchor-only contract (gr595551; review of td655156).
+    Fail-soft through the :mod:`precis.utils.gripe_summary` seam: a
+    mint fault redacts the location, it never lands raw."""
+    if not text.strip():
+        return text
+    from precis.utils import gripe_summary
+
+    return gripe_summary.anchorize(store, text, gripe=ref_id)
 
 
 def _write_verdict(
@@ -1944,6 +1991,18 @@ def _write_verdict(
     the STATUS written (``None`` on that stale skip)."""
     from precis.store.types import Tag
 
+    # gr595551: every prose field the verdict carries mints ``an<N>``
+    # handles for its code locations BEFORE the entries are built —
+    # the ledger's contract is anchors only, never a raw path or
+    # symbol (review of td655156).
+    reason = _anchored(store, g.ref_id, v.reason or "")
+    recommendation = (
+        _anchored(store, g.ref_id, v.recommendation) if v.recommendation else None
+    )
+    project_why = _anchored(store, g.ref_id, v.project_why) if v.project_why else None
+    dup_whys = {
+        id(d): _anchored(store, g.ref_id, d.why) for d in v.dups if d.same is True
+    }
     stamp = when.strftime("%Y-%m-%dT%H:%M:%SZ")
     with store.tx() as conn:
         row = conn.execute(
@@ -1986,7 +2045,9 @@ def _write_verdict(
         for d in v.dups:
             if d.same is True:
                 suggested[d.parent] = {"id": d.parent, "why": d.why}
-                comments.append(f"{_DUP_SUGGEST_PREFIX}gr{d.parent} - {d.why}")
+                comments.append(
+                    f"{_DUP_SUGGEST_PREFIX}gr{d.parent} - {dup_whys.get(id(d), d.why)}"
+                )
             elif d.same is False:
                 checked.add(d.parent)
         if suggested:
@@ -2011,10 +2072,10 @@ def _write_verdict(
                 close.append("triage: fix cites main — landed, not yet deployed")
         elif may_close and v.verdict == "noise":
             status = "wontfix"
-            close.append(f"resolved: wontfix — noise: {v.reason} ({day})")
+            close.append(f"resolved: wontfix — noise: {reason} ({day})")
         elif may_close and v.verdict in _DISPUTES:
             status = "wontfix"
-            close.append(f"resolved: wontfix — {v.verdict}: {v.reason} ({day})")
+            close.append(f"resolved: wontfix — {v.verdict}: {reason} ({day})")
         elif status == "triaged" and v.verdict == "bug" and _needs_spec(g, v):
             if g.ruled:
                 # gr633601: a ``Reto <date>:`` ruling settled the
@@ -2034,8 +2095,7 @@ def _write_verdict(
                 # deploy verifier closes it once a docs/backlog spec names it.
                 status = "needs_spec"
                 comments.append(
-                    f"{_NEEDS_SPEC_PREFIX}"
-                    f"{v.recommendation or v.reason or '(see gripe)'}"
+                    f"{_NEEDS_SPEC_PREFIX}{recommendation or reason or '(see gripe)'}"
                 )
         # Replace the OPEN triage tags + a stale disagreement flag.
         conn.execute(
@@ -2074,20 +2134,25 @@ def _write_verdict(
             if v.project != _DEFAULT_PROJECT:
                 comments.append(
                     f"project: {_DEFAULT_PROJECT} -> {v.project}, because "
-                    f"{_one_line(v.project_why or v.reason or 'see gripe text')}"
+                    f"{_one_line(project_why or reason or 'see gripe text')}"
                 )
         if reto:
             store.add_tag(g.ref_id, Tag.open("reto:ask"), set_by="system", conn=conn)
             # gr595189: one payload, one comment — when the needs-spec
             # note already carries this text, the `recommend:` twin
             # adds only a second label to the same words.
-            rec_text = v.recommendation or v.reason or "(see gripe)"
+            rec_text = recommendation or reason or "(see gripe)"
             if all(c.split(": ", 1)[-1] != rec_text for c in comments):
                 comments.append(f"{_RECOMMEND_PREFIX}{rec_text}")
         elif reto_overflow:
             store.add_tag(
                 g.ref_id, Tag.open("reto:overflow"), set_by="system", conn=conn
             )
+        # gr595551: the triage stage's ledger evidence — the suspected
+        # root cause — lands on every ordinary bug verdict, not only the
+        # spec-park / reto paths that already quote it.
+        if v.verdict == "bug" and reason and all(reason not in c for c in comments):
+            comments.append(f"{_TRIAGE_PREFIX}suspected cause - {_one_line(reason)}")
         if status == "triaged" and v.verdict != "bug":
             # A close verdict held back — no reason, a reopened or
             # owner-filed gripe, or past the dispute cap: stays open
@@ -2098,7 +2163,7 @@ def _write_verdict(
             )
             comments.append(
                 f"{_TRIAGE_PREFIX}{v.verdict.replace('-', ' ')} - "
-                f"{v.reason or '(no reason given)'}"
+                f"{reason or '(no reason given)'}"
             )
         # gr604593: machine sequencing lives in ``dispatch_score``, never
         # the human ``prio`` column — stamp the verdict's severity (the
@@ -2127,13 +2192,17 @@ def _write_verdict(
         pos = _next_ord(conn, g.ref_id)
         for text in comments:
             if text not in existing:
-                pos = _add_comment(conn, store, g.ref_id, text, pos)
+                pos = _add_comment(conn, store, g.ref_id, text, pos, stage="triage")
         for text in close:
-            pos = _add_comment(conn, store, g.ref_id, text, pos)
+            pos = _add_comment(conn, store, g.ref_id, text, pos, stage="triage")
         conn.execute(
             "UPDATE refs SET meta = %s WHERE ref_id = %s",
             (Jsonb(meta), g.ref_id),
         )
+    # gr595551: the ledger entries committed above — now the stage
+    # rewrites the summary. Outside the tx and fail-soft: a fold
+    # fault must not count as a write failure (or charge a miss).
+    _fold_summary(store, g.ref_id)
     return status
 
 
@@ -2256,7 +2325,8 @@ def _record_miss(
             "UPDATE refs SET meta = %s WHERE ref_id = %s",
             (Jsonb(meta), g.ref_id),
         )
-        if misses >= _MISS_LIMIT:
+        appended = misses >= _MISS_LIMIT
+        if appended:
             _add_comment(
                 conn,
                 store,
@@ -2264,7 +2334,10 @@ def _record_miss(
                 f"{_TRIAGE_PREFIX}no usable model verdict after "
                 f"{misses} ticks — needs manual triage",
                 _next_ord(conn, g.ref_id),
+                stage="triage",
             )
+    if appended:
+        _fold_summary(store, g.ref_id)
     return True
 
 

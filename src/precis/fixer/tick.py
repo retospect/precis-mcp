@@ -33,6 +33,7 @@ reliable source) — *not* ``--bare``/API-key like the container
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import logging
 import os
@@ -275,6 +276,99 @@ def _committed_anything(worktree: Path) -> bool:
     return bool(head) and head != base
 
 
+def _assign_names(node: ast.Assign | ast.AnnAssign) -> list[str]:
+    """Bound names of a module/class-level assignment (constants, config).
+
+    Same walk as ``scripts/coderef``'s ``symbol_index`` — kept local so
+    the evidence read needs no script import."""
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    names: list[str] = []
+    for t in targets:
+        if isinstance(t, ast.Name):
+            names.append(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            names += [e.id for e in t.elts if isinstance(e, ast.Name)]
+    return names
+
+
+def _symbol_spans(src: str) -> dict[str, str]:
+    """``qualname -> source text`` for every def/class/module constant.
+
+    Mirrors ``scripts/coderef``'s ``symbol_index`` — the dotted
+    ``__qualname__`` nesting (``Class.method``, ``outer.inner``), plus
+    module-/class-level assignments — but maps to the whole source
+    segment (decorators folded in) so two revisions can be compared."""
+    try:
+        tree = ast.parse(src)
+    except (SyntaxError, ValueError, RecursionError):
+        return {}
+    lines = src.splitlines(keepends=True)
+    out: dict[str, str] = {}
+
+    def walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qual = prefix + child.name
+                start = child.lineno
+                for dec in child.decorator_list:
+                    start = min(start, dec.lineno)
+                end = child.end_lineno or child.lineno
+                out[qual] = "".join(lines[start - 1 : end])
+                walk(child, qual + ".")
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)) and isinstance(
+                node, (ast.Module, ast.ClassDef)
+            ):
+                end = child.end_lineno or child.lineno
+                seg = "".join(lines[child.lineno - 1 : end])
+                for name in _assign_names(child):
+                    out.setdefault(prefix + name, seg)
+            else:
+                # descend through non-symbol nodes (if/try/with) so a def
+                # nested in a module-level block registers at the prefix.
+                walk(child, prefix)
+
+    walk(tree, "")
+    return out
+
+
+def _changed_symbols(old_src: str, new_src: str) -> set[str]:
+    """Qualnames whose definition differs between revisions — added,
+    removed or edited. An unchanged symbol keeps an identical span even
+    when its line numbers shift, so churn elsewhere in the file does
+    not list it."""
+    old, new = _symbol_spans(old_src), _symbol_spans(new_src)
+    return {q for q in set(old) | set(new) if old.get(q) != new.get(q)}
+
+
+def _change_evidence(worktree: Path) -> tuple[list[str], list[str]]:
+    """``(touched files, changed symbols)`` of the build vs origin/main.
+
+    Symbols are anchor-shaped ``<file>::<qualname>`` pairs — the
+    def/class/module-constant spans that differ between the two
+    revisions. Reading the diff's hunk headers only names the def a
+    hunk sits in: an added top-level function was attributed to its
+    predecessor or dropped when the diff carried no context —
+    AST-diffing both revisions names what actually changed (gr595551).
+    Best-effort: git failure gives empty lists; non-Python files and
+    unparseable sources contribute files but no symbols."""
+    names = _git(worktree, "diff", "--name-only", "origin/main...HEAD", check=False)
+    files = [f.strip() for f in names.stdout.splitlines() if f.strip()]
+    syms: set[str] = set()
+    for path in files:
+        if not path.endswith(".py"):
+            continue
+        old = _git(worktree, "show", f"origin/main:{path}", check=False)
+        new = _git(worktree, "show", f"HEAD:{path}", check=False)
+        syms.update(
+            f"{path}::{q}"
+            for q in _changed_symbols(
+                old.stdout if old.returncode == 0 else "",
+                new.stdout if new.returncode == 0 else "",
+            )
+        )
+    return files, sorted(syms)
+
+
 def _commit_if_dirty(worktree: Path, message: str) -> bool:
     """Commit any working-tree changes; return True if a commit was made."""
     if not _git(worktree, "status", "--porcelain", check=False).stdout.strip():
@@ -411,7 +505,11 @@ _WRITEBACK_PREFIX = "FIXER (auto):"
 
 
 def _gripe_outcome(
-    report: Report, autonomy: Autonomy, item: WorkItem, *, shipped: bool
+    report: Report,
+    autonomy: Autonomy,
+    item: WorkItem,
+    *,
+    shipped: bool,
 ) -> tuple[str, str | None]:
     """The (comment, status) write-back for one gripe-kind tick's report.
 
@@ -433,7 +531,21 @@ def _gripe_outcome(
     The latter's fix IS on main; only verification failed, so the lead
     phrase says that honestly (not "did not land") and the gripe still
     flips to ``in_review`` (fix-forward needed, not a re-pick).
+
+    The comment is the outcome head only: the code stage's ledger
+    evidence (``touched files:`` / ``changed symbols:`` lines, gr595551)
+    is appended by ``gripe_writeback`` — it needs a store to mint the
+    ``an<N>`` anchor handles the ledger's anchor-only contract requires.
+    The head itself anchorizes there too (a failed gate's tail names
+    paths): this helper may compose raw locations; they land as
+    handles.
     """
+    return _gripe_outcome_head(report, autonomy, item, shipped=shipped)
+
+
+def _gripe_outcome_head(
+    report: Report, autonomy: Autonomy, item: WorkItem, *, shipped: bool
+) -> tuple[str, str | None]:
     if report.status is ReportStatus.NEEDS_YOU:
         head = "\n".join(report.detail.splitlines()[:3])
         if shipped:
@@ -491,6 +603,7 @@ def run_tick(cfg: FixerConfig) -> TickResult:
     _worktree_add(cfg.repo_root, worktree, item.branch)
 
     shipped = False
+    touched: tuple[list[str], list[str]] | None = None
     try:
         build = _spawn_claude(cfg, worktree, _compose_prompt(item), item)
         if build.returncode != 0:
@@ -510,6 +623,7 @@ def run_tick(cfg: FixerConfig) -> TickResult:
             return result
 
         _autofix_lint(worktree)
+        touched = _change_evidence(worktree)
 
         gate_ok, gate_msg = _quick_gate(cfg, worktree)
         if not gate_ok:
@@ -584,9 +698,12 @@ def run_tick(cfg: FixerConfig) -> TickResult:
                     comment,
                     status,
                     escalate_skill=True,
+                    touched=touched,
                 )
             else:
-                gripe_writeback(cfg.gripe_db_url, item.ref_id, comment, status)
+                gripe_writeback(
+                    cfg.gripe_db_url, item.ref_id, comment, status, touched=touched
+                )
 
 
 def _run_script_in_worktree(worktree: Path, script: str, msg: str) -> tuple[bool, str]:
