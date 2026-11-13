@@ -875,6 +875,11 @@ class SkillHandler(Handler):
         """
         from precis.handlers._find_in_ref import find_preflight, find_response
 
+        # The dispatcher routes ``get``+``q`` here ahead of ``get``'s
+        # own list door, so a batch find arrives as a list in this
+        # shape — the same per-id fan-out ``_get_batch`` gives a view.
+        if isinstance(id, (list, tuple)):
+            return self._get_batch(list(id), view=view, q=q)
         if id is None:
             if view is not None:
                 raise BadInput(
@@ -953,7 +958,7 @@ class SkillHandler(Handler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         full: bool = False,
@@ -994,6 +999,12 @@ class SkillHandler(Handler):
         # ``search`` so the verbs converge on the obvious intent.
         if view == "usage":
             return self._render_usage(family=family)
+        # ``id=[...]`` is the batch form (gr665340 — before this door a
+        # list fell into ``str(id)`` and its repr parsed as one
+        # unparseable slug, so the refusal never named the real
+        # problem). ``q`` rides along as a per-element find-in-ref.
+        if isinstance(id, (list, tuple)):
+            return self._get_batch(list(id), view=view, q=q)
         if id is None and q is not None and q.strip():
             return self.search(q=q)
         if id is None or (isinstance(id, str) and id.startswith("/")):
@@ -1242,6 +1253,85 @@ class SkillHandler(Handler):
             result_budget_hint=_result_budget_hint(display),
             budget_outline=_budget_outline(display, text),
         )
+
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, q: str | None
+    ) -> Response:
+        """``get(id=[...])``: the single-id read mapped over every id, in
+        the order given (gr665340).
+
+        The shared batch path (``_numeric_ref._get_batch``) covers the
+        integer-id ref kinds; a skill id is a string, not a ``refs``
+        row, so the batch lives here — the same shape ``md`` uses.
+        Each element takes the same spellings the singleton form does
+        (``slug``, ``slug~N``, ``slug~A..B``, ``slug/toc``,
+        ``<wt-alias>/<slug>``); a miss is a one-line ``not found``
+        block, never a dropped id or an error for the whole call.
+        ``q=`` carries through to each element's find-in-ref. Whole
+        blocks page under :data:`BATCH_VIEW_PAGE_CHARS`, same as the
+        numeric batch's view form — the unread tail is named as the
+        ``next:`` call's id list.
+        """
+        # Lazy import: the store-free handler keeps ``_numeric_ref``
+        # (and its psycopg/store chain) out of its module imports —
+        # md.py's convention for the same helpers.
+        from precis.handlers._numeric_ref import (
+            BATCH_ID_CAP,
+            BATCH_VIEW_PAGE_CHARS,
+            _id_batch_next,
+        )
+
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next="get(kind='skill', id=['<slug>', ...])",
+            )
+        # The split hints re-issue the call verbatim — ``view=`` and
+        # ``q=`` ride along, same order the batch header prints them.
+        extra = (f", view={view!r}" if view is not None else "") + (
+            f", q={str(q).strip()!r}" if q is not None else ""
+        )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=_id_batch_next("get", "skill", ids, extra=extra),
+            )
+        addr: list[str] = []
+        for pos, raw in enumerate(ids):
+            if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+                raise BadInput(
+                    f"id[{pos}] must be a skill id string, got {type(raw).__name__}",
+                    next="get(kind='skill', id=['<slug>', ...])",
+                )
+            a = str(raw).strip()
+            if a not in addr:
+                addr.append(a)
+        blocks: list[str] = []
+        for a in addr:
+            try:
+                blocks.append(self.get(id=a, view=view, q=q).body)
+            except NotFound:
+                blocks.append(f"{a}  not found")
+        shown: list[str] = []
+        used = 0
+        for block in blocks:
+            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+                break
+            shown.append(block)
+            used += len(block) + 2  # the "\n\n" join
+        rest = addr[len(shown) :]
+        body = f"# {len(addr)} skill ids (batch"
+        if view is not None:
+            body += f", view={view!r}"
+        if q is not None:
+            body += f", q={str(q).strip()!r}"
+        body += ")\n\n" + "\n\n".join(shown)
+        if rest:
+            body += (
+                f"\n\n{len(rest)} more — next: get(kind='skill', "
+                f"id=[{', '.join(repr(a) for a in rest)}]{extra})"
+            )
+        return Response(body=body, result_count=len(shown))
 
     def _render_serve_stub(self, slug: str, text: str, rev: str) -> Response:
         """Stub for a ``have=<rev>`` get() of an unchanged skill (gr477798).

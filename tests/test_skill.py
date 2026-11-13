@@ -23,6 +23,7 @@ Split into per-concern files (gr515135):
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -318,6 +319,80 @@ def test_get_rejects_literal_args_dict(skill: SkillHandler) -> None:
     kwarg spelling a handler-level test should use instead."""
     with pytest.raises(BadInput, match="args="):
         skill.get(id="toc", args={"family": "se"})
+
+
+# ── batch get (``id=[...]``, gr665340) ───────────────────────────────
+
+
+def test_get_batch_renders_one_block_per_id(skill: SkillHandler) -> None:
+    """The reported call: a list of ``slug~N`` ids used to be
+    ``str()``-ed into one unparseable slug; now each element gets its
+    own read. Whole blocks page under BATCH_VIEW_PAGE_CHARS — the
+    unread tail is named as the ``next:`` call's id list."""
+    out = skill.get(
+        id=[
+            "precis-structure-help~15",
+            "precis-structure-help~17",
+            "precis-structure-help~18",
+        ]
+    )
+    assert out.body.startswith("# 3 skill ids (batch)")
+    assert "precis-structure-help~15" in out.body
+    # paged tail names the re-issue call with the unread ids
+    assert "id=['precis-structure-help~17'" in out.body
+
+
+def test_get_batch_miss_is_one_line_block_not_call_error(
+    skill: SkillHandler,
+) -> None:
+    out = skill.get(id=["zz-no-such-skill", "precis-structure-help~1"])
+    assert "zz-no-such-skill  not found" in out.body
+    # the live id still renders
+    assert "Handles & atom labels" in out.body
+
+
+def test_get_batch_dedupes(skill: SkillHandler) -> None:
+    out = skill.get(id=["precis-structure-help~1", "precis-structure-help~1"])
+    assert out.body.startswith("# 1 skill ids (batch)")
+
+
+def test_get_batch_empty_list_refuses(skill: SkillHandler) -> None:
+    with pytest.raises(BadInput, match=r"id=\[\] is empty"):
+        skill.get(id=[])
+
+
+def test_get_batch_over_cap_refuses_with_split_next(
+    skill: SkillHandler,
+) -> None:
+    ids: list[str | int] = ["precis-toc"] * 51
+    with pytest.raises(BadInput, match="at most 50") as excinfo:
+        skill.get(id=ids)
+    assert "id=['precis-toc'" in str(excinfo.value.next)
+
+
+def test_get_batch_non_id_element_refuses(skill: SkillHandler) -> None:
+    # a JSON bridge can hand any element shape — validation is runtime
+    bad: list[Any] = ["precis-toc", {"not": "an id"}]
+    with pytest.raises(BadInput, match=r"id\[1\] must be a skill id"):
+        skill.get(id=bad)
+
+
+def test_get_batch_view_maps_per_id(skill: SkillHandler) -> None:
+    out = skill.get(
+        id=["precis-structure-help~15", "precis-structure-help~17"], view="toc"
+    )
+    assert "view='toc'" in out.body
+    assert "precis-structure-help~15..15" in out.body
+    assert "precis-structure-help~17..17" in out.body
+
+
+def test_get_batch_find_maps_q_per_element(skill: SkillHandler) -> None:
+    """The dispatcher routes a get's ``q`` to ``find_in_ref`` before
+    ``get``, so ``get(kind='skill', id=[...], q='…')`` arrives at
+    ``find_in_ref`` as a list — the batch find is what must run."""
+    out = skill.find_in_ref(id=["precis-structure-help", "precis-toc"], q="skill")
+    assert out.body.startswith("# 2 skill ids (batch, q='skill')")
+    assert "precis-structure-help" in out.body
 
 
 # ── search scope=/view= (gr573037) ──────────────────────────────────
