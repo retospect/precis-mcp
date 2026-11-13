@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import types
 import urllib.error
 from dataclasses import dataclass, field, replace
@@ -258,6 +259,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         if args[:2] == ["cat-file", "-e"]:
             # rc 0 = the named path exists on origin/main.
             return _proc(rc=calls.get("cat_rc", 0))
+        if args == ["rev-parse", "--absolute-git-dir"]:
+            # The reused slice tree's own gitdir (its index.lock's home).
+            return _proc(calls.get("abs_gitdir", ""))
         return _proc()
 
     def fake_launch(argv: list[str], **kw: Any) -> int:
@@ -1449,6 +1453,114 @@ def test_reset_reused_worktree_failure_refuses_the_reuse(
     monkeypatch.setattr(run_slice, "_git", fake_git)
     with pytest.raises(RuntimeError, match="checkout"):
         run_slice._ensure_worktree(tmp_path, 42)
+
+
+def _reused_tree_with_lock(
+    seams: dict[str, Any], tmp_path: Path, *, age_s: float
+) -> Path:
+    """A reused slice tree whose gitdir holds a 0-byte ``index.lock``
+    ``age_s`` old — a dead git's remnant (gr650484). Returns the lock."""
+    (tmp_path / ".claude" / "worktrees" / "slice-td42").mkdir(parents=True)
+    gitdir = tmp_path / "repo" / ".git" / "worktrees" / "slice-td42"
+    gitdir.mkdir(parents=True)
+    seams["abs_gitdir"] = str(gitdir)
+    lock = gitdir / "index.lock"
+    lock.write_bytes(b"")
+    then = time.time() - age_s
+    os.utime(lock, (then, then))
+    return lock
+
+
+def test_submit_reaps_a_stale_index_lock_before_the_reuse_checkout(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr650484: a stale 0-byte ``index.lock`` no live git holds is
+    removed before ``checkout -f`` — the same keep-on-doubt rule
+    land_slice runs — and the launch proceeds."""
+    lock = _reused_tree_with_lock(
+        seams, tmp_path, age_s=land_slice.INDEX_LOCK_STALE_S + 600
+    )
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: False)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert not lock.exists()
+    assert ["checkout", "-f", "slice/42"] in [a for a, _c in seams["git"]]
+    assert seams["launch"]
+    assert any(
+        "run_slice: reaped stale index.lock" in text
+        for kind, text in ctx.chunks
+        if kind == "job_event"
+    )
+
+
+@pytest.mark.parametrize("why", ["fresh", "held"])
+def test_submit_keeps_a_live_index_lock_and_burns_no_attempt(
+    seams: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    why: str,
+) -> None:
+    """A young lock, or an old one a live process holds open, is kept:
+    the reuse checkout never runs and the job fails attempt-free — a
+    wait, not a build failure, so no ``attempt:<n>`` and no ladder rung
+    (gr650484)."""
+    age = 5.0 if why == "fresh" else land_slice.INDEX_LOCK_STALE_S + 600
+    lock = _reused_tree_with_lock(seams, tmp_path, age_s=age)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: False)
+    monkeypatch.setattr(land_slice, "_held_open", lambda p: why == "held")
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert lock.exists()
+    assert seams["launch"] == []
+    assert not any(a[:1] == ["checkout"] for a, _c in seams["git"])
+    assert "index.lock" in (ctx.failure or "")
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    tags = store.tag_strings(42)
+    assert "attempt:1" in tags and "attempt:2" not in tags
+    assert "STATUS:open" in tags
+    assert not any(t.startswith("claimed-by:") for t in tags)
+
+
+def test_reuse_checkout_index_lock_failure_is_an_infra_wait(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout that still trips on an ``index.lock`` after the reap
+    (a git raced in) is the same infra wait: attempt-free, no rung."""
+    (tmp_path / ".claude" / "worktrees" / "slice-td42").mkdir(parents=True)
+    inner = run_slice._git
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["checkout", "-f"]:
+            return subprocess.CompletedProcess(
+                [],
+                128,
+                stdout="",
+                stderr=(
+                    "fatal: Unable to create '/x/.git/worktrees/slice-td42/"
+                    "index.lock': File exists."
+                ),
+            )
+        return inner(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", git)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.", tags=("attempt:1",))
+
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+    assert "attempt:2" not in store.tag_strings(42)
 
 
 def test_submit_unpinned_child_uses_lane_default_model(

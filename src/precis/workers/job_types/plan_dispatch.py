@@ -534,7 +534,8 @@ _REQUEUE_ON_CANCEL = frozenset({DEFAULT_OP, "ci_verdict_poll"})
 #: ``run_slice.ATTEMPT_FREE_KEY``, restated — the dependency stays
 #: one-way (a test pins the two spellings equal). A job carrying the key
 #: failed for a reason outside the slice's diff and burned no attempt:
-#: ``"lane-wait"`` (the lane never freed a slot, gr572118), ``"infra-land"``
+#: ``"lane-wait"`` (the lane never freed a slot, gr572118), ``"index-lock"``
+#: (a live git's lock in the reused slice tree, gr650484), ``"infra-land"``
 #: (the gate's own machinery killed the land, gr570187).
 ATTEMPT_FREE_KEY = "attempt_free"
 

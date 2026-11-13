@@ -27,7 +27,10 @@ that holds the lane's credentials with ``params.target_node``):
   cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
   ``origin/main`` under the checkout root (:func:`slice_root`) — a reused
   tree is reset to a clean checkout of its branch tip first
-  (:func:`_reset_reused_worktree`, gr571311) — writes
+  (:func:`_reset_reused_worktree`, gr571311), after a dead git's stale
+  ``index.lock`` there is reaped by land_slice's keep-on-doubt rule; a
+  live one fails the submit ``attempt_free`` (:func:`_clear_slice_index_lock`,
+  gr650484) — writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
@@ -281,7 +284,8 @@ _DEFAULT_EFFORT = "high"
 LANE_FULL_BACKOFF = timedelta(minutes=10)
 
 #: Job-meta key marking a failure that burned no attempt, its value the
-#: reason (``"lane-wait"`` here; ``land_slice`` writes ``"infra-land"``).
+#: reason (``"lane-wait"``/``"index-lock"`` here; ``land_slice`` writes
+#: ``"infra-land"``).
 #: ``plan_dispatch._attempts`` skips a job carrying it (gr570187,
 #: gr572118); the key is restated there — the dependency stays one-way.
 ATTEMPT_FREE_KEY = "attempt_free"
@@ -1831,6 +1835,54 @@ def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
         )
 
 
+class _IndexLockWait(RuntimeError):
+    """A reused slice tree's ``index.lock`` that a live (or unjudgeable)
+    git holds: an infra wait, not the build's failure (gr650484). Submit
+    gives the lease back with ``meta.attempt_free = "index-lock"``, so
+    no ``attempt:<n>`` and no ladder rung is spent on it."""
+
+
+def _git_or_raise(args: list[str], tree: Path) -> None:
+    """``git <args>`` in a reused tree; a non-zero exit raises — as
+    :class:`_IndexLockWait` when git names an ``index.lock``."""
+    proc = _git(args, tree)
+    if proc.returncode == 0:
+        return
+    err = proc.stderr.strip()[:200]
+    cls = _IndexLockWait if "index.lock" in err else RuntimeError
+    raise cls(f"git {' '.join(args)} in reused worktree failed: {err}")
+
+
+def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
+    """gr650484 — reap a reused slice tree's stale ``index.lock`` before
+    :func:`_reset_reused_worktree`'s ``checkout -f`` meets it: a dead
+    git's 0-byte remnant failed every retry with "File exists" and spent
+    the node's whole ladder. land_slice's keep-on-doubt judge decides
+    (:func:`land_slice._index_lock_state`, scripts/reap-index-locks'
+    rule): provably dead is removed with a job_event line; young, held
+    open, a live git in the tree, or unjudgeable is kept and raises
+    :class:`_IndexLockWait`. No tree yet, or no gitdir git will name:
+    nothing to clear."""
+    if not tree.exists():
+        return
+    # land_slice imports this module at load time; the lazy import keeps
+    # the dependency one-way at import.
+    from precis.workers.job_types import land_slice as _ls
+
+    gitdir = _ls._worktree_gitdir(tree)
+    if gitdir is None:
+        return
+    lock = gitdir / "index.lock"
+    if _ls._index_lock_state(lock, tree) == "stale":
+        _ls._reap_index_lock(ctx, lock, who=NAME)
+    if lock.exists():
+        raise _IndexLockWait(
+            f"index.lock {lock} is kept — a live git holds it, it is younger "
+            f"than {_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
+            "ruled out; the reuse checkout waits for it"
+        )
+
+
 def _reset_reused_worktree(tree: Path, branch: str) -> None:
     """Return a reused worktree to a clean checkout of ``branch``'s tip:
     abort an in-flight merge/rebase, switch back to the slice branch,
@@ -1849,20 +1901,10 @@ def _reset_reused_worktree(tree: Path, branch: str) -> None:
         ["reset", "--hard", "HEAD"],
         ["clean", "-fd"],
     ):
-        proc = _git(args, tree)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"git {' '.join(args)} in reused worktree failed: "
-                f"{proc.stderr.strip()[:200]}"
-            )
+        _git_or_raise(args, tree)
     for stale in ("scratch", ".devin", ".claude"):
         if (tree / stale).is_dir():
-            proc = _git(["clean", "-fdx", "--", stale], tree)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"git clean -fdx {stale} in reused worktree failed: "
-                    f"{proc.stderr.strip()[:200]}"
-                )
+            _git_or_raise(["clean", "-fdx", "--", stale], tree)
     # The -x clean may have removed a nested worktree a session cut under
     # its own .claude/worktrees/; drop stale registrations. Best-effort.
     _git(["worktree", "prune"], tree)
@@ -2967,6 +3009,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     mint_error: str | None = None
     read_url: str | None = None
     try:
+        _clear_slice_index_lock(ctx, worktrees_dir(slice_root()) / slice_name(todo_id))
         tree = _ensure_worktree(slice_root(), todo_id)
         _install_acceptance_tests(tree, artifacts, lane.deny_write_paths)
         scratch = tree / "scratch"
@@ -3093,6 +3136,16 @@ def submit(ctx: Any, spec: Any) -> Any:
             }
         )
         _raise_lane_refusal(ctx.store, lane.name, str(exc), until)
+        ctx.record_failure(f"run_slice: {exc}")
+        return None
+    except _IndexLockWait as exc:
+        # gr650484: a live git's index.lock in the reused tree is a wait,
+        # not the build's failure — the lease goes back unburned and
+        # plan_dispatch re-queues the node without spending a rung.
+        _drop_submit_key(ctx)
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        unclaim_todo(ctx.store, todo_id, lane.name)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: "index-lock"})
         ctx.record_failure(f"run_slice: {exc}")
         return None
     except Exception as exc:

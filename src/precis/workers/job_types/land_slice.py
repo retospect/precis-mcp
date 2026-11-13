@@ -2294,12 +2294,13 @@ def _git_in_tree(checkout: Path) -> bool | None:
     return False if saw_proc else None
 
 
-def _reap_index_lock(ctx: Any, lock: Path) -> bool:
+def _reap_index_lock(ctx: Any, lock: Path, *, who: str = NAME) -> bool:
     """Remove a judged-stale ``index.lock``. The re-stat right before
     the unlink must match the first stat's ``st_ino``/``st_mtime_ns`` —
     a lock replaced between judgement and unlink is a live writer's,
     never ours to remove (gr650484). ``False`` when the unlink lost a
-    race (another reaper got there first — fine either way)."""
+    race (another reaper got there first — fine either way). ``who``
+    prefixes the job_event line (run_slice reuses this reap)."""
     try:
         st = lock.stat()
     except OSError:
@@ -2316,7 +2317,7 @@ def _reap_index_lock(ctx: Any, lock: Path) -> bool:
         return False
     ctx.append_chunk(
         "job_event",
-        f"land_slice: reaped stale index.lock {lock} "
+        f"{who}: reaped stale index.lock {lock} "
         f"(age {int(time.time() - st.st_mtime)}s; no live git in the "
         "tree held it)",
     )
