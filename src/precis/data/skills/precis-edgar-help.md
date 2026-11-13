@@ -129,13 +129,16 @@ section labels to answer "where does this 10-K discuss X?".
 
 ## Tag or cross-link a filing
 
+You can't — filings are read-only: `tag`/`link`/`put` on `kind='edgar'`
+all refuse (the `memory` link idiom below parks the edge on the other
+ref). The tags that *exist* are auto-applied at ingest — `form:<lower>`,
+`cik:<digits>`, `fiscal-year:<yyyy>` — and work as search filters:
+
 ```python
-tag(kind="edgar", id="ed40", add=["topic:semiconductors"])
-link(kind="edgar", id="ed40", target="pa57", rel="related-to")
+search(kind="edgar", q="risk factors", tags=["form:10-k"])
 ```
 
-Closed-prefix axes for edgar: `SRC:`, `CACHE:`. Auto-applied open tags at
-ingest: `form:<lower>`, `cik:<digits>`, `fiscal-year:<yyyy>`. Company
+Closed-prefix axes for edgar: `SRC:`, `CACHE:`. Company
 name / ticker / form live in `refs.meta`, not as tag rows.
 
 ## Write a note about a filing

@@ -40,7 +40,7 @@ this is concrete:
 |---|---|
 | **Cluster** — related memories that share encoding context | `search(kind='memory', tags=[...], q='...')` |
 | **Schema formation** — write the abstract that captures them | `put(kind='memory', text='I tend to ...', tags=['internal-state' or 'internal-thought', 'user:asa'])` |
-| **Reconsolidation** — link the originals as superseded | `link(src='memory:<old>', dst='memory:<new>', rel='superseded-by')` |
+| **Reconsolidation** — link the originals as superseded | `link(kind='memory', id='<old>', target='memory:<new>', rel='superseded-by')` |
 | **Pruning / retirement** — flag so they fall out of recall | `tag(kind='memory', id=<old>, add=['retired'])` |
 
 After a consolidation pass: the new semantic memory carries the
@@ -110,7 +110,7 @@ yourself, `internal-thought` is honest.
 For each item in the cluster:
 
 ```python
-link(src=f"memory:{old_id}", dst=f"memory:{synth_id}", rel="superseded-by")
+link(kind="memory", id=f"{old_id}", target=f"memory:{synth_id}", rel="superseded-by")
 ```
 
 `supersedes`/`superseded-by` is the symmetric relation: the

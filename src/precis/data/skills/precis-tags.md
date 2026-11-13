@@ -116,7 +116,7 @@ and with `q=`; a bare `'!'` is refused.
 
 ```python
 get(kind="tag", args={"page_size": 20})  # top 20, most-used first
-get(kind="tag", scope="paper")  # tags used on papers only
+get(kind="tag", args={"scope": "paper"})  # tags used on papers only
 ```
 
 Output is a TOON table with `tag / count / axis`. Each row is

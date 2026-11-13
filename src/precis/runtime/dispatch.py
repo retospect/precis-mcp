@@ -2278,6 +2278,29 @@ class DispatchMixin(RuntimeShape):
             )
         args["sort"] = extras.pop("sort")
 
+    @staticmethod
+    def _hoist_folder_arg(args: dict[str, Any]) -> None:
+        """``args={'folder': …}`` → top-level ``folder=``.
+
+        ``folder=`` is the verb-level ``search`` param the folder-scope
+        route reads (``refs.parent_id`` subtree, cross-kind fan-out) —
+        never a kind's ``args=`` key. Nested, it missed the route read
+        and died at the extras gate as ``keys ['folder'] not accepted by
+        <kind>.search`` — the documented
+        ``search(kind='draft', q=…, folder='Hardware')`` refused outright
+        (td658272). Same hoist as ``sort=`` (:meth:`_hoist_sort_arg`) and
+        the cite facets; a ``folder=`` at both levels is ambiguous —
+        refuse it rather than pick a winner."""
+        extras = args.get(_EXTRAS_KEY)
+        if not isinstance(extras, dict) or extras.get("folder") is None:
+            return
+        if args.get("folder") is not None:
+            raise BadInput(
+                "folder= was passed twice — top-level and inside args=",
+                next="pass folder= once, at the top level",
+            )
+        args["folder"] = extras.pop("folder")
+
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
@@ -2310,6 +2333,7 @@ class DispatchMixin(RuntimeShape):
             self._hoist_spray_args(args)
             self._hoist_source_facet_args(args)
             self._hoist_sort_arg(args)
+            self._hoist_folder_arg(args)
             # ``q='*'`` is the match-all spelling (gr538071): fold
             # before any routing decision (under= listing,
             # source-search gate) reads it as a real query.
@@ -3830,6 +3854,20 @@ class DispatchMixin(RuntimeShape):
             verb == "put" and "reason" not in self._accepted_kwargs(method)
         ):
             reason = args.pop("reason", None)
+            # A nested ``args={'reason': …}`` is the same consumed reason —
+            # hoist it like ``sort=``/``folder=`` on search (td658272) or it
+            # dies at the extras gate as ``keys ['reason'] not accepted by
+            # <kind>.<verb>`` on every handler that doesn't declare it.
+            extras = args.get(_EXTRAS_KEY)
+            if isinstance(extras, dict):
+                nested_reason = extras.pop("reason", None)
+                if nested_reason is not None:
+                    if reason is not None:
+                        raise BadInput(
+                            "reason= was passed twice — top-level and inside args=",
+                            next="pass reason= once, at the top level",
+                        )
+                    reason = nested_reason
 
         # graph-node-trust-state slice 1: the typed trust payload and the
         # trust-only edit are consumed before the handler's kwargs gate.

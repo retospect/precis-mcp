@@ -14,6 +14,7 @@ applies-to: kind='fleet'; scripts/fleet-report --push; sweeper dead-row retireme
 status: active
 tags: [workflow]
 kinds: [fleet]
+governs: [factory]
 ---
 
 # precis-fleet-help — the `fleet` kind

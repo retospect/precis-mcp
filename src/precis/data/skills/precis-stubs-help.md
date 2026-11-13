@@ -194,7 +194,7 @@ claim hub's grounding/supporter papers). The canonical "find sources
 this draft doesn't already have" query:
 
 ```python
-get(kind="semanticscholar", id="wang tile guided self assembly", exclude=["dr42995"])
+get(kind="semanticscholar", id="wang tile guided self assembly", args={"exclude": ["dr42995"]})
 search(kind="paper", q="wang tile guided self assembly", exclude=["dr42995"])
 ```
 

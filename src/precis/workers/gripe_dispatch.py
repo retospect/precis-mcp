@@ -101,6 +101,7 @@ from typing import Any
 
 from precis import settings as psettings
 from precis.corpus_layout import host_name
+from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import route as _route
 from precis.plans.nodes import finish_mint
@@ -443,7 +444,10 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         "minted": [],
     }
     ok = failed = 0
-    deny = _lanes.deny_paths_for(store)
+    # gr657066: governs:factory skills route to the coordinator like
+    # deny-path text; the scan failing open matches the classifier's
+    # own posture (the mint gates fail closed downstream).
+    deny = _lanes.deny_paths_for(store) + _governs.governed_skill_paths()
     for c in picks:
         # gr645163: work no builder lane may write — the report names a
         # deny path, or the fix is prod-graph only — skips the chain and

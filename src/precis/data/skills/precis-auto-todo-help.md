@@ -86,7 +86,7 @@ parks consumer work behind them:
 
 ```python
 for doi in ["10.x/y1", "10.x/y2", "10.x/y3"]:
-    put(kind="paper", ref={"doi": doi})  # queue ingest
+    put(kind="paper", doi=doi)  # queue ingest
     wait = put(
         kind="todo",
         parent_id=98,

@@ -368,17 +368,61 @@ def _seeded_relation_slugs() -> set[str]:
     return slugs
 
 
+def _alias_call_spans(text: str) -> list[tuple[int, int]]:
+    """Spans of every ``put(kind='alias', …)``/``edit(kind='alias', …)``
+    call in ``text`` — a ``rel=`` inside one names the *alias* relation
+    vocabulary (``precis.handlers.alias.RELATIONS``), not the graph
+    ``relations`` seed, and is judged by
+    :func:`test_skill_examples_execute_on_the_live_surface` against the
+    live handler instead (td658272: the two namespaces spell the same
+    kwarg, and the live surface refuses ``args={'rel': …}`` on alias —
+    ``rel`` shadows the declared top-level kwarg — so the alias skill
+    *must* teach the top-level spelling)."""
+    spans: list[tuple[int, int]] = []
+    opener = re.compile(r"\b(?:put|edit)\s*(\()\s*kind\s*=\s*['\"]alias['\"]")
+    for m in opener.finditer(text):
+        start = m.start(1)
+        depth = 0
+        i = start
+        quote: str | None = None
+        while i < len(text):
+            c = text[i]
+            if quote is not None:
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == quote:
+                    quote = None
+            elif c in "'\"":
+                quote = c
+            elif c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((start, i + 1))
+                    break
+            i += 1
+    return spans
+
+
 def test_skill_rel_examples_use_seeded_relation_slugs() -> None:
-    """gr635127 — every ``rel='...'`` a skill prints must resolve to a
-    seeded relation (or the reserved virtual ``parent``); an agent
+    """gr635127 — every graph ``rel='...'`` a skill prints must resolve
+    to a seeded relation (or the reserved virtual ``parent``); an agent
     copying an unseeded slug gets a refusal the docs promised would
     work. Whole-file scan, not just fenced code: inline examples and
-    ``applies-to:`` front matter carry the same kwarg spelling."""
+    ``applies-to:`` front matter carry the same kwarg spelling. A
+    ``rel=`` inside a ``kind='alias'`` call is the alias namespace
+    (:func:`_alias_call_spans`) — the alias skill's rel vocabulary is
+    handler-side, not migration-seeded."""
     allowed = _seeded_relation_slugs()
     bad: list[str] = []
     for path in skill_files():
         text = path.read_text(encoding="utf-8")
+        alias_spans = _alias_call_spans(text)
         for m in _REL_KWARG_RE.finditer(text):
+            if any(a <= m.start() < b for a, b in alias_spans):
+                continue  # alias namespace — judged by the live drift gate
             slug = m.group(1)
             if slug not in allowed:
                 line = text.count("\n", 0, m.start()) + 1

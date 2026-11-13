@@ -11,6 +11,7 @@ from precis import fleet
 from precis.dispatch import boot
 from precis.errors import BadInput
 from precis.handlers.fleet import FleetHandler, _age_min, _window_label
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 
 HOST = "melchior"
@@ -246,6 +247,30 @@ def test_edit_of_reporter_owned_field_is_refused(h: FleetHandler) -> None:
     with pytest.raises(BadInput, match="not an agent row"):
         h.edit(id=f"host:{HOST}", note="x")
     assert agent(h, KEY).meta["state"] == "working"
+
+
+def test_edit_through_the_mcp_verb_drops_wrapper_verdict(
+    runtime_with_store: PrecisRuntime, h: FleetHandler
+) -> None:
+    """td658272/gr657066: ``tools.core.edit()`` forwards its
+    ``verdict='approved'`` default on *every* call — ``fleet.edit`` must
+    drop it (the taxon convention), or each documented
+    ``edit(kind='fleet', id=..., note=...)`` refuses on a param the
+    caller never sent."""
+    from precis.tools import TOOL_REGISTRY
+    from precis.tools import core as tools_core
+    from precis.tools.mcp_slim import make_slim_verb
+
+    send(h, rep([row()]))
+    edit = make_slim_verb("edit", TOOL_REGISTRY["edit"]["func"])
+    tools_core._runtime = runtime_with_store
+    try:
+        result = edit(kind="fleet", id=KEY, note="held for review")
+    finally:
+        tools_core._runtime = None
+    assert isinstance(result, str), getattr(result, "content", result)
+    assert "updated note" in result
+    assert agent(h, KEY).meta["note"] == "held for review"
 
 
 def test_get_one_row_by_key_and_id(h: FleetHandler) -> None:

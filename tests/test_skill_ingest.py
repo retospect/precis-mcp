@@ -418,6 +418,17 @@ def test_scan_unknown_tag_is_hard_failure_by_default(tmp_path: Path) -> None:
     assert "graph gate" in f.reason
 
 
+def test_scan_emits_governs_tag(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ngoverns: [factory]\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    [p] = r.plans
+    assert "governs:factory" in p.tags
+
+
 def test_scan_kind_named_tag_is_hard_failure_by_default(tmp_path: Path) -> None:
     _write(
         tmp_path,

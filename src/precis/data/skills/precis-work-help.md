@@ -7,7 +7,7 @@ answers:
   - what is in flight right now and who is on it?
   - how do I read a row of the work view?
   - what blocks a lane, and what waits on the owner?
-  - how do I ask the owner a question, and how is it answered?
+  - how do I ask the owner a question?
   - how do I claim a slice before working it, and how do I release it?
   - where does a gripe land in the work tree, and what does its stage mean?
   - what does a rescue:<class> tag mean, and how do I read the rescue queue?
@@ -16,6 +16,7 @@ answers:
 applies-to: search(kind='todo', view='work'); get(kind='todo', id=N, extent='fisheye+1hop'); tag(kind='todo', add=['claimed-by:…'])
 tags: [workflow]
 kinds: [todo, quest, gripe]
+governs: [factory]
 status: active
 ---
 

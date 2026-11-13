@@ -435,12 +435,20 @@ class IntrospectionMixin(RuntimeShape):
         from precis.handlers.job import _job_window_bound
 
         assert self.store is not None  # gate in _dispatch_introspect_view
+
+        def _unsupported(name: str) -> bool:
+            if extras.get(name) is not None:
+                return True
+            if name == "page":
+                # tools/core.py's search payload always carries page=1 —
+                # the wrapper default, not caller intent — so only real
+                # paging refuses (the convention gripe's '/queue'
+                # listing already uses).
+                return args.get("page") not in (None, 1)
+            return args.get(name) is not None
+
         bad = next(
-            (
-                a
-                for a in self._FLOW_UNSUPPORTED_TOP
-                if args.get(a) is not None or extras.get(a) is not None
-            ),
+            (a for a in self._FLOW_UNSUPPORTED_TOP if _unsupported(a)),
             None,
         )
         if bad is not None:

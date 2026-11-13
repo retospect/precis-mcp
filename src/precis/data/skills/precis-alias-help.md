@@ -42,9 +42,8 @@ other sessions need.
 ## Verbs
 
 ```python
-put(kind='alias', args={'a': 'sciadv-aeg5791',
-    'b': 'https://api.crossref.org/works/10.1126/sciadv.aeg5791',
-    'rel': 'short-for'})
+put(kind='alias', rel='short-for', args={'a': 'sciadv-aeg5791',
+    'b': 'https://api.crossref.org/works/10.1126/sciadv.aeg5791'})
 # created alias as12: 'sciadv-aeg5791' short-for 'https://…'
 
 get(kind='alias', id='sciadv-aeg5791')   # → the URL (rel short-for)
@@ -89,8 +88,8 @@ When precis maps two things wrongly or not at all and a gripe is filed,
 record the workaround mapping with the gripe:
 
 ```python
-put(kind='alias', args={'a': 'pa36264', 'b': 'doi:10.1000/xyz',
-    'rel': 'same-as', 'gripe': 'gr537001',
+put(kind='alias', rel='same-as', args={'a': 'pa36264',
+    'b': 'doi:10.1000/xyz', 'gripe': 'gr537001',
     'note': 'paper ingest dropped the DOI'})
 ```
 

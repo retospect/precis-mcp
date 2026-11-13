@@ -230,6 +230,7 @@ from typing import Any
 
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
+from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import outcome as _outcome
 from precis.plans import release as _release
@@ -3199,7 +3200,6 @@ def submit(ctx: Any, spec: Any) -> Any:
     base = _release.land_target_of(todo.meta, body, latest) or "main"
     if base != "main":
         brief_kwargs["base"] = base
-    brief = render_brief(**brief_kwargs, read_mcp=read_scope)
     grant: dict[str, Any] | None = None
     mint_error: str | None = None
     read_url: str | None = None
@@ -3208,7 +3208,21 @@ def submit(ctx: Any, spec: Any) -> Any:
         tree = _ensure_worktree(
             slice_root(), todo_id, *(() if base == "main" else (base,))
         )
-        _install_acceptance_tests(tree, artifacts, lane.deny_write_paths)
+        # gr657066: governs:factory skills join the lane's deny set —
+        # resolved at the base ref so the branch cannot un-tag the
+        # fence, and fail-closed like every other gate read here.
+        governed = _governs.governed_skill_paths_at_ref(
+            tree, f"origin/{base}", git=_git
+        )
+        if governed is None:
+            raise RuntimeError(
+                f"governed-skill scan failed at origin/{base}; refusing "
+                "to launch a slice whose deny set it cannot name"
+            )
+        deny = lane.deny_write_paths + governed
+        brief_kwargs["deny_paths"] = deny
+        brief = render_brief(**brief_kwargs, read_mcp=read_scope)
+        _install_acceptance_tests(tree, artifacts, deny)
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
@@ -3270,7 +3284,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             effort=effort,
             tree=tree,
             brief_path=brief_path,
-            deny_paths=lane.deny_write_paths,
+            deny_paths=deny,
             max_turns=_max_turns(),
             models=lane.models,
             writable_roots=(
@@ -4182,7 +4196,12 @@ def _deny_reason(
     """``(why the branch breaks the deny paths, human-only paths hit)``.
     The check still runs on an empty ``deny_paths`` — human-only paths
     hold regardless (:func:`deny_violations`). The second element stamps
-    :data:`HUMAN_ONLY_KEY` on the failed job (td584381 S1a)."""
+    :data:`HUMAN_ONLY_KEY` on the failed job (td584381 S1a); governed
+    skill paths join it so the tick asks for sign-off at once instead of
+    retrying a forbidden edit (td658272).
+    ``governs:factory`` skills (gr657066) join the set at ``base`` so a
+    branch cannot un-tag the fence; the scan failing closes like an
+    unreadable diff."""
     paths = changed_paths(tree, base)
     if paths is None:
         return (
@@ -4190,13 +4209,31 @@ def _deny_reason(
             "failing closed",
             [],
         )
+    governed = _governs.governed_skill_paths_at_ref(tree, base, git=_git)
+    if governed is None:
+        return (
+            f"governed-skill scan could not read {base} in {tree} (git failed); "
+            "failing closed",
+            [],
+        )
+    gov_paths = sorted(set(paths) & set(governed))
     hits = deny_violations(paths, deny_paths)
-    if not hits:
+    if not hits and not gov_paths:
         return None, []
-    return (
-        "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50]),
-        _lanes.human_only_hits(paths),
-    )
+    parts: list[str] = []
+    if hits:
+        parts.append(
+            "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50])
+        )
+    if gov_paths:
+        parts.append(
+            "touched governs:factory skill(s) needing Reto's sign-off: "
+            + ", ".join(f"`{p}`" for p in gov_paths[:50])
+        )
+    # Governed skills join the human-only stamp: plan_dispatch reads
+    # HUMAN_ONLY_KEY to ask for sign-off at once instead of climbing
+    # the retry/escalation ladder on a forbidden edit (td658272).
+    return "; ".join(parts), sorted(set(_lanes.human_only_hits(paths)) | set(gov_paths))
 
 
 #: What the job summary shows where session text (a verdict's ``why``)

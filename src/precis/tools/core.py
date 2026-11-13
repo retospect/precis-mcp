@@ -2894,6 +2894,11 @@ def link(
     # suggests it (_check_reason_contribution's next=) names a call that
     # works. Kinds whose link() doesn't declare it refuse it like meta=.
     reason: str | None = None,
+    # structure (td658272): the edge note StructureHandler.link()
+    # already writes. Declared at the verb level like reason= so
+    # strict-schema clients keep it; kinds without a note-taking
+    # link() refuse it like meta=.
+    note: str | None = None,
     # FastMCP-injected Context — binds the MCP session for the dispatch
     # (ledger attribution on the write path, gr504485).
     ctx: Context | None = None,
@@ -2928,6 +2933,7 @@ def link(
                 "element": element,
                 "meta": meta,
                 "reason": reason,
+                "note": note,
             },
             ctx=ctx,
         )

@@ -99,7 +99,7 @@ relief, every part's operating temperature, and condensation/ingress.
 
 The same `op='review'` works both ledgers; use `page_size:60` or re-run to
 continue beyond the default 15 items. `args.item` can name either checklist's
-item. Read `get(kind='checklist', id='pcb-mech-env', target='pcb:<slug>')`.
+item. Read `get(kind='checklist', id='pcb-mech-env', args={'target': 'pcb:<slug>'})`.
 The reviewer also receives board declarations, fab features, stored copper,
 footprints and instance poses.
 Missing geometry records `not checkable` with reason

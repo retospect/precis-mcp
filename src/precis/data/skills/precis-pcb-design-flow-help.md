@@ -65,7 +65,7 @@ only `pcb-tapeout` by default.
 
 `put(kind='pcb', id=<slug>, args={'op':'review', 'page_size':60})` works
 both checklists through the same review job; re-run if the summary reports
-items left. Read `get(kind='checklist', id='pcb-mech-env', target='pcb:<slug>')`.
+items left. Read `get(kind='checklist', id='pcb-mech-env', args={'target': 'pcb:<slug>'})`.
 Its eight judgment items cover bend zones, stiffeners, coverlay clearances,
 coating keep-off, access after coating, mounting/strain relief, every part's
 temperature rating and condensation/ingress. Coverlay openings must be

@@ -11,12 +11,13 @@ answers:
   - which work items are in build, in review, waiting to land, awaiting deploy?
   - who is working this gripe, on which host and session?
   - how do I hold a work item behind another fix or until a date?
-  - how do I resume a wave after a crash with no files left?
+  - how do I resume a wave after a crash?
   - where does a builder's task scratch live so other tasks can't recall it?
   - what happens to a builder's scratch when the todo closes?
 applies-to: put/tag/link(kind='todo') under the 'Code work from gripes' root; put(kind='gripe') work: mirrors; edit(kind='gripe', mode='fix') state stays readable
 tags: workflow
 kinds: [gripe, todo]
+governs: [factory]
 status: active
 scope: write
 ---

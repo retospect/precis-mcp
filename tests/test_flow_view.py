@@ -327,6 +327,23 @@ class TestFlowErrors:
         )
         assert "q= is not supported with view='flow'" in body
 
+    def test_wrapper_page_default_tolerated_but_real_paging_refused(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """td658272/gr657066: ``tools.core.search``'s payload always
+        carries ``page=1`` — the wrapper default, not caller intent —
+        so it must not refuse ``view='flow'``; a real ``page=`` still
+        does (the convention ``/queue`` listings already use)."""
+        _gripe(store)
+        body = runtime_with_store.dispatch(
+            "search", {"kind": "gripe", "view": "flow", "page": 1}
+        )
+        assert "# gripe flow" in body
+        body = runtime_with_store.dispatch(
+            "search", {"kind": "gripe", "view": "flow", "page": 2}
+        )
+        assert "page= is not supported with view='flow'" in body
+
     def test_unknown_extras(self, runtime_with_store: PrecisRuntime) -> None:
         body = runtime_with_store.dispatch(
             "search",

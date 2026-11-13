@@ -143,7 +143,7 @@ the measurand fields `get` alone does not show:
 
 ```python
 get(kind="taxon", view="meta", id=["tn465823", "tn465824"])
-get(kind="taxon", view="meta", under="measurand")   # every descendant
+get(kind="taxon", view="meta", args={"under": "measurand"})   # every descendant
 ```
 
 An id list caps at 50; `under=` walks the same descendant set

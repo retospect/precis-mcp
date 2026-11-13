@@ -118,9 +118,9 @@ failure is never stored as the assistant's answer.
 alert surface: `budget/cap-<window>` (`cap-hourly`, `cap-daily`) when a
 dollar spend-cap window trips, and `budget:quota/quota-<window>`
 (`quota-five_hour`, `quota-seven_day`) when a Claude subscription
-rate-limit window is exhausted. `get(kind='llm', id='/budget')` is the
+rate-limit window is exhausted. `get(kind='llm', id='/pools')` is the
 live view; nothing LLM-backed runs until the window rolls, the cap is
-raised, or an operator resumes on `/budget`. A related per-host check:
+raised, or an operator resumes on `/pools`. A related per-host check:
 `quota_check:auth/<host>:claude-oauth` fires when a host's Claude OAuth
 credential is expired or unreadable (re-login there).
 

@@ -77,11 +77,12 @@ of the row's `fresh_until`, not a flag you write:
 - `CACHE:pinned` — `fresh_until` NULL: the row was written without a
   TTL (a pinned kind, `mode='import'`, or `args={'ttl_days': 0}`).
 
-Filter on it:
+Filter on it — `tags=` rides the cross-kind fan-out, so name a
+comma-list of the cache kinds (or omit `kind=` to sweep all):
 
 ```python
-search(kind="websearch", q="photocatalysis", tags=["CACHE:fresh"])
-search(kind="web", q="reactor design", tags=["CACHE:stale"])
+search(kind="websearch,perplexity-reasoning,perplexity-research", q="photocatalysis", tags=["CACHE:fresh"])
+search(kind="web,youtube", q="reactor design", tags=["CACHE:stale"])
 ```
 
 The response footer also reports it inline:
@@ -96,16 +97,15 @@ The response footer also reports it inline:
 ## Bypass the cache for one query
 ## Re-run a stale answer
 
-Soft-delete the row, then re-query. The next `get` misses and
-refetches:
+Re-fetch in place: `refresh=True` on the `get` forces the paid call and
+overwrites the row — no delete step (cache kinds don't take `delete`):
 
 ```python
-delete(kind="perplexity-reasoning", id="<canonical-query>")
-get(kind="perplexity-reasoning", q="<query>")
+get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
 ```
 
-Works on every cache kind. For `web` and `youtube`, `id=` is the
-canonical URL / video ID.
+Works on every cache kind. For `web` and `youtube`, pass the canonical
+URL / video ID in `id=` instead of `q=`.
 
 ## Pin a row so it never expires
 ## Keep a cached answer indefinitely
@@ -118,7 +118,7 @@ NULL and it reports `CACHE:pinned` forever:
 ```python
 get(kind="perplexity-reasoning", q="<query>", args={"ttl_days": 0})
 # same on a refresh — pins the stored row in place:
-get(kind="perplexity-reasoning", q="<query>", mode="refresh", args={"ttl_days": 0})
+get(kind="perplexity-reasoning", q="<query>", args={"mode": "refresh", "ttl_days": 0})
 ```
 
 The bare `pinned` flag is *not* the mechanism — on a cache kind it is

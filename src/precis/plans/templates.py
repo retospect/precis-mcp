@@ -1196,10 +1196,11 @@ def _pr_reviewer_brief(target_id: int, pr: dict[str, Any]) -> str:
 
 
 def _analysis_brief(store: Any, f: pr_class.PrFacts, why: str) -> str:
+    from precis.plans.governs import governed_skill_paths
     from precis.plans.lanes import deny_paths_for
 
     n = f.number
-    deny = "\n".join(f"- `{p}`" for p in deny_paths_for(store))
+    deny = "\n".join(f"- `{p}`" for p in deny_paths_for(store) + governed_skill_paths())
     return (
         f"Read-only analysis of pull request #{n} ({f.url or 'GitHub'}) by "
         f"{f.author}: {f.title!r}. Class external ({why}).\n\n"

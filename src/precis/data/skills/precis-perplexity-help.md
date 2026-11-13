@@ -247,8 +247,7 @@ without `PERPLEXITY_API_KEY`.
 ## How do I re-run a stale answer?
 
 ```python
-delete(kind="perplexity-reasoning", id="<canonical-query>")
-get(kind="perplexity-reasoning", q="<query>")
+get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
 ```
 
 `perplexity-research` is pinned by default; `perplexity-reasoning` has

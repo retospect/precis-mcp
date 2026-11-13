@@ -188,8 +188,8 @@ purpose, answer once:
 
 ```python
 link(kind="component", id="r-8k", target="component:r-10k",
-     rel="kept-distinct", meta={"reason": "8k sets the LED current"})
-# or tag the bom root: kept-distinct:r-8k:r-10k:<reason>
+     rel="kept-distinct")
+# record the why on the bom root: kept-distinct:r-8k:r-10k:<reason>
 ```
 
 An unregistered `spec=` is rejected with `BadInput` naming it; a spec no

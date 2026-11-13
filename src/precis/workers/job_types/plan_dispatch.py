@@ -368,6 +368,7 @@ from typing import Any
 from precis.alerts import raise_alert
 from precis.errors import BadInput
 from precis.plans import gates as _gates
+from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans import route as _route
@@ -5115,7 +5116,11 @@ def _step_dispatch(
                 if hid != n.id and mine and mine & hfiles:
                     held[n.id] = hid
                     break
-    deny = _lanes.deny_paths_for(w.store)
+    # gr657066: governs:factory skills join the routing set — a brief
+    # naming one routes to the coordinator like any deny-path text. The
+    # filesystem variant failing open is fine here (the run/land gates
+    # re-resolve at the base and fail closed).
+    deny = _lanes.deny_paths_for(w.store) + _governs.governed_skill_paths()
     for n in candidates:
         if _excluded(plan, n) or _claims(n) or plan.live_job(n):
             continue

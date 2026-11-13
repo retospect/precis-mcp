@@ -65,8 +65,8 @@ Only these two source kinds are accepted; the `r/` after `reddit:` is
 optional (`reddit:python` is `reddit:r/python`). `tags=` become the row's `default_tags`
 (stamped on every article from it); `title=` overrides the label. Articles
 are tagged `source:reddit-<name>` / `source:mastodon-<user>-<instance>`
-(dots → dashes), so `search(kind="news", tags=["source:reddit-python"])`
-scopes to one source. Re-registering an existing source is a no-op (it
+(dots → dashes), so `search(tags=["source:reddit-python"])` scopes to
+one source (the tags-only sweep; a single-kind `tags=` refuses on news). Re-registering an existing source is a no-op (it
 re-enables a parked row). A mistyped name isn't caught at put: the row's
 `last_status` shows the fetch error after the first poll and the feed backs
 off. Posts without a title (Mastodon) take their first line as the title;

@@ -278,3 +278,22 @@ def test_delete_verb_forwards_base_sha(monkeypatch) -> None:
     assert out == "ok"
     assert seen["verb"] == "delete"
     assert seen["payload"]["base_sha"] == "abcd1234"
+
+
+def test_link_verb_forwards_note(monkeypatch) -> None:
+    """td658272/gr657066: ``note=`` is declared on the wire verb so
+    ``StructureHandler.link``'s documented call reaches dispatch —
+    before it was declared the call TypeError'd at the verb itself."""
+    seen: dict = {}
+
+    def fake_dispatch(verb, payload, ctx=None):
+        seen["verb"], seen["payload"] = verb, payload
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", fake_dispatch)
+    out = tools_core.link(
+        kind="structure", id="s1", target="paper:pa1", note="designed because"
+    )
+    assert out == "ok"
+    assert seen["verb"] == "link"
+    assert seen["payload"]["note"] == "designed because"

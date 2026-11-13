@@ -505,6 +505,81 @@ def test_job_search_nested_sort_routes_to_source_search(
     assert "not accepted by job.search" not in out, out
 
 
+def test_search_nested_folder_routes_to_folder_scope(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """td658272: ``search(kind='draft', q=…, args={'folder': …})`` is the
+    top-level ``folder=`` spelling misfiled inside args= — the folder
+    route reads ``args['folder']`` only, so the nested key died at the
+    extras gate as ``keys ['folder'] not accepted by draft.search``.
+    The hoist makes the nested call the top-level call: it reaches the
+    folder-scope resolution (which refuses the unknown folder name) —
+    never the handler's extras gate."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "draft", "q": "x", "__extras__": {"folder": "no-such-folder"}},
+    )
+    assert "not accepted by draft.search" not in out, out
+    assert "no-such-folder" in out or "folder" in out, out
+
+
+def test_search_folder_passed_twice_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A ``folder=`` at both levels is ambiguous — refuse it rather than
+    pick a winner (same shape as ``sort=``)."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "draft",
+            "q": "x",
+            "folder": "a",
+            "__extras__": {"folder": "b"},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "folder= was passed twice" in out, out
+
+
+def test_put_nested_reason_is_the_consumed_reason(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """td658272: ``put(kind='memory', text=…, args={'reason': …})`` is the
+    revision-log ``reason=`` misfiled inside args= — the dispatcher
+    consumes ``reason`` before the kwargs gate (memory.put does not
+    declare it), so the nested key used to die at the extras gate. The
+    hoist makes the nested call the top-level call: the put succeeds and
+    the reason lands in the revision context."""
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "nested reason hoist",
+            "__extras__": {"reason": "probe"},
+        },
+    )
+    assert "[error" not in out, out
+    assert "not accepted" not in out, out
+
+
+def test_put_reason_passed_twice_refuses(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A ``reason=`` at both levels is ambiguous — refuse it rather than
+    pick a winner."""
+    out = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "twice",
+            "reason": "top",
+            "__extras__": {"reason": "nested"},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "reason= was passed twice" in out, out
+
+
 def test_job_type_search_with_q_and_since_stays_on_job(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

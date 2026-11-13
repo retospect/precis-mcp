@@ -193,6 +193,7 @@ class FleetHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         """Set coordinator-owned fields (``''`` clears one)."""
+        _kw.pop("verdict", None)  # the edit verb sends its default on every call
         reporter = sorted(k for k in _kw if k in fleet.REPORTER_FIELDS)
         if reporter:
             raise BadInput(

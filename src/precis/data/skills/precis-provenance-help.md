@@ -99,8 +99,8 @@ diff: title (fuzzy match), first-author surname, year ±1.
 get(
     kind="provenance",
     view="verify",
-    suggest_candidates=True,
     q='[{"doi": "10.x/typo", "title": "...", "authors": [...], "year": 2019}]',
+    args={"suggest_candidates": True},
 )
 ```
 
@@ -110,7 +110,7 @@ advisory only — the supplied DOI's status stays `unknown`.
 ## Chase retractions one level deep
 
 ```python
-get(kind="provenance", q="...", transitive=True)
+get(kind="provenance", q="...", args={"transitive": True})
 ```
 
 For each parent, also checks its references. A clean paper that

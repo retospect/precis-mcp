@@ -124,7 +124,7 @@ will read as finished and ship. **When in doubt, flag.**
 
      ```python
      edit(kind='draft', id='dc<id>', text='<the extended paragraph>',
-          source={'authored_by': 'review:<persona>'})
+          args={'source': {'authored_by': 'review:<persona>'}})
      ```
 
    - **Add a new paragraph/subsection** only when the content is genuinely

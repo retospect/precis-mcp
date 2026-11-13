@@ -26,10 +26,10 @@ edit(id="dc12", text="Nanoscale transistors, defined as …")  # whole-chunk rew
 edit(id="dc12", find="60°C", text="65°C")  # find= implies find-replace
 edit(id="dc12", text="… big rewrite …", dry_run=True)  # PREVIEW the diff, write nothing
 edit(
-    kind="draft", id="dc12", review="human", verdict="needs-rework"
+    kind="draft", id="dc12", args={"review": "human", "verdict": "needs-rework"}
 )  # record a sign-off
 edit(
-    kind="draft", id="nanotrans", authoring="on"
+    kind="draft", id="nanotrans", args={"authoring": "on"}
 )  # let review personas author fixes inline
 delete(id="dc12")  # retire a chunk (un-delete restores)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
@@ -158,10 +158,10 @@ you read, and never substitute a number you did not read in a source.
 Taste-level changes — voice, structure, framing — you steer instead:
 
 ```python
-edit(id='nanotrans', meta={'workspace': {'brief': '…updated brief…'}})
+edit(id='nanotrans', args={'meta': {'workspace': {'brief': '…updated brief…'}}})
 put(kind='todo', parent_id='<project>', text='tighten this paragraph',
     meta={'anchor': 'dc12'}, ...)        # a change request, anchored
-link(src='dc12', rel='derived-from', dst='memory:7x2')  # provenance
+link(kind='draft', id='dc12', rel='derived-from', target='memory:me7x2')  # provenance
 ```
 
 To propose a rewrite for someone else, put it in `meta.proposed_text` on

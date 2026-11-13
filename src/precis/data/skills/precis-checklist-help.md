@@ -41,7 +41,7 @@ neither is ever rendered as clean.
 ## Which checklists apply to my target
 
 ```python
-get(kind='checklist', target='pcb:sensor-node')
+get(kind='checklist', args={'target': 'pcb:sensor-node'})
 ```
 
 Lists explicit assignments and **kind defaults** — `pcb-tapeout` applies
@@ -53,7 +53,7 @@ the definition (phase, severity, decidability, `prevents` per item).
 ## Read the status view
 
 ```python
-get(kind='checklist', id='pcb-tapeout', target='pcb:sensor-node')
+get(kind='checklist', id='pcb-tapeout', args={'target': 'pcb:sensor-node'})
 ```
 
 The first line is the gate verdict: `BLOCKED — n blocking failure(s)`,

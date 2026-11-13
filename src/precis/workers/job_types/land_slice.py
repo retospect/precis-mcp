@@ -250,6 +250,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans.logbook import log_plan_event
@@ -1869,7 +1870,28 @@ def submit(ctx: Any, spec: Any) -> Any:
     # opens on the frozen branch instead of burning the ladder on
     # rebuilds that can never land. The stamp's name undersells: at
     # the land every resolved-deny hit is a "no lane may write" hit.
-    denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store))
+    # gr657066: governs:factory skills join the set at the land base —
+    # the fence is the base's declaration, so a branch cannot un-tag
+    # it, and the scan failing closes like the diff read above.
+    governed = _governs.governed_skill_paths_at_ref(
+        tree, f"origin/{onto or 'main'}", git=_git
+    )
+    if governed is None:
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            f"governed-skill scan failed at origin/{onto or 'main'} "
+            f"in {tree} (git failed); failing closed",
+            handoff=(
+                "land FAILED: git could not enumerate the governs:factory "
+                "skills at the land base, so the deny gate cannot run "
+                "— the land refuses to ship blind. Check the worktree's "
+                "git state; a coordinator ruling lands the branch by hand."
+            ),
+        )
+        return None
+    denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store) + governed)
     if denied:
         ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
         _fail(

@@ -204,14 +204,15 @@ Same `mode='create'` discipline as `markdown`. The `id=` form for
 put(
     kind="websearch",
     mode="import",
+    id="latest perovskite tandem efficiencies",
     text="<paste the answer body>",
-    args={"q": "latest perovskite tandem efficiencies"},
 )
-put(kind="perplexity-reasoning", mode="import", text="...", args={"q": "compare DAC and BECCS"})
-put(kind="perplexity-research", mode="import", text="...", args={"q": "mechanism of NOxRR"})
+put(kind="perplexity-reasoning", mode="import", id="compare DAC and BECCS", text="...")
+put(kind="perplexity-research", mode="import", id="mechanism of NOxRR", text="...")
 ```
 
-`mode='import'` lands the report in the cache keyed on `args={'q': …}`; the
+`mode='import'` lands the report in the cache keyed on `id=` (the original
+query); the
 next `get(kind='websearch', q='...')` hits cache at $0. See
 `precis-perplexity-help`.
 

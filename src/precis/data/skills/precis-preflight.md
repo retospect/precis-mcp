@@ -99,7 +99,7 @@ precis jobs check-provenance --refs preflight.txt --transitive depth=1
 ```
 
 ```python
-get(kind="provenance", q="10.x/a, 10.x/b, ...", transitive=True)
+get(kind="provenance", q="10.x/a, 10.x/b, ...", args={"transitive": True})
 ```
 
 Clean-itself papers that cite retracted sources get promoted to 🟠.
@@ -111,7 +111,7 @@ get(
     kind="provenance",
     view="verify",
     q='[{"doi": "10.1234/typo", "title": "..."}]',
-    suggest_candidates=True,
+    args={"suggest_candidates": True},
 )
 ```
 

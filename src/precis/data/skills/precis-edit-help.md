@@ -317,7 +317,7 @@ A kind whose edit handler doesn't declare it raises `BadInput` naming
 
 `review='human'` (+ optional `verdict=`, default `'approved'`) records that
 you — the human — signed off on a chunk at its *current* text, e.g.
-`edit(kind='draft', id='dc12', review='human')`. Both are **draft-only**:
+`edit(kind='draft', id='dc12', args={'review': 'human'})`. Both are **draft-only**:
 a gripe/todo takes no verdict — record a resolution with
 `put(kind='gripe', id=N, text='resolved: <sha> — <how verified>',
 tags=['STATUS:done'])` (`precis-gripe-help`). `authoring='on'|'off'`

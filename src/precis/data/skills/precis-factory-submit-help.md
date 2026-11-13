@@ -13,6 +13,7 @@ answers:
 applies-to: put/link/tag/get (kind='todo') plan nodes; put(kind='todo', mode='plan', args={'template': …})
 tags: [workflow]
 kinds: [todo]
+governs: [factory]
 status: active
 scope: write
 ---
