@@ -510,6 +510,9 @@ def export_docx(
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
     )
+    # Export-level advisories (gr592892: unset PRECIS_WEB_BASE_URL →
+    # every dev record-handle link is path-only).
+    ctx.warnings.extend(ctx.audience.warnings)
 
     doc = Document()
     _apply_paper_theme(doc)

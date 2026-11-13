@@ -290,10 +290,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         from precis.export.retraction import draft_retraction_report
 
         retraction_override = draft_retraction_report(ctx.store, ref).retracted
+    audience_name = str(params.get("audience") or "dev")
     try:
-        out_dir, in_workspace = _resolve_audience_out_dir(
-            ctx, slug, str(params.get("audience") or "dev")
-        )
+        out_dir, in_workspace = _resolve_audience_out_dir(ctx, slug, audience_name)
     except ValueError as exc:
         ctx.record_failure(f"draft_export: {exc}")
         return
@@ -306,7 +305,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             ctx.store,
             ref,
             target_dir=out_dir,
-            audience=str(params.get("audience") or "dev"),
+            audience=audience_name,
             include_sources=include_sources,
             doc_type=doc_type,
             retraction_override=retraction_override,
@@ -325,7 +324,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     for w in result.warnings:
         ctx.append_chunk("job_event", f"warn: {w}")
-    if params.get("audience") == "external":
+    if audience_name == "external":
         supplement = out_dir / "supplement.zip"
         ctx.set_meta(supplement=str(supplement))
         ctx.append_chunk("job_event", f"data supplement: {supplement}")
@@ -352,12 +351,29 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "cite(s) in the sources appendix",
         )
 
+    # The collaborator link origin, reported on the job summary (gr592892):
+    # one operator-set PRECIS_WEB_BASE_URL per installation — never a
+    # per-export param — so the summary says what the links used.
+    origin_line: str | None = None
+    if audience_name == "dev":
+        from precis.export.audience import SET_ORIGIN_COMMAND, web_base_url
+
+        origin = web_base_url(ctx.store)
+        origin_line = (
+            f"record-handle links → {origin}"
+            if origin
+            else "record-handle links are path-only — PRECIS_WEB_BASE_URL "
+            f"unset; set it once per installation: {SET_ORIGIN_COMMAND}"
+        )
+
     if not have_latexmk():
         ctx.append_chunk(
             "job_summary",
             f"LaTeX project exported to {out_dir} — latexmk not installed, "
             "PDF compile skipped (install mactex / texlive on the worker).",
         )
+        if origin_line is not None:
+            ctx.append_chunk("job_summary", origin_line)
         ctx.set_meta(export_dir=str(out_dir), pdf=None)
         return
 
@@ -365,6 +381,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.append_chunk("job_event", f"latexmk rc={cres.returncode}\n{cres.log_tail}")
     if cres.ok and cres.pdf is not None:
         ctx.append_chunk("job_summary", f"PDF compiled: {cres.pdf}")
+        if origin_line is not None:
+            ctx.append_chunk("job_summary", origin_line)
         ctx.set_meta(export_dir=str(out_dir), pdf=str(cres.pdf))
     else:
         ctx.record_failure(

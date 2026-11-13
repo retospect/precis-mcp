@@ -6306,6 +6306,11 @@ class DraftHandler(Handler):
         as a typo at line start and has no emphasis rescue under house
         style (gr592934) — see :meth:`_hygiene_sentence_start_lines`.
 
+        A twelfth line — only on a draft that carries record handles an
+        export would link: an unset ``PRECIS_WEB_BASE_URL`` leaves every
+        dev/collaborator link path-only (gr592892) — see
+        :meth:`_hygiene_link_origin_lines`.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -6410,6 +6415,8 @@ class DraftHandler(Handler):
         out.extend(self._hygiene_figure_lines(chunks, limit=limit))
 
         out.extend(self._hygiene_caption_lines(chunks, limit=limit))
+
+        out.extend(self._hygiene_link_origin_lines(text))
 
         if not out:
             return []
@@ -6589,6 +6596,36 @@ class DraftHandler(Handler):
             "assigned 'Figure N:'/'Table N:' itself — drop the authored "
             "label and reference the float from prose with [dc<id>]."
         ]
+
+    def _hygiene_link_origin_lines(self, text: str) -> list[str]:
+        """Link-origin line (gr592892): with ``PRECIS_WEB_BASE_URL`` unset
+        a dev/collaborator export writes every record-handle link in this
+        draft path-only — a PDF viewer cannot open it. Scoped to drafts
+        that actually carry a linkable handle (``text`` is the same
+        joined body the other checks scan, minus ``code`` chunks): a
+        handle-free draft produces no links, so flagging it would only
+        train readers past the warning. The fix is one operator-set
+        secret per installation, not a draft edit — advisory ``⚠``,
+        never a gate; the job event names the same ``precis secret set``
+        command. ``[]`` once the origin is configured.
+
+        ``has_record_handles`` runs WITHOUT the store here: the footer
+        already scans the whole body on every outline read, and the
+        store variant pays a per-paper-token lookup (its dataset
+        re-classification) — a cite-heavy draft with no linkable handle
+        would cost a query per cite. The one blind spot is a draft whose
+        only record handles are dataset papers; the export itself still
+        warns unconditionally."""
+        from precis.export.audience import (
+            has_record_handles,
+            link_origin_warnings,
+            web_base_url,
+        )
+
+        warnings = link_origin_warnings(web_base_url(self.store))
+        if not warnings or not has_record_handles(text):
+            return []
+        return [f"⚠ {w}" for w in warnings]
 
     def _render_hygiene(
         self, slug: str, ref: Any = None, *, root_handle: str | None = None

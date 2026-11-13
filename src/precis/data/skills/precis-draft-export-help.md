@@ -101,8 +101,15 @@ The same choice is `--audience dev|external` on the CLI and
 
 Collaborator exports link record handles such as `[pw12]`, `[st34]`,
 `[gr56]` and `[qu78]` to the web application using its configured
-`PRECIS_WEB_BASE_URL`. Paper citations and draft cross-references keep
-their normal bibliography and section/figure semantics.
+`PRECIS_WEB_BASE_URL` — one operator-set origin per installation
+(`/secrets`, or `echo <origin> | precis secret set PRECIS_WEB_BASE_URL`);
+there is no per-export `base_url` override. Unset, the export still runs but
+every record-handle link is path-only — a PDF viewer cannot open it —
+so the job warns in its events, the draft hygiene report flags
+handle-bearing drafts, and the job summary says the origin is missing
+(otherwise it prints the origin used). Paper citations and draft
+cross-references keep their normal bibliography and section/figure
+semantics.
 
 External exports replace record handles with supplement numbers and
 descriptive footnotes, without application links. S1 contains pathways,

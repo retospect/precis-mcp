@@ -2665,6 +2665,9 @@ def render_body(
         withheld_figures=withheld_figures,
         paragraph_handles=walker.named_headings(chunks, depth_of, back_matter),
     )
+    # Export-level advisories (gr592892: unset PRECIS_WEB_BASE_URL →
+    # every dev record-handle link is path-only).
+    ctx.warnings.extend(ctx.audience.warnings)
     title_tex = _render_document_title(ref, ctx)
     lines = _render_chunk_lines(
         chunks, ctx, depth_of=depth_of, title_dc=title_dc, back_matter=back_matter
@@ -3706,6 +3709,7 @@ def _export_poster(
         withheld_figures=withheld_figures,
         poster=True,
     )
+    ctx.warnings.extend(ctx.audience.warnings)
 
     document_title = _render_document_title(ref, ctx, thanks=False)
     sections = _poster_sections(chunks, depth_of, title_dc)
