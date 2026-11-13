@@ -11,6 +11,7 @@ answers:
   - how do I check my payload against the mint gates without approving?
   - when does signing freeze a claim's content?
   - why does a claim hub show as unmintable?
+  - how do I record that a hypothesis was ruled out?
   - how does the OpenTimestamps (OTS) batch anchor work, and when does a signed nanopub get timestamped?
 applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); precis nanopub CLI (human-run); reading publish state
 status: active
@@ -176,6 +177,50 @@ envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
 are flagged/listed for re-review. Once signed, correction requires a successor
 nanopublication; this edit door refuses.
+
+## Hypothesis — record a rejection
+
+A hypothesis hub showing **zero corroborating edges is correct, not a
+defect** — a conjecture is evidence-free by type, and the widening pass
+(`hub_refine`) deliberately skips hypothesis hubs: hunting for passages
+that agree with a guess is a confirmation engine. An empty `support`
+cell on a hypothesis is the shape it is meant to have; do not attach
+evidence to "repair" it — the mint gates refuse evidence on a
+hypothesis anyway.
+
+When `testable_by`'s experiment settles against a hypothesis, record a
+rejection — the rejection *converts* rather than deletes:
+
+```python
+# 1. Mint the negative ruling as an ordinary finding — the hard-won
+#    "X does not gate Y" is premium knowledge in its own right; the
+#    usual chase establishes it (a hand-set STATUS:established is
+#    refused — that tag is worker-owned).
+put(kind='finding', title='<the negative claim>',
+    body='<the ruling as the source states it>',
+    args={'cited_in': 'pc<the chunk that rules it out>'})
+
+# 2. Link the hypothesis to the ruling ('retracts' or 'superseded-by').
+link(kind='finding', id='fi<hypothesis>', target='fi<ruling>',
+     rel='retracts')
+
+# 3. Stamp the hypothesis refuted — the tag verb is the whole
+#    machinery; terminal, no transition pass.
+tag(kind='finding', id='fi<hypothesis>', add=['STATUS:refuted'])
+```
+
+`STATUS:refuted` is the typed **do-not-repropose ledger**: a refuted
+finding is fenced out of the default finding cohort and every
+cross-kind search, so a rejected conjecture never resurfaces as if
+still live. Read the ledger by explicit ask —
+`search(kind='finding', status='refuted')` or
+`search(kind='finding', tags=['STATUS:refuted'])`; `status='*'` does
+not lift the fence. This is distinct from the evidence-derived
+`refuted` flag in [[precis-finding-help]]'s row table (every judged
+edge negative — a hypothesis carries no edges to judge). Reading needs
+no opt-in: every `[fi<id>]` cite site renders the refuted sigil red —
+the ledger outranks the epistemic mark — and `/claim/fi<id>` shows the
+red banner plus the superseding ruling.
 
 ## Report and definition types
 
