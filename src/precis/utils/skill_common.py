@@ -54,6 +54,20 @@ VALID_TAGS: Final[tuple[str, ...]] = (
     "design",
 )
 
+#: Closed vocabulary for the ``governs:`` axis (gr657064, interim
+#: definition until the parent campaign's slice 3 settles it):
+#: ``factory`` marks a skill that steers agent or factory behaviour —
+#: the repo-dev workflow material migrated out of agent-local folders
+#: (``.claude/skills/``, ``.claude/commands/``, ``.devin/workflows/``).
+#: At ingest each entry is emitted as a ``governs:<value>`` tag, and the
+#: served skill graph folds the axis onto the same ``governs:<value>``
+#: tag spelling (``skill_index/graph.py``), so the steering set
+#: enumerates without a filename scan:
+#: ``search(kind='skill', tags=['governs:factory'])``,
+#: ``search(kind='skill', q='…', tag='governs:factory')`` and
+#: ``get(kind='skill', id='toc', tag='governs:factory')``.
+VALID_GOVERNS: Final[tuple[str, ...]] = ("factory",)
+
 #: ``[[slug]]`` wikilink pattern — a lateral skill-to-skill cross
 #: reference inside a skill body (docs/backlog/skill-graph.md; documented
 #: for agents in ``precis-addressing-help``). Mirrors the slug grammar
@@ -171,6 +185,13 @@ class SkillFrontmatter:
     #: (docs/backlog/skill-graph.md slice 1).
     kinds: tuple[str, ...] | None = None
 
+    #: What the skill governs, checked against :data:`VALID_GOVERNS`
+    #: at ingest (gr657064): ``factory`` = a skill that steers agent or
+    #: factory behaviour rather than documenting a product surface.
+    #: Emitted as ``governs:<value>`` tags so the steering set is
+    #: queryable. Empty tuple when absent (the common case).
+    governs: tuple[str, ...] = ()
+
     #: Subject family (``family: se``) - the grouping axis behind
     #: ``family=`` on skill search/toc. ``None`` = absent: the family
     #: defaults to the slug's name-prefix stem (:func:`skill_family`).
@@ -226,6 +247,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "requires",
         "tags",
         "kinds",
+        "governs",
         "family",
         "parent",
         "scope",
@@ -291,7 +313,8 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     tags: [orientation]
     ```
 
-    ``tags:`` and ``kinds:`` accept the same three list shapes. Raises
+    ``tags:``, ``kinds:``, ``requires:``, ``answers:`` and ``governs:``
+    accept the same three list shapes. Raises
     :class:`FrontmatterError` when ``flavor:`` is set to a value
     outside :data:`VALID_FLAVORS` (the only *hard-fail* validation
     that happens here). ``tags:``/``kinds:`` membership validation
@@ -364,6 +387,7 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
             "tags",
             "kinds",
             "requires",
+            "governs",
         }
         if key in list_keys and val.startswith("[") and val.endswith("]"):
             inner = val[1:-1].strip()
@@ -446,6 +470,13 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
         fields_in["kinds"] = (kd,) if kd else ()
     # else: None (absent) or already tuple from the parser — untouched.
 
+    # governs: always tuple[str, ...], same normalisation as tags.
+    gv = fields_in.get("governs")
+    if gv is None:
+        fields_in["governs"] = ()
+    elif isinstance(gv, str):
+        fields_in["governs"] = (gv,) if gv else ()
+
     # fields_in is dict[str, object] (frontmatter is parsed dynamically);
     # unpacking it into SkillFrontmatter's typed fields can't be checked
     # statically. Each value is coerced/validated above before landing here.
@@ -473,6 +504,15 @@ def unknown_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
     Order-preserving, may contain duplicates if the author repeated one.
     """
     return tuple(t for t in tags if is_known_kind(t) or t not in VALID_TAGS)
+
+
+def unknown_governs(governs: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the subset of ``governs`` outside :data:`VALID_GOVERNS`.
+
+    Same closed-vocabulary discipline as ``tags:`` — a typo'd value
+    (``governs: facotry``) must not silently tag a steering skill as
+    ordinary. Order-preserving."""
+    return tuple(g for g in governs if g not in VALID_GOVERNS)
 
 
 def unknown_kinds(kinds: tuple[str, ...]) -> tuple[str, ...]:

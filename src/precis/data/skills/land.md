@@ -1,0 +1,254 @@
+---
+id: land
+family: work
+title: precis — land the worktree branch on main
+summary: end-of-session worktree wrap-up — commit WIP, sync onto main, gate on GitHub CI via scripts/ship --remote, squash-merge, then close what the ship resolved
+answers:
+  - how do I ship my worktree branch to main at the end of a session?
+  - what do I do when scripts/ship --remote reports a red gate or a merge conflict?
+  - how do I wait on the remote gate without blocking the session?
+  - what happens to open gripes and residual bugs after a green land?
+applies-to: end-of-session repo-dev wrap-up — commit, sync, gate, squash-merge to main
+status: active
+tags: [workflow]
+kinds: [gripe, todo]
+scope: write
+governs: factory
+---
+
+# land — wrap up the worktree and land on main
+
+You are wrapping up a worktree session. The goal of a feature branch is to
+land on `main`. **Shipping is a script, not a set of LLM steps** — one
+`scripts/ship` run does commit → sync → gate → squash-merge → local-main
+fast-forward deterministically, which is faster, reproducible, and
+token-cheap. Your job is only to (a) supply a good commit message and
+(b) handle anything the script can't (a real merge conflict or a red gate).
+
+If there's nothing to ship (clean tree, zero commits ahead), say so and stop
+— but note *why* in one line if the session did real work: durable output can
+land entirely outside this repo (personal auto-memory, precis MCP `todo`/
+`gripe` writes), which won't show here and isn't a ship failure.
+
+Live state at invocation:
+
+- Branch + status:
+  !`git -c color.ui=never status -sb`
+- Commits this branch is ahead of main:
+  !`git -c color.ui=never log --oneline origin/main..HEAD 2>/dev/null || git -c color.ui=never log --oneline main..HEAD 2>/dev/null || echo "(can't compute ahead-of-main — neither origin/main nor main resolves)"`
+
+Optional ship message from the user: `$ARGUMENTS`
+
+The `!`-prefixed command lines are the Claude harness's live-state injection
+— other runtimes run those commands themselves (Kimi invokes this skill as
+`/skill:land`); where the procedure names a harness agent, see Harness notes
+when no subagent runtime exists.
+
+## Procedure — prepare
+
+1. **Decide the message.** If `$ARGUMENTS` is non-empty, use it. Otherwise
+   write a concise one-line, conventional-commit-style summary of what this
+   branch changes (look at the diff vs `main` if unsure). The message is
+   required (`-m`, or derived from the branch's own commit); ship refuses
+   `ship(...)`/`wip(...)`/unprefixed subjects before any gate.
+
+2. **Refresh touched docs (terse, in-place).** For each subsystem this
+   branch's diff changes, re-read the owning package docstring
+   section, the `docs/codebase.md` invariants, and any affected product
+   skill under `src/precis/data/skills/`; update in place — terse, per
+   `docs/conventions/llm-facing-prose.md` — **only where the change altered
+   the contract or shape**, not for every edit. These edits ride
+   the same ship commit: commit them yourself (ship refuses uncommitted
+   edits outside `.claude/` and names them).
+
+3. **Review risky diffs before shipping (size/risk-gated, blocking).** Check
+   `git diff --stat origin/main...HEAD` (or `main...HEAD`). Spawn `reviewer`
+   (foreground — you need its findings before continuing) only if the diff
+   touches **more than ~5 files**, or touches a sensitive area (a migration
+   under `src/precis/migrations/`, `safe_fetch.py`, auth/session code, or a
+   schema/ACL change). A small, low-risk diff **skips this entirely** — that's
+   what on-demand `/code-review` is for; don't spend tokens reviewing the
+   common one-line-fix ship. If `reviewer` runs: fix any real finding now,
+   before step 4; if you deliberately don't fix one, note why in the ship
+   message or a comment. `clean`, or under-threshold, means go straight to
+   step 4.
+
+## Procedure — run the ship
+
+4. **Run the script.** It is idempotent — re-running after a fix resumes
+   cleanly. **Run it in the background with output redirected to a log**
+   (the remote gate takes ~90 min green, longer when queued; a foreground
+   run would block the session and raw output would flood context):
+   ```
+   scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
+   ```
+   Wait on it with `scripts/ship-wait /tmp/ship.log` in the background —
+   it exits on green, red or cancelled with the verdict and the first
+   failure line, nonzero on red or cancelled. That watcher is the only
+   way to wait on the gate: no polling subagents, no log-tail loops.
+   Output is quiet by default (gr497896): `/tmp/ship.log` captures the
+   epilogue — ✖ lines, a conflict's file list, the printed `/tmp/ship-*.log`
+   full-transcript path, and a final `SHIP_STATUS:` token. Tail the printed
+   log for the live gate output; `--verbose` restores the old stream.
+   `--remote` gates on **GitHub's computers**: the synced branch goes to
+   `ci/<branch>`, the check.yml gate shape (lint · mypy · the test shards of
+   Linux+db 3.13; a docs-only diff runs the fast-set docs lane instead of
+   the shards; 3.12 · macOS are nightly-only) runs there, and only
+   a green run reaches
+   `main` — via the same atomic CAS squash-push. The ship lock covers only
+   that push (seconds), never the CI wait or a gate. A full-gate ship lands
+   an exactly-tested tree, or says it did not and pins nothing. If main
+   moves during the wait (siblings keep landing meanwhile), the race budget
+   decides: a tree that adds a migration or touches `safe_fetch.py` re-syncs
+   and re-runs CI on the integrated tree once (~90 min), because an
+   exactly-tested land is worth a second gate there; any other tree gets one
+   CI run. When the budget is spent, ship lands by an in-lock forward merge of
+   main, prints "not a deploy warrant", writes no `.ship-sha`, and trails
+   the squash with `Gate: forward-merged over N commits`.
+   Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the
+   local impacted container gate FIRST, before spending a CI cycle.
+   (`scripts/ship --impacted` without `--remote` is the legacy local-gate
+   ship — still valid when GitHub is down.)
+
+   `scripts/ship --remote` does, in order: refuse-if-on-main → refuse a
+   dirty tree (outside `.claude/`) → sync (`git fetch` + `git merge` origin/main) → push to
+   `ci/<branch>` → **poll the check.yml run to conclusion** → squash-merge
+   to `main` via `commit-tree` + a `--force-with-lease` CAS push → delete
+   the remote feature + ci branches → reset the feature branch to the
+   shipped `main` (zero divergence) → fast-forward the local `main` → print
+   the new `main` sha.
+
+## Procedure — failures
+
+5. **Handle failures.** The script exits non-zero and prints a `✖` line only
+   on something it can't do mechanically:
+   - **Merge conflict during sync** — resolve the conflict, then
+     `git add -A && git commit`, then re-run `scripts/ship`.
+   - **Red remote gate** — ship prints the failing jobs and the
+     `scripts/ci-failed <id>` pointer. Diagnose from the run log,
+     fix, re-run `scripts/ship --remote`. Reproduce locally with
+     `scripts/test <path or -k>`; remember the matrix covers macOS/Windows
+     paths the local container can't (auto-memory `green-gate-neq-green-ci`).
+   - **Remote gate timeout / no run appears** — ship already retries via one
+     `workflow_dispatch` after 10 min (dropped push events during GitHub
+     incidents are never replayed); if it still times out, check
+     githubstatus.com, then re-run.
+   - **Red gate (mypy/pytest)** (local-gate modes) — the failure is printed above the `✖`. Ruff
+     lint/format drift is auto-fixed, so a ruff failure here means an
+     *unfixable* lint error. Fix the code and re-run. Reproduce/iterate on a
+     red test locally with `scripts/test <path or -k>` (same container + test
+     DB, against this worktree) before re-shipping. Only real failures in
+     branch-touched code block the ship; a lone `UniqueViolation` /
+     stale-row error in an unrelated test is usually shared-`precis_test`
+     pollution — clean the stray row and re-run.
+   - **Flake vs. real — classify before you re-run.** Many gate reds are
+     infra flakes from a concurrent sibling gate, not your code. Signatures:
+     *zero output after ruff* / pytest dots stopping mid-run / scattered
+     `gwN crashed` = container mypy or pytest **OOM-137**; `import file
+     mismatch` / `Different tests collected between gwN` = **colima
+     bind-mount** load flake; `database does not exist` / `recovery mode` =
+     **shared test-DB** concurrency. For all of these the fix is an
+     **isolated re-run in a quiet window** (wait for sibling `precis-dev-run`
+     containers to clear; optionally set the `PRECIS_GATE_N` env to 3) —
+     **not** immediate churn, log-tail loops, or dropping `PRECIS_GATE_N`
+     to 0. Only re-touch code once
+     you've confirmed the failure names *your* changed files.
+   - **CAS push rejected** — a sibling worktree shipped first; just re-run
+     `scripts/ship` (it re-syncs onto the new `main`).
+   - A `WARNING:` about the primary `main` not fast-forwarding is
+     **best-effort, not a ship failure** (the remote is already updated) —
+     just relay it so the human can `git merge --ff-only origin/main` in the
+     primary worktree.
+
+## Procedure — confirm and close
+
+6. **Confirm — always end with this exact three-line block** (verify each
+   line against `git rev-parse origin/main`, don't assume):
+   ```
+   Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
+   Pushed:          ✓ origin/main             (the squash-merge IS the push)
+   Deployed:        — not deployed (/land is ship-only; run /go to deploy)
+   ```
+   Use ✗ on the first two lines if the ship failed (red gate / conflict). The
+   deploy line is always "not deployed" here. If the local primary `main`
+   didn't fast-forward, add the `WARNING:` line as a fourth line. Then one
+   line summarizing what shipped.
+
+7. **Close what this ship resolved (background, non-blocking) — only if step 6
+   confirmed ✓.** If the ship failed (any ✗ in step 6), skip this step
+   entirely — there is no new shipped sha to check. Otherwise spawn a
+   background `issue-closer` agent with the sha just confirmed in step 6
+   (not a re-derived `git rev-parse main` — use the same sha you verified
+   against `origin/main`). It checks open gripes and the backlog dir
+   against the diff and closes only what it's confident this ship fixed.
+   Don't wait for it — continue to step 8 immediately; relay its one-line
+   note (or "nothing to close") whenever it completes.
+
+## Residuals and handoff
+
+8. **Follow through on residuals (tiered).** A green ship is not the end if
+   this session surfaced latent bugs it parked. **Harvest** every residual
+   whose finder is **Opus 4.7 or better** — *this* session (you qualify) or
+   an opus reviewer memory (`structural` / `deep_review`). A finding from
+   nursery SQL or a haiku planner tick is *filed, never chased* — that is the
+   capability gate doing its job. A residual is a concrete correctness gap —
+   a latent bug, an incomplete fix, a message-only mitigation of a real root
+   cause — **not** a feature extension or a nice-to-have.
+   - **Persist first — it must survive compaction.** Before anything else,
+     record every harvested residual durably: a backlog item
+     and/or `kind='todo'` / `gripe` rows. Free-text residuals get
+     summarized away on the next auto-compaction; persisted ones don't. The
+     persisted list — not your memory — is the source of truth for the loop
+     below, so it keeps working after the harness self-compacts.
+   - **Fix the in-reach ones now.** For each residual that is a known, bounded
+     fix, open a fresh worktree cycle, fix it, and run `land` again
+     (ship-only here — `go` if you also want it deployed). Each residual is
+     its own cycle so history stays legible.
+   - **File the rest.** Anything that needs investigation before a fix, or is
+     out of reach this session, becomes a `gripe` (filed against the owning thread, whose
+     session fixes it) or a `kind='todo'` — the fix_gripe lane is off — and
+     you note it; you do not spin on it.
+   - **Stop-and-report guard.** If a residual's fix balloons in scope, or goes
+     red and isn't quickly greenable, stop, file it, and surface it — never
+     chain unbounded ships.
+
+9. **Summarize next steps, then hand off a clean restart.** Close by telling
+   the user what — if anything — comes next: the persisted residuals from step
+   8, the next item on a tracked list, or "nothing open." Then, when the session
+   ran long *or* there are next steps to resume, emit a **full handoff block**
+   per the [[next]] skill's steps 4–5 (the copy → `/compact` → paste
+   recovery prompt), drawing its pointers from the **persisted** source
+   (the backlog dir / `kind='todo'` / memory), never a recap of this
+   conversation — the durable artifact is what survives compaction. Skip the
+   handoff when the session was short and nothing is open; don't manufacture
+   ceremony.
+
+## Harness notes
+
+Deltas for runtimes without the Claude agent roster (the Devin
+workflow's own list, folded in):
+
+- **No subagents.** Where the procedure dispatches an agent (risky-diff
+  `reviewer`, background `issue-closer`), do the review yourself before
+  shipping and skip the issue-closer; list what it would have closed in your
+  summary.
+- **Run ship in the background with output to a log**, never piped — a pipe
+  reports the filter's status, so a red gate would read as exit 0:
+  ```
+  scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
+  ```
+- **Prod writes default to go.** Filing a `gripe`/`todo` — like other
+  additive writes through the precis MCP verbs — lands in PROD without
+  asking (`docs/conventions/thresholds.md`); ask only for destructive,
+  outward-facing or >$25 actions.
+- **Mark the round after a green land.** If `scripts/round status` shows an
+  open round, mark it from this tree: `scripts/round in <sha>` (or `none`,
+  or `eta <text>`). The mark is the status report; message the coordinator
+  only for a question, blocker or decision.
+
+## See also
+
+- [[go]] — the same land plus a release cut, gate and deploy.
+- [[qland]] — the burst fast lane this is the careful version of.
+- [[next]] — the handoff block step 9 points at.
+- [[rebase]] — sync this branch onto main before a ship.

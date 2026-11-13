@@ -223,30 +223,39 @@ def _next_hints(err: BadInput | NotFound) -> list[str]:
     return nxt if isinstance(nxt, list) else [nxt or ""]
 
 
-def test_repo_dev_skill_notfound_names_the_file(skill: SkillHandler) -> None:
-    """gr563570 — ``bug`` is a repo-dev skill
-    (``.claude/skills/bug/SKILL.md``), not a product skill; the NotFound
-    recurred ~13×/day, mostly codex clients. The refusal now says so and
-    names the file, ahead of the unchanged search/deploy hints."""
+def test_repo_dev_skill_notfound_names_the_file(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr563570 — a ``.claude/skills/<name>/SKILL.md`` name is a repo-dev
+    skill, not a product skill, so a NotFound for one names the file
+    ahead of the search/deploy hints. gr657064: the pin originally used
+    ``bug``, which the agent-local-skills migration now serves as a real
+    skill; a stand-in name keeps the hint contract exercised."""
+    monkeypatch.setattr(
+        SkillHandler,
+        "_repo_dev_skill_names",
+        lambda self: frozenset({"fake-dev-skill"}),
+    )
     with pytest.raises(NotFound) as excinfo:
-        skill.get(id="bug")
+        skill.get(id="fake-dev-skill")
     hints = _next_hints(excinfo.value)
     assert any(
-        "repo-dev skill" in h and ".claude/skills/bug/SKILL.md" in h for h in hints
+        "repo-dev skill" in h and ".claude/skills/fake-dev-skill/SKILL.md" in h
+        for h in hints
     )
     assert any("search(kind='skill'" in h for h in hints)
     assert any("not yet deployed" in h for h in hints)
     # The selector views land on the same refusal.
-    for sid in ("bug/toc", "bug~0"):
+    for sid in ("fake-dev-skill/toc", "fake-dev-skill~0"):
         with pytest.raises(NotFound) as excinfo:
             skill.get(id=sid)
         hints = _next_hints(excinfo.value)
-        assert any(".claude/skills/bug/SKILL.md" in h for h in hints), sid
+        assert any(".claude/skills/fake-dev-skill/SKILL.md" in h for h in hints), sid
     # find-in-ref too.
     with pytest.raises(NotFound) as excinfo:
-        skill.get(id="bug", q="anything")
+        skill.get(id="fake-dev-skill", q="anything")
     hints = _next_hints(excinfo.value)
-    assert any(".claude/skills/bug/SKILL.md" in h for h in hints)
+    assert any(".claude/skills/fake-dev-skill/SKILL.md" in h for h in hints)
 
 
 def test_repo_dev_skills_constant_matches_checkout() -> None:
@@ -367,3 +376,19 @@ def test_search_scope_through_dispatch(
     )
     assert is_error is False
     assert "# find 'executor' in precis-job-help" in body
+
+
+def test_search_tags_list_through_dispatch(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr657064: ``tags=['governs:factory']`` is a CORE search kwarg —
+    pin that it clears the strictness gate and narrows the listing to
+    the steering set (previously it died in ``**_kw``)."""
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "search",
+        {"kind": "skill", "tags": ["governs:factory"]},
+    )
+    assert is_error is False
+    assert "Filtered by" in body
+    assert "bug" in body  # a served governs:factory skill
+    assert "precis-paper-help" not in body

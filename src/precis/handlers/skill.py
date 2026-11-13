@@ -72,6 +72,7 @@ from precis.store import SEMANTIC_DISTANCE_FLOOR, _refs_ops
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.search_merge import SearchHit as _MergeSearchHit
 from precis.utils.skill_common import (
+    VALID_GOVERNS,
     VALID_TAGS,
     WIKILINK_RE,
     SkillFrontmatter,
@@ -297,6 +298,8 @@ _TAG_GROUPS: tuple[tuple[str, str], ...] = (
 _SKILL_ALIASES_INLINE: dict[str, tuple[str, ...]] = {
     "precis-toc": ("toc",),
     "precis-part-select-help": ("precis-part-help",),
+    "precis-differentiation-help": ("differentiation",),
+    "flow-stages": ("flow",),
 }
 
 
@@ -312,16 +315,28 @@ _SKILL_ALIASES_INLINE: dict[str, tuple[str, ...]] = {
 #: wins (delete the map entry the day one ships).
 _SKILL_SLUG_ALIASES: dict[str, str] = {
     "precis-part-help": "precis-part-select-help",
+    # gr657064: the repo-dev ``differentiation`` skill was a stub that
+    # deferred to ``precis-differentiation-help``; the migration folds
+    # it into the product skill and this alias keeps the short name
+    # agents already ask for.
+    "differentiation": "precis-differentiation-help",
+    # gr657064: ``flow`` shipped as ``flow-stages`` — a single-word file
+    # slug can't pin its own query (it ranked below precis-se-flow-help
+    # and dead-ended the neighbour door) — the alias keeps the local
+    # name working.
+    "flow": "flow-stages",
 }
 
 
 #: Repo-dev skill directory names under ``.claude/skills/`` — harness
-#: skills for developing this repo, not product skills, so a NotFound
-#: for one should name the file to read instead of the catalogue
-#: (gr563570). Test-guarded against the checkout's ``.claude/skills``
-#: dirs; at runtime the handler unions this with the live dirs of the
-#: configured worktrees' checkouts, so a deployment without a repo
-#: mount still hints the common ones.
+#: skills for developing this repo, so a NotFound for one names the
+#: file to read instead of the catalogue (gr563570). Test-guarded
+#: against the checkout's ``.claude/skills`` dirs; at runtime the
+#: handler unions this with the live dirs of the configured worktrees'
+#: checkouts, so a deployment without a repo mount still hints the
+#: common ones. gr657064: the twelve names also shipped as real corpus
+#: skills — a served name wins (the hint only fires on NotFound), so the
+#: set covers the unmigrated/stale case until td657071's trim runs.
 _REPO_DEV_SKILLS = frozenset(
     {
         "backup-restore-drill",
@@ -943,6 +958,7 @@ class SkillHandler(Handler):
         q: str | None = None,
         full: bool = False,
         tag: str | None = None,
+        tags: list[str] | str | None = None,
         kinds: str | None = None,
         family: str | None = None,
         by: str | None = None,
@@ -981,7 +997,7 @@ class SkillHandler(Handler):
         if id is None and q is not None and q.strip():
             return self.search(q=q)
         if id is None or (isinstance(id, str) and id.startswith("/")):
-            return self._render_index(tag=tag, kinds=kinds, family=family)
+            return self._render_index(tag=tag, tags=tags, kinds=kinds, family=family)
 
         raw_id = str(id).strip()
         # Worktree root prefix (gr541511): ``<wt-alias>/<slug>`` serves
@@ -1081,6 +1097,7 @@ class SkillHandler(Handler):
                 return Response(
                     body=renderer(
                         tag=tag,
+                        tags=tags,
                         kinds=kinds,
                         family=family,
                         by=by,
@@ -1460,6 +1477,7 @@ class SkillHandler(Handler):
         page_size: int | None = None,
         page: int = 1,
         tag: str | None = None,
+        tags: list[str] | str | None = None,
         kinds: str | None = None,
         family: str | None = None,
         configured_only: bool = False,
@@ -1542,7 +1560,7 @@ class SkillHandler(Handler):
         # the agent a runnable second-step option that mirrors
         # ``get(kind='skill')``'s index.
         if q is None or not q.strip():
-            return self.get(tag=tag, kinds=kinds, family=family)
+            return self.get(tag=tag, tags=tags, kinds=kinds, family=family)
 
         all_rows, sem_hits_per_slug, hidden_slugs = self._ranked_rows(
             q, mode_norm=mode_norm, page_size=page_size
@@ -1625,10 +1643,10 @@ class SkillHandler(Handler):
                 )
             )
 
-        # tag=/kinds= axis filter (docs/backlog/skill-graph.md slice 1)
-        # — applied before the availability partition below so a
-        # narrowed search is actually narrowed, not just annotated.
-        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
+        # tag=/tags=/kinds= axis filter (docs/backlog/skill-graph.md
+        # slice 1) — applied before the availability partition below so
+        # a narrowed search is actually narrowed, not just annotated.
+        wanted = _axis_filter_set(tag=tag, tags=tags, kinds=kinds, family=family)
         if wanted is not None:
             all_rows = [row for row in all_rows if row.slug in wanted]
 
@@ -1788,6 +1806,8 @@ class SkillHandler(Handler):
                 call += f", page_size={page_size}"
             if tag is not None:
                 call += f", tag={tag!r}"
+            if tags is not None:
+                call += f", tags={tags!r}"
             if kinds is not None:
                 call += f", kinds={kinds!r}"
             args_extra: dict[str, Any] = {}
@@ -2666,6 +2686,7 @@ class SkillHandler(Handler):
         self,
         *,
         tag: str | None = None,
+        tags: list[str] | str | None = None,
         kinds: str | None = None,
         family: str | None = None,
     ) -> Response:
@@ -2678,7 +2699,7 @@ class SkillHandler(Handler):
         # tag=/kinds= toc filter (docs/backlog/skill-graph.md slice 1) —
         # synth skills carry no tags:/kinds: frontmatter, so a filtered
         # index shows only real, axis-matching skills.
-        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
+        wanted = _axis_filter_set(tag=tag, tags=tags, kinds=kinds, family=family)
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
@@ -2725,7 +2746,9 @@ class SkillHandler(Handler):
                 p
                 for p in (
                     f"tag={tag!r}" if tag else "",
+                    f"tags={tags!r}" if tags else "",
                     f"kinds={kinds!r}" if kinds else "",
+                    f"family={family!r}" if family else "",
                 )
                 if p
             ]
@@ -2839,6 +2862,7 @@ class SkillHandler(Handler):
         self,
         *,
         tag: str | None = None,
+        tags: list[str] | str | None = None,
         kinds: str | None = None,
         family: str | None = None,
         by: str | None = None,
@@ -2875,7 +2899,7 @@ class SkillHandler(Handler):
                 options=["family"],
                 next="get(kind='skill', id='toc', args={'by': 'family'})",
             )
-        wanted = _axis_filter_set(tag=tag, kinds=kinds, family=family)
+        wanted = _axis_filter_set(tag=tag, tags=tags, kinds=kinds, family=family)
         if wanted is not None:
             synth = []
             file_slugs = [s for s in file_slugs if s in wanted]
@@ -5403,16 +5427,29 @@ def _domain_hidden_note(hidden: set[str] | list[str], domain_name: str) -> str:
 
 
 def _axis_filter_set(
-    *, tag: str | None, kinds: str | None, family: str | None = None
+    *,
+    tag: str | None,
+    tags: list[str] | str | None = None,
+    kinds: str | None,
+    family: str | None = None,
 ) -> frozenset[str] | None:
-    """Slugs matching the requested ``tag=``/``kinds=`` toc filter.
+    """Slugs matching the requested ``tag=``/``tags=``/``kinds=`` filter.
 
-    ``None`` when neither filter is given — "no restriction", distinct
-    from an empty result set. When both are given, intersects: a skill
-    must carry both to match. docs/backlog/skill-graph.md slice 1:
+    ``None`` when no filter is given — "no restriction", distinct
+    from an empty result set. ``tag=`` is the single-value spelling;
+    ``tags=[...]`` (the plural other kinds use) takes a list — every
+    value must match (intersection), and a bare string reads as one
+    value. When several axes are given, intersects: a skill must
+    carry all of them to match. docs/backlog/skill-graph.md slice 1:
     "``tag=``/``kind=`` filters on the toc — HONORED, never swallowed."
     """
-    if tag is None and kinds is None and family is None:
+    tag_values: list[str] = []
+    if tag is not None:
+        tag_values.append(str(tag))
+    if tags is not None:
+        tag_list = [tags] if isinstance(tags, str) else list(tags)
+        tag_values.extend(str(v) for v in tag_list)
+    if not tag_values and kinds is None and family is None:
         return None
     # Unknown filter values are rejected, not swallowed (gr338978): a
     # typo'd tag/kind returning "0 skills" reads as "nothing matches",
@@ -5424,23 +5461,39 @@ def _axis_filter_set(
     # ``kinds=`` rather than refused. A real tag still wins the check
     # above; a value that is neither tag nor kind stays a BadInput.
     kind_axes: list[str] = []
-    if tag is not None and tag not in VALID_TAGS:
-        remapped = tag if is_known_kind(tag) else None
+    tag_axes: list[str] = []
+    for tag_value in tag_values:
+        if tag_value in VALID_TAGS:
+            tag_axes.append(tag_value)
+            continue
+        # gr657064: ``governs:<value>`` is a tag-axis spelling (the
+        # graph folds ``governs:`` frontmatter onto it); the value is
+        # closed-vocabulary like ``tags:`` itself, so an unknown one
+        # refuses rather than remapping.
+        if tag_value.startswith("governs:"):
+            if tag_value.removeprefix("governs:") in VALID_GOVERNS:
+                tag_axes.append(tag_value)
+                continue
+            raise BadInput(
+                f"unknown tag {tag_value!r} — valid governs values: "
+                + ", ".join(f"governs:{v}" for v in VALID_GOVERNS),
+                next="get(kind='skill', id='toc', tag='governs:factory')",
+            )
+        remapped = tag_value if is_known_kind(tag_value) else None
         if remapped is None:
             try:
-                remapped, _is_chunk = kind_for_code(tag)
+                remapped, _is_chunk = kind_for_code(tag_value)
             except KeyError:
                 remapped = None
         if remapped is None:
             raise BadInput(
-                f"unknown tag {tag!r} — valid tags: {', '.join(VALID_TAGS)}",
+                f"unknown tag {tag_value!r} — valid tags: {', '.join(VALID_TAGS)}",
                 next=(
                     "get(kind='skill', id='toc', tag='workflow') — or, to "
                     "filter by the kind a skill is about: "
                     "get(kind='skill', id='toc', kinds='<kind>')"
                 ),
             )
-        tag = None
         kind_axes.append(remapped)
     if kinds is not None and not is_known_kind(kinds):
         try:
@@ -5466,8 +5519,8 @@ def _axis_filter_set(
     sets: list[frozenset[str]] = []
     if family is not None:
         sets.append(frozenset(graph.by_family(family.strip().lower())))
-    if tag is not None:
-        sets.append(frozenset(graph.by_tag(tag)))
+    for tag_axis in tag_axes:
+        sets.append(frozenset(graph.by_tag(tag_axis)))
     for kind_axis in kind_axes:
         sets.append(frozenset(graph.by_kind(kind_axis)))
     if kinds is not None:

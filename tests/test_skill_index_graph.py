@@ -106,6 +106,21 @@ def test_tag_groups_built_from_frontmatter() -> None:
     assert g.by_tag("no-such-tag") == ()
 
 
+def test_governs_frontmatter_folds_onto_tag_axis() -> None:
+    """gr657064: ``governs:`` is served under its ``governs:<value>``
+    tag spelling — the same folding ``skill_ingest._build_tags`` gives
+    refs — so ``tag='governs:factory'`` / ``tags=['governs:factory']``
+    enumerate the steering set."""
+    files = {
+        "a": _skill("body", front="flavor: reference\ngoverns:\n  - factory"),
+        "b": _skill("body", front="flavor: reference"),
+    }
+    g = build_skill_graph(files)
+    assert g.by_tag("governs:factory") == ("a",)
+    # The axis is namespaced — a plain ``factory`` tag is not it.
+    assert g.by_tag("factory") == ()
+
+
 def test_kind_groups_built_from_frontmatter() -> None:
     files = {
         "a": _skill("body", front="flavor: reference\nkinds:\n  - paper"),

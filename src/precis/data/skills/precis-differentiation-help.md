@@ -154,8 +154,9 @@ Run these at a *representative* design point, not at a symmetric or empty
 starting state where whole terms are inactive, and along directions that
 matter physically, not only random ones. A verified gradient is a test to
 keep, not a one-off check: the house's shipped density-based sensitivity
-is gated against central finite differences through the whole map, and
-that test is why term additions there are safe.
+(`src/precis/structsolve/simp.py`) is gated against central finite
+differences through the whole map, and that test is why term additions
+there are safe.
 
 ## Memory
 

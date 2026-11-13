@@ -476,6 +476,49 @@ def test_search_axis_filter_actually_filters(
     assert "widget-workflow" not in out.body
 
 
+def test_search_tags_list_filter_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657064: ``search(kind='skill', tags=['governs:factory'])`` —
+    the spelling VALID_GOVERNS advertises — narrows ranked hits to the
+    steering set instead of dropping the kwarg."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "widget-steering": _md(
+                front="flavor: reference\ngoverns:\n  - factory",
+                body="widget gadget thing",
+            ),
+            "widget-plain": _md(
+                front="flavor: reference",
+                body="widget gadget thing",
+            ),
+        },
+    )
+    out = skill.search(q="widget gadget", tags=["governs:factory"])
+    assert "widget-steering" in out.body
+    assert "widget-plain" not in out.body
+
+
+def test_search_tags_list_empty_q_routes_to_filtered_index(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``search(tags=[...])`` without q= degrades to the listing view —
+    the filter follows it there too."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "widget-steering": _md(
+                front="flavor: reference\ngoverns:\n  - factory", body="body"
+            ),
+            "widget-plain": _md(front="flavor: reference", body="body"),
+        },
+    )
+    out = skill.search(tags=["governs:factory"])
+    assert "widget-steering" in out.body
+    assert "widget-plain" not in out.body
+
+
 def test_search_related_line_on_top_hit(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:

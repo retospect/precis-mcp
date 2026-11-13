@@ -558,6 +558,31 @@ def test_scan_no_kind_or_topic_tags_when_axes_absent(tmp_path: Path) -> None:
     assert p.tags == ("FLAVOR:reference",)
 
 
+def test_scan_emits_governs_tags(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ngoverns:\n  - factory\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    [p] = r.plans
+    assert "governs:factory" in p.tags
+
+
+def test_scan_unknown_governs_is_hard_failure_by_default(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "a.md",
+        "---\nflavor: reference\ngoverns:\n  - facotry\n---\n# A\n## op\nbody\n",
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.plans == ()
+    [f] = r.failures
+    assert "facotry" in f.reason
+    assert "governs" in f.reason
+    assert "graph gate" in f.reason
+
+
 # ── the real shipped corpus (docs/backlog/skill-graph.md slice 2 accept-
 # ance criterion) ───────────────────────────────────────────────────────
 

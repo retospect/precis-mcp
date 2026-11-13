@@ -58,6 +58,7 @@ from precis.utils.skill_common import (
     extract_wikilinks,
     flavor_tag,
     parse_frontmatter,
+    unknown_governs,
     unknown_kinds,
     unknown_tags,
 )
@@ -275,6 +276,12 @@ def _build_tags(fm: SkillFrontmatter) -> tuple[str, ...]:
     for tag in fm.tags:
         # Lowercase prefix → accumulates, same rationale as ``requires:``.
         out.append(f"topic:{tag}")
+    for value in fm.governs:
+        # gr657064: ``governs:factory`` marks skills that steer agent or
+        # factory behaviour. Lowercase prefix → accumulates, like
+        # ``topic:``/``requires:`` — the steering set is enumerable via
+        # ``tags=['governs:factory']``.
+        out.append(f"governs:{value}")
     return tuple(out)
 
 
@@ -372,6 +379,13 @@ def _validate_graph_gates(
                         f"kinds: unknown kind(s) {bad_kinds} — not in "
                         "the kind registry (utils/handle_registry.py)"
                     )
+
+        bad_governs = unknown_governs(plan.frontmatter.governs)
+        if bad_governs:
+            findings.append(
+                f"governs: unknown value(s) {bad_governs} "
+                "(see VALID_GOVERNS in utils/skill_common.py)"
+            )
 
         if not findings:
             good.append(plan)

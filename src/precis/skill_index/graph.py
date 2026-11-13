@@ -5,7 +5,10 @@ Pure, text-derived lateral structure over the shipped skill corpus
 skill body is an edge, symmetrized so a target skill knows who links to
 it even though only the source file wrote the link; ``tags:``/``kinds:``
 frontmatter group skills for the ``tag=``/``kind=`` toc filters and the
-served-skill footer (``handlers/skill.py``, slice 1 surfacing).
+served-skill footer (``handlers/skill.py``, slice 1 surfacing). The
+``governs:`` axis (gr657064) folds onto the tag axis under its
+``governs:<value>`` spelling, so ``by_tag('governs:factory')`` names
+the steering set.
 
 No embedder, no DB — this is deliberately decoupled from
 :class:`~precis.skill_index.index.FileCorpusIndex`, which builds
@@ -111,6 +114,13 @@ def build_skill_graph(files: dict[str, str]) -> SkillGraph:
         fm = parse_frontmatter(text)
         for tag in fm.tags:
             tags_acc[tag].append(slug)
+        for value in fm.governs:
+            # gr657064: ``governs:`` rides the tag axis under its
+            # ``governs:<value>`` spelling — the same folding
+            # ``ingest/skill_ingest._build_tags`` gives refs — so
+            # ``tag='governs:factory'`` / ``tags=['governs:factory']``
+            # enumerate the steering set.
+            tags_acc[f"governs:{value}"].append(slug)
         fam_acc[skill_family(slug, fm)].append(slug)
         for kind in fm.kinds or ():
             kinds_acc[kind].append(slug)

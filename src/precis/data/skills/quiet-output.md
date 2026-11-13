@@ -1,0 +1,94 @@
+---
+id: quiet-output
+family: work
+title: precis — keep noisy command logs out of context with rtk
+summary: run verbose dev commands — deploy, image build, ingest, migration, big git/psql/grep output — through rtk so only failures and compacted signal reach context, and never blind-wait on a silent foreground run
+answers:
+  - how do I keep a noisy command's output from flooding context?
+  - when do I prefix a command with rtk — and when not?
+  - how do I watch a long-running deploy or build without polling stdout?
+  - does rtk summary propagate the command's exit code?
+applies-to: repo-dev shell commands whose raw output would swamp context
+status: active
+tags: [workflow]
+governs: factory
+---
+
+# quiet-output — keep noisy command logs out of context with rtk
+
+Verbose command output is the biggest avoidable context sink in this repo's
+dev loop. `rtk` (a token-killer CLI proxy; `brew install rtk`) filters a
+command's output to just the signal — failures, compacted tables, grouped
+errors — and tees the full log to disk. On Reto's dev Mac a **global
+PreToolUse hook** already rewrites *known* commands (git/psql/grep/find/
+docker/…) to `rtk <cmd>` transparently — Bash output there is a digest even
+with no prefix. `scripts/*` wrappers pass through untouched, and CI /
+cluster `claude -p` runs have no hook. Authority on the hook, its gaps, and
+the don't-`2>/dev/null` rule: `docs/conventions/rtk.md`.
+
+## When to reach for it
+
+Prefix manually wherever the hook doesn't cover it — `scripts/*` wrappers,
+arbitrary commands, hook-less environments:
+
+    rtk err -- scripts/deploy          # arbitrary command, errors/warnings only
+    rtk summary -- <cmd>               # arbitrary command, heuristic summary
+    rtk git status | rtk git diff      # compact git
+    rtk psql -- <psql args>            # borderless, compressed tables
+    rtk grep / rtk rg / rtk find       # compact search output
+
+`rtk` is a safe passthrough — a subcommand it doesn't specially handle runs
+unchanged. Project-specific filters live in `.rtk/filters.toml` (committed).
+
+## When NOT to
+
+- **Tests** — `scripts/test` already terse-ifies pytest; don't double-wrap.
+- **Interactive** commands (a shell, an interactive `psql`, anything needing a
+  TTY) — rtk captures output, so there's nothing to type into.
+- When you genuinely need the raw stream — run it without `rtk`.
+
+## Long runs: never blind-wait on a silent foreground
+
+rtk solves **volume**, not **latency** — a foreground `scripts/deploy`,
+image build, or big ingest returns *nothing* until exit, minutes of zero
+visibility. For anything expected to run > ~1 minute:
+
+1. Launch via Bash `run_in_background: true` — the task's exit (code +
+   notification) is the authoritative completion signal.
+2. Watch the **live log file**, not the process stdout. `scripts/deploy`
+   already tees each run to the MAIN checkout's
+   `.deploy-logs/<ts>-<ref>.log` (path on its first `▶` line); for other
+   commands, redirect to a file yourself.
+3. Arm a Monitor with a line-buffered filter covering milestones **and
+   every failure signature** — silence must never be ambiguous. For a
+   deploy:
+
+       tail -F "$LOG" | grep -E --line-buffered '^▶|^✖|PLAY \[|fatal:|FAILED|UNREACHABLE|ERROR!|failed=[1-9]'
+
+4. TaskStop the monitor when the completion notification lands.
+
+(`run_in_background`, Monitor and TaskStop are this harness's names — map to
+your runtime's background-task and log-watch equivalents, or poll the log
+file on an interval.)
+
+**Retrofit:** a deploy already running blind (yours or a sibling
+session's) is still tee'ing — `ls -1t <main>/.deploy-logs/*.log | head -1`
+and tail/Read that. Don't wait in the dark, and don't pipe the raw log
+into context — filter as above.
+
+## The output is a DIGEST, not raw
+
+Treat rtk output as a filtered digest. If a detail you need was compressed
+away, **re-run the command raw** (or read the tee'd full log rtk prints) —
+never assume the digest is the whole story.
+
+**Exit codes:** `rtk err -- <cmd>` propagates the child's exit code; `rtk
+summary -- <cmd>` does NOT (it returns 0 even on failure). So when the exit
+status matters — chaining on `&&`, gating on success — use `rtk err`, not `rtk
+summary`.
+
+## See also
+
+- [[flow-stages]] — the stage map whose ship step produces the long noisy runs.
+- [[coder-chain]] — round-by-round test output is the same context sink.
+- [[backup-restore-drill]] — a multi-hour restore is the extreme case of a long run.

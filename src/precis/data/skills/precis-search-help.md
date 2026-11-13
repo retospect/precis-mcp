@@ -160,8 +160,11 @@ search(
 
 `search(kind="skill", ...)` also takes `args={"family": "se"}` (subject family =
 the skill id's name-prefix stem unless its frontmatter says otherwise) and
-`args={"tag": "workflow"}`; both narrow the menu and combine. Memory search takes
-`args={"under": "me<hub>"}` to stay inside one hub's subtree.
+`args={"tag": "workflow"}`; both narrow the menu and combine. `tags=["…"]` is the
+plural spelling — `search(kind="skill", tags=["governs:factory"])` lists the
+steering set (same slice as `args={"tag": "governs:factory"}` and
+`get(kind="skill", id="toc", args={"tag": "governs:factory"})`). Memory search
+takes `args={"under": "me<hub>"}` to stay inside one hub's subtree.
 
 `mode=` works on a single kind and across the cross-kind fan-out.
 Scores are never comparable *across* modes — within one result list,

@@ -23,6 +23,7 @@ from precis.utils.skill_common import (
     flavor_tag,
     kind_label,
     parse_frontmatter,
+    unknown_governs,
     unknown_kinds,
     unknown_tags,
 )
@@ -402,6 +403,35 @@ def test_kind_label_includes_short_code() -> None:
 
 def test_kind_label_falls_back_for_unregistered_name() -> None:
     assert kind_label("not-a-kind") == "not-a-kind"
+
+
+# ── governs: axis (gr657064) ────────────────────────────────────────────
+
+
+def test_governs_scalar_form() -> None:
+    fm = parse_frontmatter("---\ngoverns: factory\n---\n")
+    assert fm.governs == ("factory",)
+
+
+def test_governs_block_and_bracket_forms() -> None:
+    text = "---\ngoverns:\n  - factory\n---\n"
+    assert parse_frontmatter(text).governs == ("factory",)
+    text = "---\ngoverns: [factory]\n---\n"
+    assert parse_frontmatter(text).governs == ("factory",)
+
+
+def test_governs_default_empty() -> None:
+    fm = parse_frontmatter("---\nid: precis-overview\n---\n")
+    assert fm.governs == ()
+
+
+def test_unknown_governs_flags_out_of_vocab_value() -> None:
+    assert unknown_governs(("facotry", "factory")) == ("facotry",)
+
+
+def test_unknown_governs_empty_for_clean_input() -> None:
+    assert unknown_governs(("factory",)) == ()
+    assert unknown_governs(()) == ()
 
 
 # ── [[slug]] wikilink extraction ────────────────────────────────────────

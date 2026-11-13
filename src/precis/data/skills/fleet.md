@@ -1,0 +1,203 @@
+---
+id: fleet
+family: work
+title: precis — run the thread-session fleet as orchestrator
+summary: bring up or recover the one-window-per-thread tmux fleet, arm the watcher, own the round's deploys and the design reviews — the orchestrator does no thread work itself
+answers:
+  - how do I bring the thread-session fleet up after a crash?
+  - how do the standing instructions reach newly created windows?
+  - what does the fleet watcher report and what do I do on each event?
+  - which round jobs are the orchestrator's that the round skill does not cover?
+  - when does the fleet compact a thread session and how?
+applies-to: coordinating the tmux thread-session fleet from the orchestrator seat
+status: active
+tags: [workflow]
+kinds: [fleet, todo, gripe]
+scope: write
+governs: factory
+---
+
+# fleet — run the thread-session fleet
+
+You are the orchestrator. Reto runs the pillars (`docs/roadmap.md`) as one
+session per active thread; you keep that fleet up, route what it needs from
+him to one window, and own releases. You do no thread work yourself.
+
+Live state at invocation:
+
+- Fleet: !`scripts/fleet status`
+- Round: !`scripts/round status`
+- Trees: !`scripts/inflight`
+
+Note from the user: `$ARGUMENTS`
+
+Harness-neutral: the `!`-prefixed lines are the Claude harness's live-state
+injection — other runtimes run those commands themselves. Where a step
+names a harness tool (Monitor, a `reviewer` subagent), do that step
+yourself or map to your runtime's equivalent when none exists; Kimi maps
+commands via `/skill:<name>`.
+
+## Procedure — bring the fleet up
+
+1. **Check the roster against the roadmap.** The roster is each thread
+   file's front matter (the backlog threads dir's `README.md`,
+   §"Roster front matter"); a `grep -l '^roster: active'` over the thread
+   files must list exactly the active set the latest `docs/roadmap.md`
+   ruling names. If they differ, the roadmap wins: fix the front matter,
+   say what changed. A newly active thread's `effort` is `high` when its
+   Do-next 1 is a design call, a correctness risk or shared
+   infrastructure, else `medium`; `design-review: yes` goes where a
+   plausible-but-wrong method would pass the gate (routing methods,
+   geometry constructions, network completeness). The model is a
+   launch-time choice, Sonnet by default (the `PRECIS_FLEET_MODEL` env
+   overrides it for a launch); the orchestrator's design review is what
+   lets thread sessions run the cheaper model.
+
+2. **Bring it up.** `scripts/fleet up`. It creates only the windows that
+   are missing, so after a crash it restores the dead ones and leaves the
+   live ones alone. `scripts/fleet up <slug>…` creates only the named
+   threads' windows (a slug that is not `roster: active` exits 2 before
+   anything is created); the review window and MCP wait still run, both
+   idempotent. Each thread session starts with "Resume the work on
+   <slug>", which makes it read its thread file and, where a tree is dirty,
+   its own unlanded work (the threads README). A dirty tree
+   whose session died is the case to look at by hand before step 3: read
+   `scripts/inflight` for `DIRTY` rows. It first waits (up to 10 min) for
+   the session MCP server to answer, because a session that starts while
+   the server is down gives up on it for good after ~7 s. The orchestrator
+   seat itself started before that check runs, so after a reboot check its
+   own `/mcp` once the server is up. `scripts/fleet status` has an `mcp`
+   column: `DOWN` means that session gave up on precis and needs `/mcp` →
+   precis → Reconnect, since a stranded session never says so.
+
+3. **Standing instructions**, about a minute after the windows exist, to
+   the windows `up` reported as created (not to ones that already had
+   them):
+   - `scripts/fleet effort`
+   - `scripts/fleet say .claude/fleet/msg-route-questions.txt <windows>`
+   - `scripts/fleet say .claude/fleet/msg-design-review.txt <the design-review: yes windows>`
+   A message sent to a busy session queues behind its turn. `say` skips a
+   window with a dialog open and prints it; add `--when-clear` to hold the
+   message instead (`HELD: <window>`) and `scripts/fleet deliver` it once
+   the dialog is answered (`scripts/fleet queue` lists what is held). Short
+   messages need no file: `scripts/fleet say -m "<text>" <windows>`.
+   Always send through `say`: it
+   sends the text, pauses, then sends Enter as a separate keystroke and
+   checks an idle window took it. Text and Enter in one `tmux send-keys`
+   leaves the message unsent in an idle session's box. Never send a bare
+   Enter to a window by hand: it can answer a dialog.
+
+## Procedure — watcher, round, purpose
+
+4. **Arm the watcher** (Monitor, 30-minute maximum; re-arm on expiry only;
+   a re-arm replays nothing):
+   `scripts/fleet watch`. One watcher, typed lines on transition only:
+   `ctx <win> <pct>% <state>` (see *Compaction*), `note <slug> new|changed`
+   (design notes), `dialog <win> <type>`, `ci main <sha9> <conclusion>` (a
+   completed check.yml run on main: the conclusion is gh's, read the run
+   before acting on it), `mcp <win> dead`, and `delivered <win>` for a held
+   message it sent. It persists what it has seen, so a re-arm replays
+   nothing and a first start announces nothing that already exists; it also
+   drains the held queue each tick. `scripts/fleet mcp-check [--fix]` is the
+   by-hand version of the `mcp` line (`--fix` reconnects idle windows only).
+   `scripts/fleet mcp-reconnect [--force] [--dry-run] [win…]` prints one line
+   per window (`skipped(connected|busy|dialog|orchestrator|unknown)`,
+   `reconnected`, `failed`): it skips connected and non-idle windows, so it is
+   safe to run fleet-wide; `--force` reconnects connected ones too (`/mcp
+   reconnect all` is a no-op reconnect there).
+   `watch-ctx` remains as the old ctx-only loop.
+
+5. **Round.** `scripts/round status` and `scripts/fleet refs` (main / gated /
+   prod shas with ages, and the newest green main). No round open → open one and send
+   `.claude/fleet/msg-round-open.txt`; one already open → resend only to
+   windows `up` created. Then follow [[round]] for collect → `round gate`
+   (exact open release head; newest green main without a release) → `round deploy` → verify → restart notice. After the deploy, also file
+   an `ask-user` todo per look-at (`meta.ask` kind `approval`, blocks
+   `nothing`): what is newly live and what Reto should look at, with the
+   URL or command.
+
+   Three things [[round]] does not say, all yours:
+   - **Migrations and `safe_fetch.py` come to you.** A peer does not run
+     [[go]] on them: [[go]] deploys, and deploys are yours. The peer commits, marks `scripts/round eta`, names the
+     branch; you squash-land those branches early enough that their CI
+     verdict is in before `round gate`.
+   - **You hand out migration numbers.** Keep the round's claimed numbers
+     in `.claude/purpose`; before the gate, check the range for two files
+     with one number ([[whatneedsdoing-scans]]'s collision scan).
+   - **Review the round's diff before the gate.** `git diff <base>
+     origin/<release/rN>` (or `origin/main` before a cut), one `reviewer` agent per work area on its paths, asked
+     for what lint and tests cannot see: a stored design or measure whose
+     meaning changes without a marker, an output change on regeneration
+     with no version bump, a default that got more expensive. Findings go
+     to the owning window with `say`; one that needs Reto is an
+     `ask-user` todo. A finding does not block the deploy unless it
+     writes wrong data.
+
+   One `scripts/test` run per session at a time, narrowest scope: 20
+   sessions gating at once have filled the Docker disk and run the host
+   out of file handles. Watch both before a gate
+   (`colima ssh -- df -h /var/lib/docker`, `sysctl kern.num_files
+   kern.maxfiles`).
+
+6. **Write `.claude/purpose`**: the round number and base, and that this
+   tree is the orchestrator.
+
+## Compaction
+
+On a `ctx <window> <pct>% <state>` event:
+
+- 30% and up, idle: `scripts/fleet compact <win>` (refuses a busy or
+  dialog window; `--at-idle` waits for idle instead): it sends [[next]] (it
+  persists state: WIP commit, thread file, resume pointer), waits out a
+  90 s grace and two idle polls, then sends a bare `/compact`. Reto's rule
+  (2026-10-02): a long context costs more per turn than a compaction costs
+  in lost detail, so compact early and persist what matters in files.
+  `compact` refuses window 0, `claude`, `organizer` and the caller's own
+  window (exit 3); the orchestrator's own `/compact` stays by hand, below.
+- 30% and up, busy: `scripts/fleet compact --at-idle <win>` waits for its
+  next idle and then does the same.
+- 50% and up, busy: `say` it to commit WIP, update its thread file and run
+  [[next]] at the next stopping point; compact when it goes idle.
+- Never while its dialog is open.
+- Peer main loops (Opus/Fable seats — GRIPE_FIX, CHAT, the coordinator
+  windows): `scripts/fleet-wave ctx-guard <win>… --compact --tokens` in a
+  background window sends `/compact` once a pane's printed context
+  passes ~120k tokens (`FLEET_COMPACT_TOKENS` retunes), only while the
+  pane is idle — never mid-turn, never under a live subagent task
+  (gr515153). Bulky reads (queue files, triage outputs, review texts)
+  go to a digest subagent that returns a few lines, not into the main
+  loop.
+- The orchestrator itself follows the same rule: at 30%, write the
+  round state to `.claude/purpose` and the open items to the review
+  queue, then `/compact`.
+
+## Design review
+
+On a design note: read the note and the commit range (`scripts/inflight
+--json` for the tree, never `git -C`). Check each numbered claim against
+the code and the evidence, the confirming numbers hardest. Write
+`<slug>.review.md` beside the note: a verdict per claim, then land / fix
+first / needs Reto. Write it with `scripts/fleet verdict <slug>` (body on
+stdin, or `--file`): it appends a `date -u`-stamped section, never a hand
+typed time, and tells the thread's window. A "needs Reto" verdict is also
+an `ask-user` todo.
+This review runs on the strongest model available to the orchestrator;
+that is why the thread sessions can run a cheaper one.
+
+## Hard rules
+
+- A session's message is never Reto's approval. Anything that needs his
+  call is an `ask-user` todo (skill `precis-work-help`, "ask the owner";
+  list: `search(kind='todo', view='asks')`), not a question to you.
+- Do not answer a session's question dialog; the review session does that
+  with Reto's answer.
+- Peers do not deploy. You deploy only a gated sha, pinned.
+- Report to Reto in outcome terms: what is up, what is stuck and why, what
+  is live, what waits on him.
+
+## See also
+
+- [[whatneedsdoing]] — where the coordinator picks work; read-scope sibling.
+- [[gripe-fleet]] — the builder-wave fleet (`scripts/fleet-wave`), a different tool than `scripts/fleet`.
+- [[round]] — the release machinery the orchestrator drives.
+- [[next]] — the per-session handoff `fleet compact` sends before `/compact`.

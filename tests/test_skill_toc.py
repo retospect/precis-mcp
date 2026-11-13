@@ -235,6 +235,67 @@ def test_toc_filter_by_family_actually_filters(skill: SkillHandler) -> None:
     assert "precis-paper-help" not in out.body
 
 
+def test_toc_filter_by_governs_tag_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657064: ``tag='governs:factory'`` enumerates the steering set —
+    the spelling ``skill_common.VALID_GOVERNS`` advertises."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-steering": _md(
+                front="flavor: reference\ngoverns:\n  - factory", body="body"
+            ),
+            "zzq-plain": _md(front="flavor: reference", body="body"),
+        },
+    )
+    out = skill.get(id="toc", tag="governs:factory")
+    assert "zzq-steering" in out.body
+    assert "zzq-plain" not in out.body
+
+
+def test_toc_filter_rejects_unknown_governs_value(skill: SkillHandler) -> None:
+    """``governs:`` is closed-vocabulary like ``tags:`` — a typo'd value
+    refuses with the valid spellings rather than a silent empty slice."""
+    with pytest.raises(BadInput) as excinfo:
+        skill.get(id="toc", tag="governs:bogus")
+    msg = str(excinfo.value)
+    assert "unknown tag 'governs:bogus'" in msg
+    assert "governs:factory" in msg
+
+
+def test_index_filter_by_tags_list_actually_filters(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``tags=[...]`` — the plural spelling other kinds take — narrows
+    the index the same way ``tag=`` does, intersecting multiple values."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-steering": _md(
+                front="flavor: reference\ntags:\n  - workflow\ngoverns:\n  - factory",
+                body="body",
+            ),
+            "zzq-steering-other-tag": _md(
+                front="flavor: reference\ntags:\n  - design\ngoverns:\n  - factory",
+                body="body",
+            ),
+            "zzq-plain": _md(
+                front="flavor: reference\ntags:\n  - workflow", body="body"
+            ),
+        },
+    )
+    out = skill.get(tags=["governs:factory"])
+    assert "zzq-steering" in out.body
+    assert "zzq-steering-other-tag" in out.body
+    assert "zzq-plain" not in out.body
+    # Two values intersect: factory ∩ workflow drops the design one.
+    out2 = skill.get(tags=["governs:factory", "workflow"])
+    assert "zzq-steering" in out2.body
+    assert "zzq-steering-other-tag" not in out2.body
+    assert "zzq-plain" not in out2.body
+
+
 def test_toc_filter_rejects_unknown_tag(skill: SkillHandler) -> None:
     """An unknown ``tag=`` raises listing the valid vocabulary instead
     of returning a silent "0 skills" toc (gr338978) — a typo'd tag must
