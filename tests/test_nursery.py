@@ -335,6 +335,23 @@ def test_long_wait_detector_exempts_the_human_decision_queue(
     assert rid not in {f.ref_id for f in findings}
 
 
+def test_long_wait_detail_guides_session_handoff_cleanup(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr658672: the nag on a session-handoff tells the agent to audit the
+    items, close if all done, else re-file the open ones and close."""
+    r = handler.put(text="Session handoff: slice work")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("session-handoff"), set_by="agent")
+    store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
+
+    detail = next(f.detail for f in _detect_long_waits(store) if f.ref_id == rid)
+
+    assert "re-file only those" in detail
+    assert "answer:" in detail
+
+
 def test_long_wait_detector_still_flags_a_machine_dependency(
     handler: TodoHandler, store: Store
 ) -> None:

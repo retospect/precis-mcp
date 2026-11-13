@@ -675,6 +675,15 @@ def _detect_stale_claims(store: Store) -> list[Symptom]:
 _LONG_WAIT_EXEMPT_TARGETS: frozenset[str] = frozenset({"waiting-for:reto"})
 
 
+#: Long-wait action for a ``session-handoff`` todo (gr658672): no expiry
+#: rule exists, so the nag is the trigger for an agent to audit the items.
+_HANDOFF_LONG_WAIT_ACTION = (
+    "; session handoff: check each item it lists. All done or closed -> "
+    "close it with an `answer:` comment saying so. Some still open -> "
+    "re-file only those as fresh todos on the queue, then close this handoff"
+)
+
+
 def _detect_long_waits(store: Store) -> list[Symptom]:
     """Leaves with ``waiting-for:*`` tagged more than ``LONG_WAIT_DAYS``,
     excluding the targets in :data:`_LONG_WAIT_EXEMPT_TARGETS`.
@@ -694,7 +703,10 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
                      WHERE c.ref_id = r.ref_id
                        AND c.chunk_kind = %(body_kind)s
                        AND c.retired_at IS NULL
-                     ORDER BY c.ord LIMIT 1) AS body
+                     ORDER BY c.ord LIMIT 1) AS body,
+                   EXISTS (SELECT 1 FROM ref_tags ht JOIN tags h ON h.tag_id = ht.tag_id
+                            WHERE ht.ref_id = r.ref_id
+                              AND h.value = 'session-handoff') AS is_handoff
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
@@ -734,7 +746,12 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
         )
         if r[4]:
             detail += f"; {_first_line(str(r[4]))!r}"
-        detail += "; decide: chase the dependency, extend the wait, or close the todo"
+        if r[5]:
+            detail += _HANDOFF_LONG_WAIT_ACTION
+        else:
+            detail += (
+                "; decide: chase the dependency, extend the wait, or close the todo"
+            )
         out.append(
             Symptom(
                 category="long-wait",

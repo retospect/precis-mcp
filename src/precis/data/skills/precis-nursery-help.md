@@ -35,7 +35,7 @@ the push merges dark and everything else stays pull-only.
 |---|---|---|
 | `orphan` | open todo whose top-level ancestor doesn't carry `meta.rotation_root=true` | — · **detected, never alerted** |
 | `stale-claim` | leaf carries `claimed-by:*` older than threshold | 3 h |
-| `long-wait` | leaf carries `waiting-for:*` older than threshold | 7 d |
+| `long-wait` | leaf carries `waiting-for:*` older than threshold; on a `session-handoff` todo the detail says: audit its items, close it with an `answer:` comment if all are done, else re-file only the open ones as fresh todos and then close it | 7 d |
 | `stuck-doable` | dispatch-candidate open leaf (`meta.executor` / `meta.llm_tier` / `OPEN:executor:*`), no claim, no doable-exclusion tag (`halt`, `waiting-for:`, `ask-user`, `child-failed:` — the shared registry), no blocker, >threshold old | 24 h |
 | `stalled-recurring` | recurring's most recent spawned child has been open >1 h | 1 h floor |
 | `child-failed-parked` | a todo parked on an open `child-failed:<job>` tag past budget | 6 h |
