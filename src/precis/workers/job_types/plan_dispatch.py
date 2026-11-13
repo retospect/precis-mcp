@@ -319,7 +319,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    A job still queued is never an
    attempt; one queued over 10 min whose ``ServiceSpec.placement``
    capabilities no live host advertises gets the note ``td<id>: job jo<N>
-   queued <m> min — no host advertises {tokens}`` (td543917).
+   queued <m> min — no host advertises {tokens}`` (td543917), and one
+   queued over :data:`QUEUED_ASK_AFTER` also files ONE ruling ask on its
+   node — provision a host, drop the node, or wait — deduped on
+   ``meta.unplaced_ask`` and settled ``done``/``won't-do`` as the gap or
+   the node closes (gr657333).
 
 Plan roots: the ids named by ``plan:<id>`` tags on live todos, plus every
 live todo whose meta makes it a gate / loop / generator / phase; a root
@@ -417,6 +421,30 @@ CLAIM_STALE = timedelta(hours=4)
 #: A plan job queued longer than this with no host advertising its placement
 #: capabilities gets a pass note (td543917).
 QUEUED_NOTE_AFTER = timedelta(minutes=10)
+
+#: A plan job queued longer than this with no live host advertising its
+#: placement capabilities also files ONE coordinator ask on its node
+#: (gr657333): the sweeper's ``scheduler/unschedulable`` warn alert is
+#: the standing page, but a ``run_slice`` needing
+#: claude_bin/repo_checkout/git still sat queued 51+ min with no
+#: capable host and nobody asked. Deduped on :data:`_UNPLACED_ASK_KEY` —
+#: a closed ask is the ruling, never re-minted.
+QUEUED_ASK_AFTER = timedelta(minutes=30)
+
+#: ``meta.unplaced_ask`` on the task node — ``{ask, at, job, gap}``
+#: recording the ask its placement gap filed: the dedup mark plus the
+#: heal check's handle (``_step_unplaced`` closes it ``done`` once a
+#: live host advertises the tokens again, ``won't-do`` when the node
+#: closes first).
+_UNPLACED_ASK_KEY = "unplaced_ask"
+
+#: Options of the ask an unplaced job files (gr657333) — a bounded
+#: ruling, never delegated work (``todo.guards``'s ``meta.ask`` shape).
+_UNPLACED_ASK_OPTIONS: list[str] = [
+    "provision a host advertising the missing capability",
+    "drop the node",
+    "wait — the host comes back on its own",
+]
 
 #: A ``waiting-for:mint`` tag older than this is stale — the minter died,
 #: errored or forgot between the ``put`` and its link-settling calls
@@ -5859,11 +5887,87 @@ def _step_gripe_leases(store: Any, w: _Writer, res: PassResult, now: datetime) -
         res.notes.append(f"gr{gripe_id}: released expired {', '.join(held)}")
 
 
-def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> None:
+def _mint_unplaced_ask(
+    store: Any, n: _Node, j: _Node, gap: frozenset[str], minutes: int
+) -> int:
+    """The ONE ruling ask a placement gap files on its node (gr657333):
+    the job's ``ServiceSpec.placement`` tokens no live host advertises
+    together — the claim gate holds it until one does, so the ask is the
+    escalation, not a block: no ``blocked-by`` edge (the queued job still
+    claims the moment a host turns up; :data:`_UNPLACED_ASK_KEY` on the
+    node's meta is the dedup mark instead). Insert shape of
+    :func:`_mint_orphan_ask`, parked on the plan root."""
+    job_type = str(j.meta.get("job_type") or "job")
+    gap_s = ", ".join(sorted(gap))
+    context = (
+        f"job jo{j.id} ({job_type}) queued {minutes}m — no live host "
+        f"advertises {{{gap_s}}} together (td{n.id}, plan td{n.root})"
+    )
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": list(_UNPLACED_ASK_OPTIONS),
+            "blocks": f"td{n.id}",
+            "context": context[:_ASK_CONTEXT_CAP],
+        }
+    }
+    check_ask_meta(meta)
+    title = (
+        f"td{n.id}: job jo{j.id} unplaceable {minutes}m — "
+        "provision a host, wait, or drop the node?"
+    )
+    body = (
+        f"td{n.id}'s job jo{j.id} ({job_type}) has sat queued {minutes} min: "
+        f"its placement capabilities {{{gap_s}}} are advertised by no live "
+        f"host together, so the claim gate holds it. To fix the gap, "
+        "provision a host advertising the tokens (pick the first option and "
+        "close this todo done). To keep waiting — the host comes back on its "
+        "own — pick 'wait' and close this todo done; the job claims the "
+        "moment one turns up. To give up on the work, pick 'drop the node' "
+        f"and close td{n.id} STATUS:won't-do (this ask then closes won't-do "
+        "with it). The sweeper's scheduler/unschedulable alert is the "
+        "standing page meanwhile."
+    )
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=n.root,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        for value in ("ask-user", f"plan:{n.root}"):
+            store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+        finish_mint(store, ref.id, conn=conn)
+    return int(ref.id)
+
+
+def _step_unplaced(
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
     """td543917: a note per plan job queued past :data:`QUEUED_NOTE_AFTER`
     whose placement capabilities (``ServiceSpec.placement``) no live host
-    advertises together — the claim gate holds it until one does. Read-only;
-    the sweeper's ``scheduler/unschedulable:<id>`` alert is the page."""
+    advertises together — the claim gate holds it until one does. The
+    sweeper's ``scheduler/unschedulable:<id>`` alert is the page.
+
+    gr657333: past :data:`QUEUED_ASK_AFTER` the node also files ONE ruling
+    ask (:func:`_mint_unplaced_ask`), deduped on ``meta.unplaced_ask`` —
+    a closed ask is the ruling, never re-minted. The heal check settles
+    it: the node closes first → the ask closes ``won't-do``; the gap
+    heals or the job leaves ``queued`` → ``done``."""
     from precis.workers.executors._common import (
         advertised_by_host,
         placement_gap,
@@ -5878,10 +5982,50 @@ def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> N
         and now - j.created_at > QUEUED_NOTE_AFTER
         and placement_requires(j.meta)
     ]
-    if not waiting:
+    marked = [
+        (n, mark)
+        for n in plan.todos()
+        if isinstance((mark := n.meta.get(_UNPLACED_ASK_KEY)), dict)
+    ]
+    if not waiting and not marked:
         return
     with store.pool.connection() as conn:
         advertised = advertised_by_host(conn)
+    for n, mark in marked:
+        ask_id = mark.get("ask")
+        ask = plan.nodes.get(ask_id) if isinstance(ask_id, int) else None
+        if ask is None or _closed(ask):
+            continue  # answered (or gone) — the ruling stands; never re-mint
+        if _closed(n):
+            w.comment(
+                ask,
+                f"plan_dispatch: td{n.id} is closed — the placement ruling "
+                "it waited on is moot.",
+            )
+            w.set_status(ask, "won't-do")
+            res.notes.append(
+                f"td{ask.id}: unplaced ask closed won't-do — td{n.id} is closed"
+            )
+            continue
+        # The ask is about the node's gap, not the recorded job: a
+        # re-minted job inheriting the same gap keeps it open.
+        still_blocked = any(
+            j.status == "queued"
+            and placement_requires(j.meta)
+            and placement_gap(j.meta, advertised)
+            for j in plan.jobs(n)
+        )
+        if still_blocked:
+            continue
+        w.comment(
+            ask,
+            f"plan_dispatch: td{n.id}'s placement gap closed (job jo{mark.get('job')} "
+            "claims or ended) — this ask is moot.",
+        )
+        w.set_status(ask, "done")
+        res.notes.append(
+            f"td{ask.id}: unplaced ask closed — td{n.id}'s placement gap healed"
+        )
     for n, j in waiting:
         gap = placement_gap(j.meta, advertised)
         if not gap:
@@ -5890,6 +6034,42 @@ def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> N
         res.notes.append(
             f"td{n.id}: job jo{j.id} queued {minutes} min — no host advertises "
             f"{{{', '.join(sorted(gap))}}}"
+        )
+        if (
+            now - j.created_at <= QUEUED_ASK_AFTER
+            or _UNPLACED_ASK_KEY in n.meta
+            or _closed(n)
+        ):
+            continue
+        if w.dry_run:
+            res.asks += 1
+            res.notes.append(
+                f"td{n.id}: would ask — job jo{j.id} unplaceable {minutes}m "
+                f"({{{', '.join(sorted(gap))}}})"
+            )
+            continue
+        ask_id = _mint_unplaced_ask(store, n, j, gap, minutes)
+        w.stamp_meta(
+            n,
+            {
+                _UNPLACED_ASK_KEY: {
+                    "ask": ask_id,
+                    "at": _iso(now),
+                    "job": j.id,
+                    "gap": sorted(gap),
+                }
+            },
+        )
+        res.asks += 1
+        res.notes.append(
+            f"td{n.id}: job jo{j.id} unplaceable {minutes}m, asked in td{ask_id}"
+        )
+        log_plan_event(
+            w.store,
+            n.id,
+            f"ask td{ask_id} raised (job jo{j.id} unplaceable {minutes}m; "
+            f"gap {{{', '.join(sorted(gap))}}})",
+            root=n.root,
         )
 
 
@@ -6142,7 +6322,7 @@ def _step_hygiene(
     rules: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     _step_gripe_leases(w.store, w, res, now)
-    _step_unplaced(w.store, plan, res, now)
+    _step_unplaced(w.store, plan, w, res, now)
     _step_mint_holds(w.store, plan, w, res, now)
     for n in plan.todos():
         if _closed(n):
@@ -6436,6 +6616,7 @@ __all__ = [
     "MINT_STALE",
     "NAME",
     "PARAMS_SCHEMA",
+    "QUEUED_ASK_AFTER",
     "QUEUED_NOTE_AFTER",
     "SERVICE",
     "SPEC",

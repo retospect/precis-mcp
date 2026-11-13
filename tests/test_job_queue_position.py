@@ -57,7 +57,10 @@ def test_queued_job_shows_position_and_what_runs_ahead(store: Store) -> None:
         "queue: position 2 of 2 queued for executor 'job_inproc' — class "
         "background (1 ahead" in body
     )
-    assert "claim order is class, then priority, then time queued" in body
+    assert (
+        "claim order is class, then factory-pipeline ops, then priority, "
+        "then time queued" in body
+    )
     assert "queue: running now on 'job_inproc': 1 (materialize x1)" in body
     assert "queue: position 1 of 2" in _body(store, first)
 
@@ -290,6 +293,36 @@ def test_queued_behind_release_leg_parses_fractional_class(store: Store) -> None
     body = _body(store, follower)
     assert "queue: position 2 of 2" in body
     assert "queue: ahead by class: release x1" in body
+
+
+# ── Factory-pipeline term in the readout (gr657333, review td657493) ──
+#
+# The claim ranks a ``run_slice``/``land_slice`` ahead of same-class bulk
+# rows; the position math must count the same way or a slice still
+# reports older seeds ahead despite claiming before them.
+
+
+def test_factory_op_reports_ahead_of_same_class_bulk(store: Store) -> None:
+    """The gripe's shape on the card: a fresh ``run_slice`` reports
+    position 1 over the older bulk backlog it claims before — not
+    ``position N`` behind it."""
+    for _ in range(3):
+        _job(store, "queued", origin="background", job_type="autocatpath_seed")
+    run = _job(store, "queued", origin="background", job_type="run_slice")
+    body = _body(store, run)
+    assert "queue: position 1 of 4" in body
+    assert "factory-pipeline ops" in body
+
+
+def test_bulk_row_counts_the_factory_op_ahead(store: Store) -> None:
+    """The inverse read: a bulk row behind a factory op sees it named —
+    ``ahead by class`` alone would show only 'background x1' and hide
+    why the younger job outranks it."""
+    _job(store, "queued", origin="background", job_type="run_slice")
+    seed = _job(store, "queued", origin="background", job_type="autocatpath_seed")
+    body = _body(store, seed)
+    assert "queue: position 2 of 2" in body
+    assert "queue: ahead by class: background x1 (1 factory-pipeline op ahead)" in body
 
 
 def test_release_leg_freezes_ageing_in_readout(store: Store) -> None:

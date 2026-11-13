@@ -22,6 +22,7 @@ from precis.workers.executors._common import (
     _MAX_RUNNING_DEFAULTS,
     CLAIM_CLASS_RANK_ENV,
     claim_executor_jobs,
+    lane_has_waiters,
 )
 
 _DRAIN_CAP = _MAX_RUNNING_DEFAULTS["derived_drain"]
@@ -611,3 +612,228 @@ def test_background_drains_freely_without_agent_work(store: Store) -> None:
         _job(store, origin="background", prio=5, queued_s_ago=60 * i) for i in (1, 2)
     ]
     assert set(_claim(store)) == set(bgs)
+
+
+# ── gr657333: factory-pipeline sub-priority inside a class ─────────
+
+
+def _advertise_all(store: Store, host: str = "h1") -> None:
+    """The placement gate (td543917) holds a job whose tokens no live
+    host advertises: ``run_slice`` needs ``repo_checkout/claude_bin/git``,
+    ``autocatpath_seed`` needs ``autocatpath`` — one host offers all."""
+    store.sync_host_resource_slots(
+        host,
+        {"repo_checkout": 1, "claude_bin": 1, "git": 1, "autocatpath": 1},
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) VALUES (%s, now()) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host,),
+        )
+        conn.commit()
+
+
+def test_factory_op_outranks_same_class_bulk(store: Store) -> None:
+    """The gripe's shape: a fresh ``run_slice`` claims ahead of a bulk
+    ``autocatpath_seed`` backlog queued before it — both background, so
+    the class rank ties and the factory term decides."""
+    _advertise_all(store)
+    seeds = [
+        _job(
+            store,
+            origin="background",
+            prio=5,
+            queued_s_ago=300 + i,
+            job_type="autocatpath_seed",
+        )
+        for i in range(3)
+    ]
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _claim(store)[:4] == [run, *reversed(seeds)]
+
+
+def test_factory_pref_never_bypasses_class_rank(store: Store) -> None:
+    """The term sits after the class rank: a recurring bulk row still
+    outranks a background factory op — no cross-class jump."""
+    _advertise_all(store)
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    bulk_rec = _job(store, origin="recurring", prio=5, job_type="autocatpath_seed")
+    assert _claim(store)[:2] == [bulk_rec, run]
+
+
+def test_aged_bulk_tie_still_loses_to_factory(store: Store) -> None:
+    """A bulk row promotes only to TIE the top class queued: against a
+    factory op of its own class it lands on 3 and the factory term
+    decides. Its starvation bound lives across classes — the test above
+    shows bulk winning on a better class."""
+    _advertise_all(store)
+    old_seed = _job(
+        store,
+        origin="background",
+        prio=5,
+        queued_s_ago=1900,
+        job_type="autocatpath_seed",
+    )
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _claim(store)[:2] == [run, old_seed]
+
+
+def test_prio1_bulk_still_preempts_factory(store: Store) -> None:
+    """The prio-1 absolute preempt sits ABOVE the factory term: an
+    operator-urgent bulk row claims before a factory op."""
+    _advertise_all(store)
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    urgent = _job(store, origin="background", prio=1, job_type="autocatpath_seed")
+    assert _claim(store)[:2] == [urgent, run]
+
+
+def test_factory_pref_off_under_kill_switch(store: Store, monkeypatch: Any) -> None:
+    """``PRECIS_CLAIM_CLASS_RANK=0`` drops the factory term with the
+    class order: an older bulk row outranks a fresh factory op again —
+    the pre-slice-2 aged/FIFO order verbatim."""
+    _advertise_all(store)
+    seed = _job(
+        store,
+        origin="background",
+        prio=5,
+        queued_s_ago=300,
+        job_type="autocatpath_seed",
+    )
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _claim(store)[:2] == [run, seed]  # class order on: factory wins
+    # Re-queue both so the flag-off claim sees the same candidates.
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM ref_tags WHERE ref_id = ANY(%s)", ([seed, run],))
+        conn.commit()
+    store.add_tag(seed, Tag.parse_strict("STATUS:queued"))
+    store.add_tag(run, Tag.parse_strict("STATUS:queued"))
+    monkeypatch.setenv(CLAIM_CLASS_RANK_ENV, "0")
+    assert _claim(store)[:2] == [seed, run]  # old aged order: older wins
+
+
+def _has_waiters(store: Store, running_id: int) -> bool:
+    with store.pool.connection() as conn:
+        return lane_has_waiters(
+            conn,
+            executor="job_inproc",
+            node="h1",
+            exclude_ref_id=running_id,
+        )
+
+
+def test_waiter_factory_op_preempts_running_bulk(store: Store) -> None:
+    """Yield half of gr657333: a queued ``run_slice`` outranks a running
+    bulk seed at the slice boundary — the seed yields."""
+    running = _job(
+        store,
+        origin="background",
+        prio=5,
+        status="running",
+        job_type="autocatpath_seed",
+    )
+    _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _has_waiters(store, running)
+
+
+def test_waiter_bulk_does_not_preempt_running_factory(store: Store) -> None:
+    """The inverse: a bulk waiter inside its class-age bound never bumps
+    a running factory op — queue age alone does not beat the term."""
+    running = _job(
+        store,
+        origin="background",
+        prio=5,
+        status="running",
+        job_type="run_slice",
+    )
+    _job(
+        store,
+        origin="background",
+        prio=5,
+        queued_s_ago=600,
+        job_type="autocatpath_seed",
+    )
+    assert not _has_waiters(store, running)
+
+
+def test_waiter_factory_term_off_under_kill_switch(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The yield decision honours the same kill switch: a worse-prio
+    factory waiter preempts a running bulk row only while the class
+    order (and so the factory term) is on."""
+    running = _job(
+        store,
+        origin="background",
+        prio=5,
+        status="running",
+        job_type="autocatpath_seed",
+    )
+    _job(store, origin="background", prio=8, job_type="run_slice")
+    assert _has_waiters(store, running)
+    monkeypatch.setenv(CLAIM_CLASS_RANK_ENV, "0")
+    assert not _has_waiters(store, running)
+
+
+def test_background_share_stays_oldest_first_over_factory(
+    store: Store, monkeypatch: Any
+) -> None:
+    """Bounded bulk progress (td657493 review): the reserved pick is the
+    starvation guard — a factory-first share under a continuous factory
+    stream would starve the backlog it exists for. The oldest bulk row
+    takes the reserved pick even with a factory op queued."""
+    from precis.workers.executors import _common
+
+    _advertise_all(store)
+    monkeypatch.setitem(_common._bg_share_ticks, "job_inproc", 9)
+    seed = _job(
+        store,
+        origin="background",
+        prio=5,
+        queued_s_ago=300,
+        job_type="autocatpath_seed",
+    )
+    _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _claim(store, limit=1) == [seed]
+
+
+def test_factory_stream_cannot_starve_bulk(store: Store, monkeypatch: Any) -> None:
+    """The review's starvation shape: ten fresh factory ops fill the
+    ordinary picks of a 10-claim batch, and the oldest bulk row still
+    claims on the reserved tenth — its wait is bounded, not FIFO-lost.
+    A factory-first share would leave the seed unclaimed entirely."""
+    from precis.workers.executors import _common
+
+    _advertise_all(store)
+    monkeypatch.setitem(_common._bg_share_ticks, "job_inproc", 0)
+    seed = _job(
+        store,
+        origin="background",
+        prio=5,
+        queued_s_ago=600,
+        job_type="autocatpath_seed",
+    )
+    for _ in range(10):
+        _job(store, origin="background", prio=5, job_type="run_slice")
+    got = _claim(store, limit=10)
+    assert got.index(seed) == 9
+
+
+def test_factory_op_loses_only_the_reserved_pick(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The floor costs factory work one pick in ten, not the lane: the
+    next ordinary claim still takes the queued factory op first."""
+    from precis.workers.executors import _common
+
+    _advertise_all(store)
+    monkeypatch.setitem(_common._bg_share_ticks, "job_inproc", 9)
+    seed = _job(
+        store,
+        origin="background",
+        prio=5,
+        queued_s_ago=300,
+        job_type="autocatpath_seed",
+    )
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    assert _claim(store, limit=2) == [seed, run]

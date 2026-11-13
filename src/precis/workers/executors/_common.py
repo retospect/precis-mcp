@@ -186,6 +186,34 @@ _RELEASE_LEG_TYPES_SQL = (
     "(" + ", ".join(f"'{jt}'" for jt in RELEASE_LEG_JOB_TYPES) + ")"
 )
 
+#: The dark-factory pipeline job types (gr657333): the ops that move a
+#: slice or a release forward on the box-heavy lanes. Within ONE claim
+#: class they rank ahead of bulk seed/drain work — jo656686's
+#: ``run_slice`` sat FIFO behind 58 queued ``autocatpath_seed`` rows for
+#: 51+ min on ``ssh_node``: the class order ties them (both
+#: ``background``) and the share term only prefers the fewer-running
+#: share, so a fresh pipeline op can still lose an equal-share pick to
+#: every older bulk row. The ``release_*`` ops are listed for
+#: completeness — the 2.5 band already outranks background, so their
+#: membership is a no-op today that keeps the set self-describing.
+FACTORY_PIPELINE_JOB_TYPES: tuple[str, ...] = (
+    "run_slice",
+    "land_slice",
+    "release_cut",
+    "release_deploy",
+    "release_confirm",
+    "ci_red_digest",
+    "ci_rerun",
+    "dep_check",
+    "pr_action",
+    "lane_health",
+)
+
+#: The factory job_types as a SQL ``IN`` literal — module constants only.
+_FACTORY_TYPES_SQL = (
+    "(" + ", ".join(f"'{jt}'" for jt in FACTORY_PIPELINE_JOB_TYPES) + ")"
+)
+
 #: ``meta.job_type``/``meta.origin`` -> base class rank (D2: human 0, agent
 #: 1, recurring 2, release 2.5, background 3). The release band is keyed
 #: on ``job_type`` (the legs' origin stays ``background``); a missing
@@ -337,14 +365,18 @@ def lane_has_waiters(
     Lane gates mirror :func:`claim_executor_jobs` for this host: same
     ``meta.executor``, the ``target_node`` pin check, a claimable
     status, a free lease, not operator-suspended. The ranking compares
-    each waiter's full claim key — ``(claim_rank, aged_prio,
-    queued_since, ref_id)`` from :func:`_claim_order_sql` — against the
-    running job's key evaluated as-if-just-yielded: its base class (the
-    yield re-stamps the tag, so no accumulated age or promotion;
-    ``-1`` for prio 1), its raw aged prio, ``now()`` as its queue
-    stamp. ``now()`` is after every real tag stamp, so a waiter that
-    ties on rank+aged still wins the age tiebreak — exactly the
-    "behind jobs already waiting" rule."""
+    each waiter's full claim key — ``(claim_rank, factory_pref,
+    aged_prio, queued_since, ref_id)`` from :func:`_claim_order_sql` and
+    :data:`FACTORY_PIPELINE_JOB_TYPES` — against the running job's key
+    evaluated as-if-just-yielded: its base class (the yield re-stamps
+    the tag, so no accumulated age or promotion; ``-1`` for prio 1), its
+    factory flag, its raw aged prio, ``now()`` as its queue stamp.
+    ``now()`` is after every real tag stamp, so a waiter that ties on
+    rank+factory+aged still wins the age tiebreak — exactly the "behind
+    jobs already waiting" rule. The factory element lets a queued
+    ``run_slice``/``land_slice`` preempt a running bulk seed at its next
+    slice boundary (gr657333) — a bulk waiter never preempts a running
+    factory op."""
     age_step = claim_age_step_s()
     class_age = claim_class_age_s()
     class_rank = claim_class_rank_enabled()
@@ -360,12 +392,18 @@ def lane_has_waiters(
     if class_rank:
         my_key = (
             "(CASE WHEN me.prio = 1 THEN -1 ELSE me.base_class END,"
+            f" CASE WHEN me.job_type IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END,"
             " GREATEST(me.prio,"
             "  LEAST(me.prio,"
             "   CASE WHEN me.base_class < 2 THEN 5 ELSE 2 END)),"
             " now(), me.ref_id)"
         )
-        waiter_key = "(o.crank, o.aged, q.qs, r.ref_id)"
+        waiter_key = (
+            "(o.crank,"
+            f" CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL}"
+            "  THEN 0 ELSE 1 END,"
+            " o.aged, q.qs, r.ref_id)"
+        )
     else:
         # Kill switch (PRECIS_CLAIM_CLASS_RANK=0): order is
         # (aged_prio, queued_since, ref_id) — no classes.
@@ -379,7 +417,8 @@ def lane_has_waiters(
         WITH me AS (
           SELECT r.ref_id AS ref_id,
                  {_CLASS_RANK_CASE} AS base_class,
-                 COALESCE(r.prio, %s)::float8 AS prio
+                 COALESCE(r.prio, %s)::float8 AS prio,
+                 r.meta->>'job_type' AS job_type
             FROM refs r WHERE r.ref_id = %s
         )
         SELECT 1
@@ -1359,11 +1398,18 @@ def claim_executor_jobs(
     row beat agent work, so a saturated agent queue would starve it:
     about one pick in :data:`_BG_SHARE_EVERY` goes to the oldest queued
     background row instead, unless a human-class or prio-1 row waits.
+    The share is also the bulk-progress floor under the factory term
+    (gr657333 review, td657493): it ignores ``factory_pref`` on purpose —
+    a factory-first share under a continuous factory stream would starve
+    the bulk backlog it exists to protect, while a factory op loses the
+    reserved pick to an older bulk row and still claims on the ordinary
+    order.
 
     **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
-    2026-10-24, D4 share half; release band 2026-11-07, gr584136).**
-    ``ORDER BY claim_rank ASC,
+    2026-10-24, D4 share half; release band 2026-11-07, gr584136;
+    factory sub-priority 2026-11-13, gr657333).**
+    ``ORDER BY claim_rank ASC, factory_pref ASC,
     share_running ASC, aged_prio ASC, queued_since ASC, ref_id ASC``
     where ``claim_rank`` is the row's class (human 0 < agent 1 <
     recurring 2 < release 2.5 < background 3 — the release band from
@@ -1371,7 +1417,12 @@ def claim_executor_jobs(
     missing origin reads as the old cron
     band at prio <= 2, else background) stepped down one class per
     :func:`claim_class_age_s` of wait until it ties the top class
-    queued, ``-1`` for a prio-1 preempt (absolute across classes), and
+    queued, ``-1`` for a prio-1 preempt (absolute across classes),
+    ``factory_pref`` is 0 for a :data:`FACTORY_PIPELINE_JOB_TYPES` row
+    (within a class, the dark-factory ops outrank bulk seed/drain work —
+    the bulk side's progress floor is the oldest-first background share
+    above, so a factory stream defers bulk but cannot starve it)
+    and 1 otherwise, and
     ``aged_prio`` is ``COALESCE(prio, 5)`` less one band per
     :func:`claim_age_step_s` of ``queued_since`` age, floored at the
     effective class's best prio (5 above recurring, 2 at or below it —
@@ -2099,12 +2150,31 @@ def claim_executor_jobs(
               ) s ON s.sjt = r.meta->>'job_type'
                  AND s.sps = COALESCE(r.meta->'params'->>'pass', '')"""
         share_params = (executor, claim_host, STATUS_NAMESPACE, RUNNING)
+    # Factory-pipeline sub-priority (gr657333): within a claim class the
+    # dark-factory ops (:data:`FACTORY_PIPELINE_JOB_TYPES`) outrank bulk
+    # seed/drain work — a ``run_slice`` must not FIFO-wait an hour behind
+    # a deep ``autocatpath_seed`` backlog for the same ssh_node slot. The
+    # term sits BETWEEN ``claim_rank`` and the share term: a bulk row
+    # class-promotes only to TIE the top class queued, so on an
+    # all-background lane it never escapes the term — the bounded bulk
+    # progress floor is the reserved oldest-first background share below
+    # (td657493 review), not class promotion. Off under the class-rank
+    # kill switch, like the share term — the pre-slice-2 order stays
+    # verbatim.
+    factory_col_sql = "0"
+    factory_order_sql = ""
+    if class_rank_on:
+        factory_col_sql = (
+            f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
+        )
+        factory_order_sql = "factory_pref ASC, "
     fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
                {aged_prio_sql} AS aged_prio,
-               {share_col_sql} AS share_running
+               {share_col_sql} AS share_running,
+               {factory_col_sql} AS factory_pref
           FROM refs r
           CROSS JOIN LATERAL (
                 SELECT max(rt.created_at) AS qs
@@ -2183,16 +2253,20 @@ def claim_executor_jobs(
     rows = conn.execute(
         fresh_sql.replace("@@BG_WHERE@@", "").replace(
             "@@ORDER_BY@@",
-            f"claim_rank ASC, {share_order_sql}aged_prio ASC, q.qs ASC, r.ref_id ASC",
+            f"claim_rank ASC, {factory_order_sql}{share_order_sql}"
+            "aged_prio ASC, q.qs ASC, r.ref_id ASC",
         ),
         (*fresh_params, fresh_limit * _CLAIM_OVERFETCH),
     ).fetchall()
     # Cross-class starvation guard (td656098): the order above never lets
     # a background row beat agent work, so under an always-busy agent
     # queue it never claims. About 1 claim in ``_BG_SHARE_EVERY`` is
-    # reserved for the OLDEST waiting background row; fetch it into the
-    # window explicitly (the overfetch window is agent-ordered and may
-    # not contain it).
+    # reserved for the OLDEST waiting background row — strictly
+    # oldest-first, ignoring the factory term (td657493 review): it is
+    # also the bulk-progress floor under a factory stream, so letting a
+    # factory op take it would starve the very backlog it guards —
+    # fetched into the window explicitly (the overfetch window is
+    # agent-ordered and may not contain it).
     bg_ticks = _bg_share_ticks.get(executor, 0)
     bg_share_due = (
         class_rank_on
@@ -2211,7 +2285,10 @@ def claim_executor_jobs(
                     fresh_sql.replace(
                         "@@BG_WHERE@@",
                         " AND b.base_class = 3 AND COALESCE(r.prio, %s)::float8 <> 1",
-                    ).replace("@@ORDER_BY@@", "q.qs ASC, r.ref_id ASC"),
+                    ).replace(
+                        "@@ORDER_BY@@",
+                        "q.qs ASC, r.ref_id ASC",
+                    ),
                     (*fresh_params, _DEFAULT_JOB_PRIO, _CLAIM_OVERFETCH),
                 ).fetchall()
                 if int(r[0]) not in have
@@ -2274,7 +2351,7 @@ def claim_executor_jobs(
             qs = qs.replace(tzinfo=UTC)
         return max(0.0, (now_utc - qs).total_seconds())
 
-    def _order_key(r: Any) -> tuple[float, float, float, float, Any, int]:
+    def _order_key(r: Any) -> tuple[float, float, float, float, float, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -2303,15 +2380,30 @@ def claim_executor_jobs(
             if class_rank_on
             else 0.0
         )
+        # Factory sub-priority (gr657333): sits between class rank and
+        # the share term, exactly like the SQL ORDER BY.
+        factory = (
+            float(
+                str(dict(r[2] or {}).get("job_type") or "")
+                not in FACTORY_PIPELINE_JOB_TYPES
+            )
+            if class_rank_on
+            else 0.0
+        )
         # ``queued_since`` (r[5]) before ``ref_id``: the same FIFO-within-band
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, rank, share, aged, r[5] or r[4], int(r[0]))
+        return (-scarcity, rank, factory, share, aged, r[5] or r[4], int(r[0]))
 
     def _oldest_background(cands: list[Any]) -> int | None:
         """Index of the oldest queued background-class row — the reserved
-        share's pick. ``None`` when a human-class or prio-1 row waits
+        share's pick. Strictly oldest-first, ignoring the factory term
+        (td657493 review): the share is the bulk-progress floor under a
+        factory stream — a factory-first pick would let continuous
+        factory work starve the backlog the guard exists for, while a
+        factory op loses only this one pick and still claims on the
+        ordinary order. ``None`` when a human-class or prio-1 row waits
         (they preempt the share) or no background row is queued."""
         if any(_row_prio(c) == 1.0 or _row_base(c) == 0 for c in cands):
             return None

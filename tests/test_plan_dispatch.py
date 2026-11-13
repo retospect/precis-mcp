@@ -7628,6 +7628,112 @@ def test_queued_slice_with_a_capable_host_gets_no_note(store: Store) -> None:
     assert _unplaced_notes(pd.run_pass(store)) == []
 
 
+# ── gr657333: the unplaceable job escalates to ONE ruling ask ──────
+
+
+def test_queued_slice_asks_after_thirty_minutes(store: Store) -> None:
+    """gr657333: a job unplaceable past :data:`pd.QUEUED_ASK_AFTER` files
+    ONE ruling ask on its node — the sweeper alert is no longer the only
+    page."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued")
+    _backdate(store, job, 35)
+    # No live host advertises the slice's placement set at all.
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert any("asked in td" in n for n in res.notes)
+    mark = _meta(store, task)[pd._UNPLACED_ASK_KEY]
+    ask = int(mark["ask"])
+    assert mark["job"] == job
+    assert mark["gap"] == ["claude_bin", "git", "repo_checkout"]
+    ameta = _meta(store, ask)["ask"]
+    assert ameta["kind"] == "ruling"
+    assert ameta["blocks"] == f"td{task}"
+    assert set(pd._UNPLACED_ASK_OPTIONS) == set(ameta["options"])
+    assert {"ask-user", f"plan:{mint.root_id}"} <= _open_tags(store, ask)
+    # The job is still queued and the node is not parked: no blocker edge.
+    assert _status(store, task) == "open"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND "
+            "dst_ref_id = %s AND relation = 'blocked-by'",
+            (task, ask),
+        ).fetchone()
+    assert row is not None and row[0] == 0
+    # One ask ever: no second mint while it is open.
+    assert pd.run_pass(store).asks == 0
+
+
+def test_queued_slice_ask_waits_thirty_minutes(store: Store) -> None:
+    """Between the 10-min note and :data:`pd.QUEUED_ASK_AFTER` the
+    escalation stays a note — the alert still covers it."""
+    mint = _one_task_plan(store)
+    job = _slice_job(store, mint.ids["task"], "run_slice", "queued")
+    _backdate(store, job, 20)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert pd._UNPLACED_ASK_KEY not in _meta(store, mint.ids["task"])
+
+
+def test_unplaced_ask_closes_done_when_the_gap_heals(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued")
+    _backdate(store, job, 35)
+    assert pd.run_pass(store).asks == 1
+    ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
+    _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    pd.run_pass(store)
+    assert _status(store, ask) == "done"
+
+
+def test_unplaced_ask_closes_wont_do_with_the_node(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued")
+    _backdate(store, job, 35)
+    assert pd.run_pass(store).asks == 1
+    ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
+    _set_job_status(store, job, "cancelled")
+    store.add_tag(
+        task,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    pd.run_pass(store)
+    assert _status(store, ask) == "won't-do"
+
+
+def test_unplaced_ask_is_never_re_minted(store: Store) -> None:
+    """A closed ask is the ruling: the dedup mark stays and the tick
+    never files a second one — even while the gap persists."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued")
+    _backdate(store, job, 35)
+    assert pd.run_pass(store).asks == 1
+    ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
+    # The human answers 'wait' — the ruling stands, the gap is still real.
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _status(store, ask) == "done"
+
+
+def test_unplaced_ask_dry_run_counts_without_writing(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued")
+    _backdate(store, job, 35)
+    res = pd.run_pass(store, dry_run=True, reason="params.dry_run")
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY not in _meta(store, task)
+
+
 # ── Tick lock ─────────────────────────────────────────────────────
 
 
