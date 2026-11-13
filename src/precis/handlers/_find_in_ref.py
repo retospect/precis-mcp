@@ -22,8 +22,13 @@ Matching: case-insensitive literal substring by default; ``q='re:<pat>'``
 opts into a bounded regex — length-capped, no backrefs, no nested
 quantifiers (the classic ReDoS shape), and each scanned line is itself
 truncated before matching, so a bad pattern costs at most a bounded
-scan of one short line. ``args={'context': N}`` widens the ±3-line
-window (capped).
+scan of one short line. When a multi-word literal q hits nothing at
+all, one term-wise rescan runs before 'no match' is declared — a line
+carrying every term counts as a hit (gr659451: callers reorder the
+ref's own words, 'reparent move under another' vs a 'Move a todo
+under another (reparent)' heading); the render is labelled term-wise
+so a weaker match is never dressed as a phrase hit.
+``args={'context': N}`` widens the ±3-line window (capped).
 """
 
 from __future__ import annotations
@@ -347,16 +352,47 @@ def find_response(
     finder = _span_finder(q)
     label_of = chunk_label or (lambda c: _chunk_label(kind, display, c))
 
+    # Scan every chunk up front so a literal q that drew a complete
+    # blank can fall back before 'no match' is declared.
+    scanned: list[tuple[Any, list[str], list[int]]] = []
+    for chunk in chunks:
+        lines = (getattr(chunk, "text", "") or "").splitlines()
+        scanned.append((chunk, lines, [i for i, ln in enumerate(lines) if match(ln)]))
+
+    # gr659451: a natural-language q reorders the ref's own words —
+    # 'reparent move under another' never literal-matches the heading
+    # 'Move a todo under another (reparent)', though every term sits
+    # on that one line. When the literal scan is empty and a
+    # non-regex q carries more than one term, rescan term-wise: a
+    # line holding every term is almost certainly what the caller
+    # meant. Phrase hits keep precedence — the fallback only runs on
+    # a total miss.
+    term_wise = False
+    if not q.startswith(REGEX_PREFIX) and not any(h for _c, _l, h in scanned):
+        terms = q.split()
+        if len(terms) >= 2:
+            folded = [t.casefold() for t in terms]
+
+            def match(line: str) -> bool:
+                return all(t in line.casefold() for t in folded)
+
+            finder = re.compile(
+                "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True)),
+                re.IGNORECASE,
+            )
+            scanned = [
+                (chunk, lines, [i for i, ln in enumerate(lines) if match(ln)])
+                for chunk, lines, _hits in scanned
+            ]
+            term_wise = True
+
     n_matches = 0
     matched_chunks = 0
     rendered = 0
     elided = 0
     sections: list[str] = []
 
-    for chunk in chunks:
-        text = getattr(chunk, "text", "") or ""
-        lines = text.splitlines()
-        hits = [i for i, ln in enumerate(lines) if match(ln)]
+    for chunk, lines, hits in scanned:
         if not hits:
             continue
         matched_chunks += 1
@@ -399,12 +435,17 @@ def find_response(
 
     head = [f"# find {q!r} in {display}"]
     if n_matches == 0:
-        scanned = "chunk" if len(chunks) == 1 else "chunks"
-        head.append(f"no match — scanned {len(chunks)} {scanned}")
+        chunk_plural = "chunk" if len(chunks) == 1 else "chunks"
+        line = f"no match — scanned {len(chunks)} {chunk_plural}"
+        if term_wise:
+            line += " (literal phrase and term-wise)"
+        head.append(line)
     else:
         plural = "match" if n_matches == 1 else "matches"
         chunk_plural = "chunk" if matched_chunks == 1 else "chunks"
         head.append(f"{n_matches} {plural} in {matched_chunks} {chunk_plural}")
+        if term_wise:
+            head[-1] += " — term-wise (the literal phrase is absent)"
         if elided:
             head[-1] += f" — +{elided} matches elided (narrow q=)"
     head.append("")

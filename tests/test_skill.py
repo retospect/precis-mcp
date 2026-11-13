@@ -333,6 +333,16 @@ def test_search_scope_routes_to_find_in_ref(skill: SkillHandler) -> None:
     assert "match" in out.body
 
 
+def test_search_scope_reordered_terms_hit(skill: SkillHandler) -> None:
+    """gr659451: ``q='reparent move under another'`` against
+    precis-todo-help missed — literal matching can't reorder the
+    caller's words to fit the 'Move a todo under another (reparent)'
+    heading. The term-wise fallback lands the section."""
+    out = skill.search(q="reparent move under another", scope="precis-todo-help")
+    assert "term-wise" in out.body
+    assert "Move a todo under another (reparent)" in out.body
+
+
 def test_search_scope_needs_q(skill: SkillHandler) -> None:
     with pytest.raises(BadInput, match="needs q="):
         skill.search(scope="precis-job-help")

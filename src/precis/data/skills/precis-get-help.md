@@ -244,7 +244,15 @@ lines, each with ~3 lines of context, the chunk/selector handle
 (`pc<N>`, `gc<N>`, `dc<N>`, `me<id>~ord`, `alias/file~slug`) and the
 line number — plus a match count, or `no match` when nothing hits.
 Literal `q` is case-insensitive text; `q='re:<pattern>'` is a bounded
-regex (no backrefs or nested quantifiers). `args={'context': N}` widens
+regex (no backrefs or nested quantifiers). A multi-word literal `q`
+that hits nothing at all gets one term-wise rescan before `no match`
+is declared — a line holding every term counts as a hit, so a caller
+that reorders the ref's own words still lands (`re:` q's are exempt,
+and terms scattered across different lines stay a miss). The headline
+says which scan produced it: a rescanned hit reads `N matches in M
+chunks — term-wise (the literal phrase is absent)`; a total miss reads
+`no match — scanned N chunks (literal phrase and term-wise)`.
+`args={'context': N}` widens
 the window (≤25). `~SEL` on the id scopes the find (draft `~dc<N>`,
 file `~<block>` / `~L42-58`, paper `~A..B`). A get returns the body whole up to
 24 kB; over that it returns the head that fits plus an outline and the targeted `next:`/`rest:` call for

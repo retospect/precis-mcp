@@ -107,6 +107,44 @@ def test_no_match(memory: MemoryHandler) -> None:
     assert "scanned" in out
 
 
+def test_term_wise_fallback_on_reordered_terms(memory: MemoryHandler) -> None:
+    """gr659451: a natural-language q reorders the ref's own words —
+    'reparent move under another' never literal-matches the heading
+    'Move a todo under another (reparent)'. When the phrase scan is a
+    total miss, a line carrying every term counts as a hit and is
+    labelled term-wise."""
+    body = "intro line\n## Move a todo under another (reparent)\nbody under it\n"
+    rid = id_of(memory.put(text=body).body)
+    out = memory.get(id=rid, q="reparent move under another").body
+    assert "1 match in 1 chunk — term-wise" in out
+    assert "> " in out
+    assert "Move a todo under another (reparent)" in out
+
+
+def test_phrase_hit_is_not_labelled_term_wise(memory: MemoryHandler) -> None:
+    rid = id_of(memory.put(text=_BODY).body)
+    out = memory.get(id=rid, q="plaza packing").body
+    assert "term-wise" not in out
+
+
+def test_term_wise_needs_all_terms_on_one_line(memory: MemoryHandler) -> None:
+    """Terms scattered across different lines stay a no-match — the
+    fallback rescues reordering, not loosening."""
+    body = "reparent lives here\nmove lives there\nunder another roof\n"
+    rid = id_of(memory.put(text=body).body)
+    out = memory.get(id=rid, q="reparent move under another").body
+    assert "no match" in out
+    assert "term-wise" in out
+
+
+def test_term_wise_does_not_apply_to_regex(memory: MemoryHandler) -> None:
+    body = "alpha beta gamma\n"
+    rid = id_of(memory.put(text=body).body)
+    out = memory.get(id=rid, q="re:gamma beta").body
+    assert "no match" in out
+    assert "term-wise" not in out
+
+
 def test_long_lines_are_clipped(memory: MemoryHandler) -> None:
     """Paragraph-per-line bodies: the hit line is windowed around the
     match and context lines keep a head, so a find never re-serves the
