@@ -134,7 +134,10 @@ def validate_prio(
             options=[f"prio={n}" for n in sorted(rungs)],
             next=(
                 "off-rung numbers were machine band scores; sequencing now "
-                "lives on meta.dispatch_score, the prio column is human-only"
+                "lives on meta.dispatch_score, the prio column is human-only. "
+                "The same spelling means the full 1..10 column on todo/quest "
+                "— the gripe axis is rungs-only (gr604593), which is why "
+                "PRIO:4 lands on a todo but refuses here (gr632810 side note)"
             ),
         )
     return prio
@@ -182,7 +185,11 @@ def split_prio(
                     options=sorted(PRIO_TAG_TO_INT),
                     next=(
                         "off-rung numbers were machine band scores; "
-                        "sequencing now lives on meta.dispatch_score"
+                        "sequencing now lives on meta.dispatch_score. "
+                        "todo/quest accept the full PRIO:<1..10> — the "
+                        "gripe axis is rungs-only (gr604593), so the same "
+                        "PRIO:4 spelling lands on a todo but refuses here "
+                        "(gr632810 side note)"
                     ),
                 )
             found = n

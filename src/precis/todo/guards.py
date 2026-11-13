@@ -884,6 +884,25 @@ def _depth_of(store: Store, ref_id: int) -> int:
 # ── level / authority ──────────────────────────────────────────────
 
 
+def _is_one_shot_schedule(spec: object) -> bool:
+    """True when a ``meta.schedule`` value is the one-shot ``at`` shape.
+
+    A dict carrying ``at`` (and none of the recurring keys ``cron`` /
+    ``every``) fires exactly once and retires itself — bounded, single
+    fire. Anything else (``cron`` / ``every``, or a mixed shape that
+    write-time validation will refuse) is recurring. The guard calls
+    this BEFORE :func:`check_schedule_in_meta` runs on the tag path, so
+    the recurring-key exclusion keeps a malformed mixed shape falling
+    through to the owner-only wall rather than the one-shot door.
+    """
+    return (
+        isinstance(spec, dict)
+        and "at" in spec
+        and "cron" not in spec
+        and "every" not in spec
+    )
+
+
 def _facet_violation(meta: dict[str, Any]) -> str | None:
     """Return the owner-only facet key set by ``meta``, or ``None``.
 
@@ -893,12 +912,19 @@ def _facet_violation(meta: dict[str, Any]) -> str | None:
     the old ``level:recurring`` gate, now keyed on ``meta.schedule``
     presence rather than a tag). Absence of a key, or a value that
     matches the worker-mintable default, is never a violation.
+
+    gr632810 (Reto ruling 2026-11-11): the ONE-SHOT ``at`` shape of
+    ``meta.schedule`` is the deliberate exception — an agent scheduling
+    a single future check ("check on job 632755 in two days") mints its
+    own one-shot node, which fires once and self-retires. The recurring
+    shapes stay owner-only: a ``cron``/``every`` root mints unbounded
+    repeated work, which is the load this gate exists to keep scarce.
     """
     if meta.get(META_ROTATION_ROOT) is True:
         return META_ROTATION_ROOT
     if meta.get(META_WORKER_MINTABLE) is False:
         return META_WORKER_MINTABLE
-    if "schedule" in meta:
+    if "schedule" in meta and not _is_one_shot_schedule(meta.get("schedule")):
         return "schedule"
     return None
 
@@ -910,7 +936,8 @@ def check_facets_on_create(meta: dict[str, Any] | None) -> None:
     physically cannot mint strategic or tactical refs, or scheduled
     (recurring) work. ``proposed-tactical`` (the plain open tag) stays
     open to everyone so workers / dreamers can suggest promotions for
-    owner triage.
+    owner triage. The one-shot ``meta.schedule.at`` shape is the
+    gr632810 exception (see :func:`_facet_violation`).
     """
     if not meta:
         return
@@ -918,13 +945,21 @@ def check_facets_on_create(meta: dict[str, Any] | None) -> None:
         return
     violation = _facet_violation(meta)
     if violation is not None:
+        next_step = (
+            f"propose via tag='{PROPOSED_TACTICAL}' instead, "
+            "or run from a non-worker source (web:owner / cli)"
+        )
+        if violation == "schedule":
+            next_step = (
+                "mint a NEW todo with meta={'schedule': {'at': "
+                "'<ISO-8601>'}} instead — a one-shot fire-at is "
+                "worker-settable (gr632810); recurring cron/every "
+                "schedules stay owner-only"
+            )
         raise BadInput(
             f"meta.{violation!r} is owner-only; the current source has "
             "worker authority",
-            next=(
-                f"propose via tag='{PROPOSED_TACTICAL}' instead, "
-                "or run from a non-worker source (web:owner / cli)"
-            ),
+            next=next_step,
         )
 
 
@@ -971,7 +1006,11 @@ def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
     Unlike :func:`check_facets_on_create` (which only blocks the
     *owner-tier* value at mint time), this blocks a worker from
     touching ``rotation_root`` / ``worker_mintable`` / ``schedule`` at
-    all post-creation — promoting AND demoting are both owner-only. The
+    all post-creation — promoting AND demoting are both owner-only.
+    The gr632810 one-shot ``at`` exception is CREATE-only
+    (:func:`check_facets_on_create`): attaching a self-retiring
+    schedule to an existing ref would let a worker close an owner's
+    todo by side channel, so the tag wall stays whole. The
     ``proposed-tactical`` open tag stays freely mutable for anyone via
     ``add=``/``remove=``.
     """
@@ -980,12 +1019,27 @@ def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
     touched = set(meta) & _TAG_TIME_OWNER_ONLY_KEYS
     if touched:
         key = sorted(touched)[0]
+        next_step = (
+            f"propose via tag='{PROPOSED_TACTICAL}' instead, "
+            "or run from a non-worker source (web:owner / cli)"
+        )
+        if key == "schedule":
+            # gr632810: touching `schedule` on an EXISTING ref stays
+            # owner-only at `tag()` even for the one-shot shape — a
+            # worker converting someone else's live todo into a
+            # self-retiring scheduled node (the root tags itself
+            # STATUS:done on fire, bypassing the done-artifact guard)
+            # is the demote-by-stealth edge the facet wall exists for.
+            # The worker door is create-only: mint a fresh one-shot.
+            next_step = (
+                "mint a NEW todo with meta={'schedule': {'at': "
+                "'<ISO-8601>'}} instead — a one-shot fire-at is "
+                "worker-settable at create (gr632810); touching "
+                "`schedule` on an existing ref is owner-only"
+            )
         raise BadInput(
             f"meta.{key!r} is owner-only; the current source has worker authority",
-            next=(
-                f"propose via tag='{PROPOSED_TACTICAL}' instead, "
-                "or run from a non-worker source (web:owner / cli)"
-            ),
+            next=next_step,
         )
 
 

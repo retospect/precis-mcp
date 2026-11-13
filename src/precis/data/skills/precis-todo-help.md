@@ -222,11 +222,34 @@ holds the `0000000` placeholder (a slice landed by hand with
 the `sha: <sha> — landed by td<N>` comment (`landed_by` optional), and
 refuses on a non-gate todo, a non-placeholder sha, or any prose kwargs.
 
-## Schedule a todo for a date
+## Schedule a one-off check at a future time
+## Remind me to look at something in two days
 ## Add a due date to a todo
-## How do I track when something is due?
 
-There is no built-in due-date field. Use a lowercase tag:
+For a **single one-off check that fires on its own**, mint a todo with a
+one-shot `meta.schedule.at` — when the instant comes due the schedule
+pass mints a tick child into the doable queue, so the check surfaces
+without anyone re-reading a due-tagged title (gr632810):
+
+```python
+put(
+    kind="todo",
+    text="Check on job 632755.",
+    meta={"schedule": {"at": "2026-11-14T09:00:00Z"}},
+)
+```
+
+The one-shot `at` shape is **worker-settable** — an agent schedules its
+own future checks. Recurring `cron`/`every` schedules stay owner-only.
+Add `meta={'deliver': {'target': 'conv:discord/<g>/<c>/<t>'}}` to push
+the fired prompt to a conversation instead of the doable queue
+(`precis-recurring-help`). Attaching a schedule to an EXISTING todo via
+`tag(meta=...)` is owner-only — mint a fresh one-shot todo instead.
+A fired one-shot tags itself `STATUS:done`; cancel by tagging it
+`STATUS:paused` / `won't-do` before it fires.
+
+For a **passive date label only** (no automatic fire), use a lowercase
+tag:
 
 ```python
 tag(kind="todo", id=122, add=["due:2026-06-15"])

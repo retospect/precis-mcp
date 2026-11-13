@@ -330,6 +330,25 @@ def test_gripe_prio_takes_only_the_named_rungs(store: Store, hub: Hub) -> None:
         assert ref is not None and ref.prio == rung
 
 
+def test_gripe_off_rung_rejection_names_the_todo_asymmetry(
+    store: Store, hub: Hub
+) -> None:
+    """gr632810 side note: PRIO:4 lands on a todo (full 1..10 column)
+    but refuses on a gripe (judgement rungs only) — the rejection must
+    SAY the two kinds read the same spelling differently, or the
+    inconsistency reads as a bug."""
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as put_exc:
+        handler.put(text="prio4 filing", tags=["PRIO:4"])
+    assert "rungs-only" in str(put_exc.value)
+    assert "todo" in str(put_exc.value)
+    rid = _seed(store, "asymmetry target")
+    with pytest.raises(BadInput) as tag_exc:
+        handler.tag(id=rid, add=["PRIO:4"])
+    assert "rungs-only" in str(tag_exc.value)
+    assert "todo" in str(tag_exc.value)
+
+
 def test_gripe_prio_remove_still_clears(store: Store, hub: Hub) -> None:
     """A ``PRIO:*`` remove clears the column — clearing isn't a write,
     so the rung rule doesn't gate it (even an off-rung spelling)."""

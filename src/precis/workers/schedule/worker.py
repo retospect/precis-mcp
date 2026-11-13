@@ -527,11 +527,14 @@ def _process_one_shot(
 
     A one-shot is a recurring (``meta.schedule`` set) node whose schedule
     fires exactly once: this decides fire / wait / expire via
-    :func:`~precis.workers.schedule.parse.one_shot_action`, fires the
-    delivery notify on a fire (when ``rec['deliver']`` is set), and — on
-    either a fire or an expire — tags the recurring root ``STATUS:done``
-    so it drops out of :func:`_candidate_recurring_ids` for good (no
-    self-inflicted re-fire next pass).
+    :func:`~precis.workers.schedule.parse.one_shot_action`, acts on the
+    fire (push notify when ``rec['deliver']`` is set, mint a queue child
+    otherwise — gr632810: a queue-mode one-shot must SURFACE work, not
+    just log an event, or an agent's "check on job 632755 in two days"
+    fires silently), and — on either a fire or an expire — tags the
+    recurring root ``STATUS:done`` so it drops out of
+    :func:`_candidate_recurring_ids` for good (no self-inflicted
+    re-fire next pass).
 
     Returns ``(spawned, skipped)`` where ``spawned`` counts a fire and
     ``skipped`` counts a not-yet-due wait or an expiry.
@@ -544,25 +547,33 @@ def _process_one_shot(
     if action == "wait":
         return (0, 0)
     stamp = at.isoformat(timespec="minutes")
-    if _deliver_stamp_exists_conn(conn, rec["id"], stamp):
+    deliver = rec.get("deliver")
+    already_resolved = (
+        _deliver_stamp_exists_conn(conn, rec["id"], stamp)
+        if deliver
+        else _child_with_stamp_exists_conn(conn, rec["id"], stamp)
+    )
+    if already_resolved:
         # Already resolved this exact tick (shouldn't happen — the
         # STATUS:done tag below should have excluded it from the next
-        # candidate scan — but stay idempotent regardless).
+        # candidate scan — but stay idempotent regardless). Queue-mode
+        # idempotency lives on the child's ``spawned_for_tick`` stamp,
+        # delivery-mode on the ``schedule:deliver`` event, mirroring
+        # the per-tick guards of the cron branch.
         return (0, 0)
-    deliver = rec.get("deliver")
     if action == "fire":
         if deliver:
             _fire_delivery_conn(
                 conn, rec, stamp=stamp, target=deliver["target"], store=store
             )
         else:
-            store.append_event(
-                rec["id"],
-                source="schedule",
-                event="deliver",
-                payload={"tick": stamp, "action": "fire"},
-                conn=conn,
-            )
+            # Queue mode — the one-shot's whole point is work that
+            # surfaces when due: mint the ordinary tick child into the
+            # doable queue, same shape as a cron recurring's spawn
+            # (gr632810). Before the cron-fold this branch only
+            # appended a `schedule:deliver` event, so the fire was
+            # invisible outside the event log.
+            _mint_child_conn(store, conn, rec, tick=at, stamp=stamp)
         result = (1, 0)
     else:  # "expire"
         store.append_event(

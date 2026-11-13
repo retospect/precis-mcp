@@ -351,6 +351,73 @@ def test_put_with_bad_deliver_rejected_at_write_time(handler: TodoHandler) -> No
         )
 
 
+# ── gr632810: worker sources schedule their own one-shots ──────────
+
+
+def test_worker_source_can_create_one_shot_schedule(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr632810 (Reto ruling 2026-11-11): an agent schedules a single
+    future check itself — the one-shot `at` shape passes the facet
+    guard from a worker source and lands under the Watches umbrella
+    like any scheduled root."""
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    resp = handler.put(
+        text="check on job 632755",
+        meta={"schedule": {"at": "2026-11-14T09:00:00Z"}},
+    )
+    rid = _id_of(resp.body)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["schedule"] == {
+        "at": "2026-11-14T09:00:00+00:00",
+        "catch_up": True,
+    }
+    assert ref.parent_id == ensure_watches_root(store)
+
+
+def test_worker_source_cannot_create_recurring_schedule(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recurring shapes stay owner-only — the one-shot carve-out
+    must not open the cron/every door (the rejection teaches the
+    worker-settable escape)."""
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    with pytest.raises(BadInput, match="owner-only") as cron_exc:
+        handler.put(
+            text="poll hourly forever",
+            meta={"schedule": {"cron": "0 * * * *"}},
+        )
+    assert "one-shot" in str(cron_exc.value)
+    with pytest.raises(BadInput, match="owner-only"):
+        handler.put(
+            text="poll hourly forever (shorthand)",
+            meta={"schedule": {"every": "1h"}},
+        )
+
+
+def test_worker_source_cannot_attach_schedule_via_tag(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gr632810 door is create-only: `tag(meta={'schedule': ...})`
+    stays owner-only — attaching a self-retiring schedule to an
+    existing ref would let a worker close an owner's todo by side
+    channel (the root tags itself STATUS:done on fire, past the
+    done-artifact guard)."""
+    plain = handler.put(text="plain todo")
+    assert plain.ref_id is not None
+    monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
+    with pytest.raises(BadInput, match="owner-only") as tag_exc:
+        handler.tag(
+            id=plain.ref_id,
+            meta={"schedule": {"at": "2026-11-14T09:00:00Z"}},
+        )
+    assert "one-shot" in str(tag_exc.value)
+    ref = handler.store.get_ref(kind="todo", id=plain.ref_id)
+    assert ref is not None
+    assert "schedule" not in ref.meta
+
+
 # ── PRIO column ────────────────────────────────────────────────────
 
 
@@ -1474,3 +1541,50 @@ def test_schedule_pass_expires_overdue_one_shot_without_catch_up(
         ).fetchone()
     assert action_row is not None
     assert action_row[0] == "expire"
+
+
+def test_schedule_pass_fires_due_one_shot_queue_mode_mints_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr632810: a queue-mode one-shot must SURFACE work when due — the
+    fire mints one tick child into the doable queue (before the fix it
+    only logged a `schedule:deliver` event, so an agent's "check on job
+    632755 in two days" fired silently) and the root self-retires."""
+    past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    resp = handler.put(
+        text="check on job 632755",
+        meta={"schedule": {"at": past, "catch_up": True}},
+    )
+    rid = _id_of(resp.body)
+
+    result = run_schedule_pass(store, limit=50)
+    assert result.ok >= 1
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "STATUS:done" in tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id, meta->>'spawned_for_tick' AS stamp FROM refs "
+            "WHERE parent_id = %s AND retired_at IS NULL",
+            (rid,),
+        ).fetchone()
+    assert row is not None
+    child_id = int(row[0])
+    assert row[1] == past[:16] + "+00:00"  # minute-resolution tick stamp
+    child = store.get_ref(kind="todo", id=child_id)
+    assert child is not None
+    assert child.prio == 2  # the cron-spawn default
+    child_tags = {str(t) for t in store.tags_for(child_id)}
+    assert "STATUS:open" in child_tags
+
+    # Second pass: the retired root is out of the candidate set — no
+    # duplicate child, nothing else claimed.
+    result2 = run_schedule_pass(store, limit=50)
+    assert result2.claimed == 0
+    with store.pool.connection() as conn:
+        n_row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND retired_at IS NULL",
+            (rid,),
+        ).fetchone()
+    assert n_row is not None
+    assert int(n_row[0]) == 1

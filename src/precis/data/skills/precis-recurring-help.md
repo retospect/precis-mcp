@@ -59,6 +59,14 @@ put(
 )
 ```
 
+Who may set a schedule (gr632810): the **one-shot `at` shape is
+worker-settable at create** — an agent schedules its own single future
+checks ("check on job 632755 in two days") without an operator. The
+recurring shapes (`cron`/`every`) stay owner-only — a self-spawning
+cadence mints unbounded work, which stays a human decision. Attaching a
+schedule to an existing ref via `tag(meta=...)` is owner-only in both
+directions (create-only door).
+
 ## Schedule format
 
 Three shapes:
@@ -169,7 +177,13 @@ child stamp.
 **One-shot** (`meta.schedule.at` set, either mode) resolves to fire /
 skip-not-yet-due / expire exactly once, then tags the recurring root
 `STATUS:done` so it never re-fires — a one-shot is a recurring
-node that retires itself after its one tick.
+node that retires itself after its one tick. A fired one-shot acts like
+the mode's cron tick: queue mode mints one subtask into the doable
+queue (gr632810 — before the fold a queue-mode fire only logged an
+event, so the check never surfaced), delivery mode pushes; an expiry
+logs a `schedule:deliver` event with `action='expire'` and mints
+nothing. Idempotency rides the same per-mode stamp as cron ticks (the
+child's `spawned_for_tick` / the `schedule:deliver` event).
 
 ## Provenance
 

@@ -338,7 +338,7 @@ The level tier is `meta`, not a tag — write `tier=`, read the booleans:
 | `tier='strategic'` | Strategic root — the picks-7d rotation unit (stored as `rotation_root=true`) | owner only |
 | `tier='tactical'` | Tactical (sub-strategic, non-root) tier (stored as `worker_mintable=false`) | owner only |
 | `tier='subtask'` / *(unset)* | Subtask — the worker-mintable default | anyone |
-| `schedule={...}` | Scheduled root — presence IS "recurring" (not a settable tier) | owner only |
+| `schedule={...}` | Scheduled root — presence IS "recurring" (not a settable tier) | owner only — except the one-shot `at` shape, worker-settable at create (gr632810) |
 
 | Tag | Purpose | Who writes |
 |---|---|---|
