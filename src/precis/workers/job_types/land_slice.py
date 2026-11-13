@@ -1747,7 +1747,10 @@ def _fail(
             log.warning(
                 "land_slice: lease unclaim on td%d failed", todo_id, exc_info=True
             )
-        suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
+        if (standing := _rs._terminal_status(ctx.store, todo_id)) is not None:
+            suffix = f"; todo td{todo_id} stays STATUS:{standing} (result discarded)"
+        else:
+            suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
     else:
         try:
             attempt = _rs.release_todo(ctx.store, todo_id, str(lane) if lane else None)
@@ -1755,9 +1758,12 @@ def _fail(
             log.warning(
                 "land_slice: lease release on td%d failed", todo_id, exc_info=True
             )
-        suffix = (
-            f"; todo td{todo_id} back to open, attempt:{attempt}" if attempt else ""
-        )
+        if attempt is not None:
+            suffix = f"; todo td{todo_id} back to open, attempt:{attempt}"
+        elif (standing := _rs._terminal_status(ctx.store, todo_id)) is not None:
+            suffix = f"; todo td{todo_id} stays STATUS:{standing} (result discarded)"
+        else:
+            suffix = ""
         try:
             # The rebuild must clear the pre-land review again (gr570506).
             _rs.rearm_preland_review(ctx.store, todo_id)
