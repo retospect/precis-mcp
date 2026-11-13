@@ -23,7 +23,8 @@ and deleting a worktree deletes its runs. A run therefore exists only on the
 host and checkout that produced it, until someone removes it. The run's
 `tool_calls` ledger rows (`header.tool_calls.source`) live in the DB on its
 own retention. `scripts/bench index` lists what the current
-`default_results_dir()` holds (`--match` filters), so check it, on the host
+`default_results_dir()` holds (`--match` filters) and prints this policy,
+as does the quest tick's `bench:index` read — so check it, on the host
 that ran the bench, before building a reader for a run. Runs #1–#3
 (schema 1) were not committed anywhere; if `index` does not show them there, their raw logs are gone and only their
 digests survive (gr660413).

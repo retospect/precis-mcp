@@ -803,6 +803,11 @@ def _read_refusal(ident: str) -> str:
         listing = ", ".join(shown) or "(none held)"
         if len(pool) > len(shown) and shown:
             listing += f", +{len(pool) - len(shown)} more"
+        if not pool:
+            # An empty dir is also the retention answer (gr660413).
+            from precis.bench import raw as bench_raw
+
+            listing += "; " + bench_raw.RETENTION_LINE
         return head + listing
     return f"{ident}: does not resolve to a held ref/chunk"
 

@@ -1080,19 +1080,25 @@ def _bench_index_text(
     index line or the raw file text, so a date (``20261109``), a caller,
     or a todo/handle the file names is the search-by-date or
     by-todo-reference the quest asked for. ``page`` windows the listing.
+    Every answer — populated, filtered-empty or an empty dir — ends in
+    :data:`precis.bench.raw.RETENTION_LINE`, so a probe that finds no
+    run still learns what absence means (gr660413: runs are never
+    archived; a run the index does not list survives only on the
+    host+checkout that ran it, or is gone).
     """
     from precis.bench import raw as bench_raw
 
     lines = bench_raw.index_lines(results_dir, match=match)
     scope = f" matching {match!r}" if match else ""
     if not lines:
-        if match:
-            return (
-                f"(no held bench run matches {match!r} — the filter is a "
-                "substring over stem, index line and file text; drop "
-                '"section" for the full index)'
-            )
-        return "(no bench runs held — the results dir is empty)"
+        miss = (
+            f"(no held bench run matches {match!r} — the filter is a "
+            "substring over stem, index line and file text; drop "
+            '"section" for the full index)'
+            if match
+            else "(no bench runs held — the results dir is empty)"
+        )
+        return miss + "\n" + bench_raw.RETENTION_LINE
     pages = _bench_pages(lines)
     if page > len(pages):
         return f"(page {page} out of {len(pages)} — {len(lines)} runs{scope})"
@@ -1105,7 +1111,7 @@ def _bench_index_text(
         'td<id> the file names); "page" windows; `bench:<stem>` reads '
         "the run's raw log"
     )
-    return out + f"\n\n({hint})"
+    return out + f"\n\n({hint})\n{bench_raw.RETENTION_LINE}"
 
 
 def _read_bench_text(
@@ -2614,7 +2620,10 @@ dates, set, caller, row/arm/task counts and the `td<id>` the run was \
 launched under — and its `"section"` filters that list by substring \
 (a date `20261109`, a caller, a `td<id>` the file names); a `bench:` \
 read whose stem is a unique substring of one held run reads it, and a \
-refused `bench:` read answers with the matching stems held. \
+refused `bench:` read answers with the matching stems held. Runs are \
+never archived: the index lists what THIS checkout's results dir \
+holds, and a run it does not list survives only on the host+checkout \
+that ran it (or is gone). \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \
@@ -2864,7 +2873,10 @@ dates, set, caller, row/arm/task counts and the `td<id>` the run was \
 launched under — and its `"section"` filters that list by substring \
 (a date `20261109`, a caller, a `td<id>` the file names); a `bench:` \
 read whose stem is a unique substring of one held run reads it, and a \
-refused `bench:` read answers with the matching stems held. \
+refused `bench:` read answers with the matching stems held. Runs are \
+never archived: the index lists what THIS checkout's results dir \
+holds, and a run it does not list survives only on the host+checkout \
+that ran it (or is gone). \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \

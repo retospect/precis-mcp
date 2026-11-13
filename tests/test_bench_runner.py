@@ -767,6 +767,16 @@ def test_index_markdown_pages_with_a_next_call(tmp_path: Path):
         raw.index_markdown(tmp_path, offset=-1)
 
 
+def test_index_markdown_carries_the_retention_line(tmp_path: Path):
+    """gr660413 — the listing is also the retention doc: an empty or
+    filtered-empty index still says what absence means (a run not
+    listed survives only on the host+checkout that ran it)."""
+    assert raw.RETENTION_LINE in raw.index_markdown(tmp_path)
+    assert raw.RETENTION_LINE in raw.index_markdown(tmp_path, match="zzz")
+    _index_results(tmp_path / "20261109Z-aaaa111-quick-triage.json")
+    assert raw.RETENTION_LINE in raw.index_markdown(tmp_path)
+
+
 def test_index_cli_lists_runs(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: Any
 ):

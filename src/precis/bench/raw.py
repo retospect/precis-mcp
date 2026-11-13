@@ -178,6 +178,19 @@ def resolve_results(results_dir: Path, name: str) -> Path | None:
 #: ``<day>Z-<sha>-<set>-<caller>``).
 INDEX_STEM = "index"
 
+#: The results-retention policy in one line, rendered with the run index
+#: so the listing itself answers "does a run absent here exist anywhere"
+#: (gr660413 — a probe returning zero held runs could not say whether
+#: runs #2/#3 survived on some other checkout; now an empty or
+#: filtered-empty listing still carries the policy). The long form is
+#: ``bench/results/README.md`` `## Retention`; the needs-apply answer
+#: (``precis.quest.needs._bench_retention_hint``) quotes the same facts.
+RETENTION_LINE = (
+    "retention: results files live only on the host+checkout that ran "
+    "them — never uploaded, archived or pruned; a run not listed "
+    "survives only where it ran (or is gone)"
+)
+
 
 def _norm(needle: str) -> str:
     """A search needle's matchable form — lowercase, alphanumerics only —
@@ -312,8 +325,10 @@ def index_markdown(
 ) -> str:
     """The run index in one bounded slice — the ``scripts/bench index``
     render: a header line naming the window, one :func:`index_line` per
-    matching run, and a ``Next:`` continuation when runs remain past the
-    window (the same paging convention as :func:`raw_markdown`)."""
+    matching run, the :data:`RETENTION_LINE` footer (an empty listing
+    still says what absence means, gr660413), and a ``Next:``
+    continuation when runs remain past the window (the same paging
+    convention as :func:`raw_markdown`)."""
     if offset < 0 or limit < 1:
         raise ValueError("offset must be >= 0 and limit >= 1")
     lines = index_lines(results_dir, match=match)
@@ -324,6 +339,7 @@ def index_markdown(
         f"({results_dir})"
     ]
     out.extend(lines[offset:end])
+    out.append(RETENTION_LINE)
     if end < len(lines):
         call = "scripts/bench index"
         if match:

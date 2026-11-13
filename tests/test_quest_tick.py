@@ -5033,6 +5033,44 @@ class TestBenchIndexRead:
         assert s1 in todo_block and s2 not in todo_block
         assert "no held bench run matches 'no-such-needle'" in prompt
 
+    def test_bench_index_states_what_an_absent_run_means(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr660413 — the probe that returned zero held runs could not
+        say whether runs #2/#3 still existed anywhere: every
+        ``bench:index`` answer — populated, filtered-empty, or an empty
+        dir — now ends in the retention line."""
+        _bench_results("20261110Z-aaaa111-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving after runs #2 and #3")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": "bench:index"},
+                    {"ref": "bench:index", "section": "2026-11-09"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "no held bench run matches '2026-11-09'" in prompt
+        assert prompt.count(bench_raw.RETENTION_LINE) == 2
+        empty = tick_mod._bench_index_text(tmp_path / "nowhere")
+        assert "no bench runs held" in empty
+        assert bench_raw.RETENTION_LINE in empty
+
+    def test_prompt_docs_state_the_bench_retention(self, store: Any) -> None:
+        """gr660413 — both bodies' read docs say what ``bench:index``
+        absence means, so the policy reaches the tick from its own
+        vocabulary, not only from a probed index."""
+        qid = _mk_quest(store, "A striving reading its read docs")
+        assert "never archived" in build_tick_prompt(store, _qref(store, qid))
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+        prompt = build_tick_prompt(
+            store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
+        )
+        assert "never archived" in prompt
+
     def test_bench_read_unique_substring_resolves(
         self, store: Any, tmp_path: Any, monkeypatch: Any
     ) -> None:
@@ -5110,6 +5148,18 @@ class TestBenchIndexRead:
         assert len(msg) <= 400
         assert "bench:index" in msg
         assert "more" in msg
+
+    def test_bench_refusal_on_an_empty_dir_states_retention(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr660413 — a ``bench:`` read miss with nothing held is also
+        the retention answer, inside the 400-char clip."""
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        from precis.quest.search import _read_refusal
+
+        msg = _read_refusal("bench:20261109")
+        assert len(msg) <= 400
+        assert "(none held" in msg and bench_raw.RETENTION_LINE in msg
 
 
 def _ledger_rows(store: Any, tag: str | None, ts: str | None = None) -> None:
