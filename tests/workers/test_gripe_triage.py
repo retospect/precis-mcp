@@ -610,6 +610,40 @@ class TestTick:
             store.links_for(gid, direction="out", relation="raises-concern-about") == []
         )
 
+    def test_memory_verdict_terminal_close_strips_the_flag(self, store: Store) -> None:
+        """gr657257 (review td658283): a verdict that closes the
+        complaint — ``done``/``wontfix`` — mints no concern edge, and
+        one a filer or an earlier pass left is stripped through the
+        same drop ``gripe_close_cascade`` runs, in either stored
+        direction. A resolved complaint is no open concern: left in
+        place the edge would flag the memory on its reads and feed
+        the argument-graph distrust walk forever."""
+        from tests.test_garden_memory import _memory
+
+        mid = _memory(store, "A flagged claim.")
+        mid2 = _memory(store, "A second flagged claim.")
+        _light(store)
+        gid = _gripe(store, f"me{mid}: stale", body=f"me{mid2} disagrees too")
+        store.add_link(src_ref_id=gid, dst_ref_id=mid, relation="raises-concern-about")
+        store.add_link(src_ref_id=mid2, dst_ref_id=gid, relation="concern-raised-by")
+        _run(
+            store,
+            _llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            project="memory",
+                            verdict="not-a-bug",
+                            reason="the claim is current",
+                        )
+                    ]
+                }
+            ),
+        )
+        assert _status(store, gid) == "wontfix"
+        assert store.links_for(gid, direction="both") == []
+
     def test_writes_tags_prio_status_and_clears_lease(self, store: Store) -> None:
         gid = _gripe(store, "router pours fail", age_days=7, body="it pours")
         _light(store)

@@ -42,7 +42,10 @@ routes to the memory gardener, never a coder lane (gr657257): the
 write stamps ``project:memory`` and adds a ``raises-concern-about``
 edge per live memory its text names, so the complaint shows on the
 memory's own reads and the gardener's ``griped`` detector picks it up
-first, newest complaint first.
+first, newest complaint first. A verdict that closes the complaint —
+``done`` or ``wontfix`` — mints no flag and strips one already
+hanging on the gripe through the same drop the tag close's
+``gripe_close_cascade`` runs, so only an open concern ever flags.
 
 A ``Reto <date>:`` ruling — a comment, or a line in the gripe's own
 body — settles the asks pending when it was recorded (gr633601): the
@@ -1013,6 +1016,14 @@ _BACKFILL_STATUSES: tuple[str, ...] = (
     "needs_spec",
     "parked",
 )
+
+#: The STATUS values :func:`_write_verdict` may write that close the
+#: gripe — mirror ``_numeric_ref._BROWSE_TERMINALS['gripe']`` (the same
+#: don't-depend distance as :data:`_BACKFILL_STATUSES`). ``auto_verify``
+#: is deliberately absent: the complaint is pending its deploy check,
+#: still open, so its concern flag holds until the verifying close runs
+#: ``gripe_close_cascade``.
+_TERMINAL_WRITES: frozenset[str] = frozenset({"done", "wontfix"})
 
 
 def _claim_backfill(store: Store, limit: int) -> list[tuple[int, str]]:
@@ -2185,8 +2196,15 @@ def _write_verdict(
         # coder — one ``raises-concern-about`` edge per live memory the
         # text names, so the complaint shows on the memory's own reads
         # while it waits. ``add_link`` dedupes the unique tuple, so a
-        # re-triage can't double the flag.
-        if v.project == "memory":
+        # re-triage can't double the flag. A terminal verdict resolves
+        # the complaint in this write: no flag mints, and any a filer or
+        # an earlier pass left is stripped through the same drop the tag
+        # close's ``gripe_close_cascade`` runs — a resolved complaint is
+        # no open concern, so it must not keep flagging the node on its
+        # reads or feeding the argument-graph distrust walk (td658283).
+        if status in _TERMINAL_WRITES:
+            store.clear_concern_edges(g.ref_id, conn=conn)
+        elif v.project == "memory":
             for mid in _named_live_memories(conn, g):
                 store.add_link(
                     src_ref_id=g.ref_id,

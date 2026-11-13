@@ -1526,6 +1526,47 @@ class LinksMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def clear_concern_edges(
+        self, ref_id: int, *, conn: Connection | None = None
+    ) -> int:
+        """Drop ``ref_id``'s ``raises-concern-about`` /
+        ``concern-raised-by`` ref-level edges — the "under review" flag
+        a memory complaint (gr657257) hangs on the node it names, in
+        either stored direction.
+
+        Removing through ``remove_link`` names the relation, so the
+        retraction ripple recomputes in the same transaction and a
+        downstream stale-premise mark lifts with the flag. Every path
+        that resolves a complaint runs this — the tag close's
+        ``gripe_close_cascade``, and the triage write's terminal
+        verdicts, which bypass that cascade but must not leave a
+        resolved complaint flagging its target on reads or feeding the
+        argument-graph distrust walk. Returns the number of edges
+        dropped.
+        """
+
+        def _do(c: Connection) -> int:
+            n = 0
+            for src_id, dst_id, relation in c.execute(
+                "SELECT src_ref_id, dst_ref_id, relation FROM links "
+                "WHERE src_chunk_id IS NULL AND dst_chunk_id IS NULL AND ("
+                "(src_ref_id = %s AND relation = 'raises-concern-about') OR "
+                "(dst_ref_id = %s AND relation = 'concern-raised-by'))",
+                (ref_id, ref_id),
+            ).fetchall():
+                n += self.remove_link(
+                    src_ref_id=int(src_id),
+                    dst_ref_id=int(dst_id),
+                    relation=cast("Relation", str(relation)),
+                    conn=c,
+                )
+            return n
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def links_for(
         self,
         ref_id: int,
