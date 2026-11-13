@@ -216,10 +216,23 @@ stub is auto-claimed by `fetch_oa`, a title+url one waits on the hand-
 download queue. `provenance=` is a ref/chunk handle — required, and
 distinct from `cited_in=`: it's where *this claim* came from (a
 research note, a lit-hunt todo, the chunk that cited the not-yet-held
-paper), not a pointer into a paper the corpus already holds. Spelling it
-as `link=` with `rel` set to `provenance` (or `derived-from`) folds into
-`provenance=`; a `link=` with any other `rel=` mints an extra edge and
-does not fill it.
+paper), not a pointer into a paper the corpus already holds. The
+near-miss spelling — provenance carried on the mint-time extra link —
+folds into `provenance=` too (gr661901):
+
+```python
+put(
+    kind="finding",
+    title="gate-bias 2.4 kV / 30 s on Si/SiO2",
+    body="…",
+    link="pc17",          # provenance spelled as the mint-time link …
+    rel="provenance",     # … folds into provenance="pc17"
+    args={"wants": [{"doi": "10.1234/xyz"}]},
+)
+```
+
+`rel='derived-from'` folds the same way; a `link=` with any other
+`rel=` mints an extra edge and does not fill it.
 
 The chase worker polls the linked stub(s); once one lands a PDF with
 chunks, it grounds the finding — best-matching passage via embedding
