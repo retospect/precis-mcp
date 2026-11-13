@@ -391,9 +391,9 @@ def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
 
 def test_griped_window_runs_newest_first(store: Store) -> None:
     """gr657257: the complaint queue is recency-ordered *every* pass —
-    the head window always opens at the newest open ``project:memory``
-    gripe, so a complaint filed since the last run never waits out a
-    cursor wraparound."""
+    the fresh band (open gripes above the ``griped:hi`` mark) always
+    leads, so a complaint filed since the last run never waits out a
+    wraparound of the backlog walk."""
     m1 = _memory(store, "First flagged claim.")
     m2 = _memory(store, "Second flagged claim.")
     m3 = _memory(store, "Third flagged claim.")
@@ -403,15 +403,58 @@ def test_griped_window_runs_newest_first(store: Store) -> None:
     order = [c.evidence["gripe"] for c in cand.griped_candidates(store)]
     mine = [g for g in order if g in {g1, g2, g3}]
     assert mine == [g3, g2, g1]
-    # A saved cursor bounds only the backlog tail read after the head —
-    # the head still opens at the top, so a cursor at the middle gripe
-    # hides nothing newer.
+    # A saved walk cursor never hides the fresh band — with no high-water
+    # mark recorded yet every open complaint is fresh, so a cursor at the
+    # middle gripe changes nothing.
     order = [
         c.evidence["gripe"]
         for c in cand.griped_candidates(store, cursors={"griped:gripe": g2})
     ]
     mine = [g for g in order if g in {g1, g2, g3}]
     assert mine == [g3, g2, g1]
+
+
+def test_griped_walk_covers_the_backlog_and_wraps(store: Store) -> None:
+    """gr657257 (review td658283): the pass resumes strictly below its
+    saved cursor instead of restarting at the top, so a ``limit`` spent
+    on still-open complaints — pending or declined, which the runner
+    dedups *after* the detector's limit — can no longer starve older
+    complaints forever. The walk descends one complaint per pass here,
+    wraps at the bottom, and a mid-cycle filing still leads."""
+    m1 = _memory(store, "First flagged claim.")
+    m2 = _memory(store, "Second flagged claim.")
+    m3 = _memory(store, "Third flagged claim.")
+    g1 = _gripe(store, f"me{m1}: oldest complaint")
+    g2 = _gripe(store, f"me{m2}: middle complaint")
+    g3 = _gripe(store, f"me{m3}: newest complaint")
+    mine = {g1, g2, g3}
+    cursors: dict[str, int] = {}
+
+    def one() -> int:
+        nxt: dict[str, int] = {}
+        order = [
+            c.evidence["gripe"]
+            for c in cand.griped_candidates(
+                store, limit=1, cursors=cursors, next_cursors=nxt
+            )
+            if c.evidence["gripe"] in mine
+        ]
+        assert len(order) == 1
+        cursors.update(nxt)
+        return order[0]
+
+    # One candidate per pass: the walk descends newest→oldest and wraps.
+    assert one() == g3
+    assert one() == g2
+    assert one() == g1
+    # A complaint filed mid-cycle jumps the queue — the fresh band leads.
+    m4 = _memory(store, "Fourth flagged claim.")
+    g4 = _gripe(store, f"me{m4}: filed mid-cycle")
+    mine.add(g4)
+    assert one() == g4
+    # Then the walk wraps to the top of the backlog band and re-covers.
+    assert one() == g3
+    assert one() == g2
 
 
 def test_reader_complaint_survives_the_considered_skip(store: Store) -> None:

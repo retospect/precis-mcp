@@ -131,6 +131,67 @@ def test_non_memory_gripe_has_no_route(
     assert "route" not in refs[0].meta
 
 
+def test_quick_form_memory_gripe_keeps_the_route(
+    store: Store, hub: Hub, memory_ledger: list[dict[str, Any]]
+) -> None:
+    """gr657257 (review td658283): the documented quick form carries no
+    tag — ``me<N>: <what is wrong>`` on the first line — so the route
+    gate cannot wait on the ``project:memory`` tag triage adds later;
+    without this the replay evidence is lost on the sanctioned path."""
+    GripeHandler(hub=hub).put(
+        text="me101: export notes disagree\nGoal: pick the export format",
+        new=True,
+    )
+    refs = store.list_refs(kind="gripe")
+    assert len(refs) == 1
+    assert refs[0].meta["route"] == memory_ledger
+
+
+def test_concern_linked_memory_gripe_keeps_the_route(
+    store: Store, hub: Hub, memory_ledger: list[dict[str, Any]]
+) -> None:
+    """gr657257: a create-time ``raises-concern-about`` link to a memory
+    is the other tagless complaint shape; a ``related-to`` memory link
+    stays context and attaches no route."""
+    from tests.test_garden_memory import _memory
+
+    mid = _memory(store, "A claim a reader flagged.")
+    gripe = GripeHandler(hub=hub)
+    gripe.put(
+        text="stale claim, flagged by link",
+        link=f"me{mid}",
+        rel="raises-concern-about",
+        new=True,
+    )
+    flagged = store.list_refs(kind="gripe")
+    assert len(flagged) == 1
+    assert flagged[0].meta["route"] == memory_ledger
+    gripe.put(
+        text="ordinary gripe citing a memory as context",
+        link=f"me{mid}",
+        rel="related-to",
+        new=True,
+    )
+    refs = store.list_refs(kind="gripe")
+    assert len(refs) == 2
+    plain = next(r for r in refs if r.id != flagged[0].id)
+    assert "route" not in plain.meta
+
+
+def test_me_handle_later_in_the_text_is_not_a_complaint(
+    store: Store, hub: Hub, memory_ledger: list[dict[str, Any]]
+) -> None:
+    """The quick form is the *first line* — a memory handle quoted in the
+    body of an ordinary gripe does not attach the route."""
+    GripeHandler(hub=hub).put(
+        text="router pour fails\nRoute: get me101 returned the stale note",
+        new=True,
+    )
+    refs = store.list_refs(kind="gripe")
+    assert len(refs) == 1
+    assert "route" not in refs[0].meta
+
+
 def test_memory_gripe_without_session_still_files(store: Store, hub: Hub) -> None:
     with serve_ledger.session_scope(None):
         GripeHandler(hub=hub).put(text="memory: unclear claim", project="memory")

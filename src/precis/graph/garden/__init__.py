@@ -106,8 +106,7 @@ Review rows and trust acts retain the original model string.
    rejected unchanged target content. Proposer refusals also persist as
    ``rejected``: unchanged candidates are asked once per prompt version
    (gr506046). Candidate-producing detectors share ``max_proposals``
-   round-robin — after ``griped``: a reader-filed memory complaint drains
-   first under the same budget, newest complaint first (gr657257).
+   round-robin — ``griped`` complaints drain first under it (gr657257).
 4. The sampled reviewer (:mod:`precis.graph.garden.reviewer`,
    ``precis garden review``) — a FRONTIER-tier burn-down over open
    proposals older than a few days: one approve/reject verdict per
@@ -153,9 +152,10 @@ list); ``limit`` bounds scans, ``max_proposals`` bounds writes. Per-detector
 wall-clock deadlines skip that detector, preserving the tick (gr503580).
 Wide scans resume per-kind cursors in job ``meta.garden.cursors``
 (:func:`precis.graph.garden.service.saved_cursors`), covering the corpus
-across runs; the ``griped`` complaint queue instead opens at the newest
-open ``project:memory`` gripe every pass and uses its cursor only for
-the backlog tail beyond one scan window (gr657257). An operator seeds a Watches **recurring todo**:
+across runs; the ``griped`` queue instead leads each pass with filings
+newer than ``griped:hi``, then walks the backlog down from
+``griped:gripe`` and wraps, so a blocked complaint cannot starve the
+queue (gr657257). An operator seeds a Watches **recurring todo**:
 ``meta.schedule``, ``meta.executor='job_inproc'``,
 ``meta.job_type='graph_garden'`` (``precis-recurring-help`` job-mode
 automation). Each due tick spawns a subtask; dispatch mints its job.

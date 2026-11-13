@@ -20,9 +20,12 @@ Surface (see ``precis-gripe-help``):
   normally (the ack lists them). ``args={'observation': True}`` files
   the gripe already closed (``STATUS:done`` + ``observation`` tag) via
   the ordinary resolved-comment + tag path.
-  A ``project:memory`` filing carries the session's last ten memory
-  reads in ``meta.route`` for replay; the masked ledger lookup is
-  best-effort so unavailable diagnostics never block the complaint.
+  A filing that reads as a memory complaint carries the session's
+  last ten memory reads in ``meta.route`` for replay
+  (:func:`_is_memory_complaint` — the ``project:memory`` tag, a
+  ``raises-concern-about`` memory link, or the ``me<N>:`` first
+  line); the masked ledger lookup is best-effort so unavailable
+  diagnostics never block the complaint.
 - ``put(kind='gripe', id=N, text=...)`` appends a ``gripe_comment``
   chunk to the existing gripe (id-present routes to append; same
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
@@ -256,6 +259,65 @@ def _status_check_refusal(exc: BaseException) -> BadInput | None:
             "of the database's values"
         ),
     )
+
+
+#: A memory complaint's quick form (gr657257): the filing's first line
+#: opens with the memory handle, ``me<N>: <what is wrong>``. The token
+#: grammar mirrors the gardener's story parse
+#: (:data:`candidates._MEMORY_HANDLE`); the registry's ``parse`` decides
+#: whether the handle names a memory — the tag no longer travels on
+#: this form, so the first line is the filer-side signal.
+_MEMORY_GRIPE_HEAD = re.compile(r"([a-zA-Z]{2}[0-9]{1,19})\s*:")
+
+
+def _is_memory_complaint(
+    text: str | None,
+    *,
+    tags: list[str] | None,
+    concern_link: bool = False,
+) -> bool:
+    """Whether a gripe *filing* reads as a complaint about a memory node.
+
+    The gate for attaching the session's masked ``meta.route`` and for
+    choosing the memory keeper pool. Three documented shapes
+    (gr657257): the filer-set ``project:memory`` tag; a create-time
+    ``raises-concern-about`` link to a memory (``concern_link`` — a
+    ``related-to``/``cites`` memory link is context, not a complaint);
+    or the tagless quick form whose first line opens ``me<N>:`` — there
+    the ``project:memory`` tag arrives with triage, so the tag alone
+    cannot gate the route capture or the replay evidence is lost.
+    A filer-set ``project:<other>`` vetoes the inference: an explicit
+    project declaration wins over the first-line form, the same
+    never-override rule the triage tick keeps."""
+    tag_list = tags or ()
+    if any(t.lower().startswith(_PROJECT_TAG_PREFIX) for t in tag_list):
+        return "project:memory" in tag_list
+    if concern_link:
+        return True
+    from precis.handlers._gripe_title import first_line
+    from precis.utils import handle_registry
+
+    if (m := _MEMORY_GRIPE_HEAD.match(first_line(text or ""))) is None:
+        return False
+    parsed = handle_registry.parse(m.group(1))
+    return parsed is not None and parsed[0] == "memory"
+
+
+def _concern_link_names_memory(link: str | None, rel: str | None) -> bool:
+    """Best-effort read of a raw ``link=``/``rel=`` pair for
+    :func:`_is_memory_complaint`: the edge is the complaint flag only
+    when the relation is ``raises-concern-about`` *and* the target
+    spells a memory (``me<N>`` handle or ``memory:<id>``). The real
+    parse and relation validation run later on the write path — a miss
+    here only skips the route attach, never a filing."""
+    if rel != "raises-concern-about" or link is None:
+        return False
+    from precis.utils import handle_registry
+
+    s = link.strip()
+    if (parsed := handle_registry.parse(s)) is not None:
+        return parsed[0] == "memory"
+    return s.split(":", 1)[0].strip() == "memory"
 
 
 @contextlib.contextmanager
@@ -1134,7 +1196,12 @@ class GripeHandler(NumericRefHandler):
             )
             keeper = self._theme_keeper(
                 slug,
-                memory=self.kind == "gripe" and "project:memory" in (tags or ()),
+                memory=self.kind == "gripe"
+                and _is_memory_complaint(
+                    text,
+                    tags=tags,
+                    concern_link=_concern_link_names_memory(link, rel),
+                ),
                 threads=threads,
             )
             if keeper is not None:
@@ -1282,7 +1349,9 @@ class GripeHandler(NumericRefHandler):
                 next=f"tag(kind={self.kind!r}, id={keeper}, prio={prio})",
             )
         route: list[dict[str, Any]] | None = None
-        if self.kind == "gripe" and "project:memory" in (tags or ()):
+        if self.kind == "gripe" and _is_memory_complaint(
+            text, tags=tags, concern_link=_concern_link_names_memory(link, rel)
+        ):
             from precis.tool_ledger import memory_route
 
             route = memory_route(self.store)
@@ -2069,7 +2138,15 @@ class GripeHandler(NumericRefHandler):
         # Capture the reader's replay evidence before opening the write
         # transaction, so a ledger outage cannot abort gripe creation.
         route: list[dict[str, Any]] | None = None
-        if self.kind == "gripe" and "project:memory" in (tags or ()):
+        if self.kind == "gripe" and _is_memory_complaint(
+            text,
+            tags=tags,
+            concern_link=(
+                relation == "raises-concern-about"
+                and target is not None
+                and target.kind == "memory"
+            ),
+        ):
             from precis.tool_ledger import memory_route
 
             route = memory_route(self.store)

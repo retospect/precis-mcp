@@ -161,9 +161,9 @@ cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
 `dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`,
 `host_facts:memory`, each memory-review detector's own keys) and wrap
 at the end, covering every kind; a run over fewer kinds carries the
-other cursors forward. `griped` is the exception (gr657257): every
-pass opens at the newest open `project:memory` gripe — no wraparound
-wait — and its `griped:gripe` cursor bounds only the backlog tail.
+other cursors forward. `griped` is the exception (gr657257): filings
+newer than `griped:hi` lead each pass, then the backlog walk resumes
+below `griped:gripe` and wraps — a blocked complaint starves nothing.
 The merge window shrinks as a kind grows (each window ref compares with
 every live ref of its kind, about `scan_cap`² per kind). A detector
 skipped on its deadline keeps its old cursor.

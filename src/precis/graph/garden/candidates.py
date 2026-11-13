@@ -17,9 +17,12 @@ The wide scans are windowed per kind past a saved cursor
 (:attr:`DetectorRun.cursors`, persisted on the job's ``meta.garden``)
 and wrap at the end, so successive runs walk every kind instead of
 re-reading the oldest refs (gr504843). The ``griped`` complaint queue is
-the exception: every pass opens at the newest open ``project:memory``
-gripe so a fresh complaint never waits out a wraparound, and its cursor
-only bounds the backlog tail (gr657257). :func:`run_detectors` adds a
+the exception: every pass leads with the fresh band — open
+``project:memory`` gripes filed since the last pass's ``griped:hi``
+mark, newest first — then resumes a descending backlog walk below its
+``griped:gripe`` cursor and wraps at the bottom, so pending or declined
+complaints cannot starve older ones behind ``limit`` (gr657257).
+:func:`run_detectors` adds a
 per-detector wall-clock deadline plus skip-and-continue on a Postgres
 statement timeout, so one slow detector cannot zero the tick
 (gr503580 — ``untagged`` did exactly that on the first prod run).
@@ -3066,32 +3069,51 @@ GRIPED_OPEN_SCAN = 500
 #: starting cursor (gr657257: the newest complaint is worked first).
 _GRIPED_TOP = 9223372036854775807
 
+#: Open ``project:memory`` gripes bounded on ``ref_id``, newest first.
+#: ``{op}`` is ``<`` (the backlog walk and the wrap band) or ``>`` (the
+#: fresh band above the high-water mark).
+_GRIPED_OPEN_SQL = (
+    "SELECT r.ref_id FROM refs r WHERE r.kind = 'gripe' "
+    "AND r.retired_at IS NULL AND r.ref_id {op} %s "
+    "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+    "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
+    "  AND t.namespace = 'OPEN' AND t.value = 'project:memory') "
+    "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
+    "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
+    "  AND t.namespace = 'STATUS' AND t.value = ANY(%s)) "
+    "ORDER BY r.ref_id DESC LIMIT %s"
+)
 
-def _griped_window(store: Store, *, before: int, size: int) -> tuple[list[int], int]:
-    """Open ``project:memory`` gripe ids below ``before``, newest first,
-    and the cursor to save — the window's smallest id, or ``0`` when it
-    reached the bottom (the next run wraps to the top). ``before=0``
-    starts at the top; a truncated run resumes *below* the gripe it
-    stopped at, so the unprocessed tail keeps its place (the ascending
-    contract of :func:`_scan_window`, mirrored)."""
+
+def _griped_window(store: Store, *, before: int, size: int) -> list[int]:
+    """Open ``project:memory`` gripe ids below ``before``, newest first;
+    ``before=0`` starts at the top. The bound is stable under new
+    filings — they land above it — so a resumed walk never re-reads
+    what an earlier pass covered."""
     top = before or _GRIPED_TOP
     with store.pool.connection() as conn:
-        ids = [
+        return [
             int(r[0])
             for r in conn.execute(
-                "SELECT r.ref_id FROM refs r WHERE r.kind = 'gripe' "
-                "AND r.retired_at IS NULL AND r.ref_id < %s "
-                "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
-                "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
-                "  AND t.namespace = 'OPEN' AND t.value = 'project:memory') "
-                "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
-                "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
-                "  AND t.namespace = 'STATUS' AND t.value = ANY(%s)) "
-                "ORDER BY r.ref_id DESC LIMIT %s",
+                _GRIPED_OPEN_SQL.format(op="<"),
                 (top, list(_GRIPED_CLOSED_STATUS), size),
             ).fetchall()
         ]
-    return ids, (ids[-1] if len(ids) >= size else 0)
+
+
+def _griped_fresh(store: Store, *, after: int, size: int) -> list[int]:
+    """Open ``project:memory`` gripe ids above ``after``, newest first —
+    the complaints filed since the last pass's ``griped:hi`` high-water
+    mark. The fresh band leads every pass, so a new complaint never
+    waits out a wraparound of the backlog walk (gr657257)."""
+    with store.pool.connection() as conn:
+        return [
+            int(r[0])
+            for r in conn.execute(
+                _GRIPED_OPEN_SQL.format(op=">"),
+                (after, list(_GRIPED_CLOSED_STATUS), size),
+            ).fetchall()
+        ]
 
 
 def _gripe_story(
@@ -3419,7 +3441,7 @@ def _griped_memory_target(
         store, "memory", after=saved["griped:memory"], size=scan_cap
     )
     only_gripe = saved.get("griped:gripe")
-    gids, _nxt = _griped_window(store, before=0, size=GRIPED_OPEN_SCAN)
+    gids = _griped_window(store, before=0, size=GRIPED_OPEN_SCAN)
     stories = _gripe_story(store, gids)
     out: list[GardenCandidate] = []
     for gid in gids:
@@ -3446,12 +3468,17 @@ def griped_candidates(
     per (gripe, memory). Read-only: the route replay runs the recorded
     searches lexically and pins every named memory's sha.
 
-    Newest complaint first, *every* pass (gr657257): the head window
-    always opens at the top, so a complaint filed since the last run is
-    seen immediately instead of after a cursor wraparound. A saved
-    ``griped:gripe`` cursor only bounds the backlog tail read after the
-    head — cover for an open queue deeper than ``scan_cap`` — and the
-    pass saves where it stopped for the same purpose.
+    Newest complaint first, *every* pass (gr657257): the window leads
+    with the fresh band — open complaints above the ``griped:hi``
+    high-water mark — so a filing since the last run is seen
+    immediately instead of after a wraparound. The rest of the window
+    resumes the descending backlog walk strictly below ``griped:gripe``
+    (the id the last pass stopped at) and, once it reaches the bottom,
+    wraps back to just under the fresh band: a circular walk where each
+    pass moves the cursor down, so pending or declined complaints
+    re-emit on their cycle but cannot spend ``limit`` every pass and
+    starve the older queue behind them (td658283 — the pre-review head
+    restart did exactly that).
 
     A ``griped:memory`` cursor switches to the apply re-check's targeted
     mode (:func:`_griped_memory_target`); there ``griped:gripe`` pins one
@@ -3463,13 +3490,32 @@ def griped_candidates(
     if "griped:memory" in saved:
         return _griped_memory_target(store, saved, scan_cap=scan_cap, limit=limit)
     key = "griped:gripe"
-    window, nxt = _griped_window(store, before=0, size=scan_cap)
-    if low := saved.get(key, 0):
-        tail, nxt = _griped_window(store, before=low, size=scan_cap)
-        seen = set(window)
+    hi_key = "griped:hi"
+    low = saved.get(key, 0)
+    hi = saved.get(hi_key, 0)
+    fresh = _griped_fresh(store, after=hi, size=scan_cap)
+    hi_next = fresh[0] if fresh else hi
+    window = list(fresh)
+    seen = set(window)
+    room = scan_cap - len(window)
+    last_short = len(fresh) < scan_cap
+    if room > 0 and low:
+        tail = _griped_window(store, before=low, size=room)
+        last_short = len(tail) < room
         window.extend(g for g in tail if g not in seen)
+        seen.update(tail)
+        room = scan_cap - len(window)
+    if room > 0 and (not low or last_short):
+        # The walk sits at the bottom (no stop point, or the tail read
+        # ran dry): wrap to the top of the backlog band — just under
+        # the fresh ids, or under the high-water mark when none came in.
+        bound = fresh[-1] if fresh else hi_next + 1
+        wrap = _griped_window(store, before=bound, size=room)
+        last_short = len(wrap) < room
+        window.extend(g for g in wrap if g not in seen)
     stories = _gripe_story(store, window)
     out: list[GardenCandidate] = []
+    nxt = 0
     for gid in window:
         row = stories.get(gid)
         if row is None:
@@ -3478,8 +3524,12 @@ def griped_candidates(
         if len(out) >= limit:
             nxt = gid
             break
+    else:
+        if window and not last_short:
+            nxt = window[-1]
     if next_cursors is not None:
         next_cursors[key] = nxt
+        next_cursors[hi_key] = hi_next
     return out[:limit]
 
 
@@ -4662,8 +4712,9 @@ def run_detectors(
     windowed detectors start past them and report where the next run
     should start in ``DetectorRun.cursors``. A skipped detector reports
     nothing, so its window is retried. ``griped`` is the exception: the
-    complaint queue always opens at the newest open gripe and its cursor
-    only bounds the backlog tail (gr657257).
+    complaint queue leads with the filings since its ``griped:hi``
+    high-water mark, then walks the open backlog down from its
+    ``griped:gripe`` cursor, wrapping at the bottom (gr657257).
 
     Each detector runs under ``detector_deadline_s`` wall-clock via
     :func:`call_with_deadline` (``<= 0`` disables) — an over-budget
