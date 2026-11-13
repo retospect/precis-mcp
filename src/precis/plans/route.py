@@ -36,7 +36,20 @@ Two signals:
   targets. Without
   an intent marker the whole report is judged as before. A declared
   write set still takes precedence. This avoids treating a deny path
-  in symptom evidence as the requested edit (gr645561).
+  in symptom evidence as the requested edit (gr645561). A mention is
+  discounted, not counted, when it is negated or cited (gr653037): a
+  negation or citation cue (``no``/``not``/``never``/``without``…,
+  ``cross-checked``/``matches``/``cf.``/``related:``…) within three
+  words before it in its clause, ``cross-checked`` right after it, or a
+  ``Related:``/``Evidence:``/``See also:``/``Cross-checked:`` paragraph
+  around it. Paragraphs that are routing notes — the dispatchers'
+  ``dispatch:``/``plan_dispatch:`` stamps, a ``Coordinator note`` —
+  and a quoted ``names deny path …`` reason are stripped with the
+  boilerplate; hidden comments never reach here (the callers drop them:
+  ``templates.gripe_report_texts``, ``plan_dispatch._route_text``).
+  The rule is negative on purpose: a positive "edit verb or label" rule
+  would drop reports whose subject is the broken file with no verb at
+  all (gr639737's ``scripts/round open refuses …``).
 - ``graph-only`` — every non-empty token is a well-formed graph handle
   (``td<id>``/``gr<id>``/``me<id>``/…), bare punctuation, graph
   vocabulary or grammar glue, and at least one handle appears. A
@@ -89,6 +102,23 @@ _LAND_MECHANISM = (
     re.compile(r"\bas a normal slice \([^)]*\)", re.IGNORECASE),
 )
 
+#: A routing reason quoted back (an ask body or title, a pasted routing
+#: comment): it names the deny path that routed the work, not a target.
+_ROUTE_REASON = re.compile(
+    r"\bnames deny path `[^`\n]*`(?: \(matched `[^`\n]*`\))?", re.IGNORECASE
+)
+
+#: A paragraph that is a note ABOUT the work's routing, not the work
+#: (gr653037): the dispatchers' own stamps (``dispatch: routes to the
+#: coordinator — report names deny path `X` …``, ``plan_dispatch: …``,
+#: ``dispatch: minted …``) and the coordinator's notes (``Coordinator
+#: note — …``, ``coordinator: …``). A routed gripe's routing comment
+#: quotes its deny path; judged, it re-routed the gripe once released.
+_NOTE_START = re.compile(
+    r"^\s*(?:(?:plan_|gripe_)?dispatch:|coordinator(?:\s+note)?\s*[:—–-])",
+    re.IGNORECASE,
+)
+
 #: A deny path RUN as a command, not written: the token followed by a
 #: flag, a test path or a quoted argument (``scripts/test
 #: tests/test_x.py -m slow``, ``scripts/test --typecheck``) — every
@@ -108,12 +138,63 @@ _INTENT_START = re.compile(
     r"\*{0,2}[ \t]*(?::\*{0,2}[ \t]*|$)",
     re.IGNORECASE,
 )
+#: Labels that cite paths as evidence (gr653037). Unlike a ``Symptom``
+#: (often the target itself, gr639737), these never name the edit, so
+#: their paragraphs are dropped even from a report without intent labels.
+_CITATION_LABELS = (
+    r"Evidence|Related|See also|Cross-checked|Checked|Cites|Refs?|References"
+)
 _EVIDENCE_START = re.compile(
-    r"^(?:#{1,6}\s+)?\*{0,2}(?:Symptom|Route|Evidence|Seen)\b"
+    rf"^(?:#{{1,6}}\s+)?\*{{0,2}}(?:Symptom|Route|Seen|{_CITATION_LABELS})\b"
     r"(?:[ \t]*\([^)]*\))?\*{0,2}[ \t]*(?::|$)",
     re.IGNORECASE,
 )
+_CITATION_START = re.compile(
+    rf"^(?:#{{1,6}}\s+)?\*{{0,2}}(?:{_CITATION_LABELS})\b"
+    r"(?:[ \t]*\([^)]*\))?\*{0,2}[ \t]*(?::\*{0,2}[ \t]*|$)",
+    re.IGNORECASE,
+)
 _FENCE = re.compile(r"^(`{3,}|~{3,})")
+
+#: Where a mention's clause starts, looking back from the path token:
+#: sentence or list punctuation, a dash, an opening paren, or a
+#: contrast word (``not in a.py but in scripts/ship``). ``cf.`` is no
+#: sentence end.
+_CLAUSE_BREAK = re.compile(
+    r"[;,!?\n(—–]|(?<![Cc]f)\.(?=\s|$)|\b(?:but|instead|rather)\b",
+    re.IGNORECASE,
+)
+#: Cue words that make a deny-path mention a non-target (gr653037) when
+#: one sits within :data:`_CUE_REACH` words before the path in its clause:
+#: negation (``no deploy/.github/scripts paths``, ``never edit X``,
+#: ``without touching X``, ``not X``) and citation (``cross-checked
+#: against X``, ``matches X's format``, ``cf. X``, ``related: X``).
+_NEGATION_CUES = frozenset(
+    ["no", "not", "never", "without", "nor", "nothing", "don't", "dont"]
+)
+_CITATION_CUES = frozenset(
+    [
+        "cross-checked",
+        "checked",
+        "matches",
+        "matching",
+        "mirrors",
+        "mirroring",
+        "cf",
+        "cites",
+        "citing",
+        "cited",
+        "see",
+        "related:",
+        "evidence:",
+        "cross-checked:",
+        "checked:",
+        "see:",
+    ]
+)
+_DISCOUNT_CUES = _NEGATION_CUES | _CITATION_CUES
+_CUE_REACH = 3
+_CUE_WRAP = "`'\"*_()[]{}<>.,"
 
 #: Characters a handle may be wrapped in inside prose.
 _HANDLE_WRAP = ".,;:()[]{}`'\"*_#<>|"
@@ -237,25 +318,59 @@ def strip_direct_head(text: str) -> str:
     if idx >= 0:
         text = text[idx + len(_templates.DIRECT_HEAD_END) :]
     out: list[str] = []
-    skip = False
+    skip = note = False
+    para_start = True
     for line in text.split("\n"):
         if line.startswith("## "):
             skip = _BOILER_SECTION.match(line) is not None
-        if not skip:
+        if not line.strip():
+            note, para_start = False, True
+        elif para_start:
+            note, para_start = routing_note(line), False
+        if not (skip or note):
             out.append(line)
     stripped = "\n".join(out)
-    for pattern in _LAND_MECHANISM:
+    for pattern in (*_LAND_MECHANISM, _ROUTE_REASON):
         stripped = pattern.sub(" ", stripped)
     return stripped
+
+
+def routing_note(text: str) -> bool:
+    """True when ``text`` opens as a dispatcher routing stamp or a
+    coordinator note (:data:`_NOTE_START`) — a comment about the work's
+    routing that never classifies the work (gr653037)."""
+    return _NOTE_START.match(text) is not None
+
+
+def _discounted(text: str, start: int, end: int) -> bool:
+    """True when the path token at ``text[start:end]`` is negated or cited
+    rather than asked for (gr653037): a negation or citation cue within
+    :data:`_CUE_REACH` words before it in its clause, or ``cross-checked``
+    right after it."""
+    head = text[max(0, start - 200) : start]
+    breaks = list(_CLAUSE_BREAK.finditer(head))
+    if breaks:
+        head = head[breaks[-1].end() :]
+    if any(w in _DISCOUNT_CUES for w in _cue_words(head)[-_CUE_REACH:]):
+        return True
+    tail = _cue_words(text[end : end + 40])
+    return bool(tail) and tail[0].startswith("cross-checked")
+
+
+def _cue_words(text: str) -> list[str]:
+    return [w for w in (w.strip(_CUE_WRAP).lower() for w in text.split()) if w]
 
 
 def deny_path_hit(text: str, deny_paths: Iterable[str]) -> tuple[str, str] | None:
     """``(token, glob)`` of the first path-shaped token matching a deny
     glob, ``None`` when none does — case-folded like the lane's write
     check. Tokens are judged as whole paths, so ``gr645163`` or
-    ``plan_dispatch`` prose never reads as a ``scripts/*`` hit."""
+    ``plan_dispatch`` prose never reads as a ``scripts/*`` hit. A
+    negated or cited mention (:func:`_discounted`) is no hit."""
     globs = tuple(dict.fromkeys(g.lower() for g in deny_paths))
     for m in _PATH_TOKEN.finditer(text):
+        if _discounted(text, m.start(), m.end()):
+            continue
         token = m.group(0).lower()
         if token.startswith("./"):
             token = token[2:]
@@ -291,17 +406,34 @@ def graph_only(text: str) -> bool:
 
 
 def _change_intent(text: str) -> str:
-    """Select labelled intent paragraphs, or retain unstructured text.
+    """Select labelled intent paragraphs, or retain unstructured text
+    minus its citation paragraphs (:data:`_CITATION_START`, gr653037).
 
     Only deny-path matching uses this selection; graph-only classification
     must still account for every word in the report.
     """
     out: list[str] = []
-    found = active = awaiting_content = False
+    rest: list[str] = []
+    found = active = awaiting_content = cited = cite_waiting = False
     fence = ""
     log_fence = False
     for raw in text.splitlines():
         line = raw.strip()
+        if not fence:
+            if match := _CITATION_START.match(line):
+                cited, cite_waiting = True, not line[match.end() :].strip()
+            elif not line:
+                cited = cited and cite_waiting
+            elif (
+                _INTENT_START.match(line)
+                or _EVIDENCE_START.match(line)
+                or line.startswith("#")
+            ):
+                cited = False
+            else:
+                cite_waiting = False
+        if not cited:
+            rest.append(raw)
         if fence:
             if line.startswith(fence) and not line[len(fence) :].strip(fence[0]):
                 fence = ""
@@ -332,7 +464,7 @@ def _change_intent(text: str) -> str:
         elif active:
             out.append(line)
             awaiting_content = False
-    return "\n".join(out) if found else text
+    return "\n".join(out if found else rest)
 
 
 def coordinator_route(

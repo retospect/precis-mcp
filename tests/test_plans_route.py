@@ -19,6 +19,7 @@ from precis.plans import route, templates
 _DENY = (
     "scripts/ship",
     "scripts/test",
+    "scripts/lib/**",
     "src/precis/plans/**",
     ".github/**",
     "deploy/inventory*/**",
@@ -312,6 +313,83 @@ def test_fenced_intent_target_still_routes(language: str) -> None:
     text = f"Fix: update these files:\n```{language}\nscripts/ship\n```"
     why = route.coordinator_route(text, _DENY)
     assert why is not None and "`scripts/ship`" in why
+
+
+_WORK = "fix the widget flake in src/precis/todo/guards.py"
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        # gr573439/gr573440: a scope note, not a target
+        "no deploy/.github/scripts paths",
+        "never edit scripts/ship for this",
+        "without touching .github/workflows/check.yml",
+        "the fix belongs in guards.py, not scripts/lib/lock-holder.sh",
+        "do not touch `scripts/lib/**`",
+    ],
+)
+def test_negated_deny_mention_does_not_route(mention: str) -> None:
+    """gr653037: a negated mention names a path the fix must NOT edit."""
+    assert route.coordinator_route(f"{_WORK}; {mention}.", _DENY) is None
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "dispatch: routes to the coordinator — report names deny path "
+        "`scripts/lib/lock-holder.sh` (matched `scripts/lib/**`); ask td1. "
+        "No chain minted; `hold:no-dispatch` holds the gripe — remove the "
+        "tag to release it back to dispatch.",
+        "plan_dispatch: routes to the coordinator — names deny path "
+        "`.github/workflows/check.yml` (matched `.github/**`); ask td2",
+        "Coordinator note — released; the earlier hold quoted "
+        "scripts/lib/lock-holder.sh only.",
+    ],
+)
+def test_routing_note_does_not_route(note: str) -> None:
+    """gr653037: a routed gripe's own routing comment (or the coordinator's
+    note on it) quotes the deny path; it must not re-route the gripe."""
+    assert route.coordinator_route(f"{_WORK}\n\n{note}", _DENY) is None
+    assert route.routing_note(note)
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        # td652194: a review brief citing a harness file as checked
+        "Cross-checked against scripts/lib/lock-holder.sh: same lock format.",
+        "The new lock line matches scripts/lib/lock-holder.sh's format.",
+        "Related: scripts/lib/lock-holder.sh",
+        "Evidence: scripts/ship reported success.",
+        "The lock format (cf. scripts/lib/lock-holder.sh) is unchanged.",
+        "`scripts/lib/lock-holder.sh` cross-checked, no drift.",
+    ],
+)
+def test_cited_deny_mention_does_not_route(mention: str) -> None:
+    """gr653037: a deny path cited as evidence is not the edit target."""
+    assert route.coordinator_route(f"{_WORK}.\n\n{mention}", _DENY) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        ("the fix is in scripts/lib/lock-holder.sh", "scripts/lib/lock-holder.sh"),
+        ("edit .github/workflows/check.yml", ".github/workflows/check.yml"),
+        # a negated mention elsewhere hides no requested target
+        (
+            "no deploy paths; the fix is in scripts/lib/lock-holder.sh",
+            "scripts/lib/lock-holder.sh",
+        ),
+        (
+            "The fix is not in guards.py, it's in scripts/lib/lock-holder.sh",
+            "scripts/lib/lock-holder.sh",
+        ),
+    ],
+)
+def test_requested_deny_edit_still_routes(text: str, path: str) -> None:
+    why = route.coordinator_route(text, _DENY)
+    assert why is not None and f"`{path}`" in why
 
 
 @pytest.mark.parametrize(

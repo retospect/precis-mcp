@@ -104,7 +104,7 @@ from precis.corpus_layout import host_name
 from precis.plans import lanes as _lanes
 from precis.plans import route as _route
 from precis.plans.nodes import finish_mint
-from precis.plans.templates import mint_gripe_fix_direct
+from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -527,10 +527,15 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
 
 def _route_report(store: Store, pick: DispatchPick) -> str:
     """The text the mint-time coordinator route judges for a gripe
-    (gr645163): title plus every chunk — the same material
-    ``mint_gripe_fix_direct`` embeds in the build body."""
+    (gr645163): title plus every visible chunk — the same material
+    ``mint_gripe_fix_direct`` embeds in the build body — minus routing
+    notes (gr653037): the dispatcher's own ``dispatch: routes to the
+    coordinator …`` comment quotes the deny path it routed on, and a
+    coordinator note is about the routing, not the work."""
     parts = [
-        str(c.text) for c in store.chunks.list_chunks_for_ref(pick.gripe_id) if c.text
+        t
+        for t in gripe_report_texts(store, pick.gripe_id)
+        if not _route.routing_note(t)
     ]
     return "\n\n".join([pick.title, *parts])
 

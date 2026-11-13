@@ -502,11 +502,27 @@ def _gripe_id(raw: Any) -> int:
 _DIRECT_REPORT_CAP = 12_000
 
 
+def gripe_report_texts(store: Store, gid: int) -> list[str]:
+    """The gripe's chunk texts in order, minus its hidden comments
+    (``meta.hidden_comments``): a hidden comment is stale by the hider's
+    ruling, so neither a build's embedded report nor the mint-time route
+    reads it (gr653037 — gr573439 stayed held after its comment was hidden)."""
+    from precis.handlers import _comment_timeline as tl
+
+    ref = store.get_ref(kind="gripe", id=gid)
+    hidden = tl.hidden_comments(ref) if ref is not None else set()
+    return [
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.text and not (c.chunk_kind == "gripe_comment" and c.ord in hidden)
+    ]
+
+
 def _gripe_report(store: Store, gid: int, handle: str, title: str) -> str:
-    """The gripe's chunks (body and comments, in order) verbatim at mint
-    time, headed by its handle and title: what a lane without the precis
-    MCP gets instead of ``get(kind='gripe')``."""
-    parts = [str(c.text) for c in store.chunks.list_chunks_for_ref(gid) if c.text]
+    """The gripe's visible chunks (body and comments, in order) verbatim at
+    mint time, headed by its handle and title: what a lane without the
+    precis MCP gets instead of ``get(kind='gripe')``."""
+    parts = gripe_report_texts(store, gid)
     text = "\n\n".join(parts).strip()
     if len(text) > _DIRECT_REPORT_CAP:
         text = (

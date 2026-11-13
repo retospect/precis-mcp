@@ -603,6 +603,44 @@ def test_deny_path_report_routes_to_the_coordinator(
     assert res.claimed == 0
 
 
+def test_hidden_comment_does_not_route(store: Store, two_lanes: Any) -> None:
+    """gr653037: hiding a stale comment that names a deny path releases
+    the gripe — neither the route check nor the build's embedded report
+    reads it (gr573439 was held again after its comment was hidden)."""
+    from precis.plans import route
+    from precis.plans.templates import _gripe_report
+
+    _light(store)
+    gid = _gripe(store, "fix the widget flake in src/precis/todo/guards.py")
+    gd._append_comment(store, gid, "the fix is in scripts/ship")
+    hidden = max(int(c.ord) for c in store.chunks.list_chunks_for_ref(gid))
+    store.stamp_ref_meta(gid, {"hidden_comments": [hidden]})
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert "routed" not in res.extra
+    assert [m["gripe"] for m in res.extra["minted"]] == [gid]
+    report = _gripe_report(store, gid, f"gr{gid}", "t")
+    assert "scripts/ship" not in report
+    assert route.coordinator_route(report, ("scripts/ship",)) is None
+
+
+def test_routing_comment_does_not_reroute(store: Store, two_lanes: Any) -> None:
+    """gr653037: the dispatcher's own routing comment quotes the deny path;
+    a released gripe (hold tag removed) must not route on it again."""
+    _light(store)
+    gid = _gripe(store, "fix the widget flake in src/precis/todo/guards.py")
+    gd._append_comment(
+        store,
+        gid,
+        "dispatch: routes to the coordinator — report names deny path "
+        "`scripts/ship` (matched `scripts/ship`); ask td1. No chain minted; "
+        "`hold:no-dispatch` holds the gripe — remove the tag to release it "
+        "back to dispatch.",
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert "routed" not in res.extra
+    assert [m["gripe"] for m in res.extra["minted"]] == [gid]
+
+
 def test_graph_only_report_routes_to_the_coordinator(
     store: Store, two_lanes: Any
 ) -> None:

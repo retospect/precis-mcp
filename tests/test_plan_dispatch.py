@@ -2883,6 +2883,22 @@ def test_body_and_newest_brief_route_independently(
         assert _blocked_by_ids(store, task) == []
 
 
+def test_hidden_brief_never_routes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr653037: a hidden ``brief:`` comment is stale by the hider's
+    ruling — its deny path no longer holds the node at mint."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _todo_comment(store, task, "brief: Update scripts/ship")
+    hidden = max(int(c.ord) for c in store.chunks.list_chunks_for_ref(task))
+    store.stamp_ref_meta(task, {"hidden_comments": [hidden]})
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    assert _blocked_by_ids(store, task) == []
+
+
 def test_no_commit_on_the_top_rung_asks_the_coordinator(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

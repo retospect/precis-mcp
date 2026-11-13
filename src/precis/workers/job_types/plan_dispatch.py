@@ -4931,17 +4931,22 @@ def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
     lander notes plan_dispatch/run_slice post) never classify: they
     report what happened, and a denied attempt's own deny-path line or
     a mechanical brief's ``scripts/ship`` mention is the event, not
-    the target. ``route.strip_direct_head`` removes the
-    ``gripe-fix-direct`` instruction head for the same reason."""
+    the target. A hidden comment is stale by the hider's ruling and is
+    never the brief either (gr653037). ``route.strip_direct_head``
+    removes the ``gripe-fix-direct`` instruction head for the same
+    reason."""
+    from precis.handlers._comment_timeline import HIDDEN_META_KEY
     from precis.workers.job_types import run_slice as _rs
 
     chunks = _rs._todo_chunks(store, n.id)
     parts = [str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text]
+    hidden = set(n.meta.get(HIDDEN_META_KEY) or ())
     brief = next(
         (
             str(c.text).lstrip()
             for c in sorted(chunks, key=lambda c: int(c.ord), reverse=True)
             if c.chunk_kind == _rs._COMMENT_KIND
+            and int(c.ord) not in hidden
             and not str((c.meta or {}).get("principal", "")).startswith("worker:")
             and str(c.text or "").lstrip().lower().startswith("brief:")
         ),
