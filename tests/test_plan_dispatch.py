@@ -844,6 +844,18 @@ def test_every_factory_mint_site_calls_finish_mint() -> None:
     )
 
 
+def _age_jobs(store: Store, todo_id: int, interval: str) -> None:
+    """Backdate every job under ``todo_id`` by ``interval`` — the
+    attempt-free backoff reads the newest job's mint time, and jobs sort
+    by ``created_at`` (gr662077)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = created_at - %s::interval "
+            "WHERE kind = 'job' AND parent_id = %s",
+            (interval, todo_id),
+        )
+
+
 def _age_tag(store: Store, ref_id: int, value: str, interval: str) -> None:
     """Backdate a tag's ``ref_tags.created_at`` — the staleness clocks
     (:data:`pd.CLAIM_STALE`, :data:`pd.MINT_STALE`) read it."""
@@ -1256,6 +1268,67 @@ def test_attempt_free_jobs_are_no_attempt(store: Store) -> None:
         )
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_attempt_free_failures_back_off_then_park(store: Store) -> None:
+    """gr662077: identical ``attempt_free`` failures re-queue free for
+    the first :data:`pd.FREE_RETRY_IMMEDIATE`, then back off
+    exponentially — and a run at :data:`pd.ATTEMPT_FREE_CAP` parks the
+    node behind a coordinator ask. The bound td656030's index.lock loop
+    (~140 jobs in 3 h) lacked."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+
+    def fail_newest() -> int:
+        job_id = int(_jobs_under(store, task)[-1][0])
+        _set_job_status(store, job_id, "failed")
+        store.stamp_ref_meta(job_id, {"attempt_free": "index-lock"})
+        return job_id
+
+    _failed_job(store, task, "index.lock is kept", meta={"attempt_free": "index-lock"})
+    # Runs 1-2: free re-queues, exactly as before.
+    for _ in range(pd.FREE_RETRY_IMMEDIATE):
+        res = pd.run_pass(store)
+        assert (res.dispatched, res.asks) == (1, 0)
+        fail_newest()
+    # Run 3: the backoff engages — nothing mints inside the window.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert any("backing off" in n for n in res.notes)
+    # The window elapsed: the re-queue fires on the next pass.
+    _age_jobs(store, task, "1 hour")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    # Runs under the cap keep re-queuing once their window passed; at
+    # the cap the node parks behind a coordinator ask.
+    res = None
+    while res is None or res.dispatched:
+        fail_newest()
+        _age_jobs(store, task, "1 hour")
+        res = pd.run_pass(store)
+    assert res.asks == 1
+    assert any("attempt-free loop" in n for n in res.notes)
+    asks = [
+        c
+        for c in _children(store, mint.root_id)
+        if "ask-coordinator" in _open_tags(store, c)
+    ]
+    assert len(asks) == 1
+    # The ask blocks the node — a later pass files nothing twice.
+    assert pd.run_pass(store).asks == 0
+
+
+def test_attempt_free_run_breaks_on_a_different_reason(store: Store) -> None:
+    """The run counts IDENTICAL reasons only: a different ``attempt_free``
+    — or a real attempt — between two ``index-lock`` failures ends it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(store, task, "lock", meta={"attempt_free": "index-lock"})
+    _failed_job(store, task, "lane", meta={"attempt_free": "lane-wait"})
+    _failed_job(store, task, "lock", meta={"attempt_free": "index-lock"})
+    plan = pd._load(store)
+    n = plan.nodes[task]
+    assert pd._attempt_free_run(plan, n) == ("index-lock", 1)
 
 
 @pytest.mark.parametrize("no_lanes", [False, True])
