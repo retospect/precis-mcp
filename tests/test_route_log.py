@@ -873,7 +873,7 @@ def test_dispatch_local_records_openai_token_split(
     assert row[5] is None  # cache_creation_tokens — no cache split reported
 
 
-# ── llm_call_rollup (migration 0313, gr575088) ───────────────────────
+# ── llm_call_rollup (migration 0314, gr575088) ───────────────────────
 #
 # The rollup pass aggregates completed hours of llm_call_log into
 # llm_call_rollup ahead of the GC horizon. Tests seed the app_state

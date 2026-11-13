@@ -587,7 +587,7 @@ def rollup(
 
     gr575088: the raw log kept no aggregates, so every historical rollup
     question — the status page's per-source stats among them — seq-scanned
-    the full table. This fills ``llm_call_rollup`` (migration 0313) forward
+    the full table. This fills ``llm_call_rollup`` (migration 0314) forward
     from an ``app_state`` watermark, oldest-first and capped at
     ``hours_budget`` hours per pass, so a large backlog drains over sweeps
     instead of one long aggregate. The watermark seeds at the *retention

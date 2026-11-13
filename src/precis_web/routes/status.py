@@ -1536,10 +1536,10 @@ def _llm_op_stats(store: Store) -> dict[str, dict[str, Any]]:
     (gr575088's ~23 near-full scans/day). The trailing 7 days come off
     ``llm_call_log`` directly (its ``ts`` index makes a week cheap);
     activity older than that comes from ``llm_call_rollup`` (migration
-    0313), which ``route_log.rollup`` fills ahead of the GC horizon. A
+    0314), which ``route_log.rollup`` fills ahead of the GC horizon. A
     source quiet >7d still surfaces with its last rolled hour; one never
     rolled up yet simply appears at its next call. Degrades to ``{}`` on
-    any surprise (a pre-0313 database included).
+    any surprise (a pre-0314 database included).
     """
     try:
         with _connect(store) as conn:
