@@ -160,7 +160,7 @@ def test_rejects_reason_still_gated_but_copy_now_refused(hub: Hub) -> None:
 # ---------------------------------------------------------------------------
 # The reason= kwarg spelling — merge_link_reason folds it onto meta.reason
 # on the kinds whose link() declares meta= (memory/finding/paper/taxon/todo,
-# gr657045).
+# gr657045; gripe, gr662070).
 # ---------------------------------------------------------------------------
 
 
@@ -480,3 +480,158 @@ def test_todo_link_reason_through_dispatch(
     assert "linked" in out
     links = store.links_for(todo, direction="out")
     assert links[0].meta["reason"] == "the blocker names what this waits on"
+
+
+# ---------------------------------------------------------------------------
+# gr662070 — link(kind='gripe') takes reason= like its numeric-ref siblings;
+# the verb-level link signature always advertised it.
+# ---------------------------------------------------------------------------
+
+
+def _gripe(store, title: str = "a gripe") -> int:
+    from precis.store.types import Tag
+
+    with store.tx() as conn:
+        rid = int(
+            store.insert_ref(
+                kind="gripe", slug=None, title=title, meta={}, conn=conn
+            ).id
+        )
+        store.add_tag(rid, Tag.closed("STATUS", "open"), set_by="agent", conn=conn)
+    return rid
+
+
+def test_gripe_reason_kwarg_folds_onto_meta(hub: Hub) -> None:
+    """The call the gripe ran: a gripe's related-to edge records its why."""
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    src = _gripe(store, "the gripe doing the linking")
+    dst = _gripe(store, "the gripe it depends on")
+    GripeHandler(hub=hub).link(
+        id=src,
+        target=f"gripe:{dst}",
+        rel="related-to",
+        reason="this gripe depends on that one's fix",
+    )
+    links = store.links_for(src, direction="out")
+    assert len(links) == 1
+    assert links[0].meta["reason"] == "this gripe depends on that one's fix"
+
+
+def test_gripe_meta_kwarg_lands_on_the_edge(hub: Hub) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    src = _gripe(store)
+    dst = _mem(store, "the spec it implements")
+    GripeHandler(hub=hub).link(
+        id=src, target=f"memory:{dst}", rel="related-to", meta={"why": "spec edge"}
+    )
+    assert store.links_for(src, direction="out")[0].meta["why"] == "spec edge"
+
+
+def test_gripe_reason_kwarg_is_add_only(hub: Hub) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    src = _gripe(store)
+    dst = _gripe(store, "a neighbour")
+    with pytest.raises(BadInput, match="only applies when adding"):
+        GripeHandler(hub=hub).link(
+            id=src, target=f"gripe:{dst}", mode="remove", reason="."
+        )
+
+
+def test_gripe_reason_kwarg_disagrees_with_meta_reason(hub: Hub) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    src = _gripe(store)
+    dst = _gripe(store, "a neighbour")
+    with pytest.raises(BadInput, match="disagree"):
+        GripeHandler(hub=hub).link(
+            id=src,
+            target=f"gripe:{dst}",
+            reason="the edge adds X",
+            meta={"reason": "the edge adds Y"},
+        )
+
+
+def test_gripe_reason_copying_target_title_is_refused(hub: Hub) -> None:
+    """The gr626896 title-copy refusal applies to gripe edges too."""
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    src = _gripe(store, "the linking gripe")
+    dst = _mem(store, "Doppler shift for light at relativistic speeds")
+    with pytest.raises(BadInput, match="restates the target endpoint's title"):
+        GripeHandler(hub=hub).link(
+            id=src,
+            target=f"memory:{dst}",
+            reason="Doppler shift for light at relativistic speeds",
+        )
+    assert store.links_for(src, direction="out") == []
+
+
+def test_gripe_reason_refused_on_fan_in(hub: Hub) -> None:
+    """``id=[...]`` fans one edge shape across ids; edge meta is per-edge."""
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    a = _gripe(store, "one")
+    b = _gripe(store, "two")
+    tgt = _gripe(store, "shared target")
+    with pytest.raises(BadInput, match="single id"):
+        GripeHandler(hub=hub).link(
+            id=[a, b], target=f"gripe:{tgt}", rel="related-to", reason="."
+        )
+
+
+def test_base_link_refuses_reason_on_kinds_without_link_meta(hub: Hub) -> None:
+    """Only ``link_meta`` kinds take edge meta on the base ``link`` path;
+    the rest refuse it rather than storing an undocumented edge why."""
+    from precis.handlers.anki import AnkiHandler
+
+    with pytest.raises(BadInput, match="does not accept meta=/reason="):
+        AnkiHandler(hub=hub).link(id=1, target="gripe:2", reason="why")
+
+
+def test_gripe_link_reason_through_dispatch(
+    hub: Hub, runtime_with_store: PrecisRuntime
+) -> None:
+    """The reported call end to end: the strictness gate passes
+    ``reason=`` through to the handler instead of refusing it."""
+    store = hub.live_store
+    src = _gripe(store, "the linking gripe")
+    dst = _gripe(store, "the spec dependency")
+    out = runtime_with_store.dispatch(
+        "link",
+        {
+            "kind": "gripe",
+            "id": src,
+            "target": f"gripe:{dst}",
+            "rel": "related-to",
+            "reason": "this gripe implements that spec section",
+        },
+    )
+    assert "linked" in out
+    links = store.links_for(src, direction="out")
+    assert links[0].meta["reason"] == "this gripe implements that spec section"
+
+
+def test_gripe_links_view_renders_reason(hub: Hub) -> None:
+    """The stored edge why renders in the gripe's links view (acceptance)."""
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.live_store
+    src = _gripe(store, "the linking gripe")
+    dst = _gripe(store, "the spec dependency")
+    store.add_link(
+        src_ref_id=src,
+        dst_ref_id=dst,
+        relation="related-to",
+        meta={"reason": "this gripe implements that spec section"},
+    )
+    body = GripeHandler(hub=hub).get(id=src, view="links").body
+    assert "this gripe implements that spec section" in body

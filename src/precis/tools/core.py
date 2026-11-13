@@ -2904,7 +2904,8 @@ def link(
     # clients don't strip it.
     element: str | None = None,
     meta: dict[str, Any] | None = None,
-    # memory/finding/paper/taxon/todo (gr626896, gr657045): the edge's
+    # memory/finding/paper/taxon/todo/gripe (gr626896, gr657045,
+    # gr662070): the edge's
     # why — the kwarg spelling of meta={'reason': …}; reason='.' marks
     # reviewed-obvious. Declared at the verb level so the refusal that
     # suggests it (_check_reason_contribution's next=) names a call that
@@ -3062,7 +3063,7 @@ _LINK_HELP: dict[str, str] = {
     "mode": "'add' (default) | 'remove'.",
     "rel": "Relation slug. Defaults to 'related-to' on add.",
     "reason": "Edge why (meta.reason). '.' = reviewed-obvious. "
-    "memory/finding/paper/taxon/todo only.",
+    "memory/finding/paper/taxon/todo/gripe only.",
 }
 
 CLI_HELP: dict[str, dict[str, str]] = {
