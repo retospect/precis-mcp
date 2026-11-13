@@ -22,6 +22,7 @@ from precis_web.item_view import (
     SePresenter,
     StructurePresenter,
     YoutubePresenter,
+    _display_tags,
     artifact_kinds,
     item_row,
     presenter_for,
@@ -307,18 +308,41 @@ def test_item_row_carries_created_and_updated_stamps() -> None:
 
     created = _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC)
     updated = _dt.datetime(2026, 2, 1, tzinfo=_dt.UTC)
-    row = item_row(_ref(created_at=created, updated_at=updated), None, 0.0, set())
+    row = item_row(
+        _ref(created_at=created, updated_at=updated), None, 0.0, set(), ref_kinds=[]
+    )
     assert row["created_at"] == created
     assert row["updated_at"] == updated
 
-    bare = item_row(_ref(), None, 0.0, set())
+    bare = item_row(_ref(), None, 0.0, set(), ref_kinds=[])
     assert bare["created_at"] is None
     assert bare["updated_at"] is None
 
 
+def test_display_tags_encodes_label_and_pins_ref_kinds() -> None:
+    """gr664407: chip hrefs urlencode the canonical ``ns:value`` filter
+    (values with ``& # + %`` or spaces break a raw href) and pin the
+    listing's ref kinds as ``k=`` params so a saved ``k=tag`` cookie
+    can't bounce the click back to a tag listing."""
+    chips = _display_tags(
+        [("topic", "a&b #1"), ("OPEN", "free tag"), ("DREAM", "spec")],
+        ["paper", "draft"],
+    )
+    assert chips == [
+        {
+            "label": "topic:a&b #1",
+            "href": "/drive?tag=topic%3Aa%26b+%231&k=paper&k=draft",
+        },
+        {
+            "label": "free tag",
+            "href": "/drive?tag=free+tag&k=paper&k=draft",
+        },
+    ]
+
+
 def test_item_row_carries_hover_thumbnail_actions() -> None:
     ref = _ref(kind="youtube", slug="abc123", title="A video")
-    row = item_row(ref, _block("a caption line"), 0.5, set())
+    row = item_row(ref, _block("a caption line"), 0.5, set(), ref_kinds=[])
     assert row["thumbnail"] == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
     # Universal per-row actions (WS1a) address by slug when the ref has one.
     assert {a["type"]: a["id"] for a in row["actions"]} == {

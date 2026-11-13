@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlencode
 
 from precis.utils.authors import author_names
 from precis.utils.title_views import title_md, title_md_clip
@@ -120,11 +121,19 @@ _TAG_HIDE_NS: frozenset[str] = frozenset(
 _TAG_HIDE_VALUES: frozenset[str] = frozenset({"read-later", "must-read", "skim"})
 
 
-def _display_tags(raw: list[tuple[str, str]] | None) -> list[dict[str, str]]:
+def _display_tags(
+    raw: list[tuple[str, str]] | None, ref_kinds: list[str]
+) -> list[dict[str, str]]:
     """Per-row tag chips: what this item was tagged with, minus the
     machine namespaces and the reading-intent flags (which have buttons).
     ``OPEN`` tags render bare; others as ``namespace:value``; each links
-    to the ``/tags/refs`` pivot.
+    to Drive filtered to that tag (the label is already the canonical
+    tag-filter string, urlencoded — values with ``& # + %`` or spaces
+    break a raw ``href``). Each link pins ``ref_kinds`` as explicit
+    ``k=`` params — the ``/drive`` landing resolves the ``items_kinds``
+    cookie when the URL names no ``k=``, so a bare ``?tag=`` link would
+    re-list tags (a saved ``k=tag``) instead of the refs the tag matches;
+    the same pin ``routes/drive.py::_tag_rows`` puts on tag-row links.
     """
     out: list[dict[str, str]] = []
     for ns, val in raw or []:
@@ -133,7 +142,8 @@ def _display_tags(raw: list[tuple[str, str]] | None) -> list[dict[str, str]]:
         if ns == "OPEN" and val in _TAG_HIDE_VALUES:
             continue
         label = val if ns == "OPEN" else f"{ns}:{val}"
-        out.append({"label": label, "href": f"/tags/refs?namespace={ns}&value={val}"})
+        params = [("tag", label), *(("k", kind) for kind in ref_kinds)]
+        out.append({"label": label, "href": "/drive?" + urlencode(params)})
     return out
 
 
@@ -770,6 +780,7 @@ def item_row(
     score: float,
     flags: set[str],
     *,
+    ref_kinds: list[str],
     has_chunks: bool = False,
     tags: list[tuple[str, str]] | None = None,
     identifier: str | None = None,
@@ -784,10 +795,13 @@ def item_row(
     hit). ``has_chunks`` drives the stub/ingested state badges (a search
     hit matched a chunk, so it's ``True``; a recent-list ref is probed).
     ``tags`` are the ref's raw ``(namespace, value)`` tags → the per-row
-    chips. ``design`` is this one ref's slice of the caller's batched
-    ``se``/``structure``/``component`` facts lookup (``None`` for every
-    other kind, or when the caller has none to offer) — see
-    :meth:`ItemPresenter.state`.
+    chips; ``ref_kinds`` is the listing's ref scope, pinned onto each
+    chip's ``/drive?tag=`` link as explicit ``k=`` params so a saved
+    ``k=tag`` cookie can't turn the click into a tag listing (see
+    :func:`_display_tags`). ``design`` is this one ref's slice of the
+    caller's batched ``se``/``structure``/``component`` facts lookup
+    (``None`` for every other kind, or when the caller has none to
+    offer) — see :meth:`ItemPresenter.state`.
     """
     p = presenter_for(getattr(ref, "kind", ""))
     return {
@@ -806,7 +820,7 @@ def item_row(
         "created_at": getattr(ref, "created_at", None),
         "updated_at": getattr(ref, "updated_at", None),
         "state": p.state(ref, has_chunks=has_chunks, design=design),
-        "tags": _display_tags(tags),
+        "tags": _display_tags(tags, ref_kinds),
         "links": p.links(identifier),
         "score": score,
         "title_meta": p.title_meta(ref),

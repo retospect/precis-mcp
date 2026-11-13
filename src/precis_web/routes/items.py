@@ -315,6 +315,7 @@ def _run_search(
     until: datetime | None,
     tags: list[str],
     offset: int,
+    tag_kinds: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Blocking search + row-build; runs in a worker thread.
 
@@ -323,6 +324,12 @@ def _run_search(
     selected ``tags``, then batches the flag/tag state for the whole page.
     Over-fetches one extra hit past ``_PAGE_SIZE`` to probe "has next
     page" without a separate count query; returns ``(rows, has_next)``.
+
+    ``tag_kinds`` is the ref-kind set pinned onto each row's tag-chip
+    ``/drive?tag=`` links (defaults to ``kinds`` — the search scope) so
+    every chip on a page pins one consistent scope; the caller passes
+    the listing's ``tag_row_kinds`` when a supplementary query ran on a
+    narrower set.
     """
     query_vec = None
     if embedder is not None:
@@ -371,6 +378,7 @@ def _run_search(
             block,
             score,
             flag_state.get(ref.id, set()),
+            ref_kinds=kinds if tag_kinds is None else tag_kinds,
             has_chunks=(ref.id in pinned_body if ref.id in pinned_ids else True),
             tags=tags_bulk.get(ref.id),
             identifier=idents.get(ref.id),
@@ -402,6 +410,7 @@ def _recent_rows(
     untried: bool = False,
     downloadable_first: bool = False,
     viewer: str | None = None,
+    tag_kinds: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
     first (or most recently created when ``created=True``);
@@ -427,7 +436,9 @@ def _recent_rows(
     ones). ``viewer`` is the web login the page is for: another owner's
     ``kind='profile'`` row never lists (gr490266, ``recent_refs(viewer=)``).
     Rows carry no preview (no query) — name, kind, when-edited, badges,
-    tags, links, flags. Returns
+    tags, links, flags. ``tag_kinds`` is the ref-kind set pinned onto
+    each row's tag-chip ``/drive?tag=`` links, defaulting to ``kinds``
+    (see :func:`_run_search`). Returns
     ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
     """
@@ -465,6 +476,7 @@ def _recent_rows(
             None,
             0.0,
             flag_state.get(r.id, set()),
+            ref_kinds=kinds if tag_kinds is None else tag_kinds,
             has_chunks=r.id in ingested,
             tags=tags_bulk.get(r.id),
             identifier=idents.get(r.id),

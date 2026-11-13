@@ -1072,11 +1072,30 @@ def test_drive_rows_show_per_item_tags(client) -> None:
     source of these links is the per-row chips."""
     resp = client.get("/drive?q=query")
     assert resp.status_code == 200
-    # Paper #10's topical tag renders as a chip linking to the pivot.
-    assert "/tags/refs?namespace=topic&amp;value=co2-capture" in resp.text
+    # Paper #10's topical tag renders as a chip linking to Drive filtered
+    # to it — the label urlencoded, the listing's ref kinds pinned.
+    assert "/drive?tag=topic%3Aco2-capture&amp;k=paper" in resp.text
     # Its flag + machine tags do NOT appear as chips.
     assert "namespace=OPEN&amp;value=read-later" not in resp.text
     assert "namespace=DREAM&amp;value=spec" not in resp.text
+
+
+def test_drive_row_tag_chips_pin_ref_kinds(runtime, client) -> None:
+    """gr664407: a bare ``/drive?tag=…`` chip resolves the saved
+    ``items_kinds`` cookie, so a saved ``k=tag`` would bounce the click
+    back to a tag listing instead of the refs the tag matches. The chip
+    pins the listing's ref kinds as explicit ``k=`` params — the same
+    pin ``routes/drive.py::_tag_rows`` puts on tag-row links."""
+    # Save a tag-only kind cookie first: it must not leak into the chip.
+    client.get("/drive?submitted=1&k=tag")
+    resp = client.get("/drive?q=query&k=paper")
+    assert resp.status_code == 200
+    assert 'href="/drive?tag=topic%3Aco2-capture&amp;k=paper"' in resp.text
+    # Following the pinned link lands on matching refs, not the tag
+    # listing the saved cookie would have produced for a bare ?tag=.
+    client.get("/drive?tag=topic:co2-capture&k=paper")
+    assert runtime.store.recent_kinds == ["paper"]
+    assert runtime.store.recent_tags == ["topic:co2-capture"]
 
 
 def test_drive_has_new_button(client) -> None:

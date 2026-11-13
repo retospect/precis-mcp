@@ -1119,10 +1119,11 @@ async def index(
     # ``tag`` is not a ref kind (gr636493): the ref queries run on the rest.
     want_tags = "tag" in selected_kinds and not fetch_ref_ids
     ref_kinds = [kk for kk in selected_kinds if kk != "tag"]
-    # Tag-row links pin the ref kinds as explicit ``k=`` params (the
-    # bare-``?tag=`` link would resolve a saved ``k=tag`` cookie and list
-    # tags again, td650230). A tag-only selection falls back to the
-    # fresh-landing scope so the click still lands on matching refs.
+    # Tag-row links and per-row tag chips pin the ref kinds as explicit
+    # ``k=`` params (the bare-``?tag=`` link would resolve a saved
+    # ``k=tag`` cookie and list tags again, td650230/gr664407). A
+    # tag-only selection falls back to the fresh-landing scope so the
+    # click still lands on matching refs.
     tag_row_kinds = ref_kinds or [
         *_DEFAULT_SOURCE_KINDS,
         *artifact_kind_defs,
@@ -1156,6 +1157,7 @@ async def index(
             until=until_dt,
             tags=tags,
             offset=offset,
+            tag_kinds=tag_row_kinds,
         )
         if ambiguous_ids and offset == 0:
             # An ambiguous DOI prefix: list the matching papers first.
@@ -1168,6 +1170,7 @@ async def index(
                 None,
                 0,
                 ref_ids=ambiguous_ids,
+                tag_kinds=tag_row_kinds,
             )
             seen = {r["id"] for r in first}
             rows = [*first, *(r for r in rows if r.get("id") not in seen)]
@@ -1226,6 +1229,7 @@ async def index(
             untried=(sort == "untried"),
             downloadable_first=(state == "stub"),
             viewer=viewer,
+            tag_kinds=tag_row_kinds,
         )
         # Exact total for the browse "showing N of K" header + last-page
         # jump — the no-query list is a plain filtered ``refs`` query, so
