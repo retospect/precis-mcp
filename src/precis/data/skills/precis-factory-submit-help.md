@@ -104,7 +104,9 @@ a `plan_tick` ([[precis-todo-tree-help]]). Never give a builder node
    in the lane settings; the squash merge is the only path to main.
 4. Downstream nodes — a `sha-in-prod` gate fills from the `landed:`
    sha, a validate task re-proves the fix. The root closes when they
-   settle.
+   settle. A `blocked-by` edge to the build (or to the reviewer) holds
+   its dependant through the whole hold — the review wait and the
+   in-flight land — since `done` is "built", not "on main" (gr659981).
 
 ## Wait for the outcome
 

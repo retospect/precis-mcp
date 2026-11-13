@@ -145,7 +145,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    nested phases cascade in one pass.
 4. **dispatch** — each doable task (``node_kind`` task, a generator with no
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
-   ``blocked-by`` target on it or an ancestor, no doable-exclusion tag other
+   ``blocked-by`` target on it or an ancestor — a terminal target stays
+   live while its ``meta.pending_land`` holds, the dependant's worktree
+   having to cut from a main carrying the build, and only the pre-land
+   reviewer gating that land is exempt, gr659981 — no doable-exclusion
+   tag other
    than ``child-failed:`` on it or an ancestor, no paused ancestor, no live
    child job, no
    ``claimed-by:`` tag, no mint pass still in flight, under its retry cap)
@@ -883,6 +887,17 @@ class _Blocker:
     status: str
     is_ask: bool
     created_at: datetime
+    #: ``meta.pending_land`` on the blocker (gr570506): a ``done`` build
+    #: whose squash still waits on the pre-land review or whose held
+    #: land is in flight — its terminal status does not put the code on
+    #: main (gr659981). Read for blockers outside the loaded subtrees,
+    #: where :meth:`_Plan._land_held` has no node meta to consult. The
+    #: load query also sets it for a REVIEWER blocker — one closes
+    #: ``done`` at LAND with no stamp of its own — when the review
+    #: targets named by its ``meta.generate.from`` still carry the
+    #: stamp, resolved in the store because those targets may sit
+    #: outside the loaded subtrees (gr659981 review td660658).
+    pending_land: bool = False
 
 
 @dataclass
@@ -924,11 +939,41 @@ class _Plan:
             cur = self.nodes.get(cur.parent_id) if cur.parent_id is not None else None
         return out
 
+    def _land_held(self, b: _Blocker) -> bool:
+        """The blocker's code is not on main yet: ``meta.pending_land``
+        on it — a build closed ``done`` with its squash held for the
+        pre-land review, or that held land still in flight (gr659981) —
+        or, the blocker being the review itself, on its targets (the
+        reviewer closes ``done`` at LAND while the in-flight land has
+        not recorded). The load-time :attr:`_Blocker.pending_land` is
+        honored on the loaded path too: the load query resolves it in
+        the store, so it sees a reviewer's held targets that sit
+        outside the loaded subtrees — invisible to the in-memory
+        :func:`_pending_targets` (gr659981 review td660658)."""
+        node = self.nodes.get(b.id)
+        if node is None:
+            return b.pending_land
+        if (
+            isinstance(node.meta.get(_templates.PENDING_LAND_KEY), dict)
+            or b.pending_land
+        ):
+            return True
+        return _is_reviewer(node) and bool(_pending_targets(self, node))
+
     def blocked(self, n: _Node) -> bool:
-        """A live ``blocked-by`` target on ``n`` or any ancestor in the plan."""
+        """A live ``blocked-by`` target on ``n`` or any ancestor in the
+        plan — live meaning open, or terminal with its land still held
+        (:meth:`_land_held`): the dependant's worktree must cut from a
+        main carrying the build, so ``done`` alone never releases it
+        (gr659981). The one exemption is ``n`` itself being the pre-land
+        reviewer gating that land (:func:`_is_its_land_gate`): its LAND
+        verdict is what mints the held ``land_slice``, so holding it
+        would deadlock the chain."""
         for node in (n, *self.ancestors(n)):
             for b in self.blockers.get(node.id, []):
                 if self.status_of(b) not in BLOCKER_TERMINAL_STATUSES:
+                    return True
+                if self._land_held(b) and not _is_its_land_gate(self, n, b):
                     return True
         return False
 
@@ -1184,7 +1229,40 @@ def _load(store: Any, roots: list[int] | None = None) -> _Plan:
                             WHERE rt.ref_id = b.ref_id AND t.namespace = 'OPEN'
                               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')),
                    (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
-                     WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1)
+                     WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                   (
+                     jsonb_typeof(b.meta->'pending_land') = 'object'
+                     OR (
+                       b.meta->'generate'->>'role' = 'reviewer'
+                       AND EXISTS (
+                         SELECT 1
+                           FROM refs t
+                          WHERE t.retired_at IS NULL
+                            AND t.kind = 'todo'
+                            AND jsonb_typeof(t.meta->'pending_land') = 'object'
+                            AND (
+                              (
+                                t.ref_id::text = substring(
+                                  b.meta->'generate'->>'from'
+                                  from '^[[:space:]]*td([0-9]+)[[:space:]]*$')
+                                AND NOT EXISTS (
+                                  SELECT 1 FROM refs c
+                                   WHERE c.parent_id = t.ref_id
+                                     AND c.retired_at IS NULL
+                                     AND c.kind = 'todo'
+                                     AND NOT COALESCE(c.meta ? 'ask', FALSE)
+                                )
+                              )
+                              OR (
+                                t.parent_id::text = substring(
+                                  b.meta->'generate'->>'from'
+                                  from '^[[:space:]]*td([0-9]+)[[:space:]]*$')
+                                AND NOT COALESCE(t.meta ? 'ask', FALSE)
+                              )
+                            )
+                       )
+                     )
+                   ) AS pending_land
               FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
              WHERE l.relation = 'blocked-by' AND l.src_ref_id = ANY(%s)
                AND b.retired_at IS NULL
@@ -1214,13 +1292,14 @@ def _load(store: Any, roots: list[int] | None = None) -> _Plan:
         if node.parent_id is not None and node.parent_id in nodes:
             nodes[node.parent_id].children.append(node.id)
     blockers: dict[int, list[_Blocker]] = {}
-    for src, dst, created_at, has_ask, ask_tag, status in link_rows:
+    for src, dst, created_at, has_ask, ask_tag, status, pending_land in link_rows:
         blockers.setdefault(int(src), []).append(
             _Blocker(
                 id=int(dst),
                 status=str(status or "open"),
                 is_ask=bool(has_ask) or bool(ask_tag),
                 created_at=created_at,
+                pending_land=bool(pending_land),
             )
         )
     return _Plan(roots=roots, nodes=nodes, blockers=blockers)
@@ -2420,6 +2499,21 @@ def _pending_targets(plan: _Plan, n: _Node) -> list[_Node]:
         for t in _review_targets(plan, n)
         if isinstance(t.meta.get(_templates.PENDING_LAND_KEY), dict)
     ]
+
+
+def _is_its_land_gate(plan: _Plan, n: _Node, b: _Blocker) -> bool:
+    """``n`` is the reviewer whose verdict releases the land ``b``'s
+    ``meta.pending_land`` holds (gr659981): the stamp blocks every
+    dependant but this one — its LAND is what mints the held
+    ``land_slice``, its FIX/REVERT what reopens the builder. ``from``
+    names the held todo, or one of the review targets carries it (a
+    slicer's slices). Only a pre-land reviewer (``meta.preland_review``)
+    is exempt: a post-land reviewer judges the squash, so it waits."""
+    if not _is_reviewer(n) or n.meta.get(_templates.PRELAND_REVIEW_KEY) is not True:
+        return False
+    return _review_from(n) == b.id or any(
+        t.id == b.id for t in _review_targets(plan, n)
+    )
 
 
 def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:

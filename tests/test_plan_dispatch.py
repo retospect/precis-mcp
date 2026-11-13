@@ -5831,7 +5831,7 @@ def test_dry_run_counts_the_gripe_release_without_writing(hub: Any) -> None:
 # ── reviewer verdicts (td543732) ───────────────────────────────────
 
 
-def _review_plan(store: Store) -> T.PlanMint:
+def _review_plan(store: Store, *, preland: bool = False) -> T.PlanMint:
     """root phase: build (run_slice) <- review (reviewer generator)."""
 
     def build(m: T._Minter) -> None:
@@ -5840,8 +5840,8 @@ def _review_plan(store: Store) -> T.PlanMint:
         m.node(
             "review",
             "Review it",
-            T._reviewer(b),
-            body=T._reviewer_brief(b),
+            T._reviewer(b, preland=preland),
+            body=T._reviewer_brief(b, preland=preland),
             blocked_by=("build",),
         )
 
@@ -6313,7 +6313,7 @@ def test_pending_land_build_lets_the_review_dispatch(store: Store) -> None:
     """gr570506: a done build whose land is held for review has no
     ``landed:`` comment — ``meta.pending_land`` is the stamp that keeps
     the dead-chain close off it while the review gates the squash."""
-    mint = _review_plan(store)
+    mint = _review_plan(store, preland=True)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")
     store.stamp_ref_meta(
@@ -6488,6 +6488,286 @@ def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
     assert run_slice._preland_reviewer(store, build) == review
     _mark_done(store, review)
     assert run_slice._preland_reviewer(store, build) is None
+
+
+def _held_land_plan(store: Store, dep_edge: str) -> T.PlanMint:
+    """root: build -> review (pre-land) -> nothing, plus ``dep`` blocked-by
+    ``dep_edge`` — the dependant gr659981 is about."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        b = m.node("build", "Build it", {"op": "run_slice"}, body="Build it.")
+        m.node(
+            "review",
+            "Review it",
+            T._reviewer(b, preland=True),
+            body=T._reviewer_brief(b, preland=True),
+            blocked_by=("build",),
+        )
+        m.node(
+            "dep",
+            "Build on it",
+            {"op": "run_slice"},
+            body="Build on it.",
+            blocked_by=(dep_edge,),
+        )
+
+    return T._run(store, None, build)
+
+
+def _hold_the_land(store: Store, build: int, review: int, dep: int) -> None:
+    """Drive the held-land chain to just after its LAND verdict: build
+    done with ``pending_land``, the reviewer run and judged LAND — the
+    held ``land_slice`` minted, the reviewer closed, the dependant
+    untouched."""
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    res = pd.run_pass(store)
+    # The pre-land reviewer is the hold's one exemption.
+    assert res.dispatched == 1
+    ((review_job, _),) = _jobs_under(store, review)
+    assert _jobs_under(store, dep) == []
+    _set_job_status(store, review_job, "succeeded")
+    _todo_comment(store, review, "review: LAND")
+    res2 = pd.run_pass(store)
+    assert res2.reviews == 1
+    assert _status(store, review) == "done"
+    assert any(
+        m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build)
+    )
+
+
+def test_pending_land_blocks_a_dependant_until_the_land_records(
+    store: Store,
+) -> None:
+    """gr659981: a node ``blocked-by`` a build whose land is held for the
+    pre-land review must not dispatch on the build's ``done`` — its
+    worktree would cut from an ``origin/main`` without the build. The
+    hold spans both waits: the review's (``done`` releases only the
+    reviewer gating it) and the in-flight land's (the LAND verdict
+    closes the reviewer before ``land_slice`` finishes). The dependant
+    frees when ``_record_land`` clears ``meta.pending_land``."""
+    mint = _held_land_plan(store, "build")
+    build, review, dep = mint.ids["build"], mint.ids["review"], mint.ids["dep"]
+    _hold_the_land(store, build, review, dep)
+    assert _jobs_under(store, dep) == []
+    # The lander's ``_record_land`` is the release: the ``landed:``
+    # comment and the cleared stamp are one write.
+    _todo_comment(store, build, "landed: abc1234 — the squash")
+    store.stamp_ref_meta(build, {"pending_land": None})
+    res3 = pd.run_pass(store)
+    assert len(_jobs_under(store, dep)) == 1, res3.notes
+
+
+def test_pending_land_blocks_a_review_dependant_through_the_land(
+    store: Store,
+) -> None:
+    """gr659981's residual race: a node ``blocked-by`` the pre-land
+    reviewer alone still waits for the land — the reviewer closes
+    ``done`` at LAND while ``meta.pending_land`` keeps the squash off
+    main until ``_record_land`` clears it."""
+    mint = _held_land_plan(store, "review")
+    build, review, dep = mint.ids["build"], mint.ids["review"], mint.ids["dep"]
+    _hold_the_land(store, build, review, dep)
+    assert _jobs_under(store, dep) == []
+    _todo_comment(store, build, "landed: abc1234 — the squash")
+    store.stamp_ref_meta(build, {"pending_land": None})
+    res3 = pd.run_pass(store)
+    assert len(_jobs_under(store, dep)) == 1, res3.notes
+
+
+def test_pending_land_blocks_an_out_of_plan_dependant(store: Store) -> None:
+    """The blocker need not sit in the dependant's plan: ``_load`` reads
+    ``meta.pending_land`` off the edge target itself, so a dependant
+    blocked-by a standalone held build — no plan subtree reaches it —
+    waits the same way."""
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="held build",
+            meta={"pending_land": {"todo_id": 0, "branch": "slice/0"}},
+            conn=conn,
+        )
+        build = int(ref.id)
+        store.stamp_ref_meta(
+            build,
+            {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+            conn=conn,
+        )
+        store.add_tag(build, Tag.closed("STATUS", "done"), set_by="system", conn=conn)
+
+    def plan(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("dep", "Build on it", {"op": "run_slice"}, body="Build on it.")
+
+    mint = T._run(store, None, plan)
+    dep = mint.ids["dep"]
+    store.add_link(src_ref_id=dep, dst_ref_id=build, relation="blocked-by")
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, dep) == []
+    store.stamp_ref_meta(build, {"pending_land": None})
+    pd.run_pass(store)
+    assert len(_jobs_under(store, dep)) == 1
+
+
+def test_pending_land_blocks_a_dependant_through_an_out_of_subtree_reviewer(
+    store: Store,
+) -> None:
+    """gr659981 review td660658: the dependant rides the pre-land
+    REVIEWER alone, and the review's build target sits OUTSIDE every
+    loaded plan subtree — ``_review_targets`` resolves ``from`` against
+    the in-memory model only, so the held target read as "no pending
+    targets" and the dependant dispatched between the LAND verdict and
+    the lander's ``landed:``. ``_load`` resolves the reviewer's held
+    targets in the store; the loaded node must honor that flag."""
+
+    def build_ref(conn: Any) -> int:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="held build",
+            meta={"op": "run_slice"},
+            conn=conn,
+        )
+        return int(ref.id)
+
+    with store.tx() as conn:
+        build = build_ref(conn)
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+
+    def plan(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "review",
+            "Review it",
+            T._reviewer(build, preland=True),
+            body=T._reviewer_brief(build, preland=True),
+        )
+        m.node(
+            "dep",
+            "Build on it",
+            {"op": "run_slice"},
+            body="Build on it.",
+            blocked_by=("review",),
+        )
+
+    mint = T._run(store, None, plan)
+    review, dep = mint.ids["review"], mint.ids["dep"]
+    store.add_link(src_ref_id=review, dst_ref_id=build, relation="blocked-by")
+    # The LAND already judged and the held land_slice in flight: a
+    # succeeded job, the verdict comment, the judgement recorded so
+    # step 2a does not re-judge, and the reviewer closed.
+    job = _job(store, review)
+    _todo_comment(store, review, "review: LAND")
+    store.stamp_ref_meta(
+        review,
+        {
+            "review": {
+                "job": job,
+                "verdict": "LAND",
+                "at": "2026-11-13T00:00:00Z",
+                "tests_run": False,
+            }
+        },
+    )
+    _mark_done(store, review)
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, dep) == []
+    _todo_comment(store, build, "landed: abc1234 — the squash")
+    store.stamp_ref_meta(build, {"pending_land": None})
+    pd.run_pass(store)
+    assert len(_jobs_under(store, dep)) == 1
+
+
+def test_pending_land_blocks_a_dependant_through_an_unloaded_reviewer(
+    store: Store,
+) -> None:
+    """gr659981 review td660658, the other hole: the reviewer blocker
+    sits in NO loaded subtree (it rides a closed plan root), so
+    ``_land_held`` falls back to the load-time ``_Blocker.pending_land``
+    — which used to read only the reviewer's own meta. A reviewer
+    closes ``done`` at LAND carrying no stamp of its own; the hold
+    lives on its build target. The load query now resolves a reviewer
+    blocker's held targets in the store, loaded or not."""
+
+    def build_ref(conn: Any) -> int:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="held build",
+            meta={"op": "run_slice"},
+            conn=conn,
+        )
+        return int(ref.id)
+
+    with store.tx() as conn:
+        build = build_ref(conn)
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+
+    def dead_plan(m: T._Minter) -> None:
+        m.node("deadroot", "Old plan", {"auto_close": True})
+        m.node(
+            "review",
+            "Review it",
+            T._reviewer(build, preland=True),
+            body=T._reviewer_brief(build, preland=True),
+        )
+
+    dead = T._run(store, None, dead_plan)
+    review = dead.ids["review"]
+    store.add_link(src_ref_id=review, dst_ref_id=build, relation="blocked-by")
+    job = _job(store, review)
+    _todo_comment(store, review, "review: LAND")
+    store.stamp_ref_meta(
+        review,
+        {
+            "review": {
+                "job": job,
+                "verdict": "LAND",
+                "at": "2026-11-13T00:00:00Z",
+                "tests_run": False,
+            }
+        },
+    )
+    _mark_done(store, review)
+    # Closing the root keeps the reviewer's subtree out of every live
+    # plan load; the dead-root sweep leaves its done node alone.
+    _mark_done(store, dead.ids["deadroot"])
+
+    def plan(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("dep", "Build on it", {"op": "run_slice"}, body="Build on it.")
+
+    mint = T._run(store, None, plan)
+    dep = mint.ids["dep"]
+    store.add_link(src_ref_id=dep, dst_ref_id=review, relation="blocked-by")
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 0
+    assert _jobs_under(store, dep) == []
+    _todo_comment(store, build, "landed: abc1234 — the squash")
+    store.stamp_ref_meta(build, {"pending_land": None})
+    pd.run_pass(store)
+    assert len(_jobs_under(store, dep)) == 1
 
 
 def _land(store: Store, task: int, sha: str) -> None:
@@ -8022,3 +8302,36 @@ def test_hidden_meta_key_matches_the_comment_timeline() -> None:
     from precis.handlers._comment_timeline import HIDDEN_META_KEY
 
     assert pd._HIDDEN_META_KEY == HIDDEN_META_KEY
+
+
+def test_pending_land_holds_a_post_land_reviewer(store: Store) -> None:
+    """gr659981 review td660658: only the PRE-land reviewer is exempt from
+    the ``meta.pending_land`` hold; a post-land reviewer of the same build
+    judges the squash, so it waits until the stamp clears."""
+
+    def plan(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        b = m.node("build", "Build it", {"op": "run_slice"}, body="Build it.")
+        m.node(
+            "review",
+            "Review it",
+            T._reviewer(b),
+            body=T._reviewer_brief(b),
+            blocked_by=("build",),
+        )
+
+    mint = T._run(store, None, plan)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+
+    pd.run_pass(store)
+    assert _jobs_under(store, review) == []
+    _todo_comment(store, build, "landed: abc1234 — the squash")
+    store.stamp_ref_meta(build, {"pending_land": None})
+    pd.run_pass(store)
+    assert len(_jobs_under(store, review)) == 1
