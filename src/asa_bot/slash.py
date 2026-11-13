@@ -310,8 +310,8 @@ async def cmd_status(ctx: SlashContext) -> None:
     for k in kinds:
         try:
             blob = await ctx.precis.call_tool(
-                "search",
-                {"kind": k, "page_size": 1, "q": "*"},
+                "get",
+                {"kind": k},
             )
             first_line = (blob or "").strip().split("\n", 1)[0] if blob else "(empty)"
             parts.append(f"`{k}`: {first_line}")
