@@ -141,6 +141,30 @@ CLAIM_CLASS_AGE_ENV = "PRECIS_CLAIM_CLASS_AGE_S"
 #: age, ref_id — the 1.5 floor); anything else keeps the class order.
 CLAIM_CLASS_RANK_ENV = "PRECIS_CLAIM_CLASS_RANK"
 
+#: Background-class share (gr633506, revised scope): about 1 fresh claim
+#: in this many diverts to the oldest waiting background-class row.
+#: D3's class promotion lifts a background row only to the recurring
+#: rank, so continuously queued agent/human work could hold the class
+#: down indefinitely on an always-on agent fleet — the share reserves a
+#: trickle so background work keeps moving and stays exercised. The
+#: diversion fires only when the natural winner is agent or recurring
+#: class; a human-class, prio-1 or release-band winner, an empty
+#: background candidate set, and the ``PRECIS_CLAIM_CLASS_RANK=0`` kill
+#: switch all leave the pick unchanged (human work still preempts,
+#: release legs keep their freeze, spare capacity drains background in
+#: natural order anyway). Override with :data:`BG_SHARE_EVERY_ENV`;
+#: ``0`` disables the share.
+DEFAULT_BG_SHARE_EVERY = 10
+BG_SHARE_EVERY_ENV = "PRECIS_CLAIM_BG_SHARE_EVERY"
+
+#: The ``app_state`` key holding the share counter — the fleet-wide
+#: number of fresh claims taken, stored modulo
+#: :data:`DEFAULT_BG_SHARE_EVERY`. It advances once per claim pass (by
+#: that pass's fresh-claim count, in the same transaction), so the
+#: 1-in-N cadence holds across lanes and restarts without a per-pick
+#: hot-row lock.
+_BG_SHARE_COUNTER_KEY = "claim.bg_share.counter"
+
 #: Release-pass legs (gr584136, S3 of td584381) plus the dark-factory /
 #: release heartbeat ticks (td593845 review): these ``job_type``s claim
 #: in a band strictly between ``recurring`` and ``background`` — a
@@ -610,6 +634,23 @@ def claim_class_rank_enabled() -> bool:
     """``PRECIS_CLAIM_CLASS_RANK != '0'`` — the slice-2 order; ``0`` is
     the kill switch restoring the pre-slice-2 aged-prio order."""
     return os.environ.get(CLAIM_CLASS_RANK_ENV) != "0"
+
+
+def bg_share_every() -> int:
+    """The 1-in-N background-class share (``0`` = share off)."""
+    raw = os.environ.get(BG_SHARE_EVERY_ENV)
+    if not raw:
+        return DEFAULT_BG_SHARE_EVERY
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        log.warning(
+            "claim: %s=%r is not an int; using %d",
+            BG_SHARE_EVERY_ENV,
+            raw,
+            DEFAULT_BG_SHARE_EVERY,
+        )
+        return DEFAULT_BG_SHARE_EVERY
 
 
 #: How long an ``llm:``-affine job (see :func:`~precis.workers.dispatch.
@@ -1386,6 +1427,22 @@ def claim_executor_jobs(
     (``ref_id``) as the within-prio tiebreak / anti-starvation term. An
     all-unset queue collapses to ``ref_id`` ASC — the pre-6a FIFO. The
     capability-rarity term (§5.3) is layered on in 6d.
+
+    **Background-class share (gr633506, revised scope).**
+    Independently of the key, about 1 fresh claim in
+    :data:`DEFAULT_BG_SHARE_EVERY` (``PRECIS_CLAIM_BG_SHARE_EVERY``;
+    ``0`` disables) diverts to the oldest waiting background-class
+    row: class promotion ties background at the recurring rank, so a
+    continuously queued agent/human front could otherwise hold the
+    whole class down indefinitely. The diversion fires only when the
+    natural winner is agent or recurring class — human-class, prio-1
+    and release-band winners preempt as before, an empty background
+    candidate set leaves the pick unchanged, and with nothing higher
+    queued the batch drains background in natural order anyway. The
+    cadence counter lives in ``app_state``
+    (:data:`_BG_SHARE_COUNTER_KEY`) and advances once per claim pass
+    by that pass's fresh-claim count, so the share holds fleet-wide,
+    not per lane.
 
     **Reserve-at-claim (slices 6c/6d).** A job's resource requirements —
     explicit ``meta.requires`` or *derived* from its ``job_type`` via the
@@ -2264,13 +2321,51 @@ def claim_executor_jobs(
 
     fresh_claimed = 0
     remaining = sorted(rows, key=_order_key)
+    # Background-class share (gr633506): the fleet-wide pick counter,
+    # read once per pass and advanced by the pass's fresh-claim count
+    # after the loop. ``_row_base``/``_row_prio`` are defined above.
+    share_every = bg_share_every() if class_rank_on else 0
+    share_base = 0
+    if share_every:
+        row = conn.execute(
+            "SELECT value::int FROM app_state WHERE key = %s",
+            (_BG_SHARE_COUNTER_KEY,),
+        ).fetchone()
+        share_base = int(row[0]) if row and row[0] is not None else 0
     while remaining and fresh_claimed < fresh_limit:
         # Pick the best row under the CURRENT share counts — popping
         # argmin each time keeps a ``limit``-sized batch interleaving
         # shares rather than claiming a statically-sorted prefix.
-        r = remaining.pop(
-            min(range(len(remaining)), key=lambda i: _order_key(remaining[i]))
-        )
+        best = min(range(len(remaining)), key=lambda i: _order_key(remaining[i]))
+        r = remaining[best]
+        if (
+            share_every
+            and (share_base + fresh_claimed + 1) % share_every == 0
+            and _row_base(r) in (1.0, 2.0)
+            and _row_prio(r) != 1.0
+        ):
+            # The 1-in-N diversion and the natural winner is agent or
+            # recurring class: hand the claim to the oldest waiting
+            # background row instead. A human-class, prio-1 or
+            # release-band winner never diverts (they fail the
+            # membership/prio tests above), and with no background
+            # candidate the natural pick stands.
+            bg_idx = min(
+                (
+                    i
+                    for i, cand in enumerate(remaining)
+                    if _row_base(cand) == 3.0 and _row_prio(cand) != 1.0
+                ),
+                key=lambda i: (
+                    remaining[i][5] or remaining[i][4],
+                    int(remaining[i][0]),
+                ),
+                default=None,
+            )
+            if bg_idx is not None:
+                best = bg_idx
+                r = remaining[best]
+        r = remaining.pop(best)
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
         job_type = str(meta.get("job_type") or "")
         cap = caps.get(job_type)
@@ -2302,6 +2397,21 @@ def claim_executor_jobs(
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
         share_key = _share_key(meta)
         running_by_share[share_key] = running_by_share.get(share_key, 0) + 1
+    if share_every and fresh_claimed:
+        # Advance the background-share counter by this pass's fresh-claim
+        # count — one row touch per pass, in the claim's transaction, so
+        # the 1-in-N cadence holds fleet-wide without per-pick locks.
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = "
+            "((app_state.value::int + %s) %% %s)::text",
+            (
+                _BG_SHARE_COUNTER_KEY,
+                str(fresh_claimed % share_every),
+                fresh_claimed,
+                share_every,
+            ),
+        )
     return claimed
 
 

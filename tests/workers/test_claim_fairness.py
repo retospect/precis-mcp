@@ -562,3 +562,110 @@ def test_drain_cap_leaves_a_lane_free_of_the_deployed_drain_lanes() -> None:
     lanes = int(match.group(1))
     assert lanes >= 2
     assert 1 <= _DRAIN_CAP < lanes
+
+
+# ── gr633506 (revised scope): the background-class share ────────────────
+#
+# Class promotion ties a background row at the recurring rank, so a
+# continuously queued agent/human front holds the whole class down
+# indefinitely. About 1 fresh claim in ``DEFAULT_BG_SHARE_EVERY``
+# (``PRECIS_CLAIM_BG_SHARE_EVERY``) diverts to the oldest waiting
+# background row; human-class, prio-1 and release-band winners never
+# divert, and an empty background candidate set leaves the pick alone.
+
+
+_BG_SHARE_EVERY_ENV = "PRECIS_CLAIM_BG_SHARE_EVERY"
+
+
+def test_background_share_diverts_tenth_claim(store: Store) -> None:
+    """The default cadence: 9 agent claims, then the 10th diverts to the
+    waiting background row even though agents are still queued."""
+    agents = [_job(store, origin="agent", prio=5) for _ in range(12)]
+    bg = _job(store, origin="background", prio=8, queued_s_ago=3600)
+    claimed = _claim(store, limit=11)
+    assert claimed[:9] == agents[:9]
+    assert claimed[9] == bg  # the 10th claim is the diversion
+    assert claimed[10] == agents[9]
+
+
+def test_background_share_counter_persists_across_passes(store: Store) -> None:
+    """The cadence counter is fleet-wide, not per pass: 6 fresh claims in
+    pass one + 4 in pass two put the diversion mid-batch of pass two."""
+    agents = [_job(store, origin="agent", prio=5) for _ in range(10)]
+    bg = _job(store, origin="background", prio=8, queued_s_ago=3600)
+    first = _claim(store, limit=6)
+    assert first == agents[:6]
+    # Claimed rows leave the queue — the second pass sees only the rest
+    # (the test harness leaves STATUS queued, so flip them to running).
+    for ref_id in first:
+        store.add_tag(ref_id, Tag.parse_strict("STATUS:running"), replace_prefix=True)
+    second = _claim(store, limit=5)
+    assert second[:3] == agents[6:9]
+    assert second[3] == bg  # global claim 10
+    assert second[4] == agents[9]
+
+
+def test_background_share_diverts_recurring_winner(
+    store: Store, monkeypatch: Any
+) -> None:
+    """Recurring-class winners forgo the share too — any winner above the
+    background class can be diverted, not just agents."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "2")
+    rec = [_job(store, origin="recurring", prio=2) for _ in range(3)]
+    bg = _job(store, origin="background", prio=8)
+    # Claims 1 and 3: recurring; claim 2 diverts to background.
+    assert _claim(store, limit=3) == [rec[0], bg, rec[1]]
+
+
+def test_background_share_human_class_still_preempts(
+    store: Store, monkeypatch: Any
+) -> None:
+    """A human-class winner is never diverted: with the share forced on
+    for EVERY claim, the human row still claims first and only the
+    next (agent) winner yields to the background row."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    human = _job(store, origin="human", prio=5)
+    bg = _job(store, origin="background", prio=8)
+    agent = _job(store, origin="agent", prio=5)
+    assert _claim(store, limit=3) == [human, bg, agent]
+
+
+def test_background_share_prio1_winner_never_diverts(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The prio-1 preempt band stays absolute: an agent-class prio-1 row
+    (otherwise a divertible winner) claims ahead of the share."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    p1 = _job(store, origin="agent", prio=1)
+    bg = _job(store, origin="background", prio=8, queued_s_ago=600)
+    agent = _job(store, origin="agent", prio=5)
+    assert _claim(store, limit=3) == [p1, bg, agent]
+
+
+def test_background_share_respects_release_band(store: Store, monkeypatch: Any) -> None:
+    """A release-leg winner is not diverted — gr584136's freeze protects
+    the band from aged lower classes and from the share alike."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    poll = _job(store, origin="recurring", prio=2, job_type="release_poll")
+    bg = _job(store, origin="background", prio=8, queued_s_ago=7200)
+    assert _claim(store, limit=2) == [poll, bg]
+
+
+def test_background_share_drains_background_freely(
+    store: Store, monkeypatch: Any
+) -> None:
+    """Spare capacity: with only background rows queued the diversion
+    test never fires (winner base 3) — natural aged order stands."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    old_bg = _job(store, origin="background", prio=8, queued_s_ago=60)
+    new_bg = _job(store, origin="background", prio=8)
+    assert _claim(store, limit=2) == [old_bg, new_bg]
+
+
+def test_background_share_env_zero_disables(store: Store, monkeypatch: Any) -> None:
+    """``PRECIS_CLAIM_BG_SHARE_EVERY=0`` turns the share off entirely."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "0")
+    agents = [_job(store, origin="agent", prio=5) for _ in range(11)]
+    bg = _job(store, origin="background", prio=8)
+    assert _claim(store, limit=11) == agents
+    assert bg not in agents

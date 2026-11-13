@@ -304,7 +304,8 @@ put(kind='job',
 
 Claim order is **class, then priority, then time queued** — the same
 `(class_rank, aged_prio, queued_since)` key the `queue:` lines on a
-queued job report. Two mint-time knobs:
+queued job report — plus a background-class share (last bullet). Two
+mint-time knobs:
 
 ```python
 put(kind='job', parent_id=<todo>, job_type='survey_extract',
@@ -324,6 +325,12 @@ put(kind='job', parent_id=<todo>, job_type='survey_extract',
   background). Inside a class, an aged job gains one prio band per
   ~10 min queued, so a high-number prio still can't starve — it just
   claims after fresher work first.
+* Background-class fairness (gr633506): class promotion lifts a
+  background row only to the recurring band, so a wall of agent work
+  could starve the class indefinitely — about 1 claim in 10 diverts to
+  the oldest waiting background row (`PRECIS_CLAIM_BG_SHARE_EVERY`,
+  default 10; `0` off). Human-class and prio-1 winners still preempt,
+  and when nothing higher is queued background drains in natural order.
 * Reprioritise a live job with `tag(kind='job', id=N, prio=M)` — works
   on any non-terminal job (queued, running, `waiting_*`; the write
   lands on the row's next claim/re-queue). A terminal job refuses:
@@ -420,9 +427,10 @@ search(kind="job", tags=["STATUS:queued"])
 
 `get(kind="job", id=N)` on a queued job adds `queue:` lines: its origin
 class, its position in the executor's claim order (class, then priority,
-then time queued) with the per-class count of rows ahead, what is running
-on that executor now, and holds it can see (operator suspension, a
-`target_node` pin, a live lease).
+then time queued — the background share can jump an oldest background row
+~1 claim in 10 ahead of this) with the per-class count of rows ahead,
+what is running on that executor now, and holds it can see (operator
+suspension, a `target_node` pin, a live lease).
 
 The card's status is verified against a fresh read before queue text is
 rendered: when the row's real state moved on (claimed, parked, finished),
