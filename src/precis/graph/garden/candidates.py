@@ -16,7 +16,10 @@ wide scans also take ``scan_cap`` (max refs inspected per kind per run).
 The wide scans are windowed per kind past a saved cursor
 (:attr:`DetectorRun.cursors`, persisted on the job's ``meta.garden``)
 and wrap at the end, so successive runs walk every kind instead of
-re-reading the oldest refs (gr504843). :func:`run_detectors` adds a
+re-reading the oldest refs (gr504843). The ``griped`` complaint queue is
+the exception: every pass opens at the newest open ``project:memory``
+gripe so a fresh complaint never waits out a wraparound, and its cursor
+only bounds the backlog tail (gr657257). :func:`run_detectors` adds a
 per-detector wall-clock deadline plus skip-and-continue on a Postgres
 statement timeout, so one slow detector cannot zero the tick
 (gr503580 — ``untagged`` did exactly that on the first prod run).
@@ -3443,9 +3446,16 @@ def griped_candidates(
     per (gripe, memory). Read-only: the route replay runs the recorded
     searches lexically and pins every named memory's sha.
 
+    Newest complaint first, *every* pass (gr657257): the head window
+    always opens at the top, so a complaint filed since the last run is
+    seen immediately instead of after a cursor wraparound. A saved
+    ``griped:gripe`` cursor only bounds the backlog tail read after the
+    head — cover for an open queue deeper than ``scan_cap`` — and the
+    pass saves where it stopped for the same purpose.
+
     A ``griped:memory`` cursor switches to the apply re-check's targeted
-    mode (:func:`_griped_memory_target`); the ordinary ``griped:gripe``
-    cursor windows open complaints like every other wide scan.
+    mode (:func:`_griped_memory_target`); there ``griped:gripe`` pins one
+    complaint's story.
     """
     if limit <= 0 or scan_cap <= 0:
         return []
@@ -3453,7 +3463,11 @@ def griped_candidates(
     if "griped:memory" in saved:
         return _griped_memory_target(store, saved, scan_cap=scan_cap, limit=limit)
     key = "griped:gripe"
-    window, nxt = _griped_window(store, before=saved.get(key, 0), size=scan_cap)
+    window, nxt = _griped_window(store, before=0, size=scan_cap)
+    if low := saved.get(key, 0):
+        tail, nxt = _griped_window(store, before=low, size=scan_cap)
+        seen = set(window)
+        window.extend(g for g in tail if g not in seen)
     stories = _gripe_story(store, window)
     out: list[GardenCandidate] = []
     for gid in window:
@@ -4647,7 +4661,9 @@ def run_detectors(
     (``dup_pair:<kind>``, ``untagged:<kind>``, ``redundant_link``); the
     windowed detectors start past them and report where the next run
     should start in ``DetectorRun.cursors``. A skipped detector reports
-    nothing, so its window is retried.
+    nothing, so its window is retried. ``griped`` is the exception: the
+    complaint queue always opens at the newest open gripe and its cursor
+    only bounds the backlog tail (gr657257).
 
     Each detector runs under ``detector_deadline_s`` wall-clock via
     :func:`call_with_deadline` (``<= 0`` disables) — an over-budget
@@ -4801,11 +4817,15 @@ def run_detectors(
         )
         # review_due already checks the SHA, checklist version, explicit
         # expiry and type-specific age. The legacy 30-day skip knows neither
-        # version nor expiry and would hide valid review debt.
+        # version nor expiry and would hide valid review debt. griped is
+        # exempt the other way: the reader's complaint is itself fresh
+        # evidence — a recent review stamp on the memory must not silence
+        # it for a month (gr657257).
         kept = [
             c
             for c in out.candidates
-            if c.detector == "review_due" or (c.target_kind, c.target_id) not in fresh
+            if c.detector in {"review_due", "griped"}
+            or (c.target_kind, c.target_id) not in fresh
         ]
         out.skipped_considered = len(out.candidates) - len(kept)
         out.candidates = kept

@@ -3357,6 +3357,16 @@ def gripe_close_cascade(
     A referrer already at a terminal STATUS (per
     ``BLOCKER_TERMINAL_STATUSES`` — done/won't-do todo, closed gripe,
     abandoned quest) is settled and gets no note.
+
+    A resolved complaint is also no longer an *open concern* (gr657257):
+    the ``raises-concern-about`` / ``concern-raised-by`` edges a filer or
+    the triage write hung off this gripe are the "under review" flag on
+    the named node — left in place they would flag it on reads and feed
+    the argument-graph distrust walk forever. Removing them through
+    ``remove_link`` names the relation, so the retraction ripple
+    recomputes in the same transaction and a downstream stale-premise
+    mark lifts with the close. ``STATUS:parked`` is not terminal and
+    keeps its flag — a parked complaint waits, it is not resolved.
     """
     row = conn.execute(
         "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
@@ -3381,6 +3391,20 @@ def gripe_close_cascade(
         "AND r.retired_at IS NULL",
         (f"waiting-for:gr{gripe_id}",),
     ).fetchall()
+
+    for src_id, dst_id, relation in conn.execute(
+        "SELECT src_ref_id, dst_ref_id, relation FROM links "
+        "WHERE src_chunk_id IS NULL AND dst_chunk_id IS NULL AND ("
+        "(src_ref_id = %s AND relation = 'raises-concern-about') OR "
+        "(dst_ref_id = %s AND relation = 'concern-raised-by'))",
+        (gripe_id, gripe_id),
+    ).fetchall():
+        store.remove_link(
+            src_ref_id=int(src_id),
+            dst_ref_id=int(dst_id),
+            relation=str(relation),
+            conn=conn,
+        )
 
     from precis.todo import BLOCKER_TERMINAL_STATUSES, blocker_terminal_sql
 

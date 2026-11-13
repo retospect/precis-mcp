@@ -390,9 +390,10 @@ def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
 
 
 def test_griped_window_runs_newest_first(store: Store) -> None:
-    """gr657257: the complaint queue is recency-ordered — the newest
-    open ``project:memory`` gripe yields its candidates first, and a
-    truncated run resumes *below* where it stopped."""
+    """gr657257: the complaint queue is recency-ordered *every* pass —
+    the head window always opens at the newest open ``project:memory``
+    gripe, so a complaint filed since the last run never waits out a
+    cursor wraparound."""
     m1 = _memory(store, "First flagged claim.")
     m2 = _memory(store, "Second flagged claim.")
     m3 = _memory(store, "Third flagged claim.")
@@ -402,11 +403,50 @@ def test_griped_window_runs_newest_first(store: Store) -> None:
     order = [c.evidence["gripe"] for c in cand.griped_candidates(store)]
     mine = [g for g in order if g in {g1, g2, g3}]
     assert mine == [g3, g2, g1]
-    # A saved cursor at the middle gripe resumes below it — the unprocessed
-    # tail keeps its place and the top wraps on the next pass.
-    saved = {"griped:gripe": g2}
-    window, _nxt = cand._griped_window(store, before=saved["griped:gripe"], size=10)
-    assert [g for g in window if g in {g1, g2, g3}] == [g1]
+    # A saved cursor bounds only the backlog tail read after the head —
+    # the head still opens at the top, so a cursor at the middle gripe
+    # hides nothing newer.
+    order = [
+        c.evidence["gripe"]
+        for c in cand.griped_candidates(store, cursors={"griped:gripe": g2})
+    ]
+    mine = [g for g in order if g in {g1, g2, g3}]
+    assert mine == [g3, g2, g1]
+
+
+def test_reader_complaint_survives_the_considered_skip(store: Store) -> None:
+    """gr657257: a fresh memory complaint is itself new evidence — the
+    30-day freshly-considered skip must not silence it, while a routine
+    detector's candidate on the same target is still dropped."""
+    from tests.test_garden import _consider
+
+    retired = _memory(store, "A retired claim.")
+    store.retire_ref(retired)
+    flagged = _memory(store, f"A live claim still citing me{retired}.")
+    _gripe(store, f"me{flagged}: wrong hub")
+    _consider(store, "ref", flagged)
+    run = cand.run_detectors(store, passes=("memory",), detector_deadline_s=0)
+    detectors = {c.detector for c in run.candidates if c.target_id == flagged}
+    assert "griped" in detectors
+    assert "dangling_mention" not in detectors
+
+
+def test_resolving_the_gripe_clears_its_concern_flag(store: Store) -> None:
+    """gr657257: the concern edge *is* the flag — a terminal STATUS on
+    the complaint removes it in either stored direction, so the memory's
+    read and the distrust walk only ever see an open complaint."""
+    from precis.dispatch import Hub
+    from precis.handlers.gripe import GripeHandler
+
+    flagged = _memory(store, "A flagged claim about pour boards.")
+    flagged2 = _memory(store, "A second flagged claim.")
+    gid = _gripe(store, f"me{flagged} and me{flagged2}: wrong hub")
+    store.add_link(src_ref_id=gid, dst_ref_id=flagged, relation="raises-concern-about")
+    store.add_link(src_ref_id=flagged2, dst_ref_id=gid, relation="concern-raised-by")
+    GripeHandler(hub=Hub(store=store)).put(
+        id=gid, text="resolved: hub moved", tags=["STATUS:done"]
+    )
+    assert store.links_for(gid, direction="both") == []
 
 
 def test_flagged_gripes_drain_before_routine_candidates(

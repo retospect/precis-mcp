@@ -79,7 +79,7 @@ list, default `all`):
   `raises-concern-about` edge per named memory from triage. One
   `rewrite` candidate per named live memory replays `meta.route`; the
   queue drains newest complaint first, ahead of routine detectors,
-  and a fix or no-change closes it `resolved:`.
+  and a fix or no-change closes it `resolved:`, dropping the flag edge.
 - **host-facts** — opt-in one-off (gr560767): after the operator refreshes
   the machine census (`put(kind='machine', mode='sync')` plus hand-added
   hosts), `host_facts` scans live memory bodies for sentences naming a
@@ -155,33 +155,34 @@ only: a paper merge is a human decision.
 ## Scan windows and budget
 
 **Scan windows.** The wide scans (merge, tag-sweep, redundant_link,
-paper-identity, memory, memory-review, host-facts) resume from saved windows, starting past a
+paper-identity, memory, memory-review, host-facts) resume past a
 cursor saved on the run's `meta.garden.cursors` (`dup_pair:<kind>`,
 `untagged:<kind>`, `redundant_link`, `paper_identity`,
 `dangling_mention:memory`, `thread_shape:memory`, `anchor_rot:memory`,
-`host_facts:memory`, plus
-each memory-review detector's own cursor keys). The next run
-starts where the last stopped and wraps at the end, so successive runs
-cover every kind; a run over fewer kinds carries the other cursors
-forward. The merge window shrinks as a kind grows (each window ref is
-compared with every live ref of its kind, about `scan_cap`² comparisons
-per kind). A detector skipped on its deadline keeps its old cursor.
+`host_facts:memory`, each memory-review detector's own keys) and wrap
+at the end, covering every kind; a run over fewer kinds carries the
+other cursors forward. `griped` is the exception (gr657257): every
+pass opens at the newest open `project:memory` gripe — no wraparound
+wait — and its `griped:gripe` cursor bounds only the backlog tail.
+The merge window shrinks as a kind grows (each window ref compares with
+every live ref of its kind, about `scan_cap`² per kind). A detector
+skipped on its deadline keeps its old cursor.
 
 **Budget.** `max_proposals` shares round-robin across detectors with
 candidates: each takes `max_proposals // n`, then unspent shares move
-to the rest. `meta.garden.proposals_by_detector` records the split.
+to the rest — `griped` drains first. `meta.garden.proposals_by_detector`
+records the split.
 
 **Freshly reviewed targets are skipped.** A candidate whose target was
 `considered` inside the last `considered_days` (default 30) is dropped
 before the proposer — provided the node is unchanged: the consider
 act's `expected_sha` must still equal the node's content sha and the
-stamp must still read `considered` (a demote or a content edit re-opens
-it). Reviewers stamp with the structured `kg-review:<model>:
-<YYYY-MM-DD>:ok|fixed` reason on `edit(mode='trust')` — the stamp's
-date decides freshness (a backdated review stays old), absent it the
-act's recording time. The tick reports the drop count as
+stamp must still read `considered` (a demote or edit re-opens
+it). Reviewers stamp with the `kg-review:<model>:<YYYY-MM-DD>:ok|fixed`
+reason on `edit(mode='trust')` — the stamp's date decides freshness,
+absent it the act's recording time. The tick reports the drop count as
 `meta.garden.skipped_considered`. `considered_days: 0` disables the
-skip.
+skip; `griped` is exempt — the complaint is fresh evidence.
 
 **Review coverage.** `get(kind='taxon', id='/coverage',
 args={'days': 30})` reports per kind: live refs, how many were
@@ -191,21 +192,20 @@ a reviewer actually looked at, and who".
 
 ## When was a memory last gardened?
 
-There is no per-memory `last_gardened_at` column. Distinguish three events:
+No per-memory `last_gardened_at` column; three events differ:
 
-- **Scanned:** detector windows/cursors live on the run's `meta.garden.cursors`.
-  A clean scan writes no per-node event, so the ledger cannot prove a scan time.
+- **Scanned:** detector windows/cursors live on `meta.garden.cursors`; a
+  clean scan writes no per-node event — no provable scan time.
 - **Reviewed:** `reviews.at` dates a proposal or verdict, with `content_sha`
   identifying the version judged. A proposal is not a completed review.
   `revisions.at` and its `trust_acts` record `consider` acts with `expected_sha`;
   `payload.kg_review.date`, when present, is the review date used by the
   freshness filter. `freshly_considered` also requires the current content SHA
-  and `trust_confidence='considered'`. This is general review currency, not
-  proof that the gardener visited every detector for that node.
+  and `trust_confidence='considered'` — review currency, not proof the
+  gardener hit every detector for that node.
 - **Applied:** an approved garden decision with `garden.applied` records an
-  actual change. A merge decision also names its loser and winner; review the
-  payload to find all involved nodes, rather than assuming `target_id` covers
-  both.
+  actual change. A merge decision also names loser and winner; the payload
+  lists every involved node — `target_id` needn't cover both.
 
 Content changes invalidate content-pinned review currency — a bare
 timestamp would skip a memory edited after its review.
@@ -350,8 +350,8 @@ Watches — a `meta.schedule` (`{'every': '2h'}`) plus
 `meta.executor='job_inproc'` and `meta.job_type='graph_garden'`, the
 job-mode automation shape (`precis-recurring-help`,
 `precis-automations`). Each due tick spawns a subtask the dispatch pass
-mints the job from; `spawned_for_tick` makes a tick idempotent and
-holds the next tick while the previous child is open.
+mints the job from; `spawned_for_tick` keeps a tick idempotent while
+its child is open.
 
 The two gates are evaluated **per run**, inside the job's dispatch —
 not by the schedule:

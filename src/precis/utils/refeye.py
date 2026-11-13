@@ -159,7 +159,9 @@ ARGUMENT_RELATIONS: frozenset[str] = frozenset(
         # the memory-gripe flag (gr657257): an open complaint against a
         # node renders on its fisheye ring as ``concern-raised-by`` —
         # the same distrust family as ``qualifies``, so a reader sees
-        # "under review" before trusting the claim.
+        # "under review" before trusting the claim. A resolved complaint
+        # is no flag: the gripe-close cascade removes the edge with the
+        # terminal STATUS write, so only an open concern shows here.
         "raises-concern-about",
         "concern-raised-by",
     }

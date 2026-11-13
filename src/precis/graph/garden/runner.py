@@ -11,9 +11,11 @@ itself once no sibling fix path remains (gr561873).
 
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
-first, and whatever a detector leaves unspent goes to the others. A
-high-volume detector (dangling_edge) can no longer take the whole tick
-because it sorts first.
+first, and whatever a detector leaves unspent goes to the others — with
+one priority ahead of the rotation: a reader-filed memory complaint
+(``griped``, gr657257) drains first under the same budget, newest
+complaint first. A high-volume detector (dangling_edge) can no longer
+take the whole tick because it sorts first.
 
 ``propose=`` is the test seam: a callable ``(store, candidate) ->
 Verdict``. Default :func:`propose_llm` (one routed call per candidate).
