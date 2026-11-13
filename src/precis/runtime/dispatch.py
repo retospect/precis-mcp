@@ -3890,12 +3890,13 @@ class DispatchMixin(RuntimeShape):
             verb == "put" and "reason" not in self._accepted_kwargs(method)
         ):
             reason = args.pop("reason", None)
-            # A nested ``args={'reason': …}`` is the same consumed reason —
-            # hoist it like ``sort=``/``folder=`` on search (td658272) or it
-            # dies at the extras gate as ``keys ['reason'] not accepted by
-            # <kind>.<verb>`` on every handler that doesn't declare it.
+            # A nested ``args={'reason': …}`` on put is the same consumed
+            # reason — hoist it like ``sort=``/``folder=`` on search
+            # (td658272) or it dies at the extras gate. Edit keeps it:
+            # paper's retire/merge_into/restore doors read their own
+            # ``args['reason']`` from the extras.
             extras = args.get(_EXTRAS_KEY)
-            if isinstance(extras, dict):
+            if verb == "put" and isinstance(extras, dict):
                 nested_reason = extras.pop("reason", None)
                 if nested_reason is not None:
                     if reason is not None:
