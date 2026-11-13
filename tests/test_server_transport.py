@@ -226,14 +226,21 @@ def test_session_idle_timeout_reaches_the_session_manager() -> None:
 
 def _session_status_app() -> Any:
     """A Starlette app whose /mcp endpoint returns the status the caller
-    asks for via ``x-status``, wrapped in the session-log middleware."""
+    asks for via ``x-status``, wrapped in the session-log middleware.
+    ``x-body`` overrides the response body and ``x-resp-session`` sets a
+    ``mcp-session-id`` response header, to fake the SDK's error shapes."""
     from starlette.applications import Starlette
     from starlette.responses import PlainTextResponse
     from starlette.routing import Route
 
     async def _endpoint(request: Any) -> Any:
+        headers = {}
+        if session := request.headers.get("x-resp-session"):
+            headers["mcp-session-id"] = session
         return PlainTextResponse(
-            "the-body", status_code=int(request.headers["x-status"])
+            request.headers.get("x-body", "the-body"),
+            status_code=int(request.headers["x-status"]),
+            headers=headers,
         )
 
     app = Starlette(
@@ -244,6 +251,14 @@ def _session_status_app() -> Any:
     )
     server._install_session_log(app, mcp_path="/mcp")
     return app
+
+
+#: What the SDK's ``_validate_session`` puts on the wire for a
+#: non-initialize request without ``Mcp-Session-Id`` (gr660591).
+_MISSING_ID_400_BODY = (
+    '{"jsonrpc":"2.0","id":"server-error",'
+    '"error":{"code":-32600,"message":"Bad Request: Missing session ID"}}'
+)
 
 
 def test_session_log_middleware_logs_the_id_hash_on_a_404(
@@ -309,6 +324,114 @@ def test_session_log_middleware_ignores_ok_and_other_paths(
         client.post("/other", headers={"x-status": "404"})
 
     assert not [r for r in caplog.records if "session=" in r.getMessage()]
+
+
+def test_session_log_rewrites_a_missing_id_400_to_a_reinit_404(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """gr660591: the SDK's bare 400 'Missing session ID' becomes the
+    stale-id 404 + ``mcp-session-error: reinitialize`` — the response
+    shape a client is mandated to re-initialize on. The SDK's dead
+    ``mcp-session-id`` response header is stripped, and the log keeps the
+    original status, the request's JSON-RPC method and the 400 body."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post(
+            "/mcp",
+            headers={
+                "x-status": "400",
+                "x-body": _MISSING_ID_400_BODY,
+                "x-resp-session": "deadbeefsessionid0123456789abcdef",
+            },
+            content='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}',
+        )
+
+    assert resp.status_code == 404
+    assert resp.headers["mcp-session-error"] == "reinitialize"
+    assert resp.headers["cache-control"] == "no-store"
+    assert "mcp-session-id" not in resp.headers
+    assert resp.json() == {
+        "jsonrpc": "2.0",
+        "id": "server-error",
+        "error": {"code": -32600, "message": "Session not found"},
+    }
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "rpc=tools/call" in logged
+    assert "sent=404" in logged
+    assert "Missing session ID" in logged
+    assert "deadbeef" not in logged
+
+
+def test_session_log_keeps_a_400_the_missing_id_did_not_cause(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A parse-error 400 (no session-id marker in the body) stays a 400 —
+    answering 404 would tell the client to re-init and resend the same
+    malformed body forever."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post(
+            "/mcp",
+            headers={
+                "x-status": "400",
+                "x-body": (
+                    '{"jsonrpc":"2.0","id":"server-error",'
+                    '"error":{"code":-32700,"message":"Parse error: x"}}'
+                ),
+            },
+            content="not json",
+        )
+
+    assert resp.status_code == 400
+    assert "mcp-session-error" not in resp.headers
+    assert resp.json()["error"]["message"] == "Parse error: x"
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "rpc=-" in logged
+    assert "sent=404" not in logged
+    assert "Parse error" in logged
+
+
+def test_session_log_keeps_the_marker_400_when_an_id_was_sent() -> None:
+    """The rewrite is only for a request that lacked Mcp-Session-Id; one
+    that carried an id keeps whatever 400 it earned."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    resp = client.post(
+        "/mcp",
+        headers={
+            "x-status": "400",
+            "x-body": _MISSING_ID_400_BODY,
+            "mcp-session-id": "deadbeefsessionid0123456789abcdef",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "mcp-session-error" not in resp.headers
+
+
+def test_session_log_logs_the_rpc_method_on_a_404(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        client.post(
+            "/mcp",
+            headers={
+                "x-status": "404",
+                "mcp-session-id": "deadbeefsessionid0123456789abcdef",
+            },
+            content='{"jsonrpc":"2.0","id":7,"method":"notifications/cancelled"}',
+        )
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "rpc=notifications/cancelled" in logged
 
 
 # ── main()'s transport branching (stdio stays byte-identical) ──────
