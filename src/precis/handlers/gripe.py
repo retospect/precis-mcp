@@ -2074,6 +2074,47 @@ class GripeHandler(NumericRefHandler):
         ]
         return Response(body="\n".join(lines))
 
+    # ── link: meta=/reason= fold onto the edge ─────────────────────
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | list[str | int],
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        meta: dict[str, Any] | None = None,
+        reason: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Take ``meta=``/``reason=`` like the other numeric-ref kinds.
+
+        The verb-level ``link`` signature advertises ``reason=`` on
+        every kind (:mod:`precis.tools.core`), but the kwarg survives
+        the dispatch strictness gate only where the handler declares
+        it — inheriting the base ``link`` meant gripe-to-spec and
+        gripe-to-gripe edges couldn't carry the why the gr626718
+        ruling wants on directional edges (gr662070). ``reason=`` is
+        the kwarg spelling of ``meta={'reason': …}``
+        (:func:`merge_link_reason`, gr626896); the gr626896 title-copy
+        refusal lives in ``store.add_link`` and applies unchanged.
+
+        Edge meta is per-edge payload: ``id=[...]`` fan-in refuses it
+        rather than writing one meta blob onto every edge (same shape
+        as todo, gr657045).
+        """
+        from precis.utils.link_tag_ops import merge_link_reason
+
+        meta = merge_link_reason(meta, reason, mode=mode)
+        if isinstance(id, list):
+            if meta is not None:
+                raise BadInput(
+                    "link meta requires a single gripe id",
+                    next="link each gripe separately with its own meta=/reason=",
+                )
+            return self._link_batch(id, target=target, mode=mode, rel=rel)
+        return self._link(id=id, target=target, mode=mode, rel=rel, meta=meta)
+
     # ── create: ref + body chunk + default tags + (optional) link ──
 
     def _is_ro(self) -> bool:
