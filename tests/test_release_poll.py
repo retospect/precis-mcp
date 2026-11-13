@@ -28,6 +28,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.workers import factory_git as _fg
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types import release_poll as rp
+from precis.workers.job_types import run_slice as rs
 from tests._lane_rows import use_lanes
 from tests._script import load_script
 
@@ -72,6 +73,14 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rp, "_git_lands", lambda: (list(_GIT_LANDS), _GIT_PIN[0]))
     monkeypatch.setattr(
         rp, "_release_lands", lambda rel: list(_REL_LANDS), raising=False
+    )
+    # ``_patch_equivalent_on_main`` shells out through ``run_slice._git``;
+    # a failing stub keeps it fail-closed (and offline) unless a test
+    # re-patches the seam (gr662045).
+    monkeypatch.setattr(
+        rs,
+        "_git",
+        lambda *a: SimpleNamespace(returncode=1, stdout="", stderr="stub"),
     )
 
 
@@ -345,6 +354,149 @@ def test_a_stale_head_on_main_does_not_block(
         f"{API}/git/matching-refs/tags/deployed/",
         f"{API}/compare/{HEAD_SHA}...main",
     ]
+
+
+def test_a_dropped_pass_branch_does_not_block(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr662045: the pass claiming ``r7`` closed ``won't-do`` — the
+    leftover ``release/r7`` head is a dropped pass's litter, not a
+    release in flight, even though the ancestry compare still says main
+    lacks its head (its fix reached main by cherry-pick: same patch,
+    different sha)."""
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(
+        root,
+        {
+            "release": {
+                "rN": "r7",
+                "sha": HEAD_SHA,
+                "range": f"{MAIN_SHA}..{HEAD_SHA}",
+            }
+        },
+    )
+    _drop(store, root)
+    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "behind"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert calls == [
+        f"{API}/compare/prod...{MAIN_SHA}",
+        f"{API}/git/matching-refs/heads/release/",
+        f"{API}/git/matching-refs/tags/deployed/",
+        f"{API}/compare/{HEAD_SHA}...main",
+    ]
+
+
+def test_a_branch_no_pass_claims_still_blocks_without_proof(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal pass for a DIFFERENT round proves nothing about r7's
+    head: unclaimed and not patch-equivalent, it stays in flight."""
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(root, {"release": {"rN": "r8", "sha": "f" * 40}})
+    _drop(store, root)
+    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "behind"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == "release/r7 is in flight" and res.minted is None
+    assert calls == [
+        f"{API}/compare/prod...{MAIN_SHA}",
+        f"{API}/git/matching-refs/heads/release/",
+        f"{API}/git/matching-refs/tags/deployed/",
+        f"{API}/compare/{HEAD_SHA}...main",
+    ]
+
+
+def test_a_patch_equivalent_branch_does_not_block(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr662045: ``git cherry`` marks every commit on the head ``-``
+    (patch-equivalent on main) — the branch is leftover litter even
+    when no release-pass claims it (a hand- or script-cut round)."""
+    monkeypatch.setattr(rp, "_patch_equivalent_on_main", lambda n, sha: True)
+    calls = _fake_github(monkeypatch, heads=[_head(7)], main_cmp={"status": "diverged"})
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None
+    assert calls == [
+        f"{API}/compare/prod...{MAIN_SHA}",
+        f"{API}/git/matching-refs/heads/release/",
+        f"{API}/git/matching-refs/tags/deployed/",
+        f"{API}/compare/{HEAD_SHA}...main",
+    ]
+
+
+def test_patch_equivalent_on_main_cherry_verdicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``git cherry`` verdict itself: ``-``-only output clears; one
+    ``+``, an empty sha or any git failure keeps the block."""
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", "/tmp/slice-root")
+    calls: list[list[str]] = []
+
+    def git(args: list[str], cwd: Any) -> Any:
+        calls.append(args)
+        if "cherry" in args:
+            return SimpleNamespace(returncode=0, stdout="- a\n- b\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "_git", git)
+    assert rp._patch_equivalent_on_main(7, HEAD_SHA) is True
+    assert calls == [
+        [
+            *rp._GIT_SAFE,
+            "fetch",
+            "-q",
+            "origin",
+            "+refs/heads/release/r7:refs/remotes/origin/release/r7",
+        ],
+        [*rp._GIT_SAFE, "rev-list", "--merges", f"origin/main..{HEAD_SHA}"],
+        [*rp._GIT_SAFE, "cherry", "origin/main", HEAD_SHA],
+    ]
+
+    # one ``+`` line: a commit main does not carry even by patch
+    def git_plus(args: list[str], cwd: Any) -> Any:
+        if "cherry" in args:
+            return SimpleNamespace(returncode=0, stdout="- a\n+ c\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "_git", git_plus)
+    assert rp._patch_equivalent_on_main(7, HEAD_SHA) is False
+
+    # ``git cherry`` omits merge commits: an all-``-`` verdict is no proof
+    # when the head carries a merge main lacks (resolution may differ)
+    def git_merge(args: list[str], cwd: Any) -> Any:
+        if "rev-list" in args:
+            return SimpleNamespace(returncode=0, stdout="m" * 40 + "\n", stderr="")
+        if "cherry" in args:
+            return SimpleNamespace(returncode=0, stdout="- a\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "_git", git_merge)
+    assert rp._patch_equivalent_on_main(7, HEAD_SHA) is False
+
+    def git_merge_fail(args: list[str], cwd: Any) -> Any:
+        if "rev-list" in args:
+            return SimpleNamespace(returncode=128, stdout="", stderr="bad")
+        return SimpleNamespace(returncode=0, stdout="- a\n", stderr="")
+
+    monkeypatch.setattr(rs, "_git", git_merge_fail)
+    assert rp._patch_equivalent_on_main(7, HEAD_SHA) is False
+    # git failures and an empty sha fail closed
+    monkeypatch.setattr(
+        rs, "_git", lambda *a: SimpleNamespace(returncode=1, stdout="", stderr="x")
+    )
+    assert rp._patch_equivalent_on_main(7, HEAD_SHA) is False
+    assert rp._patch_equivalent_on_main(7, "") is False
+
+
+def test_pass_ended_needs_a_terminal_claim(store: Store) -> None:
+    """An open claimant still reads in flight; an unclaimed round and a
+    dropped claimant do not."""
+    root = T.mint_release_pass(store).root_id
+    store.stamp_ref_meta(root, {"release": {"rN": "r7", "sha": HEAD_SHA}})
+    assert rp._pass_ended(store, 7) is False
+    _drop(store, root)
+    assert rp._pass_ended(store, 7) is True
+    assert rp._pass_ended(store, 8) is False
 
 
 @pytest.mark.parametrize(
@@ -966,9 +1118,9 @@ def test_two_interleaved_runners_mint_once(
     barrier = threading.Barrier(2)
     real_in_flight = rp._in_flight
 
-    def synced_in_flight(repo: str) -> str | None:
+    def synced_in_flight(*args: Any) -> str | None:
         barrier.wait(timeout=30)  # both runners reach the claim together
-        return real_in_flight(repo)
+        return real_in_flight(*args)
 
     monkeypatch.setattr(rp, "_in_flight", synced_in_flight)
     results: list[rp.PollResult] = []

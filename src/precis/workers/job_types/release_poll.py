@@ -86,7 +86,13 @@ budget is GitHub's unauthenticated 60/h per IP):
    that fails that test still clears when main already contains it
    (``GET .../compare/<head sha>...main`` answers ``identical`` or
    ``ahead``) — a superseded re-cut leaves its stale ref on origin and
-   must not block the next pass forever (gr585785).
+   must not block the next pass forever (gr585785) — or when every
+   ``release-pass`` claiming ``r<N>`` is STATUS-terminal (a dropped
+   pass's leftover branch), or when ``git cherry origin/main <sha>``
+   marks every unique commit ``-`` — the fixes reached main by
+   cherry-pick, which the ancestry compare can never see (gr662045); a
+   head carrying a merge main lacks never clears this way (``git cherry``
+   skips merges).
 7. The sha claim — one pass per cut sha (td573430 fix round 1): inside
    one transaction under the ``_MINT_LOCK_KEY`` advisory lock the pass
    re-checks the open-pass gate and refuses when a
@@ -1174,9 +1180,77 @@ def _merged_to_main(base: str, sha: str) -> bool:
     return isinstance(cmp_, dict) and cmp_.get("status") in ("identical", "ahead")
 
 
-def _in_flight(repo: str) -> str | None:
+def _pass_ended(store: Any, n: int) -> bool:
+    """Every live ``release-pass`` todo claiming ``release/r<n>`` (its
+    root's ``meta.release.rN``) is STATUS-terminal — the branch is the
+    leftover of a pass that ended (a drop, a hand close), not a release
+    in flight (gr662045). ``False`` when no pass claims the round or any
+    claimant is still live."""
+    found = False
+    for rid in _release_pass_ids(store):
+        rel = _release.release_of(store, rid)
+        if rel is None or str(rel.get("rN") or "") != f"r{n}":
+            continue
+        status = next(
+            (str(t.value) for t in store.tags_for(rid) if t.prefix == "STATUS"),
+            "open",
+        )
+        if status not in TERMINAL_TODO_STATUSES:
+            return False
+        found = True
+    return found
+
+
+def _patch_equivalent_on_main(n: int, sha: str) -> bool:
+    """``git cherry origin/main <sha>`` marks every commit the head adds
+    ``-`` — each is patch-equivalent to a commit main already has, the
+    shape a cherry-picked fix leaves on a dropped branch (gr662045). An
+    ancestry compare cannot see it (the shas differ). ``False`` on an
+    empty sha or any git failure — when unsure, the head stays in
+    flight. ``git cherry`` omits merge commits, so a clean verdict is no
+    proof for a branch carrying one: any merge unique to the head
+    (``rev-list --merges origin/main..<sha>``) keeps it in flight, as its
+    resolution may hold changes main lacks. Seam: tests patch it."""
+    from precis.workers.job_types import run_slice as _rs
+
+    if not sha:
+        return False
+    tracking = f"refs/remotes/origin/release/r{n}"
+    try:
+        root = _rs.slice_root()
+        proc = _rs._git(
+            [
+                *_GIT_SAFE,
+                "fetch",
+                "-q",
+                "origin",
+                f"+refs/heads/release/r{n}:{tracking}",
+            ],
+            root,
+        )
+        if proc.returncode != 0:
+            return False
+        proc = _rs._git(
+            [*_GIT_SAFE, "rev-list", "--merges", f"origin/main..{sha}"], root
+        )
+        if proc.returncode != 0 or proc.stdout.strip():
+            return False
+        proc = _rs._git([*_GIT_SAFE, "cherry", "origin/main", sha], root)
+        if proc.returncode != 0:
+            return False
+    except Exception:
+        return False
+    return all(
+        line.startswith("-") for line in proc.stdout.splitlines() if line.strip()
+    )
+
+
+def _in_flight(store: Any, repo: str) -> str | None:
     """The first in-flight ``release/r<N>`` on origin (``release/r<N>``),
-    else ``None``. Raises :class:`precis.plans.pr_class.GitHubUnreadable`."""
+    else ``None``. Raises :class:`precis.plans.pr_class.GitHubUnreadable`.
+    A head that reads in flight still clears when main holds it
+    (gr585785), every pass claiming the round is terminal, or its
+    commits are all patch-equivalent on main (gr662045)."""
     base = _API.format(repo=repo)
     heads_url = f"{base}/git/matching-refs/heads/release/"
     heads = _matching_refs(heads_url, _HEAD_RE, _HEAD_CAP)
@@ -1198,8 +1272,15 @@ def _in_flight(repo: str) -> str | None:
                 "identical",
                 "ahead",
             )
-        if branch_in_flight(has_tag, prod_has_head) and not _merged_to_main(base, sha):
-            return f"release/r{n}"
+        if not branch_in_flight(has_tag, prod_has_head):
+            continue
+        if (
+            _merged_to_main(base, sha)
+            or _pass_ended(store, n)
+            or _patch_equivalent_on_main(n, sha)
+        ):
+            continue
+        return f"release/r{n}"
     return None
 
 
@@ -2738,7 +2819,7 @@ def run_pass(
                 f"— they hold the deploy, not the cut "
                 f"({', '.join(v.unit.land for v in uncleared)})"
             )
-        flying = _in_flight(res.repo)
+        flying = _in_flight(store, res.repo)
         if flying is not None:
             res.blocker = f"{flying} is in flight"
             return res
