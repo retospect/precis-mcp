@@ -178,6 +178,15 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("gripe", "edit", "landed"),
         ("gripe", "edit", "session"),
         ("gripe", "edit", "tree"),
+        # -- gripe: summary/stage ledger keys (gr595551, da3cb4580), args=
+        # by design — ``put(id=N, text=…, args={'stage': '<slug>'})``
+        # appends a pipeline-stage entry and ``edit(id=N, mode='summary',
+        # args={'summary': …, 'through': N})`` drives the small-model fold
+        # (precis-gripe-help); the pipeline is the only writer and three
+        # params are not worth top-level schema weight.
+        ("gripe", "put", "stage"),
+        ("gripe", "edit", "summary"),
+        ("gripe", "edit", "through"),
         # -- todo: edit(mode='gate') sha-in-prod fill (gr597921), args= by
         # design — a rare ops door, not worth advertised schema weight.
         ("todo", "edit", "sha"),
