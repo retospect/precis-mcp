@@ -731,13 +731,30 @@ def _bench_stems() -> list[str]:
         return []
 
 
+def _bench_stem_hits(needle: str) -> list[str]:
+    """The held stems containing ``needle`` (:func:`match_stems`'s
+    normalised substring) — the refusal's narrower address book when a
+    ``bench:`` miss was ambiguous rather than empty (gr660023). Any
+    lookup fault is an empty list, never an apply failure."""
+    try:
+        from precis.bench import raw as bench_raw
+        from precis.bench import runner as bench_runner
+
+        return bench_raw.match_stems(bench_runner.default_results_dir(), needle)
+    except Exception:
+        return []
+
+
 def _resolve_read_ref(store: Store, ident: str) -> Any | None:
     """Resolve a ``read`` entry's ``ref`` — any well-formed universal
     handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live, a
     ``web:<ref_id|slug>`` cache address (a fetched page carries no
     universal handle — gr573684), or a ``bench:<stem>`` results-file
     address (gr618517 — a benchmark run's raw log lives on disk, not in
-    the store; resolves to its ``Path``, a truthy non-ref)."""
+    the store; resolves to its ``Path``, a truthy non-ref). The reserved
+    ``bench:index`` address resolves to the results dir — the run index
+    the read renders (gr660023) — and a stem that is a unique substring
+    of one held run resolves to that run."""
     ident = ident.strip()
     if ident.lower().startswith("web:"):
         return _resolve_cache_ref(store, "web", ident[4:])
@@ -746,9 +763,16 @@ def _resolve_read_ref(store: Store, ident: str) -> Any | None:
         from precis.bench import runner as bench_runner
 
         try:
-            return bench_raw.resolve_results(
-                bench_runner.default_results_dir(), ident[6:]
-            )
+            results_dir = bench_runner.default_results_dir()
+            name = ident[6:].strip()
+            if name.lower() == bench_raw.INDEX_STEM:
+                return results_dir
+            path = bench_raw.resolve_results(results_dir, name)
+            if path is None:
+                hits = bench_raw.match_stems(results_dir, name)
+                if len(hits) == 1:
+                    path = results_dir / f"{hits[0]}.json"
+            return path
         except Exception:
             return None
     resolved = store.resolve_handle(ident)
@@ -757,14 +781,29 @@ def _resolve_read_ref(store: Store, ident: str) -> Any | None:
 
 def _read_refusal(ident: str) -> str:
     """The apply-time refusal line for an unresolvable ``read`` ref —
-    a ``bench:`` miss names the held run stems so the next tick can aim
-    again (gr618517)."""
+    a ``bench:`` miss names the held run stems matching the attempted
+    name (all of them when nothing matched) and the ``bench:index``
+    address, so the next tick can aim again without a second miss
+    (gr618517, gr660023)."""
     if ident.lower().startswith("bench:"):
-        stems = _bench_stems()
-        listing = ", ".join(stems[:12]) or "(none held)"
-        if len(stems) > 12:
-            listing += f", +{len(stems) - 12} more"
-        return f"{ident}: no such results file — held runs: {listing}"
+        hits = _bench_stem_hits(ident[6:])
+        pool = hits or _bench_stems()
+        which = f" matching {ident[6:].strip()!r}" if hits else ""
+        # The recovery hint leads: apply_reads clips the line to 400 chars.
+        head = (
+            f"{ident}: no such results file — bench:index lists every run "
+            f"with dates and filters by substring; held runs{which}: "
+        )
+        budget = 390 - len(head)
+        shown: list[str] = []
+        for stem in pool:
+            if sum(len(x) + 2 for x in shown) + len(stem) > budget - 12:
+                break
+            shown.append(stem)
+        listing = ", ".join(shown) or "(none held)"
+        if len(pool) > len(shown) and shown:
+            listing += f", +{len(pool) - len(shown)} more"
+        return head + listing
     return f"{ident}: does not resolve to a held ref/chunk"
 
 

@@ -165,6 +165,21 @@ def _parser() -> argparse.ArgumentParser:
         "series per arm (and per file)",
     )
 
+    idx = sub.add_parser(
+        "index",
+        help="list the held runs — stem, dates, set, caller, counts; "
+        "--match filters by substring over the line or the file text "
+        "(a date, a caller, a td<id> the file names)",
+    )
+    idx.add_argument(
+        "--match",
+        default=None,
+        metavar="NEEDLE",
+        help="only runs whose stem, index line or file text contains this",
+    )
+    idx.add_argument("--offset", type=int, default=0)
+    idx.add_argument("--limit", type=int, default=raw.DEFAULT_LIMIT)
+
     raw_p = sub.add_parser(
         "raw",
         help="read a results file's raw log in bounded slices: one block per "
@@ -382,6 +397,21 @@ def _report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _index(args: argparse.Namespace) -> int:
+    try:
+        print(
+            raw.index_markdown(
+                runner.default_results_dir(),
+                match=args.match,
+                offset=args.offset,
+                limit=args.limit,
+            )
+        )
+    except ValueError as exc:
+        raise runner.BenchRunError(str(exc)) from exc
+    return 0
+
+
 def _raw(args: argparse.Namespace) -> int:
     results = runner.load_results(args.results)
     try:
@@ -419,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
             return _report(args)
         if args.cmd == "raw":
             return _raw(args)
+        if args.cmd == "index":
+            return _index(args)
         return _ingest(args) if args.cmd == "ingest" else _manifest(args)
     except (corpus.BenchCorpusError, runner.BenchRunError) as exc:
         print(f"error: {exc}", file=sys.stderr)

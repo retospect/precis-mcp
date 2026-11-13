@@ -32,11 +32,21 @@ lines. Runs written before schema 3 carry no ``header.tool_calls`` tag;
 the ``calls`` section then falls back to the run's ``started_at``–
 ``ended_at`` window (untagged rows only — labelled, since a shared DB
 can interleave unrelated calls).
+
+The reserved ``bench:index`` address (``INDEX_STEM``; gr660023) renders
+the run index — one :func:`index_line` per held file with the stem plus
+its dates, set, caller and the ``header.todo`` handle the run was
+launched under (schema 5+) — and its ``section`` filters the listing by
+normalised substring over the line or the raw file text: the
+search-by-date or by-todo-reference the quest asked for so it can name
+the right stem. A ``bench:`` address that is a unique stem substring
+(:func:`match_stems`) resolves to that run outright.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -156,6 +166,180 @@ def resolve_results(results_dir: Path, name: str) -> Path | None:
         return None
     path = results_dir / f"{stem}.json"
     return path if path.is_file() else None
+
+
+# ── the run index (gr660023) ──────────────────────────────────────────
+
+#: The reserved ``bench:`` read address that renders the run index — one
+#: line per held results file, so a tick can NAME the right ``bench:<stem>``
+#: instead of guessing. Checked before stem resolution, the way the
+#: ``calls`` section shadows a task id: a results file literally named
+#: ``index.json`` is unreachable by address (none exists — stems mint as
+#: ``<day>Z-<sha>-<set>-<caller>``).
+INDEX_STEM = "index"
+
+
+def _norm(needle: str) -> str:
+    """A search needle's matchable form — lowercase, alphanumerics only —
+    so ``2026-11-09``, ``20261109`` and ``2026/11/09`` are the same date,
+    and ``td 604857`` hits ``td604857`` (gr660023)."""
+    return re.sub(r"[^a-z0-9]+", "", needle.lower())
+
+
+def match_stems(results_dir: Path, needle: str) -> list[str]:
+    """Held stems containing ``needle`` (normalised substring), newest
+    first — the forgiving half of a ``bench:`` address: a date fragment
+    or a caller/set word names a run without the full stem. A trailing
+    ``.json`` is tolerated, as in :func:`resolve_results`."""
+    n = _norm(needle.removesuffix(".json"))
+    if not n:
+        return []
+    return [s for s in list_results_stems(results_dir) if n in _norm(s)]
+
+
+def run_index(results_dir: Path) -> list[dict[str, Any]]:
+    """One index entry per held results file, newest first — the data
+    behind the ``bench:index`` read and ``scripts/bench index``. Each
+    entry carries the ``stem`` (its ``bench:<stem>`` address) plus the
+    header facts a search needs to pick a run: ``started_at``/``ended_at``,
+    ``set``, ``caller``, ``schema``, ``precis_sha``/``git_dirty``, the
+    ``todo`` handle the run was launched under (schema 5+), and its
+    row/arm/task counts. An unreadable file still lists — the stem is
+    the address — with ``readable`` False."""
+    out: list[dict[str, Any]] = []
+    if not results_dir.is_dir():
+        return out
+    for p in results_dir.glob("*.json"):
+        if not p.is_file():
+            continue
+        e: dict[str, Any] = {
+            "stem": p.stem,
+            "path": p,
+            "mtime": p.stat().st_mtime,
+            "readable": False,
+        }
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            h = data["header"]
+            rows = data["rows"]
+            if not isinstance(h, Mapping) or not isinstance(rows, list):
+                raise ValueError("malformed results file")
+            if not all(isinstance(r, Mapping) for r in rows):
+                raise ValueError("malformed results rows")
+            n_arms = len({r.get("arm") for r in rows})
+            n_tasks = len({r.get("task") for r in rows})
+        except Exception:
+            e["note"] = "unreadable results file"
+        else:
+            caller = h.get("caller")
+            e.update(
+                readable=True,
+                set=h.get("set"),
+                caller=caller.get("name") if isinstance(caller, Mapping) else None,
+                schema=h.get("schema"),
+                precis_sha=h.get("precis_sha"),
+                git_dirty=h.get("git_dirty"),
+                todo=h.get("todo"),
+                started_at=h.get("started_at"),
+                ended_at=h.get("ended_at"),
+                n_rows=len(rows),
+                n_arms=n_arms,
+                n_tasks=n_tasks,
+            )
+        out.append(e)
+    out.sort(key=lambda e: (str(e.get("started_at") or ""), e["mtime"]), reverse=True)
+    return out
+
+
+def index_line(e: Mapping[str, Any]) -> str:
+    """One run's index line — the stem (its ``bench:<stem>`` address),
+    then the facts a reader picks a run by."""
+    if not e.get("readable"):
+        return f"{e['stem']} — ({e.get('note') or 'unreadable results file'})"
+    bits = [
+        f"set {e.get('set') or '?'}",
+        f"caller {e.get('caller') or '?'}",
+        f"{e.get('started_at') or '?'} → {e.get('ended_at') or '?'}",
+        f"schema {e.get('schema') if e.get('schema') is not None else '?'}",
+        f"{e.get('n_rows', 0)} rows",
+        f"{e.get('n_arms', 0)} arms",
+        f"{e.get('n_tasks', 0)} tasks",
+    ]
+    if e.get("todo"):
+        bits.append(str(e["todo"]))
+    if e.get("precis_sha"):
+        bits.append(f"sha {str(e['precis_sha'])[:9]}")
+    if e.get("git_dirty"):
+        bits.append("dirty")
+    return f"{e['stem']} — {' · '.join(bits)}"
+
+
+def file_mentions(path: Path, needle: str) -> bool:
+    """Normalised substring scan of a results file's raw JSON — how a
+    ``bench:index`` filter finds a run by what the file *says* (a
+    ``header.todo`` handle, a gripe a ``known_defect`` cites), not only
+    by what its stem is called."""
+    n = _norm(needle)
+    if not n:
+        return False
+    try:
+        return n in _norm(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+
+
+def index_lines(results_dir: Path, *, match: str | None = None) -> list[str]:
+    """The formatted index lines the ``bench:index`` read renders —
+    every held run, or with ``match`` only the runs whose index line or
+    file text contains it (search-by-date or by-reference, gr660023)."""
+    runs = run_index(results_dir)
+    n = _norm(match) if match is not None else ""
+    out: list[str] = []
+    for e in runs:
+        line = index_line(e)
+        if n and n not in _norm(line) and not file_mentions(e["path"], match or ""):
+            continue
+        out.append(line)
+    return out
+
+
+def index_markdown(
+    results_dir: Path,
+    *,
+    match: str | None = None,
+    offset: int = 0,
+    limit: int = DEFAULT_LIMIT,
+) -> str:
+    """The run index in one bounded slice — the ``scripts/bench index``
+    render: a header line naming the window, one :func:`index_line` per
+    matching run, and a ``Next:`` continuation when runs remain past the
+    window (the same paging convention as :func:`raw_markdown`)."""
+    if offset < 0 or limit < 1:
+        raise ValueError("offset must be >= 0 and limit >= 1")
+    lines = index_lines(results_dir, match=match)
+    scope = f" matching {match!r}" if match else ""
+    end = min(offset + limit, len(lines))
+    out = [
+        f"# bench run index{scope} — runs {offset}-{end} of {len(lines)} "
+        f"({results_dir})"
+    ]
+    out.extend(lines[offset:end])
+    if end < len(lines):
+        call = "scripts/bench index"
+        if match:
+            call += f" --match {shlex.quote(match)}"
+        call += f" --offset {end} --limit {limit}"
+        out.append(
+            render_next_section(
+                [
+                    (
+                        call,
+                        f"read runs {end}-{min(end + limit, len(lines))} of {len(lines)}",
+                    )
+                ]
+            )
+        )
+    return "\n".join(out) + "\n"
 
 
 def raw_markdown(

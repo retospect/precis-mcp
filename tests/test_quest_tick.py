@@ -4959,6 +4959,159 @@ class TestBenchRead:
         assert "held: (none held)" in build_tick_prompt(store, _qref(store, qid))
 
 
+class TestBenchIndexRead:
+    """gr660023 — qu604835 could not name the Run #2/#3 stems a
+    ``bench:<stem>`` read needs: >12 stems truncate the ``held:`` book,
+    and a bare stem lists no dates. ``bench:index`` renders one line per
+    held run — stem, dates, set, caller, counts, the ``td<id>`` the run
+    was launched under — ``section`` filtering it by date or by
+    reference, and a unique stem substring resolves to the run."""
+
+    def test_bench_index_lists_held_runs(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        s1 = _bench_results(
+            "20261109Z-aaaa111-quick-triage",
+            tmp_path,
+            started_at="2026-11-09T10:00:00Z",
+            ended_at="2026-11-09T12:00:00Z",
+            todo="td604857",
+        )
+        s2 = _bench_results(
+            "20261110Z-bbbb222-full-rowkw",
+            tmp_path,
+            set="full",
+            started_at="2026-11-10T09:00:00Z",
+            ended_at="2026-11-10T11:00:00Z",
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving naming a run")
+        store.update_ref(qid, meta_patch={"pending_reads": [{"ref": "bench:index"}]})
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "# bench run index — 2 held runs" in prompt
+        assert s1 in prompt and s2 in prompt
+        assert "td604857" in prompt
+        assert "bench:<stem>" in prompt
+
+    def test_bench_index_section_filters_by_date_and_todo(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        s1 = _bench_results(
+            "20261109Z-aaaa111-quick-triage",
+            tmp_path,
+            started_at="2026-11-09T10:00:00Z",
+            ended_at="2026-11-09T12:00:00Z",
+            todo="td604857",
+        )
+        s2 = _bench_results(
+            "20261110Z-bbbb222-full-rowkw",
+            tmp_path,
+            started_at="2026-11-10T09:00:00Z",
+            ended_at="2026-11-10T11:00:00Z",
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving searching the runs")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": "bench:index", "section": "2026-11-09"},
+                    {"ref": "bench:index", "section": "td604857"},
+                    {"ref": "bench:index", "section": "no-such-needle"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        blocks = prompt.split("### ")
+        date_block = next(
+            b for b in blocks if 'section "2026-11-09"' in b.splitlines()[0]
+        )
+        assert s1 in date_block and s2 not in date_block
+        todo_block = next(
+            b for b in blocks if 'section "td604857"' in b.splitlines()[0]
+        )
+        assert s1 in todo_block and s2 not in todo_block
+        assert "no held bench run matches 'no-such-needle'" in prompt
+
+    def test_bench_read_unique_substring_resolves(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A date fragment matching exactly one held run reads it — no
+        full stem needed."""
+        stem = _bench_results("20261109Z-aaaa111-quick-triage", tmp_path)
+        _bench_results("20261110Z-bbbb222-full-rowkw", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving abbreviating a stem")
+        store.update_ref(qid, meta_patch={"pending_reads": [{"ref": "bench:20261109"}]})
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert f"'20261109' resolved to {stem}" in prompt
+        assert "# raw log quick (caller triage)" in prompt
+
+    def test_bench_read_ambiguous_substring_lists_the_matches(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """An ambiguous name answers with the filtered index, not a bare
+        miss — the next tick can aim again without another refused
+        guess."""
+        s1 = _bench_results("20261109Z-aaaa111-quick-triage", tmp_path)
+        s2 = _bench_results(
+            "20261110Z-aaaa222-quick-rowkw",
+            tmp_path,
+            started_at="2026-11-10T09:00:00Z",
+        )
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving guessing half a stem")
+        store.update_ref(qid, meta_patch={"pending_reads": [{"ref": "bench:aaaa"}]})
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "# bench run index" in prompt
+        assert s1 in prompt and s2 in prompt
+
+    def test_bench_index_and_unique_substring_reads_queue(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Apply-side: ``bench:index`` and a unique-substring stem queue
+        like any other read; an ambiguous name is refused naming the
+        matching stems and the index address."""
+        s1 = _bench_results("20261109Z-aaaa111-quick-triage", tmp_path)
+        s2 = _bench_results("20261110Z-aaaa222-quick-rowkw", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving queuing a search")
+        payload = {
+            "logbook": [],
+            "read": [
+                {"ref": "bench:index"},
+                {"ref": "bench:20261109"},
+                {"ref": "bench:aaaa"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.reads_queued == 2
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any(
+            "read refused" in t
+            and "bench:aaaa" in t
+            and s1 in t
+            and s2 in t
+            and "bench:index" in t
+            for t in texts
+        )
+
+    def test_bench_refusal_keeps_index_hint_within_400_chars(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Many held stems must not push the ``bench:index`` hint past the
+        400-char clip ``apply_reads`` applies to the refusal."""
+        for i in range(30):
+            _bench_results(f"20261109Z-abcdef{i:02d}-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        from precis.quest.search import _read_refusal
+
+        msg = _read_refusal("bench:nope")
+        assert len(msg) <= 400
+        assert "bench:index" in msg
+        assert "more" in msg
+
+
 def _ledger_rows(store: Any, tag: str | None, ts: str | None = None) -> None:
     """``tool_calls`` rows as a bench run's dispatches would write them —
     ``tag`` on ``source`` is the schema-3 correlation (``None`` = an

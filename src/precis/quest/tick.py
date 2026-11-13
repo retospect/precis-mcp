@@ -60,6 +60,8 @@ from precis.utils.llm.json_reply import extract_json_object
 from precis.utils.text import excerpt
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from precis.store import Ref, Store
 
 log = logging.getLogger(__name__)
@@ -1067,6 +1069,45 @@ def _bench_ledger_text(store: Store, results: Mapping[str, Any], *, page: int) -
     return out + f"\n\n({hint})"
 
 
+def _bench_index_text(
+    results_dir: Path, *, match: str | None = None, page: int = 1
+) -> str:
+    """The ``bench:index`` read (gr660023) — the run index: one
+    :func:`precis.bench.raw.index_line` per held results file carrying
+    the stem plus the run's dates, set, caller, row/arm/task counts and
+    the ``td<id>`` the run was launched under (``header.todo``, schema
+    5+). ``section`` is the filter: a normalised substring over the
+    index line or the raw file text, so a date (``20261109``), a caller,
+    or a todo/handle the file names is the search-by-date or
+    by-todo-reference the quest asked for. ``page`` windows the listing.
+    """
+    from precis.bench import raw as bench_raw
+
+    lines = bench_raw.index_lines(results_dir, match=match)
+    scope = f" matching {match!r}" if match else ""
+    if not lines:
+        if match:
+            return (
+                f"(no held bench run matches {match!r} — the filter is a "
+                "substring over stem, index line and file text; drop "
+                '"section" for the full index)'
+            )
+        return "(no bench runs held — the results dir is empty)"
+    pages = _bench_pages(lines)
+    if page > len(pages):
+        return f"(page {page} out of {len(pages)} — {len(lines)} runs{scope})"
+    start, end = pages[page - 1]
+    out = f"# bench run index — {len(lines)} held run{'s' if len(lines) != 1 else ''}{scope}"
+    out += "\n\n" + "\n".join(lines[start:end])
+    hint = (
+        f"page {page}/{len(pages)}; {end}/{len(lines)} runs — "
+        '"section" filters by substring (a date 20261109, a caller, a '
+        'td<id> the file names); "page" windows; `bench:<stem>` reads '
+        "the run's raw log"
+    )
+    return out + f"\n\n({hint})"
+
+
 def _read_bench_text(
     store: Store, ident: str, *, section: str | None = None, page: int = 1
 ) -> str:
@@ -1080,18 +1121,38 @@ def _read_bench_text(
     ``result_tokens_est``; :func:`_bench_ledger_text`) and ``page``
     windows the long table, so the quest's inquiry step reaches every
     arm and per-call token log the truncated views could not show —
-    with no shell access (its only tool channel is the JSON payload)."""
+    with no shell access (its only tool channel is the JSON payload).
+
+    ``bench:index`` (:func:`_bench_index_text`, gr660023) is the run
+    index — how a tick names the right stem without guessing; a stem
+    that is a unique substring of one held run resolves to it, and an
+    ambiguous one renders the filtered index instead of a bare miss."""
     from precis.bench import raw as bench_raw
     from precis.bench import runner as bench_runner
 
     results_dir = bench_runner.default_results_dir()
+    if ident.strip().lower() == bench_raw.INDEX_STEM:
+        return _bench_index_text(results_dir, match=section, page=page)
     path = bench_raw.resolve_results(results_dir, ident)
+    note = ""
     if path is None:
-        stems = bench_raw.list_results_stems(results_dir)
-        listing = ", ".join(stems[:_READ_SECTION_NAMES_MAX]) or "(none held)"
-        if len(stems) > _READ_SECTION_NAMES_MAX:
-            listing += f", +{len(stems) - _READ_SECTION_NAMES_MAX} more"
-        return f"(no results file named {ident!r} — held runs: {listing})"
+        hits = bench_raw.match_stems(results_dir, ident)
+        if len(hits) == 1:
+            path = results_dir / f"{hits[0]}.json"
+            note = (
+                f"({ident!r} resolved to {hits[0]} — the one held run matching it)\n\n"
+            )
+        elif hits:
+            return _bench_index_text(results_dir, match=ident, page=page)
+        else:
+            stems = bench_raw.list_results_stems(results_dir)
+            listing = ", ".join(stems[:_READ_SECTION_NAMES_MAX]) or "(none held)"
+            if len(stems) > _READ_SECTION_NAMES_MAX:
+                listing += f", +{len(stems) - _READ_SECTION_NAMES_MAX} more"
+            return (
+                f"(no results file named {ident!r} — held runs: {listing}; "
+                "bench:index lists every run with dates and filters by substring)"
+            )
     try:
         results = bench_runner.load_results(path)
     except Exception as exc:
@@ -1132,7 +1193,7 @@ def _read_bench_text(
     start, end = pages[page - 1]
     h = results["header"]
     caller = h.get("caller", {}).get("name", "?")
-    out = (
+    out = note + (
         f"# raw log {h.get('set', '?')} (caller {caller}) — "
         f"rows {start}-{end} of {len(sel)}"
     )
@@ -2494,7 +2555,7 @@ derive_from clone>", "why": "<the elementary step this edge measures>"}}
   ],
   "read": [
     {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id>, web:<id> or \
-bench:<run-stem> of a held item you want text of>", "why": "<what you are \
+bench:index|bench:<run-stem> of a held item you want text of>", "why": "<what you are \
 looking for>", "section": "<optional heading name>", "page": \
 "<optional 1-based page>"}}
   ],
@@ -2548,8 +2609,12 @@ results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
 per-arm rows with their per-call token logs — on it `"section"` names an \
 arm, a task id, or `calls` for the run's raw `tool_calls` log records \
 (the ledger's per-call `result_tokens_est`, for spot-checking the file's \
-`tokens` estimates), and a refused `bench:` read answers with the stems \
-held. \
+`tokens` estimates). `bench:index` instead lists every held run — stem, \
+dates, set, caller, row/arm/task counts and the `td<id>` the run was \
+launched under — and its `"section"` filters that list by substring \
+(a date `20261109`, a caller, a `td<id>` the file names); a `bench:` \
+read whose stem is a unique substring of one held run reads it, and a \
+refused `bench:` read answers with the matching stems held. \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \
@@ -2762,7 +2827,7 @@ it would unblock>"}}
   ],
   "read": [
     {{"ref": "<fi<id>, pa<id>, pc<id>, td<id>, st<id>, web:<id> or \
-bench:<run-stem> of a held item you want text of>", "why": "<what you are \
+bench:index|bench:<run-stem> of a held item you want text of>", "why": "<what you are \
 looking for>", "section": "<optional heading name>", "page": \
 "<optional 1-based page>"}}
   ],
@@ -2794,8 +2859,12 @@ results-file name, e.g. `20261109Z-0123456-quick-triage`) pages a run's \
 per-arm rows with their per-call token logs — on it `"section"` names an \
 arm, a task id, or `calls` for the run's raw `tool_calls` log records \
 (the ledger's per-call `result_tokens_est`, for spot-checking the file's \
-`tokens` estimates), and a refused `bench:` read answers with the stems \
-held. \
+`tokens` estimates). `bench:index` instead lists every held run — stem, \
+dates, set, caller, row/arm/task counts and the `td<id>` the run was \
+launched under — and its `"section"` filters that list by substring \
+(a date `20261109`, a caller, a `td<id>` the file names); a `bench:` \
+read whose stem is a unique substring of one held run reads it, and a \
+refused `bench:` read answers with the matching stems held. \
 `fetch` (0–{fetch_cap}) does two jobs: a `paper` entry requests the full \
 text of a served abstract stub — the `pa<id>` of a paper marked \
 `full text: none` (never `requested`, that fetch is already queued); \

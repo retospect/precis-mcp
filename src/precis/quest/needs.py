@@ -122,23 +122,45 @@ def _held_bench_stems() -> list[str]:
         return []
 
 
-def _bench_reader_hint() -> str:
-    """The ``bench:<stem>`` affordance plus the live address book — the
-    stems are unguessable, and the prompt's ``read`` docs now list them
-    inline (``held: …``, gr647524), so the answer embeds the same
-    listing directly (gr646528)."""
-    stems = _held_bench_stems()
+def _stem_listing(stems: list[str]) -> str:
     listing = ", ".join(stems[:12]) or (
         "(none held — this host's results dir has no run files)"
     )
     if len(stems) > 12:
         listing += f", +{len(stems) - 12} more"
+    return listing
+
+
+def _bench_reader_hint() -> str:
+    """The ``bench:<stem>`` affordance plus the live address book — the
+    stems are unguessable, and the prompt's ``read`` docs now list them
+    inline (``held: …``, gr647524), so the answer embeds the same
+    listing directly (gr646528)."""
     return (
         "the `bench:<run-stem>` `read` opens a run's raw results log — "
         'per-arm rows with the per-call token log; `"section"` names an '
-        "arm, a task id, or `calls` (the run's tool_calls ledger). Held "
-        "runs are also listed inline in the `read` docs (held: …) — "
-        f"currently: {listing}"
+        "arm, a task id, or `calls` (the run's tool_calls ledger). "
+        "`bench:index` lists every held run with dates and its `section` "
+        "filters by substring (a date, a caller, a `td<id>` the file "
+        "names). Held runs are also listed inline in the `read` docs "
+        f"(held: …) — currently: {_stem_listing(_held_bench_stems())}"
+    )
+
+
+def _bench_index_hint() -> str:
+    """The ``bench:index`` affordance — the run index/search the need
+    declares missing, answered with the live stem listing so the next
+    tick can aim (gr660023 — qu604835 could not name the Run #2/#3
+    stems a ``bench:<stem>`` read needs)."""
+    return (
+        "the `bench:index` `read` lists every held run — stem, dates, "
+        "set, caller, row/arm/task counts and the `td<id>` the run was "
+        'launched under — and its `"section"` filters by substring: a '
+        "date `20261109`, a caller, or a `td<id>` the file names "
+        "(search-by-date or by-todo-reference). `bench:<stem>` then "
+        "reads that run's raw log; a stem that is a unique substring of "
+        "one held run resolves to it. Held runs: "
+        f"{_stem_listing(_held_bench_stems())}"
     )
 
 
@@ -161,6 +183,13 @@ _HAVE_CAPABILITIES: tuple[tuple[str, Callable[[], str]], ...] = (
     ("bench-log-reader", _bench_reader_hint),
     ("bench-results-reader", _bench_reader_hint),
     ("raw-results-reader", _bench_reader_hint),
+    # gr660023 — the run index/search is its own capability: a need for
+    # it is answered with the ``bench:index`` affordance, not filed. The
+    # needles keep the ``-run`` tail on purpose, same as ``-reader``
+    # above — bare ``bench-index`` would substring-hit ``workbench-index``.
+    ("bench-run-index", _bench_index_hint),
+    ("bench-run-search", _bench_index_hint),
+    ("bench-run-list", _bench_index_hint),
 )
 
 

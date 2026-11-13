@@ -723,3 +723,25 @@ class TestKnownCapabilityNeeds:
         assert out.gripes == ()
         assert out.answered == ("bench-results-reader",)
         assert out.logbook_entries == 1
+
+    def test_bench_run_index_need_is_answered_not_filed(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr660023 — the need this fix ships: ``bench:index`` is the run
+        index / search-by-date-or-by-todo-reference the quest kept
+        declaring missing. A re-declaration answers with the affordance
+        and the live stems, never a blocking gripe."""
+        self._hold_run(tmp_path, "20261110Z-abc1234-quick-triage")
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store)
+        out = needs_mod.apply_needs(
+            store,
+            qid,
+            [_need("bench-run-index-search-by-date-or-by-todo-reference")],
+        )
+        assert out.gripes == ()
+        assert _gripes(store) == []
+        assert out.answered == ("bench-run-index-search-by-date-or-by-todo-reference",)
+        assert any(
+            "already exists" in t and "bench:index" in t for t in _log_texts(store, qid)
+        )

@@ -59,7 +59,7 @@ only for headline numbers.
 
 | key | meaning |
 |---|---|
-| `schema` | results schema version (4; 3 = no `header.worlds`/re-ingest arms, 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
+| `schema` | results schema version (5; 4 = no `header.todo`, 3 = no `header.worlds`/re-ingest arms, 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
 | `tier` | `scripted` (the model-free caller; LLM tier is a later cut) |
 | `set`, `corpus_sha256` | fixture set and its hash from `bench/corpus/manifest.json` |
 | `tasks_file`, `tasks_sha256`, `tasks` | QASPER task file, its sha256, and counts (`qasper`, `planted`, `abstention`, `skipped`) |
@@ -75,6 +75,7 @@ only for headline numbers.
 | `fill` | claimed/ok/failed counts of the embed and keyword passes run by this invocation |
 | `machine`, `started_at`, `ended_at` | host python/platform; UTC `Z` timestamps |
 | `tool_calls` | `source` — the `tool_calls.source` tag (`bench:<stem>`) every dispatch of the measured matrix carried, so the run's raw MCP-log records are addressable (schema 3, gr618517) |
+| `todo` | `td<id>` of the todo the run was launched under (schema 5, gr660023) — read from `PRECIS_CURRENT_TODO`, which `scripts/bench` forwards into the container; `null` outside a todo. Lets `bench:index`/`scripts/bench index --match` search runs by todo reference |
 
 ### layer coverage and vacuous arms
 
@@ -169,6 +170,17 @@ next tick's Requested reads renders a bounded page of the same row blocks —
 (`held: …`), so the address is aimable from context rather than only after
 a refused guess (gr647524 — a "(none held)" listing means the reader is
 there and the missing piece is the file).
+
+Naming the stem without guessing is the run index (gr660023): a
+`bench:index` read renders one line per held run — stem, `started_at`–
+`ended_at`, set, caller, schema, row/arm/task counts, and the `header.todo`
+handle the run was launched under — and its `"section"` filters the listing
+by substring over the line and the raw file text: a date (`20261109` or
+`2026-11-09`), a caller, or a `td<id>` the file names (search-by-date or
+by-todo-reference). A `bench:` address that is a unique stem substring
+resolves to that run outright; an ambiguous one renders the filtered index,
+and a refused `bench:` read names the matching stems plus `bench:index`.
+`scripts/bench index [--match X]` is the same listing on the CLI.
 
 The reserved section `calls` instead pages the run's raw MCP-log records:
 the `tool_calls` ledger rows its dispatches wrote, correlated by the

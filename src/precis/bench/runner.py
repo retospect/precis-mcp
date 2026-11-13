@@ -103,8 +103,10 @@ from precis.bench.switches import ARMS
 #: so the run's raw MCP-log records are addressable (gr618517). 4 adds
 #: ``header.worlds`` — the re-ingest arms' databases (dbname, variant spec,
 #: provision, coverage) and the ``chunk-*`` / ``no-links`` / ``distractor-<N>``
-#: arm names.
-RESULTS_SCHEMA = 4
+#: arm names. 5 adds ``header.todo`` — the ``td<id>`` the run was launched
+#: under (``PRECIS_CURRENT_TODO``; ``None`` outside a todo), so the
+#: ``bench:index`` search can name a run by its todo reference (gr660023).
+RESULTS_SCHEMA = 5
 
 PLANTED_SEED = 7
 PLANTED_N = 40
@@ -1135,6 +1137,21 @@ def default_results_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "bench" / "results"
 
 
+def _launched_under_todo() -> str | None:
+    """The ``td<id>`` this run is executing under, when the caller's env
+    names a parent todo (``PRECIS_CURRENT_TODO`` — agent sessions work
+    under one, and ``scripts/bench`` forwards it into the dev container)
+    — the handle the ``bench:index`` search-by-todo-reference matches
+    (gr660023). ``None`` outside a todo or on a mangled env."""
+    from precis.utils.workspace import current_todo_from_env
+
+    try:
+        tid = current_todo_from_env()
+    except Exception:
+        return None
+    return f"td{tid}" if tid else None
+
+
 def build_results(
     *,
     header: Mapping[str, Any],
@@ -1651,6 +1668,9 @@ def run_cli(
         # carried — the correlation a ``calls`` read uses to reach the
         # run's raw MCP-log records (``result_tokens_est``).
         "tool_calls": {"source": call_tag},
+        # The ``td<id>`` this run was launched under, when the env says —
+        # the handle a ``bench:index`` search-by-todo-reference matches.
+        "todo": _launched_under_todo(),
         "arms": arms_block,
         "layer_coverage": cov,
         "worlds": worlds_meta,

@@ -600,6 +600,196 @@ def test_arm_and_task_vocabularies_come_from_the_rows():
 
 
 # ---------------------------------------------------------------------------
+# pure: the run index + search (gr660023)
+# ---------------------------------------------------------------------------
+
+
+def _index_results(path: Path, **header: Any) -> None:
+    """A minimal results file for the run index — header keys defaulted,
+    two task x arm rows so the counts are real."""
+    h = {
+        "set": "quick",
+        "caller": {"name": "triage"},
+        "schema": 5,
+        "started_at": "2026-11-09T10:00:00Z",
+        "ended_at": "2026-11-09T12:00:00Z",
+        **header,
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "header": h,
+                "rows": [
+                    {"task": "t1", "arm": "all-on"},
+                    {"task": "t2", "arm": "no-kwd"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_match_stems_is_a_normalised_substring_search(tmp_path: Path):
+    a = "20261109Z-aaaa111-quick-triage"
+    b = "20261110Z-bbbb222-full-rowkw"
+    _index_results(tmp_path / f"{a}.json")
+    _index_results(tmp_path / f"{b}.json")
+    # search-by-date, in either spelling
+    assert raw.match_stems(tmp_path, "20261109") == [a]
+    assert raw.match_stems(tmp_path, "2026-11-09") == [a]
+    assert raw.match_stems(tmp_path, "ROWKW") == [b]
+    assert raw.match_stems(tmp_path, "quick triage") == [a]
+    # a trailing .json is tolerated, like resolve_results
+    assert raw.match_stems(tmp_path, "rowkw.json") == [b]
+    assert set(raw.match_stems(tmp_path, "2026")) == {a, b}
+    assert raw.match_stems(tmp_path, "nope") == []
+    assert raw.match_stems(tmp_path, "  ") == []
+    assert raw.match_stems(tmp_path / "absent", "2026") == []
+
+
+def test_run_index_reports_header_facts_newest_first(tmp_path: Path):
+    _index_results(
+        tmp_path / "20261108Z-aaaa111-quick-triage.json",
+        started_at="2026-11-08T10:00:00Z",
+        ended_at="2026-11-08T12:00:00Z",
+        todo="td604857",
+    )
+    _index_results(
+        tmp_path / "20261110Z-bbbb222-full-rowkw.json",
+        set="full",
+        caller={"name": "rowkw"},
+        started_at="2026-11-10T09:00:00Z",
+        ended_at="2026-11-10T11:00:00Z",
+    )
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    runs = raw.run_index(tmp_path)
+    assert [e["stem"] for e in runs] == [
+        "20261110Z-bbbb222-full-rowkw",
+        "20261108Z-aaaa111-quick-triage",
+        "broken",
+    ]
+    e = runs[1]
+    assert e["todo"] == "td604857"
+    assert e["n_rows"] == 2 and e["n_arms"] == 2 and e["n_tasks"] == 2
+    assert runs[2]["readable"] is False
+
+
+def test_run_index_isolates_malformed_files(tmp_path: Path) -> None:
+    """A file with a null header or non-list rows lists as unreadable
+    instead of crashing the whole index."""
+    (tmp_path / "nullhdr.json").write_text(
+        '{"header":null,"rows":[]}', encoding="utf-8"
+    )
+    (tmp_path / "badrows.json").write_text('{"header":{},"rows":[1]}', encoding="utf-8")
+    (tmp_path / "strrows.json").write_text('{"header":{},"rows":"x"}', encoding="utf-8")
+    (tmp_path / "unhash.json").write_text(
+        '{"header":{},"rows":[{"arm":[],"task":"t"}]}', encoding="utf-8"
+    )
+    _index_results(tmp_path / "good.json")
+    runs = {e["stem"]: e for e in raw.run_index(tmp_path)}
+    assert runs["good"]["readable"] is True
+    for stem in ("nullhdr", "badrows", "strrows", "unhash"):
+        assert runs[stem]["readable"] is False
+    assert len(raw.index_lines(tmp_path)) == 5
+
+
+def test_index_line_carries_the_facts_a_search_picks_by(tmp_path: Path):
+    _index_results(
+        tmp_path / "20261109Z-aaaa111-quick-triage.json",
+        todo="td604857",
+        precis_sha="0123456789abcdef",
+    )
+    (line,) = raw.index_lines(tmp_path)
+    assert line.startswith("20261109Z-aaaa111-quick-triage — ")
+    for bit in ("set quick", "caller triage", "td604857", "2 rows", "2 arms"):
+        assert bit in line, bit
+
+
+def test_index_lines_filters_on_line_and_file_text(tmp_path: Path):
+    _index_results(tmp_path / "20261109Z-aaaa111-quick-triage.json", todo="td604857")
+    _index_results(
+        tmp_path / "20261110Z-bbbb222-full-rowkw.json",
+        set="full",
+        caller={"name": "rowkw"},
+        started_at="2026-11-10T09:00:00Z",
+        ended_at="2026-11-10T11:00:00Z",
+    )
+    _index_results(
+        tmp_path / "20261111Z-cccc333-quick-triage.json",
+        note="digested under td999",
+        started_at="2026-11-11T09:00:00Z",
+        ended_at="2026-11-11T11:00:00Z",
+    )
+    assert len(raw.index_lines(tmp_path)) == 3
+    # by date — a stem/started_at hit
+    only = raw.index_lines(tmp_path, match="2026-11-10")
+    assert len(only) == 1 and only[0].startswith("20261110Z-bbbb222")
+    # by todo reference — header.todo on the index line
+    only = raw.index_lines(tmp_path, match="td604857")
+    assert len(only) == 1 and only[0].startswith("20261109Z-aaaa111")
+    # a handle the file mentions without an index field still hits on
+    # the raw text scan
+    only = raw.index_lines(tmp_path, match="td999")
+    assert len(only) == 1 and only[0].startswith("20261111Z-cccc333")
+    assert raw.index_lines(tmp_path, match="td555") == []
+
+
+def test_file_mentions_scans_the_raw_text(tmp_path: Path):
+    p = tmp_path / "20261111Z-cccc333-quick-triage.json"
+    _index_results(p, note="digested under td999")
+    assert raw.file_mentions(p, "td999")
+    assert not raw.file_mentions(p, "td604857")
+    assert raw.file_mentions(tmp_path / "missing.json", "td999") is False
+
+
+def test_index_markdown_pages_with_a_next_call(tmp_path: Path):
+    for i, stem in enumerate(
+        (
+            "20261108Z-aaaa111-quick-triage",
+            "20261109Z-bbbb222-quick-rowkw",
+            "20261110Z-cccc333-full-ladder",
+        )
+    ):
+        _index_results(
+            tmp_path / f"{stem}.json",
+            started_at=f"2026-11-{8 + i:02d}T10:00:00Z",
+            ended_at=f"2026-11-{8 + i:02d}T12:00:00Z",
+        )
+    page = raw.index_markdown(tmp_path, limit=2)
+    assert page.startswith("# bench run index — runs 0-2 of 3")
+    assert "20261110Z-cccc333-full-ladder" in page
+    assert "Next:" in page and "scripts/bench index --offset 2 --limit 2" in page
+    tail = raw.index_markdown(tmp_path, offset=2, limit=2)
+    assert "runs 2-3 of 3" in tail and "Next:" not in tail
+    filtered = raw.index_markdown(tmp_path, match="zzz")
+    assert "matching 'zzz' — runs 0-0 of 0" in filtered
+    with pytest.raises(ValueError, match="offset must be >= 0 and limit >= 1"):
+        raw.index_markdown(tmp_path, offset=-1)
+
+
+def test_index_cli_lists_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: Any
+):
+    _index_results(tmp_path / "20261109Z-aaaa111-quick-triage.json")
+    monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+    assert cli.main(["index"]) == 0
+    out = capsys.readouterr().out
+    assert "# bench run index" in out
+    assert "20261109Z-aaaa111-quick-triage" in out
+    assert cli.main(["index", "--match", "20261110"]) == 0
+    assert "matching '20261110' — runs 0-0 of 0" in capsys.readouterr().out
+
+
+def test_launched_under_todo_reads_the_env(monkeypatch: Any):
+    monkeypatch.setenv("PRECIS_CURRENT_TODO", "604857")
+    assert runner._launched_under_todo() == "td604857"
+    monkeypatch.delenv("PRECIS_CURRENT_TODO")
+    assert runner._launched_under_todo() is None
+    monkeypatch.setenv("PRECIS_CURRENT_TODO", "junk")
+    assert runner._launched_under_todo() is None
+
+
+# ---------------------------------------------------------------------------
 # pure: the ledger line (the run's raw MCP-log records, gr618517)
 # ---------------------------------------------------------------------------
 
@@ -1662,6 +1852,7 @@ def test_run_cli_provisions_worlds_and_records_them(
 
     monkeypatch.setattr(corpus, "variant_dsn", lambda dsn, arm, set_name, manifest: dsn)
     monkeypatch.setattr(corpus, "provision_variant", _fake_provision)
+    monkeypatch.setenv("PRECIS_CURRENT_TODO", "604857")
     out = tmp_path / "res" / "w.json"
     path = runner.run_cli(
         set_name="quick",
@@ -1682,7 +1873,9 @@ def test_run_cli_provisions_worlds_and_records_them(
     res = runner.load_results(path)
     h = res["header"]
     assert calls == ["no-links", "chunk-fixed-512"]
-    assert h["schema"] == runner.RESULTS_SCHEMA == 4
+    assert h["schema"] == runner.RESULTS_SCHEMA == 5
+    # schema 5: the todo the run was launched under (gr660023)
+    assert h["todo"] == "td604857"
     assert set(h["worlds"]) == {"no-links", "chunk-fixed-512"}
     assert h["worlds"]["chunk-fixed-512"]["variant"]["chunker"] == "fixed-512"
     assert h["worlds"]["no-links"]["variant"]["links"] is False

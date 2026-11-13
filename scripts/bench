@@ -26,6 +26,10 @@
 #   scripts/bench raw <results.json> [--arm A]… [--task T] [--source S] [--offset N] [--limit M]
 #                                           # the raw log in bounded slices: one block per task x arm
 #                                           # row with its per-call token log; the Next: line names the next slice
+#   scripts/bench index [--match X] [--offset N] [--limit M]
+#                                           # one line per held run (stem, dates, set, caller, counts,
+#                                           # td<id> launched under); --match filters by substring over
+#                                           # the line or the file text (a date, a caller, a td<id>)
 #
 # Everything runs inside the precis-dev container via scripts/dev, which points
 # PRECIS_DATABASE_URL at this worktree's precis_dev; the loader refuses any
@@ -47,7 +51,9 @@ fi
 
 # The container cannot read this worktree's git dir, so the host pins the sha
 # the results header records (PRECIS_BENCH_GIT_DIRTY = changed-path count).
+# PRECIS_CURRENT_TODO is forwarded too: a run launched under a todo records it
+# in header.todo, which the bench:index search-by-todo-reference matches.
 BENCH_SHA="$(git rev-parse HEAD)"
 BENCH_DIRTY="$(git status --porcelain | wc -l | tr -d ' ')"
-export PRECIS_DEV_ENV="${PRECIS_DEV_ENV:-} PRECIS_BENCH_CACHE=${PRECIS_BENCH_CACHE:-/app/.scratch/bench-cache} HF_HOME=${HF_HOME:-/app/.scratch/hf-cache} PRECIS_BENCH_GIT_SHA=${BENCH_SHA} PRECIS_BENCH_GIT_DIRTY=${BENCH_DIRTY}"
+export PRECIS_DEV_ENV="${PRECIS_DEV_ENV:-} PRECIS_BENCH_CACHE=${PRECIS_BENCH_CACHE:-/app/.scratch/bench-cache} HF_HOME=${HF_HOME:-/app/.scratch/hf-cache} PRECIS_BENCH_GIT_SHA=${BENCH_SHA} PRECIS_BENCH_GIT_DIRTY=${BENCH_DIRTY} PRECIS_CURRENT_TODO=${PRECIS_CURRENT_TODO:-}"
 exec scripts/dev uv run --no-sync python -m precis.bench "$@"
