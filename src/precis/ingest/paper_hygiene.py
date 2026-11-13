@@ -1947,7 +1947,10 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: daily pass would re-burn registry lookups on titles it already proved it
 #: cannot fix (transient failures — timeouts, rate limits — are left
 #: unstamped so the next pass retries them).
-_TITLE_REPAIR_VERSION = 1
+#: v2: the title leg can now fold a stub into the live owner of its
+#: recovered DOI (``_merge_into_doi_owner``, gr658635) — the v1-stamped
+#: backlog holds exactly those undetected duplicates.
+_TITLE_REPAIR_VERSION = 2
 
 #: ``meta.entry_type`` values that are articles (Crossref vocabulary —
 #: journal/conference papers and preprints). The junk-title rules are
@@ -1979,7 +1982,7 @@ class TitleRepairOutcome:
     """What the repair pass did (or concluded) for one junk-titled paper."""
 
     ref_id: int
-    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'parked' | 'failed' | 'skipped'
+    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'merged' | 'parked' | 'failed' | 'skipped'
     detail: str = ""
     new_title: str = ""
 
@@ -2099,6 +2102,148 @@ def _stamp_title_repair_failed(
         )
 
 
+#: Trigram-similarity floor between a registry title and the DOI owner's
+#: title for the repair pass to fold a junk stub into it. Matches the
+#: ``merge_into`` door's floor (``handlers.paper._MERGE_TITLE_SIM_FLOOR``).
+_DOI_OWNER_MERGE_SIM = 0.85
+
+#: Sim floor that lets a missing year on either side through the merge
+#: gate — matches the ``merge_into`` door's ``_MERGE_UNKNOWN_YEAR_SIM``.
+_DOI_OWNER_MERGE_UNKNOWN_YEAR_SIM = 0.95
+
+
+def _doi_human_suppressed(conn: Any, ref_id: int, doi: str) -> bool:
+    """``True`` when a human suppression record rejects *doi* on the ref —
+    the merge-side mirror of ``apply_resolution``'s cleared-scheme guard.
+
+    ``meta.cleared_identifiers.doi`` closes the whole scheme to machine
+    writes (gr515246); ``meta.dropped_identifiers.doi`` closes just the
+    removed (scheme, value) pair (gr517591). Either means the recovered
+    DOI is an identifier a person took off this ref.
+    """
+    from precis.store._identifiers_ops import (
+        _cleared_schemes,
+        _dropped_pairs,
+        _normalise_identifier,
+    )
+
+    return "doi" in _cleared_schemes(conn, ref_id) or _normalise_identifier(
+        "doi", doi
+    ) in _dropped_pairs(conn, ref_id).get("doi", set())
+
+
+def _merge_into_doi_owner(
+    store: Store, ref: Any, res: Any, *, dry_run: bool
+) -> TitleRepairOutcome | None:
+    """Fold a junk stub into the live paper already holding its DOI (gr658635).
+
+    A registry hit whose DOI another live paper owns means the stub is a
+    duplicate the ingest failed to link: writing the DOI would collide, so
+    the true fix is ``merge_into`` the owner. Gated like that door — the
+    registry title must corroborate the owner's title/year/byline under the
+    same floors (``_DOI_OWNER_MERGE_SIM`` / ``_DOI_OWNER_MERGE_UNKNOWN_YEAR_SIM``)
+    — so a wrong DOI never retires a live paper. Only reached on a hit that
+    already passed the resolver's formula/edition/zero-overlap body guards
+    (``_resolve_by_title`` emits ``recovered-doi-owned-by-*`` last).
+    ``None`` = no other owner, carry on with the normal write. A gate
+    failure is a terminal ``failed`` outcome naming the owner, so the
+    owner queue sees the real cause.
+
+    A human suppression on the stub trumps the recovered DOI
+    (:func:`_doi_human_suppressed`): the cleared scheme or dropped pair
+    is an identifier a person removed, so folding the stub into that
+    DOI's owner would retire it on the rejected identity — worse,
+    ``merge_duplicate``'s marker unions would carry the mark onto the
+    owner (``_merge_cleared_markers`` deletes the owner's matching DOI
+    row outright). The stub stays live, keeps its title-fix todo, and is
+    stamped terminal like any gate failure.
+    """
+    from precis.ingest.dedup import merge_duplicate
+    from precis.utils.title_merge import title_merge_refusal
+
+    doi = getattr(res, "doi", None)
+    if not doi:
+        return None
+    owner_id = store.find_ref_by_identifier("doi", str(doi), kind="paper")
+    if owner_id is None or owner_id == ref.id:
+        return None
+    owner = store.fetch_refs_by_ids([owner_id]).get(owner_id)
+    if owner is None:
+        return None
+    handle = f"pa{owner_id}"
+
+    def _suppressed() -> TitleRepairOutcome:
+        if not dry_run:
+            _stamp_title_repair_failed(
+                store, ref.id, reasons=[f"doi-human-suppressed:{handle}"]
+            )
+        return TitleRepairOutcome(
+            ref.id, "failed", detail=f"terminal:doi-human-suppressed:{handle}"
+        )
+
+    with store.pool.connection() as conn:
+        suppressed = _doi_human_suppressed(conn, ref.id, str(doi))
+    if suppressed:
+        return _suppressed()
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT similarity(%s, %s)", (res.title or "", owner.title or "")
+        ).fetchone()
+    sim = float(row[0]) if row is not None and row[0] is not None else 0.0
+    refusal = title_merge_refusal(
+        res.title,
+        res.year if res.year is not None else ref.year,
+        res.author_dicts or ref.authors,
+        owner.title,
+        owner.year,
+        owner.authors,
+        sim=sim,
+        unknown_year_min_sim=_DOI_OWNER_MERGE_UNKNOWN_YEAR_SIM,
+    )
+    if sim < _DOI_OWNER_MERGE_SIM or refusal is not None:
+        if not dry_run:
+            _stamp_title_repair_failed(store, ref.id, reasons=[f"doi-held-by-{handle}"])
+        return TitleRepairOutcome(
+            ref.id,
+            "failed",
+            detail=f"terminal:doi-held-by-{handle}:{refusal or 'low-similarity'}",
+        )
+    suppressed = False
+    if not dry_run:
+        with store.tx() as conn:
+            # Both rows are locked in ascending id order — the order
+            # merge_duplicate uses — before the suppression recheck, so
+            # this never inverts against a concurrent merge. The recheck
+            # then runs under the stub's lock: a clear landing between
+            # the read above and this fold must still stop it
+            # (check-then-act, like apply_resolution's cleared-scheme
+            # guard).
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+                "ORDER BY ref_id FOR NO KEY UPDATE",
+                ([owner_id, ref.id],),
+            )
+            if _doi_human_suppressed(conn, ref.id, str(doi)):
+                suppressed = True
+            else:
+                merge_duplicate(
+                    store,
+                    survivor_ref_id=owner_id,
+                    duplicate_ref_id=ref.id,
+                    source=TITLE_FIX_SOURCE,
+                    reason=f"title-repair: DOI {doi} already held by {handle}",
+                    conn=conn,
+                )
+                _close_title_fix_todos(
+                    store, ref.id, conn=conn, how="merged", new_title=owner.title or ""
+                )
+    if suppressed:
+        return _suppressed()
+    return TitleRepairOutcome(
+        ref.id, "merged", detail=f"into {handle}", new_title=owner.title or ""
+    )
+
+
 def _repair_title_candidates(store: Store, ref: Any, stored_title: str) -> list[str]:
     """Title-search queries for a junk-titled ref: the stripped export name
     first, then the usual first-page body-chunk lines."""
@@ -2188,6 +2333,15 @@ def repair_junk_title_papers(
     * **title** — S2 title search (``_resolve_by_title``) over the stripped
       export name plus first-page body-chunk candidates, under the usual
       similarity/year/formula gates.
+
+    A resolved DOI that another live paper already holds means the stub is
+    an undetected duplicate: the pass folds it into that owner
+    (``merge_duplicate``, action ``merged``) under the ``merge_into``
+    title gate rather than colliding on the DOI write (gr658635). A
+    stub carrying a human DOI suppression (``meta.cleared_identifiers``
+    / ``meta.dropped_identifiers`` — gr515246/gr517591) is never folded:
+    the recovered DOI is an identifier a person removed, so the stub
+    stays live and terminal-stamped for the owner queue instead.
 
     A successful leg also closes the paper's open ``paper-title-fix``
     todos — the repair is exactly what they asked for. Terminal outcomes —
@@ -2382,6 +2536,12 @@ def _repair_one(
         reasons.append(res.reason)
         if res.verdict == "auto":
             return _apply_resolution(res, how)
+        if res.verdict == "review" and str(res.reason).startswith(
+            "recovered-doi-owned-by-"
+        ):
+            # The title leg found a DOI a live paper holds: a duplicate,
+            # not a metadata fix (gr658635).
+            return _merge_into_doi_owner(store, ref, res, dry_run=dry_run)
         if res.verdict == "parked":
             if not dry_run:
                 park_mismatch(store, res, source=TITLE_FIX_SOURCE)

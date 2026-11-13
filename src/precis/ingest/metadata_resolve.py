@@ -759,13 +759,6 @@ def _resolve_by_title(
     if not trusted_title and (ref.year is None or res.year is None):
         res.verdict, res.reason = "review", "scraped-title-no-corroboration"
         return res
-    # High-confidence — but a recovered DOI owned by another live ref means
-    # this is a duplicate, not a metadata fix: hand to review, don't write.
-    if res.doi:
-        owner = store.identifier_owner("doi", res.doi)
-        if owner is not None and owner != rid:
-            res.verdict, res.reason = "review", f"recovered-doi-owned-by-#{owner}"
-            return res
     # gr262881: near-identical titles (WSe2 vs MoS2) pass the trigram gate;
     # the body must contain the hit's formula terms or it goes to review.
     missing = _formula_terms_missing(store, rid, res.title)
@@ -778,7 +771,17 @@ def _resolve_by_title(
         res.verdict, res.reason = "parked", conflict
         return res
     res.verdict, res.reason = "auto", "s2-title-resolved"
-    return _guard_registry_mismatch(store, res)
+    res = _guard_registry_mismatch(store, res)
+    # High-confidence — but a recovered DOI owned by another live ref means
+    # this is a duplicate, not a metadata fix: hand to review, don't write.
+    # Checked only after the body guards: a hit that fails them describes a
+    # different work than this ref's own text, so it is nobody's duplicate —
+    # the merge path (gr658635) must never consume a DOI twin like that.
+    if res.verdict == "auto" and res.doi:
+        owner = store.identifier_owner("doi", res.doi)
+        if owner is not None and owner != rid:
+            res.verdict, res.reason = "review", f"recovered-doi-owned-by-#{owner}"
+    return res
 
 
 def _resolve_one(

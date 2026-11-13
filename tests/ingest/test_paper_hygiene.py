@@ -1731,6 +1731,453 @@ class TestRepairJunkTitlePapers:
         assert [(o.ref_id, o.action) for o in out] == [(rid, "crossref")]
         assert store.fetch_refs_by_ids([rid])[rid].title == "The Real Registry Title"
 
+    def test_title_leg_merges_into_doi_owner(self, store: Store) -> None:
+        """gr658635: a hit whose DOI a live paper holds is a duplicate."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        owner = self._old(
+            store,
+            slug="hanson96",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.1",
+        )
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (owner,))
+        stub = self._old(store, slug="stub01", title="S401_9d 152..155")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.1",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action, o.detail) for o in out] == [
+            (stub, "merged", f"into pa{owner}")
+        ]
+        loser = store.fetch_refs_by_ids([stub])[stub]
+        assert loser.retired_at is not None
+        assert store.follow_supersede(stub) == owner
+
+    def test_title_leg_doi_owner_mismatch_fails_naming_owner(
+        self, store: Store
+    ) -> None:
+        """gr658635: a DOI owner whose title disagrees is not merged."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        owner = self._old(
+            store,
+            slug="other99",
+            title="Quantum dots in photovoltaic tandem architectures",
+            doi="10.1234/dup.2",
+        )
+        stub = self._old(store, slug="stub02", title="S401_9d 152..155")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.2",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(stub, "failed")]
+        assert f"doi-held-by-pa{owner}" in out[0].detail
+        assert store.fetch_refs_by_ids([stub])[stub].retired_at is None
+        assert store.fetch_refs_by_ids([owner])[owner].retired_at is None
+
+    def test_title_leg_doi_owner_body_guard_parks_not_merges(
+        self, store: Store
+    ) -> None:
+        """gr658635/td659670: the DOI-owner merge only consumes a hit that
+        survived the resolver's body guards — a stub whose own chunk 0
+        shares no content tokens with the recovered title is a different
+        work, not a duplicate: it parks, it is NOT folded into the owner."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        owner = self._old(
+            store,
+            slug="hanson97",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.3",
+        )
+        stub = self._old(store, slug="stub03", title="S401_9d 152..155")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            # Chunk 0 is a different paper's front matter — the
+            # zero-overlap guard's signature. The hit title sits in the
+            # next chunk so the title-search leg still finds it.
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (
+                    stub,
+                    "Quantum spin Hall insulator state in mercury "
+                    "telluride wells measured through microwave "
+                    "impedance spectroscopy",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 1, 'paragraph', %s)",
+                (
+                    stub,
+                    "Methanotrophic bacteria and their ecology in soils\n\nBody.",
+                ),
+            )
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.3",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action, o.detail) for o in out] == [
+            (stub, "parked", "registry-title-zero-overlap")
+        ]
+        assert store.fetch_refs_by_ids([stub])[stub].retired_at is None
+        assert store.fetch_refs_by_ids([owner])[owner].retired_at is None
+
+    def test_title_leg_merges_when_owner_year_unknown(self, store: Store) -> None:
+        """gr658635: merge_into gate parity — a NULL owner year passes at
+        near-identical sim (``_MERGE_UNKNOWN_YEAR_SIM``), like the door."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        owner = self._old(
+            store,
+            slug="hanson98",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.4",
+        )
+        # Owner deliberately carries no year — the 0.95-sim waiver lets the
+        # merge through anyway (the DOI twin is the corroboration).
+        stub = self._old(store, slug="stub04", title="S401_9d 152..155")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.4",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action, o.detail) for o in out] == [
+            (stub, "merged", f"into pa{owner}")
+        ]
+        assert store.follow_supersede(stub) == owner
+
+    def test_v1_stamped_duplicate_is_retried_and_merged(self, store: Store) -> None:
+        """gr658635/td659670: a stub the pre-merge cascade already failed
+        (``title_repair_v=1``, ``paper-title-fix`` todo filed) is exactly
+        the backlog the merge leg was built for — the version bump must
+        re-admit it, merge it and close its todo."""
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            TITLE_FIX_SOURCE,
+            repair_junk_title_papers,
+        )
+
+        assert _TITLE_REPAIR_VERSION > 1
+        owner = self._old(
+            store,
+            slug="hanson00",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.5",
+        )
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (owner,))
+        stub = self._old(store, slug="stub05", title="S401_9d 152..155")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+            # Stamped by the v1 (pre-merge) cascade and already raised to
+            # the owner queue — the gripe's exact starting state.
+            store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="Fix title/metadata of paper:paX",
+                meta={"source": TITLE_FIX_SOURCE, "paper_ref_id": stub},
+                conn=conn,
+            )
+        store.stamp_ref_meta(stub, {"title_repair_v": 1})
+        (todo,) = self._todos(store, stub)
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.5",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action, o.detail) for o in out] == [
+            (stub, "merged", f"into pa{owner}")
+        ]
+        assert store.follow_supersede(stub) == owner
+        assert self._todo_status(store, todo[0]) == "done"
+
+    def test_title_leg_doi_owner_cleared_doi_blocks_merge(self, store: Store) -> None:
+        """gr658635/td659670 review: a stub whose doi scheme a human
+        cleared (``meta.cleared_identifiers.doi``, gr515246) is never
+        folded into the recovered DOI's owner — the merge honours the
+        same suppression ``apply_resolution`` does. The stub stays live
+        and its paper-title-fix todo stays open."""
+        from precis.ingest.paper_hygiene import (
+            TITLE_FIX_SOURCE,
+            repair_junk_title_papers,
+        )
+
+        owner = self._old(
+            store,
+            slug="hanson96c",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.6",
+        )
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (owner,))
+        stub = self._old(store, slug="stub06", title="S401_9d 152..155")
+        # The stub once carried a wrong DOI; a human cleared it — the
+        # marker now suppresses every machine DOI write, so the recovered
+        # DOI must not retire the stub either.
+        store.set_ref_identifier(stub, "doi", "10.1234/wrong.1", source="manual")
+        store.clear_ref_identifier(stub, "doi", source="web-edit")
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+            store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="Fix title/metadata of paper:paX",
+                meta={"source": TITLE_FIX_SOURCE, "paper_ref_id": stub},
+                conn=conn,
+            )
+        (todo,) = self._todos(store, stub)
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.6",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(stub, "failed")]
+        assert f"doi-human-suppressed:pa{owner}" in out[0].detail
+        assert store.fetch_refs_by_ids([stub])[stub].retired_at is None
+        assert self._todo_status(store, todo[0]) is None
+        # The owner keeps its DOI — the stub's cleared mark never rode
+        # across (``_merge_cleared_markers`` would delete the row).
+        assert store.find_ref_by_identifier("doi", "10.1234/dup.6") == owner
+
+    def test_title_leg_doi_owner_dropped_pair_blocks_merge(self, store: Store) -> None:
+        """gr658635/td659670 review: the per-value sibling — a stub whose
+        operator dropped exactly the recovered (doi, value) pair
+        (``meta.dropped_identifiers``, gr517591) is not folded into that
+        DOI's owner either."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        owner = self._old(
+            store,
+            slug="hanson96d",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.7",
+        )
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (owner,))
+        stub = self._old(store, slug="stub07", title="S401_9d 152..155")
+        # The stub once held this very DOI; a human dropped just that
+        # value (the scheme stays open for a correct one) before the
+        # owner claimed it.
+        store.stamp_ref_meta(
+            stub,
+            {
+                "dropped_identifiers": {
+                    "doi": {
+                        "10.1234/dup.7": {
+                            "at": "2026-01-01T00:00:00+00:00",
+                            "by": "drop_identifier",
+                        }
+                    }
+                }
+            },
+        )
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET year = 1996 WHERE ref_id = %s", (stub,))
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.7",
+            "year": 1996,
+        }
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=self._no_net()["crossref_fn"],
+            openalex_fn=self._no_net()["openalex_fn"],
+            s2_fn=lambda title, key: hit,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(stub, "failed")]
+        assert f"doi-human-suppressed:pa{owner}" in out[0].detail
+        assert store.fetch_refs_by_ids([stub])[stub].retired_at is None
+        assert store.find_ref_by_identifier("doi", "10.1234/dup.7") == owner
+
+    def test_title_leg_merge_locks_owner_before_stub(self, store: Store) -> None:
+        """gr658635/td659670 review: the fold takes its row locks in
+        ascending id order (owner, then stub) — ``merge_duplicate``'s
+        order. A concurrent tx holding the older owner and then reaching
+        for the stub must not deadlock against the repair pass: while the
+        pass waits on the owner it holds no lock on the stub."""
+        import threading
+        import time
+
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        owner = self._old(
+            store,
+            slug="hanson96e",
+            title="Methanotrophic bacteria and their ecology in soils",
+            doi="10.1234/dup.8",
+        )
+        stub = self._old(store, slug="stub08", title="S401_9d 152..155")
+        assert owner < stub
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET year = 1996 WHERE ref_id = ANY(%s)", ([owner, stub],)
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (stub, "Methanotrophic bacteria and their ecology in soils\n\nBody."),
+            )
+        hit = {
+            "title": "Methanotrophic bacteria and their ecology in soils",
+            "doi": "10.1234/dup.8",
+            "year": 1996,
+        }
+        out: list[Any] = []
+        errors: list[BaseException] = []
+
+        def repair() -> None:
+            try:
+                out.extend(
+                    repair_junk_title_papers(
+                        store,
+                        dry_run=False,
+                        crossref_fn=self._no_net()["crossref_fn"],
+                        openalex_fn=self._no_net()["openalex_fn"],
+                        s2_fn=lambda title, key: hit,
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE", (owner,)
+            )
+            worker = threading.Thread(target=repair)
+            worker.start()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and worker.is_alive():
+                row = conn.execute(
+                    "SELECT count(*) FROM pg_locks WHERE NOT granted"
+                ).fetchone()
+                if row is not None and row[0] > 0:
+                    break
+                time.sleep(0.05)
+            assert worker.is_alive(), "repair pass did not wait on the owner lock"
+            # The pass is parked on the owner: the stub must be free.
+            conn.execute("SET LOCAL lock_timeout = '5s'")
+            conn.execute(
+                "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE", (stub,)
+            )
+            conn.commit()
+        worker.join(30)
+        assert not worker.is_alive()
+        assert errors == []
+        assert [(o.ref_id, o.action, o.detail) for o in out] == [
+            (stub, "merged", f"into pa{owner}")
+        ]
+        assert store.follow_supersede(stub) == owner
+
+    def test_v1_stamped_failure_restamps_before_refiling(self, store: Store) -> None:
+        """gr658635: the bump must not strand the owner queue — a
+        v1-stamped paper that still can't be repaired is retried once,
+        restamped at the current version and only then re-filed."""
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
+
+        rid = self._old(store, slug="nope98", title="S999_1a 1..3")
+        store.stamp_ref_meta(rid, {"title_repair_v": 1})
+        # Below the current gate: the raise leg waits for the retry.
+        assert raise_junk_title_papers(store, dry_run=True) == []
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_no_calling(),
+            openalex_fn=_no_calling(),
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [o.action for o in out] == ["failed"]
+        assert _meta(store, rid).get("title_repair_v") == _TITLE_REPAIR_VERSION
+        assert raise_junk_title_papers(store, dry_run=True) == [rid]
+
     def test_openalex_leg_when_crossref_misses(self, store: Store) -> None:
         from precis.ingest.paper_hygiene import repair_junk_title_papers
 
@@ -1782,7 +2229,10 @@ class TestRepairJunkTitlePapers:
         assert ref.title == "Recovered Page One Title"
 
     def test_failed_repair_stamps_and_skips_next_pass(self, store: Store) -> None:
-        from precis.ingest.paper_hygiene import repair_junk_title_papers
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
 
         rid = self._old(store, slug="nope99", title="S999_1a 1..3")
         out = repair_junk_title_papers(
@@ -1793,7 +2243,7 @@ class TestRepairJunkTitlePapers:
             s2_fn=lambda *_a, **_k: None,
         )
         assert [o.action for o in out] == ["failed"]
-        assert _meta(store, rid).get("title_repair_v") == 1
+        assert _meta(store, rid).get("title_repair_v") == _TITLE_REPAIR_VERSION
         # Second pass: stamped → not re-attempted.
         assert repair_junk_title_papers(store, dry_run=False) == []
         # The stamp is exactly what hands the paper to the owner queue
@@ -1844,7 +2294,10 @@ class TestRepairJunkTitlePapers:
         lookup every pass and never reaches the owner queue."""
         from precis.ingest import metadata_resolve
         from precis.ingest.metadata_resolve import Resolution
-        from precis.ingest.paper_hygiene import repair_junk_title_papers
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
 
         rid = self._old(
             store,
@@ -1859,7 +2312,7 @@ class TestRepairJunkTitlePapers:
         )
         out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
         assert [o.action for o in out] == ["parked"]
-        assert _meta(store, rid).get("title_repair_v") == 1
+        assert _meta(store, rid).get("title_repair_v") == _TITLE_REPAIR_VERSION
         assert raise_junk_title_papers(store, dry_run=True) == [rid]
 
     def test_repair_summary_logs_even_with_no_candidates(

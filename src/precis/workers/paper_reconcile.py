@@ -216,9 +216,10 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             # and the word "junk-title" so the q='junk' worker_logs probe
             # the doctor tick uses can't miss the leg entirely.
             log.info(
-                "paper_reconcile: junk-title repair — %d fixed, %d parked, "
-                "%d failed of %d attempted",
+                "paper_reconcile: junk-title repair — %d fixed, %d merged, "
+                "%d parked, %d failed of %d attempted",
                 repaired_n,
+                sum(1 for o in repaired if o.action == "merged"),
                 sum(1 for o in repaired if o.action == "parked"),
                 sum(1 for o in repaired if o.action == "failed"),
                 len(repaired),
