@@ -307,6 +307,13 @@ def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
 #: rather than dying mid-transaction on the timeout.
 _BODY_OP_MAX_CHUNKS = 20_000
 
+#: Default ``page_size`` of a paper search by row shape: one row per paper
+#: vs one row per matching chunk (``unique_per='chunk'``, ``scope=``,
+#: ``mode='verbatim'``). Chunk rows are ~30 tokens each; the benchmark put
+#: the first gold chunk at ranks 11-20 often enough to widen the page.
+_PAPER_ROWS_PAGE_SIZE = 25
+_CHUNK_ROWS_PAGE_SIZE = 20
+
 
 def _refuse_oversized_body(probe: Any, door: str, handle: str) -> None:
     """Refuse a body door whose chunk count can't fit the lifted
@@ -2722,8 +2729,9 @@ class PaperHandler(Handler):
         q: str | None = None,
         scope: str | None = None,
         tags: list[str] | None = None,
-        # ``None`` picks the mode-aware default: 25 rows on the default
-        # ``unique_per='paper'`` page, 10 on the per-chunk page — the MCP
+        # ``None`` picks the mode-aware default: ``_PAPER_ROWS_PAGE_SIZE``
+        # rows on the default ``unique_per='paper'`` page,
+        # ``_CHUNK_ROWS_PAGE_SIZE`` on the per-chunk page — the MCP
         # surface forwards ``None`` when the caller didn't name a size so
         # this default can follow the resolved row shape.
         page_size: int | None = None,
@@ -3719,7 +3727,11 @@ class PaperHandler(Handler):
                 "capped per-hit view",
             )
         if page_size is None:
-            page_size = 25 if resolved_unique_per == "paper" else 10
+            page_size = (
+                _PAPER_ROWS_PAGE_SIZE
+                if resolved_unique_per == "paper"
+                else _CHUNK_ROWS_PAGE_SIZE
+            )
 
         # ``good=True`` — the deep-search campaign surface. Does NOT
         # search inline: mints a ``good_search`` coordinator job (under

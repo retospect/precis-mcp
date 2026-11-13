@@ -121,7 +121,7 @@ and is implied by the doors that already ask for it: `scope='pa…'`
 (search inside one paper) and `mode='verbatim'`. `per_paper=N` caps hits
 per paper *there*; with paper rows it's redundant and `per_paper>1`
 errors — the collapse already shows one row each.
-Page size follows the shape: default 25 rows in paper mode, 10 in chunk
+Page size follows the shape: default 25 rows in paper mode, 20 in chunk
 mode, capped by `page_size=` (max 100).
 
 Refine before you widen. When the counter says `87 papers`, a bigger
@@ -130,7 +130,8 @@ from a `more`-heavy row's keywords, `scope=` into the promising paper
 (that flips to chunk rows inside it), or add `queries=`/`answers=` to
 move the gold to the top instead of reading the tail. Widen when you
 want the *breadth* — a survey sweep — not when you want the one right
-hit.
+hit. A question about one known paper takes `scope=<paper handle>`, which
+searches only that paper's chunks.
 
 ## Ranking mode — hybrid (default), lexical, semantic, or verbatim
 
@@ -356,8 +357,8 @@ sees your original `q`. `mode='lexical'`/`'verbatim'`/`'literal'` refuse
 search(kind="paper", q="photocatalysis water splitting", page_size=20)
 ```
 
-`page_size=` is the result-size spelling (default 10; 25 on paper
-kind's default one-row-per-paper view, max 100) — *not* a quality cutoff
+`page_size=` is the result-size spelling (default 10; on paper
+kind 25 for the one-row-per-paper view and 20 for chunk rows, max 100) — *not* a quality cutoff
 despite the name. Search returns a bounded top-N set, not continuation
 pages; a page over 24 kB returns the top rows that fit plus a
 `N more matches not shown` line — narrow `q` or lower `page_size`. Add

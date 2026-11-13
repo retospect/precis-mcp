@@ -40,7 +40,7 @@ granularity. ``unique_per='chunk'`` keeps the per-hit drill shape and is
 implied by the doors that already ask for it (``scope=``,
 ``mode='verbatim'`` — verbatim has no per-paper pool to collapse, so an
 explicit ``'paper'`` there is a BadInput, not a silent fallback). Page-size
-defaults follow the row shape (25 papers / 10 chunks): the MCP surface
+defaults follow the row shape (25 papers / 20 chunks): the MCP surface
 forwards ``page_size=None`` when unset so the handler resolves it *after*
 ``unique_per``. Headline counters stay honest: "N papers of M matched
 (K chunk hits)" counts the lexical universe (a lower bound under fusion);

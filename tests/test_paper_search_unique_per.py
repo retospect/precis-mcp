@@ -10,7 +10,7 @@ doors that already ask for it (``scope=``, ``mode='verbatim'`` — the
 verbatim early-return applies no per-paper collapse, so an explicit
 ``'paper'`` there is a BadInput rather than a silent fallback).
 
-Page-size defaults follow the row shape — 25 papers / 10 chunks — which
+Page-size defaults follow the row shape — 25 papers / 20 chunks — which
 is why the tool boundary now forwards ``page_size=None`` when unset and
 the handler resolves it *after* ``unique_per``. An explicitly passed
 ``unique_per`` echoes into same-search continuations so ``page=N+1``
@@ -170,20 +170,35 @@ def test_per_paper_over_one_rejected_under_paper_rows(store: Store) -> None:
 
 
 def test_page_size_defaults_follow_the_row_shape(store: Store) -> None:
-    """12 one-chunk papers on one matching term: the default paper page
-    (25) returns all 12; the chunk page (10) stops at 10. An explicit
+    """22 one-chunk papers on one matching term: the default paper page
+    (25) returns all 22; the chunk page (20) returns 20 of 22. An explicit
     ``page_size`` overrides both."""
-    for i in range(12):
+    for i in range(22):
         _seed(store, slug=f"ps-{i}", blocks=[f"gallium arsenide study {i}"])
     h = _handler(store)
     paper = h.search(q="gallium arsenide")
-    assert len(_row_chunk_handles(paper.body)) == 12  # 25-row paper page
+    assert len(_row_chunk_handles(paper.body)) == 22  # 25-row paper page
     chunk = h.search(q="gallium arsenide", unique_per="chunk")
-    assert len(_row_chunk_handles(chunk.body)) == 10  # 10-row chunk page
+    assert len(_row_chunk_handles(chunk.body)) == 20  # 20-row chunk page
     # The verb refuses ``page=`` — the trailer must never advertise it.
     assert "page=" not in chunk.body
     explicit = h.search(q="gallium arsenide", page_size=5)
     assert len(_row_chunk_handles(explicit.body)) == 5
+    explicit_chunk = h.search(q="gallium arsenide", unique_per="chunk", page_size=7)
+    assert len(_row_chunk_handles(explicit_chunk.body)) == 7
+
+
+def test_scope_search_default_page_is_chunk_sized(store: Store) -> None:
+    """``scope=`` implies chunk rows, so no ``page_size`` asks for 20."""
+    ref = _seed(
+        store,
+        slug="sc-one",
+        blocks=[f"indium phosphide layer {i}" for i in range(23)],
+    )
+    res = _handler(store).search(
+        q="indium phosphide", scope=handle_registry.format_handle("paper", ref)
+    )
+    assert len(_row_chunk_handles(res.body)) == 20
 
 
 def test_paper_mode_pages_papers_not_chunks(store: Store) -> None:

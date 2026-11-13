@@ -117,7 +117,8 @@ Each row is one paper — the best hit's chunk handle `pc<chunk_id>`
 (paste back into `get`/`link`), a `+N` count of that paper's other
 hits, and the best chunk's keywords; order is the relevance signal.
 `unique_per='chunk'` (implied by `scope=`) returns one row per matching
-chunk instead. Mechanics (mode=, bounded results, tags=): `precis-search-help`.
+chunk instead. A question about one known paper takes `scope=<paper handle>`,
+which searches only that paper's chunks. Mechanics (mode=, bounded results, tags=): `precis-search-help`.
 
 When one phrasing isn't finding it, escalate (details in
 `precis-search-help` → Broad retrieval):
