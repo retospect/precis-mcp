@@ -2764,6 +2764,18 @@ KIMI_IDLE = "● kimi ready\n❯ \n"
 KIMI_TRUST = "● kimi\nTrust this folder?\n 1. Yes\n 2. No\n"
 #: synthetic: no real Kimi capture exists — a numbered permission dialog.
 KIMI_NUMBERED = "Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+#: gr651178's pane shape: two banners, the input box as a bare ``>``
+#: line, and a ``context:`` status — no ``❯`` anywhere.
+KIMI_BOX = (
+    "No session yet — one will be created on your first message.\n"
+    "tmux extended-keys is off. Modified Enter keys may not work. Add "
+    "`set -g extended-keys on` to ~/.tmux.conf and restart tmux.\n"
+    "> \n"
+    "context: 0% (0/1M)\n"
+)
+KIMI_BOX_HELD = KIMI_BOX.replace(
+    "> \n", "> Read scratch/kimi-brief.md and do exactly what it says.\n"
+)
 
 
 def test_kimi_launch_dry_run_resolves_kimi_tree_tmux_and_never_prompt(
@@ -3059,6 +3071,95 @@ def test_kimi_model_requires_kimi(env: dict[str, str], tmp_path: Path) -> None:
     env = _kimi_launch_fills(env)
     proc = _run(env, "launch", "x", "--brief", str(brief), "--kimi-model", "k3")
     assert proc.returncode == 2 and "--kimi-model needs --kimi" in proc.stderr
+
+
+# ── launch --kimi: the bare ``>`` input box (gr651178) ───────────────
+# Kimi's box is `> text`, not `❯ text` — the unscoped read saw an empty
+# box, reported "sent", and the pane idled with the brief unsubmitted.
+
+
+def test_kimi_bare_box_is_unsent_input_only_for_kimi() -> None:
+    m = _module()
+    held = "Read scratch/kimi-brief.md and do exactly what it says."
+    assert m.unsent_input(KIMI_BOX_HELD, "kimi") == held
+    assert m.unsent_input(KIMI_BOX, "kimi") == ""
+    # `>` is kimi-scoped: another agent's `>`-led scrollback is output.
+    assert m.unsent_input(KIMI_BOX_HELD) == ""
+    assert m.unsent_input(KIMI_BOX_HELD, "claude") == ""
+    assert m.input_box_visible(KIMI_BOX, "kimi") is True
+    assert m.input_box_visible("Kimi Code\nstarting…\n", "kimi") is False
+
+
+def test_send_line_refuses_a_kimi_box_holding_text(env: dict[str, str]) -> None:
+    _windows(env, {"kimi-a": KIMI_BOX_HELD})
+    proc = _run(env, "send-line", "a", "hello", "--pause", "0")
+    assert proc.returncode == 3
+    assert "input box holds unsent text" in proc.stdout
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    # An empty `>` box sends normally.
+    _windows(env, {"kimi-a": KIMI_BOX})
+    proc = _run(env, "send-line", "a", "the brief", "--pause", "0")
+    assert proc.returncode == 0 and proc.stdout == "sent: kimi-a\n"
+
+
+def test_kimi_launch_retries_a_dropped_enter_with_the_kitty_key(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    # Captures in order: box ready (launch readiness), box ready
+    # (send-line's pre-check), the typed line still held after the plain
+    # Enter, cleared after the kitty retry.
+    _seq(env, "kimi-k-x", KIMI_BOX, KIMI_BOX, KIMI_BOX_HELD, KIMI_BOX)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 0, proc.stderr
+    assert "launched kimi-k-x" in proc.stdout
+    assert _sent_texts(env) == [
+        "Read scratch/kimi-brief.md and do exactly what it says."
+    ]
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert ["send-keys", "-t", "kimi-k-x", "Enter"] in sends
+    # The first retry is the kitty-protocol Enter (ESC [ 13 u), not the
+    # plain key the extended-keys-off pane already dropped.
+    assert ["send-keys", "-t", "kimi-k-x", "-H", "1b", "5b", "31", "33", "75"] in sends
+
+
+def test_kimi_launch_fails_loudly_when_the_enter_never_lands(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _seq(env, "kimi-k-x", KIMI_BOX, KIMI_BOX, KIMI_BOX_HELD)
+    proc = _run(env, "launch", "k-x", "--batch", "b-x", "--kimi", "--settle", "0")
+    assert proc.returncode == 3
+    assert "the brief is NOT delivered" in proc.stdout
+    assert "extended-keys" in proc.stderr
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    enters = [c for c in sends if c[-1] == "Enter"]
+    assert len(enters) == 2  # the send and the plain-key retry
+    assert ["send-keys", "-t", "kimi-k-x", "-H", "1b", "5b", "31", "33", "75"] in sends
+    # The batch assign still records — the window is up.
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    assert '"assign"' in log
+
+
+def test_kimi_launch_refuses_a_pane_that_never_shows_a_box(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "kimi-k-x", "Kimi Code\nstarting…\n")
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = {**_kimi_launch_fills(env), "FLEET_KIMI_READY_S": "0"}
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 3
+    assert "no input box" in proc.stderr
+    assert not [c for c in _tmux_calls(env) if c[0] in ("send-keys", "set-buffer")]
 
 
 # ── event-watch: the Kimi pane (td576126) ────────────────────────────

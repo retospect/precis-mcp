@@ -209,7 +209,13 @@ under the CLI's own login. ``kimi -p`` headless is forbidden and the TUI
 takes no prompt flag, so the brief lands at
 ``<tree>/scratch/kimi-brief.md`` (the batch text plus the Kimi rules
 note) and the one ``Read scratch/kimi-brief.md and do exactly what it
-says.`` line is typed through send-line's machinery once the pane is up.
+says.`` line is typed through send-line's machinery once the pane shows
+its input box — a bare ``>`` line the parser scopes to kimi panes. The
+launch waits for the box before typing and refuses loudly (window kept,
+batch assign still records) when it never appears or the Enter cannot be
+confirmed; with tmux extended-keys off a plain Enter can arrive as a
+newline, so a kimi pane's Enter retry alternates the kitty-protocol
+sequence (gr651178).
 Only tier R is enforced on a Kimi pane — ``--tier W`` and
 ``FLEET_LEGACY_FOOTERS=1`` are refused — and the tier file alone does
 not bind the CLI: the deny rules bite through the tree's own
@@ -282,6 +288,7 @@ from fleet_panes import (
     devin_model,
     dialog_command,
     dialog_type,
+    input_box_visible,
     kimi_limit,
     nonempty_tail,
     pane_report,
@@ -672,9 +679,13 @@ def _send_text(
     if still:
         return 3, f"still compacting after {wait:g}s"
     plain = ANSI_RE.sub("", pane)
+    # The input-box parser needs the agent: a kimi pane's box is a bare
+    # ``>``, which the unscoped read takes for empty — send-line then
+    # reported "sent" over a line still sitting in the box (gr651178).
+    agent = detect_agent(f.pane_facts(win)[0], win)
     if dialog_type(plain):
         return 3, f"a dialog is open ({dialog_command(plain)})"
-    if pending := unsent_input(pane):
+    if pending := unsent_input(pane, agent):
         return 3, f"input box holds unsent text: {pending[:60]}"
     # Fresh instructions do not belong in a pane already at/past the ctx
     # ceiling (gr515267). Slash commands (/compact, /clear) are the
@@ -713,12 +724,25 @@ def _send_text(
         if pane is None or still:
             break  # cannot verify — window gone or compaction outlived --wait
         plain = ANSI_RE.sub("", pane)
-        if not unsent_input(pane) or BUSY_RE.search(plain) or dialog_type(plain):
+        if not unsent_input(pane, agent) or BUSY_RE.search(plain) or dialog_type(plain):
             return 0, note
         if attempt < retries:
-            f.tmux("send-keys", "-t", t, "Enter")
+            f.tmux("send-keys", "-t", t, *_enter_key(agent, attempt))
             note = "sent (retried Enter)"
     return 4, "cannot confirm the Enter landed"
+
+
+#: Kitty-keyboard Enter (ESC [ 13 u) as raw bytes. With tmux
+#: extended-keys off, a TUI that enabled the kitty protocol can read a
+#: plain ``send-keys Enter`` as a newline — the text sits in the box
+#: unsubmitted (gr651178). A kimi pane's Enter retry alternates it with
+#: the plain key; a pane that never enabled the protocol ignores it.
+_KITTY_ENTER = ("-H", "1b", "5b", "31", "33", "75")
+
+
+def _enter_key(agent: str, attempt: int) -> tuple[str, ...]:
+    """The key sent on Enter ``attempt`` (0 is the first retry)."""
+    return _KITTY_ENTER if agent == "kimi" and attempt % 2 == 0 else ("Enter",)
 
 
 def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
@@ -1539,6 +1563,23 @@ _KIMI_NOTE = (
 #: docs/runbooks/tmux-worker-launch.md).
 _KIMI_HOLD_RE = re.compile(r"trust|log ?in|device code|authenticat", re.I)
 
+#: Seconds launch waits for the TUI to draw its input box before typing
+#: (FLEET_KIMI_READY_S overrides). A line typed before the box is
+#: listening can land while its Enter is dropped, leaving the pane idle
+#: forever (gr651178); 0 tests the never-ready refusal.
+_KIMI_READY_WAIT = float(os.environ.get("FLEET_KIMI_READY_S", "15"))
+_KIMI_READY_POLL = 1.0
+
+
+def _kimi_pane_ready(pane: str) -> bool:
+    """The TUI is far enough up to type at: a hold dialog, or its input
+    box drawn (gr651178)."""
+    return bool(
+        dialog_type(pane)
+        or _KIMI_HOLD_RE.search(pane)
+        or input_box_visible(pane, "kimi")
+    )
+
 
 def _launch_kimi(
     f: Fleet,
@@ -1621,9 +1662,19 @@ def _launch_kimi(
         )
         return 3
     # kimi exits at once on a stale config or a refused flag; say
-    # "launched" and record the builder only for a window still up.
+    # "launched" and record the builder only for a window still up. And
+    # the TUI needs a moment to draw its input box — typing before it is
+    # listening can land the text while the Enter is dropped, which left
+    # two panes silently idle (gr651178) — so wait for the box, or a hold
+    # dialog, before typing.
     time.sleep(a.settle)
     pane = f.capture(win)
+    deadline = time.monotonic() + _KIMI_READY_WAIT
+    while pane is not None and not _kimi_pane_ready(pane):
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_KIMI_READY_POLL)
+        pane = f.capture(win)
     if pane is None:
         print(
             f"fleet-wave: REFUSED {win}: window gone within {a.settle:g}s — "
@@ -1643,6 +1694,16 @@ def _launch_kimi(
         if a.batch:
             _assign_batch(a.batch, win=win, name=name, vendor="kimi")
         return 3
+    if not input_box_visible(pane, "kimi"):
+        print(
+            f"fleet-wave: REFUSED {win}: the Kimi TUI showed no input "
+            f"box within {_KIMI_READY_WAIT:g}s — the pane is up but the "
+            "brief would not land; check the window by hand",
+            file=sys.stderr,
+        )
+        if a.batch:
+            _assign_batch(a.batch, win=win, name=name, vendor="kimi")
+        return 3
     rc, note = _send_text(
         f,
         win,
@@ -1654,7 +1715,16 @@ def _launch_kimi(
     )
     if rc != 0:
         print(held)
-        print(f"fleet-wave: send-line would have refused: {note}", file=sys.stderr)
+        hint = ""
+        if "extended-keys" in pane:
+            hint = (
+                " — the pane's extended-keys banner is up: add `set -g "
+                "extended-keys on` to ~/.tmux.conf and restart tmux"
+            )
+        print(
+            f"fleet-wave: send-line would have refused: {note}{hint}",
+            file=sys.stderr,
+        )
         if a.batch:
             _assign_batch(a.batch, win=win, name=name, vendor="kimi")
         return 3

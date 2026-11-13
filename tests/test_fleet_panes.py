@@ -269,6 +269,9 @@ def test_unsent_input_placeholders() -> None:
     assert m.unsent_input(_fix("codex-idle.txt")) == ""
     assert m.unsent_input(_fix("claude-idle.txt")) == ""
     assert m.unsent_input("out\n❯ \x1b[1mhalf typed\x1b[0m\n") == "half typed"
+    # Kimi's box is a bare `>` — kimi-scoped only (gr651178).
+    assert m.unsent_input("out\n> held\n", "kimi") == "held"
+    assert m.unsent_input("out\n> held\n") == ""
 
 
 # --- CLI tests against the fake tmux ------------------------------------------

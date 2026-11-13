@@ -72,12 +72,22 @@ launcher is `scripts/fleet-codex` (`codex-fleet.md`); Devin launch is
   script — code never reads `~/.kimi-code/credentials` or `oauth`.
 - The TUI cannot take an initial prompt, so the brief lands at
   `<tree>/scratch/kimi-brief.md` and launch types the one line `Read
-  scratch/kimi-brief.md and do exactly what it says.` once the pane is
-  up. If the pane shows a trust or login dialog the brief is held (rc 3,
-  window kept, batch assign still records): only Reto answers such a
-  dialog — NEVER `tmux send-keys` into it. Afterwards send the line by
+  scratch/kimi-brief.md and do exactly what it says.` once the pane shows
+  its input box (a bare `>` line — Kimi's prompt, not Claude's `❯`).
+  Launch waits up to `FLEET_KIMI_READY_S` (default 15 s) for the box and
+  refuses (rc 3) when it never appears; the send verifies the box
+  cleared and retries the Enter — on a kimi pane alternating the plain
+  key with the kitty-protocol `ESC [ 13 u`, since with tmux
+  `extended-keys` off a plain Enter can arrive as a newline and the line
+  sits unsent forever (gr651178: two panes idled 25 min before
+  event-watch flagged them frozen). If the pane shows a trust or login
+  dialog the brief is held (rc 3, window kept, batch assign still
+  records): only Reto answers such a dialog — NEVER `tmux send-keys`
+  into it. Afterwards send the line by
   hand: `scripts/fleet-wave send-line kimi-NAME "Read scratch/kimi-brief.md
-  and do exactly what it says."`.
+  and do exactly what it says."`. The durable host fix for the TUI's
+  "tmux extended-keys is off" banner is `set -g extended-keys on` in
+  `~/.tmux.conf` plus a tmux restart.
 - Tier enforcement is not `fleet-authority`'s settings file alone (Kimi
   reads no project permission file): the deny rules bite through the
   tree's own `scripts/hooks/kimi-adapt.py` copy, so only trees cut after
