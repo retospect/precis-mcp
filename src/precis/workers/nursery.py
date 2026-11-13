@@ -405,7 +405,11 @@ def _kind_roster_due(store: Store) -> bool:
     drain on the next due pass).
     """
     now = time.monotonic()
-    if now - _kind_roster_checked.get(store, 0.0) < _KIND_ROSTER_INTERVAL_S:
+    # A store never seen is always due: monotonic() counts from boot, so a
+    # 0.0 default would throttle a first pass on a host up under 15 min
+    # (fresh CI runners — the r295 gate red).
+    last = _kind_roster_checked.get(store)
+    if last is not None and now - last < _KIND_ROSTER_INTERVAL_S:
         return False
     _kind_roster_checked[store] = now
     return True

@@ -84,11 +84,11 @@ def test_index_ddl_defaults_to_index_kinds() -> None:
         assert ann_partial_index_name(kind) not in names
 
 
-def test_j_fkey_uncoverage_is_grandfathered() -> None:
-    """Dropping ``struct_bonds_j_idx`` leaves ``struct_bonds_j_fkey``
-    uncovered — the schema-design ratchet carries it deliberately
-    (dormant probe; see the migration header)."""
-    assert "struct_bonds.struct_bonds_j_fkey" in UNINDEXED_FKS
+def test_j_fkey_is_covered_again() -> None:
+    """0312 dropped ``struct_bonds_j_idx`` and grandfathered the uncovered
+    ``struct_bonds_j_fkey``; 0316 restores the index for RI cascades
+    (td653181), so the fkey is covered and leaves the ratchet."""
+    assert "struct_bonds.struct_bonds_j_fkey" not in UNINDEXED_FKS
 
 
 @pytest.mark.db

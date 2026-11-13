@@ -54,10 +54,12 @@ class _Conn:
         # absorbed by ``budget.settings.get_float``'s positive-only filter;
         # ``precis.settings.get_float`` (meter's resolver now) has no such
         # filter, so a stray 0.0 "override" would wrongly zero the cap.
+        # Two columns: spent_usd reads [0]; _spent_usd_windows reads the
+        # (hourly, daily) pair — the fake answers the same sum for both.
         if "llm_call_log" in sql:
-            return _Cursor((self._llm,))
+            return _Cursor((self._llm, self._llm))
         if "cache_state" in sql:
-            return _Cursor((self._fetch,))
+            return _Cursor((self._fetch, self._fetch))
         return _Cursor(None)
 
 
@@ -517,7 +519,9 @@ class _OverrideConn:
         if "app_settings" in sql:
             val = self._kv.get(params[0])
             return _Rows([(val,)] if val is not None else [])
-        return _Rows([(self._llm,)] if "llm_call_log" in sql else [(0.0,)])
+        return _Rows(
+            [(self._llm, self._llm)] if "llm_call_log" in sql else [(0.0, 0.0)]
+        )
 
 
 class _OverridePool:
@@ -661,9 +665,9 @@ class _SqlConn:
 
     def execute(self, sql: str, params: object = None) -> _Cursor:
         if "llm_call_log" in sql:
-            return _Cursor((self._llm,))
+            return _Cursor((self._llm, self._llm))
         if "cache_state" in sql:
-            return _Cursor((self._fetch,))
+            return _Cursor((self._fetch, self._fetch))
         if "app_settings" in sql:
             key = cast("tuple", params)[0] if params else None
             val = self._settings.get(cast("str", key))
