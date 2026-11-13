@@ -5174,8 +5174,9 @@ class JobHandler(NumericRefHandler):
         queued ``pcb_route`` showed neither). Read-only, advisory — the
         order mirrors ``claim_executor_jobs``' ``(class_rank, aged_prio,
         queued_since, ref_id)`` key (slice 6, D6: origin class first, then
-        in-class aged prio) but not its per-lane share term (gr506754) or
-        capability-scarcity re-rank. It
+        in-class aged prio) but not its per-lane share term (gr506754),
+        capability-scarcity re-rank, or the 1-in-N background-class
+        share diversion (gr633506). It
         shows this row's origin class, any class promotion ageing has
         earned it, and the per-class count of rows ahead; the reasons are
         the claim gates visible from the row itself: operator suspension, a

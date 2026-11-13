@@ -669,3 +669,53 @@ def test_background_share_env_zero_disables(store: Store, monkeypatch: Any) -> N
     bg = _job(store, origin="background", prio=8)
     assert _claim(store, limit=11) == agents
     assert bg not in agents
+
+
+def test_background_share_probes_past_saturated_window(
+    store: Store, monkeypatch: Any
+) -> None:
+    """td655182 review: the in-window scan only saw the top
+    ``limit × _CLAIM_OVERFETCH`` rows, so an agent backlog deeper than
+    the window hid every background row and the share never fired —
+    the exact starvation it exists for. ``limit=1`` fetches 3
+    candidates; a 6-deep agent backlog must still yield the background
+    row via the locked queue probe."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    bg = _job(store, origin="background", prio=8, queued_s_ago=3600)
+    agents = [_job(store, origin="agent", prio=5) for _ in range(6)]
+    assert _claim(store, limit=1) == [bg]
+    # The diversion is once per cadence hit — the next pass returns to
+    # the agent backlog (nothing background left to probe). Claimed
+    # rows keep STATUS:queued in tests, so mark bg running as the real
+    # executor would.
+    store.add_tag(bg, Tag.parse_strict("STATUS:running"), replace_prefix=True)
+    assert _claim(store, limit=1) == [agents[0]]
+
+
+def test_background_share_probe_takes_oldest_waiting(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The probe orders by the queued-tag stamp, not proximity to the
+    window: two background rows beyond the backlog, the older one is
+    diverted to first."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    _job(store, origin="background", prio=8, queued_s_ago=600)
+    older_bg = _job(store, origin="background", prio=8, queued_s_ago=7200)
+    for _ in range(6):
+        _job(store, origin="agent", prio=5)
+    assert _claim(store, limit=1) == [older_bg]
+
+
+def test_background_share_probe_never_takes_release_leg(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The probe's class filter: a release-band row (``release_poll``
+    mints with ``origin=background`` but claims at rank 2.5) is not a
+    share candidate — the diversion finds nothing and the natural
+    agent winner stands."""
+    monkeypatch.setenv(_BG_SHARE_EVERY_ENV, "1")
+    _job(store, origin="background", prio=8, job_type="release_poll")
+    agents = [_job(store, origin="agent", prio=5) for _ in range(6)]
+    # Cadence fires on pick 1: probe excludes the release-band row, so
+    # no diversion — the agent claims.
+    assert _claim(store, limit=1) == [agents[0]]

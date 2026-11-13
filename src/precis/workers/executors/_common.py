@@ -1438,7 +1438,13 @@ def claim_executor_jobs(
     natural winner is agent or recurring class — human-class, prio-1
     and release-band winners preempt as before, an empty background
     candidate set leaves the pick unchanged, and with nothing higher
-    queued the batch drains background in natural order anyway. The
+    queued the batch drains background in natural order anyway. When
+    no background row sits inside the locked candidate window — a
+    saturated agent/recurring front fills all ``limit ×
+    _CLAIM_OVERFETCH`` slots, the exact starvation the share exists
+    for — a dedicated locked probe (``_bg_share_probe`` below)
+    fetches the oldest claimable non-prio-1 background row under the
+    same gates as the main query. The
     cadence counter lives in ``app_state``
     (:data:`_BG_SHARE_COUNTER_KEY`) and advances once per claim pass
     by that pass's fresh-claim count, so the share holds fleet-wide,
@@ -2332,12 +2338,87 @@ def claim_executor_jobs(
             (_BG_SHARE_COUNTER_KEY,),
         ).fetchone()
         share_base = int(row[0]) if row and row[0] is not None else 0
+    probe_rejected: list[int] = []
+
+    def _bg_share_probe() -> Any:
+        """Oldest claimable non-prio-1 background-class row, locked like
+        the main candidates (td655182 review of gr633506): the fresh-work
+        window only holds the top ``limit × _CLAIM_OVERFETCH`` rows, so a
+        saturated agent/recurring backlog hides every background row —
+        the exact starvation the share exists for. Mirrors the main
+        query's gates (executor, node pin, claimable status, live lease,
+        no terminal tag, exclusion/parent/suspend/cap/reserve clauses —
+        all already built above) and adds ``base_class = 3`` +
+        ``prio <> 1``; release legs sit at 2.5 so they can't be picked.
+        Rows already claimed or rejected this pass are excluded so a
+        repeat probe in one batch moves to the next-oldest instead of
+        re-returning a row it can't take."""
+        return conn.execute(
+            f"""
+            SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
+                   q.qs AS queued_since
+              FROM refs r
+              CROSS JOIN LATERAL (
+                    SELECT max(rt.created_at) AS qs
+                      FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = r.ref_id
+                       AND t.namespace = %s AND t.value = ANY(%s)
+                  ) q
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
+               AND r.meta->>'executor' = %s
+               AND (
+                    (r.meta->'params'->>'target_node') IS NULL
+                 OR (r.meta->'params'->>'target_node') = %s
+               )
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = %s AND t.value = ANY(%s)
+                   )
+               AND (
+                    (r.meta->>'lease_until') IS NULL
+                 OR (r.meta->>'lease_until')::timestamptz < now()
+               )
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = %s
+                        AND t.value = ANY(%s)
+                   )
+               AND {_CLASS_RANK_CASE} = 3
+               AND COALESCE(r.prio, %s)::float8 <> 1
+               AND r.ref_id <> ALL(%s)
+               {exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}
+             ORDER BY q.qs ASC, r.ref_id ASC
+             LIMIT 1
+               FOR UPDATE OF r SKIP LOCKED
+            """,
+            (
+                STATUS_NAMESPACE,
+                list(CLAIMABLE),
+                executor,
+                node,
+                STATUS_NAMESPACE,
+                list(CLAIMABLE),
+                STATUS_NAMESPACE,
+                list(TERMINAL),
+                _DEFAULT_JOB_PRIO,
+                _DEFAULT_JOB_PRIO,
+                [int(c[0]) for c in claimed] + probe_rejected or [0],
+                *parent_params,
+                *suspend_params,
+                *cap_params,
+                *reserve_block_params,
+            ),
+        ).fetchone()
+
     while remaining and fresh_claimed < fresh_limit:
         # Pick the best row under the CURRENT share counts — popping
         # argmin each time keeps a ``limit``-sized batch interleaving
         # shares rather than claiming a statically-sorted prefix.
         best = min(range(len(remaining)), key=lambda i: _order_key(remaining[i]))
         r = remaining[best]
+        probe_row = None
         if (
             share_every
             and (share_base + fresh_claimed + 1) % share_every == 0
@@ -2364,12 +2445,22 @@ def claim_executor_jobs(
             )
             if bg_idx is not None:
                 best = bg_idx
-                r = remaining[best]
-        r = remaining.pop(best)
+            else:
+                # No background row in the window — the saturated-queue
+                # case: probe the queue itself for the oldest one.
+                probe_row = _bg_share_probe()
+        if probe_row is not None:
+            # Diverted: the probed row is not in ``remaining`` — the
+            # natural winner stays queued for the very next pick.
+            r = probe_row
+        else:
+            r = remaining.pop(best)
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
         job_type = str(meta.get("job_type") or "")
         cap = caps.get(job_type)
         if cap is not None and running_by_type.get(job_type, 0) >= cap:
+            if probe_row is not None:
+                probe_rejected.append(ref_id)
             continue  # hit the cap mid-claim — the SQL exclusion only sees the count at query time
         if executor_cap is not None:
             # Per-class slot reservation (gr603792). ``jt`` claims into
@@ -2387,9 +2478,13 @@ def claim_executor_jobs(
             if running_total >= executor_cap or (
                 running_total >= allowed and running_by_type.get(job_type, 0) >= own
             ):
+                if probe_row is not None:
+                    probe_rejected.append(ref_id)
                 continue  # only slots reserved for other types remain
         claim = _finish_claim(ref_id, title, meta, QUEUED, r[4])
         if claim is None:
+            if probe_row is not None:
+                probe_rejected.append(ref_id)
             continue
         claimed.append(claim)
         fresh_claimed += 1
