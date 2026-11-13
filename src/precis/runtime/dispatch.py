@@ -3445,13 +3445,166 @@ class DispatchMixin(RuntimeShape):
             # whole call shape, with the caller's own rel= filled in.
             rel = args.get("rel")
             rel_arg = f", rel={rel!r}" if isinstance(rel, str) and rel.strip() else ""
-            return [
+            hints = [
                 f"link(kind='<source kind>', id=<source id>, "
                 f"target='<kind>:<identifier>'{rel_arg})",
                 "a typed id needs no kind=: link(id='td12', target='todo:34') "
                 "or id='todo:12' self-identify",
             ]
-        return ["pass kind=<one of the listed options>"]
+        else:
+            hints = ["pass kind=<one of the listed options>"]
+        # gr661902: when the call DID carry an id= that self-identified
+        # nothing, lead with why — the generic "pick a kind" alone gave
+        # the caller no way to tell "not a ref" from "a tombstone" from
+        # "a kind this build doesn't serve", and sessions retried the
+        # identical call.
+        specific = self._unresolved_id_hint(args.get("id"))
+        if specific is not None:
+            hints.insert(0, specific)
+        return hints
+
+    def _unresolved_id_hint(self, raw: Any) -> str | None:
+        """Explain *why* a kindless ``id=`` self-identified nothing
+        (gr661902 — the residual ``missing kind=`` cluster after
+        gr648740's inference landed: bare ref-ids and file-shaped ids
+        with nothing live behind them still bounced on the bare
+        "pick a kind" line, which never mentioned the id itself).
+
+        A bare positive int names a live ref unambiguously
+        (:meth:`_kind_of_bare_id`), so reaching this refusal means the
+        store disagrees — nothing there, a tombstone, or a kind this
+        build doesn't serve; each case gets its own one-line diagnosis.
+        A string id that parses as a prose-file address for at least
+        one live file kind gets the analogous shape-level diagnosis via
+        :meth:`_file_shape_hint` — ambiguous on-disk ownership and
+        nothing-on-disk are different refusals, so the hint says which.
+        Anything else returns ``None`` and the generic hints stand
+        alone."""
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if stripped.isdigit():
+                raw = int(stripped)
+            else:
+                return self._file_shape_hint(stripped)
+        if not isinstance(raw, int) or raw <= 0:
+            return None
+        if self.store is None:
+            return None
+        try:
+            ref = self.store.fetch_refs_by_ids([raw], include_deleted=True).get(raw)
+        except Exception:  # pragma: no cover — store outage etc.
+            log.debug("missing-kind id probe failed", exc_info=True)
+            return None
+        if ref is None:
+            return (
+                f"id={raw} names no ref — a bare id self-identifies "
+                "only when it names a live ref"
+            )
+        if self.hub is None or ref.kind not in self.hub.kinds:
+            return (
+                f"id={raw} is a {ref.kind} ref, but kind={ref.kind!r} is "
+                "not live in this build — "
+                "get(kind='skill', id='precis-kinds-disabled-help')"
+            )
+        if ref.retired_at is not None:
+            return (
+                f"id={raw} is a deleted {ref.kind} ref — pass "
+                f"kind={ref.kind!r} to reach its tombstone"
+            )
+        # Live ref reaching here means the verb (e.g. delete, edit)
+        # deliberately skips bare-id inference — still name the kind
+        # so the retry is mechanical, not a guess.
+        return f"id={raw} is a live {ref.kind} ref — pass kind={ref.kind!r}"
+
+    def _file_id_kinds(self, ident: str, probe_attr: str) -> list[str]:
+        """Live kinds whose ``probe_attr`` file-id probe (``claims_file_id``
+        or ``owns_existing_file``) answers True for ``ident``. Callers
+        guard ``self.hub is None``."""
+        kinds: list[str] = []
+        for kind in sorted(self.hub.kinds):
+            probe = getattr(self.hub.handler_for(kind), probe_attr, None)
+            if probe is None:
+                continue
+            try:
+                if probe(ident):
+                    kinds.append(kind)
+            except Exception:  # pragma: no cover — parse/disk probe outage etc.
+                log.debug(
+                    "file probe %s failed for %s", probe_attr, kind, exc_info=True
+                )
+        return kinds
+
+    def _file_shape_hint(self, ident: str) -> str | None:
+        """The shape-level counterpart of :meth:`_maybe_infer_file_kind`
+        for the refusal path: when ``ident`` carries a file signal
+        (``--`` segment separator, ``/`` path separator, or a ``.ext``)
+        and at least one live file kind's grammar parses it, say what the
+        id actually addressed so the retry under an explicit ``kind=`` is
+        mechanical. Three outcomes, distinguished because they are
+        different refusals:
+
+        - the stem names files under 2+ kinds (``meeting.md`` +
+          ``meeting.tex``): an ambiguous stem, never guessed — the hint
+          names the owning kinds, not a fiction about missing files
+          (review on gr661902's fix);
+        - the stem names a file under exactly one kind: inference pins
+          it before this refusal is reached, but if we got here anyway
+          the hint still names the owner;
+        - the stem names nothing on disk: the hint hands off to each
+          claimant's own not-found, which lists near-misses — something
+          ``missing kind=`` cannot do.
+
+        A bare single-token slug (``dft_methodology``) is *also* a
+        valid file slug, but it's just as plausibly a paper/gripe
+        slug, so it earns no file hint — the file signal gate keeps
+        the diagnosis precise."""
+        if self.hub is None or not any(c in ident for c in ("--", "/", ".")):
+            return None
+        claimants = self._file_id_kinds(ident, "claims_file_id")
+        if not claimants:
+            # No live file kind parsed it — but on a host with no
+            # PRECIS_ROOT the file kinds are deferred outright, so the
+            # id could be a file address this build can't even parse.
+            # Say that instead of leaving the caller guessing.
+            loadabilities = getattr(self.hub, "loadabilities", {})
+            deferred = [
+                kind
+                for kind in ("markdown", "plaintext", "tex")
+                if (v := loadabilities.get(kind)) is not None and not v.loaded
+            ]
+            if deferred:
+                return (
+                    f"id={ident!r} looks like a file address, but the "
+                    f"file kinds ({', '.join(deferred)}) are not live in "
+                    "this build — "
+                    "get(kind='skill', id='precis-kinds-disabled-help')"
+                )
+            return None
+        owners = self._file_id_kinds(ident, "owns_existing_file")
+        if len(owners) > 1:
+            return (
+                f"id={ident!r} names existing files under more than one "
+                f"kind ({', '.join(owners)}) — an ambiguous stem is never "
+                "guessed; pass kind=<one of: "
+                f"{', '.join(owners)}> to pick the file you mean"
+            )
+        if owners:
+            # One owner: inference normally pins it before this refusal,
+            # so reaching here means that probe did not run for this
+            # verb — still name the kind so the retry is mechanical.
+            return (
+                f"id={ident!r} is an existing {owners[0]} file — "
+                f"pass kind={owners[0]!r}"
+            )
+        return (
+            f"id={ident!r} parses as a {'/'.join(claimants)} file address "
+            "but no such file exists on disk — pass kind=<one of: "
+            f"{', '.join(claimants)}> for that kind's own not-found "
+            "(which suggests near-misses), or get(kind='<kind>', id='/') "
+            "to list its files"
+        )
 
     def _resolve_handler(self, kind: str, verb: str, *, raw_id: Any = None) -> Handler:
         """Look up the handler for ``kind`` and verify it supports ``verb``.
@@ -4724,16 +4877,7 @@ class DispatchMixin(RuntimeShape):
         an ambiguous stem is never guessed."""
         if args.get("kind") is not None or self.hub is None:
             return
-        owners: list[str] = []
-        for kind in sorted(self.hub.kinds):
-            probe = getattr(self.hub.handler_for(kind), "owns_existing_file", None)
-            if probe is None:
-                continue
-            try:
-                if probe(ident):
-                    owners.append(kind)
-            except Exception:  # pragma: no cover — disk/store outage etc.
-                log.debug("file-kind probe failed for %s", kind, exc_info=True)
+        owners = self._file_id_kinds(ident, "owns_existing_file")
         if len(owners) == 1:
             args["kind"] = owners[0]
 

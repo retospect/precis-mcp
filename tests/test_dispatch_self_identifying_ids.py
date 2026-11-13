@@ -84,7 +84,11 @@ class TestProseFileId:
         assert "missing kind" in out
 
     def test_ambiguous_stem_still_refuses(self, store: Store, tmp_path: Path) -> None:
-        """Same stem under two extensions owns two kinds — never guessed."""
+        """Same stem under two extensions owns two kinds — never guessed.
+
+        The refusal's ``next:`` must say the stem is ambiguous — both
+        files DO exist — not the false "no such file exists on disk"
+        the shape hint used to claim (review on gr661902's fix)."""
         ws = tmp_path / "ws"
         (ws / "notes").mkdir(parents=True)
         (ws / "notes" / "meeting.md").write_text("# M\n", encoding="utf-8")
@@ -94,6 +98,10 @@ class TestProseFileId:
         out = rt.dispatch("get", {"id": "notes--meeting"})
         assert "[error:BadInput]" in out
         assert "missing kind" in out
+        assert "no such file" not in out
+        assert "ambiguous" in out
+        assert "markdown" in out
+        assert "tex" in out
 
     def test_path_form_id_infers_kind(self, rooted_runtime: PrecisRuntime) -> None:
         out = rooted_runtime.dispatch("get", {"id": "tex/catalyst_landscape.tex"})

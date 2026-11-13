@@ -2503,6 +2503,33 @@ class PlaintextHandler(Handler):
             return False
         return path.is_file()
 
+    def claims_file_id(self, raw_id: str) -> bool:
+        """True when ``raw_id`` parses as one of this kind's file
+        addresses — slug-form or path-form — whether or not a file
+        exists at it. The shape-level twin of
+        :meth:`owns_existing_file`: the dispatcher asks it on the
+        ``missing kind=`` refusal path to tell "a file address with
+        nothing there" or "a stem owned by 2+ kinds" from "not a file
+        id at all" (gr661902 — a kindless ``get(id='tex--dft_methodology')``
+        named a file that wasn't on disk, and the refusal never
+        mentioned the file-id grammar the caller was already
+        speaking)."""
+        explicit = _EXPLICIT_EXT_RE.search(str(raw_id))
+        want_ext = explicit.group(0).lower() if explicit else None
+        if want_ext is not None and want_ext not in self._EXTENSIONS:
+            return False
+        try:
+            slug, _sel, _view = _parse_file_id(
+                str(raw_id),
+                extensions=self._EXTENSIONS,
+                views=self._SUPPORTED_VIEWS,
+                aliases=self._aliases,
+            )
+        except BadInput:
+            return False
+        _alias, flat = self._split_alias(slug)
+        return is_valid_file_slug(flat)
+
     def _resolve_path(
         self, slug: str, *, must_exist: bool, preferred_ext: str | None = None
     ) -> Path:
