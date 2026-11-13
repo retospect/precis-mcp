@@ -203,6 +203,23 @@ def test_ask_verdict_files_a_gripe_linked_review_todo(store: Store) -> None:
     assert "done" not in {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
 
 
+def test_closed_review_todo_blocks_a_repeat_mint(store: Store) -> None:
+    """A done review for the same (memory, gripe) pair is the answer: the
+    runner must not mint another opus review (gr652974)."""
+    keeper = _memory(store, "Interim leaf boards permit the pour since the ruling.")
+    loser = _memory(store, "No board may ever carry a pour on any layer, period.")
+    _gripe(store, f"me{keeper} and me{loser} disagree.", route=[])
+    candidate = next(c for c in cand.griped_candidates(store) if c.target_id == loser)
+    verdict = Verdict(accept=False, ask="needs a human")
+    runner._file_review_todo(store, candidate, verdict)
+    (todo,) = store.list_refs(kind="todo", tags=["memory-review"], limit=10)
+    store.add_tag(
+        todo.id, Tag.parse_strict("STATUS:done", kind="todo"), set_by="system"
+    )
+    runner._file_review_todo(store, candidate, verdict)
+    assert len(store.list_refs(kind="todo", tags=["memory-review"], limit=10)) == 1
+
+
 def test_no_change_rejection_blocks_re_ask_while_evidence_holds(
     store: Store,
 ) -> None:

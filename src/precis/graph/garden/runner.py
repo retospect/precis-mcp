@@ -75,6 +75,29 @@ _ASK_LLM_TIERS = {
 }
 
 
+def _gripe_review_filed(store: Store, memory_id: int, gripe_id: int) -> bool:
+    """Any ``memory-review`` todo, open *or closed*, already linking this
+    (memory, gripe) pair. A closed review is the answer to the ask — a
+    re-mint would repeat the identical opus review (gr652974)."""
+    from precis.utils.memory_hubs import REVIEW_TAG
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM refs t "
+            "WHERE t.kind = 'todo' AND t.retired_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
+            "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
+            "AND g.namespace = 'OPEN' AND g.value = %s) "
+            "AND EXISTS (SELECT 1 FROM links l WHERE l.src_ref_id = t.ref_id "
+            "AND l.relation = 'raises-concern-about' AND l.dst_ref_id = %s) "
+            "AND EXISTS (SELECT 1 FROM links l WHERE l.src_ref_id = t.ref_id "
+            "AND l.relation = 'raises-concern-about' AND l.dst_ref_id = %s) "
+            "LIMIT 1",
+            (REVIEW_TAG, memory_id, gripe_id),
+        ).fetchone()
+    return row is not None
+
+
 def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> None:
     """File the evaluator's ask: one ``memory-review`` todo pointing at
     the memory, deduped on an already-open review todo (the key's
@@ -84,6 +107,9 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
     from precis.utils.memory_hubs import REVIEW_TAG, review_todos
 
     if review_todos(store, [cand.target_id]):
+        return
+    gripe = cand.payload.get("gripe") if cand.detector == "griped" else None
+    if isinstance(gripe, int) and _gripe_review_filed(store, cand.target_id, gripe):
         return
     title = f"review memory me{cand.target_id}: {cand.title}"[:200]
     ref = store.insert_ref(
