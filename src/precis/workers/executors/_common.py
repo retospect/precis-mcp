@@ -647,8 +647,7 @@ def lane_seconds_in_window(
                    LEAST(CASE WHEN st.value = %s THEN now() ELSE st.stamp END,
                          now())
                    - GREATEST(COALESCE(
-                         CASE WHEN r2.meta->>'started_at' ~ '^[0-9]{{4}}-'
-                              THEN (r2.meta->>'started_at')::timestamptz END,
+                         precis_try_timestamptz(r2.meta->>'started_at'),
                          st.stamp),
                        now() - make_interval(secs => %s))))))::float8
           FROM refs r2
