@@ -293,6 +293,29 @@ def create_app(
         response.headers[BOOT_SHA_HEADER] = BOOT_SHA
         return {"status": "ok"}
 
+    # The precis mark (gr633600) — served unauthenticated (see
+    # auth._OPEN_PATHS) so connector pickers and browsers fetch it before
+    # any credential exists; without it clients fall back to the
+    # infrastructure host's icon (Tailscale). One source of truth with
+    # the MCP host: precis.icons.
+    from precis import icons as precis_icons
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def _favicon_ico() -> Response:
+        return Response(
+            precis_icons.ico_bytes(),
+            media_type=precis_icons.ICO_MEDIA_TYPE,
+            headers=precis_icons.CACHE_HEADERS,
+        )
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    async def _favicon_svg() -> Response:
+        return Response(
+            precis_icons.svg_bytes(),
+            media_type=precis_icons.SVG_MEDIA_TYPE,
+            headers=precis_icons.CACHE_HEADERS,
+        )
+
     # RFC 9116 security.txt (gr627864) — served unauthenticated (see
     # auth._OPEN_PATHS) so external researchers can use it, with Expires
     # recomputed per request so it can never lapse.

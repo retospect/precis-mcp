@@ -66,6 +66,7 @@ from urllib.parse import urlsplit
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from precis import icons as precis_icons
 from precis import profiles
 from precis.users import (
     PepperUnavailable,
@@ -89,7 +90,13 @@ log = logging.getLogger(__name__)
 #: reporting contact — nothing the gate protects — and it must answer
 #: unauthenticated on the public funnel or scanners keep flagging it
 #: missing (a 401 looks like "not served").
-_OPEN_PATHS = frozenset({"/healthz", "/.well-known/security.txt"})
+#: ``/favicon.ico`` + ``/favicon.svg`` (gr633600) join for the same
+#: reason: a connector's icon fetch (and a browser's tab request on the
+#: OAuth consent flow) happens before any credential exists, and without
+#: the mark clients fall back to the infrastructure host's icon.
+_OPEN_PATHS = frozenset(
+    {"/healthz", "/.well-known/security.txt", *precis_icons.PUBLIC_PATHS}
+)
 
 #: Path prefixes that authenticate themselves. ``/podcast`` accepts a
 #: per-user ``?t=`` feed token because phone podcast clients handle Basic

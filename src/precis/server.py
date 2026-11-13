@@ -104,7 +104,7 @@ from mcp.types import INVALID_REQUEST, ErrorData, JSONRPCError, ToolAnnotations
 from pydantic import ValidationError
 from pydantic_core import ErrorType
 
-from precis import calllat, inflight, mcp_identity
+from precis import calllat, icons, inflight, mcp_identity
 from precis.budget.work_class import WorkClass, work_class_scope
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.secrets import mounted_secret
@@ -1192,6 +1192,13 @@ log = logging.getLogger(__name__)
 # too; FastMCP 1.x doesn't expose it through the constructor and the
 # attribute path has changed between revisions. Leave unset until the
 # upstream library grows a stable API for it. (Critic MINOR-C A1.)
+#: ``serverInfo.icons`` (gr633600): the precis mark, else connector UIs
+#: fall back to the infrastructure host's icon (Tailscale). Mutable at
+#: module scope so :func:`serve` can prepend the fetchable https URL once
+#: the deployment's public resource origin is known — the SDK's ``Server``
+#: holds this same list reference and reads it per ``initialize``. The
+#: data-URI entry carries the mark where no public origin exists (stdio).
+_MCP_ICONS = icons.mcp_icons()
 #: Streamable-HTTP session idle timeout in seconds: 24 h, because the
 #: SDK's 30 min default dropped the shared session server's sessions
 #: mid-conversation and the retry surfaced as a bare 'Error POSTing to
@@ -1201,6 +1208,8 @@ mcp: FastMCP = FastMCP(
     "precis-mcp",
     instructions=_INSTRUCTIONS,
     session_idle_timeout=_SESSION_IDLE_TIMEOUT_S,
+    website_url=icons.WEBSITE_URL,
+    icons=_MCP_ICONS,
 )
 
 
@@ -2236,7 +2245,7 @@ def _install_token_auth(
     """
     from starlette.authentication import AuthCredentials
     from starlette.datastructures import Headers
-    from starlette.responses import JSONResponse, PlainTextResponse
+    from starlette.responses import JSONResponse, PlainTextResponse, Response
 
     from precis import mcp_identity, principal, security_txt, slice_tokens
     from precis.oauth import store as oauth_store
@@ -2269,6 +2278,18 @@ def _install_token_auth(
             ):
                 await PlainTextResponse(security_txt.render())(scope, receive, send)
                 return
+            if scope.get("method") in {"GET", "HEAD"}:
+                # Brand assets are public like security.txt: the connector's
+                # icon fetch happens before any credential exists (gr633600).
+                icon = icons.for_path(scope.get("path", ""))
+                if icon is not None:
+                    body, media_type = icon
+                    await Response(
+                        body,
+                        media_type=media_type,
+                        headers=icons.CACHE_HEADERS,
+                    )(scope, receive, send)
+                    return
             if (
                 oauth_config is not None
                 and personal_path is not None
@@ -2873,12 +2894,19 @@ def _run_network_transport(
 
     mcp.settings.host = host
     mcp.settings.port = port
+    from urllib.parse import urlsplit
+
     from precis.oauth.config import OAuthConfig
     from precis.oauth_transport import configure_transport
 
     oauth_config = OAuthConfig.from_env()
     if oauth_config is not None:
         configure_transport(mcp, oauth_config)
+        # Now the public resource origin is known, lead serverInfo.icons
+        # with a fetchable https URL (the token gate below serves it
+        # unauthenticated); the data-URI entry stays as fallback.
+        resource = urlsplit(oauth_config.resource)
+        _MCP_ICONS[:] = icons.mcp_icons(f"{resource.scheme}://{resource.netloc}")
     app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
     from precis import slice_tokens
 

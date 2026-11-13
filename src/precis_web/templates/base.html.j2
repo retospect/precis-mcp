@@ -3,6 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  {# The precis mark (gr633600): SVG first, the multi-resolution
+     favicon.ico as the legacy fallback. #}
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" href="/favicon.ico" sizes="any" />
   <title>{% block title %}precis{% endblock %} · precis web</title>
   {# Prebuilt static Tailwind (scripts/ship regenerates it from the content
      scan). Replaces the in-browser Play CDN, which warns in production and is
