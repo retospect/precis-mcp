@@ -8,7 +8,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from precis.plans import outcome
 from precis.plans.lanes import ANY_CLASS, COST_FREE, COST_SUBSCRIPTION, Lane
@@ -398,6 +401,90 @@ def test_code_session_models_flags_unestablishable_identity() -> None:
     assert outcome.code_session_models(dead, dead_validate.id) == (
         frozenset(),
         "read",
+    )
+
+
+def test_account_default_model_reads_the_vendor_configs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657521: the resolver names what an unpinned session on the
+    account runs — codex's ``config.toml`` model, devin's
+    ``agent.model``, kimi's synthesized ``KIMI_MODEL_NAME``. Nothing
+    readable names nothing."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    codex = tmp_path / ".codex"
+    codex.mkdir()
+    (codex / "config.toml").write_text(
+        'model = "gpt-5.1-codex"\nmodel_reasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    devin = tmp_path / ".config" / "devin"
+    devin.mkdir(parents=True)
+    # devin's config file tolerates ``//`` comments.
+    (devin / "config.json").write_text(
+        '// devin config\n{"agent": {"model": "swe-2-high"}}\n',
+        encoding="utf-8",
+    )
+    assert outcome.account_default_model("codex_exec") == "gpt-5.1-codex"
+    assert outcome.account_default_model("devin_tree") == "swe-2-high"
+    from precis.utils.llm import kimi
+
+    assert outcome.account_default_model("kimi_tree") == kimi.MODELS[0]
+    # Adapters with no discoverable default name nothing.
+    assert outcome.account_default_model("api") is None
+    assert outcome.account_default_model(None) is None
+    # …and a malformed config file names nothing either.
+    (codex / "config.toml").write_text("model = [unclosed\n", encoding="utf-8")
+    assert outcome.account_default_model("codex_exec") is None
+    (devin / "config.json").write_text("{not json\n", encoding="utf-8")
+    assert outcome.account_default_model("devin_tree") is None
+
+
+def test_code_session_models_resolves_the_unrecorded_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657521: a launched code pick with no recorded model ran the
+    account default — the resolved default joins the avoid set so a
+    test pin to a different family proves the difference; only a
+    default the host cannot name still refuses."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    codex = tmp_path / ".codex"
+    codex.mkdir()
+    (codex / "config.toml").write_text('model = "gpt-5.1-codex"\n', encoding="utf-8")
+    store = _Store()
+    _, build, validate = _plan(store)
+    store.add(
+        _Ref(
+            10,
+            "job",
+            {
+                "job_type": "run_slice",
+                "lane": "codex",
+                "adapter": "codex_exec",
+            },
+            parent_id=build.id,
+        )
+    )
+    assert outcome.code_session_models(store, validate.id) == (
+        frozenset({"gpt-5.1-codex"}),
+        None,
+    )
+    # A recorded model still wins over the resolved default.
+    store.refs[10].meta["model"] = "gpt-5.1-codex-mini"
+    assert outcome.code_session_models(store, validate.id) == (
+        frozenset({"gpt-5.1-codex-mini"}),
+        None,
+    )
+    # An adapter whose default this host cannot name stays unprovable:
+    # the config file names no devin default.
+    store.refs[10].meta = {
+        "job_type": "run_slice",
+        "lane": "devin",
+        "adapter": "devin_tree",
+    }
+    assert outcome.code_session_models(store, validate.id) == (
+        frozenset(),
+        "unrecorded",
     )
 
 

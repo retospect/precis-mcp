@@ -367,6 +367,16 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         lambda: calls["devin"]["prices"],
         raising=False,
     )
+    # gr657521: the vendor account default resolves off host config
+    # files — the seam stands it empty so the rig's own ``~/.codex`` /
+    # ``~/.config`` cannot leak into assertions; a test sets
+    # ``calls["account_default"][<adapter>]`` to pin one.
+    calls["account_default"] = {}
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "account_default_model",
+        lambda adapter: calls["account_default"].get(adapter),
+    )
     # The seams exercise the claude_p launch path: pin the table to the
     # Claude lane so an unpinned pick lands there (the seed table's codex
     # lane is table-first since td562568). Vendor-lane tests stand their
@@ -5924,7 +5934,9 @@ def _vendor_lane(
     )
 
 
-@pytest.mark.parametrize("model_source", ["default", "params", "lane", "env"])
+@pytest.mark.parametrize(
+    "model_source", ["default", "params", "lane", "env", "account"]
+)
 def test_submit_codex_argv_and_model(
     seams: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -5961,6 +5973,10 @@ def test_submit_codex_argv_and_model(
         params["model"] = "codex-test"
     elif model_source == "env":
         monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "codex-test")
+    elif model_source == "account":
+        # gr657521: the account default the vendor config names is
+        # recorded — argv still carries no ``-m``.
+        seams["account_default"] = {"codex_exec": "codex-acct"}
     store = _Store()
     store.add_todo(42, "Build")
     ctx, handle = _submit(store, seams, **params)
@@ -5991,7 +6007,12 @@ def test_submit_codex_argv_and_model(
     # The socket path must also reach the session's own env.
     assert kw["env"]["DOCKER_HOST"] == f"unix://{sock_dir}/docker.sock"
     assert ctx.meta_set["adapter"] == "codex_exec"
-    assert ctx.meta_set["model"] == ("codex-test" if pinned else None)
+    recorded = (
+        "codex-test"
+        if pinned
+        else ("codex-acct" if model_source == "account" else None)
+    )
+    assert ctx.meta_set["model"] == recorded
 
 
 def test_codex_add_dir_docker_fallback_and_skip(
@@ -9276,6 +9297,28 @@ def test_submit_validate_refuses_an_unrecorded_prior_model(
     ctx, handle = _submit(store, seams)
     assert handle is None
     assert ctx.failure is not None and "never recorded" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_submit_model_rule_refusal_stamps_the_job(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657521: a different-model refusal stamps ``MODEL_RULE_KEY`` on
+    the failed job — the mark ``plan_dispatch`` reads to file the
+    coordinator ask instead of spending the ladder on a deterministic
+    verdict (the td655139 six-identical-rungs loop)."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), "unrecorded"),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert str(ctx.meta_set[run_slice.MODEL_RULE_KEY]).startswith(
+        "run_slice: the test session must run a different model"
+    )
     assert seams["launch"] == []
 
 

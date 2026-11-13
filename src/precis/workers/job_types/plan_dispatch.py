@@ -600,6 +600,14 @@ MOOT_VERIFIED_KEY = "moot_verified"
 #: coordinator's call, not another lane retry's.
 COORDINATOR_ASK_KEY = "coordinator_ask"
 
+#: ``run_slice.MODEL_RULE_KEY``, restated — the same one-way rule (a
+#: test pins the two spellings equal). The failed job carries the
+#: different-model refusal's reason (gr657521): the verdict is
+#: deterministic — no ladder rung changes it — so the tick asks the
+#: coordinator at once instead of spending the retry budget on
+#: identical refusals.
+MODEL_RULE_KEY = "model_rule_refusal"
+
 #: Consecutive ``_notify_gripe`` raises on a verified task moot —
 #: stamped on the moot node's meta by :func:`_step_moot` (td584381 S1d
 #: review round 2). At :data:`_MOOT_STAMP_ASK_AFTER` the tick files one
@@ -3563,6 +3571,19 @@ def _coordinator_hit(plan: _Plan, n: _Node) -> str | None:
     return str(why) if why else None
 
 
+def _model_rule_hit(plan: _Plan, n: _Node) -> str | None:
+    """The ``run_slice.MODEL_RULE_KEY`` stamp's reason on the newest
+    attempt job — a submit refusal on the test session's
+    different-model rule (gr657521). Only the newest attempt's stamp
+    counts (``_human_hit``'s scope rule): a stamped job below the
+    re-arm floor or the newest ask was already answered for."""
+    ended = _attempt_jobs(plan, n)
+    if not ended or ended[-1].status != "failed":
+        return None
+    why = ended[-1].meta.get(MODEL_RULE_KEY)
+    return str(why) if why else None
+
+
 def _rearm_floor(n: _Node) -> int | None:
     raw = n.meta.get("rearmed_after_job")
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -4062,6 +4083,11 @@ def _capped(
     # A human-only hit caps at once: no lane may write those paths, so
     # no rung and no rescue can fix the failure (td584381 S1a).
     if _human_hit(plan, n):
+        return True
+    # A different-model refusal caps at once: it is a routing verdict,
+    # not a lane failure — the next rung hits the same refusal
+    # (gr657521).
+    if _model_rule_hit(plan, n) is not None:
         return True
     if _land_again_capped(plan, n):
         return True
@@ -6362,6 +6388,7 @@ def _step_hygiene(
         land_capped = _land_again_capped(plan, n)
         mech_sig = _mech_done(plan, n)
         coord = _coordinator_hit(plan, n)
+        model_rule = _model_rule_hit(plan, n)
         no_commit = _no_commit(plan, n)
         lane_gap: str | None = None
         if (
@@ -6369,6 +6396,7 @@ def _step_hygiene(
             and not land_capped
             and mech_sig is None
             and coord is None
+            and model_rule is None
             and job_type == DEFAULT_OP
             and not rungs
         ):
@@ -6381,6 +6409,7 @@ def _step_hygiene(
             )
         rescue = (
             coord is None
+            and model_rule is None
             and mech_sig is None
             and not human
             and not land_capped
@@ -6393,7 +6422,7 @@ def _step_hygiene(
                 f"enter rescue ({'review' if _is_reviewer(n) else 'builder'})"
                 if rescue
                 else f"file a coordinator ask (retry cap {cap})"
-                if coord is not None or no_commit
+                if coord is not None or no_commit or model_rule is not None
                 else f"file an ask (retry cap {cap})"
             )
             res.notes.append(f"td{n.id}: would {what}")
@@ -6430,6 +6459,41 @@ def _step_hygiene(
                     "real verdict."
                 ),
                 context=coord,
+                now=now,
+                block_node=True,
+            )
+        elif model_rule is not None:
+            # gr657521: the test session's different-model rule refused
+            # the launch — a routing verdict, not a lane failure. Every
+            # rung hits the same refusal, so the stamp caps the ladder
+            # on the first attempt and the call goes to the
+            # coordinator: pin ``params.model``/``params.lane`` to a
+            # model outside the run's code sessions', record the code
+            # session's model when an unresolved default was the
+            # holdup, or drop the node. The ``blocked-by`` edge re-arms
+            # the node on the answer.
+            ask_id = _mint_coordinator_ask(
+                w.store,
+                plan,
+                n,
+                title=(
+                    f"td{n.id}: the different-model rule refuses the "
+                    "launch — a coordinator call"
+                ),
+                body=(
+                    f"The plan tick stopped dispatching td{n.id} "
+                    f"({n.title.splitlines()[0] if n.title else ''}): "
+                    f"{model_rule} The refusal is deterministic — every "
+                    "ladder rung hits it, so no retry can change the "
+                    "verdict. A coordinator call: pin `params.model` "
+                    "(and a lane that runs it) to a model the run's "
+                    "code sessions did not use, record the code "
+                    "session's model when an unresolvable account "
+                    "default was the holdup, or drop the node — "
+                    f"closing this ask `acknowledged` re-arms td{n.id} "
+                    "with a fresh retry budget."
+                ),
+                context=model_rule,
                 now=now,
                 block_node=True,
             )
@@ -6483,6 +6547,8 @@ def _step_hygiene(
         why = (
             "infra red routed to coordinator"
             if coord is not None
+            else "different-model refusal"
+            if model_rule is not None
             else f"mechanical red loop ({mech_sig})"
             if mech_sig
             else "human-only hit"

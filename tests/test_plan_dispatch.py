@@ -2708,6 +2708,61 @@ def test_no_commit_at_the_ladder_cap_asks_the_coordinator(
     assert (res.dispatched, res.asks) == (0, 0)
 
 
+def test_model_rule_refusal_asks_the_coordinator_at_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657521: a submit refusal on the test session's different-model
+    rule is deterministic — every ladder rung hits the same verdict —
+    so the stamped failure files one ask-coordinator ask on the first
+    attempt instead of spending the retry budget (the td655139 loop of
+    six identical ``None/default`` rungs)."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    why = (
+        "run_slice: the test session must run a different model than "
+        "the run's code session(s), but a prior code session's model "
+        "was never recorded (the account default); refusing the launch "
+        "— a difference that cannot be proven is none"
+    )
+    _failed_job(
+        store,
+        task,
+        why + "\n",
+        meta={pd.MODEL_RULE_KEY: why},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 1, 0)
+    assert "rescue:builder" not in _open_tags(store, task)
+    (ask,) = _blocked_by_ids(store, task)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    # A second pass files no second ask while the first is open.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+
+
+def test_unstamped_submit_failure_still_climbs_the_ladder(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr657521 scope: the instant cap is the STAMP's — an ordinary
+    submit refusal (no ``model_rule_refusal`` mark) retries as before."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: the test session must run a different model than "
+        "the run's code session(s) {'m1'}, but its unnamed account "
+        "default could repeat them on lane 'codex' and no fit lane "
+        "offers one outside them; refusing the launch — a same-model "
+        "test is no test\n",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    assert _blocked_by_ids(store, task) == []
+
+
 def test_deny_path_brief_routes_to_the_coordinator(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3209,6 +3264,13 @@ def test_no_commit_key_matches_run_slice() -> None:
     on a clean-exit no-commit failure — the same one-way rule as
     ``HUMAN_ONLY_KEY`` (td584381 S1a F4)."""
     assert pd.NO_COMMIT_KEY == run_slice.NO_COMMIT_KEY == "no_commit"
+
+
+def test_model_rule_key_matches_run_slice() -> None:
+    """``plan_dispatch`` restates the job-meta record ``run_slice``
+    stamps on a different-model refusal — the same one-way rule
+    (gr657521)."""
+    assert pd.MODEL_RULE_KEY == run_slice.MODEL_RULE_KEY == "model_rule_refusal"
 
 
 def test_host_refusal_jobs_are_no_attempt(store: Store) -> None:

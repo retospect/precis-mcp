@@ -40,8 +40,10 @@ model on the same lane, then a different lane — and REFUSING the
 launch when nothing satisfies it, because a test session on its code
 session's model is no test (the MUST is not a preference). The MUST
 also binds when a prior code session's model cannot be established
-— a failed pick read parks the launch; an unrecorded one refuses it
-(:func:`code_session_models`).
+— a failed pick read parks the launch; an unrecorded one resolves to
+the vendor's account default where this host's config names it
+(:func:`account_default_model`), and only a default that cannot be
+named still refuses (:func:`code_session_models`, gr657521).
 """
 
 from __future__ import annotations
@@ -49,7 +51,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import tomllib
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from precis.plans.templates import VALIDATE_TASK_CLASS
@@ -192,7 +196,9 @@ def classify(
 class PriorPick(NamedTuple):
     """One earlier session of the same run: its todo, its run job, the
     lane/model the router chose, and the outcome it recorded if it
-    already terminated."""
+    already terminated. ``adapter`` is the lane's adapter stamp —
+    :func:`account_default_model` resolves an unrecorded ``model``
+    through it."""
 
     todo_id: int
     job_id: int
@@ -201,6 +207,7 @@ class PriorPick(NamedTuple):
     model: str | None
     outcome: str | None
     gate_pass: bool | None
+    adapter: str | None = None
 
 
 def prior_picks(
@@ -258,9 +265,91 @@ def prior_picks(
                     model=str(meta["model"]) if meta.get("model") else None,
                     outcome=(str(rec["outcome"]) if rec.get("outcome") else None),
                     gate_pass=gp if isinstance(gp, bool) else None,
+                    adapter=(str(meta["adapter"]) if meta.get("adapter") else None),
                 )
             )
     return picks
+
+
+def _strip_json_comments(text: str) -> str:
+    """Drop ``//`` line comments outside string literals — devin's
+    ``config.json`` tolerates them, :mod:`json` does not."""
+    out: list[str] = []
+    in_str = False
+    esc = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def account_default_model(adapter: str | None) -> str | None:
+    """The concrete model id an UNPINNED session on ``adapter``'s
+    account runs on this host — the vendor default the CLI's own
+    config names (gr657521). ``None`` when the default cannot be
+    named: the launch the different-model rule cannot prove.
+
+    The reads mirror what the slice's vendor CLI itself loads —
+    ``run_slice.slice_env`` carries ``HOME`` (and drops
+    ``CODEX_HOME``), so the launched CLI resolves these same files:
+
+    * ``claude_p`` — the router's ``Tier.FRONTIER`` pin, the same
+      fallback ``run_slice.resolve_model`` takes (always concrete
+      there; this arm exists for old records);
+    * ``kimi_tree`` — ``kimi.MODELS[0]``, the ``KIMI_MODEL_NAME`` the
+      launch env synthesizes for an unpinned run;
+    * ``codex_exec`` — ``~/.codex/config.toml``'s ``model`` key (the
+      slice argv carries no ``--ignore-user-config``);
+    * ``devin_tree`` — ``~/.config/devin/config.json``'s
+      ``agent.model``.
+    """
+    model: Any = None
+    try:
+        if adapter == "claude_p":
+            from precis.utils.llm.router import Tier
+            from precis.utils.llm.router import resolve_model as _resolve
+
+            return _resolve(Tier.FRONTIER)
+        if adapter == "kimi_tree":
+            from precis.utils.llm import kimi
+
+            return str(kimi.MODELS[0]) if kimi.MODELS else None
+        if adapter == "codex_exec":
+            cfg = Path.home() / ".codex" / "config.toml"
+            if cfg.is_file():
+                model = tomllib.loads(cfg.read_text(encoding="utf-8")).get("model")
+        elif adapter == "devin_tree":
+            cfg = Path.home() / ".config" / "devin" / "config.json"
+            if cfg.is_file():
+                data = json.loads(_strip_json_comments(cfg.read_text(encoding="utf-8")))
+                agent = data.get("agent") if isinstance(data, dict) else None
+                model = agent.get("model") if isinstance(agent, dict) else None
+        else:
+            return None
+    except Exception:
+        log.warning("outcome: %s account default unreadable", adapter, exc_info=True)
+        return None
+    if not isinstance(model, str) or not model.strip():
+        return None
+    return model.strip()
 
 
 def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str | None]:
@@ -273,19 +362,24 @@ def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str |
       the different-model MUST is how the old code let a same-model
       test launch (review td655142).
     * ``"unrecorded"`` — a prior code session's ``meta.model`` was
-      never recorded: a vendor's unnamed account default. Permanent —
-      the run can never prove its test session ran a different model,
-      so the caller REFUSES rather than guesses.
+      never recorded AND its account default cannot be resolved either
+      (:func:`account_default_model`, gr657521). Permanent — the run
+      can never prove its test session ran a different model, so the
+      caller REFUSES rather than guesses.
 
     ``unknown is None`` says every prior code pick's model is
     established (or there are none — a test session launched first
-    owes no avoidance).
+    owes no avoidance). A launched pick with no recorded model
+    contributes its resolved account default to ``avoid``: the current
+    default stands in for the launch-time default (gr657521 — a test
+    pin to a different family then proves the difference).
 
     Only picks whose submit stamped ``meta.lane`` count as sessions:
     ``lane`` and ``model`` stamp together just before the launch, so a
     sibling job that died earlier — a lane wait, a refused launch —
     ran no session and has no model to avoid, while a launched pick
-    with no recorded model is exactly the unprovable case."""
+    with neither a recorded model nor a resolvable default is exactly
+    the unprovable case."""
     try:
         picks = prior_picks(store, todo_id, strict=True)
     except Exception:
@@ -294,10 +388,17 @@ def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str |
     sessions = [
         p for p in picks if p.task_class == CODE_TASK_CLASS and p.lane is not None
     ]
-    avoid = frozenset(p.model for p in sessions if p.model)
-    if any(p.model is None for p in sessions):
-        return avoid, "unrecorded"
-    return avoid, None
+    avoid: set[str] = {p.model for p in sessions if p.model}
+    unrecorded = False
+    for p in sessions:
+        if p.model is not None:
+            continue
+        default = account_default_model(p.adapter)
+        if default is None:
+            unrecorded = True
+        else:
+            avoid.add(default)
+    return frozenset(avoid), "unrecorded" if unrecorded else None
 
 
 def session_disagreement(
@@ -753,6 +854,7 @@ __all__ = [
     "TEST_TASK_CLASS",
     "VERDICTS",
     "PriorPick",
+    "account_default_model",
     "build_outcome",
     "category_stats",
     "classify",

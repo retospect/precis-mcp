@@ -340,6 +340,14 @@ VALIDATED_NOREPRO_KEY = "validated_norepro"
 #: leaves the node alone while its ``_step_ci_rerun`` owns it.
 NOREPRO_WAIT_TAG = "waiting-for:ci-rerun"
 
+#: Job-meta record ``submit`` stamps when it refuses a launch on the
+#: test session's different-model rule (gr657521): the refusal is
+#: deterministic — no ladder rung changes it — so ``plan_dispatch``
+#: sends the node straight to the coordinator ask instead of spending
+#: the retry budget on identical refusals. Carries the refusal's
+#: reason. Restated in ``plan_dispatch`` (the same one-way rule).
+MODEL_RULE_KEY = "model_rule_refusal"
+
 #: Lane-wait parks before the wait is given up (~6 h at
 #: :data:`LANE_FULL_BACKOFF` each). Lane waits count under
 #: ``meta.wait_parks``, their own budget — NOT ``pause_parks``: the shared
@@ -3044,6 +3052,10 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         if lane is None:
             if diversity_note is not None:
+                # gr657521: the different-model refusal is
+                # deterministic — the stamp routes the node straight
+                # to the coordinator ask; no ladder rung changes it.
+                ctx.set_meta(**{MODEL_RULE_KEY: diversity_note[:500]})
                 ctx.record_failure(diversity_note)
             return None
     try:
@@ -3076,10 +3088,17 @@ def submit(ctx: Any, spec: Any) -> Any:
     # ``meta.lane`` is the EXECUTION lane — the fair-share axis the mint
     # stamped rides ``meta.share_key`` (gr595539, td652988 review); the
     # two meanings collided under ``meta.lane``.
+    # gr657521: a lane with no declared model launches on the vendor's
+    # account default — still name the model on the job (the current
+    # configured default is the launch-time default's best record) so
+    # the run's test session can prove a different model off
+    # ``meta.model``. The launch itself stays unpinned: the record
+    # names what the account runs, it does not force it.
+    recorded_model = model or _outcome.account_default_model(adapter.name)
     ctx.set_meta(
         lane=lane.name,
         adapter=adapter.name,
-        model=model,
+        model=recorded_model,
         effort=effort,
         lane_wait=None,
         lane_woken=False,
@@ -3093,7 +3112,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         task_class=task_class,
         table=lane_table,
         site="submit",
-        picked=(lane.name, model),
+        picked=(lane.name, recorded_model),
         counts=counts,
         backoffs=backoffs,
         needs_mcp=mints or cap == "mcp",
