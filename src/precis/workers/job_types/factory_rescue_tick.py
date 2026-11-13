@@ -14,7 +14,9 @@ tag, one gripe per failure signature). The ``tick-silent`` heartbeat
 rescues the recurring ``plan_dispatch`` todo once when the tick ran no
 succeeded pass in 30 min. A hold is not a stall: ``waiting-for:``,
 ``halt``, paused, an open ask, ``rescue:`` or a live ``blocked-by``
-target exempt a node; release plans belong to
+target exempt a node — and so does a job-less node at a non-``open``
+STATUS or under a ``claimed-by:`` lease, a hand-worked node dispatch
+could never mint for (gr659982); release plans belong to
 ``release_poll::watch_stuck`` and are skipped. DB-only but for one
 host read — the mtime of a live job's session log, the liveness a
 ``run_slice`` writes progress to (gr626270). The job's target host

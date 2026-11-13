@@ -460,7 +460,10 @@ def enter_rescue(
 # — plus the ``tick-silent`` heartbeat
 # on plan_dispatch itself. A hold is not a
 # stall: ``waiting-for:``, ``halt``, paused, an open ask, ``rescue:`` or
-# a live ``blocked-by`` target exempt a node. Release plans belong to
+# a live ``blocked-by`` target exempt a node — and so does a job-less
+# node at a non-``open`` STATUS or under a ``claimed-by:`` lease, a
+# hand-worked node the dispatch tick could never mint for (gr659982).
+# Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
 # or ``dry_run``) it lists ``would_rescue`` and writes nothing.
 
@@ -1145,6 +1148,22 @@ def _judge_node(
     if held is not None:
         res.held += 1
         return
+    jobs = plan.jobs(n)
+    if not jobs and (
+        n.status != "open" or any(v.startswith("claimed-by:") for v in n.open_tags)
+    ):
+        # gr659982: a job-less node dispatch could never claim this pass
+        # is a hand lease — the tick mints only ``STATUS:open``,
+        # unclaimed candidates, and the factory's own ``doing`` /
+        # ``claimed-by:`` stamps ride a live ``run_slice`` job, so
+        # job-less means a human moved it (``doing``/``blocked``/a
+        # hand claim). Its silence is the claimer's work time, never a
+        # stall; a stale hand claim is hygiene's CLAIM_STALE release.
+        res.held += 1
+        res.notes.append(
+            f"td{n.id}: STATUS:{n.status} with no job — a hand-worked node, not a stall"
+        )
+        return
     verdict = _stage_for(store, now, plan, n, is_gate)
     if verdict is None:
         return
@@ -1153,7 +1172,6 @@ def _judge_node(
         res.held += 1
         res.notes.append(f"td{n.id}: {error_line} — a parked node is not a stall")
         return
-    jobs = plan.jobs(n)
     ids = [n.id] + [x.id for x in jobs]
     newest, label, lines = _node_signals(
         n, jobs, _signal_rows(store, ids), _unblocked_at(store, plan, n)

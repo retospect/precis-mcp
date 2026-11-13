@@ -399,7 +399,12 @@ node's class), queued 30 min, build 5 h, land 6 h, review 45 min, gate
 72 h. A hold is not a stall: `waiting-for:`, `halt`, paused, an open ask,
 `rescue:` or a live `blocked-by` target exempt a node; a lane-parked node
 (fit lanes full or backed off) waits — the live jobs on those lanes are
-judged by their own deadlines. `release-pass` plans are skipped (the
+judged by their own deadlines. A job-less node at a non-`open` STATUS or
+under a `claimed-by:` lease is a hand lease, not a stall either
+(gr659982): dispatch mints only for `STATUS:open` unclaimed candidates,
+so a `doing`/`blocked`/claimed node with no job was moved by hand and
+its silence is the claimer's work time. `release-pass`
+plans are skipped (the
 `release-stuck` watchdog owns release stages).
 
 The `tick-silent` heartbeat reads the dispatcher's real liveness — the

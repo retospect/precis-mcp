@@ -999,6 +999,65 @@ def test_blocked_by_live_node_is_exempt(store: Store) -> None:
     assert _rescue_tags(store, task) == []
 
 
+def test_jobless_doing_node_is_a_hand_lease_not_a_stall(store: Store) -> None:
+    """gr659982: a node at ``STATUS:doing`` with no job is being worked
+    by hand — the factory's own ``doing`` stamp rides a claimed
+    ``run_slice`` job (``run_slice._claim_todo``), so job-less means a
+    human moved it. Dispatch mints only ``STATUS:open`` candidates, so
+    the stall watch leaves it alone instead of rescuing it and minting
+    a showstopper ask."""
+    root = _root(store)
+    task = _node(store, root, title="manual review", meta={}, status="doing")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == [] and res.would_rescue == []
+    assert _rescue_tags(store, task) == []
+    assert _sig_gripes(store) == []
+
+
+def test_jobless_doing_node_dry_run_is_also_held(store: Store) -> None:
+    """The hand-lease exemption holds under ``dry_run`` too — no
+    ``would_rescue`` entry."""
+    root = _root(store)
+    task = _node(store, root, meta={}, status="doing")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25), dry_run=True)
+
+    assert res.would_rescue == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+
+
+def test_jobless_claimed_node_is_a_hand_lease_not_a_stall(store: Store) -> None:
+    """gr659982's sibling door: a job-less node under a ``claimed-by:``
+    tag is out of dispatch's reach the same way — the tick skips every
+    claimed node — so the watch leaves it to hygiene's CLAIM_STALE
+    release instead of rescuing the claim."""
+    root = _root(store)
+    task = _node(store, root, meta={}, tags=("claimed-by:manual",))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == [] and res.would_rescue == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+
+
+def test_doing_node_with_a_cancelled_job_is_still_judged(store: Store) -> None:
+    """The hand-lease exemption needs the node to be job-less: a node the
+    factory once ran is factory-owned whatever its STATUS — a cancelled
+    newest job still reads as the cancelled stall."""
+    root = _root(store)
+    task = _node(store, root, status="doing")
+    _job(store, task, status="cancelled")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(task, "cancelled", "idle")]
+    assert _rescue_tags(store, task) == ["rescue:cancelled"]
+
+
 def test_idle_clock_starts_when_the_blocker_finishes(store: Store) -> None:
     """gr586180: a node blocked 2 h whose predecessor went done seconds ago
     is not 120 min idle — it only just became dispatchable."""
