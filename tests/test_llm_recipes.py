@@ -629,3 +629,40 @@ def test_axis_studytype_recipe_family(monkeypatch: pytest.MonkeyPatch) -> None:
         "default",
         "recipe",
     )
+
+
+def test_gripe_summary_rebuild_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr661893: the summary fold's ``gripe_summary:rebuild`` source
+    resolves through the exact row migration 0321 seeds, so the
+    recipe-gap scan does not refile it as an unknown task kind."""
+    sql = (
+        Path(__file__).parents[1]
+        / "src/precis/migrations/0321_task_recipe_gripe_summary.sql"
+    ).read_text(encoding="utf-8")
+    seeded = re.findall(
+        r"^    \('([^']+)', '([^']+)', '([^']+)', '([^']+)', (true|false)\)",
+        sql,
+        flags=re.MULTILINE,
+    )
+    rows = {
+        src: Recipe(
+            src,
+            kind,
+            lane_class=lane,
+            consequence=cons,
+            classify=flag == "true",
+        )
+        for src, kind, lane, cons, flag in seeded
+    }
+    assert set(rows) == {"gripe_summary:rebuild"}
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    recipe = recipes.lookup("gripe_summary:rebuild")
+    assert recipe is not None
+    assert (recipe.task_kind, recipe.consequence) == ("chunk.summarize", "low")
+    assert recipes.lookup("gripe_summary:rebuild:local") == recipe
+    assert recipes.resolve("gripe_summary:rebuild") == (
+        "chunk.summarize",
+        "low",
+        "default",
+        "recipe",
+    )
