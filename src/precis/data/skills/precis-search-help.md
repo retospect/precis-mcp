@@ -596,7 +596,9 @@ sections), expired rows excluded. Both are single-kind, like count.
 `scope=<handle-or-slug>` restricts to one ref's blocks — the "where in
 this paper does X come up?" read. Implied `unique_per='chunk'` rows
 inside it. On `kind='skill'`, `scope='<slug>'` is the same read on one
-skill's body (the find-in-ref passages `get(id='<slug>', q=…)` returns).
+skill's body (the find-in-ref passages `get(id='<slug>', q=…)` returns):
+verbatim first, then — when a multi-word q misses — a term-overlap pass
+over the skill's sections whose passages name the `~N` section.
 
 ## Drop specific refs from results
 ## Hand-skip known-irrelevant papers

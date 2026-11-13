@@ -378,6 +378,54 @@ def test_search_scope_through_dispatch(
     assert "# find 'executor' in precis-job-help" in body
 
 
+# ── scoped find: section scan + term fallback (gr659451) ────────────
+
+
+def test_search_scope_multiword_terms_find_the_section(
+    skill: SkillHandler,
+) -> None:
+    """gr659451: a natural-language scoped q whose words never appear
+    as one verbatim run used to report "no match — scanned 1 chunk"
+    while ``get(id='precis-todo-help~9')`` held the answer. The scoped
+    find now scans the skill's H2 sections and falls back to term
+    overlap when the literal phrase misses — the passage names the
+    addressable ``slug~N`` section and shows the call it documents."""
+    out = skill.search(q="reparent move under another", scope="precis-todo-help")
+    assert "# find 'reparent move under another' in precis-todo-help" in out.body
+    assert "no match" not in out.body
+    assert "term match" in out.body
+    assert "## precis-todo-help~" in out.body
+    assert "Move a todo under another (reparent)" in out.body
+    assert 'rel="parent"' in out.body
+
+
+def test_find_in_ref_scans_sections_not_one_blob(skill: SkillHandler) -> None:
+    """A literal scoped find scans the ``slug~N`` sections — the
+    passage header is a navigable address and the count line is
+    per-section, not "scanned 1 chunk" over the whole body."""
+    out = skill.get(id="precis-todo-help", q="blocked-by")
+    assert "## precis-todo-help~" in out.body
+    assert "matches in" in out.body and "chunks" in out.body
+
+
+def test_find_in_ref_literal_hit_keeps_match_noun(skill: SkillHandler) -> None:
+    """Verbatim hits take precedence over the term fallback — a q that
+    appears literally counts as ``matches``, never ``term matches``."""
+    out = skill.get(id="precis-todo-help", q="Move an existing todo")
+    assert "term match" not in out.body
+    assert "match" in out.body
+
+
+def test_search_scope_no_match_reports_section_scan(
+    skill: SkillHandler,
+) -> None:
+    """A genuine miss — literal and terms both absent — still says so,
+    now counting the sections it actually scanned."""
+    out = skill.search(q="xyzzy frobnitz quuxwomble", scope="precis-todo-help")
+    assert "no match" in out.body
+    assert "scanned" in out.body and "chunks" in out.body
+
+
 def test_search_tags_list_through_dispatch(
     runtime_with_store: PrecisRuntime,
 ) -> None:

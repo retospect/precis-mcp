@@ -869,11 +869,19 @@ class SkillHandler(Handler):
     ) -> Response:
         """``get(id='<slug>', q='…')`` — matching passages inside one skill.
 
-        Scans the served body (includes expanded). A synthesized slug
+        Scans the served body's H2 sections (includes expanded); a
+        passage header names the ``slug~N`` section. A synthesized slug
         (``precis-toc`` …) scans its rendered body instead; ``id=None``
         keeps ``get``'s older delegation to ``search`` (gr486840).
+        Literal matching first; a multi-word q that misses verbatim
+        falls back to term overlap across the sections (gr659451).
         """
-        from precis.handlers._find_in_ref import find_preflight, find_response
+        from precis.handlers._find_in_ref import (
+            REGEX_PREFIX,
+            _compile_matcher,
+            find_preflight,
+            find_response,
+        )
 
         if id is None:
             if view is not None:
@@ -938,16 +946,51 @@ class SkillHandler(Handler):
             text = _write_only_stub(slug)
         else:
             text, _ = scope_render(text, conn_scope)
-        body = SimpleNamespace(
-            id=None, ord=0, slug=slug, text=text, meta={}, chunk_kind="body"
-        )
+        # gr659451: scan the H2-section chunks ``slug~N`` addresses (the
+        # same ``chunk_by_h2`` the chunk resolver runs on the same
+        # scope-rendered text), not one whole-body blob — the passage
+        # header then names the addressable section and "scanned N
+        # chunks" is honest at section granularity. An empty body still
+        # gets the single shim chunk.
+        scan = [
+            SimpleNamespace(
+                id=None, ord=i, slug=slug, text=c.text, meta={}, chunk_kind="body"
+            )
+            for i, c in enumerate(chunk_by_h2(text))
+        ] or [
+            SimpleNamespace(
+                id=None, ord=0, slug=slug, text=text, meta={}, chunk_kind="body"
+            )
+        ]
+        q_s = str(q).strip()
+        line_hits: Callable[[str], list[int]] | None = None
+        hit_finder: re.Pattern[str] | None = None
+        match_noun = "match"
+        # gr659451: a scoped q is the agent's phrasing, rarely a verbatim
+        # run ("reparent move under another" vs the "## Move a todo
+        # under another (reparent)" heading). When the literal phrase
+        # misses everywhere and q carries ≥2 content words, fall back
+        # to the ``_lexical_hits`` coverage bar at section granularity —
+        # verbatim hits still take precedence, so a literal find keeps
+        # its exact contract. ``re:<pat>`` stays pattern-exact.
+        if not q_s.startswith(REGEX_PREFIX):
+            qtokens = set(_content_tokens(q_s))
+            if len(qtokens) >= 2:
+                literal = _compile_matcher(q_s)
+                if not any(literal(ln) for c in scan for ln in c.text.splitlines()):
+                    line_hits = _term_line_hits(qtokens)
+                    hit_finder = _token_hit_finder(qtokens)
+                    match_noun = "term match"
         return find_response(
             kind="skill",
             display=slug,
-            chunks=[body],
-            q=str(q).strip(),
+            chunks=scan,
+            q=q_s,
             context=context,
-            chunk_label=lambda _c: slug,
+            chunk_label=lambda c: f"{slug}~{c.ord}",
+            line_hits=line_hits,
+            hit_finder=hit_finder,
+            match_noun=match_noun,
         )
 
     def get(
@@ -4915,6 +4958,34 @@ def _content_tokens(s: str) -> list[str]:
         + [t for t in _COMPOUND_TOKEN_RE.findall(low) if len(t) >= 3]
         + [t for t in _SNAKE_TOKEN_RE.findall(low) if len(t) >= 3]
     )
+
+
+def _term_line_hits(qtokens: set[str]) -> Callable[[str], list[int]]:
+    """Fallback hit-lines for a scoped find whose literal q missed (gr659451).
+
+    A chunk qualifies when it carries ≥2 of the query's content tokens
+    covering ≥ half of them — the bar :meth:`SkillHandler._lexical_hits`
+    applies to a whole skill body, run here at section granularity
+    inside the one scoped skill. Inside a qualifying chunk every line
+    carrying a query token is a hit line, so the marked lines show where
+    the terms sit and the passage context renders the recipe between
+    them.
+    """
+
+    def hits(text: str) -> list[int]:
+        toks = [set(_content_tokens(ln)) for ln in text.splitlines()]
+        matched = (set().union(*toks) if toks else set()) & qtokens
+        if len(matched) < 2 or len(matched) * 2 < len(qtokens):
+            return []
+        return [i for i, ts in enumerate(toks) if ts & qtokens]
+
+    return hits
+
+
+def _token_hit_finder(qtokens: set[str]) -> re.Pattern[str]:
+    """Clip-window pattern for the term fallback: locate any query token."""
+    alt = "|".join(re.escape(t) for t in sorted(qtokens, key=len, reverse=True))
+    return re.compile(rf"\b(?:{alt})\b", re.IGNORECASE)
 
 
 _FM_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)

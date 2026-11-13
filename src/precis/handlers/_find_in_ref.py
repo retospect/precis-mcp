@@ -327,6 +327,9 @@ def find_response(
     context: Any = None,
     chunk_label: Callable[[Any], str] | None = None,
     ref_id: int | None = None,
+    line_hits: Callable[[str], list[int]] | None = None,
+    hit_finder: re.Pattern[str] | None = None,
+    match_noun: str = "match",
 ) -> Response:
     """Scan ``chunks`` for ``q`` and render the matching passages.
 
@@ -338,13 +341,28 @@ def find_response(
     overrides the per-chunk header label for kinds whose chunks aren't
     handle-addressable (e.g. the md file index).
 
+    Matching defaults to the ``q`` contract above (literal substring or
+    ``re:<pat>`` per line). A kind may override three pieces to serve a
+    looser read — e.g. the skill handler's term-overlap fallback
+    (gr659451): ``line_hits`` maps a chunk's full text to its hit line
+    indices (0-based), ``hit_finder`` is the pattern used to window a
+    clipped hit line around its matches, and ``match_noun`` renames the
+    count word so the summary is honest about how the lines hit
+    (``"5 term matches in 1 chunk"``). The no-match line is untouched —
+    an empty override result is still a genuine miss.
+
     Output fits through the ordinary result budget — a long result
     returns the fitted head plus the ``next:`` read like any oversized
     get.
     """
     ctx = _clamp_context(context)
     match = _compile_matcher(q)
-    finder = _span_finder(q)
+    finder = hit_finder if hit_finder is not None else _span_finder(q)
+    if line_hits is None:
+
+        def line_hits(text: str) -> list[int]:
+            return [i for i, ln in enumerate(text.splitlines()) if match(ln)]
+
     label_of = chunk_label or (lambda c: _chunk_label(kind, display, c))
 
     n_matches = 0
@@ -356,7 +374,7 @@ def find_response(
     for chunk in chunks:
         text = getattr(chunk, "text", "") or ""
         lines = text.splitlines()
-        hits = [i for i, ln in enumerate(lines) if match(ln)]
+        hits = line_hits(text)
         if not hits:
             continue
         matched_chunks += 1
@@ -402,7 +420,12 @@ def find_response(
         scanned = "chunk" if len(chunks) == 1 else "chunks"
         head.append(f"no match — scanned {len(chunks)} {scanned}")
     else:
-        plural = "match" if n_matches == 1 else "matches"
+        plural = (
+            match_noun
+            if n_matches == 1
+            else match_noun
+            + ("es" if match_noun.endswith(("ch", "sh", "s", "x", "z")) else "s")
+        )
         chunk_plural = "chunk" if matched_chunks == 1 else "chunks"
         head.append(f"{n_matches} {plural} in {matched_chunks} {chunk_plural}")
         if elided:
