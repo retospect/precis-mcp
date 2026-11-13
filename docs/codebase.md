@@ -141,7 +141,9 @@ cannot provide a revision-specific receipt.
 | **Geom workspace kernel** | `src/precis_geom/` | DB-free builder for 3D-design workspace scripts (`docs/backlog/structure-workspaces.md`, `docs/backlog/pcb-workspace-code.md`); today hosts `precis_geom.trace`/`trace_schema` (the structure slice-2 construction tracer), `precis_geom.pcb` (the pcb builder, slice 0: `Board`/`Net`/`Part`/`Pin`/`Footprint`/`module`, `to_batch()` is the `pcb_apply`-shaped payload), `precis_geom.pcb_shape` (slice 0b: the board's 3-D shape + fit check — the ONE mechanical derivation, which `precis.pcb.export.mechanical_profile` and `precis_se.board` delegate to) and `precis_geom.flow`/`physics` (flow 4a — the Flow kernel row); trace/pcb/pcb_shape are pure stdlib, flow/physics pull numpy + `precis_flow` + the wheel's carved `precis` subset — the trusted-side importer and place/route services are later slices |
 
 Editable geometry feature graphs live in `precis_geom.design.Recipe`, with
-stable feature IDs and isolated edit, snapshot and restore boundaries.
+stable feature IDs and isolated edit, snapshot and restore boundaries;
+`precis_geom.design.build` turns one into a cached `SceneSpec` (`Built`,
+`steps.shape_sha`, `Built.solid()` for `evaluate`).
 `precis_flow.slip` supplies Navier-slip gap profiles and Taylor dispersion
 coefficients through the species solver and tracer hooks.
 

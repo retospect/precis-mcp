@@ -247,9 +247,16 @@ commit carrying this line; `git log` has the sha.*
 4b. **Design-optimisation kit + two examples (dogfood).**
    The recipe layer is landed in `src/precis_geom/design.py::Recipe`: stable
    feature ids, pinned edits, detached snapshots/restores and JSON round trips,
-   including nested mutable parameter values. The `build`/`Built` layer,
-   `shape_sha` and region-change reporting remain pending; this does not
-   complete the design representation or the examples below. Reto,
+   including nested mutable parameter values. The build layer is landed
+   too (the commit carrying this line): `design.build`/`Built`
+   (`spec`, `shape_sha`, `step_keys`, `solid()`), `FEATURE_OPS` (the
+   loader-free DSL aliases plus `drill`), canonical `<group>#<rank>`
+   groups under one `combine` step, `steps.shape_sha`, and the
+   deleted-anchor region refusal (`tests/test_precis_geom_build.py`).
+   Still pending: the rasterised region-change report (`prev=`,
+   `Built.regions`, with the `precis.cad.patch` move) and creator-frame
+   `recipe_key`s; this does not complete the design representation or
+   the examples below. Reto,
    2026-10-22: "the chamber with the holes is but a point solution. We
    want the general case implemented, the coder can do cool stuff with
    it then." And: "hole count will not be the answer to evaluate shape.

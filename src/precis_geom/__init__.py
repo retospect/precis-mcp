@@ -72,9 +72,11 @@ package — the pieces that are *the script's own surface*:
   the optimiser edits, snapshots and restores. Nested parameter values are
   copied at edit, read and transaction boundaries so aliases cannot bypass
   pinning or corrupt rollback. Built geometry is a pure function of the recipe
-  (se-flow-kernel slice 4b §Design representation item 1). This
-  is the recipe layer only — ``build(recipe) -> Built`` and ``shape_sha`` land
-  on top of it, over :mod:`precis_geom.steps`.
+  (se-flow-kernel slice 4b §Design representation item 1).
+  ``build(recipe) -> Built`` runs each feature as a ``FEATURE_OPS`` step over
+  :mod:`precis_geom.steps` (group members as leaves under one ``combine``),
+  giving the ``SceneSpec``, its ``steps.shape_sha`` and ``Built.solid()`` for
+  ``evaluate``; the region-change report is still to come.
 - :mod:`precis_geom.params` — named, bounded parameters (``Space`` of
   ``Continuous``/``Integer``/``Boolean`` dims) for continuous optimisers: a
   ``Space`` samples/clips/validates a frozen ``Params`` point and applies its

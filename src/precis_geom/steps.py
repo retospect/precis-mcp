@@ -257,6 +257,21 @@ def _digest_spec(spec: Any) -> str:
     return _sha(_dumps(_jenc(doc, strict=False)))
 
 
+def shape_sha(spec: Any) -> str:
+    """The content sha of a cad ``SceneSpec`` (node trace frames excluded) —
+    the public face of the spec digest the step cache keys by. Refuses a
+    spec carrying a ``field_loader`` or ``hmap_loader``: those digest to a
+    random uuid, which would silently disable any cache keyed by it."""
+    if spec.field_loader is not None or spec.hmap_loader is not None:
+        raise BadInput(
+            "shape_sha: the spec carries a runtime field/hmap loader, which "
+            "has no content form",
+            next="hash the spec before attaching a loader, or build it from "
+            "a recipe without field:/relief: leaves",
+        )
+    return _digest_spec(spec)
+
+
 def _digest_board(b: Any) -> str:
     batch = b.to_batch()
     for sec in ("components", "nets"):
@@ -1745,5 +1760,6 @@ __all__ = [
     "recipe",
     "report",
     "report_line",
+    "shape_sha",
     "step",
 ]

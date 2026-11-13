@@ -1,6 +1,6 @@
 """The feature-graph recipe layer (se-flow-kernel slice 4b §Design
 representation item 1, recipe half). The ``build``/``Built``/``shape_sha``
-and region-change parts land with the build layer and are tested there."""
+half is in ``tests/test_precis_geom_build.py``."""
 
 from __future__ import annotations
 
