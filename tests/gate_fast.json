@@ -2103,6 +2103,9 @@
    "test_r35_regressions_are_selected": 287.5,
    "test_second_select_does_not_reparse": 77.3
   },
+  "tests/test_skill_example_drift.py": {
+   "test_skill_examples_execute_on_the_live_surface": 95.2
+  },
   "tests/test_skill_neighbours.py": {
    "test_search_exposes_each_linked_skills_neighbours": 120.0
   },
@@ -2158,6 +2161,7 @@
   "tests/test_se_tunnel_steps.py": 1110.3,
   "tests/test_se_y_junction.py": 73.5,
   "tests/test_select_tests.py": 778.6,
+  "tests/test_skill_example_drift.py": 95.2,
   "tests/test_skill_neighbours.py": 120.0,
   "tests/test_skill_search.py": 37.3,
   "tests/test_worktree_lock_reap.py": 61.1,

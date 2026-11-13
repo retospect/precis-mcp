@@ -4459,6 +4459,7 @@
         "tests/test_skill_common.py": 0.1,
         "tests/test_skill_corpus.py": 1.6,
         "tests/test_skill_eval.py": 0.3,
+        "tests/test_skill_example_drift.py": 110.6,
         "tests/test_skill_gates.py": 0.7,
         "tests/test_skill_graph.py": 0.0,
         "tests/test_skill_index.py": 0.3,
