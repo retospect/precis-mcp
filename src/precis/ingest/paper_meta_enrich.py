@@ -56,11 +56,19 @@ What lands where:
   (``insert_ref_identifiers`` is first-write-wins).
 * **per-author ``openalex_author_id``** — the same OpenAlex fetch's
   ``authorships`` block is merged onto the Crossref author list
-  (:func:`_merge_openalex_author_ids`): paired by position when the
-  counts match, else by case-insensitive family-name match against the
-  OpenAlex ``display_name``'s last token; also backfills ``orcid`` when
-  Crossref's own byline lacked one for that author. Crossref stays the
-  source of truth for names/order — never reordered or dropped.
+  (:func:`_merge_openalex_author_ids`): every (Crossref, OpenAlex)
+  pair is graded by :func:`_author_name_score` — full family+given
+  agreement (the whole given string, middle names included) outranks a
+  surname-plus-initial compatibility, initials-only agreement is thin
+  evidence however it is punctuated ("J.-A." ties "J. A.", never
+  outranks it), and a real given-name disagreement at any position is
+  a non-match — and a pair merges only when it is the unambiguous best
+  match on *both* sides.
+  Position is never evidence, so a reordered byline can no longer shift
+  one author's ids onto a same-initial co-author (gr662344); also
+  backfills ``orcid`` when Crossref's own byline lacked one for that
+  author. Crossref stays the source of truth for names/order — never
+  reordered or dropped.
 * **``refs.retraction_status/reason/url``** — a conservative read of the
   same Crossref response's ``update-to`` array (see
   :mod:`precis.ingest.provenance` for the full notice-ref-minting
@@ -309,6 +317,104 @@ def _openalex_extra_ids(work: dict[str, Any]) -> list[tuple[str, str, str]]:
     return out
 
 
+def _oa_family_name(display_name: str) -> str:
+    """The surname an OpenAlex ``display_name`` implies — its last token,
+    lowercased. Empty string when the name is blank."""
+    tokens = display_name.split()
+    return tokens[-1].strip().lower() if tokens else ""
+
+
+def _crossref_family_name(entry: dict[str, Any]) -> str:
+    """The surname a normalized Crossref author entry implies — ``family``,
+    else the last token of a ``{"name"}``-shape entry (a mononym still
+    matches a surname-only OpenAlex row)."""
+    family = str(entry.get("family") or "").strip().lower()
+    if family:
+        return family
+    return _oa_family_name(str(entry.get("name") or ""))
+
+
+def _given_keys(name: str) -> list[tuple[str, str]]:
+    """Per-letter-run ``(full, initial)`` given-name keys off a name
+    string, lowercased: ``"Bryan R."`` → ``[("bryan", "b"), ("r",
+    "r")]``; ``"Yi-Tao"`` → ``[("yi", "y"), ("tao", "t")]``; ``"Y.-T."``
+    → ``[("y", "y"), ("t", "t")]``. One key per alphabetic run, not per
+    whitespace token, so a compressed-initials form (``"J.-A."``)
+    yields exactly the keys of its spaced form (``"J. A."``) — the same
+    initials-only evidence must score identically however it is
+    punctuated, or the tighter-written twin wins an ambiguity it should
+    tie and takes the id (gr662344 review). Every run is kept — a
+    middle name or second initial is evidence too: "John Alan" and
+    "John Brian" must conflict, not score as equal first names.
+    """
+    return [(part, part[0]) for part in re.findall(r"[^\W\d_]+", name.casefold())]
+
+
+def _crossref_given_keys(entry: dict[str, Any]) -> list[tuple[str, str]]:
+    """Given-name keys off a normalized Crossref entry — every token of
+    ``given``, else all but the last (family) token of a
+    ``{"name"}``-shape entry (a mononym exposes no given name)."""
+    given = str(entry.get("given") or "").strip()
+    if given:
+        return _given_keys(given)
+    tokens = str(entry.get("name") or "").split()
+    return _given_keys(" ".join(tokens[:-1])) if len(tokens) > 1 else []
+
+
+def _oa_given_keys(display_name: str) -> list[tuple[str, str]]:
+    """Given-name keys off an OpenAlex ``display_name`` — all but the
+    last (family) token, matching :func:`_oa_family_name`."""
+    tokens = display_name.split()
+    return _given_keys(" ".join(tokens[:-1])) if len(tokens) > 1 else []
+
+
+def _author_name_score(entry: dict[str, Any], authorship: dict[str, str]) -> int:
+    """Grade how well a Crossref author entry and an OpenAlex authorship
+    row name the same person (gr662344):
+
+    * ``2`` — family names and the *whole* given name agree,
+      tokenization aside ("Jie Xu" / "Jie Xu", "Jean-Luc" / "Jean Luc"),
+      with a real (non-initial) name part on *both* sides — initials-only
+      agreement stays thin however the initials are punctuated.
+      Strong enough to stand alone.
+    * ``1`` — family names agree and the given evidence is compatible
+      but thin: a side exposes no given name (or fewer given names than
+      the other), a bare initial ("B. Goldsmith" / "Bryan R.
+      Goldsmith"), a compressed-initials form ("Y.-T." / "Yi-Tao Dai"),
+      or initials matching initials ("J.-A." / "J. A." — identical
+      keys, identical score, so same-initial twins tie rather than the
+      tighter-written one winning). Compatible, but never proof against
+      a same-initial rival — which is why only an *unambiguous* match
+      may merge.
+    * ``0`` — family names differ, or a shared given-name position has
+      a real name or initial disagreement on the two sides: "Jie Xu" /
+      "Jun Xu", "John Alan Smith" / "John Brian Smith" — two different
+      people, not one ambiguous match.
+    """
+    oa_name = str(authorship.get("name") or "")
+    family = _crossref_family_name(entry)
+    if not family or family != _oa_family_name(oa_name):
+        return 0
+    cr_keys = _crossref_given_keys(entry)
+    oa_keys = _oa_given_keys(oa_name)
+    if not cr_keys or not oa_keys:
+        return 1  # a side exposes no given name — family-only evidence
+    cr_cat = "".join(full for full, _ in cr_keys)
+    oa_cat = "".join(full for full, _ in oa_keys)
+    if cr_cat == oa_cat:
+        # Letters agree run for run; the agreement is only as real as its
+        # weakest side — initials on either side ("J.-A.", "J. A. N.")
+        # are thin evidence even when they spell a rival's real name.
+        cr_real = any(len(full) > 1 for full, _ in cr_keys)
+        oa_real = any(len(full) > 1 for full, _ in oa_keys)
+        return 2 if cr_real and oa_real else 1
+    for (cr_full, cr_init), (oa_full, oa_init) in zip(cr_keys, oa_keys):
+        if cr_full in (oa_full, oa_init) or oa_full == cr_init:
+            continue  # equal or abbreviation agreement ("B."↔"Bryan")
+        return 0  # real given names disagree — different people
+    return 1  # compatible but thin — extra given names went unchecked
+
+
 def _merge_openalex_author_ids(
     crossref_authors: list[dict[str, Any]], authorships: list[dict[str, str]]
 ) -> None:
@@ -317,40 +423,39 @@ def _merge_openalex_author_ids(
     Crossref entry doesn't already carry one (docs/backlog/
     precis.utils.authors module docstring).
 
-    Paired by position when the two lists are the same length (the common
-    case — both sources parsed the same byline); otherwise by
-    case-insensitive family-name match against the OpenAlex
-    ``display_name``'s last token. Crossref stays the source of truth for
-    names/order — this never reorders or drops a Crossref entry, and an
-    OpenAlex authorship with no match is simply not merged.
+    Every (Crossref entry, OpenAlex row) pair is graded by
+    :func:`_author_name_score`, and a pair merges only when it is the
+    unambiguous best match on *both* sides — the unique highest score in
+    its row and in its column (gr662344). Position is deliberately not
+    evidence: a blind zip shifted every ORCID/OpenAlex id one row off on
+    a preprint whose byline was reordered for the published version, and
+    a positional surname+initial check still pairs a reordered "Jie Xu"
+    with "Jun Xu". Mutual uniqueness is the whole guard: a full-name
+    agreement pairs even across a reorder, an initial-only pairing
+    survives only with no equal rival on either side, and a contested
+    pair merges nothing — a missed id is recoverable, a wrong one mints
+    an ``authored`` link onto the wrong person node. Crossref stays the
+    source of truth for names/order — this never reorders or drops a
+    Crossref entry, and an OpenAlex authorship with no unambiguous match
+    is simply not merged.
     """
     if not crossref_authors or not authorships:
         return
-    pairs: list[tuple[dict[str, Any], dict[str, str]]]
-    if len(crossref_authors) == len(authorships):
-        pairs = list(zip(crossref_authors, authorships, strict=True))
-    else:
-        # Family-name pairing is only safe when the surname is unique on
-        # BOTH sides — two co-authors sharing a family name would otherwise
-        # get one author's orcid/openalex id stamped on the other.
-        by_family: dict[str, list[dict[str, str]]] = {}
-        for a in authorships:
-            tokens = str(a.get("name") or "").split()
-            if tokens:
-                by_family.setdefault(tokens[-1].strip().lower(), []).append(a)
-        crossref_family_counts: dict[str, int] = {}
-        for entry in crossref_authors:
-            family = str(entry.get("family") or "").strip().lower()
-            if family:
-                crossref_family_counts[family] = (
-                    crossref_family_counts.get(family, 0) + 1
-                )
-        pairs = []
-        for entry in crossref_authors:
-            family = str(entry.get("family") or "").strip().lower()
-            candidates = by_family.get(family, []) if family else []
-            if len(candidates) == 1 and crossref_family_counts.get(family) == 1:
-                pairs.append((entry, candidates[0]))
+    scores = [
+        [_author_name_score(entry, a) for a in authorships]
+        for entry in crossref_authors
+    ]
+    pairs: list[tuple[dict[str, Any], dict[str, str]]] = []
+    for i, entry in enumerate(crossref_authors):
+        row = scores[i]
+        best = max(row)
+        if best == 0 or row.count(best) != 1:
+            continue
+        j = row.index(best)
+        col = [scores[k][j] for k in range(len(crossref_authors))]
+        if max(col) != best or col.count(best) != 1:
+            continue
+        pairs.append((entry, authorships[j]))
     for entry, a in pairs:
         oa_id = str(a.get("openalex_author_id") or "").strip()
         if oa_id and not entry.get("openalex_author_id"):

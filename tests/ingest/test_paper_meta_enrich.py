@@ -248,6 +248,62 @@ class TestOpenAlexAuthorMerge:
         # ORCID mint+link now sees the OpenAlex-backfilled orcid too.
         assert outcome.orcid_links == 1
 
+    def test_reordered_byline_pairs_by_name_not_position(self, store: Store) -> None:
+        """gr662344: same count, different order (a preprint whose byline
+        was reordered for the published version). A positional zip stamps
+        every identity one row off; each OpenAlex id must land on its own
+        name instead."""
+        rid = _paper(store, slug="oa5", doi="10.1234/oa5")
+        msg = _crossref_msg(doi="10.1234/oa5")
+        msg["author"] = [
+            {"given": "Jie", "family": "Xu"},
+            {"given": "Da", "family": "Zhao"},
+            {"given": "Yi-Tao", "family": "Dai"},
+        ]
+        # Same three people, first author moved to last.
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "Yi-Tao Dai",
+                        "orcid": "https://orcid.org/0000-0001-1111-1118",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2",
+                        "display_name": "Jie Xu",
+                        "orcid": "https://orcid.org/0000-0002-2222-2224",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A3",
+                        "display_name": "Da Zhao",
+                        "orcid": "https://orcid.org/0000-0003-3333-3330",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa5",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [(r["family"], r["openalex_author_id"], r["orcid"]) for r in rows] == [
+            ("Xu", "A2", "0000-0002-2222-2224"),
+            ("Zhao", "A3", "0000-0003-3333-3330"),
+            ("Dai", "A1", "0000-0001-1111-1118"),
+        ]
+        # Every OpenAlex-stamped ORCID mints an authored link onto the
+        # right node, so the reorder links all three.
+        assert outcome.orcid_links == 3
+
     def test_merge_by_family_name_when_counts_differ(self, store: Store) -> None:
         rid = _paper(store, slug="oa2", doi="10.1234/oa2")
         msg = _crossref_msg(doi="10.1234/oa2")
@@ -294,10 +350,55 @@ class TestOpenAlexAuthorMerge:
         # Crossref order/entries are preserved regardless of match order.
         assert [a["family"] for a in ref.authors] == ["Goldsmith", "Doe"]
 
-    def test_shared_family_name_is_not_paired(self, store: Store) -> None:
+    def test_same_initial_reorder_never_swaps_ids(self, store: Store) -> None:
+        """gr662344 review: 'Jie Xu' and 'Jun Xu' share a surname and a
+        first initial — a positional surname+initial match is not identity
+        proof and stamps each author's ids on the other. Only the
+        unambiguous full-name agreement may carry the pairing."""
+        rid = _paper(store, slug="oa6", doi="10.1234/oa6")
+        msg = _crossref_msg(doi="10.1234/oa6")
+        msg["author"] = [
+            {"given": "Jie", "family": "Xu"},
+            {"given": "Jun", "family": "Xu"},
+        ]
+        # Same two people, swapped — the preprint-vs-published reorder.
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2",
+                        "display_name": "Jun Xu",
+                        "orcid": "https://orcid.org/0000-0002-0002-0007",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "Jie Xu",
+                        "orcid": "https://orcid.org/0000-0001-0001-0004",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa6",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [(r["given"], r["openalex_author_id"], r["orcid"]) for r in rows] == [
+            ("Jie", "A1", "0000-0001-0001-0004"),
+            ("Jun", "A2", "0000-0002-0002-0007"),
+        ]
+
+    def test_shared_family_name_pairs_by_full_name(self, store: Store) -> None:
         # Two co-authors named Wang: pairing by surname would stamp one
-        # author's identity on the other, so neither gets an id; the
-        # unique surname still pairs.
+        # author's identity on the other, but a full family+given
+        # agreement on both sides is unambiguous and pairs; the odd OpenAlex
+        # row merges nothing.
         rid = _paper(store, slug="oa4", doi="10.1234/oa4")
         msg = _crossref_msg(doi="10.1234/oa4")
         msg["author"] = [
@@ -342,7 +443,179 @@ class TestOpenAlexAuthorMerge:
         )
         assert outcome is not None
         rows = store.get_paper_authors(rid)
+        assert [r["openalex_author_id"] for r in rows] == ["A1", "A2", "A3"]
+
+    def test_ambiguous_initial_candidate_is_skipped(self, store: Store) -> None:
+        """An OpenAlex row giving only an initial matches every same-initial
+        co-author equally — an ambiguous pair merges nothing rather than
+        guessing which Wang it names."""
+        rid = _paper(store, slug="oa7", doi="10.1234/oa7")
+        msg = _crossref_msg(doi="10.1234/oa7")
+        msg["author"] = [
+            {"given": "Li", "family": "Wang"},
+            {"given": "Long", "family": "Wang"},
+            {"given": "Jane", "family": "Doe"},
+        ]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "L. Wang",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A3",
+                        "display_name": "Jane Doe",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa7",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
         assert [r["openalex_author_id"] for r in rows] == [None, None, "A3"]
+
+    def test_conflicting_middle_name_never_merges(self, store: Store) -> None:
+        """gr662344 review: the first-token given key read "John Alan
+        Smith" and "John Brian Smith" as a full-name agreement, so a
+        mutually-unique pair still transferred the wrong person's ids.
+        A real given-name disagreement at any position is a non-match,
+        even with no rival candidate."""
+        rid = _paper(store, slug="oa8", doi="10.1234/oa8")
+        msg = _crossref_msg(doi="10.1234/oa8")
+        msg["author"] = [{"given": "John Alan", "family": "Smith"}]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "John Brian Smith",
+                        "orcid": "https://orcid.org/0000-0001-0001-0004",
+                    }
+                }
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa8",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [(r["openalex_author_id"], r["orcid"]) for r in rows] == [(None, None)]
+        assert outcome.orcid_links == 0
+
+    def test_agreeing_and_compatible_middle_names_merge(self, store: Store) -> None:
+        """Middle-name evidence cuts both ways: a middle initial that
+        agrees with the full middle name, and a middle name one side
+        simply doesn't give, stay compatible and still merge."""
+        rid = _paper(store, slug="oa9", doi="10.1234/oa9")
+        msg = _crossref_msg(doi="10.1234/oa9")
+        msg["author"] = [
+            {"given": "John A.", "family": "Smith"},
+            {"given": "John Alan", "family": "Doe"},
+            {"given": "Mary Anne", "family": "Lee"},
+        ]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "John Alan Smith",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2",
+                        "display_name": "John Doe",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A3",
+                        "display_name": "Mary-Anne Lee",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa9",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [r["openalex_author_id"] for r in rows] == ["A1", "A2", "A3"]
+
+    def test_compressed_initials_tie_spaced_initials(self, store: Store) -> None:
+        """gr662344 review: "J.-A." and "J. A." are the same initials-only
+        evidence, but keying initials per whitespace token read the
+        compressed form as a two-letter name — it scored 2 where the
+        spaced twin scored 1, won the ambiguity it should have tied, and
+        took the id. Both forms must key identically and merge nothing
+        while a rival exists; a lone compressed-initials match still
+        merges."""
+        rid = _paper(store, slug="oa10", doi="10.1234/oa10")
+        msg = _crossref_msg(doi="10.1234/oa10")
+        msg["author"] = [
+            {"given": "J.-A.", "family": "Smith"},
+            {"given": "J. A.", "family": "Smith"},
+            {"given": "Y.-T.", "family": "Dai"},
+            {"given": "Jane", "family": "Doe"},
+        ]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "J.-A. Smith",
+                        "orcid": "https://orcid.org/0000-0001-0001-0004",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A3",
+                        "display_name": "Yi-Tao Dai",
+                        "orcid": "https://orcid.org/0000-0001-1111-1118",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2",
+                        "display_name": "Jane Doe",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa10",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [(r["family"], r["openalex_author_id"], r["orcid"]) for r in rows] == [
+            ("Smith", None, None),
+            ("Smith", None, None),
+            ("Dai", "A3", "0000-0001-1111-1118"),
+            ("Doe", "A2", None),
+        ]
+        # Only the unambiguous Dai pairing carries an ORCID to link.
+        assert outcome.orcid_links == 1
 
     def test_existing_crossref_orcid_is_not_overwritten(self, store: Store) -> None:
         rid = _paper(store, slug="oa3", doi="10.1234/oa3")
