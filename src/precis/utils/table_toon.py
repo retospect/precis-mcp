@@ -1186,7 +1186,8 @@ def op_add_column(table: dict[str, Any], spec: Any, at: Any = None) -> dict[str,
     rows = [list(r) for r in table.get("rows") or []]
     rowmeta = [dict(r) for r in table.get("rowmeta") or []]
     col = dict(spec)
-    col["id"] = fresh_table_id(_id_pool(table))
+    col_names = [str(c["name"]) for c in [*columns, col] if c.get("name") is not None]
+    col["id"] = fresh_table_id(_id_pool(table), avoid=col_names)
     j, prev, nxt = _insert_at(columns, at, what="column")
     col["pos"] = key_between(prev, nxt)
     columns.insert(j, col)

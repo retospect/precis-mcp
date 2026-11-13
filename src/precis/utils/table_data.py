@@ -97,15 +97,22 @@ def is_table_id(s: Any) -> bool:
     return isinstance(s, str) and _ID_FULL_RE.match(s) is not None
 
 
-def fresh_table_id(used: Iterable[str]) -> str:
+def fresh_table_id(used: Iterable[str], *, avoid: Iterable[str] = ()) -> str:
     """Mint an id absent from ``used`` (live ids plus ``retired_ids``, so a
     deleted id never reappears). Redraws on collision. A ``set`` argument
     is used directly, not copied — ``normalize_table`` mints once per
-    row/column, and a copy per mint is quadratic on large tables."""
+    row/column, and a copy per mint is quadratic on large tables.
+
+    ``avoid`` lists substrings a minted id must not contain — the
+    caller's column names. Exact name collisions are already refused via
+    ``used``, but a 4-char id can still *contain* a name (``qty1`` next
+    to a ``qty`` column); stored id-form formulas would then still
+    textually carry the column name they were rewritten away from."""
     pool = used if isinstance(used, set) else set(used)
+    bad = [a for a in avoid if a]
     for _ in range(100):
         cand = mint_table_id()
-        if cand not in pool:
+        if cand not in pool and not any(a in cand for a in bad):
             return cand
     raise BadInput("could not mint a unique table id after 100 draws")
 
@@ -372,9 +379,16 @@ def normalize_table(obj: Any) -> dict[str, Any]:
             used.add(entry_id)
     # Minted ids must avoid column *names* too: names and ids share the
     # formula-resolver namespace, so a minted id that equals another
-    # column's name would bind formulas to the wrong column.
+    # column's name would bind formulas to the wrong column — and one
+    # merely *containing* a name (``qty1``) leaks the name text into
+    # stored id-form formulas, so the mint avoids the substring too.
     used.update(c["name"] for c in columns)
-    for entry in [*columns, *rowmeta]:
+    col_names = [str(c["name"]) for c in columns]
+    for entry in columns:
+        if "id" not in entry:
+            entry["id"] = fresh_table_id(used, avoid=col_names)
+            used.add(entry["id"])
+    for entry in rowmeta:
         if "id" not in entry:
             entry["id"] = fresh_table_id(used)
             used.add(entry["id"])
