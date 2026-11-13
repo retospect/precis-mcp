@@ -1765,6 +1765,52 @@ class TestRepairJunkTitlePapers:
         ref = store.fetch_refs_by_ids([rid])[rid]
         assert ref.title == "Recovered Page One Title"
 
+    def _front_matter_paper(self, store: Store, slug: str, chunk0: str) -> int:
+        rid = self._old(store, slug=slug, title="")
+        _body_chunk(store, rid, 0, chunk0)
+        return rid
+
+    def test_front_matter_title_persisted(self, store: Store) -> None:
+        """gr658887: bold first line + author byline in chunk 0 is a
+        high-confidence title; registries missing, it is still stored."""
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._front_matter_paper(
+            store,
+            "helmh",
+            "**Varieties of Helmholtz Machine**\n\n"
+            "Peter Dayan, Geoffrey E. Hinton\n\nAbstract text.",
+        )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_no_calling(),
+            openalex_fn=_no_calling(),
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "body")]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert ref.title == "Varieties of Helmholtz Machine"
+
+    def test_front_matter_title_needs_byline(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._front_matter_paper(
+            store,
+            "nobyl",
+            "**Varieties of Helmholtz Machine**\n\nthis paper studies many "
+            "things in considerable depth.",
+        )
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_no_calling(),
+            openalex_fn=_no_calling(),
+            s2_fn=lambda *_a, **_k: None,
+        )
+        assert [o.action for o in out] == ["failed"]
+        assert store.fetch_refs_by_ids([rid])[rid].title in ("", None)
+
     def test_failed_repair_stamps_and_skips_next_pass(self, store: Store) -> None:
         from precis.ingest.paper_hygiene import repair_junk_title_papers
 
@@ -1777,7 +1823,7 @@ class TestRepairJunkTitlePapers:
             s2_fn=lambda *_a, **_k: None,
         )
         assert [o.action for o in out] == ["failed"]
-        assert _meta(store, rid).get("title_repair_v") == 1
+        assert _meta(store, rid).get("title_repair_v") == 2
         # Second pass: stamped → not re-attempted.
         assert repair_junk_title_papers(store, dry_run=False) == []
         # The stamp is exactly what hands the paper to the owner queue
@@ -1843,7 +1889,7 @@ class TestRepairJunkTitlePapers:
         )
         out = repair_junk_title_papers(store, dry_run=False, **self._no_net())
         assert [o.action for o in out] == ["parked"]
-        assert _meta(store, rid).get("title_repair_v") == 1
+        assert _meta(store, rid).get("title_repair_v") == 2
         assert raise_junk_title_papers(store, dry_run=True) == [rid]
 
     def test_repair_summary_logs_even_with_no_candidates(

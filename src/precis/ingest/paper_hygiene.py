@@ -1844,7 +1844,7 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: daily pass would re-burn registry lookups on titles it already proved it
 #: cannot fix (transient failures — timeouts, rate limits — are left
 #: unstamped so the next pass retries them).
-_TITLE_REPAIR_VERSION = 1
+_TITLE_REPAIR_VERSION = 2
 
 #: ``meta.entry_type`` values that are articles (Crossref vocabulary —
 #: journal/conference papers and preprints). The junk-title rules are
@@ -1949,6 +1949,62 @@ def _repair_title_candidates(store: Store, ref: Any, stored_title: str) -> list[
         c for c in chunk_cands if c.casefold() != query.casefold()
     ]
     return cands[:4]
+
+
+#: A whole line wrapped in bold/italic markers — the shape Marker gives a
+#: front-matter title (``**Varieties of Helmholtz Machine**``).
+_EMPHASIS_LINE_RE = re.compile(r"^\s*(?:#+\s*)?(\*{1,3}|_{1,3})(?P<t>[^*_\n].*?)\1\s*$")
+
+#: One name token of an author byline: capitalised word or initial.
+_BYLINE_TOKEN_RE = re.compile(r"^[A-Z][\w'.-]*$")
+
+
+def _looks_like_byline(line: str) -> bool:
+    """True for an author byline line: ``Peter Dayan, Geoffrey E. Hinton``
+    — 2-12 capitalised name tokens split on commas/``and``/``&``, no
+    digits-heavy or sentence-like text."""
+    from precis.ingest.metadata_resolve import _is_affiliation_line
+
+    plain = re.sub(r"[*_^$\\{}]|<[^>]+>", "", line)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    if not plain or len(plain) > 200 or _is_affiliation_line(plain):
+        return False
+    if sum(c.isdigit() for c in plain) > 3 or plain.endswith("."):
+        if not re.search(r"\b[A-Z]\.$", plain):
+            return False
+    names = [n for n in re.split(r",|\band\b|&", plain) if n.strip()]
+    if not names:
+        return False
+    tokens = [t for n in names for t in n.split()]
+    if not 2 <= len(tokens) <= 24:
+        return False
+    return all(
+        _BYLINE_TOKEN_RE.match(t) or t.lower() in {"de", "van", "von", "der", "la"}
+        for t in tokens
+    )
+
+
+def _front_matter_title(store: Store, ref: Any) -> str:
+    """High-confidence title from the paper's own chunk 0 (gr658887): the
+    first non-blank line is a bold/italic-wrapped, title-like line and the
+    next non-blank line is an author byline. Anything weaker returns
+    ``""`` — a guess must not be persisted."""
+    from precis.ingest.metadata_resolve import (
+        _chunk0_text,
+        _clean_title_line,
+        _is_title_like,
+    )
+
+    lines = [ln for ln in _chunk0_text(store, ref.id).splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return ""
+    m = _EMPHASIS_LINE_RE.match(lines[0])
+    if m is None:
+        return ""
+    title = _clean_title_line(m.group("t"))
+    if not _is_title_like(title) or is_placeholder_title(title):
+        return ""
+    return title if _looks_like_byline(lines[1]) else ""
 
 
 def _resolve_openalex(
@@ -2262,6 +2318,18 @@ def _repair_one(
     )
     if out is not None:
         return out
+
+    # Leg 4 — the title the paper's own front matter states (gr658887):
+    # the registries all missed, but a bold/italic first line followed by
+    # an author byline is a high-confidence title worth persisting.
+    from precis.ingest.metadata_resolve import Resolution
+
+    fm_title = _front_matter_title(store, ref)
+    if fm_title:
+        return _apply_resolution(
+            Resolution(rid, "auto", "title", "front-matter-title", title=fm_title),
+            "body",
+        )
 
     transient = any(r in _TRANSIENT_MISS_REASONS for r in reasons)
     if not transient and not dry_run:
