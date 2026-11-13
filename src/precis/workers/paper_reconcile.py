@@ -16,13 +16,16 @@ the system worker at a low cadence so the corpus self-heals:
   including the junk-title pair:
   :func:`~precis.ingest.paper_hygiene.repair_junk_title_papers` attempts
   each unflagged junk title (markup render → DOI registries → S2 title
-  search) and stamps terminal outcomes;
+  search) and stamps terminal outcomes — diverting OCR-concatenated
+  multi-article bodies (gr658650) to the body-split route before any
+  registry lookup;
   :func:`~precis.ingest.paper_hygiene.raise_junk_title_papers` then files
-  an owner title-fix todo only for papers carrying that stamp; a paper
-  :func:`~precis.ingest.paper_hygiene.flag_spliced_issue_papers` has
-  journaled as a spliced scanned issue (gr658690) needs no stamp — the
-  signature is its own terminal verdict — and gets a ``paper-needs-
-  split`` todo instead of a title-fix one. All are
+  an owner todo only for papers carrying that stamp — a title-fix todo,
+  or a ``paper-needs-split`` todo when the body is a spliced scanned
+  issue (gr658690, journaled by
+  :func:`~precis.ingest.paper_hygiene.flag_spliced_issue_papers`) or
+  reads as 2+ OCR-concatenated articles (gr658650, detected by the
+  body's chunk-keyword divergence). All are
   SQL-only except :func:`~precis.ingest.paper_hygiene.heal_bodiless_pdfs`,
   which may re-run Marker over a held PDF: that leg is capped per pass
   (``PRECIS_BODILESS_HEAL_EXTRACT_PER_PASS``, default 5, ``0`` = judge
@@ -215,14 +218,16 @@ def run_paper_reconcile_pass(store: Store, *, limit: int | None = None) -> Batch
             # Unconditional (gr508499): an aggregate even at zero attempts,
             # and the word "junk-title" so the q='junk' worker_logs probe
             # the doctor tick uses can't miss the leg entirely.
+            split_n = sum(1 for o in repaired if o.action == "split")
             log.info(
                 "paper_reconcile: junk-title repair — %d fixed, %d merged, "
-                "%d parked, %d failed of %d attempted",
+                "%d parked, %d failed of %d attempted%s",
                 repaired_n,
                 sum(1 for o in repaired if o.action == "merged"),
                 sum(1 for o in repaired if o.action == "parked"),
                 sum(1 for o in repaired if o.action == "failed"),
                 len(repaired),
+                f", {split_n} diverted to body-split" if split_n else "",
             )
             # gr658659: close todos whose title enrichment already fixed.
             stale_closed = close_resolved_title_fix_todos(

@@ -46,3 +46,16 @@ def blocker_terminal_sql() -> str:
         )
         + ")"
     )
+
+
+def terminal_todo_sql() -> str:
+    """The ``IN (…)`` literal-list fragment for
+    :data:`TERMINAL_TODO_STATUSES` — same shape and reasoning as
+    :func:`blocker_terminal_sql`."""
+    return (
+        "("
+        + ", ".join(
+            "'" + v.replace("'", "''") + "'" for v in sorted(TERMINAL_TODO_STATUSES)
+        )
+        + ")"
+    )

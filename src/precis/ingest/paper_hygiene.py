@@ -1935,6 +1935,148 @@ def requeue_placeholder_title_papers(
     return candidates
 
 
+# ---------------------------------------------------------------------------
+# Body-split flag — OCR-concatenated multi-article bodies (gr658650)
+# ---------------------------------------------------------------------------
+
+#: Open tag a flagged ref carries: its held body is (likely) 2+ unrelated
+#: articles concatenated by a scanned bound-journal-issue ingest, so no
+#: single honest title exists — title repair genuinely cannot fix it.
+#: No existing body op can partition a concatenation either:
+#: ``split_body`` / ``move_body_to`` move the WHOLE body to one ref
+#: (precis-paper-ref-help), so running them here would strand the other
+#: article(s); the repair is a partition op that does not exist yet.
+#: Deliberately NOT in
+#: ``store._body_predicate.UNUSABLE_BODY_TAGS`` — the text is usable, it
+#: just belongs to more than one paper.
+BODY_SPLIT_TAG = "body:needs_split"
+
+#: Total body chunks below which a split verdict is not attempted —
+#: concatenations run to dozens of chunks; a short body cannot show the
+#: partway-divergence signature.
+_SPLIT_MIN_CHUNKS = 12
+#: Fraction of body chunks that must carry KeyBERT keywords before the
+#: divergence signal is trusted (the ``chunk_keywords`` backlog may not
+#: have reached this ref yet — an unlabelled body is unjudgeable, not
+#: divergent; cf. ``toc_db._KEYWORD_COVERAGE_MIN``).
+_SPLIT_MIN_COVERAGE = 0.5
+#: Each side of the sharpest boundary must hold at least this many body
+#: chunks — a 1-2 chunk run is a section break or boilerplate, not an
+#: article boundary.
+_SPLIT_MIN_SIDE_CHUNKS = 3
+#: ... and at least this many of them must carry keywords, else that
+#: side is unjudgeable.
+_SPLIT_MIN_SIDE_KEYED = 2
+#: A boundary this sharp — near-zero union-keyword Jaccard between the
+#: sequential sides — is the multi-article fingerprint. Sections of one
+#: genuine paper keep sharing its core terms, so their sequential
+#: overlap stays well above this.
+_SPLIT_MAX_BOUNDARY_JACCARD = 0.05
+
+
+@dataclass(frozen=True)
+class BodySplitVerdict:
+    """One paper's sharpest sequential topic boundary (gr658650).
+
+    ``boundary_ord`` is the first ord of the second run; ``jaccard`` is
+    the keyword overlap across the boundary (≈0 for unrelated articles).
+    """
+
+    boundary_ord: int
+    left_chunks: int
+    right_chunks: int
+    jaccard: float
+
+    def line(self) -> str:
+        return (
+            f"ord {self.boundary_ord} ({self.left_chunks} + "
+            f"{self.right_chunks} chunks, jaccard {self.jaccard:.2f})"
+        )
+
+
+def classify_body_split(
+    chunk_keywords: Sequence[tuple[int, Sequence[str] | None]],
+) -> BodySplitVerdict | None:
+    """Pure divergence check: does the body read as 2+ concatenated articles?
+
+    ``chunk_keywords`` is ``(ord, keywords)`` for the ref's body chunks
+    (``ord >= 0``) in reading order — the same ``chunks.keywords``
+    KeyBERT labels the ``view='toc'`` cluster breakdown segments by. A
+    scanned bound-journal issue can ingest as one ref what is really the
+    tail/bulk of 2-4 unrelated articles (OCR bleed-through concatenation,
+    gr658650): title repair cannot assign one honest title to those, and
+    mis-repairing pastes one article's name over a foreign body. The
+    signature is a *partway* topic break — a boundary partway through the
+    chunk sequence where the keyword sets on either side stop
+    overlapping entirely while both sides carry real mass.
+
+    Verdict when all hold:
+
+    * at least :data:`_SPLIT_MIN_CHUNKS` body chunks and keyword coverage
+      ≥ :data:`_SPLIT_MIN_COVERAGE`;
+    * some boundary with ≥ :data:`_SPLIT_MIN_SIDE_CHUNKS` chunks (≥
+      :data:`_SPLIT_MIN_SIDE_KEYED` of them keyword-carrying) on each
+      side, whose union-keyword Jaccard is ≤
+      :data:`_SPLIT_MAX_BOUNDARY_JACCARD`. The sharpest such boundary
+      wins; ties take the earliest.
+
+    Conservative: ``None`` (no confident boundary) is the common case and
+    leaves the paper on the normal title-fix route.
+    """
+    n = len(chunk_keywords)
+    if n < _SPLIT_MIN_CHUNKS:
+        return None
+    keyed = [list(k or ()) for _, k in chunk_keywords]
+    if sum(1 for k in keyed if k) / n < _SPLIT_MIN_COVERAGE:
+        return None
+    keyed_prefix = [0] * (n + 1)
+    for i, k in enumerate(keyed):
+        keyed_prefix[i + 1] = keyed_prefix[i] + (1 if k else 0)
+    sets = [set(k) for k in keyed]
+    # ``suffix[i]`` = union of keyword sets over chunks [i:], so each
+    # boundary's right side is O(1) to combine with the running left
+    # union.
+    suffix: list[set[str]] = [set() for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        suffix[i] = suffix[i + 1] | sets[i]
+    # The loop adds ``sets[i - 1]`` per boundary, so seed the chunks
+    # before the first boundary's predecessor.
+    left: set[str] = set().union(*sets[: _SPLIT_MIN_SIDE_CHUNKS - 1])
+    best: BodySplitVerdict | None = None
+    for i in range(_SPLIT_MIN_SIDE_CHUNKS, n - _SPLIT_MIN_SIDE_CHUNKS + 1):
+        left |= sets[i - 1]
+        if (
+            keyed_prefix[i] < _SPLIT_MIN_SIDE_KEYED
+            or keyed_prefix[n] - keyed_prefix[i] < _SPLIT_MIN_SIDE_KEYED
+        ):
+            continue
+        right = suffix[i]
+        union = left | right
+        jac = (len(left & right) / len(union)) if union else 1.0
+        if jac > _SPLIT_MAX_BOUNDARY_JACCARD:
+            continue
+        cand = BodySplitVerdict(
+            boundary_ord=int(chunk_keywords[i][0]),
+            left_chunks=i,
+            right_chunks=n - i,
+            jaccard=round(jac, 3),
+        )
+        if best is None or cand.jaccard < best.jaccard:
+            best = cand
+    return best
+
+
+def _body_split_verdict(store: Store, ref_id: int) -> BodySplitVerdict | None:
+    """Run :func:`classify_body_split` over the ref's stored body chunks."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ord, keywords FROM chunks "
+            "WHERE ref_id = %s AND ord >= 0 ORDER BY ord",
+            (ref_id,),
+        ).fetchall()
+    return classify_body_split([(int(o), k) for o, k in rows])
+
+
 #: Tag + ``meta.source`` marking a "fix this paper's title" human todo.
 TITLE_FIX_TAG = "paper-title-fix"
 TITLE_FIX_SOURCE = "paper_hygiene:title_fix"
@@ -1946,10 +2088,11 @@ _TITLE_FIX_GRACE_DAYS = 3
 #: and the stamped backlog should get one more attempt. Without the stamp the
 #: daily pass would re-burn registry lookups on titles it already proved it
 #: cannot fix (transient failures — timeouts, rate limits — are left
-#: unstamped so the next pass retries them).
-#: v2: the title leg can now fold a stub into the live owner of its
-#: recovered DOI (``_merge_into_doi_owner``, gr658635) — the v1-stamped
-#: backlog holds exactly those undetected duplicates.
+#: unstamped so the next pass retries them). v2: two new tricks re-arm
+#: the v1-stamped backlog — the title leg can fold a stub into the live
+#: owner of its recovered DOI (``_merge_into_doi_owner``, gr658635), and
+#: the cascade diverts OCR-concatenated multi-article bodies to the
+#: body-split route before any registry lookup (gr658650).
 _TITLE_REPAIR_VERSION = 2
 
 #: ``meta.entry_type`` values that are articles (Crossref vocabulary —
@@ -1970,9 +2113,11 @@ _TRANSIENT_MISS_REASONS = frozenset(
 )
 
 #: Open tag + ``meta.source`` marking a "split this paper record into one
-#: record per spliced article" human todo (gr658690) — the spliced-issue
-#: sibling of :data:`TITLE_FIX_TAG` / :data:`TITLE_FIX_SOURCE`: the paper's
-#: body is a whole scanned journal issue and no title assignment can fix it.
+#: record per article" human todo — shared by the two split routes:
+#: spliced scanned journal issues (gr658690) and OCR-concatenated
+#: multi-article bodies (gr658650), the divergence-detected sibling of
+#: :data:`TITLE_FIX_TAG` / :data:`TITLE_FIX_SOURCE`. No title assignment
+#: can fix either class.
 SPLIT_FIX_TAG = "paper-needs-split"
 SPLIT_FIX_SOURCE = "paper_hygiene:split"
 
@@ -1982,7 +2127,7 @@ class TitleRepairOutcome:
     """What the repair pass did (or concluded) for one junk-titled paper."""
 
     ref_id: int
-    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'merged' | 'parked' | 'failed' | 'skipped'
+    action: str  # 'markup' | 'crossref' | 'openalex' | 'title' | 'merged' | 'split' | 'parked' | 'failed' | 'skipped'
     detail: str = ""
     new_title: str = ""
 
@@ -1992,7 +2137,15 @@ class TitleRepairOutcome:
 
 
 def _open_title_fix_todo_ids(store: Store, ref_id: int, *, conn: Any) -> list[int]:
-    """Title-fix todos for *ref_id* that aren't ``STATUS:done`` yet."""
+    """Title-fix todos for *ref_id* that are still open (no terminal STATUS).
+
+    Every terminal value — ``done`` but also the human's closed
+    non-done verdicts (``won't-do`` / ``auto-timeout``, the
+    :data:`precis.todo.TERMINAL_TODO_STATUSES` set) — excludes the
+    todo: the repair resolve and the body-split reroute flip only open
+    todos, never rewriting a verdict a human already recorded."""
+    from precis.todo import terminal_todo_sql
+
     rows = conn.execute(
         "SELECT t.ref_id FROM refs t "
         "WHERE t.kind = 'todo' AND t.retired_at IS NULL "
@@ -2000,7 +2153,7 @@ def _open_title_fix_todo_ids(store: Store, ref_id: int, *, conn: Any) -> list[in
         "  AND NOT EXISTS ("
         "        SELECT 1 FROM ref_tags rt JOIN tags tg USING (tag_id) "
         "         WHERE rt.ref_id = t.ref_id AND tg.namespace = 'STATUS' "
-        "           AND tg.value = 'done')",
+        f"           AND tg.value IN {terminal_todo_sql()})",
         (TITLE_FIX_SOURCE, str(ref_id)),
     ).fetchall()
     return [int(r[0]) for r in rows]
@@ -2043,7 +2196,16 @@ def close_resolved_title_fix_todos(
     human-verified, or carries a title that is neither placeholder, PII nor
     garbage. Returns the paper ref_ids whose todos were (or, dry-run, would
     be) closed.
+
+    "Open" is the shared terminal predicate (:func:`terminal_todo_sql` —
+    no ``done`` / ``won't-do`` / ``auto-timeout`` STATUS), applied in the
+    SELECT *before* ``limit``: a todo a human already closed non-done can
+    never be auto-closed by :func:`_close_title_fix_todos`, so without the
+    filter it would be selected, reported as closed and re-selected every
+    pass — consuming the cap and starving genuinely open todos.
     """
+    from precis.todo import terminal_todo_sql
+
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT DISTINCT r.ref_id, r.title, "
@@ -2056,7 +2218,7 @@ def close_resolved_title_fix_todos(
             "   AND NOT EXISTS ("
             "        SELECT 1 FROM ref_tags rt JOIN tags tg USING (tag_id) "
             "         WHERE rt.ref_id = t.ref_id AND tg.namespace = 'STATUS' "
-            "           AND tg.value = 'done') "
+            f"           AND tg.value IN {terminal_todo_sql()}) "
             " ORDER BY r.ref_id",
             (TITLE_FIX_SOURCE,),
         ).fetchall()
@@ -2357,6 +2519,17 @@ def repair_junk_title_papers(
     single title exists to resolve, a lucky registry hit would only
     disguise the splice, and the split ask routes them instead.
 
+    One paper class never reaches the registry legs (gr658650): a body
+    whose chunk-keyword topics diverge sharply partway through — the OCR
+    bleed-through concatenation of 2-4 unrelated scanned articles — has
+    no one honest title, so the cascade diverts it *before* the first
+    lookup, stamps ``title_repair_v`` like any terminal outcome, and the
+    raise leg routes it to a body-split todo instead of a title-fix
+    one. The diversion reuses :func:`classify_body_split` over the
+    ``chunks.keywords`` the ``view='toc'`` cluster breakdown segments
+    by; a keyword-barren body is unjudgeable and falls through to the
+    normal legs.
+
     Returns one :class:`TitleRepairOutcome` per candidate; ``dry_run``
     (default) resolves but writes nothing.
     """
@@ -2434,6 +2607,17 @@ def repair_junk_title_papers(
         if limit and seen >= limit:
             break
         seen += 1
+        # gr658650: an OCR-concatenated multi-article body has no one
+        # honest title — resolving one would paste an article's name over
+        # a foreign body. Divert before the first registry lookup; the
+        # stamp is what lets the raise leg route the paper to a
+        # body-split todo instead of a title-fix one.
+        split = _body_split_verdict(store, ref_id)
+        if split is not None:
+            if not dry_run:
+                _stamp_title_repair_failed(store, ref_id, reasons=["body-split"])
+            outcomes.append(TitleRepairOutcome(ref_id, "split", detail=split.line()))
+            continue
         try:
             outcomes.append(
                 _repair_one(
@@ -2639,6 +2823,19 @@ def raise_junk_title_papers(
     todo per paper: a multi-cite_key ref (pa344 × 3) must not fan out into
     per-cite_key duplicates.
 
+    One routed variant (gr658650): before a title-fix todo is filed, the
+    paper's body is checked for the OCR-concatenation signature — chunk
+    keywords that diverge sharply partway through (:func:`classify_body_split`,
+    the same ``chunks.keywords`` signal the ``view='toc'`` cluster breakdown
+    shows). A concatenated body has no one honest title, so the paper is
+    tagged :data:`BODY_SPLIT_TAG`, the split is journalled, and the todo
+    asks for the missing body-partition op (see :data:`BODY_SPLIT_TAG`
+    for why ``split_body`` / ``move_body_to`` cannot do it), tagged
+    ``waiting-for:<login>`` + :data:`SPLIT_FIX_TAG` with
+    ``meta.source`` = :data:`SPLIT_FIX_SOURCE`. The reroute closes only
+    OPEN title-fix todos; closed non-done ones (won't-do / auto-timeout)
+    are a human's verdict and stay untouched.
+
     Skipped: retired papers; human-verified papers (a human already judged
     the title — repair never stamps them, so they could never leave this
     queue either); papers whose ``meta.entry_type`` is set to a NON-article
@@ -2648,7 +2845,7 @@ def raise_junk_title_papers(
     (the enrich route owns them); papers younger than ``grace_days``;
     papers the repair cascade has not yet concluded on.
 
-    Spliced issues route differently (gr658690): a paper carrying an
+    Spliced issues route too (gr658690): a paper carrying an
     ``ingest:spread`` / ``issue_splice`` journal row is a whole scanned
     journal issue — several unrelated articles in one record — so no title
     assignment can ever satisfy its todo. The splice signature is its own
@@ -2657,11 +2854,10 @@ def raise_junk_title_papers(
     never produce one), the junk-title predicates don't apply (a lucky
     repair can't un-splice the body), and a DOI'd placeholder isn't left
     to enrich (the DOI fixes at most one of the spliced articles). Those
-    papers get a ``paper-needs-split`` todo (``meta.source``
-    :data:`SPLIT_FIX_SOURCE`) asking the owner to split the record into
-    one paper per article instead, and any open title-fix todos for the
-    same paper are auto-resolved (``how='issue_splice'``) so the queue
-    never holds both asks at once.
+    papers get the same :data:`SPLIT_FIX_TAG` / :data:`SPLIT_FIX_SOURCE`
+    split todo, and any open title-fix todos for the same paper are
+    auto-resolved (``how='issue_splice'``) so the queue never holds both
+    asks at once.
 
     Idempotent: ``meta.source``/``meta.paper_ref_id`` identify the todo,
     and a paper with an open todo of the kind this pass would file, or one
@@ -2737,7 +2933,9 @@ def raise_junk_title_papers(
             ),
         ).fetchall()
 
-    todo: list[tuple[int, str, str | None, str, bool, bool]] = []
+    todo: list[
+        tuple[int, str, str | None, str, str, bool, BodySplitVerdict | None]
+    ] = []
     for (
         ref_id,
         title,
@@ -2757,7 +2955,15 @@ def raise_junk_title_papers(
             if has_open_split_todo:
                 continue
             todo.append(
-                (int(ref_id), t, owner, cite_key, True, bool(has_open_title_todo))
+                (
+                    int(ref_id),
+                    t,
+                    owner,
+                    cite_key,
+                    "spliced",
+                    bool(has_open_title_todo),
+                    None,
+                )
             )
             continue
         # Non-article entry_types keep their (often section-shaped)
@@ -2769,19 +2975,39 @@ def raise_junk_title_papers(
                 continue  # paper_meta_enrich / requeue_placeholder_title_papers
         elif not (is_pii(t) or is_garbage_title(t)):
             continue
+        # gr658650: an OCR-concatenated multi-article body has no one
+        # honest title — divert to the split ask BEFORE the plain
+        # title-fix re-file guard below; an open title-fix todo filed
+        # before the signal was seen is closed at write time.
+        verdict = _body_split_verdict(store, int(ref_id))
+        if verdict is not None:
+            if has_open_split_todo:
+                continue
+            todo.append(
+                (
+                    int(ref_id),
+                    t,
+                    owner,
+                    cite_key,
+                    "split",
+                    bool(has_open_title_todo),
+                    verdict,
+                )
+            )
+            continue
         if has_open_title_todo:
             continue
-        todo.append((int(ref_id), t, owner, cite_key, False, False))
+        todo.append((int(ref_id), t, owner, cite_key, "title", False, None))
     if limit:
         todo = todo[:limit]
     if dry_run:
         return [t[0] for t in todo]
 
     default_owner = load_config().owner
-    for ref_id, t, owner, cite_key, spliced, had_title_todo in todo:
+    for ref_id, t, owner, cite_key, kind, had_title_todo, verdict in todo:
         login = owner or default_owner
         handle = f"paper:{format_handle('paper', ref_id)}"
-        if spliced:
+        if kind == "spliced":
             source = SPLIT_FIX_SOURCE
             text = (
                 f"Split {handle} (cite_key {cite_key or '?'}): the stored "
@@ -2789,6 +3015,26 @@ def raise_junk_title_papers(
                 "unrelated articles into one record — no single title can "
                 f"describe it (stored title {t!r}). Split the body into "
                 "one paper record per article."
+            )
+            fix_tag = SPLIT_FIX_TAG
+        elif kind == "split":
+            assert verdict is not None
+            source = SPLIT_FIX_SOURCE
+            text = (
+                f"Split body of {handle} (cite_key {cite_key or '?'}): stored "
+                f"title {t!r} is junk and the body reads as 2+ unrelated "
+                f"articles concatenated by a scanned-issue ingest (near-zero "
+                f"keyword overlap across ord {verdict.boundary_ord}: "
+                f"{verdict.left_chunks} + {verdict.right_chunks} chunks). "
+                "No single honest title exists — do NOT assign one, and do "
+                "NOT run split_body / move_body_to here: those doors move "
+                "the WHOLE body to one ref (precis-paper-ref-help), so "
+                "they cannot partition this record and would strand the "
+                "other article(s). The needed repair is a body-partition "
+                "op cutting at the flagged boundary into one ref per "
+                "article — it does not exist yet; file a gripe for it "
+                "(precis-gripe-help) and leave this record untitled and "
+                "flagged body:needs_split."
             )
             fix_tag = SPLIT_FIX_TAG
         else:
@@ -2801,6 +3047,32 @@ def raise_junk_title_papers(
             )
             fix_tag = TITLE_FIX_TAG
         with store.tx() as conn:
+            if kind == "split":
+                assert verdict is not None
+                # Reroute: an OPEN title-fix todo filed before the split
+                # signal was seen is superseded by the split todo
+                # (gr658650). Closed non-done todos (a human's won't-do /
+                # auto-timeout verdict) are left untouched —
+                # _open_title_fix_todo_ids only returns still-open ones.
+                if had_title_todo:
+                    _close_title_fix_todos(
+                        store, ref_id, conn=conn, how="body-split", new_title=""
+                    )
+                store.add_tag(
+                    ref_id, Tag.open(BODY_SPLIT_TAG), set_by="system", conn=conn
+                )
+                store.append_event(
+                    ref_id,
+                    source=SPLIT_FIX_SOURCE,
+                    event="flagged",
+                    payload={
+                        "boundary_ord": verdict.boundary_ord,
+                        "left_chunks": verdict.left_chunks,
+                        "right_chunks": verdict.right_chunks,
+                        "jaccard": verdict.jaccard,
+                    },
+                    conn=conn,
+                )
             todo_ref = store.insert_ref(
                 kind="todo",
                 slug=None,
@@ -2808,7 +3080,7 @@ def raise_junk_title_papers(
                 meta={"source": source, "paper_ref_id": ref_id},
                 conn=conn,
             )
-            if spliced and had_title_todo:
+            if kind == "spliced" and had_title_todo:
                 # gr658690: the old ask ("set a real title") is impossible
                 # for a spliced issue — close it so the queue holds only the
                 # split ask.
@@ -2830,7 +3102,7 @@ def raise_junk_title_papers(
         log.info(
             "raise_junk_title_papers: filed %d todo(s) (%d split)",
             len(todo),
-            sum(1 for t in todo if t[4]),
+            sum(1 for t in todo if t[4] != "title"),
         )
     return [t[0] for t in todo]
 

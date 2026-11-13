@@ -1377,6 +1377,33 @@ class TestRaiseJunkTitlePapers:
         assert any("done" in str(t) for t in store.tags_for(todo[0]))
         assert close_resolved_title_fix_todos(store, dry_run=False) == []
 
+    def test_wontdo_todo_is_never_auto_closed_or_counted(self, store: Store) -> None:
+        """review td659675: a won't-do/auto-timeout todo can never be
+        auto-closed (``_close_title_fix_todos`` touches open todos only),
+        so the shared terminal predicate must exclude it from the SELECT
+        before ``limit`` — else it is selected every pass, reported as
+        closed, and starves genuinely open todos."""
+        wontdo = self._old(store, slug="wontdo26a", title="__")
+        self._stamp(store, wontdo)
+        open_p = self._old(store, slug="open26a", title="__")
+        self._stamp(store, open_p)
+        assert raise_junk_title_papers(store, dry_run=False) == [wontdo, open_p]
+        self._close(store, wontdo, "won't-do")
+        for rid in (wontdo, open_p):
+            store.update_paper_fields(rid, title="A Real Title")
+        # The won't-do todo sorts first (lower paper ref_id) yet must not
+        # consume the limit: the open paper is the one closed.
+        assert close_resolved_title_fix_todos(store, dry_run=True, limit=1) == [open_p]
+        assert close_resolved_title_fix_todos(store, dry_run=False) == [open_p]
+        (todo,) = self._todos(store, open_p)
+        assert any("done" in str(t) for t in store.tags_for(todo[0]))
+        (wtodo,) = self._todos(store, wontdo)
+        wtags = {str(t) for t in store.tags_for(wtodo[0])}
+        assert any("won't-do" in t for t in wtags), wtags
+        assert not any("done" in t for t in wtags), wtags
+        # A second pass is a no-op: nothing left open, nothing re-counted.
+        assert close_resolved_title_fix_todos(store, dry_run=False) == []
+
     def test_skips_fixable_and_young_papers(self, store: Store) -> None:
         good = self._old(store, slug="good24", title="A Real Title")
         stub = self._old(store, slug="stub24", title=PLACEHOLDER_TITLE, doi="10.1234/z")
@@ -2342,6 +2369,276 @@ def _fake_crossref(result: dict[str, Any] | None) -> Any:
         return result
 
     return fn
+
+
+# ── body-split routing: OCR-concatenated multi-article bodies (gr658650) ──
+
+_TREMATODE_KWS = ["potamopyrgus", "trematode", "microphallus", "snail", "infection"]
+_GECKO_KWS = ["gecko", "seta", "adhesive", "foot-hair", "van der waals"]
+
+
+def _kw_body(
+    store: Store, ref_id: int, specs: list[list[str] | None], *, kind: str = "paragraph"
+) -> None:
+    """Body chunks carrying KeyBERT keyword labels, in ``ord`` order."""
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            for i, kws in enumerate(specs):
+                conn.execute(
+                    "INSERT INTO chunks (ref_id, ord, chunk_kind, text, keywords) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (ref_id, i, kind, f"body text {i}", kws),
+                )
+
+
+def _concat_specs(left: int = 7, right: int = 30) -> list[list[str] | None]:
+    out: list[list[str] | None] = [_TREMATODE_KWS for _ in range(left)]
+    out.extend(_GECKO_KWS for _ in range(right))
+    return out
+
+
+class TestClassifyBodySplit:
+    def test_two_article_concatenation_flags(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        v = classify_body_split(list(enumerate(_concat_specs())))
+        assert v is not None
+        assert v.boundary_ord == 7
+        assert (v.left_chunks, v.right_chunks) == (7, 30)
+        assert v.jaccard == 0.0
+
+    def test_single_paper_sections_do_not_flag(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        base = {"graphene", "transistor", "mobility", "carrier"}
+        kws = [sorted(base | {f"section-{i // 10}-term"}) for i in range(40)]
+        assert classify_body_split(list(enumerate(kws))) is None
+
+    def test_early_chunks_count_toward_left_union(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        # {a} also appears in chunks 0-1, so it is shared across the
+        # ord-3 boundary: no split despite chunks 3.. carrying only {a}.
+        kws = [["a"], ["a"], ["b"]] + [["a"] for _ in range(9)]
+        assert classify_body_split(list(enumerate(kws))) is None
+
+    def test_short_body_is_unjudgeable(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        assert classify_body_split(list(enumerate(_concat_specs(3, 5)))) is None
+
+    def test_sparse_keyword_coverage_is_unjudgeable(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        specs: list[list[str] | None] = _concat_specs()
+        # Drop keywords from most chunks: below the 0.5 coverage floor.
+        for i in range(len(specs)):
+            if i % 4:
+                specs[i] = None
+        assert classify_body_split(list(enumerate(specs))) is None
+
+    def test_keywordless_side_is_unjudgeable(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        specs: list[list[str] | None] = _concat_specs()
+        # The 7-chunk tail carries no labels at all: the boundary's left
+        # side has too few keyword-carrying chunks to judge.
+        for i in range(7):
+            specs[i] = None
+        assert classify_body_split(list(enumerate(specs))) is None
+
+    def test_tiny_unrelated_run_does_not_flag(self) -> None:
+        from precis.ingest.paper_hygiene import classify_body_split
+
+        base = ["graphene", "transistor", "mobility", "carrier"]
+        specs: list[list[str]] = [base for _ in range(20)]
+        # A single chunk of unrelated keywords mid-paper: every boundary
+        # still has the paper's core terms overlapping on both sides, so
+        # no near-zero boundary exists.
+        specs[10] = _GECKO_KWS
+        assert classify_body_split(list(enumerate(specs))) is None
+
+
+class TestBodySplitRouting:
+    """gr658650: OCR-concatenated refs divert to the split route, not
+    title-fix."""
+
+    def _concat(self, store: Store, *, slug: str, title: str = "__") -> int:
+        rid = store.insert_ref(kind="paper", slug=slug, title=title).id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        _kw_body(store, rid, _concat_specs())
+        return rid
+
+    def _stamp(self, store: Store, paper_id: int) -> None:
+        from precis.ingest.paper_hygiene import _TITLE_REPAIR_VERSION
+
+        store.stamp_ref_meta(paper_id, {"title_repair_v": _TITLE_REPAIR_VERSION})
+
+    def _todos(self, store: Store, paper_id: int) -> list[Any]:
+        with store.pool.connection() as conn:
+            return conn.execute(
+                "SELECT ref_id, title, meta->>'source' AS source FROM refs "
+                "WHERE kind='todo' AND meta->>'paper_ref_id' = %s",
+                (str(paper_id),),
+            ).fetchall()
+
+    def test_repair_diverts_before_any_registry_lookup(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import (
+            _TITLE_REPAIR_VERSION,
+            repair_junk_title_papers,
+        )
+
+        rid = self._concat(store, slug="concat-repair")
+        out = repair_junk_title_papers(
+            store,
+            dry_run=False,
+            crossref_fn=_no_calling(),
+            openalex_fn=_no_calling(),
+            s2_fn=_no_calling(),
+        )
+        # The network fns would have raised had the cascade reached them.
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "split")]
+        assert "ord 7" in out[0].detail
+        # Terminal like any failed leg: the raise leg may file on it.
+        assert _meta(store, rid).get("title_repair_v") == _TITLE_REPAIR_VERSION
+
+    def test_repair_diversion_dry_run_writes_nothing(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import repair_junk_title_papers
+
+        rid = self._concat(store, slug="concat-dry")
+        out = repair_junk_title_papers(store, dry_run=True)
+        assert [(o.ref_id, o.action) for o in out] == [(rid, "split")]
+        assert "title_repair_v" not in _meta(store, rid)
+
+    def test_raise_files_body_split_todo_not_title_fix(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import (
+            BODY_SPLIT_TAG,
+            SPLIT_FIX_SOURCE,
+            SPLIT_FIX_TAG,
+        )
+
+        rid = self._concat(store, slug="concat-raise")
+        self._stamp(store, rid)
+        assert raise_junk_title_papers(store, dry_run=True) == [rid]
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+
+        (todo,) = self._todos(store, rid)
+        assert todo[2] == SPLIT_FIX_SOURCE
+        assert "Split body" in todo[1]
+        # The instruction must not prescribe a whole-body op for a
+        # partition job: split_body/move_body_to move the ENTIRE body,
+        # so the todo names the missing partition op instead.
+        assert "do NOT run split_body" in todo[1]
+        assert "partition" in todo[1]
+        rendered = {str(t) for t in store.tags_for(todo[0])}
+        assert SPLIT_FIX_TAG in rendered, rendered
+        assert "waiting-for:reto" in rendered, rendered
+        assert not any("paper-title-fix" in r for r in rendered), rendered
+        # The paper itself is flagged so operators / views see the class.
+        assert BODY_SPLIT_TAG in _tags(store, rid)
+
+    def test_raise_split_route_is_idempotent(self, store: Store) -> None:
+        rid = self._concat(store, slug="concat-idem")
+        self._stamp(store, rid)
+        raise_junk_title_papers(store, dry_run=False)
+        assert raise_junk_title_papers(store, dry_run=False) == []
+        assert len(self._todos(store, rid)) == 1
+
+    def test_plain_junk_paper_still_gets_title_fix(self, store: Store) -> None:
+        """A keyword-barren junk title (the common backlog shape) keeps the
+        normal title-fix route — the divergence check must not starve it."""
+        rid = store.insert_ref(kind="paper", slug="plain-junk", title="__").id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        self._stamp(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        (todo,) = self._todos(store, rid)
+        assert todo[2] == "paper_hygiene:title_fix"
+        rendered = {str(t) for t in store.tags_for(todo[0])}
+        assert "paper-title-fix" in rendered, rendered
+
+    def test_existing_title_fix_todo_is_rerouted_to_split(self, store: Store) -> None:
+        """Backlog case: a title-fix todo filed before the split signal
+        existed must not block the split route (it is closed, a split todo
+        is filed)."""
+        from precis.ingest.paper_hygiene import BODY_SPLIT_TAG, SPLIT_FIX_SOURCE
+        from precis.store.types import Tag
+
+        rid = self._concat(store, slug="concat-backlog")
+        self._stamp(store, rid)
+        old = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="Fix title",
+            meta={"source": "paper_hygiene:title_fix", "paper_ref_id": rid},
+        )
+        store.add_tag(old.id, Tag.closed("STATUS", "open"), set_by="system")
+
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+
+        by_source = {t[2]: t[0] for t in self._todos(store, rid)}
+        assert set(by_source) == {"paper_hygiene:title_fix", SPLIT_FIX_SOURCE}
+        old_tags = {str(t) for t in store.tags_for(old.id)}
+        assert any("done" in t for t in old_tags), old_tags
+        assert BODY_SPLIT_TAG in _tags(store, rid)
+        # Settled: nothing further to file.
+        assert raise_junk_title_papers(store, dry_run=False) == []
+
+    def test_reroute_leaves_wontfix_title_fix_todo_untouched(
+        self, store: Store
+    ) -> None:
+        """A title-fix todo closed non-done (the human's won't-do / wontfix
+        verdict) must survive the body-split reroute untouched — only
+        OPEN todos are superseded; rewriting the verdict to done would
+        falsify it."""
+        from precis.ingest.paper_hygiene import BODY_SPLIT_TAG, SPLIT_FIX_SOURCE
+        from precis.store.types import Tag
+
+        rid = self._concat(store, slug="concat-wontfix")
+        self._stamp(store, rid)
+        old = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="Fix title (declined)",
+            meta={"source": "paper_hygiene:title_fix", "paper_ref_id": rid},
+        )
+        store.add_tag(old.id, Tag.closed("STATUS", "won't-do"), set_by="system")
+
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+
+        by_source = {t[2]: t[0] for t in self._todos(store, rid)}
+        assert set(by_source) == {"paper_hygiene:title_fix", SPLIT_FIX_SOURCE}
+        # The split todo was still filed...
+        assert by_source[SPLIT_FIX_SOURCE] != old.id
+        # ...but the won't-do verdict stands: no done tag, verdict intact.
+        old_tags = {str(t) for t in store.tags_for(old.id)}
+        assert any("won't-do" in t for t in old_tags), old_tags
+        assert not any("done" in t for t in old_tags), old_tags
+        assert BODY_SPLIT_TAG in _tags(store, rid)
+
+    def test_open_title_fix_todo_on_plain_junk_is_not_refiled(
+        self, store: Store
+    ) -> None:
+        rid = store.insert_ref(kind="paper", slug="plain-open", title="__").id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '30 days' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+        self._stamp(store, rid)
+        assert raise_junk_title_papers(store, dry_run=False) == [rid]
+        assert raise_junk_title_papers(store, dry_run=False) == []
+        assert len(self._todos(store, rid)) == 1
 
 
 # ── spliced journal issues (gr658690) ─────────────────────────────
