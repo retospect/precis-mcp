@@ -29,6 +29,10 @@ from precis_bio.alphafold import build_fold_argv
 from precis_chem.aizynth import build_aizynth_argv
 from precis_chem.jobs import _build_normalizer_argv
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: resource rlimits"
+)
+
 
 @pytest.fixture(autouse=True)
 def _clean_limit_env(monkeypatch):
