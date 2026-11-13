@@ -435,6 +435,21 @@ def _run_transcript_audit(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_run_quality(store: Store, batch_size: int) -> None:
+    """Mint a judge for a sampled run and land verdicts (gr595545); the
+    pass checks its dark-by-default gate."""
+    del batch_size
+    from precis.workers.run_quality import run_run_quality_pass
+
+    result = run_run_quality_pass(store)
+    log.info(
+        "scheduler: run_quality inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_gripe_dispatch(store: Store, batch_size: int) -> None:
     """One gripe dispatch tick (dark factory intake, td564019 cut 3): mint
     a ``gripe-fix-direct`` chain for the hottest ``fix:code`` / ``fix:skill``
@@ -1403,6 +1418,14 @@ CADENCES: tuple[Cadence, ...] = (
         name="transcript_audit",
         interval_s=1800,
         run=_run_transcript_audit,
+    ),
+    # gr595545's sampled-quality layer: mints a judge plan per flagged
+    # run and lands verdicts — same model-free shape as transcript_audit
+    # (dark until service_config lights it; the lease still advances).
+    Cadence(
+        name="run_quality",
+        interval_s=1800,
+        run=_run_run_quality,
     ),
     # Dark factory intake (td564019 cut 3): every 10 minutes, mint a
     # gripe-fix-direct chain per free code-lane slot for the hottest

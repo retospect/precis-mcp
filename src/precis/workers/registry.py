@@ -1667,6 +1667,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-work-help",
     ),
     ServiceSpec(
+        # gr595545 (plans/outcome.py): the expensive half of the hard-gate
+        # / sampled-quality split — mints one judge plan per flagged
+        # run_slice job and lands `verdict:` on meta.verdict. No model
+        # call of its own (the minted session is the spend); dark until
+        # service_config lights it.
+        name="run_quality",
+        label="Run quality review",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="30-minute model-free pass: mints big-model judge plans "
+        "for runs the outcome sampler flagged, lands their verdicts; "
+        "dark until service_config lights it.",
+        doc_skill="precis-work-help",
+    ),
+    ServiceSpec(
         # Dark factory intake (precis.workers.gripe_dispatch, td564019 cut
         # 3): the 10-minute `gripe_dispatch` scheduler cadence fires the
         # pass; this row names the service so `precis service` can light

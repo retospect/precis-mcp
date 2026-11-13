@@ -137,6 +137,13 @@ that holds the lane's credentials with ``params.target_node``):
   verdict on the gripe — except a ``moot:`` pinned to a different
   ``gr<N>`` than the plan's, which is never this plan's verdict. Only
   a no-commit exit carrying no verdict anywhere is the failure below.
+  Every one of those closes and the ``land_slice`` mint stands only on
+  the every-run hard gates (:mod:`precis.plans.outcome`, gr595545 —
+  review td655142): a clean exit that failed one — an uncompilable
+  tree, a ``tests:`` obligation never honoured (a code run that left
+  commits owes the receipt whether or not its brief named test paths),
+  a step-cap halt — mints nothing and closes nothing, validate runs
+  included; the run ends ``failed`` like the cases below.
   The release-fix loop's fix
   node (``blocked-by`` a live ``ci_red_digest`` under a
   ``release-pass`` root) gets a weaker ruling INSTEAD
@@ -224,6 +231,7 @@ from typing import Any
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
+from precis.plans import outcome as _outcome
 from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
 from precis.principal import worker_comment_meta
@@ -517,6 +525,74 @@ def resolve_model(
     from precis.utils.llm.router import resolve_model as _router_model
 
     return _router_model(Tier.FRONTIER)
+
+
+def _diverse_test_pick(
+    ctx: Any,
+    *,
+    lane: _lanes.Lane,
+    model: str | None,
+    candidates: tuple[_lanes.Lane, ...],
+    counts: dict[str, int] | None,
+    backoffs: dict[str, datetime] | None,
+    paid_ok: bool,
+    model_pin: str | None,
+    task_class: str,
+    todo_id: int,
+) -> tuple[_lanes.Lane | None, str | None, str | None]:
+    """Route the test session around the run's code models (gr595545):
+    reads the prior picks off the sibling sessions and delegates to
+    ``plans.outcome.diverse_model_pick``; the pick's reasoning lands on
+    the job's event log either way. ``(None, None, note)`` when nothing
+    satisfies the MUST — the caller refuses the launch; ``(None, None,
+    None)`` when the launch PARKED instead — the pick's store read
+    failed, a transient fault the caller must not read as a refusal
+    (review td655142: an unestablishable prior model may never ride an
+    empty avoid past the different-model rule)."""
+    try:
+        avoid, unknown = _outcome.code_session_models(ctx.store, todo_id)
+    except Exception:  # pragma: no cover — the read already reports
+        log.warning("run_slice: prior-pick read for td%d failed", todo_id)
+        avoid, unknown = frozenset(), "read"
+    if unknown == "read":
+        # A store fault, not a verdict: park on the lane-wait machinery
+        # rather than launch on a guess or burn an attempt on a window
+        # that is the DB's, not the task's.
+        _park_lane_full(
+            ctx,
+            "run_slice: the prior-pick read for the test session's "
+            "different-model rule failed; parked to retry when the "
+            "store answers",
+        )
+        return None, None, None
+    if unknown == "unrecorded":
+        # Permanent: a prior code session's model was never recorded —
+        # no pick can be PROVEN different from it.
+        why = (
+            "run_slice: the test session must run a different model than "
+            "the run's code session(s), but a prior code session's model "
+            "was never recorded (the account default); refusing the "
+            "launch — a difference that cannot be proven is none"
+        )
+        ctx.append_chunk("job_event", why)
+        return None, None, why
+    if not avoid:
+        return lane, model, None
+    new_lane, new_model, note = _outcome.diverse_model_pick(
+        ctx.store,
+        lane=lane,
+        model=model,
+        candidates=candidates,
+        counts=counts,
+        backoffs=backoffs,
+        paid_ok=paid_ok,
+        avoid=avoid,
+        model_pin=model_pin,
+        task_class=task_class,
+    )
+    if note:
+        ctx.append_chunk("job_event", note)
+    return new_lane, new_model, note
 
 
 def slice_root() -> Path:
@@ -2732,6 +2808,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     lane: _lanes.Lane | None = pinned if (params.get("lane") and not left_pin) else None
     counts: dict[str, int] | None = None
     backoffs: dict[str, datetime] | None = None
+    table: tuple[_lanes.Lane, ...] = ()
+    paid_ok = True
     if params.get("lane") and not left_pin:
         dead = lane is None or not lane.enabled or lane.parked
         if dead and cap is None:
@@ -2874,6 +2952,46 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
             return None
 
+    if model_pin is not None and not lane.accepts_model(model_pin):
+        # A pinned lane that cannot run the pinned model would launch
+        # and die at the vendor — ``pick_lane``'s ``accepts_model``
+        # gate only covers the unpinned path (gr595545 review
+        # td655142: the judge mints ``params.model`` next to its lane
+        # pin, so refuse it here rather than launch a wrong-vendor id).
+        ctx.record_failure(
+            f"run_slice: lane {lane.name!r} does not accept pinned model "
+            f"{model_pin!r}; pin a lane that runs it or drop params.model"
+        )
+        return None
+    model = resolve_model(
+        {k: v for k, v in params.items() if k != "model"} if left_pin else params, lane
+    )
+    # gr595545: the run's test session never re-runs its code session's
+    # model — ``pick_lane`` gets the run's prior picks here, at the
+    # caller (``plans/lanes.py`` is deny-listed): another model on the
+    # same lane first, then another lane, recorded on the job either
+    # way. The adapter resolves AFTER the pick so a lane hop launches
+    # through the new lane's vendor, not the stale one (review
+    # td655142); a refusal fails the job without a launch, a prior-pick
+    # read that could not answer parks it (no note — ``_park_lane_full``
+    # already spoke), and an unrecorded prior model refuses it.
+    if task_class == _outcome.TEST_TASK_CLASS and lane is not None:
+        lane, model, diversity_note = _diverse_test_pick(
+            ctx,
+            lane=lane,
+            model=model,
+            candidates=table or (lane,),
+            counts=counts,
+            backoffs=backoffs,
+            paid_ok=paid_ok,
+            model_pin=model_pin,
+            task_class=task_class,
+            todo_id=todo_id,
+        )
+        if lane is None:
+            if diversity_note is not None:
+                ctx.record_failure(diversity_note)
+            return None
     try:
         adapter = get_adapter(lane.adapter)
     except KeyError:
@@ -2898,9 +3016,6 @@ def submit(ctx: Any, spec: Any) -> Any:
             "meta.task_class off 'code' or pin an MCP lane via params.lane"
         )
         return None
-    model = resolve_model(
-        {k: v for k, v in params.items() if k != "model"} if left_pin else params, lane
-    )
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     # Leaving the lane-full park (gr611299): the lane wait marks must not
     # outlive it, or a later quota park of this job would read as one.
@@ -3449,6 +3564,42 @@ def tests_ran(text: str | None) -> bool:
     for match in _TESTS_MARKER_RE.finditer(text):
         last = match
     return last is not None and last.group(1).lower() == "ran"
+
+
+#: The ``compiled`` gate's probe: byte-compile the slice's changed
+#: ``.py`` files on the worker (gr595545 — review td655142: exit 0
+#: proved the session ended, not that its produce parses).
+def _compile_gate(tree: Path, paths: list[str] | None) -> bool | None:
+    """``True``/``False`` when the slice's changed ``.py`` files do/do not
+    compile, ``None`` when nothing can be probed — no ``.py`` touched,
+    git could not answer (``paths`` is ``None``), the file is gone, or
+    the probe itself could not run. ``None`` is never a failure: the
+    other gates own those faults."""
+    if not paths:
+        return None
+    py = [p for p in paths if p.endswith(".py") and (tree / p).is_file()]
+    if not py:
+        return None
+    try:
+        proc = _run(
+            [sys.executable, "-m", "compileall", "-q", "-f", *py],
+            tree,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.returncode == 0
+
+
+def _job_num_turns(meta: dict[str, Any]) -> int | None:
+    """The vendor-reported turn count off ``meta.usage`` — the same read
+    ``plans.outcome.build_outcome`` makes, so the cap gate and the
+    outcome record judge one number."""
+    usage = meta.get("usage")
+    nt = usage.get("num_turns") if isinstance(usage, dict) else None
+    return (
+        int(nt) if isinstance(nt, (int, float)) and not isinstance(nt, bool) else None
+    )
 
 
 #: A ``moot:`` line anywhere in the session's result (the ``handoff:``
@@ -4576,7 +4727,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         )
         return True
     result, is_error = adapter.parse_result(log_text, tree, exit_code=exit_code)
-    _adapter_usage(ctx, handle, log_text)
+    stamped_usage = _adapter_usage(ctx, handle, log_text)
     # A session the budget watch stopped (td601426): whatever its exit
     # code reads, the bound's stop is a failed attempt — no outage park
     # on its error text, no worker commit, no land mint.
@@ -4777,7 +4928,68 @@ def poll(ctx: Any, handle: Any) -> bool:
     # its child todos, so it has nothing to land.
     land = clean and not _is_generator(ctx.store, todo_id)
     nothing = None
-    if land and not commits:
+    # gr595545: the hard gates are computed BEFORE the close/land arms —
+    # and they DECIDE, every run and every arm (review td655142): a
+    # clean exit that failed one (an uncompilable tree, a ``tests:``
+    # obligation never honoured, a step-cap halt) mints no land AND
+    # closes no verdict/no-commit node — a verdict delivered by a run
+    # that mechanically failed is no deliverable, so the close arms are
+    # gated the same as the mint and the run is a failed attempt on the
+    # ladder either way.
+    gate_ok = True
+    gate_failed: list[str] = []
+    compiled = None
+    corrected = False
+    tests_expected = False
+    tests_observed = bool(worker_tests_ran or tests_ran(result))
+    # ``ctx.meta`` is the claim-time snapshot: the usage this terminal
+    # pass just stamped (claude's whole envelope lands only here —
+    # ``num_turns`` included) is invisible to ``_job_num_turns`` unless
+    # it is merged in. The gate and the ``meta.outcome`` record must
+    # judge the SAME figure, or the cap gate reads dead for every
+    # vendor whose usage arrives at the end.
+    job_meta = dict(ctx.meta or {})
+    if stamped_usage:
+        job_meta["usage"] = stamped_usage
+    try:
+        todo_ref = ctx.store.get_ref(kind="todo", id=todo_id)
+        task_class = str(
+            ((todo_ref.meta if todo_ref is not None else None) or {}).get("task_class")
+            or _DEFAULT_TASK_CLASS
+        )
+        branch_paths = changed_paths(tree) if not vanished else None
+        if task_class == _outcome.TEST_TASK_CLASS:
+            tests_expected = True
+        elif task_class == _DEFAULT_TASK_CLASS:
+            # Every code run that produced owes the tests receipt —
+            # the every-run gate (review td655142): a brief naming no
+            # test paths exempts nothing, and the lander's --checked
+            # pass supplies no evidence for THIS run's record. A run
+            # that left no commits owes none — the empty/no-commit
+            # arms own that shape.
+            tests_expected = bool(commits) and no_commit is None
+        compiled = _compile_gate(tree, branch_paths)
+        corrected = any(not p.startswith("tests/") for p in branch_paths or ())
+        gates = _outcome.hard_gates(
+            compiled=compiled,
+            is_error=is_error,
+            vanished=vanished,
+            num_turns=_job_num_turns(job_meta),
+            max_turns=_max_turns(),
+            tests_observed=tests_observed,
+            tests_expected=tests_expected,
+        )
+        gate_ok = _outcome.gate_pass(
+            gates,
+            denied=denied,
+            budget_note=budget_note,
+            test_failure=test_failure,
+        )
+        gate_failed = sorted(k for k, v in gates.items() if v is False)
+    except Exception:  # pragma: no cover — a gate fault does not convict
+        log.warning("run_slice: hard-gate eval on td%d failed", todo_id)
+        gate_ok = True
+    if land and not commits and gate_ok:
         # A ``moot:`` claim on a CODE task must verify before it may
         # close the plan (td584381 S1d): first line or anywhere in the
         # result — the ``handoff:`` comment's source text, already
@@ -5021,6 +5233,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     elif (
         clean
         and not land
+        and gate_ok
         and _mints_children(ctx.store, todo_id)
         and _child_todo_count(ctx.store, todo_id) == 0
     ):
@@ -5052,7 +5265,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                 f"td{todo_id} "
                 f"closed{' and tagged for the tick to close the plan' if moot else ''}."
             )
-    elif land:
+    elif land and gate_ok:
         # gr573563 (Reto on gr573555): the quick lane wants the builder's
         # receipt — the last ``tests:`` marker saying ``ran``. Land
         # checked when the worker committed the tree the builder left
@@ -5092,12 +5305,69 @@ def poll(ctx: Any, handle: Any) -> bool:
             else:
                 ctx.set_meta(land_job=land_job)
                 summary.append(f"Land: land_slice job:{land_job} minted.")
+    elif clean and not gate_ok:
+        # gr595545 (review td655142): a clean exit that failed a hard
+        # gate mints nothing and closes nothing — the land, the verdict
+        # and the no-commit close alike. The run is a failed attempt on
+        # the ladder, the outcome record saying which gate the "done"
+        # lied about; a validate run's gate failure is no exemption.
+        nothing = "exited clean but failed the hard gate(s): " + (
+            ", ".join(gate_failed) or "unrecorded"
+        )
+        summary.append(f"Close: none — {nothing}.")
+    # gr595545: eval-run-spine's two columns on the job row — the
+    # mechanical outcome + the four hard gates + the sampled-review
+    # decision land on ``meta.outcome`` for EVERY terminal run;
+    # ``meta.verdict`` stays for the sampled review to fill.
+    try:
+        outcome_rec = _outcome.build_outcome(
+            ctx.store,
+            job_id=int(ctx.ref_id or 0),
+            job_meta=job_meta,
+            todo_id=todo_id,
+            handle=handle,
+            exit_code=exit_code,
+            is_error=is_error,
+            denied=denied,
+            vanished=vanished,
+            budget_note=budget_note,
+            test_failure=test_failure,
+            tests_observed=tests_observed,
+            nothing=nothing,
+            clean=clean and gate_ok,
+            max_turns=_max_turns(),
+            cost_usd=_usage_usd(
+                (ctx.meta or {}).get("usage"),
+                ctx.store,
+                str(lane) if lane else None,
+            ),
+            compiled=compiled,
+            corrected=corrected,
+            tests_expected=tests_expected,
+        )
+        ctx.set_meta(outcome=outcome_rec)
+        failed_gates = [k for k, v in outcome_rec["gates"].items() if v is False]
+        rev = outcome_rec["review"]
+        summary.append(
+            f"Outcome: {outcome_rec['outcome']} "
+            f"(gate_pass={outcome_rec['gate_pass']}"
+            + (f", failed gates: {', '.join(failed_gates)}" if failed_gates else "")
+            + "; review "
+            + (
+                "sampled — " + ", ".join(rev["reasons"])
+                if rev["sampled"]
+                else "not sampled"
+            )
+            + ")."
+        )
+    except Exception:  # pragma: no cover — the job outcome still lands
+        log.warning("run_slice: outcome stamp on td%d failed", todo_id)
     if commits:
         summary += ["", *commits[:20]]
     ctx.append_chunk("job_summary", "\n".join(summary))
 
     grant = _handle_grant(handle)
-    if clean and nothing is None:
+    if clean and gate_ok and nothing is None:
         _revoke_slice_grant(ctx, todo_id, grant, "ok")
         ctx.set_status("succeeded")
         return True

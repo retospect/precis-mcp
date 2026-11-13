@@ -2886,11 +2886,15 @@ def test_poll_running_then_success(seams: dict[str, Any]) -> None:
 
     seams["porcelain"] = " M a.py\n?? b.py\n"
     seams["ahead"] = "abc1234 feat(x): y (td42)\n"
-    result = {"type": "result", "is_error": False, "result": "Landed abc1234."}
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "Landed abc1234.\ntests: ran",
+    }
     _finish(handle, 0, "noise\n" + json.dumps(result) + "\n")
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
-    assert store.comments(42)[-1] == "handoff: Landed abc1234."
+    assert store.comments(42)[-1] == "handoff: Landed abc1234.\ntests: ran"
     assert pctx.meta_set["branch_dirty"] == 2
     assert pctx.meta_set["branch_commits"] == ["abc1234 feat(x): y (td42)"]
     assert pctx.meta_set["compute_handle_released"] is True
@@ -2921,7 +2925,11 @@ def test_poll_success_with_a_preland_reviewer_defers_the_land(
 
     seams["porcelain"] = " M a.py\n"
     seams["ahead"] = "abc1234 feat(x): y (td42)\n"
-    result = {"type": "result", "is_error": False, "result": "Landed abc1234."}
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "Landed abc1234.\ntests: ran",
+    }
     _finish(handle, 0, "noise\n" + json.dumps(result) + "\n")
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
@@ -2948,15 +2956,26 @@ def test_poll_success_with_a_preland_reviewer_mints_checked_hold(
     seams: dict[str, Any],
 ) -> None:
     """The deferred ``land_slice`` params carry ``checked`` the same way
-    a direct mint does — no green ``tests:`` marker in the hand-off."""
+    a direct mint does — the worker committed the tree the builder
+    left, so the lander re-runs the impacted tests."""
     store = _Store()
     store.add_todo(42, "t", body="b")
     ctx, handle = _submit(store, seams)
     seams["preland"] = 77
     pctx = _poll_ctx(store, ctx)
     run_slice.poll(pctx, handle)
-    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
-    result = {"type": "result", "is_error": False, "result": "done."}
+    tree = Path(handle["worktree"])
+    (tree / "scratch" / "commit-msg.txt").write_text(
+        "fix(x): y (td42)\n", encoding="utf-8"
+    )
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    seams["committed_ahead"] = "def5678 fix(x): y (td42)\n"
+    result = {
+        "type": "result",
+        "is_error": False,
+        "result": "Could not commit.\ntests: ran",
+    }
     _finish(handle, 0, json.dumps(result) + "\n")
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
@@ -3247,7 +3266,11 @@ def test_poll_commits_the_tree_a_sandboxed_session_left(seams: dict[str, Any]) -
     seams["porcelain"] = " M a.py\n M b.py\n"
     seams["staged"] = True
     seams["committed_ahead"] = "def5678 fix(se): one drc solve per block (td42)\n"
-    _finish(handle, 0, json.dumps({"is_error": False, "result": "Could not commit."}))
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Could not commit.\ntests: ran"}),
+    )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
@@ -3279,7 +3302,11 @@ def test_poll_commits_a_bare_subject_normalised(seams: dict[str, Any]) -> None:
     seams["porcelain"] = " M a.py\n"
     seams["staged"] = True
     seams["committed_ahead"] = "def5678 fix(slice): td42 session commit\n"
-    _finish(handle, 0, json.dumps({"is_error": False, "result": "Could not commit."}))
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Could not commit.\ntests: ran"}),
+    )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
@@ -3291,8 +3318,8 @@ def test_poll_commits_a_bare_subject_normalised(seams: dict[str, Any]) -> None:
 
 def test_poll_worker_commit_mints_a_checked_land(seams: dict[str, Any]) -> None:
     """gr573563: the worker committing the tree a sandboxed session left
-    means the builder could not have run the gate — the land mints
-    ``checked``."""
+    means the lander, not this run, holds the impacted-test evidence —
+    the land mints ``checked`` even on a ``tests: ran`` receipt."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -3303,7 +3330,11 @@ def test_poll_worker_commit_mints_a_checked_land(seams: dict[str, Any]) -> None:
     seams["porcelain"] = " M a.py\n"
     seams["staged"] = True
     seams["committed_ahead"] = "def5678 fix(se): one drc solve per block (td42)\n"
-    _finish(handle, 0, json.dumps({"is_error": False, "result": "Could not commit."}))
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Could not commit.\ntests: ran"}),
+    )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
@@ -3311,12 +3342,12 @@ def test_poll_worker_commit_mints_a_checked_land(seams: dict[str, Any]) -> None:
     assert seams["land_checked"] == [True]
 
 
-def test_poll_tests_not_run_marker_mints_a_checked_land(
+def test_poll_tests_not_run_marker_fails_the_gate(
     seams: dict[str, Any],
 ) -> None:
-    """gr573563: a final message ending ``tests: NOT RUN — <why>`` (the
-    marker the brief asks for) mints the land checked even though the
-    builder committed its own branch."""
+    """gr595545 (review td655142): ``tests: NOT RUN — <why>`` on a code
+    run that left commits is a failed tests gate, not a checked land —
+    the every-run gate replaced the gr573563 checked-fallback."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -3325,9 +3356,13 @@ def test_poll_tests_not_run_marker_mints_a_checked_land(
     _finish(handle, 0, json.dumps({"is_error": False, "result": result}))
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "succeeded"
-    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
-    assert seams["land_checked"] == [True]
+    assert pctx.status == "failed"
+    assert seams["lands"] == []
+    assert pctx.failure is not None and "tests_ran" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is False
+    assert rec["gate_pass"] is False
 
 
 def test_poll_tests_ran_marker_lands_quick(seams: dict[str, Any]) -> None:
@@ -3344,10 +3379,12 @@ def test_poll_tests_ran_marker_lands_quick(seams: dict[str, Any]) -> None:
     assert seams["land_checked"] == [False]
 
 
-def test_poll_no_tests_marker_mints_a_checked_land(seams: dict[str, Any]) -> None:
-    """td573580 review (Reto on gr573555): a hand-off with no ``tests:``
-    marker is no receipt — the land mints checked, not quick. Covers the
-    pinned-codex build that omits the marker."""
+def test_poll_no_tests_marker_fails_the_gate(seams: dict[str, Any]) -> None:
+    """gr595545 (review td655142): a hand-off with no ``tests:`` marker
+    on a code run that left commits owes the receipt and fails the
+    every-run gate — the lander's ``--checked`` pass is no substitute
+    for THIS run's evidence. Covers the pinned-codex build that omits
+    the marker."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -3355,14 +3392,19 @@ def test_poll_no_tests_marker_mints_a_checked_land(seams: dict[str, Any]) -> Non
     _finish(handle, 0, json.dumps({"is_error": False, "result": "Done."}))
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "succeeded"
-    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
-    assert seams["land_checked"] == [True]
+    assert pctx.status == "failed"
+    assert seams["lands"] == []
+    assert pctx.failure is not None and "tests_ran" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is False
+    assert rec["gate_pass"] is False
 
 
-def test_poll_tests_red_marker_mints_a_checked_land(seams: dict[str, Any]) -> None:
+def test_poll_tests_red_marker_fails_the_gate(seams: dict[str, Any]) -> None:
     """A ``tests: red`` marker — the gate ran and failed — is no green
-    receipt either: the land mints checked."""
+    receipt either: under the every-run gate that is a failed attempt,
+    not a checked land."""
     store = _Store()
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
@@ -3370,9 +3412,13 @@ def test_poll_tests_red_marker_mints_a_checked_land(seams: dict[str, Any]) -> No
     _finish(handle, 0, json.dumps({"is_error": False, "result": "Done.\ntests: red"}))
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
-    assert pctx.status == "succeeded"
-    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
-    assert seams["land_checked"] == [True]
+    assert pctx.status == "failed"
+    assert seams["lands"] == []
+    assert pctx.failure is not None and "tests_ran" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is False
+    assert rec["gate_pass"] is False
 
 
 def test_poll_without_a_message_file_commits_nothing(seams: dict[str, Any]) -> None:
@@ -4828,7 +4874,7 @@ def test_poll_failed_land_mint_releases_the_lease(
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
     seams["ahead"] = "abc1234 feat(x): y (td42)\n"
-    _finish(handle, 0, json.dumps({"is_error": False, "result": "done"}))
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "done\ntests: ran"}))
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
@@ -5596,14 +5642,22 @@ def test_poll_document_task_class_no_commit_succeeds(
 def test_poll_document_task_class_moot_keeps_trust(seams: dict[str, Any]) -> None:
     """td584381 S1d: verification is the CODE node's gate — a
     ``task_class`` node's first-line ``moot:`` keeps today's trust and
-    closes tagged, no sha check."""
+    closes tagged, no sha check. The every-run tests gate still
+    applies: this verdict close stands on the run's ``tests: ran``
+    receipt (gr595545)."""
     store = _Store()
     store.add_todo(42, "t", meta={"task_class": "validate"})
     ctx, handle = _submit(store, seams)
     _finish(
         handle,
         0,
-        json.dumps({"is_error": False, "result": "moot: gr1 already fixed"}) + "\n",
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "moot: gr1 already fixed\ntests: ran",
+            }
+        )
+        + "\n",
     )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
@@ -5836,7 +5890,11 @@ def test_submit_codex_argv_and_model(
     lane = _vendor_lane(
         "codex",
         "codex_exec",
-        models=("codex-test",) if model_source == "lane" else (),
+        # The roster declares the id whenever a pin must ride it:
+        # ``params.model`` is validated against ``accepts_model``
+        # (gr595545 review td655142), so a pin the lane does not
+        # declare refuses rather than launching wrong.
+        models=("codex-test",) if model_source in ("lane", "params") else (),
         default_model="codex-test" if model_source == "lane" else None,
     )
     use_lanes(
@@ -5969,10 +6027,12 @@ def test_submit_devin_model_guard(
         params["model"] = model
     ctx, handle = _submit(store, seams, **params)
     if model == "paid-model":
+        # gr595545 (review td655142): a pin the lane does not declare is
+        # refused BEFORE the claim — a config fault, so no attempt burns.
         assert handle is None and ctx.status == "failed"
         assert ctx.failure is not None and "paid-model" in ctx.failure
         assert seams["launch"] == []
-        assert store.tag_strings(42) == {"STATUS:open", "attempt:1"}
+        assert store.tag_strings(42) == {"STATUS:open"}
         return
     assert handle is not None and ctx.failure is None
     [(argv, kw)] = seams["launch"]
@@ -7056,12 +7116,13 @@ def test_poll_uses_persisted_adapter(
     _finish(
         handle,
         0,
-        '{"type":"item.completed","item":{"type":"agent_message","text":"Built."}}',
+        '{"type":"item.completed","item":{"type":"agent_message",'
+        '"text":"Built.\\ntests: ran"}}',
     )
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded" and pctx.failure is None
-    assert store.comments(42)[-1] == "handoff: Built."
+    assert store.comments(42)[-1] == "handoff: Built.\ntests: ran"
     assert seams["lands"] == [(42, Path(handle["worktree"]), "codex")]
 
 
@@ -7170,6 +7231,7 @@ def _kimi_lane_submit(
     *,
     key: str | None = "sk-test-not-a-key",
     bin_ok: bool = True,
+    lane_models: tuple[str, ...] = (),
     **params: Any,
 ) -> tuple[_Ctx, Any]:
     """Submit td42 on a pinned kimi lane with the bin + key seams stubbed."""
@@ -7179,7 +7241,7 @@ def _kimi_lane_submit(
     monkeypatch.setenv("PRECIS_KIMI_BIN", "/vendor/kimi")
     monkeypatch.setattr(run_slice, "_kimi_bin_ok", lambda _bin: bin_ok)
     monkeypatch.setattr(_secrets, "get_secret", lambda _name, **kw: key)
-    use_lanes(monkeypatch, _vendor_lane("kimi", "kimi_tree"))
+    use_lanes(monkeypatch, _vendor_lane("kimi", "kimi_tree", models=lane_models))
     return _submit(store, seams, lane="kimi", **params)
 
 
@@ -7273,11 +7335,15 @@ def test_kimi_model_rides_kimi_model_name(
     want: str,
 ) -> None:
     """The model id is exported as ``KIMI_MODEL_NAME`` — never ``-m``,
-    which would rebind the CLI to the config's managed/OAuth provider."""
+    which would rebind the CLI to the config's managed/OAuth provider.
+    The pin must sit in the lane's roster (``accepts_model``, gr595545),
+    so this lane declares it."""
     store = _Store()
     store.add_todo(42, "Build")
     params: dict[str, Any] = {"model": model} if model else {}
-    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch, **params)
+    ctx, handle = _kimi_lane_submit(
+        store, seams, monkeypatch, lane_models=("k3",), **params
+    )
     assert handle is not None
     [(argv, kw)] = seams["launch"]
     assert kw["env"]["KIMI_MODEL_NAME"] == want
@@ -7534,7 +7600,8 @@ def test_kimi_poll_unreadable_secret_withholds_a_clean_exit(
     _finish(
         handle,
         0,
-        f'{{"role":"assistant","content":"KIMI_MODEL_API_KEY={key}"}}\n',
+        f'{{"role":"assistant","content":"did the work\\ntests: ran\\n'
+        f'KIMI_MODEL_API_KEY={key}"}}\n',
     )
     pctx = _poll_ctx(store, ctx)
 
@@ -7727,7 +7794,8 @@ def test_kimi_moot_verdict_withholds_when_unscrubbed(
     _finish(
         handle,
         0,
-        f'{{"role":"assistant","content":"moot: KIMI_MODEL_API_KEY={key}"}}\n',
+        f'{{"role":"assistant","content":"moot: KIMI_MODEL_API_KEY={key}'
+        f'\\ntests: ran"}}\n',
     )
     pctx = _poll_ctx(store, ctx)
 
@@ -9038,3 +9106,272 @@ def test_render_brief_appends_the_migration_ddl_rules() -> None:
     assert "CREATE TABLE IF NOT EXISTS" not in run_slice.render_brief(
         body="Do X.", latest=None, **kw
     )
+
+
+# ── gr595545: hard gates decide the land; the test session diversifies ──
+
+
+def test_submit_validate_hops_lanes_and_re_resolves_the_adapter(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td655142: a test session that must hop lanes to escape the
+    code session's models launches through the NEW lane's vendor — the
+    adapter resolves after the pick, not before it."""
+    use_lanes(monkeypatch, *SEED_LANES)
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (
+            frozenset({"swe-2-medium", "swe-2-high", "swe-2-max"}),
+            None,
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None and ctx.failure is None
+    # The free devin lane's only models are the code session's: the pick
+    # hops to claude-sub's first outside model — AND its adapter.
+    assert ctx.meta_set["lane"] == "claude-sub"
+    assert ctx.meta_set["adapter"] == "claude_p"
+    assert ctx.meta_set["model"] == "claude-haiku-5-5"
+    [(argv, _kw)] = seams["launch"]
+    assert "devin" not in Path(argv[0]).name
+    assert any(
+        "re-picked lane 'claude-sub'" in text
+        for kind, text in ctx.chunks
+        if kind == "job_event"
+    )
+
+
+def test_submit_validate_refuses_when_no_model_differs(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The different-model MUST refuses the launch — a same-model test
+    is no test, not a fallback the old pick may ride (review td655142)."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    use_lanes(
+        monkeypatch,
+        Lane(
+            "one",
+            "claude_p",
+            "pool",
+            1,
+            frozenset({ANY_CLASS}),
+            True,
+            models=("m1",),
+            default_model="m1",
+        ),
+    )
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset({"m1"}), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.failure is not None and "different model" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_submit_validate_parks_when_the_prior_pick_read_fails(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td655142: a failed prior-pick read is a transient store
+    fault — the launch parks on the lane-wait machinery; an empty
+    avoid set never rides past the different-model MUST."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), "read"),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx = _Ctx(store, {"todo_id": 42})
+    parks: list[str] = []
+
+    def _park(_wake: Any, why: str) -> bool:
+        parks.append(why)
+        return True
+
+    ctx.defer = _park
+    handle = run_slice.submit(ctx, None)
+    assert handle is None and ctx.failure is None
+    assert parks and "prior-pick read" in parks[0]
+    assert ctx.meta_set["wait_parks"] == 1
+    assert seams["launch"] == []
+
+
+def test_submit_validate_refuses_an_unrecorded_prior_model(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td655142: a prior code session whose model was never
+    recorded (the account default) makes the different-model MUST
+    unprovable — the launch refuses; a difference that cannot be
+    proven is none."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), "unrecorded"),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert ctx.failure is not None and "never recorded" in ctx.failure
+    assert seams["launch"] == []
+
+
+def test_poll_gate_failure_vetoes_the_land(seams: dict[str, Any]) -> None:
+    """review td655142: a clean exit whose owed tests never ran mints
+    no land — the run is a failed attempt on the ladder."""
+    store = _Store()
+    store.add_todo(42, "Build", body="Fix the widget; tests/test_widget.py must pass.")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    seams["ahead"] = "abc1234 fix(widget): done (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Implemented the widget."}) + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert seams["lands"] == []
+    assert pctx.failure is not None and "hard gate" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gate_pass"] is False
+    assert rec["gates"]["tests_ran"] is False
+
+
+def test_poll_compiled_gate_vetoes_uncompilable_work(seams: dict[str, Any]) -> None:
+    """Exit 0 is not proof the produce parses: the worker compile-probes
+    the changed ``.py`` files (review td655142)."""
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    tree = Path(handle["worktree"])
+    (tree / "src").mkdir()
+    (tree / "src" / "x.py").write_text("def broken(:\n", encoding="utf-8")
+    seams["diff"] = "src/x.py\n"
+    seams["ahead"] = "abc1234 fix(x): done (td42)\n"
+    seams["probe_rc"] = 1  # compileall exits nonzero
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Implemented.\ntests: ran"}) + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "compiled" in pctx.failure
+    [(argv, _cwd)] = seams["run"]
+    assert argv[:4] == [sys.executable, "-m", "compileall", "-q"]
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["compiled"] is False
+    assert rec["gate_pass"] is False
+
+
+def test_poll_validate_correction_samples_review(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td655142: a validate run that patched the fix disagreed
+    with the code session however both sessions' own gates read — the
+    sampler reviews every such run."""
+    store = _Store()
+    store.add_todo(7, "Plan", meta={"auto_close": True})
+    store.add_todo(43, "Build", meta={"task_class": "code"}, parent_id=7)
+    store.add_todo(42, "Validate", meta={"task_class": "validate"}, parent_id=7)
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "prior_picks",
+        lambda store, todo_id, **kw: [
+            run_slice._outcome.PriorPick(
+                43, 77, "code", "devin", "swe-2-high", "completed", True
+            )
+        ],
+    )
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    tree = Path(handle["worktree"])
+    (tree / "src").mkdir()
+    (tree / "src" / "fix.py").write_text("x = 1\n", encoding="utf-8")
+    seams["diff"] = "src/fix.py\n"
+    seams["ahead"] = "abc1234 fix(v): correct the fix (td42)\n"
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Corrected the fix.\ntests: ran"})
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    rec = pctx.meta_set["outcome"]
+    assert rec["gate_pass"] is True and rec["corrected"] is True
+    assert "test-disagreement" in rec["review"]["reasons"]
+
+
+def test_poll_gate_failure_vetoes_the_validate_close(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td655142: a VALIDATE run owes tests every run — a clean
+    exit that never ran them does not close the node, it fails the
+    attempt. The different-model pick is stood empty; the gate is
+    what is under test."""
+    monkeypatch.setattr(
+        run_slice._outcome,
+        "code_session_models",
+        lambda store, todo_id: (frozenset(), None),
+    )
+    store = _Store()
+    store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "validated: the fix holds"}) + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "hard gate" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    assert "STATUS:done" not in store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["tests_ran"] is False
+    assert rec["gate_pass"] is False
+
+
+def test_poll_gate_failure_vetoes_the_no_commit_close(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A document node's clean-exit close stands on the same gates
+    (review td655142): a step-cap halt is a failed attempt, not a
+    done todo."""
+    monkeypatch.setenv("PRECIS_RUN_SLICE_MAX_TURNS", "10")
+    store = _Store()
+    store.add_todo(42, "Write the brief", meta={"task_class": "brief"})
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Drafted the brief.", "num_turns": 10})
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "hard gate" in pctx.failure
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+    assert "STATUS:done" not in store.tag_strings(42)
+    rec = pctx.meta_set["outcome"]
+    assert rec["gates"]["within_step_cap"] is False
+    assert rec["gate_pass"] is False

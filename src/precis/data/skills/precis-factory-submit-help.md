@@ -143,6 +143,38 @@ the section retires it — a `~<Heading>` section becomes a redirect to
 `<module>::<symbol>` and its acceptance test, a whole-file spec is
 rewritten to the same one-line redirect, never deleted — so spec and implementation cannot drift.
 
+## What gets recorded about the run itself
+
+Every `run_slice` job ends with a `meta.outcome` record — the cheap,
+every-run layer: the mechanical gates (the changed `.py` files
+compile, the tests the run owed ran — a code run that left commits
+owes the `tests: ran` receipt whether or not its brief named test
+paths, no exceptions, within the step cap), the outcome word
+(`completed`, `completed_empty`, `halted_step_cap`,
+`halted_wall_clock`, `error`, `abandoned`), the lane, model, cost and
+wall seconds. The gates decide, not just record: a clean exit that
+fails one mints no land AND closes no verdict/no-commit node —
+validate runs included — the run is a failed attempt on the ladder.
+The expensive layer is sampled: the `run_quality` worker pass (30
+min, dark until `service_config` lights it) mints one big-model judge
+plan per tick for runs the policy flagged — every run of a task
+category until about fifty, then a hash-stable ten percent, plus
+every run whose test session disagreed with its code session (an
+opposite gate record, or a validate session that had to patch the
+fix) and any gate pass suspiciously cheap or fast for its category.
+The judge runs the router's FRONTIER model, pinned in the plan's
+`params.model` and validated against the lane's `accepts_model` — a
+pinned lane that cannot run it falls back to an MCP lane that can.
+The judge's `verdict: pass|fail` lands on the judged job's
+`meta.verdict`; how often the gates lied (gate pass, review fail)
+rolls up per category as the suitability evidence. One routing rule
+rides with it: a run's validate session must use a different model
+than its code session — re-picked at submit (another model on the
+same lane, then another lane), the launch refused when nothing
+satisfies it (a same-model test is no test), parked while a prior
+pick read cannot answer, and refused when a prior code session's
+model was never recorded: a difference that cannot be proven is none.
+
 ## See also
 
 - [[precis-job-help]] — job kinds, executors, job views and cancel
