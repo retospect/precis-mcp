@@ -534,6 +534,38 @@ def test_withdraw_after_rejudgment_does_not_resurrect_orphan(
     assert store.scoped_considerations(scope) == []
 
 
+def test_conflicting_chunk_endpoints_resolve_to_latest_verdict(
+    store: Store,
+) -> None:
+    """Judging chunk A not-useful, then chunk B useful, leaves ONE current
+    verdict for the ref pair (the later one) — the source is no longer
+    excluded — while the history keeps both judgments."""
+    scope = _mk_memory(store, title="scope", text="the question")
+    src = _mk_paper(store, slug="cv-c1", title="C1", text=f"{_Q} one. {_Q} two.")
+    chunks = store.chunks.list_chunks_for_ref(src)
+    assert len(chunks) >= 1
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=src,
+        dst_pos=0,
+        relation="considered",
+        meta={"verdict": "not-useful", "depth": "passages", "reason": "A: off"},
+    )
+    assert src in store.consideration_exclusions(scope).excluded
+    # Re-judge at the ref level (a different endpoint of the same pair).
+    store.add_link(
+        src_ref_id=scope,
+        dst_ref_id=src,
+        relation="considered",
+        meta={"verdict": "useful", "depth": "fulltext", "reason": "B: fits"},
+    )
+    found = store.consideration_exclusions(scope)
+    assert src not in found.excluded
+    current = store.scoped_considerations(scope)
+    assert [v.verdict for v in current] == ["useful"]
+    assert len(_history(store, scope)) == 2
+
+
 def test_quest_link_records_considered_verdict(
     runtime_with_store: PrecisRuntime,
 ) -> None:

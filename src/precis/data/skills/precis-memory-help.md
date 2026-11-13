@@ -610,6 +610,10 @@ Rules that bite:
 - Re-judging the same pair replaces the edge's verdict block (omitted
   `passages`/`model`/`run` are dropped, not inherited) and appends one
   history row per judgment — two runs never collapse.
+- The current verdict is one per scope/source pair, whatever chunk it
+  was grounded at: a later judgment at another endpoint supersedes the
+  earlier one (history keeps both), so chunk A not-useful then chunk B
+  useful no longer excludes the source.
 - A material edit to the scope or the source makes the verdict stale:
   it stops excluding and shows up in the reopen queue. History is never
   cleared by an edit.

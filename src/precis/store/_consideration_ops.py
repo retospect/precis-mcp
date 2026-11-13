@@ -10,7 +10,9 @@ Storage shape (decided under plan td626694): the CURRENT verdict rides the
 scoped connection itself — one ``considered`` link (scope → source) whose
 ``meta`` carries the verdict block — and EVERY judgment lands an append-only
 ``considerations`` history row. Canonical-identity dedup keeps one edge per
-(scope, source) pair; the history keeps each run's verdict, so one paper can
+(scope, source) pair — a judgment at another chunk endpoint of the same
+ref pair supersedes the older edge, so the current verdict resolves at
+ref-pair granularity; the history keeps each run's verdict, so one paper can
 be rejected for one question and useful to another, and re-judging a pair
 never collapses the earlier verdict.
 
@@ -343,6 +345,18 @@ class ConsiderationMixin:
             ),
         ).fetchone()
         assert row is not None
+        # The current verdict resolves at ref-pair granularity: a judgment
+        # grounded at another chunk endpoint of the same scope/source refs
+        # supersedes the older live edge(s) — otherwise "chunk A not-useful,
+        # then chunk B useful" would still exclude the whole source. The
+        # older edges are dropped (their judgments stay in the history and
+        # retire below as superseded orphans).
+        if link_id is not None:
+            c.execute(
+                "DELETE FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "  AND relation = 'considered' AND link_id <> %s",
+                (src_ref_id, dst_ref_id, link_id),
+            )
         # Retire superseded reconsideration state: earlier judgments of the
         # same scope/source ref pair whose edge is gone (orphans at an old
         # endpoint) are replaced by this one, so withdrawing the new edge
