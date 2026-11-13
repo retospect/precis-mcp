@@ -739,10 +739,10 @@ class PlaintextHandler(Handler):
                 )
             scope_ref = self.ensure_ingested(scope, missing_ok=True)
             if scope_ref is None:
-                raise NotFound(
-                    f"{self._KIND} file {scope!r} not found",
-                    next=f"search(kind='{self._KIND}', q='...') to find one",
-                )
+                scope_ref = self._ref_for_record_handle(scope)
+            if scope_ref is None:
+                self._raise_file_not_found(scope)
+            assert scope_ref is not None  # _raise_file_not_found never returns
             scope_ref_id = scope_ref.id
 
         query_vec = query_vec_for(self.embedder, q, mode)
@@ -1916,20 +1916,89 @@ class PlaintextHandler(Handler):
         slug is just ``foo`` (PRECIS_ROOT *is* ``work/``). This
         helper supplies that cue via :func:`nearest_slugs`.
 
+        Two id shapes get a sharper diagnosis before the fuzzy walk:
+        a universal handle (``xc<N>``, ``pa<N>``) is a wrong-door
+        call, not a slug typo — ``_raise_handle_not_slug`` names the
+        decoded kind and the self-identifying ``get(id=…)`` read
+        (gr661900); and ``<kind>--<name>`` is the double-prefix guess,
+        where '--' encodes '/' so the file that slug really addresses
+        is ``<kind>/<name><ext>`` while the root-level file wants the
+        bare slug.
+
         Never returns — always raises. Return type annotated as
         ``NotFound`` purely so ``raise self._raise_file_not_found(...)``
         passes the type checker.
         """
+        parsed = handle_registry.parse(slug)
+        if parsed is not None:
+            raise self._raise_handle_not_slug(slug, parsed)
         slug_map, _truncated = self._list_file_slugs_on_disk()
         candidates = list(slug_map)
         suggestions = nearest_slugs(slug, candidates)
+        next_hint = (
+            f"get(kind='{self._KIND}', id={suggestions[0]!r})"
+            if suggestions
+            else f"get(kind='{self._KIND}') to list every known file"
+        )
+        kind_prefix = f"{self._KIND}--"
+        if slug.startswith(kind_prefix) and slug[len(kind_prefix) :]:
+            # gr661900: the '<kind>--' head is a directory — '--'
+            # encodes '/' — not a namespace qualifier, so
+            # 'tex--outlook' addresses 'tex/outlook.tex' and the
+            # double-prefix guess wants the bare slug. Name the
+            # mapping explicitly: the bare form does not always land
+            # inside fuzzy suggestions, and the identical call is
+            # otherwise retried with the prefix re-added.
+            bare = slug[len(kind_prefix) :]
+            if bare in slug_map and bare not in suggestions:
+                suggestions.insert(0, bare)
+            next_hint = (
+                f"{slug!r} addresses "
+                f"{path_from_file_slug(slug, self._DEFAULT_EXT)!r} "
+                f"('--' encodes '/') — a file at the workspace root is "
+                f"just {bare!r}; {next_hint}"
+            )
         raise NotFound(
             f"{self._KIND} file {slug!r} not found in workspace",
             options=suggestions,
+            next=next_hint,
+        )
+
+    def _raise_handle_not_slug(
+        self, slug: str, parsed: tuple[str, bool, int]
+    ) -> BadInput:
+        """The error when the missing "slug" is a universal handle.
+
+        gr661900: a handle pasted into ``id=``/``scope=`` is a
+        wrong-door call, not a slug typo — fuzzy file suggestions
+        can't name the read that resolves it. ``get(id='<handle>')``
+        with no ``kind=`` self-identifies through dispatch: a record
+        handle routes to its own kind's ref, a chunk handle routes to
+        the owning ref's ``slug~ord`` selector. Chunk handles of the
+        numeric kinds with no selector grammar (``gc``/``jc``/``mb``/
+        ``fb``/``ql``/``lr``) have no direct read — point at the
+        owning ref instead, mirroring
+        ``NumericRefHandler._coerce_id``.
+        """
+        from precis.handlers._numeric_ref import _no_chunk_handle_read_kinds
+
+        h_kind, h_chunk, _h_pk = parsed
+        if h_chunk and h_kind in _no_chunk_handle_read_kinds():
+            recovery = (
+                f"{h_kind} chunks have no handle read — they show "
+                f"under the owning ref (get(kind={h_kind!r}, id=<ref>))"
+            )
+        else:
+            recovery = (
+                f"get(id={slug!r}) resolves the handle to its own kind (no kind=)"
+            )
+        raise BadInput(
+            f"{slug!r} is a {h_kind} {'chunk ' if h_chunk else ''}handle, "
+            f"not a {self._KIND} file slug",
             next=(
-                f"get(kind='{self._KIND}', id={suggestions[0]!r})"
-                if suggestions
-                else f"get(kind='{self._KIND}') to list every known file"
+                f"{recovery}; a {self._KIND} file is addressed by slug "
+                "('intro', 'chapters--intro') or path "
+                f"('chapters/intro{self._DEFAULT_EXT}')"
             ),
         )
 
@@ -1983,9 +2052,34 @@ class PlaintextHandler(Handler):
             )
         ref = self.ensure_ingested(slug, missing_ok=True)
         if ref is None:
+            ref = self._ref_for_record_handle(slug)
+        if ref is None:
             self._raise_file_not_found(slug)
         assert ref is not None  # _raise_file_not_found never returns
         return ref
+
+    def _ref_for_record_handle(self, slug: str) -> Ref | None:
+        """Resolve a same-kind universal record handle (``tx<N>``) to
+        its ref, or ``None``.
+
+        gr661900: dispatch normally rewrites the handle to the slug
+        upstream, but a direct handler call reaches here with the bare
+        handle. Resolving by ref_id mirrors
+        ``resolve_live_slug_ref``'s handle acceptance so
+        ``get(kind='tex', id='tx42')`` and ``search(scope='tx42')``
+        work on every door. Chunk handles are NOT resolved here:
+        their ``~ord`` selector was already split off upstream, so a
+        served ref would silently answer the whole file instead of the
+        addressed block — they fall through to the handle-aware error
+        in ``_raise_file_not_found``.
+        """
+        parsed = handle_registry.parse(slug)
+        if parsed is None or parsed[0] != self._KIND or parsed[1]:
+            return None
+        owning = self.store.get_ref(kind=self._KIND, id=parsed[2])
+        if owning is None or owning.slug is None:
+            return None
+        return self.ensure_ingested(owning.slug, missing_ok=True)
 
     # ── render helpers ─────────────────────────────────────────────
 

@@ -121,6 +121,115 @@ def test_overview_for_missing_file_raises(handler: TexHandler) -> None:
         handler.get(id="nonexistent")
 
 
+# ── gr661900: handle-shaped / kind-prefixed ids name the right door ──
+
+
+def test_chunk_handle_id_hints_at_direct_get(handler: TexHandler) -> None:
+    """``xc<N>`` pasted into ``id=`` is a tex chunk handle, not a file
+    slug — the error names what the id is and that ``get(id=…)`` with
+    no ``kind=`` resolves it through dispatch."""
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="xc1131007")
+    msg = str(exc.value)
+    assert "tex chunk handle" in msg
+    assert "not a tex file slug" in msg
+    assert "get(id='xc1131007')" in msg
+
+
+def test_foreign_record_handle_id_hints_at_direct_get(
+    handler: TexHandler,
+) -> None:
+    """A handle of another kind names that kind and the same
+    self-identifying ``get(id=…)`` read."""
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="pa123")
+    msg = str(exc.value)
+    assert "paper handle" in msg
+    assert "not a tex file slug" in msg
+    assert "get(id='pa123')" in msg
+
+
+def test_no_read_chunk_handle_names_the_owning_ref(
+    handler: TexHandler,
+) -> None:
+    """``gc<N>`` (gripe chunk) has no direct handle read — the hint
+    names the owning-ref door, not ``get(id=…)``, which would fail a
+    second time."""
+    with pytest.raises(BadInput) as exc:
+        handler.get(id="gc42")
+    msg = str(exc.value)
+    assert "gripe chunk handle" in msg
+    assert "get(kind='gripe'" in msg
+    assert "get(id='gc42')" not in msg
+
+
+def test_same_kind_record_handle_resolves(handler: TexHandler, tex_root: Path) -> None:
+    """A ``tx<N>`` record handle reaching the handler directly
+    resolves by ref_id, mirroring ``resolve_live_slug_ref`` — the
+    same call dispatch rewrites upstream."""
+    _write(tex_root, "intro.tex", "\\section{Introduction}\n\nBody text.\n")
+    handler.get(id="intro")
+    ref = handler.store.get_ref(kind="tex", id="intro")
+    assert ref is not None
+    out = handler.get(id=f"tx{ref.id}")
+    assert "intro" in out.body
+
+
+def test_kind_prefixed_slug_explains_the_dir(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    """``tex--outlook`` is the double-prefix guess: '--' encodes '/',
+    so it addresses ``tex/outlook.tex`` while the root file's slug is
+    ``outlook`` — the hint says so and leads suggestions with it."""
+    _write(tex_root, "outlook.tex", "\\section{Outlook}\n\nBody text.\n")
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="tex--outlook")
+    msg = str(exc.value)
+    assert "tex file 'tex--outlook' not found" in msg
+    assert "tex/outlook.tex" in msg
+    assert "'outlook'" in msg
+    assert exc.value.options is not None
+    assert exc.value.options[0] == "outlook"
+
+
+def test_kind_prefix_hint_when_bare_slug_absent(handler: TexHandler) -> None:
+    """Even with no ``outlook.tex`` on disk the '--' mapping is
+    explained — the generic fuzzy suggestions still apply."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="tex--outlook")
+    assert "tex/outlook.tex" in str(exc.value)
+
+
+def test_path_form_kind_prefixed_explains(handler: TexHandler) -> None:
+    """``tex/background.tex`` canonicalizes to ``tex--background`` —
+    the same dir-mapping explanation (gr661900 arg sample)."""
+    with pytest.raises(NotFound) as exc:
+        handler.get(id="tex/background.tex")
+    msg = str(exc.value)
+    assert "tex--background" in msg
+    assert "tex/background.tex" in msg
+
+
+def test_search_scope_chunk_handle_hints(handler: TexHandler) -> None:
+    """``search(scope=)`` misses route through the same handle-aware
+    error as ``get(id=)``."""
+    with pytest.raises(BadInput) as exc:
+        handler.search(q="anything", scope="xc1131007")
+    assert "get(id='xc1131007')" in str(exc.value)
+
+
+def test_search_scope_record_handle_resolves(
+    handler: TexHandler, tex_root: Path
+) -> None:
+    _write(tex_root, "intro.tex", "\\section{Introduction}\n\nmarker text.\n")
+    handler.get(id="intro")
+    ref = handler.store.get_ref(kind="tex", id="intro")
+    assert ref is not None
+    out = handler.search(q="marker", scope=f"tx{ref.id}")
+    assert "block hit" in out.body
+    assert "Introduction" in out.body
+
+
 def test_off_disk_tex_ref_serves_stored_blocks(
     handler: TexHandler, tex_root: Path
 ) -> None:

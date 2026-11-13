@@ -31,13 +31,15 @@ def handler(hub: Hub, md_root: Path) -> MarkdownHandler:
 def runtime(store: Store, md_root: Path) -> PrecisRuntime:
     """Full-dispatch runtime (handle inference included) pointed at
     ``md_root`` — needed to round-trip trailer hints that advertise a
-    universal ``md<id>`` handle: :class:`MarkdownHandler` itself only
-    resolves plain file slugs (``ensure_ingested``); the handle ->
-    slug rewrite lives one layer up, in
+    universal ``md<id>`` handle: :class:`MarkdownHandler` itself
+    resolves plain file slugs (``ensure_ingested``) plus — since
+    gr661900 — same-kind record handles (``md<id>``) by ref_id; the
+    richer handle -> slug rewrite (chunk handles, foreign kinds)
+    still lives one layer up, in
     ``PrecisRuntime._maybe_infer_kind_from_handle``. Calling
-    ``handler.get(id='md5~...')`` directly (bypassing dispatch, like
-    the plain ``handler`` fixture) would 404 even for a well-formed
-    hint."""
+    ``handler.get(id='mc5')`` directly (bypassing dispatch, like
+    the plain ``handler`` fixture) still can't serve a chunk
+    handle — it raises the handle-aware BadInput."""
     from precis.config import PrecisConfig
     from precis.dispatch import boot
     from precis.embedder import MockEmbedder
