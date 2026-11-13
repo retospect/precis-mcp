@@ -363,6 +363,89 @@ def test_starved_semantic_mode_keeps_the_timeout(
     assert fallback == set()
 
 
+@pytest.mark.parametrize("mode", ["verbatim", "literal"])
+def test_starved_exact_mode_keeps_the_timeout(
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """An exact-term ``mode=`` is caller intent: rewriting it to
+    ``'lexical'`` would silently broaden the match, so a late-dequeued
+    kind reports the timeout rather than degrading (review td665127)."""
+    rt = runtime_with_store
+    kinds = rt._cross_kind_kinds()[:2]
+    clock = _frozen_clock(monkeypatch)
+    _serial_fan_out(monkeypatch)
+
+    def fake(self: Any, handler: Any, kind: str, kw: dict[str, Any]) -> list:
+        clock["t"] += 11.0
+        return []
+
+    monkeypatch.setattr(type(rt), "_cross_kind_invoke_search_hits", fake)
+    fallback: set[str] = set()
+    out = rt._cross_kind_fan_out(
+        kinds,
+        {"q": "x", "mode": mode},
+        deadline_at=1012.0,
+        lexical_fallback=fallback,
+    )
+    assert out[kinds[0]] == []
+    assert isinstance(out[kinds[1]], TimeoutError)
+    assert fallback == set()
+
+
+def test_prepare_filtered_ann_recomputes_the_checkout_budget(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr664954 (review td665127): ``ANN_STATEMENT_TIMEOUT_MS`` holds
+    the budget remaining at fan-out *dequeue*; a statement that starts
+    after further work would outlive the call deadline if that stale
+    value were applied. ``_prepare_filtered_ann`` re-derives the
+    scope's remaining budget at execution and takes the tightest
+    bound."""
+    from precis.store._chunks_ops import (
+        ANN_STATEMENT_TIMEOUT_MS,
+        _prepare_filtered_ann,
+    )
+    from precis.store.pool import CHECKOUT_BUDGET
+
+    rt = runtime_with_store
+    store = rt.hub.store
+    assert store is not None
+
+    # Stale dequeue-time value (11 s of the 12 s deadline was left when
+    # the worker started) vs ~2 s actually remaining now — the applied
+    # timeout must track the fresher number, not the stale 11000.
+    ann_tok = ANN_STATEMENT_TIMEOUT_MS.set(11_000)
+    budget_tok = CHECKOUT_BUDGET.set((time.monotonic() + 2.0, 60_000.0))
+    try:
+        with store.pool.connection() as conn:
+            _prepare_filtered_ann(conn, 10)
+            row = conn.execute(
+                "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+            ).fetchone()
+        assert row is not None
+        assert 0 < int(row[0]) <= 2000
+    finally:
+        ANN_STATEMENT_TIMEOUT_MS.reset(ann_tok)
+        CHECKOUT_BUDGET.reset(budget_tok)
+
+    # A *tighter* dequeue-time cap still binds — the recompute only
+    # ever lowers the applied timeout, never lifts it.
+    ann_tok = ANN_STATEMENT_TIMEOUT_MS.set(500)
+    budget_tok = CHECKOUT_BUDGET.set((time.monotonic() + 60.0, 60_000.0))
+    try:
+        with store.pool.connection() as conn:
+            _prepare_filtered_ann(conn, 10)
+            row = conn.execute(
+                "SELECT setting FROM pg_settings WHERE name = 'statement_timeout'"
+            ).fetchone()
+        assert row is not None and int(row[0]) == 500
+    finally:
+        ANN_STATEMENT_TIMEOUT_MS.reset(ann_tok)
+        CHECKOUT_BUDGET.reset(budget_tok)
+
+
 def test_checkout_budget_caps_every_statement(
     runtime_with_store: PrecisRuntime,
 ) -> None:

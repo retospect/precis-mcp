@@ -241,8 +241,11 @@ CROSS_KIND_MIN_START_MS = 1_500
 #: less budget — the 2026-11-13 collapse starved cheap kinds (skill,
 #: todo) to TimeoutError purely on queue position while early kinds
 #: held the workers, and the merge lost hits a small retry slice would
-#: have found. Applies on the default expansion only: an explicit kind
-#: list and ``mode='semantic'`` are caller intent and keep the timeout.
+#: have found. Applies on the default expansion only, and only when
+#: the call's mode is the default/``'hybrid'``: an explicit kind list
+#: and any explicit ``mode=`` (``'semantic'``, or the exact-term
+#: ``'verbatim'``/``'literal'`` a lexical rewrite would silently
+#: broaden) are caller intent and keep the timeout.
 CROSS_KIND_LEXICAL_MIN_START_MS = 500
 #: Kinds whose source-search hits are addressed by the parent ref handle (gr),
 #: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
@@ -3366,9 +3369,13 @@ class SearchMixin(RuntimeShape):
         :data:`CROSS_KIND_MIN_START_MS` but above the smaller
         :data:`CROSS_KIND_LEXICAL_MIN_START_MS` floor runs lexical-only
         instead of timing out: ``lexical_fallback``, when a set is
-        passed (the default expansion — an explicit kind list or
-        ``mode='semantic'`` is caller intent and keeps the timeout),
-        collects those kinds so the caller can name the degrade.
+        passed (the default expansion — an explicit kind list is
+        caller intent and keeps the timeout), collects those kinds so
+        the caller can name the degrade. The degrade itself only
+        applies to the default/``'hybrid'`` mode: an explicit
+        ``mode='semantic'`` or an exact-term mode (``'verbatim'``,
+        ``'literal'``) would have its match semantics silently changed
+        by a lexical rewrite, so those keep the timeout too.
         """
         from concurrent.futures import wait
 
@@ -3399,12 +3406,15 @@ class SearchMixin(RuntimeShape):
                 )
                 if (
                     lexical_fallback is not None
-                    and mode not in ("lexical", "semantic")
+                    and mode in ("", "hybrid")
                     and remaining_ms >= lexical_floor
                 ):
                     # Too late for the full legs but not for a
                     # lexical-only attempt — a merged lexical result
-                    # beats an omitted kind (gr664954).
+                    # beats an omitted kind (gr664954). Only the
+                    # default/hybrid mode degrades: an exact-term mode
+                    # ('verbatim', 'literal') or 'semantic' is caller
+                    # intent a lexical rewrite would silently change.
                     kw = {**kw, "mode": "lexical"}
                     lexical_fallback.add(k)
                 elif not (mode == "lexical" and remaining_ms >= lexical_floor):

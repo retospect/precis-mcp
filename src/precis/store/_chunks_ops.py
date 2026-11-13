@@ -154,6 +154,18 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
     """
     global _ann_iterative_supported
     timeout_ms = ANN_STATEMENT_TIMEOUT_MS.get()
+    # gr664954: both existing caps age before the ANN statement runs —
+    # ``ANN_STATEMENT_TIMEOUT_MS`` is the deadline remaining at fan-out
+    # dequeue and the checkout's own SET LOCAL was computed at checkout.
+    # Inside a bounded-call scope the freshest bound is the scope's
+    # remaining budget *now*; take the tightest of the three so a
+    # statement that starts late cannot outlive the call deadline.
+    from precis.store.pool import CHECKOUT_BUDGET
+
+    budget = CHECKOUT_BUDGET.get()
+    if budget is not None:
+        cap_ms = int(min(budget[1], (budget[0] - time.monotonic()) * 1000))
+        timeout_ms = cap_ms if timeout_ms is None else min(timeout_ms, cap_ms)
     if timeout_ms is not None:
         # SET LOCAL semantics (is_local=true), like the GUCs below: pgbouncer
         # transaction mode must not see it leak to another client.
