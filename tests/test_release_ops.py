@@ -3537,6 +3537,77 @@ def test_digest_rescue_survives_a_blind_dump_past_the_cap(
     assert "FAILED tests/x.py::t - assert 1 == 2" in text
 
 
+def test_compose_digest_reserves_the_room_before_composing() -> None:
+    """td655162: ``room`` comes off the budget BEFORE the digest
+    composes — trimming a composed digest from the right cuts the
+    rescued failure lines the tail exists to keep. The tail itself is
+    never truncated: only the log head gives room."""
+    rescue = (
+        "\njobs-logs read:\n== gate-fast ==\n  FAILED tests/x.py::t - assert 1 == 2\n"
+    )
+    log_text = "== gate-fast ==\n" + "  step noise\n" * (crd._DIGEST_CAP // 10)
+    full = crd._compose_digest(log_text, rescue)
+    assert len(full) <= crd._DIGEST_CAP
+    assert full.endswith("assert 1 == 2\n")
+    out = crd._compose_digest(log_text, rescue, room=2000)
+    assert len(out) <= 2000
+    assert out.endswith("assert 1 == 2\n")
+    # No room at all still keeps the whole rescue tail.
+    assert crd._compose_digest(log_text, rescue, room=0) == rescue
+
+
+def test_digest_posts_the_complete_table_and_keeps_evidence_room(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td655162 review: the complete table is the fixer's only copy —
+    every file row posts unbudgeted, while the failure evidence still
+    keeps at least half the cap: a long table starves neither the rows
+    nor the rescue tail."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    monkeypatch.setattr(
+        crd,
+        "_gh",
+        _gh_stub_responses(
+            [{"name": "gate-fast (3.13, 1)", "id": 555, "conclusion": "failure"}],
+            {"555": "+ pytest -q\nFAILED tests/x.py::t - assert 1 == 2\n"},
+        ),
+    )
+    table = "changed files in a..b (ranked by suspicion):\n" + "\n".join(
+        f"    src/f{i}.py — 1 commit (+1/-0)" for i in range(200)
+    )
+
+    def _table(*a: Any) -> str:
+        return table
+
+    monkeypatch.setattr(crd, "_suspects_block", _table)
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    assert ctx.failures == []
+    _exit(
+        checkout,
+        0,
+        "== gate-fast (3.13, 1) ==\n"
+        "  (no signal lines — last 2 of 2 lines)\n"
+        + "  step noise\n"
+        * (crd._DIGEST_CAP // 11 + 50),
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    text = _todo_comments(store, fix_id)[0]
+    # Every file row of the complete table posts — first and last.
+    assert "src/f0.py — 1 commit (+1/-0)" in text
+    assert "src/f199.py — 1 commit (+1/-0)" in text
+    assert text.count("src/f") == 200
+    # The failure evidence kept at least half the cap (each "  step
+    # noise" line is 13 chars).
+    assert text.count("step noise") >= crd._DIGEST_CAP // 2 // 13 - 30
+    assert "FAILED tests/x.py::t - assert 1 == 2" in text
+    assert "never skip, xfail or loosen a test" in text
+
+
 # ── release_confirm (td573432) ────────────────────────────────────
 
 

@@ -14,7 +14,13 @@ pinned to that host the same way.
   digests the failed jobs; on exit 0 the job posts one ``brief:``
   comment — the header line, the digest through
   :func:`precis.utils.secret_scan.mask_secrets` capped at
-  :data:`_DIGEST_CAP`, and the fix-forward rule — on every live
+  :data:`_DIGEST_CAP`, the ranked changed-files table of
+  :mod:`precis.plans.red_suspects` (gr595552 — every file changed since
+  the last green build with its diff stat, range commits, ledger
+  handles, the failure-path flag, and the range's changed symbols per
+  the python kind's diff — complete every time: the brief is the
+  fixer's only copy of it, so the cap bounds the failure evidence,
+  never the table), and the fix-forward rule — on every live
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
   ``run_slice._brief_parts``. A run still in progress prints the ``no
@@ -84,6 +90,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.plans import red_suspects as _suspects
 from precis.plans import red_waiver as _waiver
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
@@ -729,13 +736,16 @@ def _probe_done(ctx: Any, log_text: str) -> bool:
     return True
 
 
-def _compose_digest(log_text: str, rescue: str) -> str:
-    """The masked digest through :data:`_DIGEST_CAP`, the rescued lines
-    reserved the tail room: they are the brief's only real signal, so a
-    blind dump past the cap loses the room, never them."""
+def _compose_digest(log_text: str, rescue: str, room: int = _DIGEST_CAP) -> str:
+    """The masked digest inside ``room`` chars, the rescued lines
+    reserved the tail: they are the brief's only real signal, so a blind
+    dump past the cap loses the head room, never them. The caller takes
+    the suspects table's and the rule's room off the budget BEFORE
+    composing — trimming the composed text afterwards cuts the rescue
+    tail it exists to protect (td655162)."""
     tail = mask_secrets(rescue)
-    head = mask_secrets(log_text)[: max(0, _DIGEST_CAP - len(tail))]
-    return (head + tail)[:_DIGEST_CAP]
+    head = mask_secrets(log_text)[: max(0, room - len(tail))]
+    return head + tail
 
 
 class _WaiverPark(Exception):
@@ -889,6 +899,39 @@ def _try_waiver(
     return True, steps
 
 
+def _suspects_block(
+    ctx: Any,
+    rel: dict[str, Any],
+    log_text: str,
+    rescued: dict[str, list[str]],
+) -> str:
+    """The ranked changed-files table of gr595552: every file the
+    ``last-green..this-build`` diff touched, its diff stat, range
+    commits, ledger gripes and the failure-path flag — the view the
+    ci-failed digest alone never gave the fixer. Rendered complete:
+    the brief is the fixer's only copy of it, so no budget applies
+    (td655162). Best-effort: no checkout, an unreadable range or a
+    ledger fault degrades to ``""`` and the brief posts without it."""
+    try:
+        root = _rs.slice_root()
+    except Exception:
+        log.warning("%s: suspects table: no slice root", NAME, exc_info=True)
+        return ""
+    try:
+        return _suspects.suspects_block(
+            ctx.store,
+            root,
+            sha=str(rel.get("sha") or ""),
+            rng=str(rel.get("range") or ""),
+            log_text=log_text,
+            rescued=rescued,
+            env=_factory_git.git_auth_env(),
+        )
+    except Exception:
+        log.warning("%s: suspects table failed", NAME, exc_info=True)
+        return ""
+
+
 def _digest_done(
     ctx: Any, handle: dict[str, Any], params: dict[str, Any], log_text: str
 ) -> bool:
@@ -955,21 +998,39 @@ def _digest_done(
         )
     if granted:
         return True
-    digest = _compose_digest(log_text or "", rescue)
-    text = "\n".join(
-        [
-            f"brief: release {rn} is red at {sha9} (range {rng}), "
-            f"check.yml run {run_id}",
-            digest,
-            _RULE,
-        ]
-    )
     if not targets:
         ctx.record_failure(
             f"{NAME}: no run_slice todo is blocked-by td{todo_id}; the "
             "brief has nowhere to land"
         )
         return True
+    # The complete table is the fixer's only copy of it (td655162
+    # review) — it posts unbudgeted; the failure evidence keeps its
+    # room instead: at least half the cap when the table is long,
+    # everything it leaves when it is short. The digest composes AFTER
+    # the table for the same reason the rescue tail is reserved:
+    # trimming a composed digest would cut the failure lines the room
+    # exists to keep.
+    suspects = mask_secrets(_suspects_block(ctx, rel, log_text or "", dict(rescued)))
+    digest = _compose_digest(
+        log_text or "",
+        rescue,
+        room=max(
+            _DIGEST_CAP // 2,
+            _DIGEST_CAP - len(suspects) - len(_RULE),
+        ),
+    )
+    text = "\n".join(
+        part
+        for part in [
+            f"brief: release {rn} is red at {sha9} (range {rng}), "
+            f"check.yml run {run_id}",
+            digest,
+            suspects,
+            _RULE,
+        ]
+        if part
+    )
     for tid in targets:
         _rs._append_comment(ctx.store, tid, text)
     ctx.append_chunk(
