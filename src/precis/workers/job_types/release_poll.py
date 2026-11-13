@@ -74,7 +74,9 @@ budget is GitHub's unauthenticated 60/h per IP):
    newest commit on main such that every engine land at-or-before it is
    cleared AND every corrective commit a clearance needs is carried
    (td601005: a FIX/REVERT whose fix or revert landed past the cut is
-   no clearance — [A FIX, B pending, C fixes A] cuts nothing): the
+   no clearance — [A FIX, B pending, C fixes A] cuts nothing; a landed
+   release-fix is itself a corrective the cut may not sit below,
+   tracked whatever paths it touched — gr653036, td653689): the
    newest commit the gate's spans allow, the scanned head when nothing
    holds it. ``pin`` is the ``origin/main`` head the scan's fetch
    resolved — the ONE snapshot the scan, the compare's ordering, the
@@ -1304,6 +1306,14 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # cleared FIX/REVERT's recorded ``landed:`` sha needs no review of its
 # own — a covering reviewer that reached a verdict still wins — so
 # [A FIX, B = A's fix, later lands] cuts at the tip, not below A.
+# A landed release-fix (a ``release-fix`` loop's child) is itself a
+# corrective: its commit pins every later cut at-or-above its own
+# position, review or not (gr653036) — and whatever paths it touched.
+# A fix on only application code or tests is no gate unit, so the
+# scan keeps it as a ``carry_only`` unit the engine filter cannot
+# drop, linked by the fix's own ``landed:`` record when no job stamp
+# or subject handle names it (td653689: a pending review elsewhere
+# could otherwise still push a fresh cut below the landed fix).
 # While a reviewer is open under a live root
 # the release waits, and once the NEWER of the land and its newest
 # covering reviewer is :data:`REVIEW_WAIT_AFTER` old one ``ask-user``
@@ -1485,12 +1495,17 @@ def _land_tds(subject: str) -> list[int]:
 class _GateLand:
     """One unit the engine-review gate judges: a linked todo of an
     engine commit in the cut range, or the commit itself (``todo_id``
-    ``None``) when nothing links it."""
+    ``None``) when nothing links it. ``carry_only`` marks a landed
+    release-fix the gate must never review (td653689): its commit
+    touched no engine path — or only the fix's ``landed:`` record links
+    it — so it is cleared by construction and only its must-carry pin
+    counts in the cut-sha spans."""
 
     sha12: str
     todo_id: int | None
     job_id: int | None
     committed_at: datetime | None
+    carry_only: bool = False
 
     @property
     def ask_key(self) -> str:
@@ -1523,15 +1538,19 @@ def _gate_lands(store: Any) -> tuple[list[_GateLand], str, list[str]]:
     fast lookup) or the ``td<id>`` handles in the subject's trailing
     list. A commit neither links is its own unit, and a sha-keyed
     reviewer minted for it (or for a linked todo with no live plan
-    root) covers every unit of the commit."""
+    root) covers every unit of the commit. A landed release-fix adds a
+    ``carry_only`` unit whatever its commit touched (td653689): a fix
+    on only application code or tests would otherwise drop out with
+    the engine filter and a pending review elsewhere could still push
+    a fresh cut below it; the fix's ``landed:`` record links a fix
+    whose commit no job stamp or subject handle names."""
     from precis.plans import lanes as _lanes
 
     lands, pin = _git_lands()
     stamped = _landed_jobs(store)
+    fix_ids, fix_shas = _release_fix_lands(store)
     out: list[_GateLand] = []
     for land in lands:
-        if not _lanes.engine_hits(land.paths):
-            continue
         sha12 = land.sha[:12]
         jobs = [
             (job_id, todo_id)
@@ -1540,6 +1559,20 @@ def _gate_lands(store: Any) -> tuple[list[_GateLand], str, list[str]]:
         ]
         todos = {todo_id for _job_id, todo_id in jobs} | set(_land_tds(land.subject))
         job_id = jobs[0][0] if jobs else None
+        engine = bool(_lanes.engine_hits(land.paths))
+        carries = {fid for s, fid in fix_shas.items() if _same_sha(land.sha, s)}
+        if engine:
+            # A fix the commit's own links already name is carried by
+            # its regular unit's must-carry — no duplicate.
+            carries -= todos
+        else:
+            carries |= todos & fix_ids
+        out.extend(
+            _GateLand(sha12, fid, job_id, land.committed_at, carry_only=True)
+            for fid in sorted(carries)
+        )
+        if not engine:
+            continue
         if todos:
             out.extend(
                 _GateLand(sha12, t, job_id, land.committed_at) for t in sorted(todos)
@@ -1616,6 +1649,29 @@ def _release_fix_todo(store: Any, todo_id: int | None) -> bool:
             (todo_id,),
         ).fetchone()
     return row is not None
+
+
+def _release_fix_lands(store: Any) -> tuple[set[int], dict[str, int]]:
+    """``(fix todo ids, {landed sha: fix id})`` — the
+    :func:`_release_fix_todo` parentage in one read (every live child of
+    a ``release-fix`` loop), plus each one's newest ``landed:`` sha
+    record: the index that tracks a fix whose commit no ``land_slice``
+    stamp or subject handle links — a hand land (td653689)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.ref_id FROM refs c JOIN refs p ON p.ref_id = c.parent_id
+             WHERE c.retired_at IS NULL AND p.retired_at IS NULL
+               AND p.meta->'loop'->>'body' = 'release-fix'
+            """,
+        ).fetchall()
+    ids = {int(r[0]) for r in rows}
+    shas: dict[str, int] = {}
+    for fid in sorted(ids):
+        sha = _fix_landed_sha(store, fid)
+        if sha is not None:
+            shas[sha] = fid
+    return ids, shas
 
 
 def _root(store: Any, todo_id: int) -> tuple[int, str]:
@@ -2175,10 +2231,14 @@ def _engine_verdicts(
     non-``None`` is the fail-closed line any read error returns
     (``verdicts`` and ``pin`` are ``None`` then, ``scanned`` empty).
 
-    Per gate unit (:func:`_gate_lands`), oldest land first: an answered
-    ``release-review-wait:<key>`` ask clears it; so does being a cleared
-    FIX/REVERT's recorded corrective commit while no covering reviewer
-    reached a verdict (:func:`_chain_corrective`, gr611217); no covering reviewer
+    Per gate unit (:func:`_gate_lands`), oldest land first: a
+    ``carry_only`` unit — a landed release-fix tracked outside the
+    engine filter (td653689) — is cleared by construction and marked
+    ``must_carry``, no review work at all; an answered
+    ``release-review-wait:<key>`` ask clears a gated unit; so does being
+    a cleared FIX/REVERT's recorded corrective commit while no covering
+    reviewer reached a verdict (:func:`_chain_corrective`, gr611217); no
+    covering reviewer
     (``generate.from`` naming the landed todo or its parent, or the
     commit's ``sha:<sha12>`` — sha-keyed covers every unit of the
     commit) mints one —
@@ -2237,6 +2297,16 @@ def _engine_verdicts(
         units, pin, scanned = _gate_lands(store)
         for unit in units:
             verdict = _LandVerdict(unit, cleared=False)
+            if unit.carry_only:
+                # td653689: a landed release-fix rides no review —
+                # nothing mints for it, nothing waits on it. It is the
+                # corrective itself: cleared by construction, must-carry
+                # so no pending review pushes a fresh cut below its
+                # commit.
+                verdict.cleared = True
+                verdict.must_carry = True
+                verdicts.append(verdict)
+                continue
             verdict.must_carry = _release_fix_todo(store, unit.todo_id)
             if _answered_wait_ask(store, unit.ask_key):
                 verdict.cleared = True
@@ -2537,6 +2607,20 @@ def _requires_line(v: _LandVerdict, commits: list[str]) -> str | None:
     )
 
 
+def _off_window_line(v: _LandVerdict, commits: list[str]) -> str | None:
+    """The blocker for a cleared must-carry unit the ordering cannot
+    place — a landed release-fix the compare's truncated commit list
+    dropped (td653689): any cut inside the window could sit below it,
+    so the pass waits and says why — else ``None``."""
+    if v.cleared and v.must_carry and _sha_on(v.unit.sha12, commits) < 0:
+        return (
+            f"engine land {v.unit.label} is a landed release-fix the "
+            "ordering cannot place — the cut cannot prove it is carried "
+            "— next: retry next tick"
+        )
+    return None
+
+
 def _spans(
     verdicts: list[_LandVerdict], commits: list[str]
 ) -> list[tuple[int, int, _LandVerdict]] | None:
@@ -2547,9 +2631,12 @@ def _spans(
     for v in verdicts:
         p = _sha_on(v.unit.sha12, commits)
         if p < 0:
-            if not v.cleared:
-                return None
-            continue  # already on prod: the cut cannot change it
+            if v.cleared and not v.must_carry:
+                continue  # already on prod: the cut cannot change it
+            # Uncleared — or a landed release-fix the ordering cannot
+            # place (a truncated compare; td653689): it reads as
+            # at-or-before everything, no position clears.
+            return None
         if not v.cleared:
             # gr653036: a must-carry unit holds the whole window, not
             # just the span above it — a cut anywhere below its commit
@@ -2691,7 +2778,9 @@ def cleared_head(
     if cut is None:
         lines = [v.line for v in uncleared]
         lines += [
-            ln for v in verdicts or () if (ln := _requires_line(v, commits)) is not None
+            ln
+            for v in verdicts or ()
+            if (ln := _requires_line(v, commits) or _off_window_line(v, commits))
         ]
         return None, lines or ["the engine gate cleared nothing to cut"], notes
     # gr611217: a cut below the pinned head says which unit holds it —
@@ -3103,7 +3192,7 @@ def run_pass(
             lines += [
                 ln
                 for v in verdicts or ()
-                if (ln := _requires_line(v, commits)) is not None
+                if (ln := _requires_line(v, commits) or _off_window_line(v, commits))
             ]
             res.blocker = "; ".join(lines) or ("the engine gate cleared nothing to cut")
             return res

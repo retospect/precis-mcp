@@ -2304,6 +2304,124 @@ def test_a_landed_release_fix_is_carried_once_everything_clears(
     assert target["sha"] == f and target["upto"] == [a[:12], f[:12]]
 
 
+def _app_land(store: Store, todo_id: int, *, sha: str) -> int:
+    """A ``land_slice`` job for td<todo_id> whose commit touched only
+    application code and tests — no ``ENGINE_PATHS`` hit, so the gate's
+    engine filter would drop the commit before any unit sees it (the
+    td653689 gap)."""
+    return _engine_land(
+        store,
+        todo_id,
+        paths=["src/precis/store/thing.py", "tests/test_thing.py"],
+        sha=sha,
+    )
+
+
+def test_an_app_code_release_fix_still_pins_the_cut(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td653100 review: [A reviewed, G pending, F a landed release-fix
+    touching only application code and tests] — the engine filter used
+    to drop F's commit before ``must_carry`` marked it, so G's pending
+    review pushed the fresh cut to A and the release shipped the same
+    red again. F is a carry-only unit now: nothing clears below it, the
+    pass waits for G — and once G reviews it mints carrying the fix."""
+    a, g, f = "a" * 40, "9" * 40, "b" * 40
+    _GIT_PIN[0] = f
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": g}, {"sha": f}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=g)
+    rid = _reviewer(store, 43)
+    fix = _release_fix(store)
+    _app_land(store, fix, sha=f)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td43" in res.blocker
+    # The fix rode no review: nothing minted for it, no ask filed.
+    assert _review_wait_asks(store) == []
+    assert _reviewer_keys(store) == ["td42", "td43"]
+
+    # Once G clears the pass cuts at the head, carrying the fix.
+    store.stamp_ref_meta(rid, {"review": {"verdict": "LAND"}})
+    _close(store, rid)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert f"release-main:{f[:12]}" in _tags(store, res.minted)
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == f and target["upto"] == [a[:12], g[:12], f[:12]]
+
+
+def test_an_app_code_release_fix_is_carry_only_not_gated(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The non-engine fix rides no review: nothing mints a reviewer for
+    it and no wait ask files — it is carry-only, and with everything
+    else clear the pass mints at the head carrying it (td653689)."""
+    a, f = "a" * 40, "b" * 40
+    _GIT_PIN[0] = f
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": f}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    fix = _release_fix(store)
+    _app_land(store, fix, sha=f)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is not None, res.blocker
+    assert _review_wait_asks(store) == []
+    target = R.release_target_of(store, res.minted)
+    assert target is not None
+    assert target["sha"] == f and target["upto"] == [a[:12], f[:12]]
+
+
+def test_an_unlinked_app_code_release_fix_still_pins_the_cut(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-landed fix — no ``land_slice`` stamp, no subject handle —
+    is still tracked through the fix's own ``landed:`` record
+    (td653689): [A reviewed, G pending, F the fix] waits on G rather
+    than cut at A below it."""
+    a, g, f = "a" * 40, "9" * 40, "b" * 40
+    _GIT_PIN[0] = f
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 3,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": g}, {"sha": f}],
+        },
+    )
+    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _engine_land(store, 43, paths=["scripts/ship"], sha=g)
+    rid = _reviewer(store, 43)
+    fix = _release_fix(store)
+    _landed_comment(store, fix, sha=f)
+    _hand_land(f, "fix(release): the red (gr999)", ["src/precis/store/thing.py"])
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert f"td{rid}" in res.blocker and "td43" in res.blocker
+
+
 def test_a_fix_sha_off_main_blocks_and_says_so(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

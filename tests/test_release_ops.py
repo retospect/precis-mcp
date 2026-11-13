@@ -4225,6 +4225,26 @@ def _engine_land(
     return int(ref.id)
 
 
+def _release_fix(store: Store) -> int:
+    """A fix todo under a ``release-fix`` loop — the parentage
+    ``release_poll._release_fix_todo`` reads for the must-carry rule
+    (gr653036)."""
+    loop = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="fix and re-cut until green",
+        meta={"loop": {"max": 3, "until": {}, "body": "release-fix"}},
+    )
+    fix = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="the release fix",
+        meta=None,
+        parent_id=int(loop.id),
+    )
+    return int(fix.id)
+
+
 def _fake_gh_api(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -4368,6 +4388,38 @@ def test_a_recorded_cut_holds_while_the_fix_commit_is_outside(
     assert rc.submit(ctx, None) is None
     assert checkout["argv"] == []
     assert ctx.failures and "corrective commit" in ctx.failures[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_a_recorded_target_below_a_landed_release_fix_recomputes(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td653689: the pass minted its target before a release-fix landed
+    on only application code — the recorded sha sits below the fix. The
+    first cut treats the target as stale and recomputes the cleared head
+    instead of cutting under it."""
+    a, f = "a" * 40, "b" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    fix = _release_fix(store)
+    _engine_land(store, fix, ["src/precis/store/thing.py"], sha=f)
+    _fake_gh_api(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [{"sha": a}, {"sha": f}],
+        },
+        main_sha=f,
+    )
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    handle = rc.submit(ctx, None)
+    assert ctx.failures == [] and handle is not None
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", f]
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")

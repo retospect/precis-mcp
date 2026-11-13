@@ -952,7 +952,10 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     target is stale) recomputes the newest fully-reviewed head through
     :func:`release_poll.cleared_head`; a first cut uses the pass's
     recorded ``meta.release_target`` — only the lands inside its
-    ``upto`` window may hold it, a newer land's open review does not;
+    ``upto`` window may hold it, a newer land's open review does not,
+    but a landed release-fix the window does not carry makes the
+    target stale too and sends the cut through the same recompute
+    (td653689);
     a pass without a recorded target (a hand mint, or pre-gr592271)
     keeps the whole-gate tip rule. A re-cut whose cleared head sits
     below the pinned origin/main refuses with a :data:`HOLD_PREFIX`
@@ -978,6 +981,43 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     mode = str(mark["class"]) if mark else None
     if rel is None and mode is None and _stale_vs_gated(store, todo_id) == "behind":
         mode = REFUSAL_GATED_BEHIND
+    target = (
+        _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
+    )
+    if rel is None and mode is None and target is not None:
+        verdicts, _notes, fatal, _pin, _scanned = _rp._engine_verdicts(store)
+        if fatal is not None:
+            return None, fatal
+        if any(
+            v.must_carry and not _rp._sha_in(v.unit.sha12, target["upto"])
+            for v in verdicts or ()
+        ):
+            # td653689: the recorded target sits below a landed
+            # release-fix that reached main after the pass minted —
+            # the target is stale, so the cut recomputes the cleared
+            # head like a re-cut instead of shipping under the fix.
+            mode = REFUSAL_HOLDING
+        else:
+            blockers = [
+                v.line
+                for v in verdicts or ()
+                if not v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
+            ]
+            # td601005: a clearance that rests on a corrective commit only
+            # holds while the cut CARRIES it — a land whose fix/revert
+            # commit sits outside the recorded window still blocks it.
+            blockers += [
+                f"engine land {v.unit.label} cleared on a corrective commit "
+                f"({r[:12]}) outside the recorded cut — next: land it inside "
+                "the window or drop the pass so a fresh mint re-reads it"
+                for v in verdicts or ()
+                if v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
+                for r in v.requires
+                if not _rp._sha_in(r, target["upto"])
+            ]
+            if blockers:
+                return None, "; ".join(blockers)
+            return str(target["sha"]), None
     if mode == REFUSAL_GATED_BEHIND:
         return _gated_retarget(store, todo_id)
     if rel is not None or mode is not None:
@@ -1022,33 +1062,6 @@ def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
                 f"{'; '.join(blockers)}; next tick retries"
             )
         return sha, None
-    target = (
-        _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
-    )
-    if target is not None:
-        verdicts, _notes, fatal, _pin, _scanned = _rp._engine_verdicts(store)
-        if fatal is not None:
-            return None, fatal
-        blockers = [
-            v.line
-            for v in verdicts or ()
-            if not v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
-        ]
-        # td601005: a clearance that rests on a corrective commit only
-        # holds while the cut CARRIES it — a land whose fix/revert
-        # commit sits outside the recorded window still blocks it.
-        blockers += [
-            f"engine land {v.unit.label} cleared on a corrective commit "
-            f"({r[:12]}) outside the recorded cut — next: land it inside "
-            "the window or drop the pass so a fresh mint re-reads it"
-            for v in verdicts or ()
-            if v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
-            for r in v.requires
-            if not _rp._sha_in(r, target["upto"])
-        ]
-        if blockers:
-            return None, "; ".join(blockers)
-        return str(target["sha"]), None
     blockers, _notes = _rp.engine_review_blockers(store)
     if blockers:
         return None, "; ".join(blockers)
