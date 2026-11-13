@@ -76,6 +76,9 @@ edge renders: `precis-fisheye-help`.
 | `fixes` | `fixed-by` | A workflow job resolves a gripe / todo (job → gripe is the canonical pair; pairs with `job_type='fix_gripe'`). |
 | `supersedes` | `superseded-by` | A subsumes B; B is soft-deleted but graph-reachable via the inverse. Used by `memory.supersede` consolidation (survivor → originals). |
 | `parent` | (children) | A is placed under B in the todo tree (todo only). `mode='remove'` detaches A to a root. |
+| `serves` | `served-by` | A (a slice todo) serves B, the feature node or spec section it implements; acyclic. See `precis-spec-help`. |
+| `plan-of` | `has-plan` | A (a plan root todo) is the reasoning outline of B (its spec root / project); functional — one per target. |
+| `has-prerequisite` | `prerequisite-of` | A (a concept) requires B first — the learning DAG, read B before A; acyclic. |
 | `entails` | `entailed-by` | A (an inference node) logically yields B (its conclusion lemma) — asserted, not proven. Premises attach to the inference with `derived-from`; see "Record a reasoning step" below. |
 | `qualifies` | `qualified-by` | A (a caveat node) limits/bounds B (the claim it caveats). Surfaced — never auto-discharged — by `get(view='argument')`. |
 | `cited-in` | (none) | Paper A is woven into and cited by document B (a topic dossier `draft`) — a `citation` exists. |
