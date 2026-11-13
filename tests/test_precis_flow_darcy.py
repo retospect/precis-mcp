@@ -1,8 +1,8 @@
 """precis_flow Darcy / Brinkman kernel tests — se-multiphysics.md slice 4.
 
-Kernel acceptance (the se surface — permeability/porosity patch measures,
-D6 species coupling and D7 refusals — rides a coordinator-assigned seed
-migration and lands with the adapter):
+Kernel acceptance (the se surface — permeability/porosity patch measures
+and D7 refusals — rides a coordinator-assigned seed migration and lands with
+the adapter):
 
 D1. Closed form — fully porous rectangle: ``R* = (nx-1)/(ny T*)`` and the
     bracket ``T*/(12 κ* h*)`` matches 0.95101 / 0.80002 / 0.41891 / 0.07577.
@@ -11,6 +11,9 @@ D2. Hele-Shaw limit — ``T*/h*³ − 1 = −1/(10κ*)`` at κ*=1e8 (needs the s
 D3. Series plug — an interior porous plug: ``R* = ((nx-1-n_p) + n_p/T*)/ny``.
 D4. Continuity — net flux through every column of the plug case is equal.
 D5. Local gap — ``T*`` over a deepened floor (h*=2) uses the local gap.
+D6. Darcy + species (kernel) — inside the region ``taylor_tensor`` equals
+    ``ε(φ/τ)/Pe · I`` plus ``(α_L/L)|U*|`` along ``U*``; steady mass balance
+    holds; transient runs and an overlapping reactive wall refuse (M15).
 Card — the darcy group (kappa_ratio, reynolds_pore, full_height) and its
     refusals.
 """
@@ -24,7 +27,11 @@ import numpy as np
 import pytest
 
 from precis_flow import Domain, Ports, RegimeCard, solve
-from precis_flow.darcy import brinkman_transmissivity, porous_t_factor
+from precis_flow.darcy import (
+    PorousRegion,
+    brinkman_transmissivity,
+    porous_t_factor,
+)
 from precis_flow.flow import _harmonic
 
 
@@ -171,6 +178,84 @@ def test_refusals() -> None:
         brinkman_transmissivity(0.1, 0.0)
     with pytest.raises(ValueError, match="shape"):
         porous_t_factor(np.ones((4, 6)), 0.1, np.ones((4, 5), dtype=bool))
+
+
+# ── D6. Darcy + species: porous dispersion replaces the Taylor term ───────
+
+_EPS, _PE = 0.05, 1.0  # Pe·ε = 0.05, inside the depth-average gate
+
+
+def _plug_case(
+    nx: int = 60, ny: int = 12, n_p: int = 12, kappa: float = 0.05
+) -> tuple[Any, np.ndarray]:
+    dom = _rect(nx, ny)
+    region = np.zeros((ny, nx), dtype=bool)
+    region[:, (nx - n_p) // 2 : (nx - n_p) // 2 + n_p] = True
+    return solve(dom, t_factor=porous_t_factor(dom.h_star, kappa, region)), region
+
+
+@pytest.mark.parametrize("alpha_l", [0.0, 0.02])
+def test_d6_tensor_inside_region(alpha_l: float) -> None:
+    from precis_flow.species import taylor_tensor
+
+    field, region = _plug_case()
+    phi, tau = 0.4, 1.5
+    porous = PorousRegion(region, porosity=phi, tortuosity=tau, alpha_l_star=alpha_l)
+    got = taylor_tensor(field, _EPS, _PE, porous=porous)
+    u = field.u_star
+    speed = np.hypot(u[0], u[1])
+    mol = _EPS * (phi / tau) / _PE
+    for j, i in zip(*np.where(region)):
+        uhat = np.array([u[0][j, i], u[1][j, i]]) / speed[j, i]
+        ref = mol * np.eye(2) + alpha_l * speed[j, i] * np.outer(uhat, uhat)
+        np.testing.assert_allclose(got[j, i], ref, rtol=0, atol=1e-12)
+    # Outside the region the open-gap Taylor tensor is untouched (C1).
+    open_ = taylor_tensor(field, _EPS, _PE)
+    np.testing.assert_array_equal(got[~region], open_[~region])
+
+
+def test_d6_mass_balance() -> None:
+    from precis_flow.species import ReactiveWall, transport
+
+    field, region = _plug_case()
+    reactive = np.zeros_like(region)
+    reactive[:, :10] = True  # upstream of the plug, off the region
+    walls = [ReactiveWall("floor", 0.05, reactive), ReactiveWall("lid", 0.05, reactive)]
+    porous = PorousRegion(region, porosity=0.3, tortuosity=2.0, alpha_l_star=0.01)
+    res = transport(field, epsilon=_EPS, pe=_PE, walls=walls, porous=porous)
+    assert res.mass_residual <= 1e-10
+    assert np.all(np.isfinite(res.c_star[field.domain.mask]))
+
+
+def test_d6_refusals() -> None:
+    from precis_flow.species import Pulse, ReactiveWall, transport
+
+    field, region = _plug_case()
+    porous = PorousRegion(region, porosity=0.4, tortuosity=1.5)
+    with pytest.raises(ValueError, match="steady-only"):
+        transport(
+            field,
+            epsilon=_EPS,
+            pe=_PE,
+            porous=porous,
+            pulse=Pulse(t0=0.0, width=0.1, t_end=1.0, dt_star=0.05),
+        )
+    with pytest.raises(ValueError, match="overlaps the porous region"):
+        transport(
+            field,
+            epsilon=_EPS,
+            pe=_PE,
+            walls=[ReactiveWall("floor", 0.1)],
+            porous=porous,
+        )
+    with pytest.raises(ValueError, match="porosity"):
+        PorousRegion(region, porosity=0.0, tortuosity=1.0)
+    with pytest.raises(ValueError, match="porosity"):
+        PorousRegion(region, porosity=1.2, tortuosity=1.0)
+    with pytest.raises(ValueError, match="tortuosity"):
+        PorousRegion(region, porosity=0.5, tortuosity=0.0)
+    with pytest.raises(ValueError, match="alpha_l_star"):
+        PorousRegion(region, porosity=0.5, tortuosity=1.0, alpha_l_star=-1.0)
 
 
 # ── Card: the darcy regime group ──────────────────────────────────────────

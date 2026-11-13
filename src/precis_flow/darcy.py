@@ -24,9 +24,16 @@ true ``T*/h*^3 − 1`` is ``−1e-9``). Below ``_SERIES_Z`` the Taylor series
 ``g = z²/3 − 2z⁴/15 + 17z⁶/315 − 62z⁸/2835 + 1382z¹⁰/155925 − …`` is used
 instead, which is accurate to ~1e-12 there and carries the exact
 ``T*/h*^3 → 1 − 1/(10κ*)`` Hele-Shaw expansion.
+
+Species inside the region (D6): :class:`PorousRegion` states ``φ``, ``τ`` and
+``α_L/L``; :func:`porous_dispersion` gives the tensor
+``ε(φ/τ)/Pe · I + (α_L/L)|U*| ûûᵀ`` that replaces the Taylor tensor there.
 """
 
 from __future__ import annotations
+
+import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -98,3 +105,55 @@ def porous_t_factor(
     h_safe = np.where(h > 0.0, h, 1.0)
     factor = brinkman_transmissivity(np.where(region, kappa, 1.0), h_safe) / h_safe**3
     return np.where(region, factor, 1.0)
+
+
+@dataclass(frozen=True)
+class PorousRegion:
+    """A gap-filling porous region as the species solve sees it (slice 4, D6).
+
+    ``cells`` is the ``(ny, nx)`` region mask; ``porosity`` ``φ ∈ (0, 1]`` and
+    ``tortuosity`` ``τ > 0`` set the effective diffusivity ``D φ/τ``;
+    ``alpha_l_star`` is the longitudinal dispersivity over the length scale,
+    ``α_L/L`` (``0`` = no mechanical dispersion). The Taylor term is off inside
+    the region: the across-gap profile there is near plug. The region is
+    steady-only (no ``φ`` storage term) and carries no reactive wall (the
+    series ``k_eff`` assumes open-gap ``Sh``); :func:`precis_flow.species.transport`
+    refuses both (M15).
+    """
+
+    cells: np.ndarray
+    porosity: float
+    tortuosity: float
+    alpha_l_star: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.porosity <= 1.0):
+            raise ValueError("PorousRegion: porosity must be in (0, 1]")
+        if not (math.isfinite(self.tortuosity) and self.tortuosity > 0.0):
+            raise ValueError("PorousRegion: tortuosity must be finite and > 0")
+        if not (math.isfinite(self.alpha_l_star) and self.alpha_l_star >= 0.0):
+            raise ValueError("PorousRegion: alpha_l_star must be finite and >= 0")
+
+
+def porous_dispersion(
+    u_star: np.ndarray, epsilon: float, pe: float, region: PorousRegion
+) -> np.ndarray:
+    """``(ny, nx, 2, 2)`` reduced dispersion inside a porous region.
+
+    ``𝔻* = ε(φ/τ)/Pe · I + (α_L/L)|U*| ûûᵀ`` with ``û = U*/|U*|`` the
+    superficial-velocity direction (zero where ``U* = 0``). Cells outside
+    ``region.cells`` are zero; the caller overlays this on the open-gap tensor.
+    """
+    cells = np.asarray(region.cells, dtype=bool)
+    ux, uy = np.asarray(u_star[0], dtype=float), np.asarray(u_star[1], dtype=float)
+    speed = np.hypot(ux, uy)
+    mol = epsilon * (region.porosity / region.tortuosity) / pe
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mech = np.where(speed > 0.0, region.alpha_l_star / speed, 0.0)
+    out = np.zeros(cells.shape + (2, 2), dtype=float)
+    out[:, :, 0, 0] = mol + mech * ux * ux
+    out[:, :, 1, 1] = mol + mech * uy * uy
+    out[:, :, 0, 1] = mech * ux * uy
+    out[:, :, 1, 0] = out[:, :, 0, 1]
+    out[~cells] = 0.0
+    return out

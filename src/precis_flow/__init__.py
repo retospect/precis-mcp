@@ -81,6 +81,9 @@ API
   gap-filling porous region (se-multiphysics.md slice 4):
   ``porous_t_factor(h*, κ*, region)`` builds the per-cell factor that
   :func:`solve` multiplies onto ``h*^3``; ``None`` region cells stay open.
+  ``PorousRegion`` (``φ``, ``τ``, ``α_L/L``) passed as ``porous=`` to
+  ``species.taylor_tensor``/``transport`` swaps the Taylor term in the region
+  for the porous dispersion (D6; steady-only, no reactive wall over it).
   Imported directly (like :mod:`precis_flow.fv` / :mod:`precis_flow.species`),
   not re-exported here.
 - :mod:`precis_flow.slip` — the species-side of Navier wall slip

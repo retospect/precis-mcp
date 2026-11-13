@@ -30,6 +30,13 @@ acceptance test. See slice 1b below.
 Darcy/Brinkman transmissivity kernel plus `regime.py` hooks; the
 rest of slice 4 (see its section) remains open.
 
+**Landed (slice 4 D6 kernel), 2026-11-13** — `darcy.PorousRegion` /
+`porous_dispersion` and `species.taylor_tensor`/`transport` `porous=`: the
+porous tensor `ε(φ/τ)/Pe·I + (α_L/L)|U*|ûûᵀ` replaces the Taylor term in the
+region, and `transport` refuses a pulse or an overlapping reactive wall (M15).
+Still open for slice 4: the se surface (migration from COORDINATOR, `darcy`
+registration in `PHYSICS`/`TESTED`, the D6 reason strings and D7).
+
 **Ready.** Slice 1 on 2026-10-21; slices 2, 4 and 5 on 2026-11-04
 (§Acceptance: slip, heat, Darcy), using the registrations in
 `src/precis_flow/physics.py::PHYSICS`. The other slices

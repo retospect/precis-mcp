@@ -53,6 +53,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 from . import fv
+from .darcy import PorousRegion, porous_dispersion
 from .domain import Domain
 from .flow import Field
 
@@ -137,13 +138,16 @@ def taylor_tensor(
     epsilon: float,
     pe: float,
     shear_velocity: np.ndarray | None = None,
+    porous: PorousRegion | None = None,
 ) -> np.ndarray:
     """The (ny, nx, 2, 2) reduced dispersion tensor ``𝔻*``.
 
     Built from the *shear-carrying* part of ``U*`` (the Poiseuille part;
     a uniform plug adds nothing) — ``shear_velocity`` defaults to the
     field's own ``U*``, which is all of it in slice 1 (later slices pass
-    their own shear part).
+    their own shear part). Inside a ``porous`` region (slice 4, D6) the
+    Taylor term is off and the tensor is
+    :func:`precis_flow.darcy.porous_dispersion`.
     """
     h = field.domain.h_star
     us = np.asarray(field.u_star if shear_velocity is None else shear_velocity)
@@ -153,6 +157,9 @@ def taylor_tensor(
     cross = epsilon * (pe / 210.0) * h * h * us[0] * us[1]
     out[:, :, 0, 1] = cross
     out[:, :, 1, 0] = cross
+    if porous is not None:
+        cells = np.asarray(porous.cells, dtype=bool)
+        out[cells] = porous_dispersion(field.u_star, epsilon, pe, porous)[cells]
     out[~field.domain.mask] = 0.0
     return out
 
@@ -278,13 +285,16 @@ def transport(
     limiter: bool = True,
     entrance: bool = True,
     pulse: Pulse | None = None,
+    porous: PorousRegion | None = None,
 ) -> SpeciesResult:
     """Steady (or pulsed) Eulerian solve on ``field``.
 
     ``epsilon`` is ``h0/L`` and ``pe`` is ``u0 h0/D`` — both stated by the
     caller (the kernel is dimension-free; the regime card computes them).
     A ``Pulse`` runs Crank–Nicolson and records the flux-weighted outlet
-    ``c*(t*)`` series in ``rtd``.
+    ``c*(t*)`` series in ``rtd``. A ``porous`` region (slice 4, D6) swaps
+    the Taylor tensor there for the porous dispersion; it is steady-only and
+    refuses a reactive wall over it (M15).
     """
     if profile != "poiseuille":
         raise ValueError(
@@ -300,9 +310,32 @@ def transport(
             "transit; run the Lagrangian solver instead (trace with pe= and "
             "walls=)"
         )
+    if porous is not None:
+        cells = np.asarray(porous.cells, dtype=bool)
+        if cells.shape != field.domain.shape:
+            raise ValueError(
+                "species.transport: porous.cells must have the domain's shape"
+            )
+        if pulse is not None:
+            raise ValueError(
+                "species.transport: a porous region is steady-only — the "
+                "transient term needs porosity storage the depth average does "
+                "not carry (M15); drop pulse= or the porous region"
+            )
+        for w in walls:
+            wcells = field.domain.mask if w.cells is None else w.cells
+            if np.any(np.asarray(wcells, dtype=bool) & cells):
+                raise ValueError(
+                    f"species.transport: reactive {w.wall} wall overlaps the "
+                    "porous region — the series k_eff assumes open-gap Sh (M15); "
+                    "move the reactive patch off the region"
+                )
     domain = field.domain
     h = domain.h_star
-    tensor = taylor_tensor(field, epsilon, pe, shear_velocity) * h[:, :, None, None]
+    tensor = (
+        taylor_tensor(field, epsilon, pe, shear_velocity, porous=porous)
+        * h[:, :, None, None]
+    )
     flux = field.u_star * h[None]
     sink, per_wall = wall_sink_star(field, epsilon, pe, list(walls), entrance=entrance)
 
