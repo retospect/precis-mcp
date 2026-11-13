@@ -797,13 +797,14 @@ class TestLinkMeta:
     ) -> None:
         from precis.tools import core
 
-        # memory is meta-capable since gr519925 (selection records), so the
-        # probe uses gripe, whose link() declares no meta= and must refuse it.
+        # memory is meta-capable since gr519925 (selection records) and gripe
+        # since gr662070, so the probe uses anki, whose link() declares no
+        # link_meta and refuses meta= before resolving the ids.
         out = _verb_text(
             core.link(
-                kind="gripe",
+                kind="anki",
                 id=1,
-                target="gripe:2",
+                target="anki:2",
                 rel="related-to",
                 meta={"axis": "composition"},
             )

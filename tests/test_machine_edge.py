@@ -26,7 +26,6 @@ from precis.graph.garden.apply import apply_merge
 from precis.store import Store
 from precis.store._links_ops import GARDEN_RELINK_META
 from precis.store.revision_context import revision_context, trust_producer
-from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import link_claims, mint_hub
 
@@ -542,27 +541,23 @@ class TestLinkVerbMeta:
     def test_kind_without_meta_still_refuses_it(
         self, runtime_with_store, store: Store
     ) -> None:
-        """Per-kind opt-in is pinned: ``gripe`` does not declare ``meta=``
-        on its link, so the strictness gate refuses it exactly as it did
-        for finding/paper before this change."""
-        # gripe rows need exactly one STATUS tag at commit.
+        """Per-kind opt-in is pinned: ``anki`` does not declare
+        ``link_meta`` (gripe does since gr662070), so its link refuses
+        ``meta=`` exactly as finding/paper did before this change."""
         ids = []
         for title in ("a", "b"):
             with store.tx() as conn:
                 ref = store.insert_ref(
-                    kind="gripe", slug=None, title=title, meta={}, conn=conn
-                )
-                store.add_tag(
-                    ref.id, Tag.closed("STATUS", "open"), set_by="agent", conn=conn
+                    kind="anki", slug=None, title=title, meta={}, conn=conn
                 )
             ids.append(int(ref.id))
         a, b = ids
         out = runtime_with_store.dispatch(
             "link",
             {
-                "kind": "gripe",
+                "kind": "anki",
                 "id": a,
-                "target": f"gripe:{b}",
+                "target": f"anki:{b}",
                 "rel": "related-to",
                 "meta": {"note": "x"},
             },
