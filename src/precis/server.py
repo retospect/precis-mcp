@@ -2436,6 +2436,11 @@ def _install_token_auth(
 #: id the session manager forgot, ``400`` for a request that needed one.
 _SESSION_LOG_STATUSES = frozenset({400, 404})
 
+#: How much of a logged 400/404 response body is kept. These bodies are
+#: SDK error strings, but a parse-error message can echo request text —
+#: a head is enough to name the failure (gr660591).
+_BODY_LOG_LIMIT = 200
+
 
 def _session_id_hash(scope: Scope) -> str:
     """sha256 hex[:8] of the request's ``Mcp-Session-Id``, ``-`` if absent.
@@ -2452,20 +2457,58 @@ def _session_id_hash(scope: Scope) -> str:
     return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
 
 
+def _rpc_methods(body: bytes) -> list[str]:
+    """JSON-RPC ``method`` values in a request body; ``[]`` when the body
+    is not a JSON-RPC message or batch.
+
+    Feeds the session-failure log and gates the missing-session-id
+    rewrite (gr660591): only a real non-initialize message turns the
+    SDK's ``400 Missing session ID`` into 404 + reinitialize — an
+    unparseable body's 400 is a true parse error, not a lost session.
+    """
+    import json
+
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return []
+    messages = payload if isinstance(payload, list) else [payload]
+    return [
+        m["method"]
+        for m in messages
+        if isinstance(m, dict) and isinstance(m.get("method"), str)
+    ]
+
+
 def _install_session_log(app: Any, *, mcp_path: str) -> None:
-    """Add a pure-ASGI observer logging a session-id hash on /mcp 400/404s.
+    """Log and heal session-id failures the SDK answers on ``mcp_path``.
 
     The SDK's session manager answers ``404 Session not found`` for an id
     it dropped (idle timeout, restart) and ``400`` for a resend that
     arrived without one — and neither of its own log lines carries the
     id, so a client 'Error POSTing to endpoint' can't be matched to a
-    session (gr538272). This middleware only observes: it wraps ``send``,
-    reads the status off ``http.response.start``, and never touches the
-    status or body (the MCP spec requires the 404). The idle-timeout
-    teardown itself logs inside the SDK's session task — not reachable
-    from here; what reaches our code is the 404 on the client's next
-    request.
+    session (gr538272). This middleware buffers a POST's request body
+    once (small JSON-RPC messages; the buffered messages are replayed
+    to the app untouched) and wraps ``send`` to read the status and
+    body, then logs one line per 400/404 with the session-id hash, the
+    request's JSON-RPC method and a head of the response body
+    (gr660591). The idle-timeout teardown itself logs inside the SDK's
+    session task — not reachable from here; what reaches our code is
+    the 404 on the client's next request.
+
+    One rewrite, not just observation: a POST carrying a valid
+    non-initialize JSON-RPC message but no ``Mcp-Session-Id`` means the
+    client lost its session and does not know it. The SDK's bare ``400
+    Missing session ID`` gives no recovery signal — claude.ai retries
+    the same shape and the chat looks dead (gr660591) — while the stale
+    404 carrying ``mcp-session-error: reinitialize`` is the path clients
+    demonstrably re-initialize on (the SDK itself 404s a *present* but
+    unknown id, so the spec's 400 is only the missing-header letter of
+    the law). That 400 is rewritten to the same 404 + hint. A 400 for a
+    POST whose body held no parseable method stays a 400 — it is a real
+    client error, not a session miss.
     """
+    from starlette.datastructures import Headers
     from starlette.types import Message, Receive, Send
 
     class _SessionLogMiddleware:
@@ -2477,21 +2520,84 @@ def _install_session_log(app: Any, *, mcp_path: str) -> None:
                 await self.app(scope, receive, send)
                 return
 
+            buffered: list[Message] = []
+            request_parts: list[bytes] = []
+            rpc_methods: list[str] | None = None
+
+            if scope.get("method") == "POST":
+                # Drain the body eagerly: the JSON-RPC method gates the
+                # 400 rewrite, so it must be parsed even if the app
+                # below answers without reading the request. /mcp POST
+                # bodies are small JSON-RPC messages.
+                while True:
+                    message = await receive()
+                    buffered.append(message)
+                    if message["type"] != "http.request":
+                        break
+                    request_parts.append(message.get("body", b""))
+                    if not message.get("more_body"):
+                        break
+
+            async def receive_observed() -> Message:
+                if buffered:
+                    return buffered.pop(0)
+                return await receive()
+
+            def methods() -> list[str]:
+                nonlocal rpc_methods
+                if rpc_methods is None:
+                    rpc_methods = _rpc_methods(b"".join(request_parts))
+                return rpc_methods
+
+            response_parts: list[bytes] = []
+            pending: tuple[int, int] | None = None
+
             async def send_logged(message: Message) -> None:
+                nonlocal pending
                 if (
                     message["type"] == "http.response.start"
                     and message["status"] in _SESSION_LOG_STATUSES
                 ):
-                    log.warning(
-                        "mcp %s %s -> %d session=%s",
-                        scope["method"],
-                        mcp_path,
-                        message["status"],
-                        _session_id_hash(scope),
-                    )
+                    sdk_status = message["status"]
+                    if (
+                        sdk_status == 400
+                        and scope.get("method") == "POST"
+                        and Headers(scope=scope).get(MCP_SESSION_ID_HEADER) is None
+                        and (rpc := methods())
+                        and "initialize" not in rpc
+                    ):
+                        message = dict(message)
+                        message["status"] = 404
+                        message["headers"] = [
+                            *message.get("headers", []),
+                            (b"mcp-session-error", b"reinitialize"),
+                            (b"cache-control", b"no-store"),
+                        ]
+                    pending = (sdk_status, message["status"])
+                elif message["type"] == "http.response.body" and pending is not None:
+                    response_parts.append(message.get("body", b""))
+                    if not message.get("more_body"):
+                        sdk_status, sent_status = pending
+                        pending = None
+                        body = " ".join(
+                            b"".join(response_parts)
+                            .decode("utf-8", errors="replace")
+                            .split()
+                        )[:_BODY_LOG_LIMIT]
+                        log.warning(
+                            "mcp %s %s -> %d%s session=%s rpc=%s body=%s",
+                            scope["method"],
+                            mcp_path,
+                            sent_status,
+                            f" sdk={sdk_status}" if sdk_status != sent_status else "",
+                            _session_id_hash(scope),
+                            "+".join(methods()) or "-",
+                            body or "-",
+                        )
+                        response_parts.clear()
                 await send(message)
 
-            await self.app(scope, receive, send_logged)
+            await self.app(scope, receive_observed, send_logged)
 
     app.add_middleware(_SessionLogMiddleware)
 
@@ -2578,7 +2684,9 @@ def _run_network_transport(
     serving — ``FastMCP.run()`` gives no hook to inject middleware, so
     this is the "simplest header check the framework allows" without
     forking the library. :func:`_install_session_log` wraps the same way
-    to correlate /mcp 400/404s with a session-id hash (gr538272).
+    to log /mcp 400/404s with session-id hash, JSON-RPC method and body
+    head, and to rewrite a missing-session-id 400 to 404 + reinitialize
+    (gr538272, gr660591).
 
     ``fd`` serves on an already-listening socket inherited from
     :mod:`precis.mcp_supervisor` instead of binding ``host:port``, so the

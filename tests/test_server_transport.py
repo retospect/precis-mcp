@@ -238,7 +238,7 @@ def _session_status_app() -> Any:
 
     app = Starlette(
         routes=[
-            Route("/mcp", _endpoint, methods=["POST"]),
+            Route("/mcp", _endpoint, methods=["POST", "GET"]),
             Route("/other", _endpoint, methods=["POST"]),
         ]
     )
@@ -309,6 +309,100 @@ def test_session_log_middleware_ignores_ok_and_other_paths(
         client.post("/other", headers={"x-status": "404"})
 
     assert not [r for r in caplog.records if "session=" in r.getMessage()]
+
+
+# ── missing-session-id rewrite + request detail logging (gr660591) ─
+
+
+@pytest.mark.parametrize("method", ["tools/call", "notifications/initialized"])
+def test_session_log_rewrites_a_missing_id_post_400_to_404_with_hint(
+    caplog: pytest.LogCaptureFixture, method: str
+) -> None:
+    """gr660591: a POST carrying a valid non-initialize JSON-RPC message
+    but no ``Mcp-Session-Id`` means the client lost its session — the
+    SDK's bare ``400 Missing session ID`` gives claude.ai no recovery
+    signal, so the middleware answers the same 404 + reinitialize hint
+    the stale-id path does, and logs what the client sent."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post(
+            "/mcp",
+            headers={"x-status": "400"},
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": {}},
+        )
+
+    assert resp.status_code == 404
+    assert resp.headers["mcp-session-error"] == "reinitialize"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "-> 404" in m and "sdk=400" in m and f"rpc={method}" in m for m in messages
+    )
+    assert any("body=the-body" in m for m in messages)
+
+
+def test_session_log_keeps_the_400_for_an_initialize_post() -> None:
+    """An initialize without an id is legal (it opens a session) — a 400
+    it somehow drew is a real client error, not a lost session."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    resp = client.post(
+        "/mcp",
+        headers={"x-status": "400"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    )
+
+    assert resp.status_code == 400
+    assert "mcp-session-error" not in resp.headers
+
+
+def test_session_log_keeps_the_400_for_an_unparseable_post(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 400 on a body with no JSON-RPC method is a parse error, not a
+    session miss — it stays a 400, and the log shows ``rpc=-``."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post(
+            "/mcp",
+            headers={"x-status": "400", "content-type": "application/json"},
+            content=b"not json {",
+        )
+
+    assert resp.status_code == 400
+    assert "mcp-session-error" not in resp.headers
+    assert any("rpc=-" in r.getMessage() for r in caplog.records)
+
+
+def test_session_log_keeps_the_400_when_the_id_is_present() -> None:
+    """A 400 answered to a request that DID carry ``Mcp-Session-Id`` is a
+    validation failure, not a missing id — no rewrite, no hint."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    resp = client.post(
+        "/mcp",
+        headers={"x-status": "400", "mcp-session-id": "still-there"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}},
+    )
+
+    assert resp.status_code == 400
+    assert "mcp-session-error" not in resp.headers
+
+
+def test_session_log_keeps_the_400_for_a_get_without_id() -> None:
+    """The rewrite is scoped to POST: a no-id GET's 400 is untouched."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    resp = client.get("/mcp", headers={"x-status": "400"})
+
+    assert resp.status_code == 400
+    assert "mcp-session-error" not in resp.headers
 
 
 # ── main()'s transport branching (stdio stays byte-identical) ──────
