@@ -630,3 +630,24 @@ def test_deficit_weight_scales_share(store: Store) -> None:
     got = _claim(store, limit=4)
     assert got[0] == big[0]
     assert small in got and got.index(small) >= 1
+
+
+def test_deficit_pre_limit_order_keeps_the_owed_lane(store: Store) -> None:
+    """td655978 review of gr595541: the pre-LIMIT SQL order must rank by
+    the same deficit the re-rank applies. With zero window usage and 1:3
+    weights every lane's ``frac`` is 0, so a ``frac/weight`` key tied —
+    three older weight-1 rows filled the ``limit=1`` overfetch window and
+    the weight-3 lane owed 75% never reached the Python re-rank."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES ('claim.share.big', '3')"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+    smalls = [
+        _job(store, origin="background", prio=8, queued_s_ago=300 - i, job_type="small")
+        for i in range(3)
+    ]
+    big = _job(store, origin="background", prio=8, job_type="big")
+    got = _claim(store, limit=1)
+    assert got == [big]
+    assert all(s not in got for s in smalls)

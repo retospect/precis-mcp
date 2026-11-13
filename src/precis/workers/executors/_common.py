@@ -1456,8 +1456,11 @@ def claim_executor_jobs(
     2026-10-24, D4 share half; release band 2026-11-07, gr584136).**
     ``ORDER BY claim_rank ASC,
     lane_deficit DESC, aged_prio ASC, queued_since ASC, ref_id ASC``
-    (lane deficit = weighted share minus the fraction of the sliding
-    window's lane-seconds this host gave the lane — gr595541) where ``claim_rank`` is the row's class (human 0 < agent 1 <
+    (lane deficit = the lane's weighted share — its ``claim.share.<lane>``
+    weight over the eligible lanes' weights — minus the fraction of the
+    sliding window's lane-seconds this host gave it, gr595541; the same
+    deficit orders the pre-LIMIT window so truncation can't exclude the
+    owed lane, td655978) where ``claim_rank`` is the row's class (human 0 < agent 1 <
     recurring 2 < release 2.5 < background 3 — the release band from
     :data:`RELEASE_LEG_JOB_TYPES` ``job_type``s, not ``origin``; a
     missing origin reads as the old cron
@@ -2157,35 +2160,92 @@ def claim_executor_jobs(
         class_rank=class_rank_on,
         release_freeze=True,
     )
+    # The full eligibility gate, shared by the eligible-lane read (the
+    # deficit denominator below) and the candidate query — one definition,
+    # so the two can never disagree.
+    where_sql = f"""
+         WHERE r.kind = 'job'
+           AND r.retired_at IS NULL
+           AND r.meta->>'executor' = %s
+           AND (
+                (r.meta->'params'->>'target_node') IS NULL
+             OR (r.meta->'params'->>'target_node') = %s
+           )
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = ANY(%s)
+               )
+           AND (
+                (r.meta->>'lease_until') IS NULL
+             OR (r.meta->>'lease_until')::timestamptz < now()
+           )
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s
+                    AND t.value = ANY(%s)
+               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}"""
+    where_params: tuple[Any, ...] = (
+        executor,
+        node,
+        STATUS_NAMESPACE,
+        list(CLAIMABLE),
+        STATUS_NAMESPACE,
+        list(TERMINAL),
+        *parent_params,
+        *suspend_params,
+        *cap_params,
+        *reserve_block_params,
+    )
     # D4 share half, deficit form (gr595541): inside the winning class the
     # lane (``meta.share_key``, else ``job_type[:pass]`` —
     # :func:`_share_key`) this host has served LEAST of its weighted share
     # over the sliding window goes first, then aged-prio/queued_since/
-    # ref_id. The window's lane-seconds arrive as a JSON map so the
-    # overfetch actually contains the underserved lane's rows; the SQL
-    # key ``frac / weight`` is the equal-share-exact form of ``deficit
-    # DESC`` and the Python re-rank applies the exact deficit. Runs only
-    # under the class order — the ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch
-    # keeps the pre-slice-2 ORDER BY verbatim.
+    # ref_id. The SQL emits the SAME ``w/W - frac`` deficit the Python
+    # re-rank applies, ordered before the LIMIT so the overfetch window
+    # always contains the owed lane's rows: ``W`` is the weight total
+    # over the eligible lanes, read with a DISTINCT pass over the same
+    # gates (td655978 review — a ``frac/weight`` key tied at zero usage,
+    # so three older weight-1 rows could fill a ``limit=1`` window while
+    # the weight-3 lane owed 75% never reached the re-rank). The window's
+    # lane-seconds arrive as a JSON map; a lane absent from both maps
+    # reads as weight 1 / no service, the same formula a raced-in row
+    # gets. Runs only under the class order — the
+    # ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch keeps the pre-slice-2
+    # ORDER BY verbatim. Skipped when weights are all default AND the
+    # window is empty — every deficit is then identical.
     share_col_sql = "0"
     share_order_sql = ""
     share_params: tuple[Any, ...] = ()
-    if class_rank_on and claim_host is not None:
+    eligible_lanes: set[str] = set()
+    if class_rank_on and claim_host is not None and (lane_weights or lane_usage):
+        lane_key = _LANE_KEY_SQL.format(a="r")
+        eligible_lanes = {
+            str(lane)
+            for (lane,) in conn.execute(
+                f"SELECT DISTINCT {lane_key} FROM refs r {where_sql}",
+                where_params,
+            ).fetchall()
+        }
+        lane_w_total = (
+            sum(lane_weights.get(lane, 1.0) for lane in eligible_lanes) or 1.0
+        )
         total_s = sum(lane_usage.values())
         fracs = {k: v / total_s for k, v in lane_usage.items()} if total_s > 0 else {}
         share_col_sql = (
-            f"COALESCE((%s::jsonb->>{_LANE_KEY_SQL.format(a='r')})::float8, 0)"
-            f" / COALESCE((%s::jsonb->>{_LANE_KEY_SQL.format(a='r')})::float8, 1)"
+            f"COALESCE((%s::jsonb->>{lane_key})::float8, 1) / %s"
+            f" - COALESCE((%s::jsonb->>{lane_key})::float8, 0)"
         )
-        share_order_sql = "lane_vt ASC, "
-        share_params = (json.dumps(fracs), json.dumps(lane_weights))
+        share_order_sql = "lane_deficit DESC, "
+        share_params = (json.dumps(lane_weights), lane_w_total, json.dumps(fracs))
     rows = conn.execute(
         f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
                {aged_prio_sql} AS aged_prio,
-               {share_col_sql} AS lane_vt
+               {share_col_sql} AS lane_deficit
           FROM refs r
           CROSS JOIN LATERAL (
                 SELECT max(rt.created_at) AS qs
@@ -2212,28 +2272,7 @@ def claim_executor_jobs(
                        )
                    AND COALESCE(r3.prio, %s)::float8 <> 1
               ) t
-         WHERE r.kind = 'job'
-           AND r.retired_at IS NULL
-           AND r.meta->>'executor' = %s
-           AND (
-                (r.meta->'params'->>'target_node') IS NULL
-             OR (r.meta->'params'->>'target_node') = %s
-           )
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s AND t.value = ANY(%s)
-               )
-           AND (
-                (r.meta->>'lease_until') IS NULL
-             OR (r.meta->>'lease_until')::timestamptz < now()
-           )
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}
+          {where_sql}
          ORDER BY claim_rank ASC, {share_order_sql}aged_prio ASC,
                   q.qs ASC, r.ref_id ASC
          LIMIT %s
@@ -2251,16 +2290,7 @@ def claim_executor_jobs(
             STATUS_NAMESPACE,
             list(CLAIMABLE),
             _DEFAULT_JOB_PRIO,
-            executor,
-            node,
-            STATUS_NAMESPACE,
-            list(CLAIMABLE),
-            STATUS_NAMESPACE,
-            list(TERMINAL),
-            *parent_params,
-            *suspend_params,
-            *cap_params,
-            *reserve_block_params,
+            *where_params,
             fresh_limit * _CLAIM_OVERFETCH,
         ),
     ).fetchall()
@@ -2321,15 +2351,18 @@ def claim_executor_jobs(
             qs = qs.replace(tzinfo=UTC)
         return max(0.0, (now_utc - qs).total_seconds())
 
-    cand_lanes = {_share_key(dict(r[2] or {})) for r in rows}
+    # The deficit denominator is the eligible lane set the SQL used when
+    # it ordered before LIMIT (td655978); empty when the share path
+    # didn't run — fall back to the fetched lanes.
+    cand_lanes = eligible_lanes or {_share_key(dict(r[2] or {})) for r in rows}
+    lane_w_total = sum(lane_weights.get(k, 1.0) for k in cand_lanes) or 1.0
 
     def _lane_deficit(lane: str) -> float:
         """``share - fraction`` of the window's lane-seconds, the share
-        being this lane's weight over the candidate lanes' weights."""
-        w_total = sum(lane_weights.get(k, 1.0) for k in cand_lanes) or 1.0
+        being this lane's weight over the eligible lanes' weights."""
         used = sum(lane_usage.values())
         frac = lane_usage.get(lane, 0.0) / used if used > 0 else 0.0
-        return lane_weights.get(lane, 1.0) / w_total - frac
+        return lane_weights.get(lane, 1.0) / lane_w_total - frac
 
     def _order_key(r: Any) -> tuple[float, float, float, float, Any, int]:
         prio = _row_prio(r)

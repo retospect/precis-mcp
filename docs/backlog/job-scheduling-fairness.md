@@ -248,9 +248,11 @@ over `PRECIS_CLAIM_SHARE_WINDOW_S` (default 3600; `executors._common.
 lane_seconds_in_window`) and orders by `lane_deficit DESC` after the class
 rank; the lane is `meta.share_key`, else `job_type[:pass]`. Shares are
 weights in `app_state` `claim.share.<lane>` (default 1.0, normalised over the
-lanes among the candidates). Each claim in one batch is charged 60
-lane-seconds so a multi-claim call interleaves lanes. Reservation+backfill
-waits on the footprint table.
+eligible lanes — read with a DISTINCT pass over the same gates; the
+pre-LIMIT order applies the same `w/W − frac` deficit so the LIMIT can't
+exclude the owed lane, td655978 review). Each claim in one batch is
+charged 60 lane-seconds so a multi-claim call interleaves lanes.
+Reservation+backfill waits on the footprint table.
 
 Reservation and backfill once footprints exist: `cluster-scheduling.md`
 Pillar 3b. The footprint predictor and the admission loop that consume these
