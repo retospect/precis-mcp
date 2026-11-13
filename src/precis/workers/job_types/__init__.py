@@ -50,6 +50,17 @@ Cloud ``devin_task`` appends a pending named-branch handoff contract; no
 consumer fetches or lands that branch yet, and the API executor has no
 local checkout.
 
+A ``run_slice`` launch also writes one ``slice_run_features`` row
+(:mod:`precis.workers.job_types._run_features`, gr595544): cheap
+text/graph features plus the pick's lane context, recorded beside the
+job ref and keyed ``(job_ref_id, launch)`` — an outage relaunch
+resubmits the same job, so launches, not attempts, are the grain. The
+writer is dark by construction: a missing table, dead store or down
+embedder logs at debug and never blocks a launch. After a few hundred
+rows a small model fit on them can predict whether the small rung
+passes the hard gates, measured against recipe-only routing — the
+cheap half of the task-aware-routing spec, no per-call classifier.
+
 ``gripe_validate`` deduplicates held ship notes by fix SHA, not release,
 to keep later releases from repeating the same fix. Legacy notes inherit
 the preceding fix comment's SHA (unknown provenance counts as noted);

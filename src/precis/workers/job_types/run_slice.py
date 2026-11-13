@@ -235,7 +235,7 @@ from precis.utils.dispatch_score import (
 from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
 )
-from precis.workers.job_types import _lane_decide
+from precis.workers.job_types import _lane_decide, _run_features
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
@@ -3175,6 +3175,26 @@ def submit(ctx: Any, spec: Any) -> Any:
     # A launch on a lane that once refused is the probe that clears both
     # the backoff (this job is newer than the marked one) and the alert.
     _resolve_lane_refusal(ctx.store, lane.name)
+    # gr595544: one features row per launch, beside the job ref the
+    # attempts ledger already keeps — cheap text/graph features plus
+    # this pick's lane context, the substrate a learned router is fit
+    # on. An outage relaunch re-enters submit on the same job ref, so
+    # rows key (job, launch) not (job, attempt). Best-effort: a miss
+    # never blocks the launch.
+    _run_features.record(
+        store,
+        job_ref_id=getattr(ctx, "ref_id", None),
+        todo_id=todo_id,
+        todo=todo,
+        task_text="\n\n".join(
+            part for part in (str(todo.title or ""), body, latest or "") if part
+        ),
+        brief=brief,
+        lane=lane,
+        model=model,
+        effort=effort,
+        task_class=task_class,
+    )
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
