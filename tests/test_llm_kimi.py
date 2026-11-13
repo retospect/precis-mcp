@@ -132,7 +132,7 @@ def _wire_fakes(monkeypatch: pytest.MonkeyPatch, seen: list[dict[str, Any]]) -> 
     'quota'/'boom' markers."""
 
     class FakeClient:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, **_kw: object) -> None:
             seen.append(
                 {
                     "url": getattr(config, "url", None),
