@@ -24,7 +24,18 @@ modules' docstrings for the detailed rationale):
 Idempotent: candidate selection is ``meta->>'authors_resolved_at' IS
 NULL`` — ``enrich_paper`` stamps that key on every ref it visits
 (hit, miss, or error), so a second pass over the same rows selects zero
-candidates and is a no-op.
+candidates and is a no-op. One bounded exception (gr658887): a ref
+still carrying a placeholder title re-enters the claim while its
+``meta.title_recovery_v`` pin is below the current version — the
+front-matter title leg postdates most of the stamped placeholder
+backlog, and ``enrich_paper`` pins the version on the visit, so a
+still-blank dead end is retried exactly once per version instead of
+sitting blank forever (or, unpinned, spinning hourly). The pin and the
+recovered title commit in one transaction at the very end of the visit
+(``ingest.paper_meta_enrich``'s "Ordering" note): the sentinel title is
+this leg's claim key, so a recovery that fails midway leaves both
+predicates true and the row stays claimable until every side effect —
+card rebuild included — has finished.
 """
 
 from __future__ import annotations
@@ -60,11 +71,23 @@ def _due(store: Store) -> bool:
 
 
 def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
-    """Unvisited paper refs, newest first: ``(ref_id, doi_or_none)``.
+    """Claimable paper refs, newest first: ``(ref_id, doi_or_none)``.
 
-    A DOI-less ref is included (``doi`` is ``None``) — ``enrich_paper``
+    Mostly unvisited rows (``authors_resolved_at IS NULL``); the OR's
+    second leg admits the stamped-placeholder recovery class below. A
+    DOI-less ref is included (``doi`` is ``None``) — ``enrich_paper``
     degrades to the no-network heuristic author split for those.
+
+    The OR's second leg is the bounded placeholder recovery (gr658887):
+    a ref already stamped before the pass learned the front-matter title
+    leg re-enters the claim while ``meta.title_recovery_v`` is below the
+    current version — ``enrich_paper`` pins the version on that visit,
+    so each still-blank row is recovered once per version, never every
+    pass.
     """
+    from precis.identity import PLACEHOLDER_TITLE
+    from precis.ingest.paper_meta_enrich import _TITLE_RECOVERY_VERSION
+
     sql = """
         SELECT r.ref_id,
                (SELECT min(id_value) FROM ref_identifiers ri
@@ -72,7 +95,18 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
           FROM refs r
          WHERE r.kind = 'paper'
            AND r.retired_at IS NULL
-           AND r.meta->>'authors_resolved_at' IS NULL
+           AND (
+                 r.meta->>'authors_resolved_at' IS NULL
+                 OR (
+                       (r.title IS NULL OR btrim(r.title) IN ('', %s))
+                       AND coalesce(
+                             CASE
+                               WHEN jsonb_typeof(r.meta->'title_recovery_v')
+                                    = 'number'
+                               THEN (r.meta->>'title_recovery_v')::int
+                             END, 0) < %s
+                   )
+               )
            -- gr520915: a JUNK-verdict paper gets no metadata sweep; an
            -- expired verdict doesn't exclude (build_tag_filter's TTL leg).
            AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t
@@ -84,7 +118,9 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
          LIMIT %s
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(sql, (limit,)).fetchall()
+        rows = conn.execute(
+            sql, (PLACEHOLDER_TITLE, _TITLE_RECOVERY_VERSION, limit)
+        ).fetchall()
     return [(int(r[0]), r[1]) for r in rows]
 
 

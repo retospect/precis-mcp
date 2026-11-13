@@ -30,7 +30,14 @@ What lands where:
   placeholder guard is what lets this run corpus-wide: a real title is
   by definition not a placeholder, so a PDF-derived title or a human's
   Meta-tab correction is never clobbered (and needs no ``verified``
-  special case — there is nothing to protect in a blank).
+  special case — there is nothing to protect in a blank). When Crossref
+  can't supply the title (miss, fetch error, no DOI), the paper's own
+  front matter is the last resort (gr658887): a chunk-0 title head
+  followed by a multi-name byline — the same signature the junk-title
+  repair cascade's front-matter leg persists — is written under the
+  same placeholder guard and breadcrumbed as a ``title_front_matter``
+  event, so the DOI'd-placeholder class the repair cascade delegates
+  here doesn't sit blank forever.
 * **``meta.entry_type`` / ``meta.issn`` / ``meta.abstract`` /
   ``meta.volume`` / ``meta.number`` / ``meta.pages``** — filled only when
   the ref doesn't already carry one (never clobbers a better existing
@@ -94,14 +101,30 @@ Provenance + idempotency: every visited ref gets
 ``meta.authors_resolved_at`` stamped (regardless of outcome — a
 Crossref miss/error still counts as "visited" so it isn't retried every
 pass forever); ``meta.authors_source`` (``crossref`` | ``heuristic``) is
-set only when authors were actually replaced. The worker pass selects on
-``authors_resolved_at IS NULL``, so a second run over the same rows is a
-no-op.
+set only when authors were actually replaced. A visit that read a
+placeholder title also pins ``meta.title_recovery_v`` at
+:data:`_TITLE_RECOVERY_VERSION` (gr658887): the front-matter title leg
+postdates most of the stamped placeholder backlog, so
+``_claim_batch``'s recovery leg re-selects a stamped placeholder only
+while its pin is below the current version — each still-blank row gets
+exactly one recovery per version, never a pass-every-hour retry. The
+worker pass otherwise selects on ``authors_resolved_at IS NULL``, so a
+second run over the same rows is a no-op.
 
 Ordering: the stamp is written **last**, only after the authors/meta
 update, the ORCID mint+link, and the card rebuild have all completed —
-not up front. ``_claim_batch`` re-selects on the same predicate, so a
-ref left unstamped after a mid-way failure (network hiccup, a raised
+not up front. And for a placeholder visit the recovered *title* is
+written in that same final transaction, not with the earlier
+authors/meta update (gr658887 review): the still-placeholder title IS
+the ``_claim_batch`` recovery leg's claim key — the row's old
+``authors_resolved_at`` stamp is already set — so a title committed
+before the pin would falsify the leg's title predicate on a mid-way
+failure and wedge the row (real title, old stamp, pin never written,
+cards still showing the sentinel). Deferring the write keeps the row
+claimable until every recovery side effect has landed; the card rebuild
+reads the pending title via a parameter instead of the column. A ref
+left unstamped (and, for a placeholder, unpinned and still
+sentinel-titled) after a mid-way failure (network hiccup, a raised
 exception in card rebuild, …) is simply retried next pass rather than
 silently wedged half-enriched forever. Every side effect here is
 itself safe to repeat (wholesale author replace, fill-blanks-only meta,
@@ -145,6 +168,22 @@ log = logging.getLogger(__name__)
 RESOLVED_AT_KEY = "authors_resolved_at"
 #: meta key recording where the current ``refs.authors`` value came from.
 SOURCE_KEY = "authors_source"
+#: meta key pinning the placeholder-title recovery version a placeholder
+#: was last swept at (gr658887). Stamped together with
+#: :data:`RESOLVED_AT_KEY` on any visit that read a placeholder title —
+#: the ``_claim_batch`` recovery leg re-selects a stamped placeholder
+#: only while its pin is below :data:`_TITLE_RECOVERY_VERSION`, so a
+#: still-blank dead end is retried once per version, never every pass.
+#: The pin, the stamp and the recovered title land in one transaction
+#: (see the module docstring's "Ordering" note): the placeholder title
+#: is the recovery leg's other predicate, so committing it earlier would
+#: wedge a row whose remaining side effects never ran.
+#: Bump the version when the title-fill legs learn a new trick (mirrors
+#: ``paper_hygiene._TITLE_REPAIR_VERSION``).
+TITLE_RECOVERY_KEY = "title_recovery_v"
+#: Current placeholder-title recovery version (see
+#: :data:`TITLE_RECOVERY_KEY`). v1: the front-matter title leg.
+_TITLE_RECOVERY_VERSION = 1
 
 #: Raw (non-normalized) Crossref message fetch — injectable for tests.
 CrossrefRawFn = Callable[[str, str], "dict[str, Any] | None"]
@@ -520,9 +559,15 @@ def _mint_and_link_orcid_authors(
     return linked
 
 
-def _rebuild_cards(store: Store, ref_id: int) -> None:
+def _rebuild_cards(store: Store, ref_id: int, *, title: str | None = None) -> None:
     """Rewrite ``ref_id``'s derived search cards after an author/abstract
-    change (mirrors ``workers/openalex_enrich.py::_rebuild_cards``)."""
+    change (mirrors ``workers/openalex_enrich.py::_rebuild_cards``).
+
+    ``title`` overrides the stored ``refs.title``: ``enrich_paper``
+    defers its title write to the final stamp transaction (module
+    docstring "Ordering"), so the column still shows the old value when
+    this runs — the pending string is passed in instead.
+    """
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if ref is None:
         return
@@ -536,7 +581,7 @@ def _rebuild_cards(store: Store, ref_id: int) -> None:
         rewrite_cards(
             conn,
             ref_id,
-            title=ref.title or "",
+            title=title if title is not None else (ref.title or ""),
             author_names=authors_display,
             abstract=abstract,
             keywords=keywords,
@@ -565,7 +610,8 @@ def enrich_paper(
     only, not a metadata fallback). A DOI that 404s/errors at Crossref
     degrades to the same heuristic path as a DOI-less paper — this
     pass's job is to converge the row, not retry forever; the
-    ``authors_resolved_at`` stamp (always written) keeps it from being
+    ``authors_resolved_at`` stamp (always written, and for a placeholder
+    the ``title_recovery_v`` pin beside it) keeps it from being
     re-selected next pass either way.
 
     ``crossref_fn``/``openalex_fn`` default to ``None``, resolved to this
@@ -582,6 +628,10 @@ def enrich_paper(
         return None
     now = now or datetime.now(UTC)
     verified = ref.human_verified_at is not None
+    # Captured once at read time: the Crossref fill, the front-matter leg
+    # and the recovery pin all gate on the title *as visited*, not on
+    # whatever this call is about to write.
+    was_placeholder = is_placeholder_title(ref.title)
     current_meta = ref.meta or {}
     outcome = EnrichOutcome(ref_id=ref_id)
 
@@ -641,7 +691,7 @@ def enrich_paper(
         # the same guard because a placeholder-titled stub's year is NULL
         # for the same reason — but is filled independently, since a
         # properly-titled ref can still be missing its year.
-        if norm.get("title") and is_placeholder_title(ref.title):
+        if norm.get("title") and was_placeholder:
             new_title = str(norm["title"]).strip() or None
             outcome.title_filled = new_title
         elif not verified:
@@ -712,6 +762,24 @@ def enrich_paper(
         if crossref_authors is not None:
             crossref_orcid_authors = [a for a in crossref_authors if a.get("orcid")]
 
+    # gr658887: the placeholder Crossref couldn't fill (a miss, a fetch
+    # error, a DOI-less ref, or a registry message with no usable title)
+    # still has the answer in the paper's own front matter — the same
+    # title-head + multi-name-byline signature the junk-title cascade's
+    # last leg persists. ``repair_junk_title_papers`` skips DOI'd
+    # placeholders exactly because this pass owns them, so without the
+    # leg here that class sits blank forever. The derived string is
+    # already ``_is_title_like``-gated and declines spliced bodies; like
+    # the Crossref fill it only ever replaces a blank/sentinel.
+    fm_title: str | None = None
+    if new_title is None and was_placeholder:
+        from precis.ingest.paper_hygiene import _front_matter_title
+
+        fm_title = _front_matter_title(store, ref)
+        if fm_title:
+            new_title = fm_title
+            outcome.title_filled = fm_title
+
     new_authors: list[dict[str, Any]] | None = None
     orcid_authors: list[dict[str, Any]] = []
     if verified:
@@ -738,9 +806,14 @@ def enrich_paper(
     )
 
     with store.tx() as conn:
+        # ``title`` is deliberately absent — a placeholder's recovered
+        # title commits with the final stamp below, not here (the module
+        # docstring's "Ordering" note): on a stamped placeholder the
+        # still-sentinel title is ``_claim_batch``'s claim key, so
+        # writing it here would wedge the row if a later side effect
+        # raises before the pin lands.
         store.update_paper_fields(
             ref_id,
-            title=new_title,
             year=new_year,
             authors=new_authors,
             meta_patch=meta_patch,
@@ -801,18 +874,46 @@ def enrich_paper(
         outcome.orcid_links = _mint_and_link_orcid_authors(store, ref_id, orcid_authors)
 
     if new_authors or new_title or meta_patch.get("abstract"):
-        _rebuild_cards(store, ref_id)
+        _rebuild_cards(store, ref_id, title=new_title)
         outcome.cards_rebuilt = True
 
     # Stamp the idempotency marker LAST — see the module docstring's
     # "Ordering" note. If anything above raised, execution never reaches
-    # here, the ref stays unstamped, and the next pass retries it (safe:
-    # every side effect above is itself idempotent/get-or-create).
-    store.update_paper_fields(
-        ref_id,
-        meta_patch={RESOLVED_AT_KEY: now.isoformat()},
-        source="paper-meta-enrich",
-    )
+    # here, the ref stays unstamped (and a placeholder keeps its sentinel
+    # title + low pin, so the recovery leg still claims it), and the
+    # next pass retries it (safe: every side effect above is itself
+    # idempotent/get-or-create).
+    stamp: dict[str, Any] = {RESOLVED_AT_KEY: now.isoformat()}
+    if was_placeholder:
+        # gr658887: pin the recovery version alongside. A placeholder
+        # stamped before the front-matter leg existed carries no pin, so
+        # ``_claim_batch``'s recovery leg re-selects it exactly once;
+        # after this write a still-blank dead end is pinned and out.
+        stamp[TITLE_RECOVERY_KEY] = _TITLE_RECOVERY_VERSION
+    with store.tx() as conn:
+        # The title write joins the stamp atomically (Ordering note): a
+        # failure anywhere earlier left the placeholder in place, so a
+        # stamped-placeholder row stayed claimable; a failure here rolls
+        # the whole bundle back the same way.
+        store.update_paper_fields(
+            ref_id,
+            title=new_title,
+            meta_patch=stamp,
+            source="paper-meta-enrich",
+            conn=conn,
+        )
+        if fm_title:
+            # Breadcrumb like ``title_backfill_queued``: a locally-derived
+            # (not registry) title write is exactly the surprising change
+            # ``view='log'`` should explain. In this tx so the event never
+            # claims a title the row doesn't carry.
+            store.append_event(
+                ref_id,
+                source="paper-meta-enrich",
+                event="title_front_matter",
+                payload={"title": fm_title[:200]},
+                conn=conn,
+            )
 
     return outcome
 
@@ -820,6 +921,7 @@ def enrich_paper(
 __all__ = [
     "RESOLVED_AT_KEY",
     "SOURCE_KEY",
+    "TITLE_RECOVERY_KEY",
     "EnrichOutcome",
     "enrich_paper",
 ]

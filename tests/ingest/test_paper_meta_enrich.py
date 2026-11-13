@@ -971,7 +971,9 @@ class TestStampOrdering:
     side-effect chain (author/meta write, ORCID mint+link, card rebuild)
     must leave the ref unstamped so the next pass retries it, even though
     already-committed side effects (like the author replace here) stay
-    durable."""
+    durable. A placeholder's recovered title rides in the same final
+    transaction as the stamp (gr658887 review — the sentinel title is
+    the recovery leg's claim key), so it stays unwritten too."""
 
     def test_card_rebuild_failure_leaves_ref_unstamped(
         self, monkeypatch: pytest.MonkeyPatch, store: Store
@@ -979,7 +981,7 @@ class TestStampOrdering:
         rid = _paper(store, slug="p12", doi="10.1234/ord")
         msg = _crossref_msg(doi="10.1234/ord")
 
-        def _boom(store_: Store, ref_id: int) -> None:
+        def _boom(store_: Store, ref_id: int, **kw: Any) -> None:
             raise RuntimeError("card rebuild blew up")
 
         monkeypatch.setattr(paper_meta_enrich, "_rebuild_cards", _boom)
@@ -1322,3 +1324,178 @@ class TestJunkCiteKeyRemint:
         ]
         assert store.find_ref_by_identifier("cite_key", "goldsmith20") == rid
         assert store.events_for(rid, event="cite_key_changed") == []
+
+
+def _chunk(store: Store, ref_id: int, ord_: int, text: str) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, 'paragraph', %s)",
+                (ref_id, ord_, text),
+            )
+
+
+class TestFrontMatterTitleFill:
+    """gr658887: a placeholder Crossref couldn't fill still has the
+    answer in the paper's own front matter — the same title-head +
+    multi-name-byline signature the junk-title cascade's last leg
+    persists. ``repair_junk_title_papers`` delegates DOI'd placeholders
+    to this pass, so the leg must live here too or that class sits
+    blank forever."""
+
+    def test_crossref_miss_fills_title_from_front_matter(self, store: Store) -> None:
+        rid = _paper(store, slug="fm1", title=PLACEHOLDER_TITLE, doi="10.1234/gone")
+        _chunk(
+            store,
+            rid,
+            0,
+            "**Varieties of Helmholtz Machine**\n\nG. E. Hinton & P. Dayan",
+        )
+        _chunk(store, rid, 1, "The Helmholtz machine learns. " * 4)
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/gone",
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "Varieties of Helmholtz Machine"
+        ref = _ref(store, rid)
+        assert ref.title == "Varieties of Helmholtz Machine"
+        events = store.events_for(rid, event="title_front_matter")
+        assert len(events) == 1
+        assert events[0].payload["title"] == "Varieties of Helmholtz Machine"
+
+    def test_doi_less_placeholder_fills_from_front_matter(self, store: Store) -> None:
+        rid = _paper(store, slug="fm2", title="")
+        _chunk(
+            store,
+            rid,
+            0,
+            "**Adaptive routing in mesh networks**\n\nJ. Doe & R. Roe",
+        )
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi=None,
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "Adaptive routing in mesh networks"
+        assert _ref(store, rid).title == "Adaptive routing in mesh networks"
+
+    def test_no_byline_signature_leaves_the_placeholder(self, store: Store) -> None:
+        """A lone title-like first line is not confident enough — the
+        sentinel survives for the human queue rather than a guess."""
+        rid = _paper(store, slug="fm3", title=PLACEHOLDER_TITLE)
+        _chunk(
+            store,
+            rid,
+            0,
+            "An Obscure Machine Learning Result\n\n"
+            + "The experiment proceeded as follows. " * 4,
+        )
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi=None,
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled is None
+        assert _ref(store, rid).title == PLACEHOLDER_TITLE
+        assert store.events_for(rid, event="title_front_matter") == []
+
+    def test_real_title_is_never_clobbered_by_front_matter(self, store: Store) -> None:
+        rid = _paper(
+            store, slug="fm4", title="The Author's Own Title", doi="10.1234/gone2"
+        )
+        _chunk(
+            store,
+            rid,
+            0,
+            "**A Different Front Matter Title**\n\nJ. Doe & R. Roe",
+        )
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/gone2",
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled is None
+        assert _ref(store, rid).title == "The Author's Own Title"
+
+    def test_crossref_title_still_wins_over_front_matter(self, store: Store) -> None:
+        """The registry hit is the stronger source — the leg only runs
+        when Crossref produced no title."""
+        rid = _paper(store, slug="fm5", title=PLACEHOLDER_TITLE, doi="10.1234/hit")
+        _chunk(
+            store,
+            rid,
+            0,
+            "**A Different Front Matter Title**\n\nJ. Doe & R. Roe",
+        )
+        msg = _crossref_msg(doi="10.1234/hit")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/hit",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "A Paper"
+        assert _ref(store, rid).title == "A Paper"
+        assert store.events_for(rid, event="title_front_matter") == []
+
+
+class TestTitleRecoveryPin:
+    """gr658887 bound: a visit that *read* a placeholder title pins
+    ``meta.title_recovery_v`` at the current recovery version — the
+    worker claim's recovery leg re-selects a stamped placeholder only
+    while that pin is behind. A real-titled visit carries no pin."""
+
+    def test_placeholder_visit_pins_the_recovery_version(self, store: Store) -> None:
+        rid = _paper(store, slug="pin1", title=PLACEHOLDER_TITLE, doi="10.1/x")
+        msg = _crossref_msg(doi="10.1/x")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1/x",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        meta = _ref(store, rid).meta or {}
+        assert meta["title_recovery_v"] == paper_meta_enrich._TITLE_RECOVERY_VERSION
+
+    def test_unfixable_placeholder_still_pins(self, store: Store) -> None:
+        """The pin lands even when no leg could fill the title — it's the
+        bound that keeps a dead end from being reclaimed every pass."""
+        rid = _paper(store, slug="pin2", title="")
+        outcome = enrich_paper(store, rid, doi=None)
+        assert outcome is not None
+        ref = _ref(store, rid)
+        assert ref.title == ""
+        assert (ref.meta or {})["title_recovery_v"] == (
+            paper_meta_enrich._TITLE_RECOVERY_VERSION
+        )
+
+    def test_real_title_visit_pins_nothing(self, store: Store) -> None:
+        rid = _paper(store, slug="pin3", title="A Real Title", doi="10.1/y")
+        msg = _crossref_msg(doi="10.1/y")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1/y",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert "title_recovery_v" not in (_ref(store, rid).meta or {})

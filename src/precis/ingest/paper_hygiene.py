@@ -40,7 +40,11 @@ ingestion/edit bugs that the current code no longer produces:
   until it was taught to; clearing its ``meta.authors_resolved_at``
   idempotency stamp is the whole heal — the ref falls back into
   ``_claim_batch``'s predicate and the (now title-filling) pass re-runs
-  over it. No network here: this only re-arms.
+  over it. No network here: this only re-arms. Since the claim's
+  recovery leg (gr658887) re-selects a stamped placeholder once per
+  ``title_recovery_v`` version on its own, this is now the operator's
+  *extra* re-arm — a forced re-visit for a dead end the version already
+  spent.
 * :func:`repair_front_matter_metadata` — a paper whose title the
   junk-title cascade repaired off chunk 0 but whose ``year``/``authors``
   kept ingest's guesses (ingestion year, blank or ``Nature User``
@@ -1888,6 +1892,13 @@ def requeue_placeholder_title_papers(
     :func:`precis.workers.paper_meta_enrich._claim_batch` on the next pass
     (hourly by default), which now fills the title. Nothing is fetched
     here — the re-fetch is the worker's, under its existing rate budget.
+
+    Since the claim learned its bounded placeholder-recovery leg
+    (gr658887 — a stamped placeholder whose ``meta.title_recovery_v`` is
+    below the current version re-enters on its own, then pins out), the
+    residual need for this is an *extra* re-arm beyond the one the
+    version already grants: a still-blank dead end an operator wants
+    retried now rather than after the next capability bump.
 
     Only papers carrying a DOI are selected: a DOI-less placeholder has
     nothing for Crossref to resolve, so re-arming it would burn a claim
