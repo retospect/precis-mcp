@@ -204,6 +204,9 @@ the section renders `unreachable: <ExcType>: <msg>` inline rather
 than crashing the whole status call — this surface is the first
 thing you hit *because* something is wrong, so it stays usable when
 the DB is the thing wrong.
+A pool timeout is split by the pool's own stats: `unreachable: cannot
+connect to the database` (check Tailscale / the DB host; waiting won't
+help) versus `pool saturated` (all connections busy; wait and retry).
 
 ## What migration version is the DB at?
 ## What schema version is this?

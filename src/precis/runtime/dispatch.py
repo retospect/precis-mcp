@@ -96,6 +96,11 @@ from precis.runtime.trust_verb import (
 from precis.runtime.under_facet import UNDER_NEXT
 from precis.store._review_ops import trust_refusal
 from precis.store._salience import current_background_actor
+from precis.store.pool_health import (
+    UNREACHABLE_CAUSE,
+    UNREACHABLE_NEXT,
+    diagnose_pool,
+)
 from precis.store.revision_context import (
     current_revision_context,
     process_actor,
@@ -1559,6 +1564,19 @@ def _transient_db_classes() -> tuple[type[BaseException], ...]:
     )
 
 
+def _is_pool_timeout(exc: BaseException) -> bool:
+    import psycopg_pool
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, psycopg_pool.PoolTimeout):
+            return True
+        cur = cur.__cause__
+    return False
+
+
 def _is_transient_db_fault(exc: BaseException) -> bool:
     """True when ``exc`` or an explicit ``raise ... from`` cause is one of
     the retryable database faults."""
@@ -1614,6 +1632,18 @@ class DispatchMixin(RuntimeShape):
             except Exception as exc:
                 if not _is_transient_db_fault(exc):
                     raise
+                if (
+                    _is_pool_timeout(exc)
+                    and diagnose_pool(getattr(self.store, "pool", None))
+                    == "unreachable"
+                ):
+                    # The pool cannot open connections (DB host down,
+                    # Tailscale stopped): each replay burns another pool
+                    # wait for nothing (gr663490).
+                    raise Upstream(
+                        f"{UNREACHABLE_CAUSE} ({type(exc).__name__})",
+                        next=UNREACHABLE_NEXT,
+                    ) from exc
                 if not safe or attempt >= _RETRY_ATTEMPTS:
                     if attempt == 1:
                         raise

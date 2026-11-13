@@ -4545,6 +4545,20 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
         # real signal; render the failure mode in-band instead — via
         # the probe-failure signal so the status cache never stores a
         # transient outage.
+        from precis.store.pool_health import UNREACHABLE_NEXT, diagnose_pool
+
+        # gr663490: a PoolTimeout is "cannot connect" or "pool full"; say which.
+        state = diagnose_pool(store.pool)
+        if state == "unreachable":
+            raise _ProbeUnavailable(
+                f"unreachable: cannot connect to the database "
+                f"({type(exc).__name__}) — {UNREACHABLE_NEXT}"
+            ) from exc
+        if state == "saturated":
+            raise _ProbeUnavailable(
+                f"pool saturated: all connections are checked out "
+                f"({type(exc).__name__}); wait a minute, then retry"
+            ) from exc
         raise _ProbeUnavailable(f"unreachable: {type(exc).__name__}: {exc}") from exc
 
     if row is None:
