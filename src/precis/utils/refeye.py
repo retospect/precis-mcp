@@ -156,6 +156,12 @@ ARGUMENT_RELATIONS: frozenset[str] = frozenset(
         "qualified-by",
         "derived-from",
         "derived-into",
+        # the memory-gripe flag (gr657257): an open complaint against a
+        # node renders on its fisheye ring as ``concern-raised-by`` —
+        # the same distrust family as ``qualifies``, so a reader sees
+        # "under review" before trusting the claim.
+        "raises-concern-about",
+        "concern-raised-by",
     }
 )
 

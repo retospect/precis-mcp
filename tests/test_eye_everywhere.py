@@ -447,6 +447,28 @@ class TestPerKind:
             "Parts:" in out and f"  contains: me{section.id} — Diagnosis section" in out
         )
 
+    def test_memory_eye_shows_an_open_memory_gripe_as_a_concern(
+        self, runtime_with_store: Any, store: Any
+    ) -> None:
+        """gr657257: the memory-gripe flag is visible on the memory's
+        own read — a complaint's ``raises-concern-about`` edge renders
+        on the fisheye ring as ``concern-raised-by``."""
+        from tests._refs import insert_gripe
+
+        memo = _ref(store, "memory", "Flagged claim")
+        gripe = insert_gripe(store, "stale memory")
+        store.add_link(
+            src_ref_id=gripe.id,
+            dst_ref_id=memo.id,
+            relation="raises-concern-about",
+        )
+        out, err = _get(
+            runtime_with_store, kind="memory", id=memo.id, extent="fisheye+1hop"
+        )
+        assert not err
+        assert "Argument:" in out
+        assert f"  concern-raised-by: gr{gripe.id}" in out
+
     def test_paper_eye_is_the_cluster_map_and_a_chunk_eye_the_split(
         self, runtime_with_store: Any, store: Any
     ) -> None:

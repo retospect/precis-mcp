@@ -115,19 +115,25 @@ is briefed with the skill file (`src/precis/data/skills/<id>.md`) and your notes
 
 ## A memory is wonky, inconsistent or unclear
 
-File with `args={'project': 'memory'}`. Include Goal, Route and the claim
-each route returned; name every involved memory and entity handle in the
-text, and pass `link=` to create an edge. Link additional refs with `link()`;
-handles in gripe text alone do not create links. Say "Which is right: unknown"
-when you only have a suspicion. The example is in [[precis-memory-help]],
-"A recalled memory misled me".
+**A memory gripe is a plain gripe.** File
+`put(kind='gripe', text='me<N>: <what is wrong>')` — the memory handle on
+the first line, then the problem. No project tag, link or argument to
+remember: the triage tick reads every gripe, classifies a memory
+complaint as `project:memory`, and adds a `raises-concern-about` link to
+each live memory the text names. The gardener works those gripes first,
+newest first, on its next pass, and the open gripe shows on the memory's
+fisheye until it closes with a `resolved:` note. Never a coder lane.
+
+For a route disagreement — a recall misled you and the recorded route is
+the evidence — the fuller form still helps: Goal, Route and the claim
+each route returned, every involved memory and entity handle named in
+the text. Say "Which is right: unknown" when you only have a suspicion.
+The example is in [[precis-memory-help]], "A recalled memory misled me".
 
 The server adds `meta.route` from the session's last ten memory get/search
 calls, with masked arguments. This is best-effort: unavailable call history
 does not prevent filing, and the written story still supplies the goal.
-The gardener is the fixer for `project:memory`, never the coder lane.
-Triage judges project attribution; it does not send these gripes to a
-coder. Use [[precis-fix-memory-gripe-help]] to replay the routes, classify
+Use [[precis-fix-memory-gripe-help]] to replay the routes, classify
 the disagreement, repair through the ledger, and close or ask.
 
 ## Why was my gripe folded into another one?
@@ -826,8 +832,9 @@ and want it findable, use `memory`.
 A gripe reports something wrong with the **precis tool / MCP surface /
 repo** — a verb that errors, a misleading message, a missing affordance,
 a handler bug. It is fixed by the session owning the relevant thread, in *this codebase*.
-Memory confusion is the content exception: file `project:memory` with the
-goal, routes and claims; the gardener owns its repair.
+Memory confusion is the content exception: a plain gripe with the memory
+handle on the first line (triage tags it `project:memory`); the gardener
+owns its repair.
 
 A defect in **content you are authoring or auditing** — a draft chunk
 with a missing `\citep{}`, an empty section stub, an unsupported claim, a

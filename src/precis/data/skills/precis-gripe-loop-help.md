@@ -42,8 +42,8 @@ todo tree alone — phase 1 of the gripe-todo-unify backlog spec.
 Loop state the old wave kept on the gripe (`batch:` tags, the
 `gripe_brief`/`gripe_handoff`/`gripe_review` chunks, `meta.fix.*`) is
 still readable, nothing writes it for new work —
-`src/precis/handlers/_gripe_fix.py` has the field map and the queue
-derivation (`/queue`, `/batch` still render pre-phase-1 gripes).
+`src/precis/handlers/_gripe_fix.py` has the field map and the
+`/queue`/`/batch` derivation.
 
 ## How does the loop run, step by step?
 
@@ -70,8 +70,11 @@ takes — `work: parked behind gr<M> (td<U>)`, `work: attempt N failed on
 
 The triage tick has already tagged most open gripes (`fix:<type>`,
 `size:S|M|L`, `cluster:<slug>`, a PRIO) and moved them to
-`STATUS:triaged`. Pick a wave of gripes that touch the same files or
-area — one builder tree can cover several:
+`STATUS:triaged`. It routes memory complaints itself: a gripe read as a
+complaint about a memory node's content gets `project:memory` plus a
+`raises-concern-about` link to each named memory — the gardener's
+`griped` queue works those first, never this wave. Pick a wave of
+gripes that touch the same files or area — one builder tree can cover several:
 
 ```python
 search(kind="gripe", tags=["STATUS:triaged", "cluster:draft-reads"], view="list", page_size=50)
@@ -137,7 +140,7 @@ put(kind="gripe", id=514335, text="work: parked behind gr<M> (td<U>)")
 
 The brief itself is unchanged: numbered slices (one commit each), the
 files and anchors you already know, what to verify before changing, how
-to test, and each gripe's rulings folded in — a builder reads the body,
+to test, and each gripe's rulings — a builder reads the body,
 not the comment timeline. Three rules that cost builders real time:
 
 - A length target and a per-item content rule can be unsatisfiable
@@ -147,9 +150,9 @@ not the comment timeline. Three rules that cost builders real time:
 - When a brief constrains a surface, name the allowed functions —
   "`_TOP_KEYS` only" leaves open whether a related refusal may live in
   a neighbouring helper.
-- State what a cap is measured on — a 120-char line cap on a board post
-  did not say whether it counts the note text or the stored line with
-  its timestamp and window prepended; the builder had to guess.
+- State what a cap is measured on — a 120-char line cap did not say
+  whether it counts the note text or the stored line with its timestamp
+  and window; the builder had to guess.
 
 Every brief to an agent session also carries the standing context rule
 (gr515153): bulky reads — queue files, triage outputs, review texts —
@@ -169,8 +172,7 @@ on `CREATE TABLE` without `IF NOT EXISTS` and a `smallint` column):
   copy its shape.
 
 The same brief carries the builder-run acceptance lines — the land's
-checked selection runs them, so skipping lands red on tests the diff
-never touched:
+checked selection runs them, so skipping lands red:
 
 ```
 uvx -q --from 'squawk-cli>=2' squawk <new migration file>
@@ -197,9 +199,8 @@ put(kind="gripe", id=514335, text="in progress draft-reads — covers all asks; 
 The `lane:` comment is one line — `<vendor>:<window>@<host>, tree
 <tree>[, model <id>]` — so the fleet row `vendor:host:project:tree`
 resolves from its prefix. A devin launch prints the line verbatim,
-with the `, model <id>` tail when set (`--devin-model`, else
-`--model`/`FLEET_MODEL`); event-watch reads the recorded id to keep
-its quota reflex off non-SWE models (td573330).
+with the `, model <id>` tail when set; event-watch reads the recorded
+id to keep its quota reflex off non-SWE models (td573330).
 The claim is a lease, not a mark: `expires_at` is stamped 4 h out and
 re-claiming refreshes it (`guards.CLAIM_TTL_HOURS`,
 `guards.stamp_claim_lease`) — re-issue at each coordinator poll while
@@ -228,11 +229,10 @@ tag(kind="todo", id=T, add=["attempt:2"], remove=["attempt:1", "claimed-by:fleet
 put(kind="gripe", id=514335, text="work: attempt 2 failed on devin — typecheck red in tests/test_draft.py")
 ```
 
-The `attempt:N` tag shape is the one `run_slice.release_todo` writes,
-so a later automated pass reads the same history — but `release_todo`
-only knows the `claimed-by:lane-<lane>` prefix; a `claimed-by:fleet-…`
-lease is dropped by hand in the same `tag` call, or kept when the same
-tree re-takes the fix round.
+The `attempt:N` shape is the one `run_slice.release_todo` writes — but
+`release_todo` only knows the `claimed-by:lane-<lane>` prefix; a
+`claimed-by:fleet-…` lease is dropped by hand in the same `tag` call,
+or kept when the same tree re-takes the fix round.
 
 ## Step 5 — record the review verdict
 
@@ -352,11 +352,11 @@ clean node owns the claim. Do NOT hand-delete the scratch: the
 owner-close expiry is its retirement path, and unlinked nodes
 dissolving is the designed default, not a leak.
 
-Required on every gripe-fix todo — that is where multi-agent scratch
-accumulates (builders, reviewers, fix rounds) — and advisory anywhere
-else a task carries scratch. The `harvest:` line is how the next
-coordinator, and the planned gardener detector for unharvested
-scratch, see the close was read before the dissolve.
+Required on every gripe-fix todo — where multi-agent scratch
+accumulates — and advisory anywhere else a task carries scratch. The
+`harvest:` line is how the next coordinator, and the planned gardener
+detector for unharvested scratch, see the close was read before the
+dissolve.
 
 ## Builder scratch — `scratch-for:td<T>`, not the shared bucket
 
@@ -433,7 +433,7 @@ where, `handoff:` where it stopped, `review:` the verdict, `attempt:<n>`
 the round. `open` under a live lease is in-build, a `review: FIX` after
 it is a fix round, `done` with `landed:` is awaiting deploy.
 
-Wave aggregates stay on the MCP, not raw SQL:
+Wave aggregates stay on the MCP:
 `view='count'`+`group_by`+`since=` is the snapshot, `view='flow'` the
 burn-down (`precis-search-help`).
 

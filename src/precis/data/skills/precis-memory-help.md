@@ -1020,23 +1020,28 @@ and `view='index'`). `q=`/`page=`/`mode=`/`scope=` are refused on the view.
 ## Fix or escalate a stale memory
 
 **Complain first.** A wonky, inconsistent or unclear memory is enough to
-file a `project:memory` gripe; you do not need to know which claim wins.
-Name the goal, the routes followed, what each memory said, and every
-involved handle, including entity refs of other kinds. Pass `link=` to
-create an edge; handles in gripe text alone do not create links.
+file a plain gripe — `put(kind='gripe', text='me<N>: <what is wrong>')`,
+the memory handle on the first line. You do not need to know which claim
+wins, and you need no tag or link: the triage tick classifies it
+`project:memory` and adds a `raises-concern-about` link to each live
+memory the text names. The gardener works those gripes first, newest
+first, on its next pass; the open gripe shows on the memory's fisheye
+until it closes.
 
 ```python
-put(kind='gripe', args={'project': 'memory'},
-    link='me123', rel='raises-concern-about',
-    text='memory: export notes disagree\n'
+put(kind='gripe',
+    text='me123: export notes disagree\n'
          'Goal: choose the current export format.\n'
          'Route: search export -> me123 said CSV; '
          'export hub -> me456 said JSON.\n'
          'Which is right: unknown; I have not checked the source yet.')
-link(kind='gripe', id=G, target='me456', rel='raises-concern-about')
 ```
 
-Use the returned gripe ID for `G`; link each additional involved ref likewise.
+One line — `me<N>: <what is wrong>` — is the complete quick form; the
+Goal/Route/claims above are the fuller form for a route disagreement,
+where the recorded route is the fixer's test. Pass `link=` yourself only
+for a ref the text does not name (an entity handle of another kind);
+triage links every `me<N>` it finds.
 
 The server attaches the session's last ten memory get/search calls as
 `meta.route`, with masked arguments, when available. Keep the human-readable

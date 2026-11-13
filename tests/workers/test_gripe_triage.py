@@ -543,6 +543,73 @@ class TestTick:
         assert "project:precis" in _open_tag_values(store, gid)
         assert not any(c.startswith("project:") for c in _comments(store, gid))
 
+    def test_memory_verdict_links_named_memories(self, store: Store) -> None:
+        """gr657257: a ``project=memory`` verdict routes the gripe to
+        the gardener — the ``project:memory`` tag lands plus one
+        ``raises-concern-about`` edge per live memory the text names,
+        so the flag shows on the memory's own reads and the ``griped``
+        detector's story parse matches the declared target."""
+        from tests.test_garden_memory import _memory
+
+        keeper = _memory(store, "Boards permit the pour.")
+        loser = _memory(store, "No board may carry a pour.")
+        _light(store)
+        gid = _gripe(
+            store,
+            f"me{keeper}: stale",
+            body=f"it contradicts me{loser} and cites ghost me999999",
+        )
+        _run(
+            store,
+            _llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            project="memory",
+                            project_why="names me<N> handles",
+                        )
+                    ]
+                }
+            ),
+        )
+        assert "project:memory" in _open_tag_values(store, gid)
+        links = store.links_for(gid, direction="out", relation="raises-concern-about")
+        assert {int(l.dst_ref_id) for l in links} == {keeper, loser}
+        assert any(
+            c.startswith("project: precis -> memory") for c in _comments(store, gid)
+        )
+
+    def test_memory_project_filer_set_links_too(self, store: Store) -> None:
+        """gr657257: a filer-set ``project:memory`` stays filer-set, and
+        still mints the concern edges — the flag is the write's job,
+        not the model's vote."""
+        from tests.test_garden_memory import _memory
+
+        mid = _memory(store, "Stale routing claim.")
+        _light(store)
+        gid = _gripe(store, f"me{mid}: wrong hub")
+        store.add_tag(gid, Tag.open("project:memory"), set_by="agent")
+        _run(store, _llm({"verdicts": [_verdict(gid, project="precis")]}))
+        values = _open_tag_values(store, gid)
+        assert "project:memory" in values
+        links = store.links_for(gid, direction="out", relation="raises-concern-about")
+        assert {int(l.dst_ref_id) for l in links} == {mid}
+
+    def test_non_memory_verdict_links_nothing(self, store: Store) -> None:
+        """gr657257: an ordinary gripe that only cites memories as
+        evidence is not flagged — no ``raises-concern-about`` edges."""
+        from tests.test_garden_memory import _memory
+
+        mid = _memory(store, "Context memory.")
+        _light(store)
+        gid = _gripe(store, "router pour fails", body=f"see me{mid}")
+        _run(store, _llm({"verdicts": [_verdict(gid)]}))
+        assert "project:memory" not in _open_tag_values(store, gid)
+        assert (
+            store.links_for(gid, direction="out", relation="raises-concern-about") == []
+        )
+
     def test_writes_tags_prio_status_and_clears_lease(self, store: Store) -> None:
         gid = _gripe(store, "router pours fail", age_days=7, body="it pours")
         _light(store)

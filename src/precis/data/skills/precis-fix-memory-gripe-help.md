@@ -21,6 +21,8 @@ status: active
 
 1. Read the `project:memory` gripe: Goal, Route and the claims each route
    returned. Read `meta.route` for the recorded calls and their arguments.
+   A quick-form filing may carry only `me<N>: <what is wrong>` — the first
+   line is the claim and the `raises-concern-about` edges name the targets.
 2. Open every named memory with `view='fisheye+1hop'`, every named entity
    ref, and the evidence they cite. Capture the hub's recall set before
    changing anything.

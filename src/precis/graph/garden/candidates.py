@@ -3059,24 +3059,33 @@ GRIPED_STORY_CHARS = 1500
 GRIPED_OPEN_SCAN = 500
 
 
-def _griped_window(store: Store, *, after: int, size: int) -> tuple[list[int], int]:
-    """Open ``project:memory`` gripe ids past ``after`` (ascending), and the
-    cursor to save — the window's last id, or ``0`` when it reached the end
-    (same contract as :func:`_scan_window`)."""
+#: ``ref_id`` bound for "from the top" — the newest-first window's
+#: starting cursor (gr657257: the newest complaint is worked first).
+_GRIPED_TOP = 9223372036854775807
+
+
+def _griped_window(store: Store, *, before: int, size: int) -> tuple[list[int], int]:
+    """Open ``project:memory`` gripe ids below ``before``, newest first,
+    and the cursor to save — the window's smallest id, or ``0`` when it
+    reached the bottom (the next run wraps to the top). ``before=0``
+    starts at the top; a truncated run resumes *below* the gripe it
+    stopped at, so the unprocessed tail keeps its place (the ascending
+    contract of :func:`_scan_window`, mirrored)."""
+    top = before or _GRIPED_TOP
     with store.pool.connection() as conn:
         ids = [
             int(r[0])
             for r in conn.execute(
                 "SELECT r.ref_id FROM refs r WHERE r.kind = 'gripe' "
-                "AND r.retired_at IS NULL AND r.ref_id > %s "
+                "AND r.retired_at IS NULL AND r.ref_id < %s "
                 "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
                 "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
                 "  AND t.namespace = 'OPEN' AND t.value = 'project:memory') "
                 "AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t "
                 "  USING (tag_id) WHERE rt.ref_id = r.ref_id "
                 "  AND t.namespace = 'STATUS' AND t.value = ANY(%s)) "
-                "ORDER BY r.ref_id LIMIT %s",
-                (after, list(_GRIPED_CLOSED_STATUS), size),
+                "ORDER BY r.ref_id DESC LIMIT %s",
+                (top, list(_GRIPED_CLOSED_STATUS), size),
             ).fetchall()
         ]
     return ids, (ids[-1] if len(ids) >= size else 0)
@@ -3407,7 +3416,7 @@ def _griped_memory_target(
         store, "memory", after=saved["griped:memory"], size=scan_cap
     )
     only_gripe = saved.get("griped:gripe")
-    gids, _nxt = _griped_window(store, after=0, size=GRIPED_OPEN_SCAN)
+    gids, _nxt = _griped_window(store, before=0, size=GRIPED_OPEN_SCAN)
     stories = _gripe_story(store, gids)
     out: list[GardenCandidate] = []
     for gid in gids:
@@ -3444,7 +3453,7 @@ def griped_candidates(
     if "griped:memory" in saved:
         return _griped_memory_target(store, saved, scan_cap=scan_cap, limit=limit)
     key = "griped:gripe"
-    window, nxt = _griped_window(store, after=saved.get(key, 0), size=scan_cap)
+    window, nxt = _griped_window(store, before=saved.get(key, 0), size=scan_cap)
     stories = _gripe_story(store, window)
     out: list[GardenCandidate] = []
     for gid in window:

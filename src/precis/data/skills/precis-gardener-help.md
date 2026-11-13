@@ -33,9 +33,9 @@ proposal stale by itself.
 
 Memory judgments share [[precis-memory-help]] §"Memory reconciliation policy"
 with [[precis-make-memory]]. The proposer, consumer and sampled reviewers load
-the exact packaged section, including memory `dup_pair` candidates. Its digest
-versions memory proposer rejections independently of other kinds. Maintenance
-action restrictions and existing audited apply/undo paths still govern.
+the exact packaged section, including memory `dup_pair` candidates; its digest
+versions memory proposer rejections independently of other kinds. Audited
+apply/undo restrictions still govern.
 
 ## What it scans
 
@@ -69,13 +69,17 @@ list, default `all`):
   thread children as well as roots: a missing `Left:` line, a terminal
   todo/gripe on that line, or a commit sha on that line confirmed as an
   ancestor of `origin/prod` proposes `supersede` by the nearest ancestor
-  thread with a current `Left:`, otherwise `retire`. Needed figures must
-  be folded into the ancestor's `Earlier:` line before superseding; all
-  retirement requires preservation review. Section hubs are excluded.
-  Sha-on-prod verdicts come from `git merge-base --is-ancestor` in the
-  configured main checkout; when the main root or the prod ref is
-  unavailable the evidence keeps `sha_on_prod: not_checked` and the sha
-  is not evidence.
+  thread with a current `Left:`, otherwise `retire`. Preserve needed
+  figures on the ancestor's `Earlier:` line; all retirement requires
+  preservation review. Section hubs are excluded. Sha-on-prod verdicts
+  use `git merge-base` in the main checkout; when unavailable the
+  evidence keeps `sha_on_prod: not_checked`.
+  `griped` is the flag door (gr657257): a reader's plain gripe —
+  memory handle on the first line — gets `project:memory` plus a
+  `raises-concern-about` edge per named memory from triage. One
+  `rewrite` candidate per named live memory replays `meta.route`; the
+  queue drains newest complaint first, ahead of routine detectors,
+  and a fix or no-change closes it `resolved:`.
 - **host-facts** — opt-in one-off (gr560767): after the operator refreshes
   the machine census (`put(kind='machine', mode='sync')` plus hand-added
   hosts), `host_facts` scans live memory bodies for sentences naming a
@@ -90,8 +94,8 @@ list, default `all`):
 
 The independent opt-in `memory-review` pass runs `entity_claim_stale`,
 `negative_undated`, `restated_claim`, `review_due`, `source_drift` and
-`title_shape`; `all` and `memory` exclude it. Memory anchor, review, source
-and entity checks and reviewed memory apply: [[precis-gardener-memory-help]].
+`title_shape`; `all` and `memory` exclude it. Memory checks and reviewed
+apply: [[precis-gardener-memory-help]].
 
 ## Structural scans
 
@@ -133,10 +137,9 @@ and entity checks and reviewed memory apply: [[precis-gardener-memory-help]].
   candidate — disjoint siblings are legitimate.
 
 Every proposal names its evidence (distances, shared terms, instance
-ids, run ids) so a judge can verify it without trusting the model. The
-proposer's prompt also carries an excerpt of each named ref's own text
-(memory body, else card, else title; up to 600 chars each), so it
-judges content, not titles.
+ids, run ids) so a judge can verify it without trusting the model; the
+prompt also carries each named ref's own text (memory body, else card,
+else title; up to 600 chars), so it judges content, not titles.
 
 ## Paper identity
 
@@ -164,10 +167,9 @@ forward. The merge window shrinks as a kind grows (each window ref is
 compared with every live ref of its kind, about `scan_cap`² comparisons
 per kind). A detector skipped on its deadline keeps its old cursor.
 
-**Budget.** `max_proposals` is shared round-robin across the detectors
-that found candidates: each gets `max_proposals // n` first, and a
-share a detector leaves unspent goes to the others.
-`meta.garden.proposals_by_detector` records the split.
+**Budget.** `max_proposals` shares round-robin across detectors with
+candidates: each takes `max_proposals // n`, then unspent shares move
+to the rest. `meta.garden.proposals_by_detector` records the split.
 
 **Freshly reviewed targets are skipped.** A candidate whose target was
 `considered` inside the last `considered_days` (default 30) is dropped
@@ -192,8 +194,7 @@ a reviewer actually looked at, and who".
 There is no per-memory `last_gardened_at` column. Distinguish three events:
 
 - **Scanned:** detector windows/cursors live on the run's `meta.garden.cursors`.
-  A clean scan writes no per-node event, so the ledger cannot prove a memory's
-  last scan time.
+  A clean scan writes no per-node event, so the ledger cannot prove a scan time.
 - **Reviewed:** `reviews.at` dates a proposal or verdict, with `content_sha`
   identifying the version judged. A proposal is not a completed review.
   `revisions.at` and its `trust_acts` record `consider` acts with `expected_sha`;
@@ -206,8 +207,8 @@ There is no per-memory `last_gardened_at` column. Distinguish three events:
   payload to find all involved nodes, rather than assuming `target_id` covers
   both.
 
-Content changes invalidate content-pinned review currency. An unconditional
-timestamp alone would incorrectly skip a memory edited after its review.
+Content changes invalidate content-pinned review currency — a bare
+timestamp would skip a memory edited after its review.
 
 ## The ledger row
 
@@ -349,9 +350,8 @@ Watches — a `meta.schedule` (`{'every': '2h'}`) plus
 `meta.executor='job_inproc'` and `meta.job_type='graph_garden'`, the
 job-mode automation shape (`precis-recurring-help`,
 `precis-automations`). Each due tick spawns a subtask the dispatch pass
-mints the job from; the spawner's `spawned_for_tick` stamp makes a tick
-idempotent and its collision-skip holds the next tick while the
-previous child is still open, so runs can't pile up.
+mints the job from; `spawned_for_tick` makes a tick idempotent and
+holds the next tick while the previous child is open.
 
 The two gates are evaluated **per run**, inside the job's dispatch —
 not by the schedule:

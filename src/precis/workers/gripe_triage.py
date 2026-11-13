@@ -37,6 +37,13 @@ recommended one marked (gr595189: the batch digest's bare
 ``recommend:`` prose delegated the deciding upward; Reto's ask
 grammar already existed for the job).
 
+A gripe the model reads as a complaint about a memory node's content
+routes to the memory gardener, never a coder lane (gr657257): the
+write stamps ``project:memory`` and adds a ``raises-concern-about``
+edge per live memory its text names, so the complaint shows on the
+memory's own reads and the gardener's ``griped`` detector picks it up
+first, newest complaint first.
+
 A ``Reto <date>:`` ruling — a comment, or a line in the gripe's own
 body — settles the asks pending when it was recorded (gr633601): the
 tick never re-parks a settled gripe ``needs_spec`` and never
@@ -204,6 +211,40 @@ _DISPUTE_CAP = 5
 #: of waiting forever on an operator (N1 ruling). A good probe clears
 #: the halt; any failure re-arms it for another 6 h.
 _BLOCKED_PROBE_S = 6 * 3600
+
+#: Handle-shaped tokens a gripe's text may name (``me123``, ``gr7`` …)
+#: — the same two-letter + digits grammar the gardener's ``griped``
+#: story parse reads (:data:`candidates._MEMORY_HANDLE`).
+_HANDLE_TOKEN_RE = re.compile(r"\b[a-zA-Z]{2}[0-9]{1,19}\b")
+#: Upper bound on ``raises-concern-about`` edges one memory gripe mints
+#: (gr657257) — matches the detector's ``GRIPED_MENTION_CAP``.
+_MEMORY_LINK_CAP = 16
+
+
+def _named_live_memories(conn: Any, g: ClaimedGripe) -> list[int]:
+    """Live memory refs a claimed gripe's title + body name by handle —
+    the same mention grammar the gardener's ``griped`` story parse reads,
+    so the edge the tick writes targets exactly what the detector will
+    (gr657257)."""
+    from precis.utils import handle_registry
+
+    seen: dict[int, None] = {}
+    for m in _HANDLE_TOKEN_RE.finditer(f"{g.title}\n{g.body}"):
+        parsed = handle_registry.parse(m.group())
+        if parsed is None or parsed[0] != "memory" or parsed[1]:
+            continue
+        seen.setdefault(int(parsed[2]))
+        if len(seen) >= _MEMORY_LINK_CAP:
+            break
+    if not seen:
+        return []
+    rows = conn.execute(
+        "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) "
+        "AND kind = 'memory' AND retired_at IS NULL",
+        (list(seen),),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
 
 #: ``fix:<type>`` closed vocabulary (spec §Data model).
 _FIX_TYPES = frozenset(
@@ -1246,11 +1287,15 @@ For EACH gripe decide:
   default. Judge ONLY when the gripe's header says "project: unset";
   infer it from its title, body, the paths and links it names (a body
   citing src/catpath/… is 'catpath'). Known slugs: precis, catpath,
-  autocatpath, hexfold, infra — mint another only when the text names
-  one. When the header shows a filer-set project, repeat THAT value.
+  autocatpath, hexfold, infra, memory — mint another only when the
+  text names one. A complaint about a memory NODE's content — stale,
+  thin, wrong, contradicted, unclear, wrong hub, too big — is
+  'memory', not 'precis': the memory gardener owns those, never a
+  code fix; me<N> handles it names are the strongest signal. When the
+  header shows a filer-set project, repeat THAT value.
 - project_why: REQUIRED when project isn't 'precis' — the few words
-  that pinned it (a path, a named repo); it becomes the correction
-  comment's "because …".
+  that pinned it (a path, a named repo, a me<N> handle); it becomes
+  the correction comment's "because …".
 - severity: 1..5 — 5 wrong result or data loss, 4 a blocked workflow,
   3 degraded but workable, 2 papercut, 1 wish/polish.
 - verdict: one of "bug" | "not-a-bug" | "working-as-designed" |
@@ -2135,6 +2180,20 @@ def _write_verdict(
                 comments.append(
                     f"project: {_DEFAULT_PROJECT} -> {v.project}, because "
                     f"{_one_line(project_why or reason or 'see gripe text')}"
+                )
+        # gr657257: a memory complaint routes to the gardener, not a
+        # coder — one ``raises-concern-about`` edge per live memory the
+        # text names, so the complaint shows on the memory's own reads
+        # while it waits. ``add_link`` dedupes the unique tuple, so a
+        # re-triage can't double the flag.
+        if v.project == "memory":
+            for mid in _named_live_memories(conn, g):
+                store.add_link(
+                    src_ref_id=g.ref_id,
+                    dst_ref_id=mid,
+                    relation="raises-concern-about",
+                    set_by="system",
+                    conn=conn,
                 )
         if reto:
             store.add_tag(g.ref_id, Tag.open("reto:ask"), set_by="system", conn=conn)

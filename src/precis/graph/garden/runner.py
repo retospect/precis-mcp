@@ -400,6 +400,13 @@ def run_garden_tick(
 
     queues = _by_detector(candidates)
     share = max(1, max_proposals // len(queues)) if queues else 0
+    # gr657257: a reader-filed memory complaint outranks routine upkeep —
+    # the ``griped`` queue drains first under the same proposal budget,
+    # then the ordinary round-robin shares what is left.
+    flagged = queues.get("griped")
+    if flagged:
+        while flagged and out.proposals < max_proposals and not out.paused:
+            _one(flagged.popleft())
     # Round-robin, one candidate per detector per turn. First pass: each
     # detector stops at its equal share of the budget. Second pass: the
     # share a quiet detector left unspent goes to the rest, same rotation.

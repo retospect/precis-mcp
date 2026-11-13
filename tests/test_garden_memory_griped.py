@@ -387,3 +387,48 @@ def test_griped_qualify_reads_as_ask_never_a_stranded_proposal(
         model=None,
     )
     assert not verdict.accept and verdict.ask is not None
+
+
+def test_griped_window_runs_newest_first(store: Store) -> None:
+    """gr657257: the complaint queue is recency-ordered — the newest
+    open ``project:memory`` gripe yields its candidates first, and a
+    truncated run resumes *below* where it stopped."""
+    m1 = _memory(store, "First flagged claim.")
+    m2 = _memory(store, "Second flagged claim.")
+    m3 = _memory(store, "Third flagged claim.")
+    g1 = _gripe(store, f"me{m1}: oldest complaint")
+    g2 = _gripe(store, f"me{m2}: middle complaint")
+    g3 = _gripe(store, f"me{m3}: newest complaint")
+    order = [c.evidence["gripe"] for c in cand.griped_candidates(store)]
+    mine = [g for g in order if g in {g1, g2, g3}]
+    assert mine == [g3, g2, g1]
+    # A saved cursor at the middle gripe resumes below it — the unprocessed
+    # tail keeps its place and the top wraps on the next pass.
+    saved = {"griped:gripe": g2}
+    window, _nxt = cand._griped_window(store, before=saved["griped:gripe"], size=10)
+    assert [g for g in window if g in {g1, g2, g3}] == [g1]
+
+
+def test_flagged_gripes_drain_before_routine_candidates(
+    store: Store,
+) -> None:
+    """gr657257: a reader's memory complaint outranks routine upkeep —
+    every ``griped`` candidate is evaluated before the first detector
+    one, under the same proposal budget."""
+    flagged = _memory(store, "A flagged claim about pour boards.")
+    retired = _memory(store, "A retired claim.")
+    store.retire_ref(retired)
+    _memory(store, f"A live claim still citing me{retired}.")
+    _gripe(store, f"me{flagged}: wrong hub")
+    seen: list[str] = []
+
+    def propose(_s: Any, c: Any) -> Verdict:
+        seen.append(c.detector)
+        return Verdict(accept=False, rationale="no change needed")
+
+    runner.run_garden_tick(
+        store, passes=("memory",), kinds=("memory",), propose=propose
+    )
+    assert "griped" in seen and "dangling_mention" in seen
+    last_griped = len(seen) - 1 - seen[::-1].index("griped")
+    assert seen.index("dangling_mention") > last_griped
