@@ -116,6 +116,19 @@
 #                                        # before any push. Refuses a change touching
 #                                        # */migrations/*.sql or safe_fetch.py unless
 #                                        # --allow-migration (coordinator only).
+#         scripts/ship --onto release/r<N> "…"   # the release train's fix lane
+#                                        # (docs/backlog/release-train.md T1; the
+#                                        # factory lander passes it for a slice whose
+#                                        # todo names a land target): --release's
+#                                        # apply onto the NAMED origin/release/r<N>
+#                                        # (no round.json lookup — the cut may live
+#                                        # in another checkout), pushed to that
+#                                        # branch ONLY. No forward merge: main never
+#                                        # moves; the release merges back after its
+#                                        # deploy. B is the newer of the tree's
+#                                        # merge-bases with origin/main and the
+#                                        # release, so a tree cut from either applies
+#                                        # exactly its own change. Implies --release.
 #         scripts/ship --release --allow-migration "…"   # coordinator: let a release fix
 #                                        # carry a migration or safe_fetch.py change
 #                                        # (squawk runs first; a number collision against
@@ -283,6 +296,10 @@ SLOW="${PRECIS_GATE_SLOW:-0}"
 RELEASE=0
 ALLOW_MIGRATION=0
 RELEASE_BRANCH=""
+# --onto release/r<N>: the release train's fix lane (T1) — --release's apply
+# onto the named release branch, pushed there only; main is never touched.
+ONTO=""
+ONTO_SET=0
 # --verbose (or PRECIS_SHIP_VERBOSE=1): the full transcript on the terminal,
 # as before. Default is quiet (gr497896): the run goes to a /tmp log and the
 # terminal sees only its ✖ lines, a conflict's file list, the log path and a
@@ -554,6 +571,7 @@ while :; do
     case "${1:-}" in
         --release)  RELEASE=1; QUICK=1; shift ;;
         --release-branch) RELEASE_BRANCH="${2:-}"; shift 2 ;;
+        --onto)     ONTO="${2:-}"; ONTO_SET=1; RELEASE=1; QUICK=1; shift $(( $# > 1 ? 2 : 1 )) ;;
         --allow-migration) ALLOW_MIGRATION=1; shift ;;
         --impacted) IMPACTED=1; shift ;;
         --mutate)   MUTATE=1; shift ;;
@@ -568,7 +586,7 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --await --replay-notes --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --await --replay-notes --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --onto --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -576,6 +594,10 @@ done
 [[ "$RELEASE" == 1 && "$REMOTE" == 1 ]] && { printf '\033[31m✖ --release and --remote are contradictory (the release push'"'"'s own CI run is the gate) — drop --remote.\033[0m\n' >&2; exit 2; }
 [[ "$ALLOW_MIGRATION" == 1 && "$RELEASE" != 1 ]] && { printf '\033[31m✖ --allow-migration only means something with --release.\033[0m\n' >&2; exit 2; }
 [[ -n "$RELEASE_BRANCH" && "$RELEASE" != 1 ]] && { printf '\033[31m✖ --release-branch only means something with --release.\033[0m\n' >&2; exit 2; }
+[[ -n "$ONTO" && -n "$RELEASE_BRANCH" ]] && { printf '\033[31m✖ --onto names the release branch itself — drop --release-branch.\033[0m\n' >&2; exit 2; }
+if [[ "$ONTO_SET" == 1 && ! "$ONTO" =~ ^release/r[0-9]+$ ]]; then
+    printf '\033[31m✖ --onto takes a release branch named release/r<N>, got %s.\033[0m\n' "${ONTO:-nothing}" >&2; exit 2
+fi
 
 # --checked implies --quick, so its --remote refusal must come first or it
 # would die on the generic "--remote vs --quick" message.
@@ -1933,7 +1955,7 @@ _forward_merge_in_lock() {
 # a reader of the log can tell it from a gated land. No .ship-sha, no `gated`.
 RELEASE_TREE_HINT="A release fix is written in a fresh tree cut from the RELEASE head (origin/release/r<N>), not from main: then the diff is exactly the fix, the release-side merge is trivial, and the lint ran on the code that will deploy. This tree's whole diff against its merge-base with origin/main is what gets applied."
 REL_BRANCH=""; REL_N=""; RELEASE_B=""; RELEASE_NEW_MIGS=""; RELEASE_DELETED_MIGS=""
-OLD_REL=""; RELEASE_LANDED=""; REL_R1=""; REL_M=""
+OLD_REL=""; RELEASE_LANDED=""; REL_R1=""; REL_M=""; RELEASE_ONTO_NOOP=0
 
 # What to tell the user about the refs when an in-lock step dies. On try 1
 # nothing has left this host ("nothing was pushed"); after R1 landed and the
@@ -1972,8 +1994,49 @@ _release_scan_paths() {
     return 0
 }
 
+# --onto's preflight (release-train T1): the target is NAMED, not read from
+# round.json — a factory slice host is not the checkout that cut the release.
+# It must be release/r<N> and on origin. B is the newer of the tree's two
+# merge-bases: a tree cut from the release head (the fixer's normal base, its
+# earlier fixes already in) applies exactly its own commits, and a tree cut
+# from main applies its own commits without dragging main's post-cut work in.
+_onto_preflight() {
+    local out ncommits mb_main mb_rel
+    REL_BRANCH="$ONTO"
+    [[ "$REL_BRANCH" =~ ^release/r([0-9]+)$ ]] \
+        || die "--onto ${REL_BRANCH} is not a release branch named release/r<N> — refusing. Nothing was pushed."
+    REL_N="${BASH_REMATCH[1]}"
+    out="$(git_network ls-remote --heads origin "refs/heads/${REL_BRANCH}")" \
+        || die "could not read origin's branches (git ls-remote failed) — check the network and re-run scripts/ship --onto ${REL_BRANCH}."
+    [[ -n "$out" ]] \
+        || die "${REL_BRANCH} is not on origin — no release to land on. Nothing was pushed."
+    git_network fetch -q origin "+refs/heads/${REL_BRANCH}:refs/remotes/origin/${REL_BRANCH}" \
+        || die "git fetch of ${REL_BRANCH} failed — check the network and re-run scripts/ship --onto ${REL_BRANCH}."
+    mb_main="$(git merge-base HEAD origin/main)" \
+        || die "no merge-base between HEAD and origin/main — refusing. Nothing was pushed."
+    mb_rel="$(git merge-base HEAD "origin/${REL_BRANCH}")" \
+        || die "no merge-base between HEAD and origin/${REL_BRANCH} — refusing. Nothing was pushed."
+    RELEASE_B="$mb_main"
+    if [[ "$mb_rel" != "$mb_main" ]] && git merge-base --is-ancestor "$mb_main" "$mb_rel"; then
+        RELEASE_B="$mb_rel"
+    fi
+    ncommits="$(git rev-list --count "${RELEASE_B}..HEAD")"
+    if [[ "$ncommits" == 0 ]] || git diff --quiet "$RELEASE_B" HEAD; then
+        die "nothing to release — ${BRANCH} has no change against ${RELEASE_B:0:8} (the newer of its merge-bases with origin/main and origin/${REL_BRANCH})."
+    fi
+    say "release fix → ${REL_BRANCH} only (--onto; main is not touched); B = ${RELEASE_B}"
+    echo "commits ${RELEASE_B:0:8}..HEAD (${ncommits}):"
+    git log --oneline "${RELEASE_B}..HEAD"
+    git diff --stat "$RELEASE_B" HEAD
+    _release_scan_paths first
+}
+
 _release_preflight() {
     local out ncommits relinfo rc next
+    if [[ -n "$ONTO" ]]; then
+        _onto_preflight
+        return
+    fi
     # The fix target is the OPEN release recorded in round state (cut..green),
     # not the count of release/* branches on origin (release-train §5): while
     # N deploys, r<N+1> is already cut and takes the fixes.
@@ -2104,7 +2167,11 @@ _release_land() {
     head8="${head_sha:0:8}"
     subject="${MSG%%$'\n'*}"
     subject="${subject:-fix from ${BRANCH}}"
-    say "shipping release fix to ${REL_BRANCH}, forwarding into main"
+    if [[ -n "$ONTO" ]]; then
+        say "shipping release fix to ${REL_BRANCH} only (--onto; no forward merge into main)"
+    else
+        say "shipping release fix to ${REL_BRANCH}, forwarding into main"
+    fi
     . "${WORKTREE}/scripts/lib/round-lock.sh"
     acquire_round_lock || die "release lifecycle busy — nothing pushed."
     release_journal_clear "$REL_BRANCH" || die "release deployment journal owns the head — resume round deploy before any release fix. Nothing pushed."
@@ -2128,6 +2195,15 @@ _release_land() {
             r1_new=0
             r1="$OLD_REL"
             say "${REL_BRANCH} head ${OLD_REL:0:8} already carries this change — no release push"
+            if [[ -n "$ONTO" ]]; then
+                # --onto never touches main: an already-carried change is the
+                # whole answer (land_slice reads this line as nothing-new).
+                say "nothing new to ship — origin/${REL_BRANCH} already carries this change"
+                REL_R1="$OLD_REL"; REL_M=""; RELEASE_ONTO_NOOP=1
+                _release_ship_lock
+                release_round_lock
+                return 0
+            fi
             if git merge-base --is-ancestor "$OLD_REL" "$OLD_MAIN"; then
                 say "nothing to do — ${REL_BRANCH} head ${OLD_REL:0:8} is already in main (${OLD_MAIN:0:8}); no empty merge"
                 REL_R1="$OLD_REL"; REL_M=""
@@ -2143,6 +2219,24 @@ Release: r${REL_N}; from ${BRANCH} ${head8}
 $(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR" "$BRANCH_ATTRS")
 EOF
 )"
+        fi
+
+        if [[ -n "$ONTO" ]]; then
+            # --onto (release-train T1): the release push is the whole land;
+            # main gets the fix when the release merges back after deploy.
+            if _release_push "refs/heads/${REL_BRANCH}" "$r1" "$OLD_REL"; then
+                RELEASE_LANDED="$r1"
+                REL_R1="$r1"; REL_M=""
+                say "${REL_BRANCH} → ${r1:0:8}"
+                _release_ship_lock
+                release_round_lock
+                return 0
+            fi
+            if (( try >= max )); then
+                die "CAS push to ${REL_BRANCH} rejected ${max}× inside the ship lock — the release kept moving from another host. Lock released; nothing landed. Re-run scripts/ship --onto ${REL_BRANCH}."
+            fi
+            say "CAS push to ${REL_BRANCH} rejected — it moved from another host; re-fetching and recomputing in the lock (in-lock try ${try}/${max})"
+            continue
         fi
 
         # Step 2: R1 forward into main as a real merge (M, parents OLD_MAIN
@@ -2188,11 +2282,39 @@ EOF
     done
 }
 
+# --onto's tail: the branch is reset to the release head when its tree is the
+# release head's (it held only the fix), else left as it was; then the report
+# line land_slice reads (`shipped — landed on release/r<N>:` + the sha) and
+# the status token. Main was never touched, so no main sync and no merge.
+_onto_after_landing() {
+    _relock
+    git_network fetch -q origin "+refs/heads/${REL_BRANCH}:refs/remotes/origin/${REL_BRANCH}" || true
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "WARNING: worktree dirty after the release ship — branch left as it was."
+        SHIP_STATUS_NOTE="worktree dirty after the ship — branch not reset"
+    elif [[ "$(git rev-parse 'HEAD^{tree}')" == "$(git rev-parse "origin/${REL_BRANCH}^{tree}")" ]]; then
+        git reset --hard "origin/${REL_BRANCH}" >/dev/null \
+            && say "reset ${BRANCH} → $(git rev-parse --short "origin/${REL_BRANCH}") (tree equals ${REL_BRANCH})"
+    else
+        echo "NOTE: ${BRANCH}'s tree differs from ${REL_BRANCH} after the land (it was cut from main, or the release moved) — branch left as it was."
+    fi
+    say "shipped — landed on ${REL_BRANCH}:"
+    git log --oneline -1 "$REL_R1"
+    printf 'SHIP_STATUS: shipped\n'
+    if [[ "$RELEASE_ONTO_NOOP" != 1 ]]; then
+        printf '\n\033[33m⚡ release fix on %s only (lint ran on this tree); main is unchanged — the release merges back after its deploy. The release push'"'"'s check.yml run is its gate.\033[0m\n' "$REL_BRANCH"
+    fi
+}
+
 # After the pushes (lock long released): put the thread branch right and say
 # what happened. Merge origin/main in; when the tree then equals origin/main's
 # the branch holds nothing but what landed, so reset to it, else warn.
 _release_after_landing() {
     local url=""
+    if [[ -n "$ONTO" ]]; then
+        _onto_after_landing
+        return
+    fi
     _relock
     git_network fetch -q origin main || true
     if [[ -n "$(git status --porcelain)" ]]; then

@@ -31,7 +31,6 @@ from precis.workers.job_types import (
     get_job_type,
     known_job_types,
     land_slice,
-    release_poll,
     run_slice,
 )
 
@@ -258,7 +257,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return 5150 + len(calls["launch"])
 
     monkeypatch.setattr(land_slice, "_git", fake_git)
-    monkeypatch.setattr(run_slice, "changed_paths", lambda tree: calls["changed_paths"])
+
+    def fake_changed_paths(tree: Path, base: str = "origin/main") -> Any:
+        calls.setdefault("changed_base", []).append(base)
+        return calls["changed_paths"]
+
+    monkeypatch.setattr(run_slice, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(land_slice, "spot_selection", lambda tree: calls["spot"])
     monkeypatch.setattr(land_slice, "_launch", fake_launch)
     monkeypatch.setattr(land_slice, "_process_alive", lambda pid: calls["alive"])
@@ -277,24 +281,6 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         return dict(calls["preflight"])
 
     monkeypatch.setattr(land_slice, "_drift_preflight", fake_preflight)
-    # The open release pass the land freeze reads (gr651885): none by
-    # default, so the freeze never holds a land; the SQL read is the seam.
-    calls["open_pass"] = None
-    monkeypatch.setattr(release_poll, "_open_pass_id", lambda store: calls["open_pass"])
-    # The todos a reviewer names as its FIX/REVERT ``review.task`` (SQL).
-    calls["corrective"] = set()
-    monkeypatch.setattr(
-        release_poll,
-        "_corrective_land",
-        lambda store, todo_id: todo_id in calls["corrective"],
-    )
-    # A frozen land's slot release (STATUS:waiting_time, SQL): recorded.
-    calls["slot_released"] = []
-    monkeypatch.setattr(
-        land_slice,
-        "_release_slot",
-        lambda ctx, due, why: calls["slot_released"].append((due, why)),
-    )
     # Docker seams: no test reaches a daemon. `_sweep_stacks` records the
     # keep tree and returns `evicted_stacks`; `_evict_stack` records
     # (project, volumes) and returns `evict_ok`.
@@ -695,6 +681,162 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
         ["log", "--reverse", "--no-merges", "--format=%s", "origin/main..HEAD"],
         tree,
     ) in seams["git"]
+
+
+RELEASE_GREEN_LOG = (
+    "release fix → release/r7 only (--onto; main is not touched)\n"
+    "shipped — landed on release/r7:\n"
+    f"abc1234 {SUBJECT}\n"
+    "SHIP_STATUS: shipped\n"
+)
+
+
+def _main_reads(seams: dict[str, Any]) -> list[list[str]]:
+    """Every git call this land made against main's ref."""
+    return [
+        args
+        for args, _cwd in seams["git"]
+        if "main" in args or any("origin/main" in a for a in args)
+    ]
+
+
+@pytest.mark.parametrize("where", ["meta", "brief"])
+def test_a_release_fix_lands_on_its_release_branch_and_leaves_main_alone(
+    seams: dict[str, Any], where: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """release-train T1: a slice whose todo names ``release/r7`` as its
+    land target — ``meta.land_target`` or a ``land target:`` brief line —
+    ships ``--quick --onto release/r7`` (lint-only even on an engine
+    diff), reads its subject and the already-landed proof against the
+    release branch, never probes main's drift gate, and takes its sha from
+    ship's ``landed on release/r7:`` line. No git call touches main."""
+    store = _Store()
+    if where == "meta":
+        store.add_todo(42, meta={"land_target": "release/r7", "op": "run_slice"})
+    else:
+        store.add_todo(42)
+        store.chunks.rows[42].append(
+            _Chunk(0, "Fix the cluster.\nland target: release/r7", "todo_body")
+        )
+    _relaxed_deny(monkeypatch)
+    seams["changed_paths"] = [_ENGINE_PATH]  # would earn --checked on main
+    ctx, handle = _submit(store, seams)
+    tree = seams["tree"]
+    assert ctx.failure is None, ctx.failure
+    [(argv, _kw)] = seams["launch"]
+    assert argv == [
+        str(tree / "scripts" / "ship"),
+        "--quick",
+        "--onto",
+        "release/r7",
+        SUBJECT,
+    ]
+    assert ctx.meta_set["land_target"] == "release/r7"
+    assert ctx.meta_set["spot_selection"] is False
+    assert seams["probed"] == [], "main's drift preflight ran for a release fix"
+    calls = [args for args, _cwd in seams["git"]]
+    assert [
+        "log",
+        "--reverse",
+        "--no-merges",
+        "--format=%s",
+        "origin/release/r7..HEAD",
+    ] in calls
+    refspec = "+refs/heads/release/r7:refs/remotes/origin/release/r7"
+    assert ["fetch", "--quiet", "origin", refspec] in calls
+    assert ["diff", "--quiet", "origin/release/r7", "HEAD"] in calls
+    assert _main_reads(seams) == []
+
+    pctx = _Ctx(store, _params(seams))
+    _finish(handle, 0, RELEASE_GREEN_LOG)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert pctx.meta_set["landed_sha"] == FULL_SHA
+    assert ["rev-parse", "--verify", "--quiet", "abc1234^{commit}"] in [
+        args for args, _cwd in seams["git"]
+    ]
+    assert _main_reads(seams) == []
+    assert any(c.startswith("landed: abc123400") for c in store.comments(42))
+
+
+def test_a_release_fix_is_refused_once_the_release_deploy_started(
+    seams: dict[str, Any],
+) -> None:
+    """T1 review: ship's round lock is this host's checkout, not the deploy
+    owner's — the land reads the plan's ``meta.release`` instead and,
+    once the deploy started, refuses before ship launches: nothing
+    pushed, no attempt burned, the re-land capped at the ask."""
+    store = _Store()
+    store.add_todo(
+        1,
+        meta={
+            "release": {
+                "rN": "r7",
+                "sha": FULL_SHA,
+                "range": "a..b",
+                "deploy_started_at": "2026-11-12T10:00:00Z",
+            }
+        },
+    )
+    store.add_todo(
+        42,
+        tags=("plan:1", "claimed-by:lane-claude-sub"),
+        meta={"land_target": "release/r7", "op": "run_slice"},
+    )
+    ctx, handle = _submit(store, seams)
+    assert handle is None
+    assert seams["launch"] == []
+    assert ctx.failure is not None and "takes no more fixes" in ctx.failure
+    assert "deploy started at 2026-11-12T10:00:00Z" in ctx.failure
+    assert ctx.meta_set["land_again_cap"] is True
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "attempt:1" not in store.tag_strings(42)
+    assert store.comments(42)[-1].startswith("handoff: lander: land REFUSED")
+
+
+def test_a_normal_slice_still_lands_on_main(seams: dict[str, Any]) -> None:
+    """No land target — a brief that only CITES a release branch in prose
+    is not one — lands exactly as before: ``--quick`` onto main, the
+    subject read against origin/main, main's drift preflight run."""
+    store = _Store()
+    store.add_todo(42, meta={"op": "run_slice"})
+    store.chunks.rows[42].append(
+        _Chunk(0, "release/r7 went red on this test; fix it on main.", "todo_body")
+    )
+    assert land_slice.land_target(store, _params(seams), 42) is None
+    ctx, handle = _submit(store, seams)
+    tree = seams["tree"]
+    assert ctx.failure is None, ctx.failure
+    [(argv, _kw)] = seams["launch"]
+    assert argv == [str(tree / "scripts" / "ship"), "--quick", SUBJECT]
+    assert "land_target" not in ctx.meta_set
+    assert seams["probed"] == [tree]
+    calls = [args for args, _cwd in seams["git"]]
+    assert ["fetch", "--quiet", "origin", "main"] in calls
+    assert [
+        "log",
+        "--reverse",
+        "--no-merges",
+        "--format=%s",
+        "origin/main..HEAD",
+    ] in calls
+    assert not any("release/" in a for args in calls for a in args)
+    pctx = _Ctx(store, _params(seams))
+    _finish(handle, 0, GREEN_LOG)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.meta_set["landed_sha"] == FULL_SHA
+
+
+def test_a_release_target_needs_the_release_branch_shape() -> None:
+    """A malformed target never redirects a land: only ``release/r<N>``."""
+    from precis.plans import release as R
+
+    assert R.land_target_of({"land_target": "release/r7"}) == "release/r7"
+    assert R.land_target_of({"land_target": "main"}) is None
+    assert R.land_target_of({"land_target": "release/r7; rm"}) is None
+    assert R.land_target_of({}, "x\nland target: release/r12\n") == "release/r12"
+    assert R.land_target_of({}, "land target: main") is None
+    assert R.land_target_of({}, "the land target: release/r7 is named") is None
 
 
 def test_submit_uses_the_stated_subject(seams: dict[str, Any]) -> None:
@@ -2214,202 +2356,6 @@ def test_poll_at_not_before_relaunches_once(
     # the relaunch is now running: polls wait on it, no further launch
     assert land_slice.poll(pctx, handle) is False
     assert len(seams["launch"]) == 2
-
-
-# ── gr651885: lands freeze while a re-cut waits on the tip's reviews ──
-
-#: The open release pass's root in the freeze tests.
-_PASS = 7
-#: The latch's ``since`` is the trip: the first land that read the freeze.
-FROZEN = (
-    "land frozen: release re-cut r291 waits for the tip's reviews "
-    "(since 2026-11-01T10:00:00Z)"
-)
-
-
-def _frozen_store(
-    seams: dict[str, Any],
-    *,
-    held_s: int = 900,
-    kind: str | None = "tip",
-    release: bool = True,
-    plan: int | None = None,
-    line: str = "engine land td43 pending",
-) -> _Store:
-    """Todo 42 to land, beside open release pass td7 whose re-cut r291
-    has been held on the tip's reviews for ``held_s`` seconds at T0."""
-    store = _Store()
-    tags = ("claimed-by:lane-claude-sub",) + ((f"plan:{plan}",) if plan else ())
-    store.add_todo(42, tags=tags)
-    since = (T0 - timedelta(seconds=held_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    hold: dict[str, Any] = {"since": since, "lines": [line]}
-    if kind is not None:
-        hold["kind"] = kind
-    meta: dict[str, Any] = {"cut_hold": hold}
-    if release:
-        meta["release"] = {"rN": "r291", "sha": "c" * 40}
-    store.add_todo(_PASS, status="open", tags=("release-pass",), meta=meta)
-    seams["open_pass"] = _PASS
-    return store
-
-
-def test_a_land_waits_attempt_free_while_a_recut_is_held_past_the_threshold(
-    seams: dict[str, Any], clock: dict[str, datetime]
-) -> None:
-    """r290 → r291: the factory landed faster than the reviews drained,
-    so the re-cut (which only cuts a fully-reviewed origin/main) never
-    fired. Past the threshold a land parks before ship — no failure, no
-    attempt, no deferral rung — and goes on once the hold clears."""
-    store = _frozen_store(seams)
-    ctx, handle = _submit(store, seams)
-    assert seams["launch"] == [] and seams["probed"] == []
-    assert ctx.failure is None and ctx.status is None
-    assert handle["not_before"] == "2026-11-01T10:02:00Z"
-    assert handle["frozen"] == FROZEN
-    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
-    assert "pid" not in handle and "main_refusals" not in handle
-    assert ctx.meta_set["compute_handle"] == handle
-    assert ctx.meta_set["compute_handle_released"] is False
-    assert ctx.meta_set["deadline"] == T0.timestamp() + 120 + land_slice.wall_seconds()
-    assert ctx.chunks == [("job_event", f"land_slice: {FROZEN}")]
-    # The freeze latched on the plan root, and the slot went back.
-    assert store.refs[_PASS].meta["land_freeze"] == {
-        "since": "2026-11-01T10:00:00Z",
-        "rN": "r291",
-    }
-    assert seams["slot_released"] == [(T0 + timedelta(seconds=120), FROZEN)]
-    tags = store.tag_strings(42)
-    assert "claimed-by:lane-claude-sub" in tags
-    assert not any(t.startswith("attempt:") for t in tags)
-    assert store.comments(42) == []
-    # The hold clears without a cut: the latch keeps the land parked, the
-    # reason line not repeated, the slot released again.
-    store.refs[_PASS].meta["cut_hold"] = None
-    clock["t"] = T0 + timedelta(seconds=120)
-    pctx = _Ctx(store, _params(seams))
-    assert land_slice.poll(pctx, handle) is False
-    assert seams["launch"] == [] and pctx.chunks == [] and pctx.status is None
-    assert handle["not_before"] == "2026-11-01T10:04:00Z"
-    assert pctx.meta_set["compute_handle"] == handle
-    assert len(seams["slot_released"]) == 2
-    # A cut lifts the latch: the next recheck runs ship.
-    release_poll.clear_land_freeze(store, _PASS)
-    clock["t"] = T0 + timedelta(seconds=240)
-    pctx = _Ctx(store, _params(seams))
-    assert land_slice.poll(pctx, handle) is False
-    assert len(seams["launch"]) == 1 and handle["pid"] == 5151
-    assert "not_before" not in handle and "frozen" not in handle
-    assert len(seams["slot_released"]) == 2
-
-
-@pytest.mark.parametrize(
-    "setup",
-    [
-        {"held_s": 899},  # under the threshold
-        {"kind": None},  # a script refusal's hold, not the tip's reviews
-        {"release": False},  # a first cut's hold: no release open yet
-        {"plan": _PASS},  # the release pass's own land (its fix loop)
-    ],
-)
-def test_a_land_goes_on_under_the_threshold_or_outside_a_recut_hold(
-    seams: dict[str, Any], clock: dict[str, datetime], setup: dict[str, Any]
-) -> None:
-    store = _frozen_store(seams, **setup)
-    ctx, handle = _submit(store, seams)
-    assert len(seams["launch"]) == 1 and handle["pid"] == 5151
-    assert not any("frozen" in text for _kind, text in ctx.chunks)
-
-
-def test_a_land_goes_on_with_no_release_pass_open(
-    seams: dict[str, Any], clock: dict[str, datetime]
-) -> None:
-    store = _frozen_store(seams)
-    seams["open_pass"] = None
-    _ctx, handle = _submit(store, seams)
-    assert len(seams["launch"]) == 1 and handle["pid"] == 5151
-
-
-@pytest.mark.parametrize("named_by", ["review_task", "hold_line"])
-def test_a_land_the_hold_waits_on_is_never_frozen(
-    seams: dict[str, Any], clock: dict[str, datetime], named_by: str
-) -> None:
-    """gr651885 review: a post-land review's FIX/REVERT mints the
-    corrective todo the cut holds on (``review.task``); freezing it would
-    park the one land that unblocks the cut until the 3 h expiry. Any
-    todo a hold line names passes the same way."""
-    if named_by == "review_task":
-        store = _frozen_store(seams)
-        seams["corrective"] = {42}
-    else:
-        line = (
-            "engine review td12 on the td43 land was FIX; its fix td42 is not "
-            "landed yet — next: let td42 land"
-        )
-        store = _frozen_store(seams, line=line)
-    ctx, handle = _submit(store, seams)
-    assert len(seams["launch"]) == 1 and handle["pid"] == 5151
-    assert not any("frozen" in text for _kind, text in ctx.chunks)
-    assert seams["slot_released"] == []
-    # The freeze itself still tripped (the latch): other lands wait.
-    assert store.refs[_PASS].meta["land_freeze"]["rN"] == "r291"
-
-
-def test_a_parked_land_never_takes_the_land_lock(
-    seams: dict[str, Any],
-    clock: dict[str, datetime],
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The freeze check runs before ``_launch_ship``'s land flock
-    (gr650484): a frozen land parks without holding the flock or writing
-    its stamp — on the first launch and on every recheck. Submit's
-    ``_ship_busy`` peek stays ahead of the freeze (it releases at once and
-    stamps nothing; a live ship of this slice is adopted, not frozen) and
-    reads "free" here."""
-    gitdir = tmp_path / "frozen-gitdir"
-    gitdir.mkdir()
-    taken: list[Path] = []
-
-    def no_lock(path: Path) -> Any:
-        taken.append(path)
-        raise AssertionError("a parked land took the land lock")
-
-    monkeypatch.setattr(land_slice, "_ship_busy", lambda tree, todo_id, branch: None)
-    monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda tree: gitdir)
-    monkeypatch.setattr(land_slice, "_try_land_lock", no_lock)
-    monkeypatch.setattr(
-        land_slice, "_stamp_lock_holder", lambda *a, **k: taken.append(gitdir)
-    )
-    store = _frozen_store(seams)
-    ctx, handle = _submit(store, seams)
-    assert handle["frozen"] == FROZEN and ctx.failure is None
-    clock["t"] = T0 + timedelta(seconds=120)
-    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is False
-    assert handle["frozen"] == FROZEN
-    assert taken == [] and seams["launch"] == []
-
-
-def test_an_unreadable_freeze_lets_the_land_go_on(
-    seams: dict[str, Any],
-    clock: dict[str, datetime],
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The freeze only paces lands: a read that raises fails open with a
-    warning, never a red land or a park."""
-
-    def boom(store: Any, **_kw: Any) -> str | None:
-        raise RuntimeError("db down")
-
-    monkeypatch.setattr(release_poll, "land_freeze", boom)
-    store = _frozen_store(seams)
-    with caplog.at_level("WARNING", logger=land_slice.__name__):
-        ctx, handle = _submit(store, seams)
-    assert len(seams["launch"]) == 1 and handle["pid"] == 5151
-    assert ctx.failure is None and seams["slot_released"] == []
-    assert any(
-        "land-freeze read for td42 failed" in r.getMessage() for r in caplog.records
-    )
 
 
 def test_ship_flag_is_checked_only_on_a_spot_selection() -> None:

@@ -102,7 +102,7 @@ def _exit(seen: dict[str, Any], code: int, out: str) -> None:
 
 def _fix_plan(store: Store) -> tuple[Any, dict[str, int]]:
     """A release pass with a recorded cut and the release-fix loop's
-    iteration minted (digest -> fix -> recut -> poll)."""
+    iteration minted (digest -> fix -> poll)."""
     mint = T.mint_release_pass(store)
     R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r", host="node-a")
     it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1)

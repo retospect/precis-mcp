@@ -31,13 +31,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    the loop itself parks it outright — no re-mint, no close (td610546).
    A body with no minter
    closes the loop with a comment naming the gap. A ``release-fix`` loop's automatic cap is
-   :data:`_RELEASE_FIX_AUTO_CAP` regardless of its stamped ``max``: the
+   :data:`_RELEASE_FIX_AUTO_CAP` (its node stamps no ``max``): the
    second red iteration files a ruling ask (naming the round, the head
    sha and the failing CI) and closes the loop — a third fix is a human
-   call (me573231). The cap counts iterations that honestly RAN red: an
-   iteration whose fixes all landed but whose re-cut closed without a
-   cut re-opens its re-cut and poll once instead of asking (gr653036 —
-   the re-cut starts on its own).
+   call (me573231).
 2a. **reviews** — a reviewer generator (``meta.generate.role ==
    'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
    its newest comment starting ``review:`` posted since that job was minted
@@ -335,7 +332,7 @@ in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
 dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N``; the
-actions follow it. A ``release_cut`` node's dispatch refusal (a re-cut
+actions follow it. A ``release_cut`` node's dispatch refusal (a cut
 held on the tip's reviews) is also one ``job_result`` line and a log
 line, once per change of its text (``meta.cut_refusal_logged`` on the
 node; gr651885) — the summary's notes are capped and nobody saw r291's.
@@ -792,9 +789,10 @@ _ASK_OPTIONS: list[str] = [
 ]
 #: Automatic ``release-fix`` iterations the tick runs unattended
 #: (me573231): two red fixes, then the exhausted-loop ask — a third fix
-#: never starts by itself. The stamped ``meta.loop.max`` may allow more;
-#: the cap here governs what the tick does on its own.
-_RELEASE_FIX_AUTO_CAP = 2
+#: never starts by itself. A release-fix loop stamps no ``meta.loop.max``
+#: (``nodes.TICK_CAPPED_BODIES``); one an older pass stamped is ignored.
+#: The one number is ``templates.RELEASE_FIX_CAP``.
+_RELEASE_FIX_AUTO_CAP = _templates.RELEASE_FIX_CAP
 _LOOP_ASK_OPTIONS: list[str] = [
     "close this pass and let release_poll start a fresh one",
     "hand release with /go",
@@ -1381,53 +1379,6 @@ def _close_loop(w: _Writer, res: PassResult, n: _Node, why: str) -> None:
     res.notes.append(f"loop td{n.id} closed: {why}")
 
 
-def _unrun_recut(plan: _Plan, loop: _Node) -> tuple[_Node, _Node] | None:
-    """``(recut, poll)`` to re-open when the loop's last iteration left
-    its landed fixes untried (gr653036): every ``run_slice`` fix child
-    of ``loop`` closed behind a succeeded ``land_slice``, and the newest
-    ``release_cut`` child closed without a succeeded job — a re-cut that
-    held below origin/main and was killed rather than let through. The
-    pair re-opens once: the re-cut starts on its own next tick, its poll
-    re-arms under the ``rearmed_after_job`` floor so the new cut's
-    verdict is what the ``until`` reads.
-
-    ``None`` when the cap honestly ran red — the newest re-cut cut (its
-    poll read the verdict), a fix is unlanded, the pair is blocked or
-    exclusion-tagged (a reopened node that could never dispatch would
-    stall the loop instead), the re-cut's newest job is ``cancelled``
-    (a release step never blind-re-runs, :data:`_REQUEUE_ON_CANCEL`),
-    or the re-cut already re-armed once (``meta.recut_rearmed``) — the
-    exhausted-loop ask then fires as before."""
-    children = [c for c in plan.child_todos(loop) if "ask" not in c.meta]
-    fixes = [c for c in children if _op_type(c) == DEFAULT_OP]
-    recuts = [c for c in children if _op_type(c) == "release_cut"]
-    polls = [c for c in children if _op_type(c) == "ci_verdict_poll"]
-    if not fixes or not recuts or not polls:
-        return None
-    unlanded = [
-        c
-        for c in fixes
-        if not any(
-            j.status == "succeeded" and j.meta.get("job_type") == "land_slice"
-            for j in plan.jobs(c)
-        )
-    ]
-    if unlanded:
-        return None
-    recut = max(recuts, key=lambda c: c.id)
-    if recut.meta.get("recut_rearmed") or plan.blocked(recut) or _excluded(plan, recut):
-        return None
-    jobs = plan.jobs(recut)
-    if any(j.status == "succeeded" for j in jobs):
-        return None
-    if jobs and jobs[-1].status == "cancelled":
-        return None
-    poll = max(polls, key=lambda c: c.id)
-    if plan.blocked(poll) or _excluded(plan, poll):
-        return None
-    return recut, poll
-
-
 def _step_loops(
     store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
 ) -> None:
@@ -1455,39 +1406,13 @@ def _step_loops(
         body = spec.get("body")
         if body == "release-fix":
             # me573231: the automatic cap governs, not the stamped max.
-            cap = min(cap, _RELEASE_FIX_AUTO_CAP)
+            cap = _RELEASE_FIX_AUTO_CAP
         until = _gates.evaluate(store, spec.get("until") or {}, todo_id=n.id, now=now)
         if until.open:
             _close_loop(w, res, n, f"until is met ({until.why})")
             continue
         if count >= cap:
             if body == "release-fix" and not spec.get("exhausted_ask"):
-                owed = _unrun_recut(plan, n)
-                if owed is not None:
-                    # gr653036: the iteration's fixes all landed but its
-                    # re-cut never ran — the cap counts red iterations,
-                    # and an iteration nobody re-cut is not one. The
-                    # re-cut and its poll re-open once and start on
-                    # their own; a re-cut killed again, or one that ran
-                    # red, takes the ask below.
-                    recut, poll = owed
-                    for node in (recut, poll):
-                        w.set_status(node, "open")
-                        ended = [j for j in plan.jobs(node) if j.status in _JOB_ENDED]
-                        stamp: dict[str, Any] = {"recut_rearmed": True}
-                        if ended:
-                            stamp["rearmed_after_job"] = ended[-1].id
-                        w.stamp_meta(node, stamp)
-                        w.comment(
-                            node,
-                            "plan_dispatch: re-opened — the iteration's fixes "
-                            "all landed and its re-cut never ran (gr653036)",
-                        )
-                    res.notes.append(
-                        f"loop td{n.id}: re-opened un-run re-cut td{recut.id} "
-                        f"and poll td{poll.id} — the fixes landed, no re-cut ran"
-                    )
-                    continue
                 if w.dry_run:
                     res.notes.append(
                         f"loop td{n.id}: would file the exhausted release-fix ask"
@@ -2130,6 +2055,48 @@ def _mint_coordinator_ask(
     return ask_id
 
 
+def _reviewed_shas(store: Any, plan: _Plan, n: _Node) -> list[str]:
+    """The landed shas the reviewer ``n`` judged: its targets' ``landed:``
+    shas, else the sha a sha-keyed reviewer names."""
+    shas = [s for t in _review_targets(plan, n) if (s := _landed_sha(store, t.id))]
+    if not shas and (from_sha := _review_sha(n)) is not None:
+        shas = [from_sha]
+    return shas
+
+
+def _release_scope_target(store: Any, shas: list[str]) -> str | None:
+    """``release/r<N>`` when one of ``shas`` is inside the open release's
+    scope — its cut range or a commit on the release branch
+    (``release_poll._release_lands``, the deploy gate's own scope) —
+    and that release still takes fixes (no deploy started); else
+    ``None`` (the corrective lands on main). The deploy gate wants a
+    FIX/REVERT's corrective ON the release branch (release-train T4),
+    so a corrective minted for main would hold the deploy until a human
+    answers. Any read fault reads ``None``."""
+    if not shas:
+        return None
+    from precis.workers.job_types import release_poll as _rp
+
+    try:
+        root = _rp._open_pass_id(store)
+        if root is None:
+            return None
+        rel = _release.release_of(store, root)
+        if rel is None or _release.deploy_started(store, root) is not None:
+            return None
+        lands = _rp._release_lands(rel)
+    except Exception:
+        log.warning("plan_dispatch: release scope unreadable", exc_info=True)
+        return None
+    for land in lands:
+        if any(
+            land.sha.startswith(s.lower()) or s.lower().startswith(land.sha)
+            for s in shas
+        ):
+            return _release.release_branch(str(rel["rN"]))
+    return None
+
+
 def _review_fix(
     store: Any,
     plan: _Plan,
@@ -2182,15 +2149,28 @@ def _review_fix(
         if _review_sha(n) is not None
         else f"{handle}'s brief is the intent"
     )
-    body = (
-        f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
-        f"main. Fix them on a fresh slice and land it; {intent}."
-    )
+    target = _release_scope_target(store, _reviewed_shas(store, plan, n))
+    if target is None:
+        body = (
+            f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
+            f"main. Fix them on a fresh slice and land it; {intent}."
+        )
+    else:
+        # release-train T3 review F2: the land is inside the open release,
+        # whose deploy waits for this corrective on its own branch.
+        body = (
+            f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land "
+            f"inside {target}. Fix them on a fresh slice cut from "
+            f"origin/{target}; the lander lands it onto {target}, never main; "
+            f"{intent}.\nland target: {target}"
+        )
     fix_id = _mint_task(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
     )
     node = plan.nodes[fix_id]
     w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
+    if target is not None:
+        w.stamp_meta(node, {_release.LAND_TARGET_KEY: target})
     if depth >= FIX_ESCALATE_DEPTH:
         # gr604629: two rounds could not close the finding — the third is
         # born model-pinned to the ladder's top rung (the ``model`` pin
@@ -2264,24 +2244,38 @@ def _review_revert(
         from_sha = _review_sha(n)
         if from_sha is not None:
             shas = [from_sha]
+    # release-train T3 review F2: a land inside the open release is
+    # reverted on its release branch, where the deploy gate wants it.
+    target = _release_scope_target(store, shas)
+    where = target or "main"
     if len(shas) == 1:
-        title = f"Revert {shas[0]} on main"
+        title = f"Revert {shas[0]} on {where}"
     elif shas:
-        title = f"Revert {len(shas)} landed slices of {handle} on main"
+        title = f"Revert {len(shas)} landed slices of {handle} on {where}"
     else:
-        title = f"Revert the {handle} land on main"
+        title = f"Revert the {handle} land on {where}"
     named = (
         ", ".join(f"`{s}`" for s in shas)
         if shas
         else f"the squash commit(s) naming {handle} (`git log --grep {handle} origin/main`)"
     )
-    body = (
-        f"Revert {named} on main: `git revert --no-edit <sha>` for each, newest "
-        "first; resolve conflicts against the current main; commit with a "
-        f"`revert(...)` subject and land it as a normal slice (scripts/ship).\n\n"
-        f"Why (review td{n.id}): {why}"
-    )
+    if target is None:
+        body = (
+            f"Revert {named} on main: `git revert --no-edit <sha>` for each, "
+            "newest first; resolve conflicts against the current main; commit "
+            "with a `revert(...)` subject and land it as a normal slice "
+            f"(scripts/ship).\n\nWhy (review td{n.id}): {why}"
+        )
+    else:
+        body = (
+            f"Revert {named} on {target}: on a slice cut from origin/{target}, "
+            "`git revert --no-edit <sha>` for each, newest first; commit with "
+            f"a `revert(...)` subject; the lander lands it onto {target}, "
+            f"never main.\nland target: {target}\n\nWhy (review td{n.id}): {why}"
+        )
     revert_id = _mint_task(store, plan, w, n.root, title, body, now)
+    if target is not None:
+        w.stamp_meta(plan.nodes[revert_id], {_release.LAND_TARGET_KEY: target})
     requeue = [t for t, sha in landed if sha] or targets
     for t in requeue:
         claims = _claims(t)
@@ -4542,7 +4536,7 @@ def _step_ci_rerun(
     once-per-run rule also lives in :func:`_release.ci_rerun_fired`),
     then the plan's own ``ci_verdict_poll`` records the rerun's verdict
     (no second reader). Green closes the node moot-style so the loop's
-    recut re-reads the run; red re-arms the digest — the loop continues
+    poll re-reads the run; red re-arms the digest — the loop continues
     as today. Anything blocking files one stall comment and the deduped
     root ask, never a retry. Runs between :func:`_step_phases` and
     :func:`_step_dispatch` — the park tag's ``waiting-for:`` prefix keeps
@@ -4572,7 +4566,7 @@ def _step_ci_rerun(
                 w.set_status(n, "done")
                 res.notes.append(
                     f"td{n.id}: rerun of run {run_id} recorded green; fix "
-                    "closed, the recut re-reads the run"
+                    "closed, the poll re-reads the run"
                 )
             else:
                 _rerun_stall(
@@ -5230,7 +5224,7 @@ def _step_dispatch(
             )
             and "target_node" not in params
         ):
-            # The deploy, a re-cut, the red-run digest and the runtime
+            # The deploy, the cut, the red-run digest and the runtime
             # confirm run where the cut ran (meta.release.host, td543856,
             # td543855, td573431, td573432); the first cut has none and
             # stays unpinned.
@@ -5645,16 +5639,19 @@ def _mint_loop_ask(store: Any, n: _Node, count: int, why: str) -> int:
         f"release {rn}: {count} fix iteration(s) ended red — "
         "close this pass or hand the release to a human?"
     )
+    branch = _release.release_branch(rn) if rn != "?" else "the release branch"
     body = (
         f"The {rn} pass's release-fix loop minted {count} fix iteration(s) "
-        f"and every one ended red ({why}). No further iteration is minted: "
-        "two run unattended, a third is a human call (me573231). "
-        "release_poll mints no fresh pass while this pass's root stays "
-        "open, and this ask holds the root open until it is closed. Fix "
-        "main by hand, then close this todo and the pass root "
-        "STATUS:won't-do — release_poll starts a fresh pass on the fixed "
-        "main — or answer 'hand release with /go' to run the release "
-        "yourself."
+        f"on {branch} and every one ended red ({why}). No further iteration "
+        f"is minted: {_RELEASE_FIX_AUTO_CAP} run unattended, the next is a "
+        "human call (me573231). release_poll mints no fresh pass while this "
+        "pass's root stays open, and this ask holds the root open until it is "
+        f"closed. Fix forward on {branch} by hand — a fix written on a tree cut "
+        f"from origin/{branch}, landed with `scripts/ship --onto {branch}`, "
+        "or a fix main already has cherry-picked onto it — then push; the "
+        "release head's own check.yml run is the verdict. Or answer 'hand "
+        "release with /go' to run the release yourself. Main gets the fixes "
+        "when the release merges back after its deploy."
     )
     with store.tx() as conn:
         ref = store.insert_ref(

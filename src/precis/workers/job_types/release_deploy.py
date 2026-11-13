@@ -18,6 +18,17 @@ round on that head, fail closed, an existing answer never overwritten).
 :func:`submit` re-checks before launching. There is no param that names a
 release: r<N> comes only from the plan root's ``meta.release``.
 
+**Reviews hold the deploy** (release train, Reto 2026-11-12). The
+engine-review gate never holds the cut; it holds this node:
+:func:`precis.workers.job_types.release_poll.deploy_review_blockers`
+judges every engine land inside the release — the cut's recorded range
+plus the fixes on ``release/r<N>`` after it — and the FIX/REVERT
+correctives their clearances rest on must be on ``release/r<N>``. A
+land on main after the cut is the next release's and holds nothing.
+:func:`validate_submit` refuses while any line stands (the tick notes
+"not dispatched" and mints nothing) and :func:`submit` re-checks; any
+gate read error refuses — fail closed.
+
 **Host pin.** ``release_cut`` records the ``host`` and ``checkout`` it ran in
 on ``meta.release``; the tick mints this job with ``params.target_node`` =
 that host, :func:`validate_submit` refuses any other (or no) node, and
@@ -55,6 +66,7 @@ from typing import Any
 
 from precis.plans import release as _release
 from precis.workers.job_types import release_cut as _rc
+from precis.workers.job_types import release_poll as _rp
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -124,6 +136,9 @@ def _refusal(
     )
     if pin is not None:
         return f"{NAME}: {pin}", None
+    held = _rp.deploy_review_blockers(store, todo_id)
+    if held:
+        return f"{NAME}: {rn} waits on its engine reviews — {'; '.join(held)}", None
     return None, rn
 
 
@@ -142,6 +157,15 @@ def submit(ctx: Any, spec: Any) -> Any:
         ctx.record_failure(reason or f"{NAME}: no approved release")
         return None
     ctx.set_meta(release=rn)
+    # release-train T1: from here the release takes no more fixes — a
+    # release-fix land reads this stamp (``release.deploy_started``)
+    # before it launches ship onto release/r<N>. Stamped before the
+    # deploy script runs; what is left is a land already past its check
+    # (a ship launched before this stamp, still in its lint).
+    ctx.append_chunk(
+        "job_event",
+        f"{NAME}: " + _release.mark_deploy_started(ctx.store, int(params["todo_id"])),
+    )
     return _rc.launch_script(ctx, NAME, ["--deploy-only", rn])
 
 
@@ -226,12 +250,27 @@ def _landed(root: Path, prev: str, head: str) -> list[str]:
     return [s[:n] for s in proc.stdout.split()]
 
 
+#: The deploy script's own words for a refusal before any rollout (the
+#: backup-window refusal, scripts/deploy): no host moved.
+_NO_HOST_TOUCHED = "no host was touched"
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     done = _rc.finish_run(ctx, handle, NAME)
     if done is None:
         return not isinstance(handle, dict)
     exit_code, log_text = done
     if exit_code not in (0, 3):
+        if _NO_HOST_TOUCHED in log_text:
+            # release-train T3 review F5: the script refused before any
+            # host moved (the backup window, a pin refusal) — the release
+            # is not deploying, so it takes fixes again.
+            todo_id = ((ctx.meta or {}).get("params") or {}).get("todo_id")
+            if isinstance(todo_id, int):
+                ctx.append_chunk(
+                    "job_event",
+                    f"{NAME}: " + _release.clear_deploy_started(ctx.store, todo_id),
+                )
         _rc.fail_with_tail(
             ctx, f"{NAME}: scripts/release --deploy-only exit {exit_code}", log_text
         )

@@ -74,6 +74,12 @@ _GATE_ARG_KEYS: dict[str, tuple[str, ...]] = {
 _SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 _TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
+#: Loop bodies whose iteration limit the dispatch tick owns, so their
+#: node may stamp no ``meta.loop.max``: ``release-fix`` runs under
+#: ``plan_dispatch._RELEASE_FIX_AUTO_CAP`` (me573231) — the release
+#: train retired the template's own stamped cap (Reto 2026-11-12).
+TICK_CAPPED_BODIES: frozenset[str] = frozenset({"release-fix"})
+
 #: The accepted shape per key, quoted in ``next=`` hints.
 PLAN_SHAPES: dict[str, str] = {
     "op": "'<job_type name>' or {'type': '<job_type name>', 'params': {...}}",
@@ -199,7 +205,10 @@ def _loop_problems(loop: Any) -> list[str]:
         return [f"meta.loop: {bad}"]
     out: list[str] = []
     cap = loop.get("max")
-    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+    tick_capped = cap is None and loop.get("body") in TICK_CAPPED_BODIES
+    if not tick_capped and (
+        isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0
+    ):
         out.append(f"meta.loop.max={cap!r} must be an integer > 0")
     if "until" not in loop:
         out.append("meta.loop.until is required (a gate spec)")

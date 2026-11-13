@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 from precis.plans import lanes as L
-from precis.plans import pr_class as P
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
@@ -3864,10 +3863,17 @@ def test_release_fix_body_shape(store: Store) -> None:
     mint = T.TEMPLATES["release-pass"].mint(store, None)
     loop = mint.ids["loop"]
     body = T.mint_body(store, loop, "release-fix", iteration=2)
-    assert set(body.ids) == {"digest", "fix", "recut", "poll"}
+    # release-train T1: no re-cut; the restamp waits on the fix, the poll
+    # on the restamp.
+    assert set(body.ids) == {"digest", "fix", "restamp", "poll"}
     assert _meta(store, body.ids["digest"])["op"] == "ci_red_digest"
-    assert _meta(store, body.ids["recut"])["op"] == "release_cut"
+    assert _meta(store, body.ids["restamp"])["op"] == {
+        "type": "ci_verdict_poll",
+        "params": {"restamp": True, "todo_id": body.ids["restamp"]},
+    }
     assert _meta(store, body.ids["poll"])["op"] == "ci_verdict_poll"
+    # No cut recorded on this plan: the fix has no release to land on.
+    assert "land_target" not in _meta(store, body.ids["fix"])
     assert body.root_id == loop
     for todo_id in body.ids.values():
         assert f"plan:{mint.root_id}" in _open_tags(store, todo_id)
@@ -3969,7 +3975,6 @@ def test_parked_fix_mints_the_ci_rerun_once_per_run_id(store: Store) -> None:
     assert meta[pd.ATTEMPT_FREE_KEY] == "ci-rerun"
     assert _status(store, it["fix"]) == "open"
     assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
-    assert _jobs_under(store, it["recut"]) == []
     assert _jobs_under(store, it["poll"]) == []
     assert _rerun_asks(store, mint.root_id) == []
     # A second pass while the rerun is in flight mints no second job.
@@ -3995,31 +4000,11 @@ def test_accepted_rerun_mints_the_verdict_poll(store: Store) -> None:
     assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
 
 
-def test_green_rerun_closes_the_fix_and_the_recut_runs(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_green_rerun_closes_the_fix_and_the_poll_runs(store: Store) -> None:
     """The rerun's poll recording green closes the fix moot-style
     (``validated: flake`` comment, no attempt, no ask) — then the
-    loop's own re-cut node re-reads the run: nothing re-mints it."""
-
-    def _gh(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
-        # The re-cut's validate recomputes the newest fully-reviewed
-        # head (gr592271) — the compare against the scan's pin
-        # (td601005); no lands, so it cuts the pinned tip.
-        data: Any = (
-            {
-                "status": "ahead",
-                "ahead_by": 1,
-                "behind_by": 0,
-                "commits": [{"sha": "5" * 40}],
-            }
-            if "/compare/prod..." in url
-            else {}
-        )
-        return SimpleNamespace(status_code=200, json=lambda: data)
-
-    monkeypatch.setattr(P, "_http_get", _gh)
-    monkeypatch.setattr(P, "resolve_repo", lambda *a, **k: "o/r")
+    iteration's own poll (blocked-by the fix, no re-cut since
+    release-train T1) re-reads the run: nothing re-mints it."""
     mint, it = _parked_release_fix(store)
     pd.run_pass(store)
     _succeed_rerun(store, it["fix"])
@@ -4035,8 +4020,10 @@ def test_green_rerun_closes_the_fix_and_the_recut_runs(
     )
     assert _rerun_asks(store, mint.root_id) == []
     pd.run_pass(store)
-    _job_id, meta = _jobs_under(store, it["recut"])[-1]
-    assert meta["job_type"] == "release_cut"
+    # The restamp (no re-cut since release-train T1) follows the fix.
+    _job_id, meta = _jobs_under(store, it["restamp"])[-1]
+    assert meta["job_type"] == "ci_verdict_poll"
+    assert meta["params"]["restamp"] is True
 
 
 def test_red_rerun_stalls_once_and_rearms_the_digest(store: Store) -> None:
@@ -7800,50 +7787,7 @@ def test_rearm_releases_dead_claim_and_stamps_rescue_answered(store: Store) -> N
     assert meta["rescue_answered"] == {"cls": "stalled", "ask": ask, "job": job}
 
 
-# ── gr651885: the land freeze leaves reviews alone; a held cut is logged ──
-
-
-def _held_release_pass(store: Store) -> int:
-    """A bare open release-pass todo whose re-cut r291 has been held on
-    the tip's reviews for half an hour: ``rp.land_freeze`` holds."""
-    since = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    meta = {
-        "release": {"rN": "r291", "sha": "c" * 40},
-        "cut_hold": {
-            "since": since,
-            "lines": ["engine land td43 pending"],
-            "kind": "tip",
-        },
-    }
-    with store.tx() as conn:
-        ref = store.insert_ref(
-            kind="todo", slug=None, title="release pass", meta=meta, conn=conn
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("STATUS", "open"),
-            set_by="system",
-            replace_prefix=True,
-            conn=conn,
-        )
-        store.add_tag(ref.id, Tag.open("release-pass"), set_by="system", conn=conn)
-    return int(ref.id)
-
-
-def test_a_post_land_review_dispatches_while_lands_are_frozen(store: Store) -> None:
-    """The freeze sits in the lander only: the reviews are what drains
-    the hold, so a landed build's review still dispatches."""
-    _held_release_pass(store)
-    assert rp.land_freeze(store) is not None
-    mint = _review_plan(store)
-    build, review = mint.ids["build"], mint.ids["review"]
-    _job(store, build, lane="claude-sub")
-    _todo_comment(store, build, "landed: abc1234 — the fix")
-    _mark_done(store, build)
-    res = pd.run_pass(store)
-    assert res.dispatched == 1
-    ((_job_id, meta),) = _jobs_under(store, review)
-    assert meta["job_type"] == "run_slice"
+# ── gr651885: a held cut is logged ──────────────────────────────────
 
 
 def test_a_release_cut_refusal_is_logged_once_per_reason(

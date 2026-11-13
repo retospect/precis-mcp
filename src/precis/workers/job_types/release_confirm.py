@@ -102,6 +102,14 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "todo_id": {"type": "integer"},
         # ssh_node's host pin (the host holding the release checkout).
         "target_node": {"type": "string"},
+        # The release-pass merge_back node (release-train T3): merge
+        # release/r<N> into main instead of attesting the runtime
+        # (precis.workers.job_types.release_merge_back).
+        "merge_back": {"type": "boolean"},
+        # merge_back after a conflict: "ours" records the ancestry only,
+        # once the resolver todo named by ``resolver`` landed the content.
+        "strategy": {"type": "string", "enum": ["ours"]},
+        "resolver": {"type": "integer"},
         "resources": {
             "type": "object",
             "properties": {"wall_seconds": {"type": "integer"}},
@@ -677,6 +685,12 @@ def submit(ctx: Any, spec: Any) -> Any:
     reason, rn = _refusal(ctx.store, params, running=True)
     if reason is not None or rn is None:
         ctx.record_failure(reason or f"{NAME}: no release on the plan root")
+        return None
+    if params.get("merge_back"):
+        # release-train T3: the merge-back mode — synchronous, terminal.
+        from precis.workers.job_types import release_merge_back as _mb
+
+        _mb.run(ctx, params)
         return None
     rel = _release.release_of(ctx.store, int(params["todo_id"])) or {}
     now = datetime.now(UTC)

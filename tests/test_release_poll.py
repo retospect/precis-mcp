@@ -52,6 +52,10 @@ _GIT_LANDS: list[Any] = []
 #: target to (td601005); tests move it to model main moving.
 _GIT_PIN: list[str] = [MAIN_SHA]
 
+#: The fake release scope — the cut's range plus the commits on
+#: ``release/r<N>`` after it (``rp._release_lands``, release train T4).
+_REL_LANDS: list[Any] = []
+
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,8 +67,12 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_RELEASE_REPO", raising=False)
     psettings.invalidate()
     _GIT_LANDS.clear()
+    _REL_LANDS.clear()
     _GIT_PIN[0] = MAIN_SHA
     monkeypatch.setattr(rp, "_git_lands", lambda: (list(_GIT_LANDS), _GIT_PIN[0]))
+    monkeypatch.setattr(
+        rp, "_release_lands", lambda rel: list(_REL_LANDS), raising=False
+    )
 
 
 def _at(hour: int, minute: int) -> datetime:
@@ -179,9 +187,9 @@ def test_mints_when_ahead_and_idle(
     assert root is not None and "release-pass" in _tags(store, root)
     assert f"release-main:{MAIN_SHA[:12]}" in _tags(store, root)
     members = _plan_members(store, root)
-    # root, cut, poll, gate, loop, approval, deploy, confirm
-    assert len(members) == 8
-    ops = sorted(str(m["op"]) for m in members if "op" in m)
+    # root, cut, poll, gate, loop, approval, deploy, confirm, merge_back
+    assert len(members) == 9
+    ops = sorted(str(m["op"]) for m in members if isinstance(m.get("op"), str))
     assert ops == [
         "ci_verdict_poll",
         "release_confirm",
@@ -192,6 +200,41 @@ def test_mints_when_ahead_and_idle(
     calls = _fake_github(monkeypatch)
     again = rp.run_pass(store, repo=REPO, now=NOW)
     assert calls == [] and again.blocker == f"release-pass td{root} is open"
+
+
+def test_a_merge_back_alone_mints_no_pass_a_real_land_after_it_does(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """release-train T3: the merge-back commit alone puts main ahead of
+    prod with prod's own tree (the compare's ``files`` is empty) — no
+    pass for an identical tree. One real land after it, and one mints."""
+    merge = {"sha": MAIN_SHA, "parents": [{"sha": "e" * 40}, {"sha": HEAD_SHA}]}
+    calls = _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "commits": [merge],
+            "files": [],
+        },
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None and "tree equals prod's" in res.blocker
+    assert calls == [f"{API}/compare/prod...{MAIN_SHA}"]
+    _fake_github(
+        monkeypatch,
+        compare={
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "commits": [merge, {"sha": "f" * 40}],
+            "files": [{"filename": "src/precis/x.py", "status": "modified"}],
+        },
+    )
+    again = rp.run_pass(store, repo=REPO, now=NOW)
+    assert again.minted is not None, again.blocker
 
 
 def test_closed_pass_does_not_block(
@@ -1889,7 +1932,9 @@ def test_a_deploying_leg_waiting_files_nothing(
 
 # ── the engine-review gate (td574937 E1) ───────────────────────────
 #
-# A release never cuts over an engine land its reviewer has not read:
+# A release never deploys an engine land its reviewer has not read (the
+# release train, T4: the gate holds the deploy, never the pass or its
+# cut — ``_gate`` below reads its lines as the poll writes them):
 # the gate enumerates every engine-stamped ``land_slice`` job that
 # SUCCEEDED (``meta.landed_sha`` not null — a failed land has no key, a
 # no-diff land a JSON null) and asks whether a reviewer covers the landed
@@ -2011,40 +2056,39 @@ def _slicer_child(store: Store) -> tuple[int, int]:
     return int(s.id), int(c.id)
 
 
-def _release_fix(store: Store) -> int:
-    """A fix todo under a ``release-fix`` loop — the parentage
-    ``_release_fix_todo`` reads for the must-carry rule (gr653036)."""
-    loop = store.insert_ref(
-        kind="todo",
-        slug=None,
-        title="fix and re-cut until green",
-        meta={"loop": {"max": 3, "until": {}, "body": "release-fix"}},
+def _gate(
+    store: Store, *, now: datetime = NOW, dry_run: bool = False
+) -> tuple[str, list[str]]:
+    """The engine-review gate as the poll writes it — the mint-and-ask
+    read (``file_asks``) over main ahead of prod: ``(the joined blocker
+    lines, notes)``, ``""`` when every land is cleared. These lines hold
+    the deploy of the release carrying the lands (T4), never a pass."""
+    lines, notes = rp.engine_review_blockers(
+        store, now=now, file_asks=True, dry_run=dry_run
     )
-    fix = store.insert_ref(
-        kind="todo",
-        slug=None,
-        title="the release fix",
-        meta=None,
-        parent_id=int(loop.id),
-    )
-    return int(fix.id)
+    return "; ".join(lines), notes
 
 
-def test_open_engine_reviewer_blocks_a_pass(
+def test_an_open_engine_reviewer_holds_the_gate_but_not_the_pass(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Release train T4: a first cut cuts origin/main's tip and needs no
+    reviews — the pending land is a note on the mint; the gate's line
+    (the deploy's hold) still names it."""
     calls = _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])
     rid = _reviewer(store, 42)
     res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td42" in res.blocker
-    assert "next:" in res.blocker
-    # gr592271: the blocked verdict needs the compare's commit window —
-    # the one read it costs. The in-flight and main-sha probes stay
-    # unspent.
-    assert calls == [f"{API}/compare/prod...{MAIN_SHA}"]
+    assert res.minted is not None, res.blocker
+    target = R.release_target_of(store, res.minted)
+    assert target is not None and target["sha"] == MAIN_SHA
+    assert any("td42" in n and "hold the deploy, not the cut" in n for n in res.notes)
+    assert calls == [
+        f"{API}/compare/prod...{MAIN_SHA}",
+        f"{API}/git/matching-refs/heads/release/",
+    ]
+    blocker, _notes = _gate(store)
+    assert f"td{rid}" in blocker and "td42" in blocker and "next:" in blocker
 
 
 def test_a_slicer_reviewer_covers_its_childs_land(
@@ -2052,410 +2096,59 @@ def test_a_slicer_reviewer_covers_its_childs_land(
 ) -> None:
     """``generate.from`` names the slicer; the land job names the slice —
     one level up ``parent_id`` is still coverage."""
-    _fake_github(monkeypatch)
     slicer, child = _slicer_child(store)
     _engine_land(store, child, paths=["scripts/ship"])
     rid = _reviewer(store, slicer)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and f"td{child}" in res.blocker
+    blocker, _notes = _gate(store)
+    assert f"td{rid}" in blocker and f"td{child}" in blocker
 
 
 def test_reviewer_closed_land_does_not_block(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])
     _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
-def test_the_pass_cuts_the_newest_fully_reviewed_head(
+def test_the_pass_cuts_the_pinned_tip_over_a_pending_review(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr592271: main = prod + [A reviewed, B pending] — the pass mints
-    at A; B's open review no longer starves it (the r252 stall)."""
+    """Release train T4 (replaces gr592271's cut below the oldest
+    pending land): main = prod + [A reviewed, B pending] — the pass mints
+    at the pinned tip B, recording the whole window; B's review holds
+    the deploy instead."""
     a, b = "a" * 40, "b" * 40
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
-    _reviewer(store, 43)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None, res.blocker
-    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
-    target = R.release_target_of(store, res.minted)
-    assert target is not None
-    assert target["sha"] == a and target["upto"] == [a[:12]]
-    assert any("td43" in n for n in res.notes)
-
-
-def test_an_uncleared_land_blocks_everything_after_it(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gr592271: [A LAND, B FIX unlanded, C LAND] — B's fix gates C, so
-    the pass cuts A even though C is reviewed."""
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _reviewer(store, 43, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    _engine_land(store, 44, paths=["scripts/ship"], sha=c)
-    _reviewer(store, 44, status="done", review={"verdict": "LAND"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None, res.blocker
-    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
-    target = R.release_target_of(store, res.minted)
-    assert target is not None
-    assert target["sha"] == a and target["upto"] == [a[:12]]
-
-
-def test_nothing_cleared_blocks_and_names_the_pending_reviews(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gr592271 keeps the fail-closed rule: an uncleared land at the
-    window's start leaves nothing to cut — the blocker names the
-    pending review."""
-    a, b = "a" * 40, "b" * 40
-    calls = _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    rid = _reviewer(store, 42)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td42" in res.blocker
-    assert calls == [f"{API}/compare/prod...{MAIN_SHA}"]
-
-
-def test_a_fix_cleared_land_needs_its_fix_inside_the_cut(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601005: [A FIX, B pending, C fixes A] — A's clearance rests on
-    C, and C sits past the pending B. The pass may not cut A without
-    its fix: nothing clears, the blocker names B's review."""
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
-    _GIT_PIN[0] = c
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _landed_comment(store, int(fix.id), sha=c)
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
-    rid = _reviewer(store, 43)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td43" in res.blocker
-
-
-def test_the_cut_carries_the_fix_commit(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601005: [A FIX, C fixes A, B pending] — the cut reaches C, so
-    A's FIX clearance holds: the pass mints at C, shipping land and
-    fix together."""
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
     _GIT_PIN[0] = b
     _fake_github(
         monkeypatch,
         compare={
             "status": "ahead",
-            "ahead_by": 3,
+            "ahead_by": 2,
             "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": c}, {"sha": b}],
+            "commits": [{"sha": a}, {"sha": b}],
         },
     )
     _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _landed_comment(store, int(fix.id), sha=c)
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
     _engine_land(store, 43, paths=["scripts/ship"], sha=b)
     _reviewer(store, 43)
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None, res.blocker
-    assert f"release-main:{c[:12]}" in _tags(store, res.minted)
+    assert f"release-main:{b[:12]}" in _tags(store, res.minted)
     target = R.release_target_of(store, res.minted)
     assert target is not None
-    assert target["sha"] == c and target["upto"] == [a[:12], c[:12]]
-
-
-def test_an_unreviewed_release_fix_holds_the_whole_window(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gr653036 (r291 → r292): [A reviewed, F a landed release-fix still
-    under review] — before, the cut sat at A under the landed fix and
-    shipped the same red again. F is a must-carry: it holds the whole
-    window, so the fresh pass waits for the fix's own review."""
-    a, f = "a" * 40, "b" * 40
-    _GIT_PIN[0] = f
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": f}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    fix = _release_fix(store)
-    _engine_land(store, fix, paths=["scripts/ship"], sha=f)
-    rid = _reviewer(store, fix)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and f"td{fix}" in res.blocker
-
-
-def test_a_cleared_release_fix_still_pins_the_cut_at_or_above_it(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gr653036: [A reviewed, G pending, F a landed release-fix already
-    reviewed] — G alone would cut at A, below the fix: that ships F's
-    red. The must-carry span pins the cut at-or-above F, so nothing
-    clears and the pass waits for G's review."""
-    a, g, f = "a" * 40, "9" * 40, "b" * 40
-    _GIT_PIN[0] = f
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": g}, {"sha": f}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=g)
-    rid = _reviewer(store, 43)
-    fix = _release_fix(store)
-    _engine_land(store, fix, paths=["scripts/ship"], sha=f)
-    _reviewer(store, fix, status="done", review={"verdict": "LAND"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td43" in res.blocker
-
-
-def test_a_landed_release_fix_is_carried_once_everything_clears(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The complement of the pin: every land reviewed — the pass mints
-    at the head, carrying the release-fix in the cut's ``upto``."""
-    a, f = "a" * 40, "b" * 40
-    _GIT_PIN[0] = f
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": f}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    fix = _release_fix(store)
-    _engine_land(store, fix, paths=["scripts/ship"], sha=f)
-    _reviewer(store, fix, status="done", review={"verdict": "LAND"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None, res.blocker
-    assert f"release-main:{f[:12]}" in _tags(store, res.minted)
-    target = R.release_target_of(store, res.minted)
-    assert target is not None
-    assert target["sha"] == f and target["upto"] == [a[:12], f[:12]]
-
-
-def _app_land(store: Store, todo_id: int, *, sha: str) -> int:
-    """A ``land_slice`` job for td<todo_id> whose commit touched only
-    application code and tests — no ``ENGINE_PATHS`` hit, so the gate's
-    engine filter would drop the commit before any unit sees it (the
-    td653689 gap)."""
-    return _engine_land(
-        store,
-        todo_id,
-        paths=["src/precis/store/thing.py", "tests/test_thing.py"],
-        sha=sha,
-    )
-
-
-def test_an_app_code_release_fix_still_pins_the_cut(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td653100 review: [A reviewed, G pending, F a landed release-fix
-    touching only application code and tests] — the engine filter used
-    to drop F's commit before ``must_carry`` marked it, so G's pending
-    review pushed the fresh cut to A and the release shipped the same
-    red again. F is a carry-only unit now: nothing clears below it, the
-    pass waits for G — and once G reviews it mints carrying the fix."""
-    a, g, f = "a" * 40, "9" * 40, "b" * 40
-    _GIT_PIN[0] = f
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": g}, {"sha": f}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=g)
-    rid = _reviewer(store, 43)
-    fix = _release_fix(store)
-    _app_land(store, fix, sha=f)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td43" in res.blocker
-    # The fix rode no review: nothing minted for it, no ask filed.
-    assert _review_wait_asks(store) == []
-    assert _reviewer_keys(store) == ["td42", "td43"]
-
-    # Once G clears the pass cuts at the head, carrying the fix.
-    store.stamp_ref_meta(rid, {"review": {"verdict": "LAND"}})
-    _close(store, rid)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None, res.blocker
-    assert f"release-main:{f[:12]}" in _tags(store, res.minted)
-    target = R.release_target_of(store, res.minted)
-    assert target is not None
-    assert target["sha"] == f and target["upto"] == [a[:12], g[:12], f[:12]]
-
-
-def test_an_app_code_release_fix_is_carry_only_not_gated(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The non-engine fix rides no review: nothing mints a reviewer for
-    it and no wait ask files — it is carry-only, and with everything
-    else clear the pass mints at the head carrying it (td653689)."""
-    a, f = "a" * 40, "b" * 40
-    _GIT_PIN[0] = f
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": f}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    fix = _release_fix(store)
-    _app_land(store, fix, sha=f)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None, res.blocker
-    assert _review_wait_asks(store) == []
-    target = R.release_target_of(store, res.minted)
-    assert target is not None
-    assert target["sha"] == f and target["upto"] == [a[:12], f[:12]]
-
-
-def test_an_unlinked_app_code_release_fix_still_pins_the_cut(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A hand-landed fix — no ``land_slice`` stamp, no subject handle —
-    is still tracked through the fix's own ``landed:`` record
-    (td653689): [A reviewed, G pending, F the fix] waits on G rather
-    than cut at A below it."""
-    a, g, f = "a" * 40, "9" * 40, "b" * 40
-    _GIT_PIN[0] = f
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": g}, {"sha": f}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=g)
-    rid = _reviewer(store, 43)
-    fix = _release_fix(store)
-    _landed_comment(store, fix, sha=f)
-    _hand_land(f, "fix(release): the red (gr999)", ["src/precis/store/thing.py"])
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td43" in res.blocker
-
-
-def test_a_fix_sha_off_main_blocks_and_says_so(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601005: the fix's ``landed:`` sha names no commit on main
-    ahead of prod — an unverifiable clearance; the pass stays blocked
-    and the blocker names the missing corrective commit."""
-    a = "a" * 40
-    _GIT_PIN[0] = a
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 1,
-            "behind_by": 0,
-            "commits": [{"sha": a}],
-        },
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _landed_comment(store, int(fix.id), sha="0" * 40)
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert "corrective commit" in res.blocker and "0" * 12 in res.blocker
+    assert target["sha"] == b and target["upto"] == [a[:12], b[:12]]
+    assert any("td43" in n for n in res.notes)
 
 
 def test_the_pass_pins_the_cut_to_the_scanned_head(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td601005: main moved after the scan — the recorded target is
-    the scanned head, never the newer tip, so an unreviewed land
-    reaching main mid-pass cannot ride the recorded sha. The pass
-    never reads the main ref at all."""
+    the scanned head, never the newer tip, so a land reaching main
+    mid-pass cannot ride the recorded sha. The pass never reads the
+    main ref at all."""
     a = "a" * 40
     _GIT_PIN[0] = a
     calls = _fake_github(
@@ -2479,35 +2172,11 @@ def test_the_pass_pins_the_cut_to_the_scanned_head(
     assert f"{API}/compare/prod...{a}" in calls
 
 
-def test_an_empty_compare_fails_closed_on_an_unverifiable_fix(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601285: the compare answers ahead with no commit list and the
-    FIX's ``landed:`` sha names no commit in the scan — corrective
-    membership cannot be verified, so the pass stays blocked instead
-    of falling back to the pin."""
-    a = "a" * 40
-    _GIT_PIN[0] = a
-    _fake_github(
-        monkeypatch,
-        compare={"status": "ahead", "ahead_by": 1, "behind_by": 0},
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _landed_comment(store, int(fix.id), sha="0" * 40)
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert "corrective commit" in res.blocker and "0" * 12 in res.blocker
-
-
-def test_an_empty_compare_orders_on_the_scan(
+def test_an_empty_compare_records_the_scans_window(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td601285: no commit list in the compare — the scan's own
-    ordering stands in: [A FIX, C fixes A] mints at C and records the
-    scanned window, a ``upto`` ``release_cut`` can validate."""
+    ordering stands in for the recorded ``upto`` window."""
     a, c = "a" * 40, "c" * 40
     _GIT_PIN[0] = c
     _fake_github(
@@ -2515,82 +2184,38 @@ def test_an_empty_compare_orders_on_the_scan(
         compare={"status": "ahead", "ahead_by": 2, "behind_by": 0},
     )
     _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _landed_comment(store, int(fix.id), sha=c)
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    # The fix commit sits inside the scanned window (a non-engine
-    # path: in ``scanned`` without being a gate unit itself).
     _GIT_LANDS.append(
         rp._GitLand(sha=c, subject="", committed_at=None, paths=("docs/a.md",))
     )
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None, res.blocker
-    assert f"release-main:{c[:12]}" in _tags(store, res.minted)
     target = R.release_target_of(store, res.minted)
     assert target is not None
     assert target["sha"] == c and target["upto"] == [a[:12], c[:12]]
 
 
-def test_an_empty_compare_cuts_below_a_pending_review(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601285: no commit list in the compare — the scan still
-    positions lands, so a pending review past a cleared land holds
-    only the commits at-or-after it: the pass cuts A."""
-    a, b = "a" * 40, "b" * 40
-    _GIT_PIN[0] = b
-    _fake_github(
-        monkeypatch,
-        compare={"status": "ahead", "ahead_by": 2, "behind_by": 0},
-    )
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=b)
-    _reviewer(store, 43)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None, res.blocker
-    assert f"release-main:{a[:12]}" in _tags(store, res.minted)
-    target = R.release_target_of(store, res.minted)
-    assert target is not None
-    assert target["sha"] == a and target["upto"] == [a[:12]]
-
-
 def test_fix_reviewer_with_an_unlanded_fix_blocks(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["src/precis/plans/lanes.py"])
     fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
     rid = _reviewer(
         store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
     )
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and f"td{fix.id}" in res.blocker
+    blocker, _notes = _gate(store)
+    assert f"td{rid}" in blocker and f"td{fix.id}" in blocker
 
 
 def test_fix_reviewer_with_a_landed_fix_does_not_block(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
+    """The gate's own verdict; whether the release carries the fix is
+    the deploy hold's check (``rp.deploy_review_blockers``)."""
     _engine_land(store, 42, paths=["src/precis/plans/lanes.py"])
     fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
     _landed_comment(store, int(fix.id))
-    # The clearance holds only while the cut CARRIES the corrective
-    # commit (td601005): the fix's ``landed:`` sha sits inside the
-    # scanned window (a non-engine commit — in ``scanned``, not a unit).
-    _GIT_LANDS.append(
-        rp._GitLand(
-            sha="abc1234" + "0" * 33,
-            subject="",
-            committed_at=None,
-            paths=("docs/a.md",),
-        )
-    )
     _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_fix_reviewer_without_a_task_asks_at_once(
@@ -2598,25 +2223,21 @@ def test_fix_reviewer_without_a_task_asks_at_once(
 ) -> None:
     """A FIX naming no task can never resolve — the wait ask files at
     once, not after 24 h."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])
     _reviewer(store, 42, status="done", review={"verdict": "FIX"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None and res.blocker is not None
-    assert "without a usable verdict" in res.blocker
+    blocker, _notes = _gate(store)
+    assert "without a usable verdict" in blocker
     assert len(_review_wait_asks(store)) == 1
 
 
 def test_a_reviewer_closed_without_a_verdict_asks_at_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     for i, status in enumerate(("won't-do", "auto-timeout", "done")):
         _engine_land(store, 42 + i, paths=["scripts/ship"])
         _reviewer(store, 42 + i, status=status)  # no meta.review
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None and "without a usable verdict" in res.blocker
+    blocker, _notes = _gate(store)
+    assert "without a usable verdict" in blocker
     assert len(_review_wait_asks(store)) == 3
 
 
@@ -2625,13 +2246,11 @@ def test_a_failed_land_never_blocks(
 ) -> None:
     """Only a SUCCEEDED land holds the release: a failed job has no
     ``landed_sha`` key and a no-diff land stamps it JSON null."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"], landed=False)
     _engine_land(store, 43, paths=["scripts/ship"], landed=None)
     _reviewer(store, 42)
     _reviewer(store, 43)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_later_failed_land_does_not_mask_an_engine_land(
@@ -2639,13 +2258,10 @@ def test_a_later_failed_land_does_not_mask_an_engine_land(
 ) -> None:
     """The gate scans every job, not the newest: a failed re-land on top
     of a succeeded engine land leaves the engine land blocking."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])
     _engine_land(store, 42, paths=["scripts/ship"], landed=False)
     rid = _reviewer(store, 42)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None and f"td{rid}" in res.blocker
+    assert f"td{rid}" in _gate(store)[0]
 
 
 def test_the_fix_tasks_own_engine_land_blocks(
@@ -2655,16 +2271,13 @@ def test_the_fix_tasks_own_engine_land_blocks(
     parent is the plan, not the slicer): the gate mints the sha-keyed
     reviewer for it and blocks, even though the review it answered is
     satisfied."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])
     fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
     _engine_land(store, int(fix.id), paths=["src/precis/plans/lanes.py"])
     _landed_comment(store, int(fix.id))
     _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert "no reviewer" in res.blocker and f"td{fix.id}" in res.blocker
+    blocker, _notes = _gate(store)
+    assert "no reviewer" in blocker and f"td{fix.id}" in blocker
     keys = [
         str((m.get("generate") or {}).get("from")) for _r, m in rp._reviewer_rows(store)
     ]
@@ -2676,14 +2289,11 @@ def test_an_engine_land_with_no_reviewer_mints_one_at_once(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No covering reviewer at all: the gate mints the sha-keyed
-    reviewer at once — the pass still refuses, on the minted node."""
-    _fake_github(monkeypatch)
+    reviewer at once — the land still holds, on the minted node."""
     job = _engine_land(store, 42, paths=["scripts/ship"])
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert "no reviewer" in res.blocker
-    assert "td42" in res.blocker and f"jo{job}" in res.blocker
+    blocker, _notes = _gate(store)
+    assert "no reviewer" in blocker
+    assert "td42" in blocker and f"jo{job}" in blocker
     [(rid, meta)] = rp._reviewer_rows(store)
     assert str((meta.get("generate") or {}).get("from")).startswith("sha:")
     ref = store.get_ref(kind="todo", id=rid)
@@ -2928,8 +2538,7 @@ def test_the_minted_reviewers_land_verdict_clears(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Through the real judge (``plan_dispatch._step_reviews``): the
-    minted reviewer's LAND verdict closes it done, the gate clears and
-    the pass mints."""
+    minted reviewer's LAND verdict closes it done and the gate clears."""
     _fake_github(monkeypatch)
     use_lanes(monkeypatch)
     _root_id, build = _plan_landed(store)
@@ -2942,8 +2551,7 @@ def test_the_minted_reviewers_land_verdict_clears(
     res = pd.run_pass(store)
     assert res.reviews == 1
     assert _status(store, rid) == "done"
-    poll = rp.run_pass(store, repo=REPO, now=NOW)
-    assert poll.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_minted_reviewers_revert_does_not_loop(
@@ -3114,7 +2722,7 @@ def test_the_gate_mints_at_most_two_reviewers_per_pass(
 def test_the_cut_read_names_the_gate_not_an_ask(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``file_asks=False`` (release_cut): no ask exists to answer —
+    """``file_asks=False`` (the deploy's read): no ask exists to answer —
     the blocker names the gate, not a filing that never happened."""
     _fake_github(monkeypatch)
     use_lanes(monkeypatch)
@@ -3122,7 +2730,7 @@ def test_the_cut_read_names_the_gate_not_an_ask(
     _engine_land(store, build, paths=["scripts/ship"])
     blockers, _notes = rp.engine_review_blockers(store, now=NOW)
     [line] = blockers
-    assert "the review gate holds the cut" in line
+    assert "the review gate holds the deploy" in line
     assert "review-wait ask" not in line
 
 
@@ -3130,15 +2738,13 @@ def test_an_answered_wait_ask_clears_the_land(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A ruling answered on the ask — an ``answer:`` comment — clears
-    that one land; the next pass mints."""
-    _fake_github(monkeypatch)
+    that one land; the gate's next read is clear."""
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
     rid = _reviewer(store, 42)
     # The reviewer has sat open since the land: the 24 h clock (the
     # newer of land and reviewer) is due.
     _created_at(store, rid, NOW - timedelta(hours=25))
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
+    assert _gate(store)[0] != ""
     [ask_id] = _review_wait_asks(store)
     store.chunks.insert_chunks(
         ask_id,
@@ -3151,8 +2757,7 @@ def test_an_answered_wait_ask_clears_the_land(
         ],
     )
     _close(store, ask_id)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_wait_ask_answered_in_its_body_clears_the_land(
@@ -3161,15 +2766,13 @@ def test_a_wait_ask_answered_in_its_body_clears_the_land(
     """gr645663: ``precis-todo-tree-help``'s ask close records the answer
     in the ask's details body (``edit(mode='replace', body='…\\nAnswer:
     …')``), not as an ``answer:`` comment — that clears the land too:
-    the ask stays deduped and the next pass mints."""
-    _fake_github(monkeypatch)
+    the ask stays deduped and the gate's next read is clear."""
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
     rid = _reviewer(store, 42)
     # The reviewer has sat open since the land: the 24 h clock (the
     # newer of land and reviewer) is due.
     _created_at(store, rid, NOW - timedelta(hours=25))
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
+    assert _gate(store)[0] != ""
     [ask_id] = _review_wait_asks(store)
     # The documented body close: details retained, answer a later line.
     store.chunks.replace_body_chunk(
@@ -3178,8 +2781,7 @@ def test_a_wait_ask_answered_in_its_body_clears_the_land(
         chunk_kind="todo_body",
     )
     _close(store, ask_id)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
     assert _review_wait_asks(store) == [ask_id]
 
 
@@ -3189,18 +2791,15 @@ def test_a_wait_ask_body_without_an_answer_line_does_not_clear(
     """gr645663: the body read is line-level — the ask's own filed body
     (which mentions answering) does not self-answer, and a closed ask
     whose body holds no ``answer:`` line is still refiled."""
-    _fake_github(monkeypatch)
     use_lanes(
         monkeypatch,
         L.Lane("code-only", "claude_p", "s", 1, frozenset({"code"}), vendor="x"),
     )
     _engine_land(store, 42, paths=["scripts/ship"])
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
+    assert _gate(store)[0] != ""
     [first] = _review_wait_asks(store)
     _close(store, first)  # gate-written body — mentions answering, no answer: line
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None and res.blocker is not None
+    assert _gate(store)[0] != ""
     asks = _review_wait_asks(store)
     assert len(asks) == 2 and first in asks
 
@@ -3210,7 +2809,6 @@ def test_a_terminal_unlanded_fix_asks_at_once(
 ) -> None:
     """A FIX whose fix task ended without landing can never resolve — the
     ask files without the 24 h wait, naming what to do."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])  # fresh land
     fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
     store.add_tag(
@@ -3222,11 +2820,9 @@ def test_a_terminal_unlanded_fix_asks_at_once(
     rid = _reviewer(
         store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
     )
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and f"td{fix.id}" in res.blocker
-    assert "no `landed: <sha>` record" in res.blocker
+    blocker, _notes = _gate(store)
+    assert f"td{rid}" in blocker and f"td{fix.id}" in blocker
+    assert "no `landed: <sha>` record" in blocker
     assert len(_review_wait_asks(store)) == 1
 
 
@@ -3235,7 +2831,6 @@ def test_an_open_reviewer_under_a_dead_root_asks_at_once(
 ) -> None:
     """An open reviewer whose plan root is cancelled can never finish —
     ask at once, not after 24 h."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"])  # fresh land
     root = store.insert_ref(kind="todo", slug=None, title="the plan", meta=None)
     store.add_tag(
@@ -3245,21 +2840,17 @@ def test_an_open_reviewer_under_a_dead_root_asks_at_once(
         replace_prefix=True,
     )
     rid = _reviewer(store, 42, parent_id=int(root.id))
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert "cancelled root" in res.blocker and f"td{rid}" in res.blocker
+    blocker, _notes = _gate(store)
+    assert "cancelled root" in blocker and f"td{rid}" in blocker
     assert len(_review_wait_asks(store)) == 1
 
 
 def test_non_engine_land_does_not_block(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["docs/a.md", "src/precis/foo.py"])
     _reviewer(store, 42)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_land_with_no_engine_stamp_counts_as_non_engine(
@@ -3267,34 +2858,28 @@ def test_a_land_with_no_engine_stamp_counts_as_non_engine(
 ) -> None:
     """A pre-E1 ``land_slice`` job carries no ``engine_paths`` stamp; it
     reads as non-engine and never blocks."""
-    _fake_github(monkeypatch)
     _engine_land(store, 42)  # no paths → no stamp
     _reviewer(store, 42)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_review_wait_under_24h_blocks_without_an_ask(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=2)
     _reviewer(store, 42)
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None and res.blocker is not None
+    assert _gate(store)[0] != ""
     assert _review_wait_asks(store) == []
 
 
 def test_a_review_wait_over_24h_files_one_ask(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _engine_land(store, 42, paths=["scripts/ship"], hours_ago=25)
     rid = _reviewer(store, 42)
     # Open since the land: the wait clock (the newer stamp) is due.
     _created_at(store, rid, NOW - timedelta(hours=25))
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None and res.blocker is not None
+    assert _gate(store)[0] != ""
     asks = _review_wait_asks(store)
     assert len(asks) == 1
     ref = store.get_ref(kind="todo", id=asks[0])
@@ -3304,21 +2889,21 @@ def test_a_review_wait_over_24h_files_one_ask(
     assert ask["options"] == ["acknowledged", "false alarm"]
     assert ask["blocks"] == "nothing"
     assert f"td{rid}" in ask["context"] and "td42" in ask["context"]
+    assert "holds the deploy" in ask["context"]
     tags = _tags(store, asks[0])
     # The ask keys on the LAND's todo: answering it clears that one land.
     assert {"ask-user", "showstopper", "release-review-wait:td42"} <= tags
     # Deduped while the ask is open: a second pass files nothing new.
-    rp.run_pass(store, repo=REPO, now=NOW)
+    _gate(store)
     assert _review_wait_asks(store) == asks
     # Closed WITHOUT an ``answer:`` comment the ask does not hold: the
     # next pass refiles it and the blocker names the new ask's id.
     _close(store, asks[0])
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None and res.blocker is not None
+    blocker, _notes = _gate(store)
     more = _review_wait_asks(store)
     assert len(more) == 2 and asks[0] in more
     second = next(a for a in more if a != asks[0])
-    assert f"td{second}" in res.blocker
+    assert f"td{second}" in blocker
 
 
 def test_a_wait_ask_closed_unanswered_is_refiled(
@@ -3328,26 +2913,23 @@ def test_a_wait_ask_closed_unanswered_is_refiled(
     clear the land: the gate files a new ask for it and the blocker
     names that ask's id. The land is unmintable on a code-only lane
     table, so the ask path is what runs."""
-    _fake_github(monkeypatch)
     use_lanes(
         monkeypatch,
         L.Lane("code-only", "claude_p", "s", 1, frozenset({"code"}), vendor="x"),
     )
     _engine_land(store, 42, paths=["scripts/ship"])
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
+    _gate(store)
     [first] = _review_wait_asks(store)
     _close(store, first)  # closed with no ``answer:`` comment
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None and res.blocker is not None
+    blocker, _notes = _gate(store)
     asks = _review_wait_asks(store)
     assert len(asks) == 2 and first in asks
     second = next(a for a in asks if a != first)
-    assert f"td{second}" in res.blocker
+    assert f"td{second}" in blocker
     assert "release-review-wait:td42" in _tags(store, second)
     # The still-open ask dedupes the next pass, and the no-filing read
-    # (release_cut's) names the live ask's id too.
-    rp.run_pass(store, repo=REPO, now=NOW)
+    # (the deploy's) names the live ask's id too.
+    _gate(store)
     assert _review_wait_asks(store) == asks
     lines, _notes = rp.engine_review_blockers(store, now=NOW)
     assert lines and f"td{second}" in "; ".join(lines)
@@ -3415,8 +2997,7 @@ def test_a_hand_engine_land_with_a_fix_reviewer_blocks_the_cut(
 ) -> None:
     """The incident shape: an engine commit on main, no ``land_slice``
     job, the todo its subject names carrying a FIX reviewer whose fix
-    has not landed — the pass refuses."""
-    _fake_github(monkeypatch)
+    has not landed — the gate holds it."""
     _hand_land(
         "186513b6e12f" + "0" * 28,
         "fix(plan): strictest verdict wins (gr574380, td42)",
@@ -3426,37 +3007,31 @@ def test_a_hand_engine_land_with_a_fix_reviewer_blocks_the_cut(
     rid = _reviewer(
         store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)}
     )
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is None
-    assert res.blocker is not None
-    assert f"td{rid}" in res.blocker and "td42" in res.blocker
+    blocker, _notes = _gate(store)
+    assert f"td{rid}" in blocker and "td42" in blocker
 
 
 def test_a_hand_engine_land_with_a_land_reviewer_passes(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _hand_land(
         "186513b6e12f" + "0" * 28,
         "fix(plan): strictest verdict wins (td42)",
         ["src/precis/plans/lanes.py"],
     )
     _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_non_engine_hand_land_never_blocks(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _fake_github(monkeypatch)
     _hand_land(
         "9" * 40,
         "docs(backlog): tidy up",
         ["docs/a.md", "src/precis/foo.py"],
     )
-    res = rp.run_pass(store, repo=REPO, now=NOW)
-    assert res.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_hand_land_naming_a_rootless_todo_gets_a_sha_reviewer(
@@ -3551,7 +3126,7 @@ def test_a_sha_reviewers_land_verdict_clears_the_hand_land(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Through the real judge: the sha-keyed reviewer's LAND verdict
-    closes it done and the pass mints."""
+    closes it done and the gate clears."""
     _fake_github(monkeypatch)
     use_lanes(monkeypatch)
     _hand_land("a" * 40, "fix(ship): tighten the gate", ["scripts/ship"])
@@ -3562,8 +3137,7 @@ def test_a_sha_reviewers_land_verdict_clears_the_hand_land(
     res = pd.run_pass(store)
     assert res.reviews == 1
     assert _status(store, rid) == "done"
-    poll = rp.run_pass(store, repo=REPO, now=NOW)
-    assert poll.minted is not None
+    assert _gate(store)[0] == ""
 
 
 def test_a_sha_reviewers_revert_closes_and_the_revert_task_gates(
@@ -3588,26 +3162,13 @@ def test_a_sha_reviewers_revert_closes_and_the_revert_task_gates(
     task = (ref.meta.get("review") or {}).get("task")
     assert isinstance(task, int)
     # The reviewer stays closed — no re-dispatch, no second verdict —
-    # while the gate holds the cut on the unlanded revert task.
+    # while the gate holds the land on the unlanded revert task.
     pd.run_pass(store)
     assert _status(store, rid) == "done"
     assert len(rp._reviewer_rows(store)) == 1
-    poll = rp.run_pass(store, repo=REPO, now=NOW)
-    assert poll.minted is None
-    assert poll.blocker is not None and f"td{task}" in poll.blocker
+    assert f"td{task}" in _gate(store)[0]
     _todo_comment(store, task, "landed: b9c8d7e6f5 — revert")
-    # The revert lands on main inside the scanned window — the cut
-    # carries it, so the REVERT clearance holds (td601005/td601285).
-    _GIT_LANDS.append(
-        rp._GitLand(
-            sha="b9c8d7e6f5" + "0" * 30,
-            subject="",
-            committed_at=None,
-            paths=("docs/a.md",),
-        )
-    )
-    poll = rp.run_pass(store, repo=REPO, now=NOW)
-    assert poll.minted is not None
+    assert _gate(store)[0] == ""
 
 
 # ── gr611217: reviewers while a pass is open; FIX correctives clear ──
@@ -3687,11 +3248,37 @@ def _fix_chain(
     return int(fix.id), rid
 
 
-def test_a_fix_chain_with_its_corrective_cuts_at_the_tip(
+def test_an_open_cut_pass_mints_reviewers_for_its_release_branch_fixes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Release train T4: a fix landed on ``release/r7`` is not on main,
+    so the main scan never sees it — the open pass's tick also reads
+    its own release (``rp._release_lands``) and mints the fix's
+    reviewer, which r7's deploy then waits on."""
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "9" * 12 + ".." + "c" * 12)
+    _fake_github(monkeypatch)
+    _REL_LANDS.append(
+        rp._GitLand(
+            sha="7e1ea5e00" + "0" * 31,
+            subject="fix(gate): on the branch",
+            committed_at=NOW,
+            paths=("scripts/ship",),
+        )
+    )
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.blocker == f"release-pass td{mint.root_id} is open"
+    assert _reviewer_keys(store) == ["sha:7e1ea5e00000"]
+    [line] = rp.deploy_review_blockers(store, mint.ids["deploy"])
+    assert "7e1ea5e00000" in line
+
+
+def test_a_fix_chain_with_its_corrective_clears(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """[A FIX, B = A's corrective, C LAND, D LAND] — B rides A's
-    chain: no reviewer minted for it, nothing holds, the cut is D."""
+    chain: no reviewer minted for it, nothing holds, the cut is the
+    pinned tip D."""
     a, b, c, d = "a" * 40, "b" * 40, "c" * 40, "e" * 40
     _GIT_PIN[0] = d
     _fake_github(
@@ -3709,13 +3296,12 @@ def test_a_fix_chain_with_its_corrective_cuts_at_the_tip(
     _engine_land(store, 45, paths=["scripts/ship"], sha=d)
     _reviewer(store, 45, status="done", review={"verdict": "LAND"})
     before = _reviewer_keys(store)
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    assert head == d and lines == []
     res = rp.run_pass(store, repo=REPO, now=NOW)
     assert res.minted is not None, res.blocker
     target = R.release_target_of(store, res.minted)
     assert target is not None and target["sha"] == d
     assert _reviewer_keys(store) == before  # no reviewer minted for B
+    assert _gate(store)[0] == ""
 
 
 def test_a_corrective_whose_fixed_land_is_on_prod_still_clears(
@@ -3724,21 +3310,10 @@ def test_a_corrective_whose_fixed_land_is_on_prod_still_clears(
     """A already shipped; only its fix B sits ahead of prod — the FIX
     reviewer naming B's todo as its task clears B (no in-window A)."""
     b, c = "b" * 40, "c" * 40
-    _GIT_PIN[0] = c
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": b}, {"sha": c}],
-        },
-    )
     _fix_chain(store, "a" * 40, b, a_on_window=False)
     _engine_land(store, 44, paths=["scripts/ship"], sha=c)
     _reviewer(store, 44, status="done", review={"verdict": "LAND"})
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    assert head == c and lines == []
+    assert _gate(store)[0] == ""
 
 
 def test_a_correctives_own_verdict_wins(
@@ -3746,57 +3321,13 @@ def test_a_correctives_own_verdict_wins(
 ) -> None:
     """B has its own reviewer with a FIX verdict whose fix has not
     landed — that verdict, not A's chain, judges B: it holds."""
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
-    _GIT_PIN[0] = c
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
-        },
-    )
+    a, b = "a" * 40, "b" * 40
     fix, _rid = _fix_chain(store, a, b)
     fix2 = store.insert_ref(kind="todo", slug=None, title="fix of fix", meta=None)
     own = _reviewer(
         store, fix, status="done", review={"verdict": "FIX", "task": int(fix2.id)}
     )
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    # A's span [A, B-1] chains into B's [B, end]: nothing clears.
-    assert head is None
-    assert any(f"td{own}" in ln for ln in lines)
-
-
-def test_a_cut_below_the_head_names_what_holds_it(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """[X LAND, A FIX, U pending, C = A's fix] — the cut is X, and the
-    lines name both U's pending review and A's corrective span (the
-    chained hold that used to come back with no line at all)."""
-    x, a, u, c = "1" * 40, "a" * 40, "b" * 40, "c" * 40
-    _GIT_PIN[0] = c
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 4,
-            "behind_by": 0,
-            "commits": [{"sha": s} for s in (x, a, u, c)],
-        },
-    )
-    _engine_land(store, 41, paths=["scripts/ship"], sha=x)
-    _reviewer(store, 41, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 42, paths=["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _landed_comment(store, int(fix.id), sha=c)
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    _engine_land(store, 43, paths=["scripts/ship"], sha=u)
-    pending = _reviewer(store, 43)
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    assert head == x
-    assert any(f"td{pending}" in ln and "td43" in ln for ln in lines)
-    assert any("td42" in ln and "corrective commit" in ln for ln in lines)
+    assert f"td{own}" in _gate(store)[0]
 
 
 def test_a_corrective_clears_only_its_fix_todos_unit(
@@ -3805,18 +3336,8 @@ def test_a_corrective_clears_only_its_fix_todos_unit(
     """B's subject links ``(td<fix>, td<other>)``: B is A's recorded fix,
     but td<other> is an unreviewed engine change riding the same
     commit — the (B, td<fix>) unit clears on A's chain, (B, td<other>)
-    does not, and it holds the cut."""
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
-    _GIT_PIN[0] = c
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
-        },
-    )
+    does not, and it holds."""
+    a, b = "a" * 40, "b" * 40
     _engine_land(store, 42, paths=["scripts/ship"], sha=a)
     fix = int(store.insert_ref(kind="todo", slug=None, title="fix", meta=None).id)
     other = int(store.insert_ref(kind="todo", slug=None, title="other", meta=None).id)
@@ -3827,38 +3348,23 @@ def test_a_corrective_clears_only_its_fix_todos_unit(
     assert fatal is None and verdicts is not None
     by_todo = {v.unit.todo_id: v.cleared for v in verdicts if v.unit.sha12 == b[:12]}
     assert by_todo == {fix: True, other: False}
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    assert head is None
-    assert any(f"td{other}" in ln for ln in lines)
+    assert f"td{other}" in _gate(store)[0]
 
 
 def test_a_running_reviewer_on_the_corrective_holds_it(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A reviewer still running on B (no verdict yet) judges B itself:
-    a late FIX/REVERT must not land after the cut shipped. Once that
-    reviewer is cancelled the chain clears B again."""
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
-    _GIT_PIN[0] = c
-    _fake_github(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
-        },
-    )
+    a late FIX/REVERT must not land after the release deployed. Once
+    that reviewer is cancelled the chain clears B again."""
+    a, b = "a" * 40, "b" * 40
     fix, _rid = _fix_chain(store, a, b)
     running = _reviewer(store, fix)  # open, no verdict
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    assert head is None
-    assert any(f"td{running}" in ln for ln in lines)
+    assert f"td{running}" in _gate(store)[0]
     store.add_tag(
         running, Tag.closed("STATUS", "cancelled"), set_by="agent", replace_prefix=True
     )
-    head, lines, _notes = rp.cleared_head(store, repo=REPO, now=NOW)
-    assert head == c and lines == []
+    assert _gate(store)[0] == ""
 
 
 def test_an_open_round_still_mints_engine_reviewers(
@@ -3908,8 +3414,8 @@ def _stuck_ask_ids(store: Store, tag: str) -> list[int]:
 def test_a_first_cut_hold_past_an_hour_files_one_ask(
     store: Store, monkeypatch: pytest.MonkeyPatch, cls: str, line: str
 ) -> None:
-    """A first cut a refusal held (no ``meta.release`` yet) gets the
-    same hour-long ask a re-cut does, keyed on the pass root and quoting
+    """A first cut a refusal held (no ``meta.release`` yet) gets one
+    hour-long ask, keyed on the pass root and quoting
     the class and the refusal line; nothing before the hour is up."""
     _fake_github(monkeypatch)
     mint = T.mint_release_pass(store)
@@ -3946,37 +3452,26 @@ def test_a_hold_without_a_release_or_a_retarget_marker_asks_nothing(
     assert _stuck_ask_ids(store, f"release-stuck:td{mint.root_id}:recut-hold") == []
 
 
-def test_a_recut_hold_past_an_hour_files_one_ask(
+def test_a_hold_on_a_cut_release_asks_nothing(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The re-cut's hold is stamped on the plan root; under an hour the
-    poll asks nothing, past it one ``release-stuck:r7:recut-hold`` ask
-    names the holding unit, and a re-tick files no second one. A
-    cleared hold drops the stamp."""
+    """Release train T4: no review hold re-cuts a release, so a hold
+    stamped beside ``meta.release`` files no recut-hold ask, under or
+    past the hour."""
     _fake_github(monkeypatch)
     mint = T.mint_release_pass(store)
     R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "p..c", repo=REPO)
     hold = ["engine land td43 has no reviewer; the release waits"]
-    rp.note_cut_hold(store, mint.ids["cut"], hold, now=NOW - timedelta(minutes=30))
+    rp.note_cut_hold(store, mint.ids["cut"], hold, now=NOW - timedelta(minutes=90))
     rp.run_pass(store, repo=REPO, now=NOW)
-    tag = "release-stuck:r7:recut-hold"
-    assert _stuck_ask_ids(store, tag) == []
-    # The same hold, still in place 31 min later: ``since`` is kept.
-    rp.note_cut_hold(store, mint.ids["cut"], hold, now=NOW)
-    res = rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=31))
-    [ask] = _stuck_ask_ids(store, tag)
-    assert any(f"td{ask}" in n for n in res.notes)
-    text = _todo_text(store, ask)
-    assert "td43" in text
-    assert "`scripts/round cut --abandon`" in text  # the re-cut's own release
-    rp.run_pass(store, repo=REPO, now=NOW + timedelta(minutes=45))
-    assert _stuck_ask_ids(store, tag) == [ask]
+    assert _stuck_ask_ids(store, "release-stuck:r7:recut-hold") == []
+    assert _stuck_ask_ids(store, f"release-stuck:td{mint.root_id}:recut-hold") == []
     rp.note_cut_hold(store, mint.ids["cut"], None)
     ref = store.get_ref(kind="todo", id=mint.root_id)
     assert ref is not None and not (ref.meta or {}).get("cut_hold")
 
 
-# ── gr651885: the hold keeps its holders; lands freeze behind it ────
+# ── gr651885: the hold keeps its holders ───────────────────────────
 
 
 def _cut_hold(store: Store, root: int) -> dict[str, Any]:
@@ -4006,236 +3501,3 @@ def test_the_hold_caps_at_twenty_lines_plus_a_count(store: Store) -> None:
     lines = [f"engine land td{i} has no reviewer; the release waits" for i in range(25)]
     rp.note_cut_hold(store, mint.ids["cut"], lines, now=NOW)
     assert _cut_hold(store, mint.root_id)["lines"] == [*lines[:20], "+5 more"]
-
-
-_HOLD_LINE = "engine land td43 has no reviewer; the release waits"
-#: ``rp.CUT_HOLD_TIP`` / ``rp.CUT_FREEZE_AFTER_S``, spelled out so the
-#: module collects against a tree without them.
-_TIP = "tip"
-_FREEZE_S = 900
-
-
-def _held_recut(
-    store: Store,
-    *,
-    held_for: timedelta,
-    kind: str | None = _TIP,
-    cut: bool = True,
-) -> T.PlanMint:
-    """An open pass whose re-cut (``cut``: r291 recorded) is held on
-    the tip's reviews since ``NOW - held_for``."""
-    mint = T.mint_release_pass(store)
-    if cut:
-        R.record_cut(store, mint.ids["cut"], "r291", "c" * 40, "p..c", repo=REPO)
-    rp.note_cut_hold(
-        store, mint.ids["cut"], [_HOLD_LINE], now=NOW - held_for, kind=kind
-    )
-    return mint
-
-
-def test_a_recut_held_on_the_tip_past_the_threshold_freezes_lands(
-    store: Store,
-) -> None:
-    assert (rp.CUT_HOLD_TIP, rp.CUT_FREEZE_AFTER_S) == (_TIP, _FREEZE_S)
-    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
-    assert _cut_hold(store, mint.root_id)["kind"] == _TIP
-    # The release machinery is never frozen: a land of the pass's own
-    # plan (its fix loop) goes on, and trips nothing.
-    assert rp.land_freeze(store, todo_id=mint.ids["cut"], now=NOW) is None
-    assert "land_freeze" not in _meta_of(store, mint.root_id)
-    # The first land past the threshold trips the latch; ``since`` is the trip.
-    assert rp.land_freeze(store, now=NOW) == _FROZEN_AT_NOW
-    assert _meta_of(store, mint.root_id)["land_freeze"] == {
-        "since": _zulu(NOW),
-        "rN": "r291",
-    }
-
-
-#: The freeze line a latch tripped at ``NOW`` reads.
-_FROZEN_AT_NOW = (
-    "land frozen: release re-cut r291 waits for the tip's reviews "
-    "(since 2026-11-03T12:00:00Z)"
-)
-
-
-def _zulu(t: datetime) -> str:
-    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _meta_of(store: Store, root: int) -> dict[str, Any]:
-    ref = store.get_ref(kind="todo", id=root)
-    assert ref is not None
-    return dict(ref.meta or {})
-
-
-def test_the_freeze_outlives_its_hold_until_a_cut(store: Store) -> None:
-    """The latch (review of gr651885): lifting on the hold clearing let
-    every parked land unpark before the cut was minted and run — they
-    moved the tip, the hold restarted, the 15 min began again. Only a
-    successful cut lifts it."""
-    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
-    assert rp.land_freeze(store, now=NOW) == _FROZEN_AT_NOW
-    rp.note_cut_hold(store, mint.ids["cut"], None)  # the tip got its reviews
-    later = NOW + timedelta(minutes=5)
-    assert rp.land_freeze(store, now=later) == _FROZEN_AT_NOW
-    # A fresh hold under the threshold changes nothing either.
-    rp.note_cut_hold(store, mint.ids["cut"], [_HOLD_LINE], now=later, kind=_TIP)
-    assert rp.land_freeze(store, now=later) == _FROZEN_AT_NOW
-    # The cut's success path (release_cut._clear_retarget) lifts it.
-    rp.clear_land_freeze(store, mint.ids["cut"])
-    assert not _meta_of(store, mint.root_id).get("land_freeze")
-    assert rp.land_freeze(store, now=later) is None
-
-
-def test_the_freeze_lifts_when_the_pass_closes(store: Store) -> None:
-    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
-    assert rp.land_freeze(store, now=NOW) is not None
-    store.add_tag(
-        mint.root_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
-    )
-    assert rp.land_freeze(store, now=NOW) is None
-
-
-def test_the_freeze_expires_once_with_a_warning(
-    store: Store, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The safety valve: a cut that never comes cannot freeze lands
-    forever. Past ``CUT_FREEZE_MAX_S`` the latch expires — one warning
-    naming the plan root — and the same pass does not re-trip, though
-    its hold still stands past the threshold."""
-    assert rp.CUT_FREEZE_MAX_S == 3 * 3600
-    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
-    assert rp.land_freeze(store, now=NOW) == _FROZEN_AT_NOW
-    just_under = NOW + timedelta(seconds=rp.CUT_FREEZE_MAX_S - 1)
-    assert rp.land_freeze(store, now=just_under) == _FROZEN_AT_NOW
-    expiry = NOW + timedelta(seconds=rp.CUT_FREEZE_MAX_S)
-    with caplog.at_level("WARNING", logger=rp.__name__):
-        assert rp.land_freeze(store, now=expiry) is None
-        assert rp.land_freeze(store, now=expiry + timedelta(minutes=10)) is None
-    warnings = [r for r in caplog.records if "land freeze" in r.getMessage()]
-    assert len(warnings) == 1
-    assert f"td{mint.root_id}" in warnings[0].getMessage()
-    assert _meta_of(store, mint.root_id)["land_freeze"]["expired_at"] == _zulu(expiry)
-
-
-def test_the_freeze_expiry_follows_the_env(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("PRECIS_CUT_FREEZE_MAX_S", "600")
-    _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
-    assert rp.land_freeze(store, now=NOW) is not None
-    assert rp.land_freeze(store, now=NOW + timedelta(seconds=600)) is None
-
-
-def test_a_frozen_land_gives_its_ssh_node_slot_back(store: Store) -> None:
-    """A parked-but-running land counts toward the host's ssh_node cap,
-    and the re-cut claims on the same host: the frozen land leaves
-    ``running`` for ``waiting_time`` and the wake_runner re-queues it at
-    the recheck instant."""
-    from precis.workers import wake_runner
-    from precis.workers._mint import mint_background_job
-    from precis.workers.job_types import land_slice
-
-    with store.tx() as conn:
-        job = mint_background_job(
-            store,
-            conn=conn,
-            job_type="land_slice",
-            executor="ssh_node",
-            title="land_slice td1",
-            params={"todo_id": 1},
-            status="running",
-        )
-    job_id = int(job.id)
-    due = datetime.now(UTC) - timedelta(seconds=1)
-    land_slice._release_slot(
-        SimpleNamespace(store=store, ref_id=job_id), due, "land frozen: x"
-    )
-    status = {str(t.value) for t in store.tags_for(job_id) if t.prefix == "STATUS"}
-    assert status == {"waiting_time"}
-    ref = store.get_ref(kind="job", id=job_id)
-    assert ref is not None and (ref.meta or {})["wake_when"] == {
-        "kind": "at_time",
-        "payload": {"ts": int(due.timestamp()), "why": "land frozen: x"},
-    }
-    wake_runner.run_wake_pass(store)
-    status = {str(t.value) for t in store.tags_for(job_id) if t.prefix == "STATUS"}
-    assert status == {"queued"}
-
-
-@pytest.mark.parametrize("verdict", ["FIX", "REVERT"])
-def test_a_corrective_land_passes_the_freeze(store: Store, verdict: str) -> None:
-    """gr651885 review: a FIX/REVERT verdict mints the corrective todo
-    the cut holds on (``review.task``, :func:`rp._review_outcome`); it
-    must land through the freeze — also once the hold cleared under a
-    standing latch — while any other land waits."""
-    mint = _held_recut(store, held_for=timedelta(seconds=_FREEZE_S))
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    other = store.insert_ref(kind="todo", slug=None, title="unrelated", meta=None)
-    store.insert_ref(
-        kind="todo",
-        slug=None,
-        title="review td43",
-        meta={
-            "generate": {"role": "reviewer", "from": "td43"},
-            "review": {"verdict": verdict, "task": int(fix.id)},
-        },
-    )
-    assert rp.land_freeze(store, todo_id=int(other.id), now=NOW) == _FROZEN_AT_NOW
-    assert rp.land_freeze(store, todo_id=int(fix.id), now=NOW) is None
-    rp.note_cut_hold(store, mint.ids["cut"], None)
-    assert rp.land_freeze(store, todo_id=int(fix.id), now=NOW) is None
-    assert rp.land_freeze(store, todo_id=int(other.id), now=NOW) == _FROZEN_AT_NOW
-
-
-def test_a_land_the_hold_names_passes_the_freeze(store: Store) -> None:
-    """The general case: any todo a current hold line names is a land the
-    cut waits on, so it passes; ``td<N>0`` does not name ``td<N>``."""
-    mint = T.mint_release_pass(store)
-    R.record_cut(store, mint.ids["cut"], "r291", "c" * 40, "p..c", repo=REPO)
-    named = int(store.insert_ref(kind="todo", slug=None, title="a", meta=None).id)
-    near = int(store.insert_ref(kind="todo", slug=None, title="b", meta=None).id)
-    lines = [
-        f"engine review td{near}0 on the td{named} land was FIX; its fix "
-        f"td{named} is not landed yet — next: let td{named} land",
-    ]
-    rp.note_cut_hold(
-        store, mint.ids["cut"], lines, now=NOW - timedelta(hours=1), kind=_TIP
-    )
-    assert rp.land_freeze(store, todo_id=named, now=NOW) is None
-    assert rp.land_freeze(store, todo_id=near, now=NOW) == _FROZEN_AT_NOW
-
-
-def test_review_hold_reads_only_gate_unit_lines() -> None:
-    assert rp.review_hold(
-        [
-            "engine land td43 has no reviewer; the release waits",
-            "engine review td12 on the td43 land is open; the release waits",
-            "engine land 0e5fde093000 (jo7) has no reviewer",
-        ]
-    )
-    assert not rp.review_hold([])
-    assert not rp.review_hold(["engine review gate unreadable (KeyError); next: x"])
-    assert not rp.review_hold(["main is not ahead of prod (identical)"])
-    assert not rp.review_hold(
-        ["engine land td43 has no reviewer", "prod has commits main lacks (diverged)"]
-    )
-
-
-@pytest.mark.parametrize(
-    ("held_s", "kind", "cut"),
-    [
-        (_FREEZE_S - 1, _TIP, True),  # under the threshold
-        (3600, None, True),  # a script refusal's hold, not the tip's reviews
-        (3600, _TIP, False),  # a first cut: no release open
-    ],
-)
-def test_no_freeze_under_the_threshold_on_another_hold_or_without_a_release(
-    store: Store, held_s: int, kind: str | None, cut: bool
-) -> None:
-    _held_recut(store, held_for=timedelta(seconds=held_s), kind=kind, cut=cut)
-    assert rp.land_freeze(store, now=NOW) is None
-
-
-def test_no_freeze_without_an_open_pass(store: Store) -> None:
-    assert rp.land_freeze(store, now=NOW) is None

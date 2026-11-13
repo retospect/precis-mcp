@@ -9,18 +9,13 @@ detached submit/poll pair under ``ssh_node``:
   else the main checkout around the worker's code) detached, stdout+stderr to
   a log and the exit code to a file beside it (under the temp dir), and
   returns ``{pid, pgid, root, log, exit_file, started_at}``. The sha it
-  cuts comes from :func:`_cut_target` (gr592271): the pass's recorded
-  ``meta.release_target.sha`` for a first cut, the recomputed newest
-  fully-reviewed head for a release-fix re-cut, the tip for a pass
-  minted without a target — ``--sha`` is passed only in the first two.
-  A land cleared on a corrective commit also holds the cut while that
-  commit sits outside the selected sha (td601005). A re-cut only ever
-  launches at origin/main (``scripts/round``'s pipelined-cut rule):
-  a cleared head below it refuses ``holding: <why>`` and the next tick
-  retries (gr611217); the hold is recorded on the plan root
-  (``release_poll.note_cut_hold``, ``kind: tip``) so the poll asks after
-  an hour, and past ``release_poll.CUT_FREEZE_AFTER_S`` new lands wait
-  for it (``release_poll.land_freeze``, gr651885).
+  cuts comes from :func:`_cut_target`: the pass's recorded
+  ``meta.release_target.sha`` (origin/main's pinned tip when the poll
+  minted it) for a first cut, else origin/main's tip — ``--sha`` is
+  passed only in the first case. No review ever holds a cut (release
+  train, Reto 2026-11-12): the engine-review gate holds the deploy
+  (``release_poll.deploy_review_blockers``, read by ``release_deploy``),
+  scoped to the lands inside the release.
 * :func:`poll` waits for the exit file; on exit 0 with a
   ``RELEASE_CUT: r<N> <sha>`` line it records the cut on the plan
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
@@ -47,9 +42,8 @@ detached submit/poll pair under ``ssh_node``:
   attempt-free (no attempt burned, no retry-cap ask), the hold is recorded
   (``release_poll.note_cut_hold``) and the plan root marked
   ``meta.cut_retarget``, so the next tick's :func:`_cut_target` re-targets
-  through ``release_poll.cleared_head`` (``holding:`` at validate until the
-  tip is reviewed); the hour-long recut-hold ask is the backstop, for a first
-  cut too (keyed on the marker, quoting the refusal), and an ``in-flight`` first
+  to origin/main's tip; the hour-long recut-hold ask is the backstop (keyed
+  on the marker, quoting the refusal), and an ``in-flight`` first
   cut mints at most one job per ``IN_FLIGHT_PACE_MIN`` minutes. Any
   other refusal is ``unclassified``: the plan tick's retry cap files the ask,
   now quoting the line.
@@ -146,9 +140,10 @@ NAME = "release_cut"
 _DEFAULT_WALL_S = 30 * 60
 _TAIL_CAP = 2000
 
-#: The refusal prefix of a re-cut held below origin/main (gr611217) —
-#: a wait, not a failure: ``validate_submit`` refuses it before any job
-#: mints, and a ``submit`` that races into it fails attempt-free.
+#: The refusal prefix of a cut held as a wait (gr611217; today the
+#: paced ``in-flight`` first cut) — not a failure: ``validate_submit``
+#: refuses it before any job mints, and a ``submit`` that races into it
+#: fails attempt-free.
 HOLD_PREFIX = "holding: "
 
 #: A first cut held as ``in-flight`` mints at most one cut job per this many
@@ -838,16 +833,14 @@ def _paced(mark: dict[str, Any]) -> str | None:
 
 
 def _clear_retarget(store: Any, todo_id: Any) -> None:
-    """A cut succeeded: drop the first cut's hold and re-target marker and
-    the land-freeze latch (gr651885: only a cut lifts it), each a write
-    only when one is there. A failure is a log line."""
+    """A cut succeeded: drop the first cut's hold and re-target marker,
+    each a write only when one is there. A failure is a log line."""
     try:
         if _retarget_marker(store, todo_id) is not None:
             store.stamp_ref_meta(
                 _release.plan_root(store, todo_id), {"cut_retarget": None}
             )
         _rp.note_cut_hold(store, todo_id, None)
-        _rp.clear_land_freeze(store, todo_id)
     except Exception:
         log.warning("%s: retarget clear failed", NAME, exc_info=True)
 
@@ -867,42 +860,9 @@ def _vs_gated(repo: str, sha: str) -> str:
     return "unknown"
 
 
-def _gated_retarget(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
-    """``(sha, refusal)`` for a first cut whose recorded target sits below
-    origin/gated (a later --remote land moved it): the newest fully-reviewed
-    head through :func:`release_poll.cleared_head`, accepted only when it is
-    at or after gated — a head below it is not cuttable, so the cut holds
-    (:data:`HOLD_PREFIX`, attempt-free) until a review reaches it. Unlike a
-    re-cut it may sit below the tip: with no release open the cut is not
-    pinned to origin/main."""
-    repo = pr_class.resolve_repo(store, None)
-    if not repo:
-        return None, (
-            "no GitHub owner/repo (release.repo and the checkout's "
-            "origin both empty); next: set release.repo"
-        )
-    try:
-        sha, blockers, _notes = _rp.cleared_head(store, repo=repo)
-        status = _vs_gated(repo, sha) if sha is not None else ""
-    except pr_class.GitHubUnreadable as exc:
-        return None, f"GitHub unreadable ({exc}); next: the next tick retries"
-    if sha is None:
-        _rp.note_cut_hold(store, todo_id, blockers)
-        return None, f"{HOLD_PREFIX}{'; '.join(blockers)}; next tick retries"
-    if status in ("behind", "diverged"):
-        lines = [
-            f"cleared head {sha[:12]} is not at or after origin/gated "
-            f"({status}); no fully-reviewed head reaches it yet",
-            *blockers,
-        ]
-        _rp.note_cut_hold(store, todo_id, lines)
-        return None, f"{HOLD_PREFIX}{'; '.join(lines)}; next tick retries"
-    return sha, None  # the hold stays: a cut clears it (_clear_retarget)
-
-
 def _stale_vs_gated(store: Any, todo_id: Any) -> str:
     """The recorded first-cut target's compare/gated verdict —
-    ``behind`` sends the cut through :func:`_gated_retarget` — else
+    ``behind`` drops the target for origin/main's tip — else
     ``""``: no recorded target, no repo or an unreadable GitHub (fail
     open: the script's own fast-forward guard still refuses it). The
     verdict is cached on the target (``meta.release_target.vs_gated``):
@@ -944,128 +904,34 @@ def _stale_vs_gated(store: Any, todo_id: Any) -> str:
 
 def _cut_target(store: Any, todo_id: Any) -> tuple[str | None, str | None]:
     """``(sha, refusal)`` — the sha ``scripts/release --cut-only --sha``
-    cuts, ``None`` for a tip cut, or ``(None, refusal)`` while the
-    engine-review gate holds (gr592271).
+    cuts, ``None`` for a tip cut, or ``(None, refusal)`` while an
+    ``in-flight`` first cut is paced (:func:`_paced`).
 
-    Three cases: a re-cut (the plan's ``meta.release`` exists — the
-    fix's land moved main since the pass minted, so the recorded
-    target is stale) recomputes the newest fully-reviewed head through
-    :func:`release_poll.cleared_head`; a first cut uses the pass's
-    recorded ``meta.release_target`` — only the lands inside its
-    ``upto`` window may hold it, a newer land's open review does not,
-    but a landed release-fix the window does not carry makes the
-    target stale too and sends the cut through the same recompute
-    (td653689);
-    a pass without a recorded target (a hand mint, or pre-gr592271)
-    keeps the whole-gate tip rule. A re-cut whose cleared head sits
-    below the pinned origin/main refuses with a :data:`HOLD_PREFIX`
-    line naming the holding units (gr611217): the open round's
-    pipelined cut must be at origin/main, so the launch would die.
-
-    A first cut a refusal held (``meta.cut_retarget`` on the plan root,
-    written by :func:`_note_refusal`: the recorded target sat below
-    origin/main, or a release was in flight) is recomputed the same way
-    as a re-cut — the recorded target is stale, the cleared head decides —
-    and its hold clears when the gate does. A recorded target that is a
-    strict ancestor of origin/gated (a later --remote land moved gated past
-    it) is dropped up front, as is one whose cut was refused
-    ``gated-behind``: :func:`_gated_retarget` recomputes it, so
-    ``scripts/round``'s fast-forward guard never has to refuse it. The
+    No review holds a cut (release train, Reto 2026-11-12): the gate
+    holds the release's deploy instead (``release_poll.
+    deploy_review_blockers``). A first cut uses the pass's recorded
+    ``meta.release_target.sha`` — the origin/main tip the poll pinned.
+    Every other case cuts origin/main's tip: a plan already cut (the
+    ``meta.release`` exists; ``scripts/round`` cuts a pipelined release
+    only at origin/main, gr611217), a first cut a refusal held
+    (``meta.cut_retarget``, written by :func:`_note_refusal`: the
+    recorded target sat below origin/main or origin/gated, or a release
+    was in flight), a recorded target that is a strict ancestor of
+    origin/gated (a later --remote land moved gated past it — dropped up
+    front so ``scripts/round``'s fast-forward guard never has to refuse
+    it), and a pass without a recorded target (a hand mint). The
     compare/gated read runs once per target and caches on it
     (:func:`_stale_vs_gated`) — a per-tick call would spend the shared
     unauthenticated api.github.com budget (gr620480)."""
-    rel = _release.release_of(store, todo_id) if isinstance(todo_id, int) else None
-    mark = None if rel is not None else _retarget_marker(store, todo_id)
-    if mark is not None and (paced := _paced(mark)) is not None:
-        return None, paced
-    mode = str(mark["class"]) if mark else None
-    if rel is None and mode is None and _stale_vs_gated(store, todo_id) == "behind":
-        mode = REFUSAL_GATED_BEHIND
-    target = (
-        _release.release_target_of(store, todo_id) if isinstance(todo_id, int) else None
-    )
-    if rel is None and mode is None and target is not None:
-        verdicts, _notes, fatal, _pin, _scanned = _rp._engine_verdicts(store)
-        if fatal is not None:
-            return None, fatal
-        if any(
-            v.must_carry and not _rp._sha_in(v.unit.sha12, target["upto"])
-            for v in verdicts or ()
-        ):
-            # td653689: the recorded target sits below a landed
-            # release-fix that reached main after the pass minted —
-            # the target is stale, so the cut recomputes the cleared
-            # head like a re-cut instead of shipping under the fix.
-            mode = REFUSAL_HOLDING
-        else:
-            blockers = [
-                v.line
-                for v in verdicts or ()
-                if not v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
-            ]
-            # td601005: a clearance that rests on a corrective commit only
-            # holds while the cut CARRIES it — a land whose fix/revert
-            # commit sits outside the recorded window still blocks it.
-            blockers += [
-                f"engine land {v.unit.label} cleared on a corrective commit "
-                f"({r[:12]}) outside the recorded cut — next: land it inside "
-                "the window or drop the pass so a fresh mint re-reads it"
-                for v in verdicts or ()
-                if v.cleared and _rp._sha_in(v.unit.sha12, target["upto"])
-                for r in v.requires
-                if not _rp._sha_in(r, target["upto"])
-            ]
-            if blockers:
-                return None, "; ".join(blockers)
-            return str(target["sha"]), None
-    if mode == REFUSAL_GATED_BEHIND:
-        return _gated_retarget(store, todo_id)
-    if rel is not None or mode is not None:
-        repo = pr_class.resolve_repo(store, None)
-        if not repo:
-            return None, (
-                "no GitHub owner/repo (release.repo and the checkout's "
-                "origin both empty); next: set release.repo"
-            )
-        try:
-            sha, blockers, _notes = _rp.cleared_head(store, repo=repo)
-        except pr_class.GitHubUnreadable as exc:
-            return None, f"GitHub unreadable ({exc}); next: the next tick retries"
-        if sha is None:
-            # gr651885 review: nothing cleared at all — the oldest unit's
-            # review is the slow one — holds the open re-cut on the tip's
-            # reviews just the same, so it ages the tip hold (and the land
-            # freeze) too. The gate's own fatal and prod/main compare lines
-            # are not a review wait and record nothing.
-            if rel is not None and _rp.review_hold(blockers):
-                _rp.note_cut_hold(store, todo_id, blockers, kind=_rp.CUT_HOLD_TIP)
-            return None, "; ".join(blockers)
-        # The poll's liveness clock: a hold past an hour files one ask. A
-        # held first cut keeps its clock until a cut succeeds
-        # (:func:`_clear_retarget`): in-flight retries would restart it.
-        # A re-cut held on the tip's reviews is the hold that freezes
-        # new lands past ``CUT_FREEZE_AFTER_S`` (gr651885).
-        if rel is not None or blockers:
-            _rp.note_cut_hold(
-                store,
-                todo_id,
-                blockers,
-                kind=_rp.CUT_HOLD_TIP if rel is not None else None,
-            )
-        if blockers:
-            # gr611217: a re-cut runs while r<N> is open, and
-            # ``scripts/round`` cuts that pipelined release only at
-            # origin/main — a cleared sha below the head is a doomed
-            # launch, so the cut holds until the gate clears the tip.
-            return None, (
-                f"{HOLD_PREFIX}cut {sha[:12]} sits below origin/main: "
-                f"{'; '.join(blockers)}; next tick retries"
-            )
-        return sha, None
-    blockers, _notes = _rp.engine_review_blockers(store)
-    if blockers:
-        return None, "; ".join(blockers)
-    return None, None
+    if not isinstance(todo_id, int) or _release.release_of(store, todo_id) is not None:
+        return None, None
+    mark = _retarget_marker(store, todo_id)
+    if mark is not None:
+        return None, _paced(mark)
+    if _stale_vs_gated(store, todo_id) == "behind":
+        return None, None
+    target = _release.release_target_of(store, todo_id)
+    return (str(target["sha"]) if target is not None else None), None
 
 
 def _handle_tooling(
@@ -1116,8 +982,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     sha, refusal = _cut_target(ctx.store, params.get("todo_id"))
     if refusal is not None:
         if refusal.startswith(HOLD_PREFIX):
-            # gr611217: the gate moved between validate and submit — a
-            # wait on the review gate burns no plan attempt.
+            # gr611217: the wait began between validate and submit — it
+            # burns no plan attempt.
             ctx.set_meta(**{_rs.ATTEMPT_FREE_KEY: "cut-hold"})
         ctx.record_failure(f"{NAME}: {refusal}")
         return None
@@ -1256,10 +1122,10 @@ def _note_refusal(ctx: Any, refusal: dict[str, str]) -> None:
     origin/main), ``in-flight``, ``holding`` — also fails attempt-free
     (``plan_dispatch._no_attempt``: no attempt burned, no retry-cap ask)
     and records the hold on the plan root (:func:`release_poll.note_cut_hold`):
-    the next tick's :func:`_cut_target` then re-targets through
-    ``release_poll.cleared_head``, holding at ``validate_submit`` until the
-    tip is fully reviewed. ``release_poll``'s hour-long recut-hold ask is
-    the backstop (it keys on this marker for a first cut). ``unclassified`` changes nothing about the retry."""
+    the next tick's :func:`_cut_target` then re-targets to origin/main's
+    tip (an ``in-flight`` one after its pacing window). ``release_poll``'s
+    hour-long recut-hold ask is the backstop (it keys on this marker).
+    ``unclassified`` changes nothing about the retry."""
     cls, line = refusal["class"], refusal["line"]
     ctx.set_meta(cut_refusal=dict(refusal))
     if line:

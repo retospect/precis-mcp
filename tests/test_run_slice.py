@@ -31,6 +31,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 from precis.plans import lanes
+from precis.plans import release as _release_real
 from precis.plans.lanes import ANY_CLASS, Lane, ladder, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.llm import accounts
@@ -243,6 +244,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
                 )
             return _proc(rc=calls.get("commit_rc", 0))
         if args[:2] == ["log", "--oneline"]:
+            # ``ahead_by_range`` answers per base ref (release-train T1:
+            # a release fix measures against its release branch).
+            per = calls.get("ahead_by_range")
+            if per is not None and len(args) > 2:
+                return _proc(per.get(args[2], ""))
             return _proc(calls.get("ahead", ""))
         if calls.get("raise_prefix") is not None and args[
             : len(calls["raise_prefix"])
@@ -4399,6 +4405,9 @@ def _fix_norepro_env(
             },
             newest_red_run=lambda _s, _sha: rid,
             ci_rerun_fired=lambda _s, _rid: fired,
+            # The real reader: a fix node without meta.land_target is cut
+            # from origin/main as before release-train T1.
+            land_target_of=_release_real.land_target_of,
         ),
     )
 
@@ -4691,6 +4700,52 @@ def test_poll_fix_node_without_the_marker_still_fails(
     assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
     assert run_slice.FIX_VERIFIED_KEY not in pctx.meta_set
     assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_round_two_release_fixer_with_no_commit_is_no_commit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T1 review: a round-2 fixer's tree is cut from release/r7, which
+    already carries round 1's fix. Measured against origin/main that fix
+    reads as this slice's commit and the node would land/close with work
+    it never did; measured against origin/release/r7 a session that
+    committed nothing is the no-commit failure it is."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the failures",
+        tags=("plan:1",),
+        meta={"op": "run_slice", "land_target": "release/r7"},
+    )
+    _fix_norepro_env(store, monkeypatch)
+    seams["ahead_by_range"] = {
+        "origin/main..HEAD": "abc1234 fix(x): round 1's release fix (td40)\n",
+        "origin/release/r7..HEAD": "",
+    }
+    seams["diff_quiet_rc"] = 1  # main...HEAD still carries round 1's fix
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "Read the logs; unsure what fails."})
+        + "\n",
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert pctx.meta_set["branch_commits"] == []
+    assert seams["lands"] == []
+    assert "STATUS:done" not in store.tag_strings(42)
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["log", "--oneline", "origin/release/r7..HEAD"] in git_cmds
+    assert ["log", "--oneline", "origin/main..HEAD"] not in git_cmds
+    assert [
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "origin/release/r7...HEAD",
+    ] in git_cmds
 
 
 def test_poll_verified_marker_off_the_fix_loop_still_fails(

@@ -118,7 +118,7 @@ def test_open_pass_row_shows_cut_range_verdict_run_and_step(store: Store) -> Non
     assert p["range"] == RNG
     assert p["gate"]["verdict"] == "green"
     assert p["gate"]["run_url"] == "https://github.com/o/r/actions/runs/555"
-    assert p["loop"] == "0/3"
+    assert p["loop"] == "0"  # the tick owns a release-fix loop's cap (T4)
     # Freshly minted: the cut node is the only unblocked step.
     assert p["step"] == "cutting the release"
     assert [s["role"] for s in p["steps"]] == [
@@ -129,9 +129,11 @@ def test_open_pass_row_shows_cut_range_verdict_run_and_step(store: Store) -> Non
         "approval",
         "deploy",
         "confirm",
+        "merge_back",
     ]
     assert [s["state"] for s in p["steps"]] == [
         "active",
+        "pending",
         "pending",
         "pending",
         "pending",
@@ -144,6 +146,31 @@ def test_open_pass_row_shows_cut_range_verdict_run_and_step(store: Store) -> Non
     # The panel head carries prod's served sha.
     prod = release_passes(store)["prod_head"]
     assert prod is not None and prod["sha"] == SHA
+
+
+def test_merge_back_has_its_own_step_and_the_ours_node_takes_it_over(
+    store: Store,
+) -> None:
+    """release-train T3: the merge_back node is release_confirm's merge_back
+    mode — its own row, not a second "confirm"; after a conflict the
+    minted ours-merge node stands for the step."""
+    mint = T.mint_release_pass(store)
+    _cut(store, mint, "r7", SHA, RNG)
+    for key in ("cut", "poll", "gate", "loop", "approval", "deploy", "confirm"):
+        _done(store, mint.ids[key])
+    p = _row(store, mint.root_id)
+    steps = {s["role"]: s for s in p["steps"]}
+    assert steps["confirm"]["handle"] == f"td{mint.ids['confirm']}"
+    assert steps["merge_back"]["handle"] == f"td{mint.ids['merge_back']}"
+    assert steps["merge_back"]["state"] == "active"
+    assert p["step"] == "merging the release back into main"
+
+    _done(store, mint.ids["merge_back"])
+    _resolver, ours = T.mint_merge_back_resolver(store, mint.root_id, "r7", "resolve")
+    p = _row(store, mint.root_id)
+    steps = {s["role"]: s for s in p["steps"]}
+    assert steps["merge_back"]["handle"] == f"td{ours}"
+    assert steps["merge_back"]["state"] == "pending"  # behind the resolver
 
 
 def test_step_advances_with_closed_blockers_and_loop_count(store: Store) -> None:
@@ -165,8 +192,8 @@ def test_step_advances_with_closed_blockers_and_loop_count(store: Store) -> None
     loop["count"] = 1
     store.stamp_ref_meta(mint.ids["loop"], {"loop": loop})
     p = _row(store, mint.root_id)
-    assert p["step"] == "fix loop — iteration 1 of 3"
-    assert p["loop"] == "1/3"
+    assert p["step"] == "fix loop — iteration 1"
+    assert p["loop"] == "1"
     assert p["gate"]["verdict"] == "red"
 
     # Green on the range lets the tick close the gate and the loop (the
@@ -180,17 +207,17 @@ def test_step_advances_with_closed_blockers_and_loop_count(store: Store) -> None
 
 
 def test_recut_renumbers_inside_the_one_pass_row(store: Store) -> None:
-    """gr606988's detail: r259's loop-1 re-cut became r260 under the same
-    pass root — one row naming ``r259 → r260``, never two rows."""
+    """gr606988's detail: r259's re-cut became r260 under the same pass
+    root — one row naming ``r259 → r260``, never two rows. (The fix loop
+    no longer re-cuts since release-train T1; a second ``release_cut`` on
+    the same root — a re-run cut — still renumbers the one row.)"""
     mint = T.mint_release_pass(store)
     _cut(store, mint, "r259", SHA, RNG)
     _cut_job(store, mint.ids["cut"], "r259", SHA, RNG)
 
-    # The fix loop mints an iteration; its recut node runs a second
-    # release_cut job, which records the new number on the same root.
-    fix = T.mint_release_fix(store, mint.ids["loop"], iteration=1)
-    R.record_cut(store, fix.ids["recut"], "r260", SHA2, RNG2, repo="o/r")
-    _cut_job(store, fix.ids["recut"], "r260", SHA2, RNG2)
+    # A second release_cut job records the new number on the same root.
+    R.record_cut(store, mint.ids["cut"], "r260", SHA2, RNG2, repo="o/r")
+    _cut_job(store, mint.ids["cut"], "r260", SHA2, RNG2)
 
     p = _row(store, mint.root_id)
     assert p["rns"] == "r259 → r260"

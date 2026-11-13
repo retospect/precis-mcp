@@ -52,6 +52,17 @@ Pending splits two ways (gr656644):
 
 ``dedupe_pending`` also holds a recurring-todo arming to one poll.
 
+**Restamp mode** (``params.restamp``, the release-fix loop's ``restamp``
+node between the fix nodes and the poll, release-train T1): no verdict
+read — the job reads ``release/r<N>``'s head through the GitHub refs
+API (:func:`fetch_head`) and moves ``meta.release`` onto it with no cut
+(:func:`precis.plans.release.record_head`: sha, range end, the
+``tests-green`` gate and the loop's ``until``). The poll after it then
+waits on the run the fixes' push started; the digest of a second red
+reads that run. A head equal to the recorded sha (no fix landed) writes
+nothing. The no-run ladder's clock is ``meta.release.head_at`` once a
+restamp set it, else ``cut_at``.
+
 A poll the plan tick mints for a ``validated:`` non-repro rerun
 (``meta.rerun_of``) carries ``meta.rerun_attempt_before`` — the run's
 ``run_attempt`` before ``gh run rerun`` fired. The run id survives a
@@ -131,8 +142,8 @@ STALL_ASK_AFTER = timedelta(minutes=90)
 LIVE_STALL_ASK_AFTER = timedelta(minutes=180)
 #: The poll node's ``meta.<key>`` dedupe marker — ``{sha, noted?,
 #: dispatched?, asked?, run_asked?}``: one fire per rung per cut,
-#: across re-parks and re-dispatched jobs (a re-cut restamps
-#: ``meta.release`` with a new sha, which resets the ladder).
+#: across re-parks and re-dispatched jobs (a restamp moves
+#: ``meta.release`` to a new sha, which resets the ladder).
 STALL_META_KEY = "ci_verdict_stall"
 _COMMENT_KIND = "todo_comment"
 _ASK_CONTEXT_CAP = 600
@@ -147,6 +158,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "range": {"type": "string"},
         # owner/repo on GitHub; else meta.release.repo / release.repo / git.
         "repo": {"type": "string"},
+        # The release-fix loop's restamp node (release-train T1): read
+        # origin/release/r<N>'s head and restamp meta.release onto it
+        # (precis.plans.release.record_head) instead of polling a verdict.
+        "restamp": {"type": "boolean"},
     },
     "additionalProperties": False,
 }
@@ -222,8 +237,75 @@ def resolve_target(store: Any, params: dict[str, Any]) -> dict[str, str]:
         "branch": f"release/{rn}" if rn else "",
         "repo": repo,
         # The ladder's clock (gr589270): absent or unparsable -> no rungs.
-        "cut_at": str(rel.get("cut_at") or ""),
+        # A restamped head (release-train T1) starts its own clock — its
+        # run was pushed with the fix, not at the cut.
+        "cut_at": str(rel.get("head_at") or rel.get("cut_at") or ""),
     }
+
+
+_REF_URL = "https://api.github.com/repos/{repo}/git/ref/heads/{branch}"
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def fetch_head(repo: str, branch: str) -> str | None:
+    """``branch``'s head sha on GitHub, else ``None`` when unreadable
+    (network, rate limit, a missing ref — the caller parks and retries)."""
+    headers = _factory_git.github_api_headers()
+    try:
+        resp = _http_get(_REF_URL.format(repo=repo, branch=branch), {}, headers)
+    except Exception as exc:
+        log.info("%s: GitHub ref read failed (%s)", NAME, type(exc).__name__)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    sha = str(((data or {}).get("object") or {}).get("sha") or "").lower()
+    return sha if _FULL_SHA_RE.match(sha) else None
+
+
+def _restamp(ctx: Any, params: dict[str, Any]) -> None:
+    """The restamp node (release-train T1, :data:`PARAMS_SCHEMA`
+    ``restamp``): the fix round's lands moved ``origin/release/r<N>``,
+    so ``meta.release`` moves onto its head
+    (:func:`precis.plans.release.record_head`) — no cut. The next node,
+    the verdict poll, then waits on the check.yml run the fixes' push
+    started, and a red there digests that run, never the cut's. An
+    unreadable head parks like a pending poll."""
+    try:
+        target = resolve_target(ctx.store, params)
+    except PollError as exc:
+        ctx.record_failure(str(exc))
+        return
+    if not target["branch"]:
+        ctx.record_failure(f"{NAME}: restamp needs a recorded cut (meta.release.rN)")
+        return
+    head = fetch_head(target["repo"], target["branch"])
+    if head is None:
+        note = f"{NAME}: restamp — {target['branch']} head unreadable; retrying"
+        ctx.append_chunk("job_summary", note)
+        defer = getattr(ctx, "defer", None)
+        if defer is not None and defer(datetime.now(UTC) + POLL_INTERVAL_LATE, note):
+            return
+        ctx.record_failure(note)
+        return
+    if head.startswith(target["sha"]) or target["sha"].startswith(head):
+        ctx.append_chunk(
+            "job_summary",
+            f"{NAME}: restamp — {target['branch']} head {head[:9]} is the "
+            "recorded sha (no fix landed); meta.release unchanged",
+        )
+        ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False})
+        return
+    notes = _release.record_head(ctx.store, int(params["todo_id"]), head)
+    ctx.set_meta(ci_verdict_restamp={"head": head, "moved": True})
+    ctx.append_chunk(
+        "job_summary",
+        f"{NAME}: restamp — {target['branch']} {target['sha'][:9]} -> "
+        f"{head[:9]}\n" + "\n".join(notes),
+    )
 
 
 def fetch_runs(repo: str, sha: str) -> list[dict[str, Any]] | None:
@@ -481,7 +563,7 @@ def _mint_no_run_ask(
         "minutes behind the branch, a dropped one never lands). The "
         "verdict poll already fired its one workflow_dispatch retry and "
         "keeps polling; this ask only records the stall — a push or a "
-        "re-cut fixes it, answering 'acknowledged' closes it."
+        "restamp fixes it, answering 'acknowledged' closes it."
     )
     return _mint_stall_ask(
         store,
@@ -671,6 +753,9 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     """``job_inproc`` plugin dispatcher (module docstring)."""
     del spec
     params = dict(ctx.meta.get("params") or {})
+    if params.get("restamp"):
+        _restamp(ctx, params)
+        return
     try:
         target = resolve_target(ctx.store, params)
     except PollError as exc:
@@ -794,6 +879,7 @@ __all__ = [
     "POLL_INTERVAL",
     "POLL_INTERVAL_LATE",
     "SPEC",
+    "fetch_head",
     "fetch_runs",
     "load",
     "poll_interval",

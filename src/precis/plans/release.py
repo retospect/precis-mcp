@@ -19,7 +19,13 @@ what lives here:
   re-cut is a second ``release_cut`` (td543855): the same call overwrites
   ``meta.release`` whole, rewrites the still-open gate / loop / ask to the
   new range and r<N>, and reopens a ``tests-green`` gate an earlier cut's
-  range had opened -- that verdict does not cover the new cut.
+  range had opened -- that verdict does not cover the new cut. Since
+  release-train T1 the loop no longer re-cuts: its ``restamp`` node calls
+  :func:`record_head`, which moves ``meta.release`` onto the release
+  branch's head after a fix round (same gate/loop/ask writes, keeping
+  ``cut_sha``/``cut_range``), and ``release_deploy`` stamps
+  ``deploy_started_at`` (:func:`mark_deploy_started`) so a later
+  release-fix land refuses (:func:`deploy_started`).
 - **CI verdict and prod head writers**, store-side twins of
   ``scripts/release``'s ``record_ci_verdict`` / ``record_prod_head`` (the
   script cannot import this package; the row shapes are the same, so the
@@ -239,6 +245,41 @@ def pin_refusal(
     return None
 
 
+# ── the release-fix land target (release-train T1) ─────────────────
+
+#: ``meta.land_target`` on a slice todo: the release branch the slice's
+#: worktree is cut from and its land targets — ``release/r<N>``, never
+#: main (release-train.md T1). ``run_slice`` cuts the tree from
+#: ``origin/<target>``; ``land_slice`` ships it ``--onto <target>``.
+LAND_TARGET_KEY = "land_target"
+#: The same target stated in a brief: a ``land target: release/r<N>``
+#: line in the todo body or its newest ``brief:`` comment.
+_LAND_TARGET_LINE = re.compile(
+    r"^\s*land target\s*:\s*(release/r\d+)\s*\.?\s*$", re.IGNORECASE | re.MULTILINE
+)
+_RELEASE_BRANCH_RE = re.compile(r"^release/r\d+$")
+
+
+def release_branch(rn: str) -> str:
+    """``release/r<N>`` for ``rN`` (``scripts/round cut``'s branch name)."""
+    return f"release/{rn}"
+
+
+def land_target_of(meta: dict[str, Any] | None, *texts: str | None) -> str | None:
+    """The release branch a slice lands on, else ``None`` (main).
+    ``meta.land_target`` wins; else the first ``land target:`` line in
+    ``texts`` (the brief). Anything not shaped ``release/r<N>`` is
+    ignored: a malformed target must never redirect a land."""
+    raw = str((meta or {}).get(LAND_TARGET_KEY) or "").strip()
+    if _RELEASE_BRANCH_RE.fullmatch(raw):
+        return raw
+    for text in texts:
+        m = _LAND_TARGET_LINE.search(text or "")
+        if m is not None:
+            return m.group(1)
+    return None
+
+
 def _plan_nodes(store: Store, root: int) -> list[tuple[int, dict[str, Any], str]]:
     """``(id, meta, status)`` of every live todo tagged ``plan:<root>``."""
     with store.pool.connection() as conn:
@@ -312,6 +353,104 @@ def record_cut(
         rel["checkout"] = checkout
     store.stamp_ref_meta(root, {"release": rel})
     notes = [f"td{root}: meta.release = {rn} {sha[:9]} ({rng})"]
+    return notes + _follow_release(store, root, rn, sha, rng)
+
+
+def record_head(
+    store: Store, todo_id: int, sha: str, *, now: datetime | None = None
+) -> list[str]:
+    """Restamp ``todo_id``'s plan onto ``sha`` — the release branch's head
+    after a fix round landed on it (release-train T1) — with NO cut:
+    ``meta.release`` keeps ``rN``/repo/host/checkout/``cut_at``, its
+    ``sha`` and the range's end move to the head, and it gains
+    ``cut_sha``/``cut_range`` (the first restamp keeps the cut's own) and
+    ``head_at``. The open ``tests-green`` gate, the loop's ``until`` and
+    the approval ask follow exactly as :func:`record_cut` writes them, so
+    the poll, the digest and the gate all key on the head. Raises
+    ``ValueError`` when the plan recorded no cut."""
+    rel = release_of(store, todo_id)
+    if rel is None:
+        raise ValueError(f"td{plan_root(store, todo_id)} has no recorded cut")
+    root = plan_root(store, todo_id)
+    rn, old = str(rel["rN"]), str(rel.get("range") or "")
+    left = old.split("..", 1)[0] if ".." in old else ""
+    rng = f"{left}..{sha[:LANDED_SHA_LEN]}" if left else sha[:LANDED_SHA_LEN]
+    new = {
+        **rel,
+        "sha": sha,
+        "range": rng,
+        "cut_sha": rel.get("cut_sha") or rel.get("sha"),
+        "cut_range": rel.get("cut_range") or old,
+        "head_at": _stamp(now or datetime.now(UTC)),
+    }
+    store.stamp_ref_meta(root, {"release": new})
+    notes = [f"td{root}: meta.release head = {rn} {sha[:9]} ({rng})"]
+    return notes + _follow_release(store, root, rn, sha, rng)
+
+
+def mark_deploy_started(
+    store: Store, todo_id: int, *, now: datetime | None = None
+) -> str:
+    """Stamp ``meta.release.deploy_started_at`` on the plan root — the
+    moment ``release_deploy`` launches; from then on the release takes
+    no more fixes (:func:`deploy_started`). One note."""
+    rel = release_of(store, todo_id)
+    if rel is None:
+        return "deploy start not recorded: no cut on the plan"
+    root = plan_root(store, todo_id)
+    when = _stamp(now or datetime.now(UTC))
+    store.stamp_ref_meta(root, {"release": {**rel, "deploy_started_at": when}})
+    return f"td{root}: meta.release.deploy_started_at = {when}"
+
+
+def clear_deploy_started(store: Store, todo_id: int) -> str:
+    """Drop ``meta.release.deploy_started_at`` — the deploy refused
+    before touching any host (release-train T3 review F5), so the
+    release takes fixes again. One note."""
+    rel = release_of(store, todo_id)
+    if rel is None or "deploy_started_at" not in rel:
+        return "deploy start: nothing to clear"
+    root = plan_root(store, todo_id)
+    store.stamp_ref_meta(
+        root,
+        {"release": {k: v for k, v in rel.items() if k != "deploy_started_at"}},
+    )
+    return f"td{root}: meta.release.deploy_started_at cleared (no host touched)"
+
+
+def deploy_started(store: Store, todo_id: int) -> str | None:
+    """Why the plan's release takes no more fixes, else ``None``: its
+    deploy has started or pinned a sha — ``meta.release`` carries
+    ``deploy_started_at``, a ``deploy_scope`` or a ``confirmed`` stamp, or
+    the ``release.round`` row for its number is past the open states or
+    names a ``deploy.sha``. The deploy owner writes both records, so a
+    land on another host reads the deploy's own view here, not its local
+    round lock (release-train T1). No cut on the plan: ``None``."""
+    rel = release_of(store, todo_id)
+    if rel is None:
+        return None
+    rn = str(rel["rN"])
+    if rel.get("deploy_started_at"):
+        return f"release {rn}'s deploy started at {rel['deploy_started_at']}"
+    if rel.get("deploy_scope") or rel.get("confirmed"):
+        return f"release {rn} is already deployed"
+    row = read_round(store)
+    if isinstance(row, dict) and row.get("n") == int(rn[1:]):
+        state = row.get("state")
+        if isinstance(state, str) and state and state not in _ROUND_OPEN_STATES:
+            return f"{ROUND_KEY} records {rn} {state}"
+        dep = row.get("deploy")
+        if isinstance(dep, dict) and dep.get("sha"):
+            return f"{ROUND_KEY} pins {rn}'s deploy at {str(dep['sha'])[:12]}"
+    return None
+
+
+def _follow_release(store: Store, root: int, rn: str, sha: str, rng: str) -> list[str]:
+    """Point the plan's open ``tests-green`` gate, loop ``until`` and
+    approval ask at ``rn``/``sha``/``rng`` (and reopen a gate an earlier
+    range opened) — :func:`record_cut` and :func:`record_head`'s shared
+    writes. One note per node written."""
+    notes: list[str] = []
     new_gate = {"kind": "tests-green", "args": {"range": rng}}
     for node_id, meta, status in _plan_nodes(store, root):
         if node_id == root:
@@ -632,7 +771,11 @@ def _auto_answer_approval(
     verdict = _newest_sha_verdict(store, sha12)
     if verdict is None or verdict["verdict"] != "green":
         return False, f"{nope}: no recorded green CI verdict for {sha12}"
-    rec, why, final = _open_round_record(store, rn, sha12)
+    # The round row names the CUT's sha (its ``base``); after a fix round
+    # :func:`record_head` moved ``meta.release.sha`` to the release head
+    # and kept the cut as ``cut_sha`` (release-train T1).
+    base12 = str(rel.get("cut_sha") or sha).strip().lower()[:LANDED_SHA_LEN]
+    rec, why, final = _open_round_record(store, rn, base12)
     if rec is None:
         note = f"{nope}: {why}"
         if final:

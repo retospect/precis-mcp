@@ -634,9 +634,18 @@ deciding). **How a
 home-built release loop breaks, and the guard for each:**
 
 - a red gate nobody reads → the pass mints the fixer slice with the
-  failing tests and the commit range, re-cuts when the fix lands (the
-  loop in "Branches" above); two red loops in a row make the release
-  a showstopper row (1b) and the pass stops cutting;
+  failing tests and the commit range; the release is cut once and never
+  re-cut — its fixes land on `release/r<N>` (`docs/backlog/release-train.md`,
+  Reto 2026-11-12, replaces the re-cut loop of "Branches" above); two red
+  loops in a row still make the release a showstopper row (1b) until
+  release-train T5's progress alarm replaces the cap;
+- an engine land nobody reviewed → the review gate holds the **deploy**,
+  never the cut (`release_poll.deploy_review_blockers`, read by
+  `release_deploy`): it covers the lands inside the release — the cut's
+  recorded range plus the fixes on `release/r<N>` — and a FIX verdict
+  holds until its fix's `landed:` sha is on `release/r<N>`. A land on
+  main after the cut belongs to the next release and holds nothing; there
+  is no tip-review re-cut hold and no land freeze;
 - CI-green, runtime-broken → post-deploy probes stay mechanical
   (health checks, the alert board) and a failed probe redeploys the
   previous `origin/prod` sha; two rollbacks in a row trip the breaker
@@ -655,11 +664,11 @@ home-built release loop breaks, and the guard for each:**
   `scripts/release`, `scripts/round` and `scripts/lib` out of a fresh
   origin/main before each launch and records `tooling: <sha9>` on the job;
 - a cut refused for a reason that is a wait (the asked sha below the tip,
-  origin/gated moved past the recorded target, a release in flight,
-  a review hold) → `release_cut` classifies the
-  refusal (`meta.cut_refusal`), fails attempt-free and re-targets through
-  the cleared head next tick instead of burning the retry cap into an ask;
-  a wait held an hour files the recut-hold ask (first cuts too), an in-flight
+  origin/gated moved past the recorded target, a release in flight)
+  → `release_cut` classifies the
+  refusal (`meta.cut_refusal`), fails attempt-free and re-targets to
+  origin/main's tip next tick instead of burning the retry cap into an ask;
+  a wait held an hour files the recut-hold ask, an in-flight
   first cut retries at most every 10 minutes; an unrecognised refusal still
   asks, quoting its line;
 - a dropped pass whose origin branch is gone but whose clone record is

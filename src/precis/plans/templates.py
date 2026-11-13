@@ -49,7 +49,12 @@ GATE_SHA_NOTE = (
     "The sha in meta.gate is a placeholder ('0000000'): the build task's land "
     "writes the real sha here once it is known. Until then this gate stays false."
 )
-_RELEASE_LOOP_MAX = 3
+#: The ``release-fix`` loop's one iteration cap (me573231: two red fix
+#: rounds, then a human call). Not stamped on the loop (T4 dropped the
+#: stamped max): ``plan_dispatch._RELEASE_FIX_AUTO_CAP`` reads this.
+#: release-train.md says progress is the limit;
+#: the cap stays until T5's no-progress alarm replaces it.
+RELEASE_FIX_CAP = 2
 _PCB_LOOP_MAX = 5
 _GRIPE_ID_RE = re.compile(r"(?:gr|gripe:)?(\d+)", re.IGNORECASE)
 
@@ -386,6 +391,50 @@ def mint_plan_task(
         m.node("task", title, _task(op), body=body)
 
     return _run_body(store, plan_root, plan_root, build).ids["task"]
+
+
+def mint_merge_back_resolver(
+    store: Store, plan_root: int, rn: str, body: str
+) -> tuple[int, int]:
+    """``(resolver, ours)`` — the two nodes a conflicting merge-back
+    (release-train T3, :mod:`precis.workers.job_types.release_merge_back`)
+    mints under the release pass's root, in one transaction: the
+    resolver, a normal ``run_slice`` slice off main tagged
+    ``meta.merge_back_resolver = rN`` (the key the caller dedupes on),
+    and a second ``merge_back`` node blocked-by it whose
+    ``strategy="ours"`` merge records the release head as an ancestor
+    of main once the resolver's squash carried the content."""
+
+    def build(m: _Minter) -> None:
+        rid = m.node(
+            "resolve",
+            f"Resolve the merge of release/{rn} back into main",
+            {**_task(), "merge_back_resolver": rn},
+            body=body,
+        )
+        op: dict[str, Any] = {
+            "type": "release_confirm",
+            "params": {"merge_back": True, "strategy": "ours", "resolver": rid},
+        }
+        mid = m.node(
+            "merge_back",
+            f"Record release/{rn} as merged into main",
+            {"op": op},
+            body=(
+                f"release_confirm (merge_back mode, strategy=ours): once the "
+                f"resolver td{rid} landed, `git merge --no-ff -s ours "
+                f"origin/release/{rn}` off origin/main, message 'Merge "
+                f"release/{rn} fix forward (resolved in <sha>)', pushed to "
+                "main — the release head becomes an ancestor of main with "
+                "main's tree unchanged."
+            ),
+            blocked_by=("resolve",),
+        )
+        op["params"]["todo_id"] = mid
+        m.store.stamp_ref_meta(mid, {"op": op}, conn=m.conn)
+
+    ids = _run_body(store, plan_root, plan_root, build).ids
+    return ids["resolve"], ids["merge_back"]
 
 
 def mint_reviewer(store: Store, plan_root: int, target_id: int) -> int:
@@ -925,8 +974,9 @@ def mint_release_pass(
     store: Store, parent_id: int | None = None, *, main_sha: str | None = None
 ) -> PlanMint:
     """cut -> poll -> gate tests-green -> approval ask -> deploy -> confirm;
-    a loop mints triage + fixer + re-cut + poll while red (td543733,
-    td543855, td573432).
+    a loop mints digest + one fixer per failure cluster (landing on
+    ``release/r<N>``) + poll while red (td543733, td543855, td573432,
+    release-train T1).
 
     ``cut`` (``release_cut``) runs ``scripts/release --cut-only`` and stamps
     r<N>/sha on the root (``meta.release``) and the real range on the gate
@@ -999,8 +1049,8 @@ def mint_release_pass(
         )
         m.node(
             "loop",
-            "Fix and re-cut until green",
-            {"loop": {"max": _RELEASE_LOOP_MAX, "until": gate, "body": "release-fix"}},
+            "Fix on the release branch until green",
+            {"loop": {"until": gate, "body": "release-fix"}},
             blocked_by=("poll",),
         )
         approval = m.node(
@@ -1036,6 +1086,30 @@ def mint_release_pass(
             ),
             blocked_by=("deploy",),
         )
+        # release-train T3: once the deploy ran, release/r<N> merges back
+        # into main (a release_confirm mode, like the restamp is a poll
+        # mode); the pass root stays open until it and the confirm close,
+        # so release_poll mints the next pass only after both.
+        merge_op: dict[str, Any] = {
+            "type": "release_confirm",
+            "params": {"merge_back": True},
+        }
+        mid = m.node(
+            "merge_back",
+            "Merge the release back into main",
+            {"op": merge_op},
+            body=(
+                "release_confirm (merge_back mode) merges origin/release/r<N> "
+                "into main with a real merge commit 'Merge release/r<N> fix "
+                "forward' and pushes main; no commit past the cut is a no-op; "
+                "a real conflict pushes nothing and mints one resolver todo "
+                "plus an ours-merge node behind it; the next cut waits for "
+                "both."
+            ),
+            blocked_by=("deploy",),
+        )
+        merge_op["params"]["todo_id"] = mid
+        m.store.stamp_ref_meta(mid, {"op": merge_op}, conn=m.conn)
         final = {**ask, "blocks": f"td{deploy}"}
         check_ask_meta({"ask": final})
         m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
@@ -1616,7 +1690,7 @@ TEMPLATES: dict[str, Template] = {
             "release-pass",
             (),
             "cut -> CI verdict poll -> tests-green gate -> deploy approval ask -> "
-            "deploy; fixer + re-cut loop while red",
+            "deploy; one fixer per failure cluster on release/r<N> while red",
             mint_release_pass,
         ),
         Template(
@@ -1695,38 +1769,86 @@ def _iteration_suffix(iteration: Any) -> str:
     return f" (iteration {iteration})" if iteration else ""
 
 
+def _release_fix_meta(target: str | None) -> dict[str, Any]:
+    """A release-fix node's meta: a ``run_slice`` task carrying the
+    release branch it branches from and lands on (release-train T1)."""
+    meta = _task()
+    if target:
+        meta[_release.LAND_TARGET_KEY] = target
+    return meta
+
+
+def _release_fix_body(target: str | None, cluster: str | None = None) -> str:
+    """The fix node's brief. With a ``target`` it names ``release/r<N>``
+    as the base and the land target (the ``land target:`` line is what
+    :func:`precis.plans.release.land_target_of` reads); ``cluster`` names
+    the failures this node owns when the digest split the red."""
+    scope = (
+        f"the failures of the cluster {cluster} it names"
+        if cluster
+        else "the failures it names"
+    )
+    head = (
+        "Read the brief: comment on this todo -- the digest of the red "
+        f"run's failed jobs -- and fix {scope}. "
+    )
+    if not target:
+        return head + (
+            "Land with scripts/ship --quick. Fix forward: never skip, xfail "
+            "or loosen a test."
+        )
+    return head + (
+        f"Base: origin/{target} -- the slice worktree is cut from the "
+        f"release branch, not main. The lander lands the fix onto {target} "
+        "(scripts/ship --onto), never main; main gets it when the release "
+        "merges back after its deploy. Fix forward: never skip, xfail or "
+        f"loosen a test.\nland target: {target}"
+    )
+
+
 def mint_release_fix(
     store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
 ) -> PlanMint:
-    """digest (``ci_red_digest``) -> fix -> re-cut (``release_cut``) -> poll
-    (``ci_verdict_poll``), td543855; the mechanical digest op replaced the
-    LLM triage in td573431.
+    """digest (``ci_red_digest``) -> fix(es) -> poll (``ci_verdict_poll``),
+    td543855; the mechanical digest op replaced the LLM triage in
+    td573431; the release train (``docs/backlog/release-train.md`` T1)
+    dropped the re-cut and moved the fixes onto the release branch.
 
     The digest runs ``scripts/ci-failed`` on the plan's newest red
-    check.yml run and posts the masked digest as a ``brief:`` comment on
-    the fix node -- the run_slice session reads it through
-    ``run_slice._brief_parts``. An INFRA red instead -- a completed run
-    with no failing test in the logs (jobless, skipped-only, cancelled;
-    ``ci_red_digest._infra_done``, gr611682) -- never closes the fix node
-    ``no-op``: the digest fires ``gh run rerun`` once and parks on it,
-    so the loop waits on a real verdict instead of re-cutting and
-    republishing the same sha iteration after iteration. A TEST red of
-    1-2 low-risk ids may instead be WAIVED by the digest
-    (``precis.plans.red_waiver``, setting ``release.red_waiver``): the
-    verdict is recorded green-waived, a ``broken-build`` gripe is filed,
-    and the fix, re-cut and poll nodes are closed ``waived: gr<N>`` --
-    no fix session, no new cut. The re-cut is
-    the mechanical op the release-pass ``cut`` is: it records the new
-    cut on the plan root (:func:`precis.plans.release.record_cut`
-    overwrites ``meta.release``
-    and rewrites the open ``tests-green`` gate, the loop's ``until`` and
-    the approval options to the new range / r<N>). The poll reads that new
-    ``meta.release``, so the loop -- which waits for every child to close
-    -- re-evaluates ``until`` on a recorded verdict for the new range: red
-    mints the next iteration, green closes the loop while the gate opens
-    and frees the approval ask."""
+    check.yml run, clusters the failing ids (by test file, then by the
+    failing ``src`` module) and posts one cluster's masked digest as a
+    ``brief:`` comment per fix node -- the minted ``fix`` takes the first
+    cluster, :func:`mint_release_fix_clusters` mints one sibling per
+    further cluster, so the fixers run in parallel. The run_slice session
+    reads the brief through ``run_slice._brief_parts``. Once the plan has
+    a cut (``meta.release``), every fix node carries
+    ``meta.land_target = 'release/r<N>'`` and its body names that branch
+    as base and land target: ``run_slice`` cuts the worktree from it and
+    ``land_slice`` lands onto it, never main. An INFRA red instead -- a
+    completed run with no failing test in the logs (jobless,
+    skipped-only, cancelled; ``ci_red_digest._infra_done``, gr611682) --
+    never closes the fix node ``no-op``: the digest fires ``gh run
+    rerun`` once and parks on it. A TEST red of 1-2 low-risk ids may
+    instead be WAIVED by the digest (``precis.plans.red_waiver``, setting
+    ``release.red_waiver``): the verdict is recorded green-waived, a
+    ``broken-build`` gripe is filed, and the fix and poll nodes are
+    closed ``waived: gr<N>`` -- no fix session.
+
+    No re-cut. Blocked-by every fix node, the ``restamp`` node
+    (``ci_verdict_poll`` in restamp mode) reads ``origin/release/r<N>``'s
+    head and moves ``meta.release`` onto it
+    (:func:`precis.plans.release.record_head`: sha, range end, the open
+    ``tests-green`` gate and this loop's ``until``); the ``poll`` after it
+    records the verdict of the check.yml run the fixes' push started. So
+    the loop, which waits for every child to close, re-evaluates ``until``
+    on the fixed head: green closes it and frees the approval ask, red
+    mints the next iteration, whose digest reads the head's red run --
+    never the cut's. T2's targeted ``release_rerun`` goes between the
+    restamp and the poll."""
     _loop, root = _loop_context(store, loop_todo_id)
     suffix = _iteration_suffix(iteration)
+    rel = _release.release_of(store, loop_todo_id)
+    target = _release.release_branch(str(rel["rN"])) if rel else None
 
     def build(m: _Minter) -> None:
         m.node(
@@ -1735,45 +1857,112 @@ def mint_release_fix(
             _task("ci_red_digest"),
             body=(
                 "ci_red_digest runs scripts/ci-failed on the plan's newest "
-                "red check.yml run and posts the masked digest as a brief: "
-                "comment on this node's blocked run_slice fix nodes."
+                "red check.yml run, clusters the failures and posts one "
+                "cluster's masked digest as a brief: comment per blocked "
+                "run_slice fix node (minting one more fix node per extra "
+                "cluster)."
             ),
         )
         m.node(
             "fix",
             f"Fix the failures the digest found{suffix}",
-            _task(),
-            body=(
-                "Read the brief: comment on this todo -- the digest of the "
-                "red run's failed jobs -- and fix the failures it names; "
-                "land with scripts/ship --quick. Fix forward: never skip, "
-                "xfail or loosen a test."
-            ),
+            _release_fix_meta(target),
+            body=_release_fix_body(target),
             blocked_by=("digest",),
         )
-        m.node(
-            "recut",
-            f"Re-cut the release{suffix}",
-            _task("release_cut"),
+        restamp_op: dict[str, Any] = {
+            "type": "ci_verdict_poll",
+            "params": {"restamp": True},
+        }
+        rid = m.node(
+            "restamp",
+            f"Restamp the release onto its head{suffix}",
+            {"op": restamp_op, "retries": _POLL_RETRIES},
             body=(
-                "release_cut runs scripts/release --cut-only on main with the fixes "
-                "in, then records the new cut on the plan root (meta.release) and "
-                "the new range on the tests-green gate and this loop's until."
+                "ci_verdict_poll (restamp mode) reads origin/release/r<N>'s head "
+                "after the fixes landed and moves meta.release onto it — sha, "
+                "range end, the tests-green gate and this loop's until — with "
+                "no cut, so the poll and a later digest key on the fixed head."
             ),
             blocked_by=("fix",),
         )
+        # The op names its own node: a dict op gets no todo_id from the tick.
+        restamp_op["params"]["todo_id"] = rid
+        m.store.stamp_ref_meta(rid, {"op": restamp_op}, conn=m.conn)
         m.node(
             "poll",
-            f"Record the CI verdict on the re-cut{suffix}",
+            f"Record the CI verdict on the release head{suffix}",
             {**_task("ci_verdict_poll"), "retries": _POLL_RETRIES},
             body=(
-                "ci_verdict_poll reads check.yml's run on the re-cut's sha from "
-                "the GitHub API and records it in release.ci_verdicts."
+                "ci_verdict_poll reads check.yml's run on the release head's sha "
+                "(the run the fixes' push started) from the GitHub API and "
+                "records it in release.ci_verdicts."
             ),
-            blocked_by=("recut",),
+            blocked_by=("restamp",),
         )
 
     return _run_body(store, loop_todo_id, root, build)
+
+
+_ITERATION_RE = re.compile(r" \(iteration \d+\)$")
+
+
+def mint_release_fix_clusters(
+    store: Store, digest_id: int, fix_id: int, clusters: list[str]
+) -> list[int]:
+    """One more release-fix node per entry of ``clusters``, siblings of
+    ``fix_id`` (same loop, plan tag, meta and land target), each
+    ``blocked-by`` the digest, and every node that waits on ``fix_id``
+    (the iteration's poll) made to wait on each new node too. One
+    transaction; returns the new ids in ``clusters`` order. The digest
+    (``ci_red_digest``) calls it when the red splits into more clusters
+    than the body minted fix nodes for."""
+    if not clusters:
+        return []
+    fix = store.get_ref(kind="todo", id=fix_id)
+    if fix is None or fix.parent_id is None:
+        raise NotFound(
+            f"release-fix node td{fix_id} not found or has no loop parent",
+            next="mint the iteration with the release-fix body first",
+        )
+    loop_id = int(fix.parent_id)
+    target = _release.land_target_of(fix.meta)
+    m_suffix = _ITERATION_RE.search(str(fix.title or ""))
+    suffix = m_suffix.group(0) if m_suffix else ""
+    with store.pool.connection() as conn:
+        waiters = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT src_ref_id FROM links WHERE relation = 'blocked-by' "
+                "AND dst_ref_id = %s ORDER BY src_ref_id",
+                (fix_id,),
+            ).fetchall()
+        ]
+    with store.tx() as conn:
+        m = _Minter(store, conn, loop_id)
+        m.root_id = loop_id
+        m.plan_root = _release.plan_root(store, fix_id)
+        m.ids["digest"] = digest_id
+        new: list[int] = []
+        for i, cluster in enumerate(clusters, start=2):
+            tid = m.node(
+                f"fix{i}",
+                f"Fix the failures in {cluster}{suffix}",
+                _release_fix_meta(target),
+                body=_release_fix_body(target, cluster),
+                blocked_by=("digest",),
+            )
+            for waiter in waiters:
+                store.add_link(
+                    src_ref_id=waiter,
+                    dst_ref_id=tid,
+                    relation="blocked-by",
+                    conn=conn,
+                )
+            new.append(tid)
+        for tid in new:
+            finish_mint(store, tid, conn=conn)
+    return new
 
 
 def mint_pcb_fix(

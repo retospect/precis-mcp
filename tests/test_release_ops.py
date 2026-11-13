@@ -45,6 +45,14 @@ RNG = f"{PREV}..{SHA[:12]}"
 #: reads (gr597625): tests put ``release_poll._GitLand`` commits here.
 _GIT_LANDS: list[Any] = []
 
+#: The fake release scope — the cut's range plus the commits on
+#: ``release/r<N>`` after it — the deploy's review hold reads (release
+#: train T4): tests put ``release_poll._GitLand`` commits here.
+_REL_LANDS: list[Any] = []
+
+#: The real release-scope scan, kept before the fixture fakes it.
+_REAL_RELEASE_LANDS = getattr(rc._rp, "_release_lands", None)
+
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,7 +63,11 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_RELEASE_HEALTH_URL", raising=False)
     psettings.invalidate()
     _GIT_LANDS.clear()
+    _REL_LANDS.clear()
     monkeypatch.setattr(rc._rp, "_git_lands", lambda: (list(_GIT_LANDS), "5" * 40))
+    monkeypatch.setattr(
+        rc._rp, "_release_lands", lambda rel: list(_REL_LANDS), raising=False
+    )
 
 
 class Ctx:
@@ -2678,20 +2690,23 @@ def _iteration(store: Store, loop_id: int) -> dict[str, int]:
     keys = {
         "ci_red_digest": "digest",
         "run_slice": "fix",
-        "release_cut": "recut",
         "ci_verdict_poll": "poll",
     }
     out: dict[str, int] = {}
     for ref_id, meta in rows:
-        key = keys[meta["op"]]
+        op = meta["op"]
+        key = "restamp" if isinstance(op, dict) else keys[op]
         assert key not in out, (key, rows)
         out[key] = int(ref_id)
     return out
 
 
-def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
+SHA3 = "cafe" + "3" * 36
+RNG3 = f"{PREV}..{SHA3[:12]}"
+
+
+def _red_iteration(store: Store) -> tuple[T.PlanMint, dict[str, int]]:
+    """A cut r7 that went red on run 31, iteration 1 minted."""
     mint = T.mint_release_pass(store)
     ids = mint.ids
     pd.run_pass(store)
@@ -2700,119 +2715,143 @@ def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
     _succeed(store, job)
     pd.run_pass(store)
     job, _ = _only_job(store, ids["poll"])
-
-    # Red on r7: the poll closes, the gate stays shut, the loop mints
-    # iteration 1 = digest (ci_red_digest) -> fix -> recut -> poll.
     R.record_ci_verdict(store, SHA, RNG, "red", "31")
     _succeed(store, job)
     pd.run_pass(store)
     res = pd.run_pass(store)
     assert res.loops_minted == 1, res.notes
-    assert _status(store, ids["poll"]) == "done"
-    assert _status(store, ids["gate"]) == "open"
-    assert _meta(store, ids["gate"])["gate_result"]["open"] is False
-    assert _meta(store, ids["loop"])["loop"]["count"] == 1
-    it = _iteration(store, ids["loop"])
-    assert set(it) == {"digest", "fix", "recut", "poll"}
+    return mint, _iteration(store, ids["loop"])
 
-    # The digest job posts its brief and closes, then the fixer's session
-    # runs and closes; the tick dispatches the mechanical re-cut. The
-    # re-cut recomputes the newest fully-reviewed head (gr592271).
+
+def _two_fixes_land_and_restamp(
+    store: Store, mint: T.PlanMint, it: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest splits the red in two, both fixes land on release/r7
+    (closed), and the restamp node moves meta.release onto the head."""
+    extra = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_beta.py"]
+    )
     pd.run_pass(store)
-    job, meta = _only_job(store, it["digest"])
-    assert meta["job_type"] == "ci_red_digest"
-    assert meta["params"] == {"todo_id": it["digest"]}
-    assert _jobs_under(store, it["fix"]) == []  # blocked by the digest
-    assert _jobs_under(store, it["recut"]) == []  # blocked by the fix
+    job, _ = _only_job(store, it["digest"])
     _succeed(store, job)
     _close(store, it["digest"])
+    for fix_id in (it["fix"], *extra):
+        _close(store, fix_id)
+    assert _jobs_under(store, it["poll"]) == []  # blocked by the restamp
     pd.run_pass(store)
-    for job_id, _m in _jobs_under(store, it["fix"]):
-        _succeed(store, job_id)
-    _close(store, it["fix"])
-    _fake_gh_api(monkeypatch, main_sha=SHA2)
-    pd.run_pass(store)
-    job, meta = _only_job(store, it["recut"])
-    assert (meta["job_type"], meta["executor"]) == ("release_cut", "ssh_node")
-    assert meta["params"] == {"todo_id": it["recut"]}
-
-    # The re-cut's job records r8 on the plan: meta.release overwritten,
-    # gate / loop until / approval options moved to the new range.
-    notes = R.record_cut(store, it["recut"], "r8", SHA2, RNG2, repo="o/r")
-    assert notes[0].startswith(f"td{mint.root_id}: meta.release = r8")
+    job, meta = _only_job(store, it["restamp"])
+    assert (meta["job_type"], meta["executor"]) == ("ci_verdict_poll", "job_inproc")
+    assert meta["params"] == {"restamp": True, "todo_id": it["restamp"]}
+    monkeypatch.setattr(cvp, "fetch_head", lambda repo, branch: SHA3)
+    ctx = Ctx(store, meta["params"])
+    cvp._dispatch(ctx, cvp.SPEC)
+    assert ctx.failures == []
     rel = _meta(store, mint.root_id)["release"]
-    assert (rel["rN"], rel["sha"], rel["range"]) == ("r8", SHA2, RNG2)
-    want = {"kind": "tests-green", "args": {"range": RNG2}}
-    assert _meta(store, ids["gate"])["gate"] == want
-    assert _meta(store, ids["gate"])["gate_result"] is None
-    assert _meta(store, ids["loop"])["loop"]["until"] == want
-    assert _meta(store, ids["loop"])["loop"]["count"] == 1
-    assert _meta(store, ids["approval"])["ask"]["options"] == ["deploy r8", "hold"]
+    assert (rel["rN"], rel["sha"], rel["range"]) == ("r7", SHA3, RNG3)
+    assert (rel["cut_sha"], rel["cut_range"]) == (SHA, RNG)
+    want = {"kind": "tests-green", "args": {"range": RNG3}}
+    assert _meta(store, mint.ids["gate"])["gate"] == want
+    assert _meta(store, mint.ids["loop"])["loop"]["until"] == want
     _succeed(store, job)
     pd.run_pass(store)
-    assert _status(store, it["recut"]) == "done"
+
+
+def test_red_cut_fixed_on_the_release_branch_deploys_its_restamped_head(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """release-train T1 review: red cut -> two fixes land on release/r7 ->
+    the restamp moves meta.release onto the head -> the poll reads the
+    head's run (the fixes' push), green -> the loop closes and the
+    approval for r7 opens. No re-cut, no iteration 2."""
+    mint, it = _red_iteration(store)
+    ids = mint.ids
+    assert set(it) == {"digest", "fix", "restamp", "poll"}
+    fix = _meta(store, it["fix"])
+    assert (fix["op"], fix["land_target"]) == ("run_slice", "release/r7")
+    _two_fixes_land_and_restamp(store, mint, it, monkeypatch)
+
     job, meta = _only_job(store, it["poll"])
-    assert (meta["job_type"], meta["executor"]) == ("ci_verdict_poll", "job_inproc")
     assert meta["params"] == {"todo_id": it["poll"]}
     target = cvp.resolve_target(store, meta["params"])
     assert (target["sha"], target["range"], target["branch"]) == (
-        SHA2,
-        RNG2,
-        "release/r8",
+        SHA3,
+        RNG3,
+        "release/r7",
     )
-
-    # Green on r8: the poll closes, the gate opens on the new range, the
-    # loop closes without a second iteration, the approval asks for r8.
-    R.record_ci_verdict(store, SHA2, RNG2, "green", "32")
+    R.record_ci_verdict(store, SHA3, RNG3, "green", "41")
     _succeed(store, job)
     pd.run_pass(store)
     res = pd.run_pass(store)
     assert res.loops_minted == 0, res.notes
     assert _status(store, ids["gate"]) == "done"
     assert _status(store, ids["loop"]) == "done"
-    assert set(_iteration(store, ids["loop"])) == {"digest", "fix", "recut", "poll"}
+    assert _meta(store, ids["loop"])["loop"]["count"] == 1
     assert _status(store, ids["approval"]) == "open"
-    assert "ask-user" in {str(t.value) for t in store.tags_for(ids["approval"])}
-    assert "deploy r8" in _meta(store, ids["approval"])["ask"]["options"]
-    assert _jobs_under(store, ids["deploy"]) == []
+    assert _meta(store, ids["approval"])["ask"]["options"] == ["deploy r7", "hold"]
+    assert not any(
+        m.get("job_type") == "release_cut"
+        for key in it.values()
+        for _j, m in _jobs_under(store, key)
+    )
 
-    _comment(store, ids["approval"], "answer: deploy r8")
+
+def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch, checkout: dict[str, Any]
+) -> None:
+    """The head the fixes produced goes red too: iteration 2's digest reads
+    the head's run 41, never the cut's run 31 again."""
+    mint, it = _red_iteration(store)
+    _two_fixes_land_and_restamp(store, mint, it, monkeypatch)
+    job, _ = _only_job(store, it["poll"])
+    R.record_ci_verdict(store, SHA3, RNG3, "red", "41")
+    _succeed(store, job)
     pd.run_pass(store)
-    _job, meta = _only_job(store, ids["deploy"])
-    assert meta["job_type"] == "release_deploy"
+    res = pd.run_pass(store)
+    assert res.loops_minted == 1, res.notes
+    it2 = {
+        k: v for k, v in _iteration2(store, mint.ids["loop"], set(it.values())).items()
+    }
+    script = _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": it2["digest"]})
+    crd.submit(ctx, None)
+    assert ctx.failures == []
+    assert checkout["argv"][-1] == [str(script), "41"]
 
 
-def test_recut_is_pinned_to_the_first_cut_host(
+def _iteration2(store: Store, loop_id: int, first: set[int]) -> dict[str, int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (loop_id,),
+        ).fetchall()
+    out: dict[str, int] = {}
+    for ref_id, meta in rows:
+        if int(ref_id) in first:
+            continue
+        op = meta.get("op")
+        if op == "ci_red_digest":
+            out["digest"] = int(ref_id)
+    return out
+
+
+def test_the_cut_is_pinned_to_its_host(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mint = _cut(store, host="node-a", checkout="/srv/repo")
-    ids = mint.ids
-    # The first cut has no meta.release yet: not pinned.
+    _fake_gh_api(monkeypatch, main_sha=SHA2)
+    # A pass with no cut recorded yet: not pinned.
     fresh = T.mint_release_pass(store)
     assert rc.validate_submit(store, params={"todo_id": fresh.ids["cut"]}) is None
-
-    _close(store, fresh.root_id)
-    for key in ("cut", "poll"):
-        _close(store, ids[key])
-    T.mint_body(store, ids["loop"], "release-fix", iteration=2)
-    it = _iteration(store, ids["loop"])
-    for key in ("digest", "fix"):
-        _close(store, it[key])
-    _fake_gh_api(monkeypatch, main_sha=SHA2)  # the re-cut recomputes the head
-    pd.run_pass(store)
-    _job, meta = _only_job(store, it["recut"])
-    assert meta["job_type"] == "release_cut"
-    assert meta["params"] == {"todo_id": it["recut"], "target_node": "node-a"}
-
     for params in (
-        {"todo_id": it["recut"]},
-        {"todo_id": it["recut"], "target_node": "node-b"},
+        {"todo_id": mint.ids["cut"]},
+        {"todo_id": mint.ids["cut"], "target_node": "node-b"},
     ):
         refusal = rc.validate_submit(store, params=params)
         assert refusal is not None and "target_node='node-a'" in refusal, refusal
     assert (
         rc.validate_submit(
-            store, params={"todo_id": it["recut"], "target_node": "node-a"}
+            store, params={"todo_id": mint.ids["cut"], "target_node": "node-a"}
         )
         is None
     )
@@ -2912,6 +2951,150 @@ def test_digest_posts_a_masked_brief_on_the_fix_node(
     # gr597599: the fix node's escape when main is already green.
     assert "finish with `moot: <sha>` and no commit" in text
     assert text in ctx.chunks[-1][1]
+
+
+def _blockers(store: Store, todo_id: int) -> set[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'blocked-by'",
+            (todo_id,),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _children(store: Store, parent_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (parent_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+_TWO_FILE_RED = (
+    "== test-linux (3.13, 1) ==\n"
+    "  FAILED tests/test_alpha.py::test_one - assert 1 == 2\n"
+    "  FAILED tests/test_beta.py::test_two - KeyError: 'x'\n"
+    "  FAILED tests/test_beta.py::test_three - KeyError: 'y'\n"
+    "  ===== 3 failed, 40 passed in 3.00s =====\n"
+)
+
+
+def test_a_red_in_two_files_mints_two_fix_nodes_on_the_release_branch(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    """release-train T1: the digest clusters the failing ids by test file
+    and runs one fixer per cluster — the iteration's own fix node takes
+    one cluster, a sibling is minted for the other — each landing on
+    ``release/r7`` (``meta.land_target``), each blocking the poll. There
+    is no re-cut node."""
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    assert set(it) == {"digest", "fix", "restamp", "poll"}
+    assert _meta(store, it["fix"])["land_target"] == "release/r7"
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, _TWO_FILE_RED)
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+
+    fixes = sorted(
+        tid
+        for tid in _children(store, mint.ids["loop"])
+        if _meta(store, tid).get("op") == "run_slice"
+    )
+    assert len(fixes) == 2 and fixes[0] == it["fix"]
+    extra = fixes[1]
+    meta = _meta(store, extra)
+    assert (meta["op"], meta["land_target"]) == ("run_slice", "release/r7")
+    assert f"plan:{mint.root_id}" in {str(t.value) for t in store.tags_for(extra)}
+    assert _blockers(store, extra) == {it["digest"]}
+    assert _blockers(store, it["restamp"]) == set(fixes)
+    assert _blockers(store, it["poll"]) == {it["restamp"]}
+    assert _status(store, extra) == "open"
+
+    # largest cluster first: test_beta.py (2 ids) on the iteration's fix.
+    [beta] = _todo_comments(store, it["fix"])
+    [alpha] = _todo_comments(store, extra)
+    assert beta.startswith(f"brief: release r7 is red at {SHA[:9]}")
+    assert "cluster 1/2: tests/test_beta.py" in beta
+    assert "tests/test_beta.py::test_two, tests/test_beta.py::test_three" in beta
+    assert f"tests/test_alpha.py (td{extra})" in beta
+    assert "cluster 2/2: tests/test_alpha.py" in alpha
+    assert "fix only these failing ids: tests/test_alpha.py::test_one." in alpha
+    for text in (alpha, beta):
+        assert "lander lands it onto release/r7, never main" in text
+        assert "never skip, xfail or loosen a test" in text
+    body = "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(extra)
+        if c.chunk_kind == "todo_body"
+    )
+    assert "land target: release/r7" in body and "tests/test_alpha.py" in body
+
+    # A retried digest finds both fix nodes and mints no third.
+    ctx2 = Ctx(store, {"todo_id": it["digest"]})
+    handle2 = crd.submit(ctx2, None)
+    _exit(checkout, 0, _TWO_FILE_RED)
+    assert crd.poll(ctx2, handle2) is True
+    assert ctx2.status == "succeeded", ctx2.failures
+    assert (
+        len(
+            [
+                t
+                for t in _children(store, mint.ids["loop"])
+                if _meta(store, t).get("op") == "run_slice"
+            ]
+        )
+        == 2
+    )
+
+
+def test_test_files_failing_on_one_src_module_are_one_cluster() -> None:
+    """T1 review: three test files red on the same module's import are one
+    fix; an unrelated file stays its own cluster."""
+    failures = {
+        "tests/test_a.py::t1": "ImportError: cannot import name 'x' from 'precis.foo'",
+        "tests/test_b.py::t2": "ModuleNotFoundError: No module named 'precis.foo'",
+        "tests/test_c.py::t3": "AttributeError in src/precis/foo.py:12",
+        "tests/test_d.py::t4": "assert 1 == 2",
+    }
+    assert crd.cluster_failures(failures) == [
+        (
+            "src/precis/foo.py",
+            ["tests/test_a.py::t1", "tests/test_b.py::t2", "tests/test_c.py::t3"],
+        ),
+        ("tests/test_d.py", ["tests/test_d.py::t4"]),
+    ]
+
+
+def test_a_red_in_one_file_keeps_one_fix_node(
+    store: Store, checkout: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=1).ids
+    _ci_failed_script(checkout)
+    ctx = Ctx(store, {"todo_id": it["digest"]})
+    handle = crd.submit(ctx, None)
+    _exit(
+        checkout,
+        0,
+        "== test-linux ==\n  FAILED tests/test_alpha.py::test_one - boom\n"
+        "  FAILED tests/test_alpha.py::test_two - boom\n"
+        "  ===== 2 failed in 1.00s =====\n",
+    )
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    kids = _children(store, mint.ids["loop"])
+    assert sorted(kids) == sorted(it.values())
+    [text] = _todo_comments(store, it["fix"])
+    assert "cluster" not in text.splitlines()[1]
+    assert "lander lands it onto release/r7, never main" in text
 
 
 def test_digest_fails_without_a_red_verdict_run_id(
@@ -4390,11 +4573,14 @@ def test_web_failure_during_the_restart_window_mints_no_attest_ask(
     assert "confirmed" not in _meta(store, mint.root_id)["release"]
 
 
-# ── the engine-review gate on the cut (td574937 E1) ────────────────
+# ── the engine-review gate holds the deploy, not the cut (release train T4) ──
 #
-# ``release_cut.validate_submit`` and ``submit`` refuse while a reviewer
-# on an engine-stamped ``land_slice`` job is open or its FIX is unlanded
-# — the same gate ``release_poll.run_pass`` runs; no asks are filed here.
+# Reto 2026-11-12: a release is cut once at origin/main's tip and no
+# review holds the cut. ``release_deploy.validate_submit`` and ``submit``
+# refuse while an engine land INSIDE the release — the cut's recorded
+# range plus the commits on ``release/r<N>`` after it — has an open
+# reviewer or a FIX whose fix is not on ``release/r<N>``; a land on main
+# after the cut is the next release's. No asks are filed here.
 
 
 def _reviewer(
@@ -4438,26 +4624,6 @@ def _engine_land(
     return int(ref.id)
 
 
-def _release_fix(store: Store) -> int:
-    """A fix todo under a ``release-fix`` loop — the parentage
-    ``release_poll._release_fix_todo`` reads for the must-carry rule
-    (gr653036)."""
-    loop = store.insert_ref(
-        kind="todo",
-        slug=None,
-        title="fix and re-cut until green",
-        meta={"loop": {"max": 3, "until": {}, "body": "release-fix"}},
-    )
-    fix = store.insert_ref(
-        kind="todo",
-        slug=None,
-        title="the release fix",
-        meta=None,
-        parent_id=int(loop.id),
-    )
-    return int(fix.id)
-
-
 def _fake_gh_api(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -4498,20 +4664,20 @@ def _release_target(store: Store, root: int, sha: str, upto: list[str]) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_open_engine_reviewer_blocks_a_cut(
+def test_an_open_engine_reviewer_never_holds_a_cut(
     store: Store, checkout: dict[str, Any]
 ) -> None:
+    """A pass minted without a recorded target cuts origin/main's tip
+    whatever the gate says — the review holds the deploy instead."""
     mint = T.mint_release_pass(store)
     _engine_land(store, 42, ["scripts/ship"])
-    rid = _reviewer(store, 42)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None
-    assert refusal.startswith("release_cut:")
-    assert f"td{rid}" in refusal and "td42" in refusal
+    _reviewer(store, 42)
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.failures and f"td{rid}" in ctx.failures[0]
+    assert rc.submit(ctx, None) is not None and ctx.failures == []
+    assert checkout["argv"] == [
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
@@ -4531,12 +4697,10 @@ def test_non_engine_or_resolved_review_does_not_block_a_cut(
 
 # ── the recorded cut target (gr592271) ─────────────────────────────
 #
-# A pass minted by the new poll carries ``meta.release_target =
-# {sha, upto}``: the cut runs ``--cut-only --sha <sha>`` and only the
-# lands inside ``upto`` may hold it — a newer land's open review sits
-# past the cut. A re-cut (``meta.release`` set) recomputes the newest
-# fully-reviewed head instead: the recorded window is stale once the
-# fix landed.
+# A pass minted by the poll carries ``meta.release_target = {sha,
+# upto}``: the cut runs ``--cut-only --sha <sha>``, the origin/main tip
+# the poll pinned. A plan already cut (``meta.release`` set) cuts
+# origin/main's tip: no review holds either.
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
@@ -4544,7 +4708,7 @@ def test_the_recorded_target_cuts_at_its_sha_despite_a_pending_review(
     store: Store, checkout: dict[str, Any]
 ) -> None:
     """gr592271: the pass recorded cut sha A; a newer engine land's open
-    review sits past the ``upto`` window and does not hold the cut."""
+    review does not hold the cut."""
     a, b = "a" * 40, "b" * 40
     mint = T.mint_release_pass(store, main_sha=a)
     _release_target(store, mint.root_id, a, [a[:12]])
@@ -4560,271 +4724,251 @@ def test_the_recorded_target_cuts_at_its_sha_despite_a_pending_review(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_land_inside_the_recorded_window_holds_the_cut(
-    store: Store, checkout: dict[str, Any]
-) -> None:
-    """A land whose sha sits inside the recorded ``upto`` window —
-    pushed before the cut but stamped after the poll's scan — gates it
-    until cleared."""
-    a = "a" * 40
-    mint = T.mint_release_pass(store, main_sha=a)
-    _release_target(store, mint.root_id, a, [a[:12], "f" * 12])
-    _engine_land(store, 42, ["scripts/ship"], sha="f" * 40)
-    rid = _reviewer(store, 42)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None and refusal.startswith("release_cut:")
-    assert f"td{rid}" in refusal and "td42" in refusal
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.failures and f"td{rid}" in ctx.failures[0]
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_recorded_cut_holds_while_the_fix_commit_is_outside(
-    store: Store, checkout: dict[str, Any]
-) -> None:
-    """td601005: land A inside the recorded window cleared on a FIX
-    whose corrective commit sits OUTSIDE the window — the cut must
-    carry the fix, so it still holds."""
-    a = "a" * 40
-    mint = T.mint_release_pass(store, main_sha=a)
-    _release_target(store, mint.root_id, a, [a[:12]])
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _comment(store, int(fix.id), f"landed: {'f' * 9} — fix")
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None and refusal.startswith("release_cut:")
-    assert "corrective commit" in refusal and "td42" in refusal
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.failures and "corrective commit" in ctx.failures[0]
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_recorded_target_below_a_landed_release_fix_recomputes(
+def test_a_cut_plan_cuts_the_tip_and_no_review_holds_it(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """td653689: the pass minted its target before a release-fix landed
-    on only application code — the recorded sha sits below the fix. The
-    first cut treats the target as stale and recomputes the cleared head
-    instead of cutting under it."""
-    a, f = "a" * 40, "b" * 40
-    mint = T.mint_release_pass(store, main_sha=a)
-    _release_target(store, mint.root_id, a, [a[:12]])
-    fix = _release_fix(store)
-    _engine_land(store, fix, ["src/precis/store/thing.py"], sha=f)
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": f}],
-        },
-        main_sha=f,
-    )
-    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    handle = rc.submit(ctx, None)
-    assert ctx.failures == [] and handle is not None
-    assert checkout["argv"] == [
-        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", f]
-    ]
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_the_recut_recomputes_the_newest_reviewed_head(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The release-fix re-cut's recorded target is stale once the fix
-    landed — it recomputes the newest fully-reviewed head and cuts
-    THAT."""
-    mint = _cut(store)  # meta.release set: the re-cut path
+    """A ``release_cut`` on a plan already cut (``meta.release`` set)
+    computes no reviewed head any more: it cuts origin/main's tip, a
+    pending review on main notwithstanding (gr611217's tip rule)."""
+    mint = _cut(store)
     _fake_gh_api(monkeypatch, main_sha=SHA2)
+    _engine_land(store, 42, ["scripts/ship"], sha=SHA2)
+    _reviewer(store, 42)
     assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     handle = rc.submit(ctx, None)
     assert ctx.failures == [] and handle is not None
     assert checkout["argv"] == [
-        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", SHA2]
+        [str(checkout["root"] / "scripts" / "release"), "--cut-only"]
     ]
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_the_recut_stays_blocked_on_a_pending_review(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The re-cut's recompute is fail-closed too: an uncleared land at
-    the window's start holds it, naming the pending review."""
-    mint = _cut(store)
-    b, c = "b" * 40, "c" * 40
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": b}, {"sha": c}],
-        },
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=b)
-    rid = _reviewer(store, 42)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None
-    assert f"td{rid}" in refusal and "td42" in refusal
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.failures and f"td{rid}" in ctx.failures[0]
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_the_recut_fails_closed_on_an_unverifiable_fix(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601285: the re-cut's compare comes back ahead with no commit
-    list and the FIX's corrective sha names no scanned commit — the cut
-    refuses instead of falling back to the pin."""
-    mint = _cut(store)
-    a = "a" * 40
-    _fake_gh_api(
-        monkeypatch,
-        compare={"status": "ahead", "ahead_by": 1, "behind_by": 0},
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _comment(store, int(fix.id), f"landed: {'0' * 40} — fix")
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None and refusal.startswith("release_cut:")
-    assert "corrective commit" in refusal and "0" * 12 in refusal
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.failures and "corrective commit" in ctx.failures[0]
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_the_recut_orders_on_the_scan_when_the_compare_list_is_empty(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """td601285: no commit list in the re-cut's compare — the scan's
-    own ordering stands in: [A FIX, C fixes A] recomputes to C, the
-    cut CARRIES the corrective commit."""
-    mint = _cut(store)
-    a, c = "a" * 40, "c" * 40
-    _fake_gh_api(
-        monkeypatch,
-        compare={"status": "ahead", "ahead_by": 2, "behind_by": 0},
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _comment(store, int(fix.id), f"landed: {c} — fix")
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    # The fix commit sits inside the scanned window (a non-engine
-    # path: in ``scanned`` without being a gate unit itself).
-    _GIT_LANDS.append(
-        rc._rp._GitLand(sha=c, subject="", committed_at=None, paths=("docs/a.md",))
-    )
-    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    handle = rc.submit(ctx, None)
-    assert ctx.failures == [] and handle is not None
-    assert checkout["argv"] == [
-        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", c]
-    ]
-
-
-# ── gr611217: a re-cut never launches below origin/main ────────────
-#
-# A re-cut runs while r<N> is open, and ``scripts/round`` refuses a
-# pipelined cut anywhere but origin/main — the r261 re-cut pinned
-# 5a1ab3326 three hours below main and burned the retry cap twice.
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_recut_below_the_head_holds_and_names_the_unit(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """[B LAND, C pending] — the cleared head is B, below the pinned
-    head: validate refuses ``holding:`` naming C's review (a refusal
-    mints no job, so no attempt), and a submit racing into it fails
-    attempt-free without launching."""
-    mint = _cut(store)
-    b, c = "b" * 40, "c" * 40
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": b}, {"sha": c}],
-        },
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=b)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, ["scripts/ship"], sha=c)
-    rid = _reviewer(store, 43)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None
-    assert refusal.startswith(f"release_cut: {rc.HOLD_PREFIX}cut {b[:12]}")
-    assert f"td{rid}" in refusal and "td43" in refusal
-    assert refusal.endswith("next tick retries")
-    # The poll's liveness clock: the hold sits on the plan root.
-    hold = _meta(store, mint.root_id)["cut_hold"]
-    assert hold["since"] and any("td43" in ln for ln in hold["lines"])
-    # gr651885: the tip-not-cleared hold is the one that freezes lands.
-    assert hold.get("kind") == "tip"
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.failures and rc.HOLD_PREFIX in ctx.failures[0]
-    assert ctx.stamped.get("attempt_free") == "cut-hold"
-
-
-def test_a_recut_with_nothing_cleared_still_ages_the_tip_hold(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gr651885 review: the oldest land's review is the slow one, so no
-    commit clears at all — the re-cut is held on the tip's reviews just
-    the same and must record the ``kind: tip`` hold that ages the land
-    freeze, not return before it."""
-    mint = _cut(store)
-    c = "c" * 40
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 1,
-            "behind_by": 0,
-            "commits": [{"sha": c}],
-        },
-    )
-    _engine_land(store, 43, ["scripts/ship"], sha=c)
-    rid = _reviewer(store, 43)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None and f"td{rid}" in refusal
-    hold = _meta(store, mint.root_id)["cut_hold"]
-    assert hold.get("kind") == "tip" and hold["since"]
-    assert any("td43" in ln for ln in hold["lines"])
-
-
-def test_a_recut_whose_gate_is_unreadable_records_no_tip_hold(
-    store: Store, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The gate's own fatal line is not a review wait: no hold, no freeze."""
-    mint = _cut(store)
-    monkeypatch.setattr(
-        rc._rp,
-        "cleared_head",
-        lambda store, *, repo: (None, ["engine review gate unreadable (X)"], []),
-    )
-    monkeypatch.setattr(rc.pr_class, "resolve_repo", lambda *a, **k: "o/r")
-    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is not None
     assert "cut_hold" not in _meta(store, mint.root_id)
+
+
+def _approved_cut(store: Store) -> T.PlanMint:
+    """r7 cut at SHA over RNG, its approval answered ``deploy r7``."""
+    mint = _cut(store)
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    return mint
+
+
+def _in_release(sha: str, paths: list[str], subject: str = "") -> None:
+    """A commit inside the release: in the cut's range, or on
+    ``release/r<N>`` after the cut."""
+    _REL_LANDS.append(
+        rc._rp._GitLand(sha=sha, subject=subject, committed_at=None, paths=tuple(paths))
+    )
+
+
+def test_an_unreviewed_land_after_the_cut_does_not_hold_the_deploy(
+    store: Store,
+) -> None:
+    """Release train T4: an engine land on main after r7's cut belongs to
+    the next release — its open review holds nothing of r7, whose own
+    land is reviewed; the main gate still reads it pending."""
+    mint = _approved_cut(store)
+    inside, after = "a" * 40, "b" * 40
+    _engine_land(store, 42, ["scripts/ship"], sha=inside)
+    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
+    _in_release(inside, ["scripts/ship"])
+    _engine_land(store, 43, ["scripts/ship"], sha=after)  # on main only
+    rid = _reviewer(store, 43)
+    assert rc._rp.deploy_review_blockers(store, mint.ids["deploy"]) == []
+    assert rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]}) is None
+    lines, _notes = rc._rp.engine_review_blockers(store)
+    assert any(f"td{rid}" in ln and "td43" in ln for ln in lines)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
+def test_an_unreviewed_land_inside_the_range_holds_the_deploy_not_the_cut(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Release train T4: the land inside the recorded window used to
+    hold the cut; now the cut launches and the deploy waits on the
+    review, until it closes LAND."""
+    _fake_gh_api(monkeypatch)
+    a = "a" * 40
+    mint = T.mint_release_pass(store, main_sha=a)
+    _release_target(store, mint.root_id, a, [a[:12]])
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    rid = _reviewer(store, 42)
+    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
+    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
+    assert rc.submit(ctx, None) is not None and ctx.failures == []
+    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", a]
+
+    R.record_cut(store, mint.ids["cut"], "r7", a, f"{PREV}..{a[:12]}", repo="o/r")
+    _in_release(a, ["scripts/ship"])
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
+    assert refusal is not None and "r7 waits on its engine reviews" in refusal
+    assert f"td{rid}" in refusal and "td42" in refusal
+    dctx = Ctx(store, {"todo_id": mint.ids["deploy"]})
+    assert rd.submit(dctx, None) is None
+    assert dctx.failures and f"td{rid}" in dctx.failures[0]
+    assert len(checkout["argv"]) == 1  # no deploy launched
+
+    store.stamp_ref_meta(rid, {"review": {"verdict": "LAND"}})
+    _close(store, rid)
+    assert rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]}) is None
+
+
+def test_a_fix_verdict_inside_the_range_holds_the_deploy_until_its_fix_is_on_the_branch(
+    store: Store,
+) -> None:
+    """Release train T4: a FIX on a land inside r7 holds r7's deploy
+    while the fix is unlanded, and still while its ``landed:`` sha is
+    only on main — the fix must land on ``release/r7``."""
+    mint = _approved_cut(store)
+    deploy = mint.ids["deploy"]
+    a, fix_sha = "a" * 40, "f" * 40
+    _engine_land(store, 42, ["scripts/ship"], sha=a)
+    _in_release(a, ["scripts/ship"])
+    fix = int(store.insert_ref(kind="todo", slug=None, title="the fix", meta=None).id)
+    rid = _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": fix})
+    held = rc._rp.deploy_review_blockers(store, deploy)
+    assert any(f"td{rid}" in ln and f"td{fix}" in ln for ln in held), held
+    assert rd.validate_submit(store, params={"todo_id": deploy}) is not None
+
+    _comment(store, fix, f"landed: {fix_sha} — fix")
+    _GIT_LANDS.append(
+        rc._rp._GitLand(sha=fix_sha, subject="", committed_at=None, paths=("docs/a",))
+    )
+    [line] = rc._rp.deploy_review_blockers(store, deploy)
+    assert "td42" in line and fix_sha[:12] in line and "release/r7" in line
+    refusal = rd.validate_submit(store, params={"todo_id": deploy})
+    assert refusal is not None and "not on release/r7" in refusal
+
+    _in_release(fix_sha, ["docs/a"])
+    assert rc._rp.deploy_review_blockers(store, deploy) == []
+    assert rd.validate_submit(store, params={"todo_id": deploy}) is None
+
+
+def test_the_deploy_hold_fails_closed_on_an_unreadable_scope(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _approved_cut(store)
+
+    def boom(rel: dict[str, Any]) -> list[Any]:
+        raise RuntimeError("git fetch origin release/r7: no such ref")
+
+    monkeypatch.setattr(rc._rp, "_release_lands", boom)
+    refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
+    assert refusal is not None and "fail closed" in refusal
+
+
+def test_the_release_scope_is_the_cut_range_plus_the_branch_after_the_cut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``release_poll._release_lands`` fetches the release branch into its
+    remote-tracking ref and reads two first-parent logs: the cut's
+    recorded range, then the branch past the cut sha — main's commits
+    after the cut are in neither."""
+    assert _REAL_RELEASE_LANDS is not None
+    branch = "refs/remotes/origin/release/r7"
+    logs = {
+        RNG: f"\x00{'1' * 40}\x1f1700000000\x1fthe cut's land\n\nscripts/ship\n",
+        f"{SHA}..{branch}": f"\x00{'2' * 40}\x1f1700000100\x1ffix (td9)\n\nsrc/x.py\n",
+    }
+    calls: list[list[str]] = []
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        out = logs[args[args.index("log") + 1]] if "log" in args else ""
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(rs, "slice_root", lambda: tmp_path)
+    monkeypatch.setattr(rs, "_git", git)
+    lands = _REAL_RELEASE_LANDS({"rN": "r7", "sha": SHA, "range": RNG})
+    assert [(x.sha, x.paths) for x in lands] == [
+        ("1" * 40, ("scripts/ship",)),
+        ("2" * 40, ("src/x.py",)),
+    ]
+    assert "fetch" in calls[0] and f"+refs/heads/release/r7:{branch}" in calls[0]
+    assert [c[c.index("log") + 1] for c in calls if "log" in c] == list(logs)
+    with pytest.raises(RuntimeError):
+        _REAL_RELEASE_LANDS({"rN": "r7", "sha": SHA, "range": R.PENDING_RANGE})
+
+
+def test_a_restamped_release_scope_is_still_the_cut_range_plus_the_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """T1 + T4: after a fix round's restamp ``meta.release.sha``/``range``
+    name the release head; the deploy gate's scope stays the CUT's range
+    plus every branch commit after the cut — the restamped fixes in it."""
+    assert _REAL_RELEASE_LANDS is not None
+    branch = "refs/remotes/origin/release/r7"
+    seen: list[str] = []
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if "log" in args:
+            seen.append(args[args.index("log") + 1])
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(rs, "slice_root", lambda: tmp_path)
+    monkeypatch.setattr(rs, "_git", git)
+    head = "cafe" + "3" * 36
+    _REAL_RELEASE_LANDS(
+        {
+            "rN": "r7",
+            "sha": head,
+            "range": f"{PREV}..{head[:12]}",
+            "cut_sha": SHA,
+            "cut_range": RNG,
+        }
+    )
+    assert seen == [RNG, f"{SHA}..{branch}"]
+
+
+def test_red_cut_fixed_on_the_branch_deploys_only_after_the_releases_own_reviews(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T1 + T4 end to end: red cut -> two fixes land on release/r7 ->
+    restamp -> green head -> the approval opens, and the deploy then
+    waits on the reviews of lands INSIDE the release (the cut's land and
+    an engine fix on the branch), never on a land on main after the cut;
+    a FIX inside the range holds until its fix's ``landed:`` sha is on
+    release/r7."""
+    mint, it = _red_iteration(store)
+    _two_fixes_land_and_restamp(store, mint, it, monkeypatch)
+    job, _ = _only_job(store, it["poll"])
+    R.record_ci_verdict(store, SHA3, RNG3, "green", "41")
+    _succeed(store, job)
+    pd.run_pass(store)
+    pd.run_pass(store)
+    assert _status(store, mint.ids["loop"]) == "done"
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    deploy = mint.ids["deploy"]
+
+    cut_land, branch_fix, main_after, fix_sha = "a" * 40, "c" * 40, "b" * 40, SHA3
+    _engine_land(store, 42, ["scripts/ship"], sha=cut_land)
+    _in_release(cut_land, ["scripts/ship"])
+    _engine_land(store, 44, ["scripts/ship"], sha=branch_fix)  # a fix on r7
+    _in_release(branch_fix, ["scripts/ship"])
+    branch_rid = _reviewer(store, 44)
+    _engine_land(store, 43, ["scripts/ship"], sha=main_after)  # main, after the cut
+    main_rid = _reviewer(store, 43)
+    fix = int(store.insert_ref(kind="todo", slug=None, title="the fix", meta=None).id)
+    cut_rid = _reviewer(
+        store, 42, status="done", review={"verdict": "FIX", "task": fix}
+    )
+
+    held = rc._rp.deploy_review_blockers(store, deploy)
+    assert any(f"td{branch_rid}" in ln for ln in held), held
+    assert any(f"td{cut_rid}" in ln and f"td{fix}" in ln for ln in held), held
+    assert not any(f"td{main_rid}" in ln or "td43" in ln for ln in held), held
+    assert rd.validate_submit(store, params={"todo_id": deploy}) is not None
+
+    # The branch fix's review lands; the FIX's own fix lands on release/r7
+    # (the restamped head) — the deploy is free, the main land still open.
+    store.stamp_ref_meta(branch_rid, {"review": {"verdict": "LAND"}})
+    _close(store, branch_rid)
+    _comment(store, fix, f"landed: {fix_sha} — fix")
+    held = rc._rp.deploy_review_blockers(store, deploy)
+    assert any(fix_sha[:12] in ln and "release/r7" in ln for ln in held), held
+    _in_release(fix_sha, ["src/precis/x.py"])
+    assert rc._rp.deploy_review_blockers(store, deploy) == []
+    assert rd.validate_submit(store, params={"todo_id": deploy}) is None
+    assert _status(store, main_rid) == "open"
 
 
 # ── cut refusals are classified, not retried into an ask ─────────────
@@ -4935,13 +5079,13 @@ def test_a_tip_line_naming_the_same_sha_is_not_below_the_tip(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_tip_only_refusal_holds_the_next_tick_until_the_tip_is_reviewed(
+def test_a_tip_only_refusal_cuts_the_tip_next_tick(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The recorded target A sits below the tip B: the cut is refused
-    tip-only, the job burns no attempt, and the hold on the plan root
-    sends the next tick through ``cleared_head`` — ``holding:`` while B's
-    review is open, then a cut at B (the tip) once it clears."""
+    tip-only, the job burns no attempt, and the next tick cuts
+    origin/main's tip — B's open review holds nothing (release train
+    T4). A successful cut clears the hold and the marker."""
     a, b = "a" * 40, "b" * 40
     mint = T.mint_release_pass(store, main_sha=a)
     _release_target(store, mint.root_id, a, [a[:12]])
@@ -4953,34 +5097,13 @@ def test_a_tip_only_refusal_holds_the_next_tick_until_the_tip_is_reviewed(
     assert ctx.stamped["attempt_free"] == "cut-tip-only"
     assert _meta(store, mint.root_id)["cut_hold"]["lines"] == [_TIP_LINE]
 
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 2,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}],
-        },
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
     _engine_land(store, 43, ["scripts/ship"], sha=b)
-    rid = _reviewer(store, 43)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None
-    assert refusal.startswith(f"release_cut: {rc.HOLD_PREFIX}cut {a[:12]}")
-    assert f"td{rid}" in refusal
-    assert len(checkout["argv"]) == 1  # no job minted, nothing launched
-
-    store.stamp_ref_meta(rid, {"review": {"verdict": "LAND"}})
-    store.add_tag(
-        rid, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
-    )
+    _reviewer(store, 43)
     assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
     ctx2 = Ctx(store, {"todo_id": mint.ids["cut"]})
     handle2 = rc.submit(ctx2, None)
     assert handle2 is not None
-    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+    assert checkout["argv"][-1][1:] == ["--cut-only"]
     # The hold keeps its clock while the cut runs; a successful cut clears it.
     assert _meta(store, mint.root_id)["cut_hold"]["since"]
     _exit(checkout, 0, _cut_log())
@@ -4989,59 +5112,24 @@ def test_a_tip_only_refusal_holds_the_next_tick_until_the_tip_is_reviewed(
     assert not meta.get("cut_hold") and not meta.get("cut_retarget")
 
 
-def test_a_successful_cut_lifts_the_land_freeze_latch(
-    store: Store, checkout: dict[str, Any]
-) -> None:
-    """gr651885: the land freeze latches on the plan root and only a cut
-    lifts it — the hold clearing alone would let the parked lands move
-    the tip before the cut ran."""
-    mint = T.mint_release_pass(store)
-    store.stamp_ref_meta(
-        mint.root_id,
-        {"land_freeze": {"since": "2026-11-12T10:00:00Z", "rN": "r7"}},
-    )
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    handle = rc.submit(ctx, None)
-    assert handle is not None
-    assert _meta(store, mint.root_id)["land_freeze"]  # a running cut keeps it
-    _exit(checkout, 0, _cut_log())
-    assert rc.poll(ctx, handle) is True
-    assert not _meta(store, mint.root_id).get("land_freeze")
-
-
-def _two_lands(store: Store, a: str, b: str, *, b_reviewed: bool) -> int:
-    """Lands A (cleared) and B (cleared or pending); the pending reviewer's id."""
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
-    _engine_land(store, 43, ["scripts/ship"], sha=b)
-    if b_reviewed:
-        return _reviewer(store, 43, status="done", review={"verdict": "LAND"})
-    return _reviewer(store, 43)
-
-
-_TWO_COMMITS = {"status": "ahead", "ahead_by": 2, "behind_by": 0}
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_recorded_target_behind_gated_is_dropped_and_recomputed(
+def test_a_recorded_target_behind_gated_is_dropped_for_the_tip(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A later --remote land moved origin/gated past the pass's recorded
-    target A: the first cut drops A before any launch and cuts the newest
-    reviewed head at or after gated (B) — the refusal cannot happen."""
+    target A: the first cut drops A before any launch and cuts
+    origin/main's tip — the refusal cannot happen, and B's open review
+    holds nothing."""
     a, b = "a" * 40, "b" * 40
     mint = T.mint_release_pass(store, main_sha=a)
     _release_target(store, mint.root_id, a, [a[:12]])
-    _fake_gh_api(
-        monkeypatch,
-        compare={**_TWO_COMMITS, "commits": [{"sha": a}, {"sha": b}]},
-        gated_behind=(a,),
-    )
-    _two_lands(store, a, b, b_reviewed=True)
+    _fake_gh_api(monkeypatch, gated_behind=(a,))
+    _engine_land(store, 43, ["scripts/ship"], sha=b)
+    _reviewer(store, 43)
     assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     assert rc.submit(ctx, None) is not None
-    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+    assert checkout["argv"][-1][1:] == ["--cut-only"]
     assert _meta(store, mint.root_id)["release_target"]["vs_gated"] == "behind"
 
 
@@ -5075,41 +5163,14 @@ def test_the_first_cut_gated_check_runs_once_not_per_tick(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_no_reviewed_head_at_or_after_gated_holds_the_cut(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Gated moved past A, B's review is still open: the newest cleared
-    head is A, below gated — validate holds (no job), a racing submit
-    fails attempt-free and launches nothing."""
-    a, b = "a" * 40, "b" * 40
-    mint = T.mint_release_pass(store, main_sha=a)
-    _release_target(store, mint.root_id, a, [a[:12]])
-    _fake_gh_api(
-        monkeypatch,
-        compare={**_TWO_COMMITS, "commits": [{"sha": a}, {"sha": b}]},
-        gated_behind=(a,),
-    )
-    rid = _two_lands(store, a, b, b_reviewed=False)
-    refusal = rc.validate_submit(store, params={"todo_id": mint.ids["cut"]})
-    assert refusal is not None
-    assert refusal.startswith(f"release_cut: {rc.HOLD_PREFIX}cleared head {a[:12]}")
-    assert "origin/gated" in refusal and f"td{rid}" in refusal
-    assert _meta(store, mint.root_id)["cut_hold"]["lines"]
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    assert rc.submit(ctx, None) is None
-    assert checkout["argv"] == []
-    assert ctx.stamped["attempt_free"] == "cut-hold"
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
 def test_a_gated_behind_refusal_retargets_the_next_tick(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The up-front check could not read GitHub, so the cut launched at A
     and the script refused ``origin/gated cannot fast-forward``: the job
-    burns no attempt, marks the plan root, and the next tick re-targets to
-    the reviewed head at or after gated."""
-    a, b = "a" * 40, "b" * 40
+    burns no attempt, marks the plan root, and the next tick cuts
+    origin/main's tip."""
+    a = "a" * 40
     mint = T.mint_release_pass(store, main_sha=a)
     _release_target(store, mint.root_id, a, [a[:12]])
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
@@ -5120,15 +5181,9 @@ def test_a_gated_behind_refusal_retargets_the_next_tick(
     assert ctx.stamped["attempt_free"] == "cut-gated-behind"
     assert _meta(store, mint.root_id)["cut_retarget"]["class"] == "gated-behind"
 
-    _fake_gh_api(
-        monkeypatch,
-        compare={**_TWO_COMMITS, "commits": [{"sha": a}, {"sha": b}]},
-        gated_behind=(a,),
-    )
-    _two_lands(store, a, b, b_reviewed=True)
     ctx2 = Ctx(store, {"todo_id": mint.ids["cut"]})
     assert rc.submit(ctx2, None) is not None
-    assert checkout["argv"][-1][1:] == ["--cut-only", "--sha", b]
+    assert checkout["argv"][-1][1:] == ["--cut-only"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
@@ -5137,7 +5192,7 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
 ) -> None:
     """A release in flight elsewhere refuses the cut attempt-free, and
     the marker paces the retries: validate refuses (no job minted) for
-    ten minutes after the refusal, then lets one cut try through."""
+    ten minutes after the refusal, then lets one tip cut through."""
     a = "a" * 40
     t0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
     clock = {"now": t0}
@@ -5151,17 +5206,6 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
     mark = _meta(store, mint.root_id)["cut_retarget"]
     assert mark["class"] == "in-flight" and mark["pace_until"] == "2026-11-10T12:10:00Z"
 
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 1,
-            "behind_by": 0,
-            "commits": [{"sha": a}],
-        },
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    _reviewer(store, 42, status="done", review={"verdict": "LAND"})
     launches = len(checkout["argv"])
     for minutes in (1, 9):  # inside the window: ticks skip, nothing launches
         clock["now"] = t0 + timedelta(minutes=minutes)
@@ -5176,36 +5220,4 @@ def test_an_in_flight_first_cut_is_paced_to_one_job_per_ten_minutes(
     assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
     assert rc.submit(Ctx(store, {"todo_id": mint.ids["cut"]}), None) is not None
     assert len(checkout["argv"]) == launches + 1
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: execs scripts/ship")
-def test_a_recut_over_a_fix_and_its_corrective_cuts_the_tip(
-    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """[A FIX, B = A's fix land, C LAND] — B rides A's chain, so the
-    re-cut launches at C, the tip."""
-    mint = _cut(store)
-    a, b, c = "a" * 40, "b" * 40, "c" * 40
-    _fake_gh_api(
-        monkeypatch,
-        compare={
-            "status": "ahead",
-            "ahead_by": 3,
-            "behind_by": 0,
-            "commits": [{"sha": a}, {"sha": b}, {"sha": c}],
-        },
-    )
-    _engine_land(store, 42, ["scripts/ship"], sha=a)
-    fix = store.insert_ref(kind="todo", slug=None, title="the fix", meta=None)
-    _comment(store, int(fix.id), f"landed: {b} — fix")
-    _reviewer(store, 42, status="done", review={"verdict": "FIX", "task": int(fix.id)})
-    _engine_land(store, int(fix.id), ["src/precis/plans/lanes.py"], sha=b)
-    _engine_land(store, 44, ["scripts/ship"], sha=c)
-    _reviewer(store, 44, status="done", review={"verdict": "LAND"})
-    assert rc.validate_submit(store, params={"todo_id": mint.ids["cut"]}) is None
-    ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
-    handle = rc.submit(ctx, None)
-    assert ctx.failures == [] and handle is not None
-    assert checkout["argv"] == [
-        [str(checkout["root"] / "scripts" / "release"), "--cut-only", "--sha", c]
-    ]
+    assert checkout["argv"][-1][1:] == ["--cut-only"]

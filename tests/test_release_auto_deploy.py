@@ -21,6 +21,7 @@ from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types import release_poll as rp
 from tests._script import load_script
 
 pytestmark = pytest.mark.db
@@ -38,6 +39,9 @@ RNG2 = f"{PREV}..{SHA2[:12]}"
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     psettings.invalidate()
+    # The deploy's review hold scans the release's own commits (T4): an
+    # empty scope here, never the checkout's git.
+    monkeypatch.setattr(rp, "_release_lands", lambda rel: [], raising=False)
 
 
 def _meta(store: Store, ref_id: int) -> dict[str, Any]:
@@ -501,96 +505,6 @@ def test_second_red_fix_loop_files_an_ask_and_mints_no_third(
     res = pd.run_pass(store)
     assert res.asks == 0 and res.loops_minted == 0
     assert [i for i in _ask_ids(store) if i != mint.ids["approval"]] == asks
-
-
-def _drop(store: Store, todo_id: int, status: str = "won't-do") -> None:
-    """A node killed by hand — the hold-killed re-cut of gr653036."""
-    store.add_tag(
-        todo_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
-    )
-
-
-def _job(store: Store, todo_id: int, job_type: str, status: str) -> int:
-    """One ended job under the todo (``land_slice``, ``release_cut``)."""
-    from precis.workers._mint import mint_background_job
-
-    with store.tx() as conn:
-        ref = mint_background_job(
-            store,
-            conn=conn,
-            job_type=job_type,
-            executor="ssh_node",
-            title=job_type,
-            params={"todo_id": todo_id},
-            parent_id=todo_id,
-            status=status,
-        )
-    return int(ref.id)
-
-
-def _held_iteration(store: Store, mint: T.PlanMint, iteration: int) -> dict[str, int]:
-    """The r291 shape (gr653036): the iteration's fix landed, its re-cut
-    held below origin/main until someone killed it, and its poll never
-    ran — every child closed, no job on the re-cut."""
-    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=iteration).ids
-    _close(store, it["digest"])
-    _job(store, it["fix"], "land_slice", "succeeded")
-    _close(store, it["fix"])
-    _drop(store, it["recut"])
-    _drop(store, it["poll"])
-    return it
-
-
-def test_a_never_run_recut_reopens_once_instead_of_asking(store: Store) -> None:
-    """gr653036 (r291): the cap counts red iterations, and an iteration
-    nobody re-cut is not one — the landed fixes never got their verdict.
-    The re-cut and its poll re-open once and start on their own; a
-    re-cut killed twice takes the exhausted ask as before."""
-    mint = _red_pass(store, count=2)
-    it = _held_iteration(store, mint, 2)
-    res = pd.run_pass(store)
-    assert res.asks == 0, res.notes
-    assert res.loops_closed == 0
-    assert _status(store, mint.ids["loop"]) == "open"
-    assert _status(store, it["recut"]) == "open"
-    assert _status(store, it["poll"]) == "open"
-    assert _meta(store, it["recut"])["recut_rearmed"] is True
-
-    # Killed a second time: the ask is the honest end now.
-    _drop(store, it["recut"])
-    _drop(store, it["poll"])
-    res = pd.run_pass(store)
-    assert res.asks == 1, res.notes
-    assert _status(store, mint.ids["loop"]) == "done"
-    assert _status(store, it["recut"]) == "won't-do"
-
-
-def test_a_recut_that_ran_red_still_asks_at_the_cap(store: Store) -> None:
-    """gr653036: the re-open is only for a re-cut that never ran — one
-    whose job cut and whose poll recorded the red is a real second
-    iteration: the exhausted ask fires and the loop closes."""
-    mint = _red_pass(store, count=2)
-    it = _held_iteration(store, mint, 2)
-    _job(store, it["recut"], "release_cut", "succeeded")
-    res = pd.run_pass(store)
-    assert res.asks == 1, res.notes
-    assert _status(store, mint.ids["loop"]) == "done"
-    assert _status(store, it["recut"]) == "won't-do"
-
-
-def test_an_unlanded_fix_still_asks_at_the_cap(store: Store) -> None:
-    """gr653036: the re-open wants every fix landed — a fix that closed
-    without a land_slice (killed mid-work) is nothing to re-cut for."""
-    mint = _red_pass(store, count=2)
-    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=2).ids
-    _close(store, it["digest"])
-    _drop(store, it["fix"])
-    _drop(store, it["recut"])
-    _drop(store, it["poll"])
-    res = pd.run_pass(store)
-    assert res.asks == 1, res.notes
-    assert _status(store, mint.ids["loop"]) == "done"
-    assert _status(store, it["recut"]) == "won't-do"
 
 
 def test_first_red_fix_loop_mints_the_second_iteration(store: Store) -> None:

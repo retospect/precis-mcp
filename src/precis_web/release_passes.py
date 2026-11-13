@@ -43,7 +43,16 @@ _CLOSED_LIMIT = 5
 
 #: The release-pass pipeline (``mint_release_pass``) in dispatch order —
 #: display order for the steps strip.
-_STEP_ORDER = ("cut", "poll", "gate", "loop", "approval", "deploy", "confirm")
+_STEP_ORDER = (
+    "cut",
+    "poll",
+    "gate",
+    "loop",
+    "approval",
+    "deploy",
+    "confirm",
+    "merge_back",
+)
 
 #: ``meta.op`` job_type → pipeline step. The other steps are typed by
 #: their ``gate`` / ``loop`` / ``ask`` metas instead (never by title — a
@@ -124,6 +133,13 @@ def _role(meta: dict[str, Any]) -> str | None:
     """The pipeline step a plan node plays, off its meta — never its title."""
     op = meta.get("op")
     name = str(op.get("type") if isinstance(op, dict) else op or "").strip()
+    if (
+        name == "release_confirm"
+        and isinstance(op, dict)
+        and (op.get("params") or {}).get("merge_back")
+    ):
+        # release-train T3: release_confirm's merge_back mode.
+        return "merge_back"
     if name in _OP_ROLE:
         return _OP_ROLE[name]
     if isinstance(meta.get("loop"), dict):
@@ -188,6 +204,13 @@ def _poll_for(jobs: list[dict[str, Any]], sha: str, rng: str) -> dict[str, Any] 
     return pick
 
 
+def _loop_cap(loop: dict[str, Any], sep: str) -> str:
+    """``sep`` + the loop's stamped ``max``, else ``""``: a release-fix
+    loop stamps none — the tick owns its limit (release train T4)."""
+    cap = loop.get("max")
+    return f"{sep}{cap}" if cap is not None else ""
+
+
 def _current_step(
     active: set[str],
     *,
@@ -208,6 +231,8 @@ def _current_step(
         return f"awaiting a ruling — td{ruling}"
     if "confirm" in active:
         return "confirming the deployed runtime"
+    if "merge_back" in active:
+        return "merging the release back into main"
     if "deploy" in active:
         return "deploying the release"
     if "approval" in active:
@@ -216,7 +241,7 @@ def _current_step(
     if "loop" in active:
         count = int(loop.get("count") or 0)
         if count:
-            return f"fix loop — iteration {count} of {loop.get('max', '?')}"
+            return f"fix loop — iteration {count}{_loop_cap(loop, ' of ')}"
         if verdict is not None and verdict.get("verdict") == "red":
             return "CI red — next fix iteration pending"
         return pending
@@ -443,7 +468,15 @@ def _row(
     note: int | None = None
     for n in pipeline:
         role = _role(n["meta"])
-        if role is not None and role not in by_role:
+        if role is not None and (
+            role not in by_role
+            # A conflicted merge-back's ours-merge node (minted later)
+            # stands for the step once the first one closed.
+            or (
+                by_role[role]["status"] in TERMINAL_TODO_STATUSES
+                and n["status"] not in TERMINAL_TODO_STATUSES
+            )
+        ):
             by_role[role] = n
         ask = n["meta"].get("ask")
         if (
@@ -479,7 +512,7 @@ def _row(
         label = role
         if role == "loop":
             loop = node["meta"].get("loop") or {}
-            label = f"loop {loop.get('count') or 0}/{loop.get('max', '?')}"
+            label = f"loop {loop.get('count') or 0}{_loop_cap(loop, '/')}"
         steps.append(
             {
                 "role": role,
@@ -539,7 +572,7 @@ def _row(
         "cut_at": str((rel or {}).get("cut_at") or ""),
         "gate": gate,
         "loop": (
-            f"{loop_meta.get('count') or 0}/{loop_meta.get('max', '?')}"
+            f"{loop_meta.get('count') or 0}{_loop_cap(loop_meta, '/')}"
             if loop_meta
             else ""
         ),

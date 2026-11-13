@@ -878,3 +878,72 @@ def test_lint_autofix_amend_is_rescanned_for_risky_paths(rr: ReleaseRig) -> None
     assert "shipping release fix" not in out, "refused only after taking the lock path"
     assert rr.refs() == before
     assert not rr.lockdir().exists()
+
+
+# ─────────────────── --onto: the release train's fix lane (T1) ───────────────────
+
+
+def _no_round_record(rr: ReleaseRig) -> None:
+    """A factory slice host is not the checkout that cut the release: no
+    round.json there. ``--onto`` must not need one."""
+    (rr.primary / ".git" / "precis-round" / "round.json").unlink()
+
+
+def test_onto_lands_on_the_release_branch_and_leaves_main_alone(
+    rr: ReleaseRig,
+) -> None:
+    """release-train T1: a fix cut from the release head (an earlier fix
+    already on it) lands as one commit on release/r1; main — which moved
+    after the cut — is untouched and its late work does not leak in."""
+    rr.release_push({"app.py": _app(l2="L2")}, msg="earlier release fix")
+    rr.race({"app.py": _app(l8="l8-main"), "x.txt": "late\n"})
+    rr.g(rr.primary, "fetch", "-q", "origin")
+    _no_round_record(rr)
+    wt = rr.worktree_from("onto1", f"origin/{REL}", {"app.py": _app(l1="L1", l2="L2")})
+    main0, rel0 = rr.refs()
+
+    p, log = rr.ship(wt, "--onto", REL, sleep=1)
+    out = _finish(p, log)
+
+    main, rel = rr.refs()
+    assert main == main0, "--onto must never move main"
+    assert rr.parents(rel) == [rel0]
+    assert rr.g(rr.origin, "diff", "--name-only", rel0, rel) == "app.py"
+    final = rr.show(rel, "app.py")
+    assert "L1" in final and "L2" in final and "l8-main" not in final
+    assert rr.g(rr.origin, "ls-tree", "--name-only", rel, "x.txt") == ""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    assert f"▶ shipped — landed on {REL}:\n{rel[:7]}" in plain, plain[-2000:]
+    assert "SHIP_STATUS: shipped" in plain
+    assert f"Merge {REL} fix forward" not in plain
+    assert "forward merge of" not in plain
+    assert rr.g(wt, "rev-parse", "HEAD") == rel
+    _no_pin_no_gated_move(rr, wt)
+
+
+def test_onto_from_a_main_tree_applies_only_its_own_change(rr: ReleaseRig) -> None:
+    """A fix tree cut from main after main moved past the cut: B is its
+    merge-base with main, so the release gets the fix and not main's work."""
+    rr.race({"app.py": _app(l8="l8-main")})
+    rr.g(rr.primary, "pull", "-q", "--ff-only", "origin", "main")
+    _no_round_record(rr)
+    wt = rr.worktree("onto2", {"app.py": _app(l1="L1", l8="l8-main")})
+    main0, rel0 = rr.refs()
+
+    out = _finish(*rr.ship(wt, "--onto", REL, sleep=1))
+
+    main, rel = rr.refs()
+    assert main == main0
+    assert rr.parents(rel) == [rel0]
+    final = rr.show(rel, "app.py")
+    assert "L1" in final and "l8-main" not in final, out
+
+
+def test_onto_refuses_a_branch_not_named_release_rn(rr: ReleaseRig) -> None:
+    wt = rr.worktree("onto3", {"app.py": _app(l1="L1")})
+    before = rr.refs()
+    proc, log = rr.ship(wt, "--onto", "main", sleep=1)
+    assert proc.wait(timeout=60) == 2
+    out = log.read_text(encoding="utf-8")
+    assert "--onto takes a release branch named release/r<N>" in out
+    assert rr.refs() == before

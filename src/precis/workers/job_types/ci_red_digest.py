@@ -23,7 +23,24 @@ pinned to that host the same way.
   never the table), and the fix-forward rule — on every live
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
-  ``run_slice._brief_parts``. A run still in progress prints the ``no
+  ``run_slice._brief_parts``. **Clusters** (release-train T1): a digest
+  whose ids parse complete (``red_waiver.parse_failures``, no problem)
+  is split by the failing ``src`` module an id's assertion line names
+  (a ``src/…py`` path, or the module an ``ImportError`` /
+  ``ModuleNotFoundError`` names — test files that fail on one module's
+  import are one cluster), else by test file
+  (:func:`cluster_failures`, at most :data:`_CLUSTER_CAP`); with more
+  than one cluster each fix node gets one cluster's brief — the
+  iteration's ``fix`` the first, one sibling minted per further cluster
+  (``templates.mint_release_fix_clusters``, each also blocking the
+  restamp node) — so the fixers run in parallel. The digest reads the
+  newest red run on ``meta.release.sha``: the cut, or — after a fix
+  round's restamp (``ci_verdict_poll`` restamp mode) — the release
+  head, so a second red digests the head's run, never the cut's. An
+  unparsable or partial
+  digest keeps one brief. A fix node carrying ``meta.land_target`` gets
+  the release-branch rule (:data:`_RELEASE_RULE`) instead of the
+  main-land one. A run still in progress prints the ``no
   failed-job log lines yet`` marker instead: the job parks its handle on
   ``not_before`` (:func:`_park_for_run`, land_slice's deferral —
   ``ssh_node`` wires no ``ctx.defer``) and re-digests, so a brief always
@@ -61,8 +78,8 @@ pinned to that host the same way.
   and no cut-range path on the hard-stop lists, an attributable culprit
   commit, no id on a still-unfixed waiver gripe. Granted, the job files the
   ``broken-build`` gripe, records the cut's verdict as waived
-  (green for the gate), closes the iteration's fix/re-cut/poll nodes
-  ``waived: gr<N>`` and succeeds — no brief, no fix session, no re-cut;
+  (green for the gate), closes the iteration's fix/restamp/poll nodes
+  ``waived: gr<N>`` and succeeds — no brief, no fix session;
   every step of the decision lands in the job summary. Refused (the
   summary names the reason), the loop runs as before.
 * Probe mode (``params.probe`` + ``params.run_id``; ``todo_id``
@@ -179,9 +196,33 @@ _AUTH_RE = re.compile(
 #: honors: a fix already on main needs no session diff.
 _RULE = (
     "Fix forward on main; never skip, xfail or loosen a test. Land the "
-    "fix with scripts/ship --quick; the loop then re-cuts. If the ids "
+    "fix with scripts/ship --quick. If the ids "
     "are already green on origin/main, finish with `moot: <sha>` and "
     "no commit."
+)
+
+#: The rule's release-train form (release-train T1): a fix node whose
+#: ``meta.land_target`` names ``release/r<N>`` works on that branch and
+#: lands on it, never main; its ``verified:`` escape names the branch
+#: (``run_slice._FIX_VERIFIED_GREEN_RE``).
+_RELEASE_RULE = (
+    "Fix forward on {target}; never skip, xfail or loosen a test. Your "
+    "worktree is cut from origin/{target}: commit the fix on the slice "
+    "branch and the lander lands it onto {target}, never main. If your "
+    "ids already pass on origin/{target}, finish with `verified: <ids> "
+    "green on origin/{target}` and no commit."
+)
+
+#: A red splits into at most this many fix nodes; the smallest clusters
+#: past the cap fold into the last one, so a wide red cannot launch a
+#: fixer per file.
+_CLUSTER_CAP = 8
+#: A ``src`` module named by a failing id's assertion line, and the
+#: module an import failure names — the clustering key that wins over
+#: the test file (:func:`_cluster_key`).
+_SRC_PATH = re.compile(r"\bsrc/[\w./-]+\.py\b")
+_IMPORT_MOD = re.compile(
+    r"(?:ImportError|ModuleNotFoundError)\b.*?['\"](precis(?:_\w+)?(?:\.\w+)*)['\"]"
 )
 
 #: ci-failed's per-job section head, and the marker it prints when the
@@ -286,6 +327,58 @@ def _fix_targets(store: Any, digest_id: int) -> list[int]:
             (digest_id,),
         ).fetchall()
     return [int(r[0]) for r in rows]
+
+
+def _failing_module(reason: str) -> str | None:
+    """The ``src`` module a failure's assertion line blames: a
+    ``src/...py`` path it names, else the ``precis…`` module of an
+    ``ImportError``/``ModuleNotFoundError`` (as ``src/<pkg path>.py``).
+    ``None`` when the line names neither."""
+    m = _SRC_PATH.search(reason or "")
+    if m is not None:
+        return m.group(0)
+    m = _IMPORT_MOD.search(reason or "")
+    if m is not None:
+        return "src/" + m.group(1).replace(".", "/") + ".py"
+    return None
+
+
+def _cluster_key(test_id: str, reason: str) -> str:
+    """One failing id's cluster: the ``src`` module its assertion line
+    blames when the parse has one (:func:`_failing_module` — several test
+    files failing on one module's import are one fix), else its test
+    file, else the id itself."""
+    module = _failing_module(reason)
+    if module is not None:
+        return module
+    path = _waiver.file_of_test(test_id)
+    return path or test_id
+
+
+def cluster_failures(failures: dict[str, str]) -> list[tuple[str, list[str]]]:
+    """``[(key, ids)]`` of the parsed failing ids (``red_waiver.
+    parse_failures``), grouped by test file, then by failing ``src``
+    module (:func:`_cluster_key`), largest cluster first. Past
+    :data:`_CLUSTER_CAP` the smallest clusters fold into the last kept
+    one, keyed ``<key> +<n> more``. No ids, no clusters: the caller
+    briefs every fix node with the whole digest, as before."""
+    groups: dict[str, list[str]] = {}
+    for tid, reason in failures.items():
+        groups.setdefault(_cluster_key(tid, reason), []).append(tid)
+    ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    if len(ranked) <= _CLUSTER_CAP:
+        return ranked
+    kept, rest = ranked[: _CLUSTER_CAP - 1], ranked[_CLUSTER_CAP - 1 :]
+    folded = [tid for _key, ids in rest for tid in ids]
+    return [*kept, (f"{rest[0][0]} +{len(rest) - 1} more", folded)]
+
+
+def _fix_rule(store: Any, fix_id: int) -> str:
+    """The brief's last line: :data:`_RELEASE_RULE` for a fix node that
+    lands on a release branch, else the main-land :data:`_RULE`."""
+    ref = store.get_ref(kind="todo", id=fix_id)
+    target = _release.land_target_of(ref.meta if ref is not None else None)
+    return _RELEASE_RULE.format(target=target) if target else _RULE
 
 
 def _sections(text: str) -> list[tuple[str, bool]]:
@@ -876,7 +969,7 @@ def _try_waiver(
             tid,
             f"waived: gr{gid} — release {rn} at {sha9} (run {run_id}) "
             f"deploys past known-red test(s) {', '.join(ids)}; no fix "
-            "session and no re-cut for this iteration.",
+            "session for this iteration.",
         )
         _rs.close_todo(store, tid, None)
         closed.append(tid)
@@ -1010,38 +1103,119 @@ def _digest_done(
     # everything it leaves when it is short. The digest composes AFTER
     # the table for the same reason the rescue tail is reserved:
     # trimming a composed digest would cut the failure lines the room
-    # exists to keep.
+    # exists to keep. The room reserves the longer of the two fix rules
+    # (a release-branch fix node gets :data:`_RELEASE_RULE`).
     suspects = mask_secrets(_suspects_block(ctx, rel, log_text or "", dict(rescued)))
+    rule_room = max(len(_RULE), len(_RELEASE_RULE.format(target="release/r9999")))
     digest = _compose_digest(
         log_text or "",
         rescue,
         room=max(
             _DIGEST_CAP // 2,
-            _DIGEST_CAP - len(suspects) - len(_RULE),
+            _DIGEST_CAP - len(suspects) - rule_room,
         ),
     )
-    text = "\n".join(
-        part
-        for part in [
-            f"brief: release {rn} is red at {sha9} (range {rng}), "
-            f"check.yml run {run_id}",
-            digest,
-            suspects,
-            _RULE,
+    head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
+    # Split only a digest that provably lists every failing id: an id a
+    # truncated list or a non-pytest red hides would belong to no
+    # cluster, so such a red keeps one brief with the whole digest.
+    failures, problems = _waiver.parse_failures(log_text or "", dict(rescued))
+    clusters = [] if problems else cluster_failures(failures)
+    if len(clusters) <= 1:
+        posted = [
+            (
+                tid,
+                "\n".join(
+                    part
+                    for part in [head, digest, suspects, _fix_rule(ctx.store, tid)]
+                    if part
+                ),
+            )
+            for tid in targets
         ]
-        if part
-    )
-    for tid in targets:
+    else:
+        posted = _cluster_briefs(
+            ctx, todo_id, targets, clusters, head, digest, suspects
+        )
+    for tid, text in posted:
         _rs._append_comment(ctx.store, tid, text)
+    shown = ", ".join(f"td{t}" for t, _ in posted)
     ctx.append_chunk(
         "job_summary",
-        f"{NAME}: {rn} red at {sha9} (run {run_id}); brief posted on "
-        f"td{', td'.join(str(t) for t in targets)}\n"
+        f"{NAME}: {rn} red at {sha9} (run {run_id}); "
+        + (f"{len(clusters)} clusters; " if len(clusters) > 1 else "")
+        + f"brief posted on {shown}\n"
         + "\n".join(mask_secrets(line) for line in waiver_lines)
-        + f"\n{text}",
+        + "\n"
+        + "\n\n".join(text for _, text in posted),
     )
     ctx.set_status("succeeded")
     return True
+
+
+def _cluster_briefs(
+    ctx: Any,
+    digest_id: int,
+    targets: list[int],
+    clusters: list[tuple[str, list[str]]],
+    head: str,
+    digest: str,
+    suspects: str = "",
+) -> list[tuple[int, str]]:
+    """One ``(fix node, brief)`` per cluster (release-train T1): the
+    iteration's own fix nodes take the first clusters, and one sibling is
+    minted per cluster beyond them
+    (:func:`precis.plans.templates.mint_release_fix_clusters`) so the
+    fixers run in parallel. A retried digest finds the nodes its first
+    run minted among ``targets`` and mints none again; a surplus target
+    (a re-digest that found fewer clusters) closes ``no-op``."""
+    from precis.plans import templates as _templates
+
+    nodes = list(targets[: len(clusters)])
+    if len(clusters) > len(nodes):
+        nodes += _templates.mint_release_fix_clusters(
+            ctx.store,
+            digest_id,
+            targets[0],
+            [key for key, _ids in clusters[len(nodes) :]],
+        )
+    for tid in targets[len(clusters) :]:
+        _rs._append_comment(
+            ctx.store,
+            tid,
+            f"no-op: the digest split this red into {len(clusters)} "
+            "cluster(s), each on its own fix node; none is left for this one.",
+        )
+        _rs.close_todo(ctx.store, tid, None)
+    out: list[tuple[int, str]] = []
+    for i, (tid, (key, ids)) in enumerate(zip(nodes, clusters, strict=True), start=1):
+        others = ", ".join(
+            f"{k} (td{t})"
+            for t, (k, _) in zip(nodes, clusters, strict=True)
+            if t != tid
+        )
+        scope = (
+            f"cluster {i}/{len(clusters)}: {key} — fix only these failing "
+            f"ids: {', '.join(ids)}. The other clusters are fixed in "
+            f"parallel by their own nodes — leave them alone: {others}."
+        )
+        out.append(
+            (
+                tid,
+                "\n".join(
+                    part
+                    for part in [
+                        head,
+                        mask_secrets(scope),
+                        digest,
+                        suspects,
+                        _fix_rule(ctx.store, tid),
+                    ]
+                    if part
+                ),
+            )
+        )
+    return out
 
 
 def _park_for_run(

@@ -47,6 +47,8 @@ GENERATE = {"role": "slicer", "from": "docs/backlog/x.md#Section"}
         ({"loop": {**LOOP, "count": 2}}, "loop"),
         # the exhausted-loop ruling ask the tick stamps (td573809)
         ({"loop": {**LOOP, "count": 2, "exhausted_ask": 42}}, "loop"),
+        # the tick owns a release-fix loop's limit: no stamped max (T4)
+        ({"loop": {"until": GATE_ANSWER, "body": "release-fix"}}, "loop"),
         ({"generate": GENERATE}, "generator"),
         ({"generate": {"role": "triage", "from": "gripe"}}, "generator"),
         (
@@ -110,6 +112,7 @@ def test_accepts_each_kind(meta: dict[str, Any] | None, kind: str | None) -> Non
         ({"loop": {**LOOP, "max": -2}}, "meta.loop.max"),
         ({"loop": {**LOOP, "max": True}}, "meta.loop.max"),
         ({"loop": {**LOOP, "max": "3"}}, "meta.loop.max"),
+        ({"loop": {"until": GATE_ANSWER, "body": "dogfood-cycle"}}, "meta.loop.max"),
         ({"loop": {"max": 3, "body": "t"}}, "meta.loop.until is required"),
         ({"loop": {**LOOP, "until": {"kind": "vibes"}}}, "meta.loop.until.kind"),
         ({"loop": {**LOOP, "until": "answer"}}, "meta.loop.until must be a dict"),

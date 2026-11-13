@@ -43,52 +43,38 @@ budget is GitHub's unauthenticated 60/h per IP):
    ``PRECIS_FACTORY=off`` reports the would-abandon and writes nothing,
    gr575362). No GitHub read has happened yet. An open pass or round
    still runs the engine-review gate's mint-and-ask writes (step 5)
-   before it returns (gr611217): its re-cut needs the lands since the
-   first cut reviewed, and nothing else mints their reviewers. A
-   re-cut ``release_cut`` held below origin/main
-   (``meta.cut_hold``) for :data:`CUT_HOLD_ASK_AFTER_MIN` files one
-   ``release-stuck:r<N>:recut-hold`` ask naming the holding units; a
-   first cut a refusal held (``meta.cut_retarget``) files
-   ``release-stuck:td<root>:recut-hold``, quoting the refusal. The hold
-   keeps every holder ahead of the "cleared on a corrective commit"
-   carry-notes, up to 20 lines plus ``+N more`` (gr651885: a first-five
-   cut hid r291's real holders). A re-cut held on the tip's reviews
-   (``kind: tip``) for :data:`CUT_FREEZE_AFTER_S` also freezes new lands
-   (:func:`land_freeze`, read by ``land_slice`` before every ship): the
-   factory landed faster than the reviews drained and the re-cut, which
-   cuts only a fully-reviewed origin/main, never fired. The freeze
-   latches on the plan root (``meta.land_freeze``) until a cut succeeds
-   or the pass closes, and expires after :data:`CUT_FREEZE_MAX_S`.
+   before it returns (gr611217): over main ahead of prod, and over the
+   open pass's own release (:func:`_release_lands`) once it is cut —
+   that release's deploy waits on those reviews, and nothing else
+   mints their reviewers. A first cut a refusal held
+   (``meta.cut_hold`` beside ``meta.cut_retarget``) for
+   :data:`CUT_HOLD_ASK_AFTER_MIN` files one
+   ``release-stuck:td<root>:recut-hold`` ask, quoting the refusal.
 3. The repo: ``params.repo``, else ``release.repo``, else the checkout's
    ``origin`` (:func:`precis.plans.pr_class.resolve_repo`).
 4. ``GET /repos/<repo>/compare/prod...<pin>``: ``behind_by > 0`` or
    ``status == 'diverged'`` means prod holds commits main lacks — no
-   mint, whatever ``ahead_by`` says; ``ahead_by == 0`` mints nothing.
-   The payload's ``commits`` is also the ordering the review gate
-   positions lands on.
-5. The engine-review cut sha (gr592271): the gate's per-land verdicts
-   are computed on the DB and a git scan of ``origin/prod..<pin>``
-   (:func:`_gate_lands`, gr597625) before any api.github.com read — its
-   reviewer mints and review-wait asks file regardless — but an
-   uncleared land no longer holds the whole pass. The cut sha is the
-   newest commit on main such that every engine land at-or-before it is
-   cleared AND every corrective commit a clearance needs is carried
-   (td601005: a FIX/REVERT whose fix or revert landed past the cut is
-   no clearance — [A FIX, B pending, C fixes A] cuts nothing; a landed
-   release-fix is itself a corrective the cut may not sit below,
-   tracked whatever paths it touched — gr653036, td653689): the
-   newest commit the gate's spans allow, the scanned head when nothing
-   holds it. ``pin`` is the ``origin/main`` head the scan's fetch
-   resolved — the ONE snapshot the scan, the compare's ordering, the
-   minted target and ``release_cut``'s ``upto`` validation all share;
-   a main move mid-pass can no longer smuggle an unreviewed land inside
-   the recorded sha. When the compare's ``commits`` comes back empty
-   the scan's own ordering stands in (td601285) — an empty ordering
-   cannot verify a corrective commit is carried, and an empty recorded
-   ``upto`` would leave ``release_cut`` nothing to validate. An
-   uncleared land off the ahead-of-prod
-   window reads as at-or-before everything — no cleared sha, the pass
-   stays blocked and the blocker names the pending reviews.
+   mint, whatever ``ahead_by`` says; ``ahead_by == 0`` mints nothing,
+   nor does an empty ``files`` list — main's tree equals prod's, the
+   case right after a release's merge-back commit (release-train T3).
+   The payload's ``commits`` (else the scan's own ordering, td601285)
+   is the window the pass records as ``upto``.
+5. The engine-review gate holds the deploy, never the cut (release
+   train, Reto 2026-11-12): a release is cut once, at origin/main's
+   tip, and needs no reviews to cut. The gate's per-land verdicts are
+   still computed here on the DB and a git scan of ``origin/prod..<pin>``
+   (:func:`_gate_lands`, gr597625) before any api.github.com read, so
+   its reviewer mints and review-wait asks file before the release is
+   cut; the verdicts only become a note. ``pin`` is the
+   ``origin/main`` head the scan's fetch resolved — the ONE snapshot
+   the scan, the compare and the minted target share (td601005). The
+   hold itself is :func:`deploy_review_blockers`, read by
+   ``release_deploy``: every engine land inside the release — the
+   cut's recorded ``meta.release.range`` plus the commits on
+   ``release/r<N>`` after the cut — must be cleared, and every
+   corrective commit a FIX/REVERT clearance rests on must be on
+   ``release/r<N>``. A land on main after the cut belongs to the next
+   release and holds nothing here.
 6. In flight on origin: ``GET .../git/matching-refs/heads/release/`` and
    ``.../git/matching-refs/tags/deployed/`` (each returns the whole
    prefix unpaginated — :data:`_HEAD_CAP` and :data:`_TAG_CAP` bound
@@ -105,13 +91,13 @@ budget is GitHub's unauthenticated 60/h per IP):
    one transaction under the ``_MINT_LOCK_KEY`` advisory lock the pass
    re-checks the open-pass gate and refuses when a
    ``release-main:<sha12>``-tagged root already exists in any state
-   (open, done, failed, abandoned) — a new pass needs the cleared head
+   (open, done, failed, abandoned) — a new pass needs main's head
    to move. The lock makes check-then-mint atomic: two concurrent
    runners cannot both mint.
 8. Only then: :func:`precis.plans.templates.mint_release_pass` stamps
    the root ``release-main:<sha12>`` and the pass records
-   ``meta.release_target = {sha, upto}`` — the cut sha and the sha12
-   window at-or-before it that ``release_cut`` gates on and passes to
+   ``meta.release_target = {sha, upto}`` — the pinned head and the
+   sha12 window at-or-before it; ``release_cut`` passes the sha to
    ``scripts/release --sha``. The plan itself runs when
    ``plan_dispatch`` is armed, so minting is safe while
    ``PRECIS_FACTORY=off`` — this op mints; it never cuts or deploys.
@@ -127,7 +113,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
@@ -210,15 +195,9 @@ _STAGE_VERBS = {
     '`scripts/round supersede --partial --reason "<why>"`',
     "confirm": "`scripts/round deploy` (resume/confirm) or "
     '`scripts/round supersede --partial --reason "<why>"`',
-    # Not a ``release.round`` state: the re-cut held below origin/main
-    # (:func:`note_cut_hold`, gr611217) — the holding land's review or
-    # its ``release-review-wait:`` answer moves it. The FIRST cut's hold
-    # asks with ``_FIRST_CUT_HOLD_VERBS`` instead (gr620480).
-    "recut-hold": "answer a holding land's `release-review-wait:` ask, "
-    "finish its review, or `scripts/round cut --abandon`",
 }
 
-#: The hand verbs a FIRST cut's ``recut-hold`` ask names — never
+#: The hand verbs a first cut's ``recut-hold`` ask names — never
 #: ``cut --abandon``: the pass cut nothing yet, so the abandon would land
 #: on the other, live release the hold is waiting on (gr620480).
 _FIRST_CUT_HOLD_VERBS = (
@@ -227,30 +206,13 @@ _FIRST_CUT_HOLD_VERBS = (
     "it would abandon the other, live release instead"
 )
 
-#: A re-cut held below origin/main this long files one stuck ask
-#: naming the holding units (gr611217) — the hold itself never lifts.
+#: A first cut held this long files one stuck ask quoting the refusal
+#: (gr611217) — the hold itself never lifts.
 CUT_HOLD_ASK_AFTER_MIN = 60
 
-#: The re-cut hold's stage name on that ask's ``release-stuck:`` tag.
+#: The cut hold's stage name on that ask's ``release-stuck:`` tag (the
+#: name predates the release train; it stays the dedupe key).
 _CUT_HOLD_STAGE = "recut-hold"
-
-#: ``meta.cut_hold.kind`` of a re-cut held because the tip is not fully
-#: reviewed (``release_cut``'s "sits below origin/main" refusal) — the
-#: hold :func:`land_freeze` reads (gr651885).
-CUT_HOLD_TIP = "tip"
-
-#: A :data:`CUT_HOLD_TIP` hold this old freezes new lands
-#: (:func:`land_freeze`); ``PRECIS_CUT_FREEZE_AFTER_S`` overrides it.
-CUT_FREEZE_AFTER_S = 900
-
-#: A land-freeze latch this old expires (:func:`land_freeze`'s safety
-#: valve); ``PRECIS_CUT_FREEZE_MAX_S`` overrides it.
-CUT_FREEZE_MAX_S = 3 * 3600
-
-#: The plan root's land-freeze latch, ``{since, rN[, expired_at]}``.
-LAND_FREEZE_KEY = "land_freeze"
-
-_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 #: Lines a recorded hold keeps (:func:`_kept_hold_lines`), plus a count.
 CUT_HOLD_LINES_CAP = 20
@@ -843,8 +805,8 @@ def _file_stuck_ask(
     judged the stage (``stage entered`` vs ``last leg job event``);
     ``capped`` adds the ``capped:`` line — the ask filed only because
     the live leg's hold ran past ``_ACTIVITY_CAP_MARKS`` marks.
-    ``detail`` is one more line for the body and context (the re-cut
-    hold's holding units, gr611217). ``label`` replaces ``r<n>`` in the
+    ``detail`` is one more line for the body and context (the first-cut
+    hold's refusal, gr611217). ``label`` replaces ``r<n>`` in the
     tag and the text for a pass with no release number yet (a first cut
     held before it cut: ``td<root>``). ``verbs`` overrides the stage's
     hand verbs — the first-cut hold's, which must not name
@@ -1272,16 +1234,19 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 
 # ── the engine-review gate (td574937 E1) ──────────────────────────
 #
-# A release never cuts over an engine land its reviewer has not read:
+# A release never deploys an engine land its reviewer has not read:
 # the factory may build engine paths once ``factory.deny_relaxed`` is
-# flipped, but only through the review lane. Since gr592271 the gate is
-# positional — a land holds only the commits at-or-after it, so the
-# pass cuts the newest commit ahead of the oldest uncleared land
-# instead of waiting for the tip (see the section below
-# :func:`_cut_below`). The gate's lands come from
-# GIT, not jobs (gr597625): every first-parent commit in
-# ``origin/prod..<pin>`` whose diff touches
-# ``lanes.ENGINE_PATHS`` — the commits the cut would carry. A commit
+# flipped, but only through the review lane. Since the release train
+# (Reto 2026-11-12) the gate holds the deploy, never the cut: a release
+# is cut once at origin/main's tip, and :func:`deploy_review_blockers`
+# judges the lands INSIDE it — the cut's recorded range plus the fixes
+# on ``release/r<N>`` (:func:`_release_lands`). A land on main after
+# the cut belongs to the next release. The poll runs the same gate over
+# ``origin/prod..<pin>`` (:func:`_git_lands`) for its mint-and-ask
+# writes only. The gate's lands come from
+# GIT, not jobs (gr597625): every first-parent commit in the scope
+# whose diff touches
+# ``lanes.ENGINE_PATHS`` — the commits the release carries. A commit
 # links its todos through the succeeded ``land_slice`` job whose
 # ``meta.landed_sha`` matches it (the stamped path, kept as the fast
 # lookup) or the ``td<id>`` handles in the subject's trailing list; a
@@ -1293,27 +1258,19 @@ def _pass_for_sha(store: Any, sha12: str) -> tuple[int, str] | None:
 # a linked todo with no live plan root joins it: there is nothing to
 # hang a td-keyed reviewer under, so the gate mints the sha-keyed
 # reviewer (``generate.from`` = ``sha:<sha12>``, one per commit,
-# covering every unit of the commit) and holds the cut until it
+# covering every unit of the commit) and holds the deploy until it
 # closes LAND.
 # A covering reviewer clears the land when it closed ``LAND``, or
 # ``FIX`` whose fix task landed — a sha-keyed reviewer's ``REVERT``
 # tracks its revert task the same way, since a hand land has no todo
 # to rebuild and re-read. A FIX/REVERT clearance is only half the
-# story: the cut must also CARRY the corrective commit — a land whose
-# fix or revert landed past the selected cut still holds it
-# (:func:`_cut_below`, td601005). That corrective commit is itself
+# story: the release must also CARRY the corrective commit — a fix
+# whose ``landed:`` sha is not on ``release/r<N>`` still holds the
+# deploy (:func:`deploy_review_blockers`, td601005). That corrective
+# commit is itself
 # cleared by the chain (gr611217): an engine land whose sha IS a
 # cleared FIX/REVERT's recorded ``landed:`` sha needs no review of its
-# own — a covering reviewer that reached a verdict still wins — so
-# [A FIX, B = A's fix, later lands] cuts at the tip, not below A.
-# A landed release-fix (a ``release-fix`` loop's child) is itself a
-# corrective: its commit pins every later cut at-or-above its own
-# position, review or not (gr653036) — and whatever paths it touched.
-# A fix on only application code or tests is no gate unit, so the
-# scan keeps it as a ``carry_only`` unit the engine filter cannot
-# drop, linked by the fix's own ``landed:`` record when no job stamp
-# or subject handle names it (td653689: a pending review elsewhere
-# could otherwise still push a fresh cut below the landed fix).
+# own — a covering reviewer that reached a verdict still wins.
 # While a reviewer is open under a live root
 # the release waits, and once the NEWER of the land and its newest
 # covering reviewer is :data:`REVIEW_WAIT_AFTER` old one ``ask-user``
@@ -1359,11 +1316,11 @@ def _reviewer_rows(store: Any) -> list[tuple[int, dict[str, Any]]]:
 
 @dataclass(frozen=True)
 class _GitLand:
-    """One first-parent commit in ``origin/prod..<pin>`` — the
-    gate's source of truth for what landed (gr597625): a ``scripts/ship``
-    run from a tmux tree or the coordinator seat mints no ``land_slice``
-    job, so a stamped-job scan alone lets a hand land ride the cut
-    unseen."""
+    """One first-parent commit in the gate's scope — ``origin/prod..<pin>``
+    or a release's own commits — the gate's source of truth for what
+    landed (gr597625): a ``scripts/ship`` run from a tmux tree or the
+    coordinator seat mints no ``land_slice`` job, so a stamped-job scan
+    alone lets a hand land ride the release unseen."""
 
     sha: str
     subject: str
@@ -1371,45 +1328,98 @@ class _GitLand:
     paths: tuple[str, ...]
 
 
+#: ``-c safe.directory=*``: the checkout can sit under a mount owned by
+#: a different uid — the gate container bind-mounts the host's git dir
+#: at its own path, and a service-account worker's checkout — so git
+#: otherwise refuses to read it at all; the same widening
+#: ``precis.handlers.job._git`` uses for its mounted-checkout probes.
+_GIT_SAFE = ("-c", "safe.directory=*")
+
+
 def _git_lands() -> tuple[list[_GitLand], str]:
     """``(lands, pin)`` — every first-parent commit in
     ``origin/prod..<pin>``, oldest first, with its touched paths, and
     ``pin`` the ``origin/main`` head the same fetch resolved: the ONE
-    commit snapshot the pass pins its scan, the compare's ordering and
-    the recorded target to (td601005 — a ``git/ref/heads/main`` read
-    AFTER the scan could record a cut sha carrying an engine land the
-    scan never saw, and ``release_cut``'s ``upto`` validation would
-    wave it through). ``origin`` is fetched first so a stale checkout
-    cannot hide a hand land; any failure raises (the caller fails
-    closed). Seam: tests patch it."""
+    commit snapshot the pass pins its scan, the compare and the recorded
+    target to (td601005 — a ``git/ref/heads/main`` read AFTER the scan
+    could record a cut sha carrying a land the scan never saw).
+    ``origin`` is fetched first so a stale checkout cannot hide a hand
+    land; any failure raises (the caller fails closed). Seam: tests
+    patch it."""
     # Needs repo_checkout: slice_root() reads PRECIS_SLICE_ROOT, set only on
     # a host with the repo checkout — hence :func:`conditional_requires`
     # (gr610176).
     from precis.workers.job_types import run_slice as _rs
 
     root = _rs.slice_root()
-    # ``-c safe.directory=*``: the checkout can sit under a mount owned by
-    # a different uid — the gate container bind-mounts the host's git
-    # dir at its own path, and a service-account worker's checkout — so
-    # git otherwise refuses to read it at all; the same widening
-    # ``precis.handlers.job._git`` uses for its mounted-checkout probes.
-    proc = _rs._git(
-        ["-c", "safe.directory=*", "fetch", "-q", "origin", "main", "prod"], root
-    )
+    proc = _rs._git([*_GIT_SAFE, "fetch", "-q", "origin", "main", "prod"], root)
     if proc.returncode != 0:
         raise RuntimeError(f"git fetch origin main prod: {proc.stderr.strip()[:200]}")
-    proc = _rs._git(
-        ["-c", "safe.directory=*", "rev-parse", "origin/main^{commit}"], root
-    )
+    proc = _rs._git([*_GIT_SAFE, "rev-parse", "origin/main^{commit}"], root)
     pin = proc.stdout.strip().lower()
     if proc.returncode != 0 or not pin:
         raise RuntimeError(f"git rev-parse origin/main: {proc.stderr.strip()[:200]}")
+    return _log_lands(root, f"origin/prod..{pin}"), pin
+
+
+#: ``meta.release.range`` as ``release_cut`` records it from
+#: ``scripts/release``'s ``RELEASE_RANGE: <prev prod>..<head>`` line.
+_RANGE_RE = re.compile(r"^[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}$", re.IGNORECASE)
+
+
+def _release_lands(rel: dict[str, Any]) -> list[_GitLand]:
+    """Every first-parent commit inside the release ``rel``
+    (``meta.release``), oldest first: the cut's recorded ``range``, then
+    the commits on ``release/r<N>`` after the cut sha — the fixes landed
+    on the branch. Main's commits after the cut are not in it. ``origin``
+    is fetched first (main and prod for the range's ends, the release
+    branch into its remote-tracking ref); a malformed record or any git
+    failure raises (the caller fails closed). Seam: tests patch it."""
+    from precis.workers.job_types import run_slice as _rs
+
+    rn = str(rel.get("rN") or "")
+    # release-train T1: a fix round's restamp (``release.record_head``)
+    # moves ``sha``/``range`` onto the release head and keeps the cut as
+    # ``cut_sha``/``cut_range`` — the scan is always the cut's own range
+    # plus EVERY commit on the branch after the cut, the restamped head's
+    # fixes included.
+    sha = str(rel.get("cut_sha") or rel.get("sha") or "").strip().lower()
+    rng = str(rel.get("cut_range") or rel.get("range") or "").strip()
+    if not re.fullmatch(r"r\d+", rn) or not sha or _RANGE_RE.fullmatch(rng) is None:
+        raise RuntimeError(
+            f"meta.release {rn or '?'} has no rN/sha/<prev>..<head> range to scan"
+        )
+    tracking = f"refs/remotes/origin/release/{rn}"
+    root = _rs.slice_root()
     proc = _rs._git(
         [
-            "-c",
-            "safe.directory=*",
+            *_GIT_SAFE,
+            "fetch",
+            "-q",
+            "origin",
+            "main",
+            "prod",
+            f"+refs/heads/release/{rn}:{tracking}",
+        ],
+        root,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git fetch origin release/{rn}: {proc.stderr.strip()[:200]}"
+        )
+    return _log_lands(root, rng) + _log_lands(root, f"{sha}..{tracking}")
+
+
+def _log_lands(root: Any, rng: str) -> list[_GitLand]:
+    """``git log <rng> --first-parent`` in ``root`` as lands, oldest
+    first, with their touched paths; a failure raises."""
+    from precis.workers.job_types import run_slice as _rs
+
+    proc = _rs._git(
+        [
+            *_GIT_SAFE,
             "log",
-            f"origin/prod..{pin}",
+            rng,
             "--first-parent",
             "--format=%x00%H%x1f%ct%x1f%s",
             "--name-only",
@@ -1417,9 +1427,7 @@ def _git_lands() -> tuple[list[_GitLand], str]:
         root,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"git log origin/prod..origin/main: {proc.stderr.strip()[:200]}"
-        )
+        raise RuntimeError(f"git log {rng}: {proc.stderr.strip()[:200]}")
     out: list[_GitLand] = []
     for rec in proc.stdout.split("\x00"):
         lines = rec.strip("\n").splitlines()
@@ -1440,7 +1448,7 @@ def _git_lands() -> tuple[list[_GitLand], str]:
             )
         )
     out.reverse()
-    return out, pin
+    return out
 
 
 def _landed_jobs(store: Any) -> list[tuple[str, int, int]]:
@@ -1495,17 +1503,12 @@ def _land_tds(subject: str) -> list[int]:
 class _GateLand:
     """One unit the engine-review gate judges: a linked todo of an
     engine commit in the cut range, or the commit itself (``todo_id``
-    ``None``) when nothing links it. ``carry_only`` marks a landed
-    release-fix the gate must never review (td653689): its commit
-    touched no engine path — or only the fix's ``landed:`` record links
-    it — so it is cleared by construction and only its must-carry pin
-    counts in the cut-sha spans."""
+    ``None``) when nothing links it."""
 
     sha12: str
     todo_id: int | None
     job_id: int | None
     committed_at: datetime | None
-    carry_only: bool = False
 
     @property
     def ask_key(self) -> str:
@@ -1524,31 +1527,30 @@ class _GateLand:
         return f"{self.land}{job}"
 
 
-def _gate_lands(store: Any) -> tuple[list[_GateLand], str, list[str]]:
+def _gate_lands(
+    store: Any, rel: dict[str, Any] | None = None
+) -> tuple[list[_GateLand], str, list[str]]:
     """``(units, pin, scanned)`` — the gate's units, oldest land first,
-    the pinned main head they were scanned at and ``scanned`` every
-    first-parent sha in ``origin/prod..<pin>``, oldest first — the
-    ordering the callers fall back to when the compare's ``commits``
-    list comes back empty (td601285 — an empty ordering cannot verify
-    a corrective commit is carried, and an empty recorded ``upto``
-    leaves ``release_cut`` nothing to validate). A unit is every commit
-    in the cut range whose diff touches :data:`lanes.ENGINE_PATHS`,
-    stitched to its linked todos — the succeeded ``land_slice`` job
-    whose ``meta.landed_sha`` matches (the stamped path, kept as the
-    fast lookup) or the ``td<id>`` handles in the subject's trailing
-    list. A commit neither links is its own unit, and a sha-keyed
-    reviewer minted for it (or for a linked todo with no live plan
-    root) covers every unit of the commit. A landed release-fix adds a
-    ``carry_only`` unit whatever its commit touched (td653689): a fix
-    on only application code or tests would otherwise drop out with
-    the engine filter and a pending review elsewhere could still push
-    a fresh cut below it; the fix's ``landed:`` record links a fix
-    whose commit no job stamp or subject handle names."""
+    the head they were scanned at and ``scanned`` every first-parent sha
+    of the scope, oldest first. The scope is ``origin/prod..<pin>`` with
+    ``pin`` the pinned main head (:func:`_git_lands`), or with ``rel`` a
+    release's own commits (:func:`_release_lands`) with ``pin`` its cut
+    sha; ``scanned`` is then what ``release/r<N>`` carries. A unit is
+    every commit in the scope whose diff touches
+    :data:`lanes.ENGINE_PATHS`, stitched to its linked todos — the
+    succeeded ``land_slice`` job whose ``meta.landed_sha`` matches (the
+    stamped path, kept as the fast lookup) or the ``td<id>`` handles in
+    the subject's trailing list. A commit neither links is its own unit,
+    and a sha-keyed reviewer minted for it (or for a linked todo with no
+    live plan root) covers every unit of the commit."""
     from precis.plans import lanes as _lanes
 
-    lands, pin = _git_lands()
+    if rel is None:
+        lands, pin = _git_lands()
+    else:
+        lands = _release_lands(rel)
+        pin = str(rel.get("cut_sha") or rel.get("sha") or "").lower()
     stamped = _landed_jobs(store)
-    fix_ids, fix_shas = _release_fix_lands(store)
     out: list[_GateLand] = []
     for land in lands:
         sha12 = land.sha[:12]
@@ -1560,17 +1562,6 @@ def _gate_lands(store: Any) -> tuple[list[_GateLand], str, list[str]]:
         todos = {todo_id for _job_id, todo_id in jobs} | set(_land_tds(land.subject))
         job_id = jobs[0][0] if jobs else None
         engine = bool(_lanes.engine_hits(land.paths))
-        carries = {fid for s, fid in fix_shas.items() if _same_sha(land.sha, s)}
-        if engine:
-            # A fix the commit's own links already name is carried by
-            # its regular unit's must-carry — no duplicate.
-            carries -= todos
-        else:
-            carries |= todos & fix_ids
-        out.extend(
-            _GateLand(sha12, fid, job_id, land.committed_at, carry_only=True)
-            for fid in sorted(carries)
-        )
         if not engine:
             continue
         if todos:
@@ -1627,51 +1618,6 @@ def _parent_of(store: Any, ref_id: int) -> int | None:
             (ref_id,),
         ).fetchone()
     return None if row is None else row[0]
-
-
-def _release_fix_todo(store: Any, todo_id: int | None) -> bool:
-    """``True`` when ``todo_id`` is a ``release-fix`` loop's child — a
-    fix minted for a cut's red tests (gr653036). Its landed commit is a
-    must-carry on every later cut, fresh pass or re-cut: below it the
-    release ships the same red again (r292 cut at a sha under r291's
-    landed fixes)."""
-    if todo_id is None:
-        return False
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM refs c JOIN refs p ON p.ref_id = c.parent_id
-             WHERE c.ref_id = %s AND c.retired_at IS NULL
-               AND p.retired_at IS NULL
-               AND p.meta->'loop'->>'body' = 'release-fix'
-             LIMIT 1
-            """,
-            (todo_id,),
-        ).fetchone()
-    return row is not None
-
-
-def _release_fix_lands(store: Any) -> tuple[set[int], dict[str, int]]:
-    """``(fix todo ids, {landed sha: fix id})`` — the
-    :func:`_release_fix_todo` parentage in one read (every live child of
-    a ``release-fix`` loop), plus each one's newest ``landed:`` sha
-    record: the index that tracks a fix whose commit no ``land_slice``
-    stamp or subject handle links — a hand land (td653689)."""
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT c.ref_id FROM refs c JOIN refs p ON p.ref_id = c.parent_id
-             WHERE c.retired_at IS NULL AND p.retired_at IS NULL
-               AND p.meta->'loop'->>'body' = 'release-fix'
-            """,
-        ).fetchall()
-    ids = {int(r[0]) for r in rows}
-    shas: dict[str, int] = {}
-    for fid in sorted(ids):
-        sha = _fix_landed_sha(store, fid)
-        if sha is not None:
-            shas[sha] = fid
-    return ids, shas
 
 
 def _root(store: Any, todo_id: int) -> tuple[int, str]:
@@ -1888,8 +1834,8 @@ def _file_review_wait_ask(
             "resolve on its own — acknowledge it, or is this a false alarm?"
         )
         body = (
-            f"The engine-review gate (td574937 E1) holds every release "
-            f"pass and cut while the {land} engine land is "
+            f"The engine-review gate (td574937 E1) holds the deploy of "
+            f"the release carrying the {land} engine land while it is "
             f"uncleared; reviewer td{rid} cannot settle it on its own. "
             "This ask is the only write the gate makes; answering it "
             "executes nothing — a comment starting `answer:` "
@@ -1904,17 +1850,17 @@ def _file_review_wait_ask(
         )
         why = f" The gate could not mint one itself: {reason}." if reason else ""
         body = (
-            f"The engine-review gate (td574937 E1) holds every release "
-            f"pass and cut while the {land} engine land{job} has no "
-            f"reviewer covering it — fix, revert and "
+            f"The engine-review gate (td574937 E1) holds the deploy of "
+            f"the release carrying the {land} engine land{job} while no "
+            f"reviewer covers it — fix, revert and "
             f"plain lands mint none.{why} This ask is the only write the "
             "gate makes; answering it executes nothing — a comment "
             "starting `answer:` ('acknowledged' or 'false alarm') just "
             "closes it, which clears this one land."
         )
     context = (
-        f"{what} holds every release pass and cut until cleared — "
-        "answering executes nothing"
+        f"{what} holds the deploy of the release carrying it until "
+        "cleared — answering executes nothing"
     )
     meta: dict[str, Any] = {
         "ask": {
@@ -2147,29 +2093,24 @@ def _mint_sha_reviewer(store: Any, sha12: str) -> tuple[str, int, bool]:
 
 @dataclass
 class _LandVerdict:
-    """One gate unit's verdict (:func:`_gate_lands`; gr592271).
+    """One gate unit's verdict (:func:`_gate_lands`).
 
-    ``cleared`` lands never hold a cut for their own review's sake;
+    ``cleared`` lands never hold a deploy for their own review's sake;
     ``line`` is the blocker an uncleared one carries. ``requires``
-    names corrective commit shas the selected cut must CARRY for the
+    names corrective commit shas the release must CARRY for the
     clearance to hold — a FIX's fix, a sha-keyed REVERT's revert
-    (td601005). ``must_carry`` marks a landed release-fix unit
-    (gr653036): its commit is itself corrective — a cut below it ships
-    the red it fixes — so it pins the cut at-or-above its own position
-    whether or not its review has cleared. ``unit.sha12`` positions the
-    land on main for :func:`_cut_below`."""
+    (td601005; :func:`deploy_review_blockers`)."""
 
     unit: _GateLand
     cleared: bool
     line: str = ""
     requires: tuple[str, ...] = ()
-    must_carry: bool = False
 
 
 def _same_sha(a: str, b: str) -> bool:
     """Two sha spellings name one commit — either is the other's prefix
     (case-blind; an empty spelling names nothing). The one prefix rule
-    :func:`_sha_on`, :func:`_sha_in` and the corrective chain share."""
+    the corrective chain and :func:`deploy_review_blockers` share."""
     a, b = a.lower(), b.lower()
     return bool(a and b) and (a.startswith(b) or b.startswith(a))
 
@@ -2178,7 +2119,7 @@ def _holds_own(store: Any, rid: int, meta: dict[str, Any]) -> bool:
     """The covering reviewer judges the unit itself, over the corrective
     chain (gr611217): it recorded a ``meta.review.verdict``, or it is
     still running — not terminal, not cancelled — so a late FIX/REVERT
-    cannot arrive after the cut shipped."""
+    cannot arrive after the release deployed."""
     review = meta.get("review")
     if isinstance(review, dict) and review.get("verdict"):
         return True
@@ -2217,24 +2158,24 @@ def _chain_corrective(
 def _engine_verdicts(
     store: Any,
     *,
+    rel: dict[str, Any] | None = None,
     now: datetime | None = None,
     file_asks: bool = False,
     dry_run: bool = False,
 ) -> tuple[list[_LandVerdict] | None, list[str], str | None, str | None, list[str]]:
     """``(verdicts, notes, fatal, pin, scanned)`` — the engine-review
-    gate's per-land verdict plus the pass's side effects, ``pin`` the
-    ``origin/main`` head the scan resolved and ``scanned`` the
-    first-parent shas of ``origin/prod..<pin>``, oldest first: the one
-    commit snapshot the caller pins its compare's ordering and recorded
-    target to (td601005), and the ordering it falls back to when the
-    compare's ``commits`` list is empty (td601285). ``fatal``
-    non-``None`` is the fail-closed line any read error returns
-    (``verdicts`` and ``pin`` are ``None`` then, ``scanned`` empty).
+    gate's per-land verdict plus the pass's side effects over the scope
+    :func:`_gate_lands` reads: ``origin/prod..<pin>`` by default — ``pin``
+    the ``origin/main`` head the scan resolved, ``scanned`` its
+    first-parent shas oldest first, the one commit snapshot the poll
+    pins its compare and recorded target to (td601005) and the ordering
+    it falls back to when the compare's ``commits`` list is empty
+    (td601285) — or, with ``rel`` (a plan root's ``meta.release``), the
+    release's own commits. ``fatal`` non-``None`` is the fail-closed
+    line any read error returns (``verdicts`` and ``pin`` are ``None``
+    then, ``scanned`` empty).
 
-    Per gate unit (:func:`_gate_lands`), oldest land first: a
-    ``carry_only`` unit — a landed release-fix tracked outside the
-    engine filter (td653689) — is cleared by construction and marked
-    ``must_carry``, no review work at all; an answered
+    Per gate unit (:func:`_gate_lands`), oldest land first: an answered
     ``release-review-wait:<key>`` ask clears a gated unit; so does being
     a cleared FIX/REVERT's recorded corrective commit while no covering
     reviewer reached a verdict (:func:`_chain_corrective`, gr611217); no
@@ -2255,8 +2196,8 @@ def _engine_verdicts(
     does not dedupe — the next filing pass refiles it — and blocker
     lines name the live ask's id.
     ``file_asks`` limits the mint-and-ask writes to the pass
-    (``release_cut`` asks for nothing). Any exception anywhere returns a
-    single fail-closed blocker.
+    (``release_deploy`` asks for nothing). Any exception anywhere returns
+    a single fail-closed blocker.
     """
     from precis.plans import lanes as _lanes
     from precis.workers.job_types import plan_dispatch as _plan_dispatch
@@ -2294,20 +2235,9 @@ def _engine_verdicts(
             m = _REVIEW_FROM_SHA_RE.fullmatch(src)
             if m is not None:
                 by_sha.setdefault(m.group(1).lower(), []).append((rid, meta))
-        units, pin, scanned = _gate_lands(store)
+        units, pin, scanned = _gate_lands(store, rel)
         for unit in units:
             verdict = _LandVerdict(unit, cleared=False)
-            if unit.carry_only:
-                # td653689: a landed release-fix rides no review —
-                # nothing mints for it, nothing waits on it. It is the
-                # corrective itself: cleared by construction, must-carry
-                # so no pending review pushes a fresh cut below its
-                # commit.
-                verdict.cleared = True
-                verdict.must_carry = True
-                verdicts.append(verdict)
-                continue
-            verdict.must_carry = _release_fix_todo(store, unit.todo_id)
             if _answered_wait_ask(store, unit.ask_key):
                 verdict.cleared = True
                 verdicts.append(verdict)
@@ -2428,7 +2358,7 @@ def _engine_verdicts(
                 elif file_asks:
                     next_step = f"answer the review-wait ask on {unit.land}"
                 else:
-                    next_step = "the review gate holds the cut"
+                    next_step = "the review gate holds the deploy"
                 verdict.line = (
                     f"engine land {unit.label} has no "
                     f"reviewer; the release waits — next: {next_step}"
@@ -2509,56 +2439,64 @@ def _engine_verdicts(
 def engine_review_blockers(
     store: Any,
     *,
+    rel: dict[str, Any] | None = None,
     now: datetime | None = None,
     file_asks: bool = False,
     dry_run: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """``(blocker lines, notes)`` — the engine-review gate's verdict for
-    callers that hold the whole tip (``release_cut``'s fallback for a
-    pass minted without a recorded cut target; gr592271): every
-    uncleared engine land's line, or the single fail-closed line."""
+    """``(blocker lines, notes)`` — the engine-review gate's verdict over
+    main ahead of prod, or over the release ``rel`` (a plan root's
+    ``meta.release``): every uncleared engine land's line, or the single
+    fail-closed line. The poll's mint-and-ask reads pass ``file_asks``;
+    :func:`deploy_review_blockers` is the hold."""
     verdicts, notes, fatal, _pin, _scanned = _engine_verdicts(
-        store, now=now, file_asks=file_asks, dry_run=dry_run
+        store, rel=rel, now=now, file_asks=file_asks, dry_run=dry_run
     )
     if fatal is not None:
         return [fatal], notes
     return [v.line for v in verdicts or () if not v.cleared], notes
 
 
-# ── the review gate's cut-sha computation (gr592271) ────────────────
-#
-# The gate used to hold the whole pass while ANY engine land's review
-# was pending — effectively waiting for the tip of main. With lands
-# arriving hourly and reviews taking 10–30 min a busy afternoon starved
-# the release: every new engine land minted its own reviewer and pushed
-# the clear point past the tip again (r252 blocked four ticks while the
-# two oldest lands sat LAND-reviewed). The gate now computes the newest
-# commit on main such that every engine land at-or-before it is cleared
-# — the commit just ahead of the oldest uncleared land — and the pass
-# cuts THAT sha (``release_cut --sha``). An uncleared land off the
-# ahead-of-prod window reads as at-or-before everything: no cleared
-# sha, the pass stays blocked and the blocker names the pending
-# reviews — fail closed, as before.
-#
-# td601005 tightens "cleared": a FIX/REVERT verdict clears a land only
-# for a cut that CARRIES its corrective commit — [A FIX, B pending,
-# C fixes A] has no cleared sha (shipping A without C is the bug this
-# closed) — and the whole computation sits on the scan's own pin: the
-# fetch resolved ``origin/main`` once, and the scan, the compare's
-# ordering, the minted target and ``release_cut``'s ``upto``
-# validation all name that same sha, so a land that reaches main
-# mid-pass can never ride a recorded sha the scan never saw.
-#
-# td601285: when the compare's ``commits`` comes back empty the scan's
-# own ordering stands in — an empty ordering could never verify a
-# corrective commit is carried (a FIX outside the snapshot shipped on
-# the pin fallback), and an empty recorded ``upto`` left
-# ``release_cut`` a window it cannot validate.
+def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
+    """Why the release ``todo_id``'s plan cut may not deploy yet, else
+    ``[]`` — ``release_deploy``'s hold (release train, Reto 2026-11-12).
+
+    The scope is the release itself (:func:`_release_lands`): the cut's
+    recorded range plus the commits on ``release/r<N>`` after the cut. A
+    land on main after the cut is the next release's and holds nothing.
+    Every engine land in scope must be cleared, and a FIX/REVERT
+    clearance holds only once its corrective commit (the fix todo's
+    ``landed:`` sha) is on ``release/r<N>`` — a fix landed on main alone
+    does not ship with this release (td601005). No cut recorded is no
+    hold here (the approval check refuses that deploy first); any read
+    error is the single fail-closed line. Files nothing: the poll's
+    open-pass tick mints the reviewers and asks for this scope."""
+    rel = _release.release_of(store, todo_id)
+    if rel is None:
+        return []
+    verdicts, _notes, fatal, _pin, scanned = _engine_verdicts(store, rel=rel)
+    if fatal is not None:
+        return [fatal]
+    rn = rel.get("rN")
+    lines = [v.line for v in verdicts or () if not v.cleared]
+    for v in verdicts or ():
+        missing = [
+            r[:12]
+            for r in v.requires
+            if v.cleared and not any(_same_sha(r, s) for s in scanned)
+        ]
+        if missing:
+            lines.append(
+                f"engine land {v.unit.label} {_CARRY_MARK} "
+                f"({', '.join(missing)}) that is not on release/{rn} — next: "
+                f"land the fix on release/{rn} or answer the review-wait ask"
+            )
+    return lines
 
 
 def _commit_shas(cmp_: Any) -> list[str]:
     """The ``compare prod...<pin>`` payload's commits as full shas,
-    oldest first — the ordered window the gate positions lands on."""
+    oldest first — the window the pass records as ``upto``."""
     out: list[str] = []
     if not isinstance(cmp_, dict):
         return out
@@ -2566,234 +2504,6 @@ def _commit_shas(cmp_: Any) -> list[str]:
         if isinstance(c, dict) and c.get("sha"):
             out.append(str(c["sha"]).lower())
     return out
-
-
-def _sha_on(land_sha: str, commits: list[str]) -> int:
-    """The position of ``land_sha`` in ``commits`` (the first match — a
-    short prefix hitting two commits takes the earlier, the
-    fail-closed direction), or ``-1`` when it names no commit in the
-    window: behind prod or never reached main both read as
-    at-or-before every candidate cut."""
-    # Against the commit's sha12: a longer ``land_sha`` sharing those 12
-    # still matches (the fail-closed direction).
-    for i, c in enumerate(commits):
-        if _same_sha(land_sha, c[: _release.LANDED_SHA_LEN]):
-            return i
-    return -1
-
-
-def _sha_in(land_sha: str, upto: Any) -> bool:
-    """``land_sha`` names a commit in the recorded ``upto`` window — the
-    same prefix match as :func:`_sha_on` over sha12s."""
-    if not isinstance(upto, (list, set, frozenset)):
-        return False
-    return any(_same_sha(land_sha, str(c)) for c in upto)
-
-
-def _requires_line(v: _LandVerdict, commits: list[str]) -> str | None:
-    """The blocker for a cleared land whose corrective commit the
-    window never reaches — a ``landed:`` sha that is not on main ahead
-    of prod makes the clearance unverifiable inside any cut, so the
-    pass waits and says why — or ``None`` when every required commit
-    is positioned."""
-    missing = [r for r in v.requires if _sha_on(r, commits) < 0]
-    if not missing:
-        return None
-    return (
-        f"engine land {v.unit.label} cleared on a corrective commit "
-        f"({', '.join(r[:12] for r in missing)}) that is not on main "
-        "ahead of prod — next: land the fix on main or answer the "
-        "review-wait ask"
-    )
-
-
-def _off_window_line(v: _LandVerdict, commits: list[str]) -> str | None:
-    """The blocker for a cleared must-carry unit the ordering cannot
-    place — a landed release-fix the compare's truncated commit list
-    dropped (td653689): any cut inside the window could sit below it,
-    so the pass waits and says why — else ``None``."""
-    if v.cleared and v.must_carry and _sha_on(v.unit.sha12, commits) < 0:
-        return (
-            f"engine land {v.unit.label} is a landed release-fix the "
-            "ordering cannot place — the cut cannot prove it is carried "
-            "— next: retry next tick"
-        )
-    return None
-
-
-def _spans(
-    verdicts: list[_LandVerdict], commits: list[str]
-) -> list[tuple[int, int, _LandVerdict]] | None:
-    """``[(first, last, verdict)]`` — the positions in ``commits`` each
-    holding unit holds (:func:`_cut_below`'s rule), or ``None`` when an
-    uncleared land sits off the window (at-or-before everything)."""
-    spans: list[tuple[int, int, _LandVerdict]] = []
-    for v in verdicts:
-        p = _sha_on(v.unit.sha12, commits)
-        if p < 0:
-            if v.cleared and not v.must_carry:
-                continue  # already on prod: the cut cannot change it
-            # Uncleared — or a landed release-fix the ordering cannot
-            # place (a truncated compare; td653689): it reads as
-            # at-or-before everything, no position clears.
-            return None
-        if not v.cleared:
-            # gr653036: a must-carry unit holds the whole window, not
-            # just the span above it — a cut anywhere below its commit
-            # ships the red its fix lands, so no position clears until
-            # its review does.
-            spans.append((0 if v.must_carry else p, len(commits), v))
-            continue
-        if v.must_carry and p > 0:
-            # A cleared release-fix still pins the cut at-or-above its
-            # own commit — max(cleared_head, the landed fix): an
-            # uncleared land below it may not push the cut under it
-            # either (the pass waits for that land, never ships the fix
-            # away).
-            spans.append((0, p - 1, v))
-        req = [_sha_on(r, commits) for r in v.requires]
-        if not req:
-            continue
-        top = len(commits) if any(r < 0 for r in req) else max(req)
-        if top > p:
-            spans.append((p, top - 1, v))
-    return spans
-
-
-def _hold_lines(
-    verdicts: list[_LandVerdict], commits: list[str], cut: str
-) -> list[str]:
-    """Why ``cut`` sits below the window's head (gr611217): one line per
-    unit whose span reaches past it — an uncleared land's own blocker
-    line, or a cleared land whose corrective commit the cut would have
-    to carry past an uncleared one (the chained-span case). Empty when
-    ``cut`` is the head."""
-    at = _sha_on(cut, commits)
-    if at < 0 or at >= len(commits) - 1:
-        return []
-    lines: list[str] = []
-    for _a, b, v in _spans(verdicts, commits) or ():
-        if b <= at:
-            continue
-        if not v.cleared:
-            lines.append(v.line or f"engine land {v.unit.label} is not cleared")
-        else:
-            lines.append(
-                f"engine land {v.unit.label} cleared on a corrective commit "
-                f"({', '.join(r[:12] for r in v.requires)}) the cut must carry, "
-                "so it holds from its own commit up to that one"
-            )
-    return lines
-
-
-def _cut_below(
-    verdicts: list[_LandVerdict], commits: list[str]
-) -> tuple[str | None, list[str]]:
-    """``(cut sha, upto)`` — the newest position in ``commits`` every
-    gate unit allows, ``upto`` the sha12s at-or-before it; ``(None,
-    [])`` when no position clears.
-
-    Each unit holds a span of positions: an uncleared land holds
-    everything at-or-after it (gr592271); a land cleared on a
-    corrective commit (a FIX's fix, a sha-keyed REVERT's revert) holds
-    the span from its own position to just under the newest required
-    commit — the cut must CARRY the corrective, and a land is also
-    satisfied by being left out entirely (td601005: [A FIX, B pending,
-    C fixes A] must not cut A without C). A must-carry unit — a landed
-    release-fix (gr653036) — is itself a corrective the cut may not sit
-    below: uncleared it holds the whole window, cleared it holds
-    everything under its own position, so the cut is never below a
-    landed fix for a previous cut's reds. A required commit the window
-    never reaches holds like an uncleared land; a cleared land off the
-    window is already on prod — nothing the cut decides."""
-    spans = _spans(verdicts, commits)
-    if spans is None:
-        return None, []  # off-window uncleared: at-or-before everything
-    cut = len(commits) - 1
-    while cut >= 0:
-        start = min((a for a, b, _v in spans if a <= cut <= b), default=None)
-        if start is None:
-            break
-        cut = start - 1
-    if cut < 0:
-        return None, []
-    return commits[cut], [c[: _release.LANDED_SHA_LEN] for c in commits[: cut + 1]]
-
-
-def cleared_head(
-    store: Any,
-    *,
-    repo: str,
-    now: datetime | None = None,
-    file_asks: bool = False,
-    dry_run: bool = False,
-) -> tuple[str | None, list[str], list[str]]:
-    """``(cut sha, lines, notes)`` — the newest commit on main
-    such that every engine land at-or-before it is cleared AND every
-    corrective commit a clearance needs is carried (gr592271,
-    td601005): the scanned head when nothing holds it, else the newest
-    commit the gate's spans allow, else ``None`` with the pending
-    reviews named. ``lines`` is the blockers when the cut is ``None``;
-    with a cut below the pinned head it names the units holding it
-    (:func:`_hold_lines`, gr611217) and is empty only for a head cut.
-    ``release_cut`` recomputes it for a re-cut, whose
-    recorded target is stale — the scan, the compare's ordering and the
-    answer all sit on the one pinned snapshot. Raises
-    :class:`precis.plans.pr_class.GitHubUnreadable`."""
-    verdicts, notes, fatal, pin, scanned = _engine_verdicts(
-        store, now=now, file_asks=file_asks, dry_run=dry_run
-    )
-    if fatal is not None:
-        return None, [fatal], notes
-    base = _API.format(repo=repo)
-    cmp_ = pr_class._get_json(f"{base}/compare/prod...{pin}", {})
-    if not isinstance(cmp_, dict):
-        raise pr_class.GitHubUnreadable(
-            f"GET {base}/compare/prod...{pin}: expected an object"
-        )
-    try:
-        ahead = int(cmp_["ahead_by"])
-        behind = int(cmp_["behind_by"])
-    except (KeyError, TypeError, ValueError):
-        raise pr_class.GitHubUnreadable(
-            f"GET {base}/compare/prod...{pin}: no ahead_by/behind_by"
-        ) from None
-    status = str(cmp_.get("status") or "unknown")
-    if behind > 0 or status == "diverged":
-        return None, [f"prod has commits main lacks ({status})"], notes
-    if ahead <= 0:
-        return None, [f"main is not ahead of prod ({status})"], notes
-    # td601285: when the compare's commit list is empty the scan's own
-    # ordering stands in — an empty ordering cannot verify a corrective
-    # commit is carried, and a FIX outside the snapshot would ship.
-    commits = _commit_shas(cmp_) or scanned
-    uncleared = [v for v in verdicts or () if not v.cleared]
-    cut, _upto = _cut_below(verdicts or [], commits)
-    if cut is None and not uncleared and not commits:
-        # ahead > 0 with no ordering anywhere (the compare's list and
-        # the scan both empty): the pinned head is the only honest
-        # target — nothing can sit inside the window, so there is no
-        # corrective membership to verify.
-        cut = pin
-    if cut is None:
-        lines = [v.line for v in uncleared]
-        lines += [
-            ln
-            for v in verdicts or ()
-            if (ln := _requires_line(v, commits) or _off_window_line(v, commits))
-        ]
-        return None, lines or ["the engine gate cleared nothing to cut"], notes
-    # gr611217: a cut below the pinned head says which unit holds it —
-    # the cut stands, the lines only explain (a re-cut refuses on them).
-    held = _hold_lines(verdicts or [], commits, cut)
-    if not held and ahead > len(commits) and pin and not _same_sha(cut, pin):
-        # A truncated compare (GitHub lists at most 250 commits) ends
-        # below the pin with no unit to blame.
-        held = [
-            f"the compare's ordering ends at {cut[:12]}, below the pinned "
-            f"head {pin[:12]} ({len(commits)} of {ahead} commits listed)"
-        ]
-    return cut, held, notes
 
 
 def _kept_hold_lines(lines: list[str]) -> list[str]:
@@ -2816,17 +2526,14 @@ def note_cut_hold(
     lines: list[str] | None,
     *,
     now: datetime | None = None,
-    kind: str | None = None,
 ) -> None:
-    """Record (``lines``) or clear (``None``/empty) the re-cut hold on
-    the plan root's ``meta.cut_hold = {since, lines[, kind]}`` (gr611217) —
-    ``release_cut``'s re-cut calls it on every recompute. ``since`` is
-    kept while the hold persists, so :func:`_cut_hold_ask` measures the
-    whole hold; a cleared hold resets it. ``kind`` names the hold —
-    :data:`CUT_HOLD_TIP` for the re-cut waiting on the tip's reviews, the
-    one :func:`land_freeze` reads; each write restates it. The lines are
-    :func:`_kept_hold_lines`. A write failure is a log line, never the
-    cut's verdict."""
+    """Record (``lines``) or clear (``None``/empty) the first cut's hold
+    on the plan root's ``meta.cut_hold = {since, lines}`` (gr611217) —
+    ``release_cut`` records the refusal a wait-class cut died on and
+    clears it once a cut succeeds. ``since`` is kept while the hold
+    persists, so :func:`_cut_hold_ask` measures the whole hold; a
+    cleared hold resets it. The lines are :func:`_kept_hold_lines`. A
+    write failure is a log line, never the cut's verdict."""
     try:
         root = _release.plan_root(store, todo_id)
         ref = store.get_ref(kind="todo", id=root)
@@ -2838,10 +2545,9 @@ def note_cut_hold(
         since = prior.get("since") if isinstance(prior, dict) else None
         if not since:
             since = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        hold: dict[str, Any] = {"since": since, "lines": _kept_hold_lines(lines)}
-        if kind:
-            hold["kind"] = kind
-        store.stamp_ref_meta(root, {"cut_hold": hold})
+        store.stamp_ref_meta(
+            root, {"cut_hold": {"since": since, "lines": _kept_hold_lines(lines)}}
+        )
     except Exception:
         log.warning(
             "release_poll: cut-hold stamp for td%s failed", todo_id, exc_info=True
@@ -2851,239 +2557,73 @@ def note_cut_hold(
 def _cut_hold_ask(
     store: Any, root_id: int, *, now: datetime, dry_run: bool
 ) -> str | None:
-    """The open pass's re-cut held below origin/main past
-    :data:`CUT_HOLD_ASK_AFTER_MIN` files ONE stuck ask naming the
-    holding units — :func:`_file_stuck_ask`, deduped by its
-    ``release-stuck:r<N>:recut-hold`` tag (gr611217). Returns its note,
-    ``None`` when nothing is due."""
+    """The open pass's first cut a refusal held
+    (``release_cut._note_refusal``: ``meta.cut_hold`` beside
+    ``meta.cut_retarget``, no ``meta.release`` yet) past
+    :data:`CUT_HOLD_ASK_AFTER_MIN` files ONE stuck ask —
+    :func:`_file_stuck_ask`, deduped by its
+    ``release-stuck:td<root>:recut-hold`` tag (gr611217). With no
+    release number yet the ask keys on the pass root and quotes the
+    refusal that started the hold — and never names ``cut --abandon``:
+    it would land on the other, live release (gr620480). Returns its
+    note, ``None`` when nothing is due."""
     ref = store.get_ref(kind="todo", id=root_id)
     meta = (ref.meta or {}) if ref is not None else {}
     hold = meta.get("cut_hold")
-    rel = meta.get("release")
     retarget = meta.get("cut_retarget")
-    if not isinstance(hold, dict):
+    if (
+        not isinstance(hold, dict)
+        or not isinstance(retarget, dict)
+        or isinstance(meta.get("release"), dict)
+    ):
         return None
     held = _minutes_since(now, hold.get("since"))
     if held is None or held < CUT_HOLD_ASK_AFTER_MIN:
         return None
     lines = [str(ln) for ln in hold.get("lines") or []]
-    detail = "holding: " + ("; ".join(lines) or "unrecorded")
-    verbs = None
-    if isinstance(rel, dict):
-        m = re.fullmatch(r"r(\d+)", str(rel.get("rN") or ""))
-        if m is None:
-            return None
-        n, label = int(m.group(1)), None
-        head12 = str(rel.get("sha") or "")[: _release.LANDED_SHA_LEN] or "unrecorded"
-        clock = f"re-cut hold since {hold.get('since')}"
-    elif isinstance(retarget, dict):
-        # A first cut a refusal held (``release_cut._note_refusal``): no
-        # release number yet, so the ask keys on the pass root and quotes
-        # the refusal that started the hold — and never names
-        # ``cut --abandon``: it would land on the other, live release
-        # (gr620480).
-        n, label, head12 = 0, f"td{root_id}", "unrecorded"
-        clock = f"first-cut hold since {hold.get('since')}"
-        detail = (
-            f"cut refused ({retarget.get('class')}): {retarget.get('line')}; " + detail
-        )
-        verbs = _FIRST_CUT_HOLD_VERBS
-    else:
-        return None
     return _file_stuck_ask(
         store,
-        n,
+        0,
         _CUT_HOLD_STAGE,
         int(held) - CUT_HOLD_ASK_AFTER_MIN,
-        head12,
+        "unrecorded",
         CUT_HOLD_ASK_AFTER_MIN,
         root_id,
         dry_run=dry_run,
-        clock_txt=clock,
-        detail=detail,
-        label=label,
-        verbs=verbs,
+        clock_txt=f"first-cut hold since {hold.get('since')}",
+        detail=(
+            f"cut refused ({retarget.get('class')}): {retarget.get('line')}; "
+            f"holding: {'; '.join(lines) or 'unrecorded'}"
+        ),
+        label=f"td{root_id}",
+        verbs=_FIRST_CUT_HOLD_VERBS,
     )
-
-
-def _env_seconds(name: str, default: int) -> int:
-    """``name`` from the environment when it is a non-negative int, else
-    ``default``."""
-    raw = os.environ.get(name, "").strip()
-    return int(raw) if raw.isdigit() else default
-
-
-def cut_freeze_after_s() -> int:
-    """:data:`CUT_FREEZE_AFTER_S`, or ``PRECIS_CUT_FREEZE_AFTER_S``."""
-    return _env_seconds("PRECIS_CUT_FREEZE_AFTER_S", CUT_FREEZE_AFTER_S)
-
-
-def cut_freeze_max_s() -> int:
-    """:data:`CUT_FREEZE_MAX_S`, or ``PRECIS_CUT_FREEZE_MAX_S``."""
-    return _env_seconds("PRECIS_CUT_FREEZE_MAX_S", CUT_FREEZE_MAX_S)
-
-
-def _freeze_line(latch: dict[str, Any]) -> str:
-    return (
-        f"land frozen: release re-cut {latch.get('rN')} waits for the tip's "
-        f"reviews (since {latch.get('since')})"
-    )
-
-
-def clear_land_freeze(store: Any, todo_id: int) -> None:
-    """Drop the plan root's land-freeze latch (``meta.land_freeze``) — the
-    re-cut succeeded (``release_cut._clear_retarget``). A write only when
-    one is there."""
-    root = _release.plan_root(store, todo_id)
-    ref = store.get_ref(kind="todo", id=root)
-    if ref is not None and (ref.meta or {}).get(LAND_FREEZE_KEY):
-        store.stamp_ref_meta(root, {LAND_FREEZE_KEY: None})
-
-
-def land_freeze(
-    store: Any, *, todo_id: int | None = None, now: datetime | None = None
-) -> str | None:
-    """The reason a new land waits, else ``None`` (gr651885).
-
-    A re-cut only cuts a fully-reviewed origin/main (gr611217), so a
-    factory that lands faster than the reviews drain holds it forever
-    (r290 → r291: over two hours). Once the open pass's re-cut has been
-    held on the tip's reviews (``meta.cut_hold.kind`` :data:`CUT_HOLD_TIP`
-    beside a recorded ``meta.release``) for :func:`cut_freeze_after_s` —
-    the hold's ``since`` is that clock — the freeze trips and LATCHES:
-    ``meta.land_freeze = {since, rN}`` on the plan root, ``since`` the
-    trip. The hold clearing does not lift it — the parked lands would
-    unpark before plan_dispatch minted and ran the cut, move the tip and
-    restart the hold, the same livelock one level up. Only a successful
-    cut lifts it (:func:`clear_land_freeze` from
-    ``release_cut._clear_retarget``), or the pass closing (the latch on a
-    closed root is never read). The safety valve: a latch older than
-    :func:`cut_freeze_max_s` expires — one warning naming the plan root,
-    ``expired_at`` stamped so the same pass never re-trips — so a stuck
-    cut cannot freeze lands forever. A land of the pass's own plan
-    (``todo_id`` under its root: the fix loop) is release machinery and
-    never waits, nor does a land the hold waits on
-    (:func:`_hold_waits_on`: a FIX/REVERT corrective, or any todo a hold
-    line names); reviews are not lands and never ask."""
-    now = now or datetime.now(UTC)
-    root = _open_pass_id(store)
-    if root is None:
-        return None
-    if todo_id is not None and _release.plan_root(store, todo_id) == root:
-        return None
-    ref = store.get_ref(kind="todo", id=root)
-    meta = (ref.meta or {}) if ref is not None else {}
-    latch = meta.get(LAND_FREEZE_KEY)
-    if isinstance(latch, dict):
-        if latch.get("expired_at"):
-            return None
-        age = _minutes_since(now, latch.get("since"))
-        if age is not None and age * 60 >= cut_freeze_max_s():
-            store.stamp_ref_meta(
-                root,
-                {LAND_FREEZE_KEY: {**latch, "expired_at": now.strftime(_TS_FMT)}},
-            )
-            log.warning(
-                "release_poll: land freeze on td%s (re-cut %s, since %s) "
-                "expired after %ss without a cut — lands resume; the re-cut "
-                "is stuck (gr651885)",
-                root,
-                latch.get("rN"),
-                latch.get("since"),
-                cut_freeze_max_s(),
-            )
-            return None
-    else:
-        hold = meta.get("cut_hold")
-        rel = _release.release_of(store, root)
-        if (
-            rel is None
-            or not isinstance(hold, dict)
-            or hold.get("kind") != CUT_HOLD_TIP
-        ):
-            return None
-        held = _minutes_since(now, hold.get("since"))
-        if held is None or held * 60 < cut_freeze_after_s():
-            return None
-        latch = {"since": now.strftime(_TS_FMT), "rN": str(rel["rN"])}
-        store.stamp_ref_meta(root, {LAND_FREEZE_KEY: latch})
-    if todo_id is not None and _hold_waits_on(store, todo_id, meta.get("cut_hold")):
-        return None
-    return _freeze_line(latch)
-
-
-#: A ``td<N>`` handle inside a hold line.
-_HOLD_TD_RE = re.compile(r"\btd(\d+)\b")
-
-
-def _hold_waits_on(store: Any, todo_id: int, hold: Any) -> bool:
-    """``True`` when the cut hold waits on ``todo_id``'s own land, so the
-    freeze must let it pass (gr651885 review): a post-land review's FIX
-    or REVERT mints a corrective todo (``meta.review.task`` on the
-    reviewer, :func:`_review_outcome` holds the cut on it until it
-    lands) — freezing it would freeze the one land that unblocks the
-    cut. Two reads: the current hold's lines naming ``td<todo_id>``
-    (the general case — any unit the hold names), and any reviewer
-    whose ``review.task`` is ``todo_id`` (the corrective case, which
-    also survives the hold's line cap and a hold already cleared under
-    a standing latch)."""
-    lines = hold.get("lines") if isinstance(hold, dict) else None
-    for line in lines or ():
-        if any(int(m) == todo_id for m in _HOLD_TD_RE.findall(str(line))):
-            return True
-    return _corrective_land(store, todo_id)
-
-
-def _corrective_land(store: Any, todo_id: int) -> bool:
-    """``True`` when a live reviewer names ``todo_id`` as its
-    ``review.task`` — the fix or revert its FIX/REVERT verdict minted
-    (``plan_dispatch._review_fix`` / ``_review_revert``). The same index
-    :func:`_engine_verdicts` builds as ``by_task``, read for one todo."""
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM refs
-             WHERE kind = 'todo' AND retired_at IS NULL
-               AND meta->'generate'->>'role' = 'reviewer'
-               AND meta->'review'->>'task' = %s
-             LIMIT 1
-            """,
-            (str(todo_id),),
-        ).fetchone()
-    return row is not None
-
-
-#: A gate-unit blocker line — ``engine land <td|sha12> …`` or ``engine
-#: review td<N> …`` — as opposed to the gate's own fatal or prod/main
-#: compare lines (``engine review gate unreadable``, ``prod has commits
-#: main lacks``, ``main is not ahead of prod``).
-_UNIT_LINE_RE = re.compile(r"^engine (?:land|review) (?:td\d+|[0-9a-f]{7,40})\b")
-
-
-def review_hold(lines: list[str]) -> bool:
-    """``True`` when every blocker line is a gate unit waiting on its
-    review (:data:`_UNIT_LINE_RE`): the "nothing cleared" re-cut hold
-    ``release_cut`` records as :data:`CUT_HOLD_TIP` — its oldest unit's
-    slow review holds the tip as surely as a newer one does."""
-    return bool(lines) and all(_UNIT_LINE_RE.match(str(ln)) for ln in lines)
 
 
 def _mint_reviewers_only(
-    store: Any, res: PollResult, *, now: datetime, dry_run: bool
+    store: Any,
+    res: PollResult,
+    *,
+    now: datetime,
+    dry_run: bool,
+    rel: dict[str, Any] | None = None,
 ) -> None:
     """The engine gate's mint-and-ask writes on a pass that cannot cut
     — inside a no-release window, while a pass is open or a round is
-    in flight (gr611217):
-    reviews are latency best paid before the cut can run, and an open
-    pass's re-cut needs the lands since its first cut reviewed. The
+    in flight (gr611217): reviews are latency best paid before a
+    deploy needs them. Main ahead of prod is read every time; ``rel``
+    (the open pass's cut release) adds its own scope
+    (:func:`_release_lands`) — the fixes on ``release/r<N>`` are not
+    on main, and that release's deploy waits on them. The
     advisory-locked dedupe keeps one reviewer per unit; the verdicts
     are dropped and a fail-closed line is a note, never the blocker."""
-    _verdicts, notes, fatal, _pin, _scanned = _engine_verdicts(
-        store, now=now, file_asks=True, dry_run=dry_run
-    )
-    res.notes.extend(notes)
-    if fatal is not None:
-        res.notes.append(fatal)
+    for scope in (None, rel) if rel is not None else (None,):
+        _verdicts, notes, fatal, _pin, _scanned = _engine_verdicts(
+            store, rel=scope, now=now, file_asks=True, dry_run=dry_run
+        )
+        res.notes.extend(notes)
+        if fatal is not None:
+            res.notes.append(fatal)
 
 
 def run_pass(
@@ -3116,7 +2656,13 @@ def run_pass(
         return res
     open_id = _open_pass_id(store)
     if open_id is not None:
-        _mint_reviewers_only(store, res, now=now, dry_run=dry_run)
+        _mint_reviewers_only(
+            store,
+            res,
+            now=now,
+            dry_run=dry_run,
+            rel=_release.release_of(store, open_id),
+        )
         try:
             note = _cut_hold_ask(store, open_id, now=now, dry_run=dry_run)
         except Exception:
@@ -3170,36 +2716,27 @@ def run_pass(
         if ahead <= 0:
             res.blocker = f"main is not ahead of prod ({status})"
             return res
-        # gr592271: the review gate no longer waits for the tip — the cut
-        # sha is the newest commit such that every engine land at-or-
-        # before it is cleared AND carries the corrective commits its
-        # clearance needs (td601005); a pending review past that point
-        # holds nothing. The compare's ``commits`` is the ordering —
-        # with the scan's own ordering standing in when the list comes
-        # back empty (td601285: an empty ordering cannot verify a
-        # corrective commit is carried, and an empty recorded ``upto``
-        # would leave ``release_cut`` nothing to validate).
-        commits = _commit_shas(cmp_) or scanned
-        cut, upto = _cut_below(verdicts or [], commits)
-        if cut is None and not uncleared and not commits:
-            # ahead > 0 with no ordering anywhere (the compare's list
-            # and the scan both empty): the pinned head is the only
-            # honest target — nothing can sit inside the window, so
-            # the empty ``upto`` loses nothing.
-            cut, upto = pin, []
-        if cut is None:
-            lines = [v.line for v in uncleared]
-            lines += [
-                ln
-                for v in verdicts or ()
-                if (ln := _requires_line(v, commits) or _off_window_line(v, commits))
-            ]
-            res.blocker = "; ".join(lines) or ("the engine gate cleared nothing to cut")
+        if cmp_.get("files") == []:
+            # release-train T3: a merge-back commit alone puts main ahead
+            # of prod with prod's own tree — a pass would cut, test,
+            # deploy and bounce an identical tree.
+            res.blocker = (
+                f"main's tree equals prod's ({ahead} commit(s) ahead, no file "
+                "differs — a merge-back alone): nothing to release"
+            )
             return res
+        # Release train (Reto 2026-11-12): the cut is the pinned tip and
+        # needs no reviews — a pending review holds this release's
+        # deploy (:func:`deploy_review_blockers`), never its cut. The
+        # compare's ``commits`` is the recorded window, the scan's own
+        # ordering standing in when the list comes back empty (td601285).
+        cut = str(pin)
+        upto = [c[: _release.LANDED_SHA_LEN] for c in _commit_shas(cmp_) or scanned]
         if uncleared:
             res.notes.append(
-                f"cut {cut[:9]}: {len(uncleared)} engine land(s) still "
-                f"pending past it ({', '.join(v.unit.land for v in uncleared)})"
+                f"cut {cut[:9]}: {len(uncleared)} engine land(s) await review "
+                f"— they hold the deploy, not the cut "
+                f"({', '.join(v.unit.land for v in uncleared)})"
             )
         flying = _in_flight(res.repo)
         if flying is not None:
@@ -3228,9 +2765,9 @@ def run_pass(
             log.warning("release_poll: mint failed", exc_info=True)
             res.blocker = f"mint failed: {type(exc).__name__}: {exc}"
             return res
-        # The recorded cut: ``release_cut`` gates on exactly the lands in
-        # ``upto`` — a newer land's open review does not hold the cut —
-        # and passes ``sha`` to ``scripts/release --sha`` (gr592271).
+        # The recorded cut: ``release_cut`` passes ``sha`` to
+        # ``scripts/release --sha`` (gr592271); ``upto`` is the window
+        # at-or-before it.
         store.stamp_ref_meta(
             int(mint.root_id),
             {"release_target": {"sha": cut, "upto": upto}},
@@ -3340,10 +2877,6 @@ def load() -> JobTypeSpec:
 
 
 __all__ = [
-    "CUT_FREEZE_AFTER_S",
-    "CUT_FREEZE_MAX_S",
-    "CUT_HOLD_TIP",
-    "LAND_FREEZE_KEY",
     "NAME",
     "PARAMS_SCHEMA",
     "REPO_CHECKOUT_RESOURCE",
@@ -3351,16 +2884,11 @@ __all__ = [
     "WINDOWS_SETTING",
     "PollResult",
     "branch_in_flight",
-    "clear_land_freeze",
-    "cleared_head",
     "conditional_requires",
-    "cut_freeze_after_s",
-    "cut_freeze_max_s",
+    "deploy_review_blockers",
     "engine_review_blockers",
     "in_window",
-    "land_freeze",
     "load",
     "parse_windows",
-    "review_hold",
     "run_pass",
 ]

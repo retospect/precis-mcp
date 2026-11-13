@@ -154,31 +154,26 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   gate failure or auto re-landing a ship that may already have merged
   (gr647914).
 
-**Release freeze** (gr651885). A re-cut only cuts a fully-reviewed
-origin/main, and r290 → r291 showed the factory landing faster than the
-reviews drain, so the re-cut never fired. Every ship launch — the first,
-each deferral relaunch, the FULL and deselect relaunches — first reads
-``release_poll.land_freeze``: while the open pass's re-cut has been held
-on the tip's reviews past ``release_poll.CUT_FREEZE_AFTER_S`` the freeze
-latches on the plan root and the land parks before ship
-(:func:`_park_frozen`) — no failure, no attempt, no deferral counter,
-one ``land frozen: release re-cut r<N> waits for the tip's reviews
-(since <ts>)`` event — and re-reads every :data:`FREEZE_RECHECK_S` until
-a cut lifts the latch (or it expires). The parked job leaves
-``STATUS:running`` for ``waiting_time`` (:func:`_release_slot`): every
-running ssh_node row counts toward the host's executor cap and the
-re-cut claims on the same host, so frozen lands holding slots could
-starve the very cut they wait for. The choke point is the
-launch, not ``validate_submit``: lands are minted on four paths
-(``run_slice``'s mint, the reviewer's LAND verdict, the re-land tick, a
-pr-intake node) and only the launch is common to all of them, and a job
-already minted would otherwise still ship. The check comes before the
-land flock, so a parked land never holds the lock or stamps it. Reviews
-never pass here; exempt are the pass's own plan (its fix loop) and any
-land the hold waits on — a todo a hold line names, or a FIX/REVERT
-verdict's corrective (a reviewer's ``review.task``), the land that
-unblocks the cut. An unreadable freeze lets the land go on. A hand
-``scripts/ship`` is untouched.
+**Release fixes land on the release branch** (release-train T1,
+``docs/backlog/release-train.md``). A slice todo whose
+``meta.land_target`` (or a ``land target: release/r<N>`` brief line,
+:func:`land_target` → :func:`precis.plans.release.land_target_of`)
+names a release branch lands with ``scripts/ship --quick --onto
+release/r<N>``: ship applies the branch's change onto
+``origin/release/r<N>`` and pushes that branch only — main never moves
+(it gets the fix when the release merges back after its deploy, T3).
+The target is read from the todo on every launch, not from the job
+params, so each land mint path agrees. Such a land skips the spot
+selection and main's drift preflight (ship's release lane does the
+same), reads its squash subject and the already-landed proof against
+``origin/release/r<N>``, and takes its sha from ship's ``shipped —
+landed on release/r<N>:`` line. Before every such launch the land
+reads the plan's release through :func:`_release_closed`: a deploy
+already started or pinned (``precis.plans.release.deploy_started`` —
+the deploy owner's own records; ship's round lock is only this host's
+checkout), or a plan whose release is another branch, refuses
+attempt-free with ``land_again_cap`` — nothing pushed, the coordinator
+asked. A slice with no target lands on main exactly as before.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
 plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
@@ -256,6 +251,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
+from precis.plans import release as _release
 from precis.plans.logbook import log_plan_event
 from precis.plans.templates import PENDING_LAND_KEY, PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
@@ -283,11 +279,17 @@ _HANDLE = r"(?:gr|td)\d+"
 _HANDLES_RE = re.compile(rf"\(({_HANDLE}(?:[,\s]+{_HANDLE})*)\)\s*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_RE = re.compile(r"SHIP_STATUS:\s*(\S+)")
-_LANDED_MARK = "shipped — landed on main:"
+#: Ship's ``shipped — landed on main:`` report line, or the release
+#: branch a release fix lands on (``scripts/ship --onto``, release-train T1).
+_LANDED_RE = re.compile(r"shipped — landed on (?:main|release/r\d+):")
 #: Ship's nothing-new guard: the branch's tree equals origin/main's, so no
 #: squash commit was made (the ``landed on main:`` line that follows names
 #: main's existing head, not the slice's work — gr561142).
 _NOTHING_NEW_MARK = "nothing new to ship — tree identical to origin/main"
+#: ``--onto``'s twin: the release head already carries the change.
+_NOTHING_NEW_ONTO_RE = re.compile(
+    r"nothing new to ship — origin/release/r\d+ already carries this change"
+)
 #: The ``landed:`` comment of a slice that landed no commit.
 NO_DIFF_NOTE = (
     "landed: nothing — branch had no net diff against origin/main (already on main)"
@@ -445,6 +447,10 @@ MAIN_REFUSAL_MARKS: tuple[str, ...] = (
 #: main refusal (gr552214): nothing on the branch caused it, and a builder
 #: cannot change it.
 HOST_REFUSAL_MARKS: tuple[str, ...] = (
+    # release-train T3 review F4: ``ship --onto``'s round lock is
+    # non-blocking — a second near-simultaneous release-fix land dies on
+    # it with nothing pushed. A wait on a sibling, not a red: defer.
+    "release lifecycle busy",
     "docker VM disk has",
     "disk probe failed:",
     # The docker CLI itself is broken for the lander's user (no compose
@@ -489,11 +495,6 @@ MAX_GATE_KILL_RETRIES = 2
 GATE_KILL_BACKOFF_S = 120
 #: The cause a gate-kill deferral or blocked handoff names on the job.
 GATE_KILL_CROSS = "gate killed (exit 137, VM memory) - infrastructure, not the branch"
-#: Seconds between a frozen land's re-reads of the freeze (gr651885:
-#: ``release_poll.land_freeze``) — ship runs about one of them after the
-#: latch lifts. Each recheck is a wake re-queue plus a re-adopt, two
-#: runner event lines, so it is not tighter.
-FREEZE_RECHECK_S = 120
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 #: The flock file in the worktree's gitdir. One land holds it for the
@@ -842,15 +843,25 @@ def _node_subject(store: Any, todo_id: int) -> str | None:
     return None
 
 
-def _branch_subjects(tree: Path) -> list[str] | None:
-    """The branch's own commit subjects, oldest first. Merge commits are
+def _branch_subjects(tree: Path, onto: str | None = None) -> list[str] | None:
+    """The branch's own commit subjects, oldest first — ahead of
+    ``origin/main``, or of ``origin/<onto>`` for a release fix (its tree
+    is cut from the release, whose own fixes are not the slice's).
+    Merge commits are
     skipped (gr627889): the land squashes the branch, so a builder's
     ``Merge origin/main into slice/...`` resolving a collision is not a
     candidate squash subject (it failed ship's ``type(scope):`` lint three
     times a chain); ``scripts/ship`` resolves its own message the same way
     (``--no-merges``)."""
     proc = _git(
-        ["log", "--reverse", "--no-merges", "--format=%s", "origin/main..HEAD"], tree
+        [
+            "log",
+            "--reverse",
+            "--no-merges",
+            "--format=%s",
+            f"origin/{onto or 'main'}..HEAD",
+        ],
+        tree,
     )
     if proc.returncode != 0:
         return None
@@ -1116,9 +1127,13 @@ def refusal_side(cross: str | None) -> str | None:
 
 
 def nothing_new(log_text: str) -> bool:
-    """True when ship took its nothing-new guard (:data:`_NOTHING_NEW_MARK`):
-    a green exit that squashed nothing, so no sha is the slice's."""
-    return any(_NOTHING_NEW_MARK in line for line in _lines(log_text))
+    """True when ship took its nothing-new guard (:data:`_NOTHING_NEW_MARK`,
+    or ``--onto``'s :data:`_NOTHING_NEW_ONTO_RE`): a green exit that
+    squashed nothing, so no sha is the slice's."""
+    return any(
+        _NOTHING_NEW_MARK in line or _NOTHING_NEW_ONTO_RE.search(line)
+        for line in _lines(log_text)
+    )
 
 
 #: Lines ship's ``gate_slot_acquire`` prints while it queues (the lib's
@@ -1241,21 +1256,23 @@ def infra_red(log_text: str, exit_code: int | None) -> str | None:
 
 
 def landed_short(log_text: str) -> str | None:
-    """The sha on the line after ship's ``shipped — landed on main:``."""
+    """The sha on the line after ship's ``shipped — landed on main:`` (or
+    ``… on release/r<N>:``, :data:`_LANDED_RE`)."""
     lines = _lines(log_text)
     for i in range(len(lines) - 1, -1, -1):
-        if _LANDED_MARK in lines[i] and i + 1 < len(lines):
+        if _LANDED_RE.search(lines[i]) and i + 1 < len(lines):
             token = (lines[i + 1].split() or [""])[0]
             if re.fullmatch(r"[0-9a-f]{7,40}", token):
                 return token
     return None
 
 
-def _landed_sha(log_text: str, tree: Path) -> str | None:
+def _landed_sha(log_text: str, tree: Path, onto: str | None = None) -> str | None:
     """The full landed sha: ship's report line resolved in ``tree``, else
-    ``origin/main``."""
+    the land target's tip (``origin/main``, or ``origin/<onto>``)."""
     short = landed_short(log_text)
-    for rev in ([f"{short}^{{commit}}"] if short else []) + ["origin/main"]:
+    tip = f"origin/{onto or 'main'}"
+    for rev in ([f"{short}^{{commit}}"] if short else []) + [tip]:
         proc = _git(["rev-parse", "--verify", "--quiet", rev], tree)
         sha = proc.stdout.strip()
         if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -1603,6 +1620,57 @@ def _pr_worktree(
     return tree, ""
 
 
+def land_target(store: Any, params: dict[str, Any], todo_id: int) -> str | None:
+    """The release branch this land targets (release-train T1), else
+    ``None`` for main: the slice todo's ``meta.land_target`` or a ``land
+    target: release/r<N>`` line in its brief
+    (:func:`precis.plans.release.land_target_of`). Read from the todo,
+    not the job params, so every land mint path — run_slice's, the
+    reviewer's LAND verdict, the re-land tick — lands the same place. A
+    pull-request land is never a release fix."""
+    if store is None or _pr_param(params) is not None:
+        return None
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if ref is None:
+        return None
+    body, latest = _rs._brief_parts(store, todo_id)
+    return _release.land_target_of(ref.meta, body, latest)
+
+
+def _release_closed(store: Any, todo_id: int, onto: str) -> str | None:
+    """Why ``onto`` takes no more fixes, else ``None`` (release-train T1
+    review): the plan's release has started or pinned its deploy
+    (:func:`precis.plans.release.deploy_started` — the deploy owner's own
+    records, read through the plan, since ship's round lock is this
+    host's checkout), or the plan's release is not ``onto``. A todo in no
+    release plan is not checked; an unreadable record fails closed."""
+    try:
+        rel = _release.release_of(store, todo_id)
+        if rel is None:
+            return None
+        want = _release.release_branch(str(rel["rN"]))
+        if want != onto:
+            return f"the plan's release is {want}, not {onto}"
+        return _release.deploy_started(store, todo_id)
+    except Exception as exc:
+        log.warning("land_slice: release state for td%d unreadable", todo_id)
+        return f"the release's deploy state is unreadable ({type(exc).__name__})"
+
+
+def _fetch_onto(tree: Path, onto: str) -> None:
+    """Refresh ``origin/<onto>`` in ``tree`` (best-effort: the subject and
+    already-landed reads fall back to their failure paths on a miss)."""
+    _git(
+        [
+            "fetch",
+            "--quiet",
+            "origin",
+            f"+refs/heads/{onto}:refs/remotes/origin/{onto}",
+        ],
+        tree,
+    )
+
+
 def _pr_to_close(store: Any, params: dict[str, Any], todo_id: int) -> int | None:
     """The PR a green land closes: ``params.pr``, else the todo's
     ``meta.pr_close`` (the 'land after fixes' slice)."""
@@ -1749,7 +1817,11 @@ def submit(ctx: Any, spec: Any) -> Any:
             return _adopt_ship(ctx, tree, int(todo_id), busy)
         _land_busy(ctx, int(todo_id), lane, busy["why"])
         return None
-    subjects = _branch_subjects(tree)
+    onto = land_target(ctx.store, params, todo_id)
+    if onto is not None:
+        _fetch_onto(tree, onto)
+        ctx.set_meta(land_target=onto)
+    subjects = _branch_subjects(tree, onto)
     subject = squash_subject(
         subjects or [], todo_id, node=_node_subject(ctx.store, todo_id)
     )
@@ -1764,7 +1836,9 @@ def submit(ctx: Any, spec: Any) -> Any:
     # no stamp is a pre-E1 one the release gate reads as non-engine. A
     # diff git cannot read stamps ``<unreadable>`` (fail closed) and is
     # refused below, before the deny check it cannot feed.
-    paths = _rs.changed_paths(tree)
+    # A release fix's changes are read against its release branch: the
+    # release's earlier fixes are not this slice's (T1 review).
+    paths = _rs.changed_paths(tree, f"origin/{onto or 'main'}")
     hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
     ctx.set_meta(engine_paths=hits[:50])
     if paths is None:
@@ -1833,20 +1907,24 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     # gr599427: --checked earns its gate only when the selector's answer
     # is a spot selection; the stamp rides the job so a flagless handle's
-    # default (:func:`_planned_flag`) agrees.
-    spot = spot_selection(tree) if hits or params.get("checked") is True else False
+    # default (:func:`_planned_flag`) agrees. A release fix (``onto``)
+    # lands lint-only: ship's release lane refuses --checked, and the
+    # release push's own check.yml run is its gate.
+    wants_spot = onto is None and (bool(hits) or params.get("checked") is True)
+    spot = spot_selection(tree) if wants_spot else False
     ctx.set_meta(spot_selection=spot)
-    flag = ship_flag(params, engine=bool(hits), spot=spot)
+    flag = "--quick" if onto else ship_flag(params, engine=bool(hits), spot=spot)
     handle = _launch_ship(ctx, tree, flag, subject)
     if handle is None:
         return None
     ctx.set_meta(land_subject=subject)
     if handle.get("not_before"):
         return handle  # parked before launch; the deferral event says why
+    target = f" --onto {onto}" if onto else ""
     ctx.append_chunk(
         "job_event",
-        f"land_slice: scripts/ship {flag} {subject!r} pid {handle['pid']} in {tree} "
-        f"(gate_n={test_nproc()}, slots={land_gate_slots()})",
+        f"land_slice: scripts/ship {flag}{target} {subject!r} pid {handle['pid']} "
+        f"in {tree} (gate_n={test_nproc()}, slots={land_gate_slots()})",
     )
     return handle
 
@@ -2382,9 +2460,13 @@ def _clear_index_locks(
     return True
 
 
-def _already_landed(tree: Path, subject: str) -> tuple[bool, str | None]:
+def _already_landed(
+    tree: Path, subject: str, onto: str | None = None
+) -> tuple[bool, str | None]:
     """``(True, sha|None)`` when the slice's work already sits on
-    ``origin/main``: the branch's tree identical to main's tip (ship's
+    ``origin/main`` — or on ``origin/<onto>``, the release branch a
+    release fix lands on (release-train T1; read the same way against
+    that ref): the branch's tree identical to main's tip (ship's
     own nothing-new verdict — the sha is another land's, none returned;
     gr561142), or a commit on origin/main already carrying this land's
     squash subject AND its content — a ship that landed but died before
@@ -2397,11 +2479,13 @@ def _already_landed(tree: Path, subject: str) -> tuple[bool, str | None]:
     whenever git cannot answer: this is a fast path, never a gate; on
     doubt ship still runs and its own nothing-new guard is the
     arbiter."""
-    if _git(["fetch", "--quiet", "origin", "main"], tree).returncode != 0:
+    ref = f"origin/{onto or 'main'}"
+    spec = f"+refs/heads/{onto}:refs/remotes/{ref}" if onto else "main"
+    if _git(["fetch", "--quiet", "origin", spec], tree).returncode != 0:
         return False, None
-    if _git(["diff", "--quiet", "origin/main", "HEAD"], tree).returncode == 0:
+    if _git(["diff", "--quiet", ref, "HEAD"], tree).returncode == 0:
         return True, None
-    base = _git(["merge-base", "origin/main", "HEAD"], tree)
+    base = _git(["merge-base", ref, "HEAD"], tree)
     merge_base = (base.stdout or "").strip()
     if base.returncode != 0 or not merge_base:
         return False, None
@@ -2414,7 +2498,7 @@ def _already_landed(tree: Path, subject: str) -> tuple[bool, str | None]:
             "log",
             f"--max-count={ALREADY_LANDED_WINDOW}",
             "--format=%H%x00%s",
-            "origin/main",
+            ref,
         ],
         tree,
     )
@@ -2426,12 +2510,7 @@ def _already_landed(tree: Path, subject: str) -> tuple[bool, str | None]:
             continue
         # A same-subject commit on main is this land's only when the
         # slice's own changed paths are already identical there.
-        if (
-            _git(
-                ["diff", "--quiet", "origin/main", "HEAD", "--", *paths], tree
-            ).returncode
-            == 0
-        ):
+        if _git(["diff", "--quiet", ref, "HEAD", "--", *paths], tree).returncode == 0:
             return True, sha.strip()
         return False, None
     return False, None
@@ -2490,9 +2569,7 @@ def _launch_ship(
     :func:`poll` then drives its exit file like a relaunch's. ``None`` after
     driving the job terminal: the launch itself failed, a foreign or
     orphaned holder owns the worktree (retryable), the branch's work is
-    already on origin/main, or an ``index.lock`` never freed. A land the
-    release freeze holds parks first (:func:`_park_frozen`), before the
-    land lock: a parked land never holds the flock or writes its stamp."""
+    already on origin/main, or an ``index.lock`` never freed."""
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = params.get("lane")
@@ -2504,11 +2581,30 @@ def _launch_ship(
     scratch = tree / "scratch"
     log_path = scratch / "land_slice.log"
     exit_path = scratch / "land_slice.exit"
-    # gr651885 — the release freeze comes before the land lock: a parked
-    # land must not hold the flock (or stamp it) through its wait.
-    frozen = _land_freeze(ctx.store, todo_id)
-    if frozen is not None:
-        return _park_frozen(ctx, tree, flag, subject, frozen, carry=carry)
+    # release-train T1: a release fix lands onto its release branch —
+    # read from the todo on every launch, so a relaunch lands the same
+    # place the first launch did.
+    onto = land_target(ctx.store, params, todo_id)
+    if onto is not None:
+        closed = _release_closed(ctx.store, todo_id, onto)
+        if closed is not None:
+            # ship's own round lock is this host's checkout, not the deploy
+            # owner's: the plan's record is the deploy's view (T1 review).
+            ctx.set_meta(land_again_cap=True)
+            _fail(
+                ctx,
+                todo_id,
+                lane,
+                f"{onto} takes no more fixes: {closed}",
+                handoff=(
+                    f"land REFUSED: {closed}, so a fix landing on {onto} now "
+                    "would not ship with it. Nothing was pushed; the branch "
+                    "stays. A coordinator call: land it on main, or onto the "
+                    "next release once it is cut."
+                ),
+                attempt_free="release-deployed",
+            )
+            return None
     # gr650484 — serialize ships before anything else touches the tree.
     # Our flock comes first because its stamp carries the slice's
     # identity: held by a live pid behind our own stamp means this
@@ -2562,15 +2658,16 @@ def _launch_ship(
                     f"lockdir names live pid {holder})",
                 )
                 return None
-            landed, landed_sha = _already_landed(tree, subject)
+            landed, landed_sha = _already_landed(tree, subject, onto)
             if landed:
+                where = onto or "main"
                 ctx.append_chunk(
                     "job_event",
-                    "land_slice: the slice's work is already on origin/main"
+                    f"land_slice: the slice's work is already on origin/{where}"
                     + (
                         f" (sha {landed_sha[:9]})"
                         if landed_sha
-                        else " (branch tree identical to main's)"
+                        else f" (branch tree identical to {where}'s)"
                     )
                     + " — no scripts/ship run",
                 )
@@ -2591,7 +2688,13 @@ def _launch_ship(
                 "job_event",
                 "land_slice: evicted idle slice stacks: " + ", ".join(evicted),
             )
-        pre = _drift_preflight(tree)
+        # A release fix skips main's drift probe: ship's release lane
+        # skips its drift guard too — the release push runs its own CI.
+        pre: dict[str, Any] = (
+            {"ran": False, "rc": None, "age": "", "diag": ""}
+            if onto
+            else _drift_preflight(tree)
+        )
         if _gate_unknown(pre):
             # Fail closed: the lander's identity cannot see main's gate, so do not
             # let ship's "unknown never refuses" carry an unattended land. Park
@@ -2643,7 +2746,7 @@ def _launch_ship(
             scratch.mkdir(parents=True, exist_ok=True)
             exit_path.unlink(missing_ok=True)
             pid = _launch(
-                [ship_bin(tree), flag, subject],
+                [ship_bin(tree), flag, *(("--onto", onto) if onto else ()), subject],
                 cwd=tree,
                 log=log_path,
                 exit_file=exit_path,
@@ -2732,96 +2835,6 @@ def _launch_ship(
                 os.close(fd)
             except OSError:
                 pass
-
-
-def _land_freeze(store: Any, todo_id: int) -> str | None:
-    """:func:`precis.workers.job_types.release_poll.land_freeze` for this
-    land on the :func:`_now` clock. An unreadable freeze lets the land go
-    on: the freeze only paces lands, it never guards one."""
-    from precis.workers.job_types import release_poll as _rp
-
-    if store is None:
-        return None
-    try:
-        return _rp.land_freeze(store, todo_id=todo_id or None, now=_now())
-    except Exception:
-        log.warning(
-            "land_slice: land-freeze read for td%d failed", todo_id, exc_info=True
-        )
-        return None
-
-
-def _release_slot(ctx: Any, due: datetime, why: str) -> None:
-    """Give the job's ssh_node slot back while it is frozen (gr651885):
-    ``STATUS:waiting_time`` until ``due`` with its reservation refunded —
-    :func:`precis.workers.executors._common.park_job_until`'s write minus
-    its six-park cap (the freeze has its own valve,
-    ``release_poll.CUT_FREEZE_MAX_S``). A parked-but-running land counts
-    toward the host's executor cap like any running job, and the re-cut
-    it waits for claims a slot on the same host — enough frozen lands
-    would starve the cut. The wake_runner's ``at_time`` selector
-    re-queues the row at ``due``; the claim re-adopts its parked
-    ``compute_handle`` (no attempt bump) and the next poll re-reads the
-    freeze through :func:`_relaunch_when_due`."""
-    from precis.workers.executors import _common as _ex
-
-    store, ref_id = ctx.store, getattr(ctx, "ref_id", None)
-    if store is None or not isinstance(ref_id, int):
-        return
-    with store.pool.connection() as conn:
-        _ex.set_meta(
-            conn,
-            ref_id,
-            wake_when={
-                "kind": "at_time",
-                "payload": {"ts": int(due.timestamp()), "why": why[:200]},
-            },
-        )
-        _ex.release_job_reservation(conn, ref_id)
-        _ex.set_status(store, ref_id, _ex.WAITING_TIME, conn=conn)
-        conn.commit()
-
-
-def _park_frozen(
-    ctx: Any,
-    tree: Path,
-    flag: str,
-    subject: str,
-    reason: str,
-    *,
-    carry: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Park a land the release freeze holds (gr651885): a wait, not a
-    refusal — no counter moves, no attempt is spent, the todo is
-    untouched, and the ssh_node slot is released (:func:`_release_slot`)
-    so the frozen lands can never starve the cut they wait for. The
-    parked handle re-reads the freeze every :data:`FREEZE_RECHECK_S`
-    through :func:`_relaunch_when_due`, so ship runs within about one
-    recheck of the latch lifting. ``reason`` is one job event per freeze
-    (``handle.frozen`` holds it across the rechecks); parked time does
-    not eat the wall deadline."""
-    due = _now() + timedelta(seconds=FREEZE_RECHECK_S)
-    parked: dict[str, Any] = {
-        "worktree": str(tree),
-        "log": str(tree / "scratch" / "land_slice.log"),
-        "exit_file": str(tree / "scratch" / "land_slice.exit"),
-        "subject": subject,
-        "flag": flag,
-        "frozen": reason,
-        "not_before": due.strftime(_TS_FMT),
-    }
-    for key in ("main_refusals", "last_refusal", "gate_kills", "fell_back_full"):
-        if carry is not None and key in carry:
-            parked[key] = carry[key]
-    if (carry or {}).get("frozen") != reason:
-        ctx.append_chunk("job_event", f"land_slice: {reason}")
-    deadline = due.timestamp() + wall_seconds()
-    parked["deadline"] = deadline
-    ctx.set_meta(
-        compute_handle=parked, compute_handle_released=False, deadline=deadline
-    )
-    _release_slot(ctx, due, reason)
-    return parked
 
 
 #: Seconds the drift preflight may take before it counts as unanswered.
@@ -3803,11 +3816,12 @@ def poll(ctx: Any, handle: Any) -> bool:
     # main's existing head on its ``landed on main:`` line. That sha is
     # another land's; it must not reach the todo, the gate or the logbook.
     no_diff = no_land or nothing_new(log_text)
-    sha = None if no_diff else _landed_sha(log_text, tree)
+    onto = None if no_diff else land_target(ctx.store, params, todo_id)
+    sha = None if no_diff else _landed_sha(log_text, tree, onto)
     if sha is None and not no_diff:
         ctx.record_failure(
             f"land_slice: ship of td{todo_id} exited 0 but no landed sha could "
-            f"be read (log {handle.get('log')}); check git log origin/main"
+            f"be read (log {handle.get('log')}); check git log origin/{onto or 'main'}"
         )
         return True
     return _landed_finish(
@@ -4105,6 +4119,7 @@ __all__ = [
     "is_host_refusal",
     "is_main_refusal",
     "kill",
+    "land_target",
     "landed_short",
     "outside_diff_ids",
     "pending_gate",

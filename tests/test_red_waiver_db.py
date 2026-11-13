@@ -328,8 +328,8 @@ def test_grant_files_the_gripe_records_waived_and_closes_the_iteration(
     assert f"WAIVED by gr{gid}" in ctx.chunks[-1][1]
     assert ctx.stamped["red_waiver"]["gripe"] == gid
     assert len(git_stub["fetch_env"]) == 1  # the range read got the git env
-    # fix, recut and poll are closed with the waiver note; no re-cut runs
-    for key in ("fix", "recut", "poll"):
+    # fix, restamp and poll are closed with the waiver note; no fix session runs
+    for key in ("fix", "restamp", "poll"):
         assert _status(store, it.ids[key]) == "done", key
         assert any(
             c.startswith(f"waived: gr{gid}") for c in _comments(store, it.ids[key])
@@ -369,7 +369,7 @@ def test_refusal_leaves_the_loop_untouched_and_names_the_reason(
     assert any("REFUSED" in s and "scripts/lib/ci_run.py" in s for s in steps)
     assert _waiver_gripes(store, "r7") == []
     assert R.newest_red_run(store, SHA) == RUN  # still red
-    for key in ("fix", "recut", "poll"):
+    for key in ("fix", "restamp", "poll"):
         assert _status(store, it.ids[key]) == "open"
     assert not gates.evaluate(
         store, _meta_of_gate(store, mint), todo_id=mint.ids["gate"]
@@ -421,7 +421,7 @@ def _refused(store: Store, it: T.PlanMint, log: str = DIGEST) -> list[str]:
     assert not granted and ctx.status is None
     assert _waiver_gripes(store, "r7") == []
     assert R.newest_red_run(store, SHA) == RUN  # the red verdict is untouched
-    for key in ("fix", "recut", "poll"):
+    for key in ("fix", "restamp", "poll"):
         assert _status(store, it.ids[key]) == "open"
     return steps
 
@@ -513,7 +513,7 @@ def test_an_in_progress_run_parks_the_digest_then_grants_when_it_completes(
     assert any("park 1/" in text for kind, text in ctx.chunks if kind == "job_event")
     assert _waiver_gripes(store, "r7") == []
     assert R.newest_red_run(store, SHA) == RUN
-    for key in ("fix", "recut", "poll"):
+    for key in ("fix", "restamp", "poll"):
         assert _status(store, it.ids[key]) == "open"
     # the run completes; the re-digest (handle carries its park count) grants
     git_stub["state"] = RUN_STATE
@@ -607,7 +607,7 @@ def test_unrecorded_verdict_fails_the_job_but_keeps_one_gripe(
 def test_iteration_nodes_are_the_digest_dependents_only(store: Store) -> None:
     mint, it = _iteration(store)
     nodes = W.iteration_nodes(store, it.ids["digest"])
-    assert nodes == sorted([it.ids["fix"], it.ids["recut"], it.ids["poll"]])
+    assert nodes == sorted([it.ids["fix"], it.ids["restamp"], it.ids["poll"]])
     assert mint.ids["gate"] not in nodes and mint.ids["loop"] not in nodes
 
 

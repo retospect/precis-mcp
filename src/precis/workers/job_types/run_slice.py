@@ -1303,8 +1303,10 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
         "You are read-only: run no tests, no typecheck, no lint and no "
         "`uv` or `scripts/test` command — read the diff the Review target "
         "section names (a `git show <sha>` squash after land, a "
-        "`git diff origin/main...origin/slice/<id>` branch before it) and "
-        "the files. End your verdict line with "
+        "`git diff <base>...origin/slice/<id>` branch before it, `<base>` "
+        "being `origin/main` or, for a release fix whose todo names a "
+        "`land target: release/r<N>`, `origin/release/r<N>`) and the files. "
+        "End your verdict line with "
         f"`{REVIEW_READONLY_MARKER}`.",
         "",
         "The rest of your final message: what you checked, in a line or two.",
@@ -1385,6 +1387,24 @@ def _followups_on_main(root: Path, landed: str) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line.strip()][:10]
 
 
+def _fetch_review_branch(branch: str) -> None:
+    """Best-effort fetch of ``origin/<branch>`` into the slice checkout,
+    so a reviewer's ``git show`` of a release-branch squash resolves
+    (release-train T3 review F3)."""
+    try:
+        _git(
+            [
+                "fetch",
+                "-q",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ],
+            slice_root(),
+        )
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _review_target(store: Any, meta: Any) -> str | None:
     """What a reviewer judges, inlined so a lane without the precis MCP can
     review (td564019 cut 1): the reviewed todo's title, its newest
@@ -1413,14 +1433,27 @@ def _review_target(store: Any, meta: Any) -> str | None:
             landed = hit.group(1)
             break
     body, latest = _brief_parts(store, target_id)
+    # release-train T3 review F3: a release fix's squash is on its release
+    # branch, not main — fetched here (the reviewer's worktree shares
+    # the checkout's objects and refs) and named in the brief.
+    onto = _release.land_target_of(ref.meta, body, latest)
+    ref_name = f"origin/{onto}" if onto else "origin/main"
     lines = [f"td{target_id}: {str(ref.title or '').strip()}", ""]
     if landed:
-        lines.append(
-            f"Landed squash: `{landed}` — read it with `git show {landed}` in "
-            "this worktree (it is on origin/main)."
-        )
+        if onto:
+            _fetch_review_branch(onto)
+            lines.append(
+                f"Landed squash: `{landed}` — it is on {ref_name}, not main: "
+                f"run `git fetch -q origin {onto}`, then read it with "
+                f"`git show {landed}` in this worktree."
+            )
+        else:
+            lines.append(
+                f"Landed squash: `{landed}` — read it with `git show {landed}` "
+                "in this worktree (it is on origin/main)."
+            )
         try:
-            followups = _followups_on_main(slice_root(), landed)
+            followups = [] if onto else _followups_on_main(slice_root(), landed)
         except RuntimeError:
             followups = []
         if followups:
@@ -1517,6 +1550,21 @@ _PRELAND_STEPS: tuple[str, ...] = (
 
 _LAND_LINT_STEPS: tuple[str, ...] = _SHIP_LINT_STEPS + _PRELAND_STEPS
 
+
+def _land_lint_steps(base: str = "main") -> tuple[str, ...]:
+    """:data:`_LAND_LINT_STEPS` for a slice cut from ``origin/<base>``:
+    a release fix (release-train T1) runs the migration squawk and the
+    merge dry run against its release branch, the ref it lands on."""
+    if base == "main":
+        return _LAND_LINT_STEPS
+    return _SHIP_LINT_STEPS + tuple(
+        step.replace("git fetch -q origin main", f"git fetch -q origin {base}").replace(
+            "origin/main", f"origin/{base}"
+        )
+        for step in _PRELAND_STEPS
+    )
+
+
 #: A brief whose body names a package's ``migrations/`` dir gets the
 #: squawk-rule paragraph appended (gr570072): the builder lane cannot
 #: read the skills or ``scripts/ship`` to learn the rules, so they ride
@@ -1542,8 +1590,11 @@ def render_brief(
     lane_models: tuple[str, ...] = (),
     target: str | None = None,
     adapter: str | None = None,
+    base: str = "main",
 ) -> str:
-    """The prompt a slice session starts from. Ends with the commit-and-
+    """The prompt a slice session starts from. ``base`` is the branch the
+    worktree is cut from (``main``, or a release fix's ``release/r<N>``).
+    Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
     plan tick closes it), and a generator whose ``role`` is in ``_ROLE_CLOSE``
@@ -1563,7 +1614,7 @@ def render_brief(
         f"You are a headless build session on lane `{lane}` "
         f"(model `{model or 'account default'}`, "
         f"effort `{effort}`), in git worktree `{name}` on branch "
-        f"`{slice_branch(todo_id)}`, cut from `origin/main`. You get one "
+        f"`{slice_branch(todo_id)}`, cut from `origin/{base}`. You get one "
         "turn: when your turn ends the session ends and any subagents "
         "still running are killed with it — never start a background "
         "subagent and wait for it; do your research in the foreground, "
@@ -1684,7 +1735,7 @@ def render_brief(
             "output `validated: <why>` when the requested check passed, "
             "`no-op: <why>` when the plan should continue without a change, "
             "or `moot: gr<N> already fixed by <sha>` when its reason is gone. "
-            "The SHA must name the fixing commit on origin/main; a bare "
+            f"The SHA must name the fixing commit on origin/{base}; a bare "
             "moot is refused for code builds. Supplied test files alone "
             "must not hide that verdict in a worker commit. A silent exit "
             "with no changes is a failed attempt. "
@@ -1695,12 +1746,12 @@ def render_brief(
             "Land lint steps (the last two inspect committed work and belong "
             "to the lander after the worker commit; run the earlier checks "
             "before handoff when available):",
-            *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
+            *[f"{i}. `{step}`" for i, step in enumerate(_land_lint_steps(base), 1)],
             "",
             "For skill changes also run `scripts/test tests/test_skill_ingest.py`: "
             "a skill H2 section must not exceed 4000 chars. Leave a colliding "
             "new migration number as minted. The land renumbers a migration "
-            "you added to origin/main's next free number (filename and its "
+            f"you added to origin/{base}'s next free number (filename and its "
             "own header); never renumber or edit an already-landed migration.",
             "",
             "Your final message is posted on the todo as the `handoff:` comment "
@@ -1708,7 +1759,7 @@ def render_brief(
             "what you would do next.",
         ]
         return "\n".join(lines) + "\n"
-    n = len(_LAND_LINT_STEPS)
+    n = len(_land_lint_steps(base))
     lines += [
         "",
         "## When done: commit on the branch and hand off",
@@ -1717,7 +1768,7 @@ def render_brief(
         "order, and a red reopens this todo (td565331 came back for six "
         "missing test annotations). Run each before you hand off:",
         "",
-        *[f"{i}. `{step}`" for i, step in enumerate(_LAND_LINT_STEPS, 1)],
+        *[f"{i}. `{step}`" for i, step in enumerate(_land_lint_steps(base), 1)],
         f"{n + 1}. Run the tests you added or changed with `scripts/test "
         "<paths>` — a bare `pytest`/`uv run pytest` with no file, or on "
         "`tests/`, is refused on this lane (gr626270); host-side pytest "
@@ -1726,13 +1777,13 @@ def render_brief(
         "`tests/test_skill_ingest.py`: the land's lint fails a skill whose "
         "H2 section runs past 4000 chars (gr610185: three builds cycled "
         "land → red on that cap alone). The last two steps read committed "
-        "work only (`git diff origin/main...`, `git merge-tree`): commit "
+        f"work only (`git diff origin/{base}...`, `git merge-tree`): commit "
         "first (amend after any fix). A `merge-tree` exit 1 lists the paths "
-        "that conflict with `origin/main` — merge or rebase `origin/main`, "
+        f"that conflict with `origin/{base}` — merge or rebase `origin/{base}`, "
         "resolve them, re-run the lint, before you hand off. A migration "
         "number a sibling slice took first is NOT a conflict to fix by hand "
         "(gr627889): leave your file as minted. The land renumbers a "
-        "migration you added to `origin/main`'s next free number (file name "
+        f"migration you added to `origin/{base}`'s next free number (file name "
         "and its own `-- NNNN_name.sql` header) and refuses only an edited, "
         "duplicated or already-landed one; a merge commit on the branch is "
         "fine too, the land squashes it away.",
@@ -1765,7 +1816,7 @@ def render_brief(
         "message: `validated: <why>` when the check you were asked for passed, "
         "`no-op: <why>` when there is nothing to change and the plan should go "
         "on, `moot: gr<N> already fixed by <sha>` when the plan's reason is "
-        "gone — `<sha>` the commit on origin/main that fixed it, whose own "
+        f"gone — `<sha>` the commit on origin/{base} that fixed it, whose own "
         "message names the gripe; a bare `moot: <why>` is not accepted for a "
         "code build (it goes to rescue). The todo then closes done. Any other "
         "commit-less exit counts as a failed attempt and is retried.",
@@ -1989,9 +2040,11 @@ def _reset_reused_worktree(tree: Path, branch: str) -> None:
     _git(["worktree", "prune"], tree)
 
 
-def _ensure_worktree(root: Path, todo_id: int) -> Path:
+def _ensure_worktree(root: Path, todo_id: int, base: str = "main") -> Path:
     """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
-    ``slice/<id>``, cut from ``origin/main``. A retry reuses an existing
+    ``slice/<id>``, cut from ``origin/<base>`` — ``main``, or the
+    ``release/r<N>`` a release fix lands on (``meta.land_target``,
+    release-train T1). A retry reuses an existing
     tree and branch (the branch stays owned by its slice until it lands or
     is abandoned) — reset to a clean checkout of the branch tip first
     (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
@@ -2002,10 +2055,11 @@ def _ensure_worktree(root: Path, todo_id: int) -> Path:
     if tree.exists():
         _reset_reused_worktree(tree, branch)
         return tree
-    fetch = _git(["fetch", "origin", "main"], root)
+    extra = [] if base == "main" else [f"+refs/heads/{base}:refs/remotes/origin/{base}"]
+    fetch = _git(["fetch", "origin", "main", *extra], root)
     if fetch.returncode != 0:
-        raise RuntimeError(f"git fetch origin main failed: {fetch.stderr.strip()}")
-    add = _git(["worktree", "add", "-b", branch, str(tree), "origin/main"], root)
+        raise RuntimeError(f"git fetch origin {base} failed: {fetch.stderr.strip()}")
+    add = _git(["worktree", "add", "-b", branch, str(tree), f"origin/{base}"], root)
     if add.returncode != 0:
         # The branch outlived its tree (an earlier attempt): re-attach it.
         add = _git(["worktree", "add", str(tree), branch], root)
@@ -3122,13 +3176,19 @@ def submit(ctx: Any, spec: Any) -> Any:
         target=_review_target(store, todo.meta),
         adapter=adapter.name,
     )
+    # release-train T1: a release fix branches from the release it lands on.
+    base = _release.land_target_of(todo.meta, body, latest) or "main"
+    if base != "main":
+        brief_kwargs["base"] = base
     brief = render_brief(**brief_kwargs, read_mcp=read_scope)
     grant: dict[str, Any] | None = None
     mint_error: str | None = None
     read_url: str | None = None
     try:
         _clear_slice_index_lock(ctx, worktrees_dir(slice_root()) / slice_name(todo_id))
-        tree = _ensure_worktree(slice_root(), todo_id)
+        tree = _ensure_worktree(
+            slice_root(), todo_id, *(() if base == "main" else (base,))
+        )
         _install_acceptance_tests(tree, artifacts, lane.deny_write_paths)
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
@@ -3359,15 +3419,34 @@ def _read_log(handle: dict[str, Any]) -> str:
         return ""
 
 
-def _branch_state(tree: Path) -> tuple[int | None, list[str]]:
-    """``(uncommitted path count, commits ahead of origin/main)``."""
+def _land_base(store: Any, todo_id: int) -> str:
+    """The ref every branch measurement of this slice runs against:
+    ``origin/<land target>`` for a release fix (release-train T1 —
+    ``meta.land_target`` or a ``land target:`` brief line), else
+    ``origin/main``. Against main, a release-based tree from the second
+    round on would count the release's earlier fixes as its own commits
+    and changes. An unreadable todo reads ``origin/main``."""
+    try:
+        ref = store.get_ref(kind="todo", id=todo_id)
+        body, latest = _brief_parts(store, todo_id)
+        target = _release.land_target_of(ref.meta if ref else None, body, latest)
+    except Exception:
+        return "origin/main"
+    return f"origin/{target}" if target else "origin/main"
+
+
+def _branch_state(
+    tree: Path, base: str = "origin/main"
+) -> tuple[int | None, list[str]]:
+    """``(uncommitted path count, commits ahead of base)`` — ``base`` is
+    :func:`_land_base`."""
     status = _git(["status", "--porcelain"], tree)
     dirty = (
         len([ln for ln in status.stdout.splitlines() if ln.strip()])
         if status.returncode == 0
         else None
     )
-    ahead = _git(["log", "--oneline", "origin/main..HEAD"], tree)
+    ahead = _git(["log", "--oneline", f"{base}..HEAD"], tree)
     commits = (
         [ln for ln in ahead.stdout.splitlines() if ln.strip()]
         if ahead.returncode == 0
@@ -3620,7 +3699,9 @@ _MOOT_TEST_RE = re.compile(r"\btests/[\w./-]+\.py\b")
 #: the claim alone — the loop's next cut re-runs the legs, so a false
 #: one cannot pass. Position-free like :data:`_MOOT_LINE_RE`.
 _FIX_VERIFIED_RE = re.compile(r"^\s*verified\s*:\s*(.*?)\s*$", re.IGNORECASE)
-_FIX_VERIFIED_GREEN_RE = re.compile(r"green on origin/main", re.IGNORECASE)
+_FIX_VERIFIED_GREEN_RE = re.compile(
+    r"green on origin/(?:main|release/r\d+)\b", re.IGNORECASE
+)
 #: Bound on the moot fallback's clean-tree pytest run (gr638658): a cold
 #: ``uv`` env sync plus the named test files.
 _MOOT_TEST_TIMEOUT_S = 1200.0
@@ -3712,31 +3793,37 @@ def _plan_chain_ids(store: Any, root: int, todo_id: int) -> set[int]:
     return ids
 
 
-def _fetch_main(tree: Path) -> None:
-    """Best-effort ``git fetch origin main`` — a failure, a timeout or
-    an ``OSError`` only means a later ancestor check runs on whatever
-    ``origin/main`` ref exists."""
+def _fetch_main(tree: Path, base: str = "origin/main") -> None:
+    """Best-effort ``git fetch origin main`` (or the release branch
+    ``base`` names, :func:`_land_base`) — a failure, a timeout or an
+    ``OSError`` only means a later ancestor check runs on whatever ref
+    exists."""
+    branch = base.removeprefix("origin/")
+    spec = "main" if branch == "main" else f"+refs/heads/{branch}:refs/remotes/{base}"
     try:
-        _git(["fetch", "origin", "main"], tree)
+        _git(["fetch", "origin", spec], tree)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
 
-def _tests_green_on_main(tree: Path, tests: list[str]) -> bool:
+def _tests_green_on_main(
+    tree: Path, tests: list[str], base: str = "origin/main"
+) -> bool:
     """``True`` only when every named ``tests/…​.py`` passes in a clean
     detached worktree at ``origin/main`` — the moot fallback's
     independent proof (gr638658): the claim "the fix is already on
     main" holds when the slice's named failing tests re-run green
-    there. An empty list, a ``worktree add`` that fails or raises
+    there (a release fix's ``base`` is its release branch instead). An
+    empty list, a ``worktree add`` that fails or raises
     (td638767), a missing ``uv``, a red run or a timeout is ``False`` —
     fail closed. The probe tree is always removed."""
     if not tests:
         return False
-    base = Path(tempfile.mkdtemp(prefix="precis-moot-"))
-    probe = base / "tree"
+    scratch = Path(tempfile.mkdtemp(prefix="precis-moot-"))
+    probe = scratch / "tree"
     uv = os.environ.get("PRECIS_UV_BIN") or "uv"
     try:
-        add = _git(["worktree", "add", "--detach", str(probe), "origin/main"], tree)
+        add = _git(["worktree", "add", "--detach", str(probe), base], tree)
         if add.returncode != 0:
             return False
         try:
@@ -3765,11 +3852,15 @@ def _tests_green_on_main(tree: Path, tests: list[str]) -> bool:
             _git(["worktree", "remove", "--force", str(probe)], tree)
         except (OSError, subprocess.TimeoutExpired):
             pass
-        shutil.rmtree(base, ignore_errors=True)
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _verified_moot(
-    store: Any, tree: Path, result: str | None, todo_id: int
+    store: Any,
+    tree: Path,
+    result: str | None,
+    todo_id: int,
+    base: str = "origin/main",
 ) -> dict[str, str] | None:
     """``{"sha", "line"}`` when the result's ``moot:`` claim checks out on
     the worker host (td584381 S1d), else ``None`` — plus
@@ -3849,11 +3940,11 @@ def _verified_moot(
         re.compile(rf"\bgr{gid}\b", re.IGNORECASE),
         re.compile(rf"\btd(?:{'|'.join(str(i) for i in chain)})\b", re.IGNORECASE),
     ]
-    _fetch_main(tree)
+    _fetch_main(tree, base)
     ancestors: list[str] = []
     for cand in _MOOT_SHA_RE.findall(line):
         try:
-            check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
+            check = _git(["merge-base", "--is-ancestor", cand, base], tree)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if check.returncode == 0:
@@ -3877,13 +3968,13 @@ def _verified_moot(
         if "release-pass" in _open_tag_values(store, root):
             sha = ancestors[0]
             release_proof = True
-        elif _tests_green_on_main(tree, sorted(named_tests)):
+        elif _tests_green_on_main(tree, sorted(named_tests), base):
             sha = ancestors[0]
     if sha is None:
         return None
     for p in sorted(paths):
         try:
-            if _git(["cat-file", "-e", f"origin/main:{p}"], tree).returncode != 0:
+            if _git(["cat-file", "-e", f"{base}:{p}"], tree).returncode != 0:
                 return None
         except (OSError, subprocess.TimeoutExpired):
             # A cat-file that cannot answer fails closed like a miss.
@@ -3949,7 +4040,9 @@ def _foreign_moot(store: Any, todo_id: int, line: str) -> bool:
     return gid is not None and int(named.group(1)) != gid
 
 
-def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
+def _fix_moot(
+    tree: Path, result: str | None, base: str = "origin/main"
+) -> dict[str, str] | None:
     """``{"kind", "line"}`` (plus ``"sha"`` on a moot) when the
     release-fix loop's marker lets the fix node close with no commit
     (gr597599), else ``None``.
@@ -3973,10 +4066,10 @@ def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
     line = _moot_line(result)
     if line is None:
         return None
-    _fetch_main(tree)
+    _fetch_main(tree, base)
     for cand in _MOOT_SHA_RE.findall(line):
         try:
-            check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
+            check = _git(["merge-base", "--is-ancestor", cand, base], tree)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if check.returncode == 0:
@@ -3989,17 +4082,19 @@ def _fix_moot(tree: Path, result: str | None) -> dict[str, str] | None:
 _DECLARED_RE = re.compile(r"^\s*(?:moot|no-op)\s*:\s*(.*?)\s*$", re.IGNORECASE)
 
 
-def _diff_empty(tree: Path) -> bool:
-    """``True`` only when ``git diff --quiet origin/main...HEAD`` reports
+def _diff_empty(tree: Path, base: str = "origin/main") -> bool:
+    """``True`` only when ``git diff --quiet <base>...HEAD`` reports
     no net change on the branch — a git error counts as NOT empty (the
     caller's fallback is the no-commit failure; fail closed)."""
     try:
-        return _git(["diff", "--quiet", "origin/main...HEAD"], tree).returncode == 0
+        return _git(["diff", "--quiet", f"{base}...HEAD"], tree).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def _fix_declared(tree: Path, result: str | None) -> dict[str, str] | None:
+def _fix_declared(
+    tree: Path, result: str | None, base: str = "origin/main"
+) -> dict[str, str] | None:
     """``{"kind", "line"}`` (plus ``"sha"`` when a named sha still
     verifies) for the fix node's DECLARED close (gr648125 — r288 and
     r290 each idled 75+ min on it): the builder reports the fix already
@@ -4020,13 +4115,13 @@ def _fix_declared(tree: Path, result: str | None) -> dict[str, str] | None:
         if _DECLARED_RE.match(ln):
             line = ln.strip()
             break
-    if line is None or not _diff_empty(tree):
+    if line is None or not _diff_empty(tree, base):
         return None
     out = {"kind": "declared", "line": line[:300]}
-    _fetch_main(tree)
+    _fetch_main(tree, base)
     for cand in _MOOT_SHA_RE.findall(line):
         try:
-            check = _git(["merge-base", "--is-ancestor", cand, "origin/main"], tree)
+            check = _git(["merge-base", "--is-ancestor", cand, base], tree)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if check.returncode == 0:
@@ -4035,12 +4130,14 @@ def _fix_declared(tree: Path, result: str | None) -> dict[str, str] | None:
     return out
 
 
-def changed_paths(tree: Path) -> list[str] | None:
+def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
     """Repo-relative paths the slice touched: the branch diff from its
-    merge base with ``origin/main`` (renames split into delete + add) plus
+    merge base with ``base`` — ``origin/main``, or a release fix's
+    ``origin/release/r<N>`` (:func:`_land_base`) so the release's earlier
+    fixes are not this slice's (renames split into delete + add) plus
     every working-tree change, untracked files included. ``None`` when git
     cannot answer (the deny check then fails closed)."""
-    diff = _git(["diff", "--name-only", "--no-renames", "origin/main...HEAD"], tree)
+    diff = _git(["diff", "--name-only", "--no-renames", f"{base}...HEAD"], tree)
     status = _git(["status", "--porcelain", "-z", "--untracked-files=all"], tree)
     if diff.returncode != 0 or status.returncode != 0:
         return None
@@ -4061,13 +4158,13 @@ def changed_paths(tree: Path) -> list[str] | None:
 
 
 def _deny_reason(
-    tree: Path, deny_paths: tuple[str, ...]
+    tree: Path, deny_paths: tuple[str, ...], base: str = "origin/main"
 ) -> tuple[str | None, list[str]]:
     """``(why the branch breaks the deny paths, human-only paths hit)``.
     The check still runs on an empty ``deny_paths`` — human-only paths
     hold regardless (:func:`deny_violations`). The second element stamps
     :data:`HUMAN_ONLY_KEY` on the failed job (td584381 S1a)."""
-    paths = changed_paths(tree)
+    paths = changed_paths(tree, base)
     if paths is None:
         return (
             f"deny-path check could not read the branch in {tree} (git failed); "
@@ -4769,7 +4866,9 @@ def poll(ctx: Any, handle: Any) -> bool:
             )
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
-    denied, human_hits = _deny_reason(tree, _lanes.deny_paths_for(ctx.store))
+    # release-train T1: a release fix measures against its release branch.
+    base = _land_base(ctx.store, todo_id)
+    denied, human_hits = _deny_reason(tree, _lanes.deny_paths_for(ctx.store), base)
     # Deny paths and commit lines are session text too (the session names
     # its files and writes its messages): the same scrub applies — redact
     # the known values; when a value could not be re-read, the entries
@@ -4832,7 +4931,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                 worker_tests_ran, test_failure = _devin_acceptance_tests(tree, handle)
                 if worker_tests_ran and test_failure is None:
                     after_denied, after_human_hits = _deny_reason(
-                        tree, _lanes.deny_paths_for(ctx.store)
+                        tree, _lanes.deny_paths_for(ctx.store), base
                     )
                     if after_denied:
                         test_failure = (
@@ -4841,7 +4940,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                         )
                         if after_human_hits:
                             ctx.set_meta(**{HUMAN_ONLY_KEY: after_human_hits})
-                paths = changed_paths(tree) if verdict is not None else None
+                paths = changed_paths(tree, base) if verdict is not None else None
                 preserve_verdict = paths is not None and all(
                     p.startswith("tests/") for p in paths
                 )
@@ -4861,7 +4960,7 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
             else:
                 paths = (
-                    changed_paths(tree)
+                    changed_paths(tree, base)
                     if adapter.name == "devin_tree" and verdict is not None
                     else None
                 )
@@ -4877,7 +4976,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             committed = _redact(committed, pairs)
         if unscrubbed and any(n in committed for n in _KIMI_ENV_NAMES):
             committed = "worker commit note withheld (credential unreadable)"
-    dirty, commits = _branch_state(tree)
+    dirty, commits = _branch_state(tree, base)
     if pairs:
         commits = [_redact(ln, pairs) for ln in commits]
     if unscrubbed:
@@ -4893,7 +4992,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         f"{error_note}.",
         f"Branch {slice_branch(todo_id)} in {tree}: "
         f"{'?' if dirty is None else dirty} uncommitted path(s), "
-        f"{len(commits)} commit(s) ahead of origin/main.",
+        f"{len(commits)} commit(s) ahead of {base}.",
     ]
     if denied:
         summary.append(f"Deny check: {denied}.")
@@ -5000,9 +5099,9 @@ def poll(ctx: Any, handle: Any) -> bool:
         # ``_verified_moot``'s ``verdict:moot`` + gripe stamp would kill
         # the pass the loop is fixing.
         fix_node = no_commit is None and _fix_node(ctx.store, todo_id)
-        fix_moot = _fix_moot(tree, result) if fix_node else None
+        fix_moot = _fix_moot(tree, result, base) if fix_node else None
         verified = (
-            _verified_moot(ctx.store, tree, result, todo_id)
+            _verified_moot(ctx.store, tree, result, todo_id, base)
             if no_commit is None and not fix_node
             else None
         )
@@ -5065,7 +5164,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         # else ``found``/``verdict`` already owns the declaration, and a
         # ``validated:`` keeps ``_fix_norepro``'s rerun ruling.
         declared = (
-            _fix_declared(tree, result)
+            _fix_declared(tree, result, base)
             if fix_node and fix_moot is None and norepro is None
             else None
         )
@@ -5224,7 +5323,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         else:
             nothing = (
                 f"left no commit on {slice_branch(todo_id)} ahead of "
-                "origin/main (nothing to land)"
+                f"{base} (nothing to land)"
             )
             summary.append(f"Land: {nothing}.")
             # The durable mark the tick reads (td584381 S1a F4): one

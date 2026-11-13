@@ -130,7 +130,6 @@ src/precis/workers/job_types/boundary_probe.py::_rm_tagged 2
 src/precis/workers/job_types/boundary_probe.py::_run_probe 1
 src/precis/workers/job_types/ci_verdict_poll.py::_gh 1
 src/precis/workers/job_types/dep_check.py::_run 1
-src/precis/workers/job_types/land_slice.py::<module> 1
 src/precis/workers/job_types/land_slice.py::_collected_count 1
 src/precis/workers/job_types/land_slice.py::_drift_preflight 1
 src/precis/workers/job_types/land_slice.py::_selector_stdout 1
