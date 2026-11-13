@@ -73,7 +73,7 @@ Mechanics: [[precis-python-help]], [[precis-md-help]].
 - Ship/deploy authority and worktree rules: `docs/conventions/shipping.md` — run `scripts/ship`, read `scripts/inflight` first.
 - Tests, lint, types: `scripts/test` — `docs/conventions/testing.md`. `uv` for everything.
 - Irreversible invariants (migrations, chunks, safe_fetch, secrets): `docs/conventions/invariants.md`.
-- Every convention leaf: `docs/conventions/`; schema: `docs/reference/schema.md`; MCP outage: `docs/runbooks/memory-restore.md` plus `outage-memory.md` beside the harness `MEMORY.md`.
+- Every convention leaf: `docs/conventions/`; schema: `docs/reference/schema.md`; MCP outage: `docs/runbooks/memory-restore.md` plus `outage-memory.md` beside the harness `MEMORY.md`; the outage contract and aborted-call recovery: [[mcp-down]].
 
 ## Coordinate work and the surface
 ## File bugs, claim todos, ask the user

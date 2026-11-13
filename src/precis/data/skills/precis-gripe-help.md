@@ -915,16 +915,18 @@ suppresses triage's own re-ask of that question).
 A stalled `put` may have committed anyway, so don't blind-retry it —
 that risks double-filing. While precis is down your only moves are to
 restore the connection or wait about five minutes — don't carry on
-without it (the MCP-down rule). For the writes that never confirmed:
+without it (the MCP-down rule — [[mcp-down]]). For the writes that
+never confirmed:
 
 1. Keep a short list (verb, kind, first line, when).
 2. When precis is back, `search` for each one to see whether it landed.
-3. Re-file only the missing ones, each with a fresh `idem_key=`
-   (`<session>:<serial>`, e.g. `outage-2026-11-13:2`). The key dedupes
-   only writes that carried it — it cannot merge onto the original
-   unkeyed write; the search above is what catches that one. What it
-   buys you: if the re-file itself stalls, its own retry is safe. See
-   `precis-put-help`, "Make a retry safe with idem_key".
+3. Re-file only the missing ones — reusing the write's original
+   `idem_key=` if it carried one, else a fresh `<session>:<serial>`
+   (e.g. `outage-2026-11-13:2`). The key dedupes only writes that
+   carried it — a fresh key cannot merge onto an earlier write, keyed
+   or not; the search above is what catches an unkeyed original. What
+   it buys you: if the re-file itself stalls, its own retry is safe.
+   See `precis-put-help`, "Make a retry safe with idem_key".
 4. Clear the list, then file **one** gripe about the outage itself —
    what you were doing, how long it lasted, which writes were affected.
 
