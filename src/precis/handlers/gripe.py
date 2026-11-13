@@ -131,6 +131,7 @@ from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
     _BROWSE_TERMINALS,
+    _PUT_IDEM_KEY,
     NumericRefHandler,
     plain_listing_view,
 )
@@ -150,6 +151,7 @@ from precis.store import Store, Tag
 from precis.store.types import ChunkInsert, Ref
 from precis.utils import gripe_order
 from precis.utils.db_retry import retry_locked
+from precis.utils.idem import idem_lock_key, normalize_key, ref_id_for_key
 from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
@@ -193,6 +195,9 @@ _RESOLVED_REQUIRED_TAGS = _TERMINAL_STATUS_TAGS | {
 #: STATUS values a ``claimed-by:`` lease moves to ``fixing`` (gr541800).
 _CLAIMABLE_STATUSES = frozenset({"open", "triaged", "ready_for_fix"})
 _COMMENT_KIND = "gripe_comment"
+#: Chunk-meta marker on a theme-merge '+1' comment — a keyed retry finds its
+#: earlier merge by it, wherever the keeper has since gone (gr658432).
+_MERGE_FILING_META = "merge_filing"
 
 #: ``STATUS:parked`` (gr543711): the gripe waits on a wake condition in
 #: ``meta.until`` ({type, value, note}); the ``gripe_parked`` cadence
@@ -859,6 +864,11 @@ class GripeHandler(NumericRefHandler):
         # ``meta.stage``; the put then rebuilds the mutable
         # current-state summary (``meta.summary``).
         stage: str | None = None,
+        # Blind-retry dedupe (gr658432): on a filing the key stamps
+        # ``meta.idem_key`` on the minted ref (a same-key retry returns
+        # the first gripe); on ``id=N + text`` it dedupes the appended
+        # comment instead.
+        idem_key: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``text=`` + ``body=`` join as first line + details (the todo
@@ -1049,7 +1059,9 @@ class GripeHandler(NumericRefHandler):
             )
             with _PUT_UNTIL.bind(until), _translate_status_check():
                 resp = self._append_then_link(
-                    lambda: self._append_comment(id=id, text=text, meta=entry_meta),
+                    lambda: self._append_comment(
+                        id=id, text=text, meta=entry_meta, idem_key=idem_key
+                    ),
                     id=id,
                     link=link,
                     unlink=unlink,
@@ -1107,9 +1119,17 @@ class GripeHandler(NumericRefHandler):
                 _PUT_UNTIL.bind(until),
                 _translate_status_check(),
             ):
-                resp = self._create_observation(
-                    text=text, tags=tags, link=link, rel=rel
-                )
+                if idem_key is not None:
+                    resp = self._run_idempotent(
+                        idem_key,
+                        lambda: self._create_observation(
+                            text=text, tags=tags, link=link, rel=rel
+                        ),
+                    )
+                else:
+                    resp = self._create_observation(
+                        text=text, tags=tags, link=link, rel=rel
+                    )
             return interpreted(resp, readings)
         # Recurring-theme merge (gripe-ux batch, Reto 2026-10-24): a filing
         # hitting exactly one registered theme joins that theme's live
@@ -1123,6 +1143,80 @@ class GripeHandler(NumericRefHandler):
         # merging (``keeper_mint_match``), and a ``thread:<slug>`` filing
         # only ever joins a keeper inside that same thread — a weak or
         # cross-thread match files standalone, untagged.
+        # A keyed filing holds its (kind, key) advisory lock across the
+        # replay lookup, theme routing AND the write (td659660 review of
+        # gr658432): released early, a concurrent same-key call could mint
+        # the keeper in the gap — the retry then routed into
+        # ``_merge_into_keeper``, whose prio= refusal fires before the key
+        # recheck — or merged into a keeper that then closed, sending the
+        # retry down the create path where ``_run_idempotent``'s ref-only
+        # lookup misses the merge comment and double-files. Held for the
+        # whole scope, the second caller blocks on the lock until the
+        # first filing commits, then ``_keyed_filing`` answers it.
+        if idem_key is not None and not self._is_ro():
+            key = normalize_key(idem_key, kind=self.kind)
+            # ``_translate_status_check`` outermost: the deferred STATUS
+            # trigger fires at THIS transaction's commit, past the inner
+            # scopes inside ``_routed_filing``.
+            with _translate_status_check(), self.store.atomic() as conn:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (idem_lock_key(f"{self.kind}:{key}"),),
+                )
+                replay = self._keyed_filing(conn, key)
+                if replay is not None:
+                    return interpreted(replay, readings)
+                resp = self._routed_filing(
+                    text=text,
+                    tags=tags,
+                    untags=untags,
+                    link=link,
+                    unlink=unlink,
+                    rel=rel,
+                    prio=prio,
+                    new=new,
+                    until=until,
+                    idem_key=key,
+                )
+            return interpreted(resp, readings)
+        resp = self._routed_filing(
+            text=text,
+            tags=tags,
+            untags=untags,
+            link=link,
+            unlink=unlink,
+            rel=rel,
+            prio=prio,
+            new=new,
+            until=until,
+            # A keyed read-only filing reaches create with its key — it
+            # never merges, so ``_run_idempotent``'s own lock+lookup is
+            # the whole dedupe it needs.
+            idem_key=idem_key,
+        )
+        return interpreted(resp, readings)
+
+    def _routed_filing(
+        self,
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        link: str | None,
+        unlink: str | None,
+        rel: str | None,
+        prio: int | None,
+        new: bool | None,
+        until: dict[str, Any] | str | None,
+        idem_key: str | None,
+    ) -> Response:
+        """Theme-route a new filing: merge into the live keeper, else mint.
+
+        A keyed put runs this inside its (kind, key) advisory-lock
+        ``atomic()`` scope — the nested ``atomic()``/``tx()`` checkouts
+        here join it as savepoints, so routing and the write commit or
+        roll back as one unit under the lock.
+        """
         matched: list[str] = [] if (new or self._is_ro()) else match_themes(text or "")
         note = ""
         if len(matched) == 1:
@@ -1139,7 +1233,7 @@ class GripeHandler(NumericRefHandler):
             )
             if keeper is not None:
                 with _PUT_UNTIL.bind(until), _translate_status_check():
-                    resp = self._merge_into_keeper(
+                    return self._merge_into_keeper(
                         keeper,
                         slug,
                         text=text,
@@ -1149,8 +1243,8 @@ class GripeHandler(NumericRefHandler):
                         rel=rel,
                         tags=tags,
                         untags=untags,
+                        idem_key=idem_key,
                     )
-                return interpreted(resp, readings)
             if threads:
                 # The theme never took root in this thread — neither
                 # merge nor mint (gr599069).
@@ -1182,21 +1276,21 @@ class GripeHandler(NumericRefHandler):
             _translate_status_check(),
         ):
             resp = super().put(
-                id=id,
-                text=text,
                 # Already validated above (mode='create' or None here — a
                 # mismatch raised before we got this far); the base put()
                 # rejects any non-None mode= outright, so don't forward it.
                 mode=None,
+                text=text,
                 tags=tags,
                 untags=untags,
                 link=link,
                 unlink=unlink,
                 rel=rel,
+                idem_key=idem_key,
             )
         if note:
             resp = replace(resp, body=f"{resp.body}\n{note}")
-        return interpreted(resp, readings)
+        return resp
 
     def _theme_keeper(
         self,
@@ -1237,6 +1331,46 @@ class GripeHandler(NumericRefHandler):
             candidates.extend(r.id for r in refs)
         return min(candidates) if candidates else None
 
+    def _keyed_filing(self, conn: Any, key: str) -> Response | None:
+        """What ``key`` already filed: a minted ref, or a '+1' merge comment.
+
+        A merge stores the key only on its comment chunk (the keeper is not
+        the filing's own ref), so the lookup spans every live ref of the
+        kind — the keeper may have closed since.
+        """
+        from precis.utils.handle_registry import format_handle
+
+        existing = ref_id_for_key(conn, self.kind, key)
+        if existing is not None:
+            return Response(
+                body=(
+                    f"existing {self._sense()} "
+                    f"{format_handle(self.kind, existing)} for "
+                    f"idem_key={key!r} (returning that id instead "
+                    "of creating a duplicate)"
+                ),
+                ref_id=existing,
+                reused=True,
+            )
+        row = conn.execute(
+            "SELECT c.ref_id FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE r.kind = %s AND r.retired_at IS NULL AND c.chunk_kind = %s "
+            "AND c.meta->>'idem_key' = %s AND c.meta->>%s = 'true' "
+            "ORDER BY c.chunk_id DESC LIMIT 1",
+            (self.kind, _COMMENT_KIND, key, _MERGE_FILING_META),
+        ).fetchone()
+        if row is None:
+            return None
+        return Response(
+            body=(
+                f"existing +1 comment on {format_handle(self.kind, int(row[0]))} "
+                f"for idem_key={key!r} (returning it instead of appending "
+                "a duplicate)"
+            ),
+            ref_id=int(row[0]),
+            reused=True,
+        )
+
     @staticmethod
     def _merge_comment(text: str | None) -> str:
         """``+1 (<first line>): <filed text>`` — the merge comment shape.
@@ -1267,13 +1401,16 @@ class GripeHandler(NumericRefHandler):
         rel: str | None,
         tags: list[str] | None,
         untags: list[str] | None,
+        idem_key: str | None = None,
     ) -> Response:
         """Fold a theme-matched filing into its keeper as a ``+1`` comment.
 
         Same semantics as ``put(id=N, …)``: caller ``link=``/``tags=``/
         ``untags=`` ride onto the keeper in one transaction with every
         guard intact. ``prio=`` has no comment carrier — refuse it naming
-        the direct ``tag()`` door.
+        the direct ``tag()`` door. ``idem_key`` dedupes the appended
+        comment, and short-circuits to the ref when the key's first call
+        minted the keeper itself.
         """
         if prio is not None:
             raise BadInput(
@@ -1281,14 +1418,32 @@ class GripeHandler(NumericRefHandler):
                 "is not accepted on a +1 comment",
                 next=f"tag(kind={self.kind!r}, id={keeper}, prio={prio})",
             )
+        from precis.utils.handle_registry import format_handle
+
         route: list[dict[str, Any]] | None = None
         if self.kind == "gripe" and "project:memory" in (tags or ()):
             from precis.tool_ledger import memory_route
 
             route = memory_route(self.store)
-        with self.store.atomic():
+        key = normalize_key(idem_key, kind=self.kind) if idem_key is not None else None
+        with self.store.atomic() as conn:
+            if key is not None:
+                # Lost the race to a concurrent same-key filing: take the
+                # create path's (kind, key) lock, then re-check.
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (idem_lock_key(f"{self.kind}:{key}"),),
+                )
+                replay = self._keyed_filing(conn, key)
+                if replay is not None:
+                    return replay
             resp = self._append_then_link(
-                lambda: self._append_comment(id=keeper, text=self._merge_comment(text)),
+                lambda: self._append_comment(
+                    id=keeper,
+                    text=self._merge_comment(text),
+                    meta={_MERGE_FILING_META: "true"} if key is not None else None,
+                    idem_key=key,
+                ),
                 id=keeper,
                 link=link,
                 unlink=unlink,
@@ -1299,12 +1454,10 @@ class GripeHandler(NumericRefHandler):
             )
             if route is not None:
                 # A keeper's single route describes its newest filing.
-                with self.store.tx() as conn:
+                with self.store.tx() as tx_conn:
                     self.store.update_ref(
-                        keeper, meta_patch={"route": route}, conn=conn
+                        keeper, meta_patch={"route": route}, conn=tx_conn
                     )
-        from precis.utils.handle_registry import format_handle
-
         return replace(
             resp,
             body=(
@@ -1364,7 +1517,8 @@ class GripeHandler(NumericRefHandler):
                     "status='*'); reopen: "
                     f"tag(kind={self.kind!r}, id={created.ref_id}, "
                     "add=['STATUS:open'], remove=['STATUS:done'])"
-                )
+                ),
+                ref_id=created.ref_id,
             ),
             created.readings,
         )
@@ -2042,6 +2196,14 @@ class GripeHandler(NumericRefHandler):
         # reading says so. (Caller ``tags=``/``link=``/``prio=`` can no
         # longer reach this point under ro; they get Denied upstream.)
         ro = self._is_ro()
+        # A keyed put's normalized idem_key (bound by ``_run_idempotent``
+        # around this create) rides into the definer as ``p_idem_key`` —
+        # stamped on ``meta.idem_key`` inside the owner's privileges at
+        # INSERT, so a read-scoped filing whose role refuses UPDATE refs
+        # (``agent_ro``) still lands its dedupe stamp (migration 0319,
+        # td659660 review of gr658432). ``_run_idempotent`` then skips
+        # its post-hoc ``update_ref``.
+        idem = _PUT_IDEM_KEY.get()
         if link is not None:
             mint_lazy_link_target(link, store=self.store, hub=self.hub)
         target = parse_link_target(link, store=self.store) if link is not None else None
@@ -2097,10 +2259,19 @@ class GripeHandler(NumericRefHandler):
             # (an aborted transaction can never be continued).
             with self.store.tx() as conn:
                 try:
-                    row = conn.execute(
-                        "SELECT public.file_gripe_readonly(%s, %s)",
-                        (text, _ro_gripe_source() if ro else None),
-                    ).fetchone()
+                    if idem is not None:
+                        # 0319's three-arg overload: stamps the key at
+                        # mint, inside the definer — the only write an
+                        # ro role can reach.
+                        row = conn.execute(
+                            "SELECT public.file_gripe_readonly(%s, %s, %s)",
+                            (text, _ro_gripe_source() if ro else None, idem),
+                        ).fetchone()
+                    else:
+                        row = conn.execute(
+                            "SELECT public.file_gripe_readonly(%s, %s)",
+                            (text, _ro_gripe_source() if ro else None),
+                        ).fetchone()
                 except psycopg.errors.RaiseException as exc:
                     refusal = _filing_refusal(exc)
                     if refusal is not None:
@@ -2505,7 +2676,12 @@ class GripeHandler(NumericRefHandler):
         )
 
     def _append_comment(
-        self, *, id: str | int, text: str, meta: dict[str, Any] | None = None
+        self,
+        *,
+        id: str | int,
+        text: str,
+        meta: dict[str, Any] | None = None,
+        idem_key: str | None = None,
     ) -> Response:
         ref = self._resolve_live_ref(self._coerce_id(id))
         return tl.append_comment(
@@ -2515,6 +2691,7 @@ class GripeHandler(NumericRefHandler):
             comment_kind=_COMMENT_KIND,
             text=text,
             meta=meta,
+            idem_key=idem_key,
         )
 
     def _summary_rebuild_reply(self, resp: Response, *, id: str | int) -> Response:
@@ -3291,7 +3468,7 @@ class GripeHandler(NumericRefHandler):
                 ),
             ]
         )
-        return Response(body=body)
+        return Response(body=body, ref_id=ref_id)
 
     def _fix_gripe_offer(self, ref_id: int) -> list[tuple[str, str]]:
         """The ``fix_gripe`` hand-off hint — only where it can run.

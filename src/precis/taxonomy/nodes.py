@@ -66,7 +66,11 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
 )
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
 #: filed_by is the numeric-create origin stamp (precis.filing_origin.stamp_meta), carried on every stored node.
-HANDLER_KEYS: frozenset[str] = frozenset({"name", "norm_name", "slug", "filed_by"})
+#: idem_key is the blind-retry dedupe stamp (precis.utils.idem, gr658432),
+#: carried on a keyed mint.
+HANDLER_KEYS: frozenset[str] = frozenset(
+    {"name", "norm_name", "slug", "filed_by", "idem_key"}
+)
 ALLOWED_KEYS: frozenset[str] = CALLER_KEYS | HANDLER_KEYS
 
 DIMENSION_KINDS: tuple[str, ...] = (

@@ -1553,6 +1553,10 @@ class MemoryHandler(NumericRefHandler):
         action: str | None = None,
         wait_s: float | None = None,
         scratch_for: str | None = None,
+        # Blind-retry dedupe (gr658432): a caller-supplied key stamped on
+        # the minted ref's ``meta.idem_key``; a same-key retry returns
+        # the first memory instead of minting a duplicate.
+        idem_key: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a memory. ``text=`` is the body prose, ``title=`` the short
@@ -1661,7 +1665,14 @@ class MemoryHandler(NumericRefHandler):
         # Automated writers cannot rephrase: mask here. Agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py) first.
         _refuse_system_dream(tags, verb="put")
-        if tags and any(t in tags for t in _THREAD_TAGS):
+        guard_thread = tags is not None and any(t in tags for t in _THREAD_TAGS)
+        guard_deferred = guard_thread and idem_key is not None and not dry
+        if guard_thread and not guard_deferred:
+            # Unkeyed (and every dry-run) path keeps the early check; a
+            # keyed create defers it into ``create()`` below — a same-key
+            # retry's own mint is exactly the 'live thread memory' the
+            # guard would refuse, so the key lookup must answer first
+            # (gr658432).
             self._guard_thread_create(text or "")
         text, title = mask_secrets(text), mask_secrets(title)
         rule, warrant = mask_secrets(rule), mask_secrets(warrant)
@@ -1685,21 +1696,31 @@ class MemoryHandler(NumericRefHandler):
             return self._put_dry_run(
                 text=text, tags=tags, link=link, rel=rel, put_meta=create_meta
             )
-        resp = super().put(
-            id=id,
-            text=text,
-            mode=mode,
-            tags=tags,
-            untags=untags,
-            link=link,
-            unlink=unlink,
-            rel=rel,
-            auto_refresh_days=auto_refresh_days,
-            meta=create_meta,
-        )
-        if is_ruling:
-            resp = replace(resp, body=resp.body + _ruling_ack(create_meta))
-        return resp
+
+        base_put = super().put  # zero-arg super() can't see self inside create()
+
+        def create() -> Response:
+            if guard_thread and guard_deferred:
+                self._guard_thread_create(text or "")
+            resp = base_put(
+                id=id,
+                text=text,
+                mode=mode,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                auto_refresh_days=auto_refresh_days,
+                meta=create_meta,
+            )
+            if is_ruling:
+                resp = replace(resp, body=resp.body + _ruling_ack(create_meta))
+            return resp
+
+        if idem_key is not None:
+            return self._run_idempotent(idem_key, create)
+        return create()
 
     def _guard_thread_create(self, body: str) -> None:
         """Refuse a dream-thread create that busts the daily cap or
@@ -2170,7 +2191,7 @@ class MemoryHandler(NumericRefHandler):
     ) -> Response:
         if misses:
             lines = "\n".join(m.advisory() for m in misses)
-            ack = Response(body=f"{ack.body}\n\n{lines}", cost=ack.cost)
+            ack = replace(ack, body=f"{ack.body}\n\n{lines}")
         return MemoryHandler._with_shape_advisory(ack, shape)
 
     @staticmethod
@@ -2311,7 +2332,7 @@ class MemoryHandler(NumericRefHandler):
                 if finding.titles:
                     lines.append("Proposed atomic titles:")
                     lines.extend(f"- {title}" for title in finding.titles)
-        return Response(body=ack.body + "\n\n" + "\n".join(lines), cost=ack.cost)
+        return replace(ack, body=ack.body + "\n\n" + "\n".join(lines))
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         """Lead the create-ack trailer with the title/first-line convention,

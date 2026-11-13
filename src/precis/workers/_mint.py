@@ -40,10 +40,10 @@ stamp destroyed the fairness mark (td652988 review, td653075).
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, Any
 
 from precis.store.types import Tag
+from precis.utils.idem import idem_lock_key
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -89,20 +89,6 @@ _SIZE_PARAMS: dict[str, str] = {
 #: mirrors ``job_types/run_slice._DEFAULT_TASK_CLASS`` (kept as a literal
 #: here so this door never imports the job-type registry).
 _DEFAULT_TASK_CLASS = "code"
-
-
-def idem_lock_key(idem: str) -> int:
-    """Hash an idem string to a 64-bit signed integer for advisory lock.
-
-    ``pg_advisory_xact_lock`` takes a ``bigint``. We hash via BLAKE2b
-    truncated to 8 bytes and reinterpret as a signed int so the
-    value fits Postgres's ``bigint`` range. Stable across processes
-    so two workers racing the same idem key serialize correctly.
-    The hash is not security-sensitive: collisions just cause two
-    unrelated puts to share a lock briefly.
-    """
-    digest = hashlib.blake2b(idem.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, byteorder="big", signed=True)
 
 
 def active_job_id(conn: Any, idem_key: str) -> int | None:

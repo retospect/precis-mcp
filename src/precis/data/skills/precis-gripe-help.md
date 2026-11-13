@@ -907,6 +907,28 @@ gripe carries the answer, remove `reto:ask` in that same write (a
 `needs_spec` drops it for you; a ruling newer than the ask also
 suppresses triage's own re-ask of that question).
 
+## When precis stops responding
+## A put timed out — did it land?
+
+A stalled `put` may have committed anyway, so don't blind-retry it —
+that risks double-filing. While precis is down your only moves are to
+restore the connection or wait about five minutes — don't carry on
+without it (the MCP-down rule). For the writes that never confirmed:
+
+1. Keep a short list (verb, kind, first line, when).
+2. When precis is back, `search` for each one to see whether it landed.
+3. Re-file only the missing ones, each with a fresh `idem_key=`
+   (`<session>:<serial>`, e.g. `outage-2026-11-13:2`). The key dedupes
+   only writes that carried it — it cannot merge onto the original
+   unkeyed write; the search above is what catches that one. What it
+   buys you: if the re-file itself stalls, its own retry is safe. See
+   `precis-put-help`, "Make a retry safe with idem_key".
+4. Clear the list, then file **one** gripe about the outage itself —
+   what you were doing, how long it lasted, which writes were affected.
+
+If you find a write half-landed (a ref you can now see), don't re-file;
+link or comment the recovery note onto the surviving ref instead.
+
 ## See also
 
 - [[precis-fix-memory-gripe-help]] — replay and resolve a `project:memory` complaint

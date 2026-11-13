@@ -48,6 +48,7 @@ from precis.errors import BadInput, Upstream
 from precis.response import Response
 from precis.store.revision_context import current_revision_context
 from precis.store.types import ChunkInsert, ChunkRow, Ref
+from precis.utils.idem import idem_lock_key, normalize_key
 
 #: Comments rendered in full on a bare ``get`` (the default policy).
 FULL_COMMENTS = 3
@@ -484,6 +485,10 @@ def append_comment(
     number_of: Callable[[ChunkRow], int] | None = None,
     ord_for: Callable[[int], int] | None = None,
     meta: dict[str, Any] | None = None,
+    # Blind-retry dedupe (gr658432): a caller-supplied key stamped on the
+    # comment chunk's ``meta.idem_key``; a same-key append on this ref
+    # returns the existing comment's number instead of posting twice.
+    idem_key: str | None = None,
 ) -> Response:
     """Append ``text`` as a ``comment_kind`` chunk on ``ref``.
 
@@ -496,7 +501,9 @@ def append_comment(
     computed from (default: the ref's ``ord >= 0`` chunks), ``number_of``
     maps a chunk to its number, ``ord_for`` maps the new number back to
     the ord it stores under. ``meta`` merges into the chunk's meta dict
-    (e.g. ``{"no_index": "true"}``).
+    (e.g. ``{"no_index": "true"}``). ``idem_key`` dedupes a retried append
+    under a transaction-scoped advisory lock — see
+    :mod:`precis.utils.idem`.
     """
 
     # The author stamp (gr549420): the revision-context actor lands in
@@ -524,6 +531,45 @@ def append_comment(
             ord_for=ord_for,
             meta=merged_meta,
         )
+
+    if idem_key is not None:
+        key = normalize_key(idem_key, kind=kind)
+        merged_meta["idem_key"] = key
+        num_of = number_of or _number_by_ord
+        read = lister or (lambda: store.chunks.list_chunks_for_ref(ref.id))
+        # Lock-then-lookup inside one pinned transaction: a concurrent
+        # same-key append serializes on the advisory lock, so the second
+        # caller's read sees the first's committed chunk.
+        with store.atomic() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (idem_lock_key(f"{comment_kind}:{ref.id}:{key}"),),
+            )
+            hit = next(
+                (
+                    c
+                    for c in read()
+                    if c.chunk_kind == comment_kind and c.meta.get("idem_key") == key
+                ),
+                None,
+            )
+            if hit is not None:
+                return Response(
+                    body=(
+                        f"existing comment {num_of(hit)} on {kind} {ref.id} "
+                        f"for idem_key={key!r} (returning it instead of "
+                        "appending a duplicate)"
+                    ),
+                    reused=True,
+                )
+            try:
+                number = _ins()
+            except UniqueViolation:
+                # Same ord race as the unkeyed path below — the advisory
+                # lock serializes only same-key appends; a different-key
+                # append can still take the ord first. Recompute once.
+                number = _ins()
+        return Response(body=f"appended comment {number} to {kind} {ref.id}.")
 
     try:
         number = _ins()

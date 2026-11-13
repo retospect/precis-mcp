@@ -346,7 +346,7 @@ class MessageHandler(NumericRefHandler):
                 ("get(kind='message', id='/recent')", "list recent sends"),
             ]
         )
-        return Response(body=body)
+        return Response(body=body, ref_id=ref_id)
 
     def _render_one(self, ref: Any, tags: list[Any]) -> str:
         meta = ref.meta or {}

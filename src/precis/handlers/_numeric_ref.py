@@ -58,9 +58,17 @@ from psycopg.errors import QueryCanceled
 from precis import slice_tokens, worktree_server
 from precis._result_budget import size_cell
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
+from precis.errors import (
+    BadInput,
+    Gone,
+    Internal,
+    NotFound,
+    PrecisError,
+    Unsupported,
+)
 from precis.handlers._eye import is_eye_view
 from precis.handlers._prio_tag import prio_display
+from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -78,6 +86,12 @@ from precis.store._search_cut import (
 from precis.store.types import _KIND_STATUS_VALUES
 from precis.utils import handle_registry, search_trace, tag_chips
 from precis.utils.embed_query import query_vec_for
+from precis.utils.idem import (
+    idem_lock_key,
+    key_on_ref,
+    normalize_key,
+    ref_id_for_key,
+)
 from precis.utils.link_tag_ops import (
     _DEFAULT_RELATION,
     check_relation_constraints,
@@ -597,6 +611,18 @@ def plain_listing_view(view: str | None, own_views: Any) -> str | None:
     if view in _PLAIN_LISTING_VIEWS and view not in own_views:
         return None
     return view
+
+
+#: A keyed put's normalized ``idem_key``, bound by ``_run_idempotent``
+#: for the duration of ``create()`` so a kind whose insert can record
+#: the key inside its own write boundary (gripe's
+#: ``file_gripe_readonly`` definer — the only insert a no-UPDATE role
+#: can make, migration 0319) stamps it there instead of needing the
+#: post-hoc ``update_ref`` the role would refuse (gr658432/td659660
+#: review). Request-scoped like ``_PUT_PRIO``: the base ``put`` calls
+#: ``_create`` with a fixed arg set, and one handler instance serves
+#: concurrent calls, so nothing goes on ``self``.
+_PUT_IDEM_KEY: RequestState[str | None] = RequestState("precis_put_idem_key", None)
 
 
 class NumericRefHandler(Handler):
@@ -3493,6 +3519,11 @@ class NumericRefHandler(Handler):
         unlink: str | None = None,
         rel: str | None = None,
         auto_refresh_days: int | None = None,
+        # Blind-retry dedupe (gr658432): a caller-supplied key stamped on
+        # the minted ref's ``meta.idem_key``; a same-kind put carrying the
+        # same key returns the existing ref instead of minting a
+        # duplicate. See :mod:`precis.utils.idem`.
+        idem_key: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a new numeric ref.
@@ -3545,14 +3576,88 @@ class NumericRefHandler(Handler):
         create_kw: dict[str, Any] = {}
         if self.accepts_put_meta and _kw.get("meta"):
             create_kw["put_meta"] = _kw["meta"]
-        return self._create(
-            text=text,
-            tags=tags,
-            link=link,
-            rel=rel,
-            auto_refresh_days=auto_refresh_days,
-            **create_kw,
-        )
+
+        def create() -> Response:
+            return self._create(
+                text=text,
+                tags=tags,
+                link=link,
+                rel=rel,
+                auto_refresh_days=auto_refresh_days,
+                **create_kw,
+            )
+
+        if idem_key is not None:
+            return self._run_idempotent(idem_key, create)
+        return create()
+
+    def _run_idempotent(
+        self,
+        idem_key: str,
+        create: Callable[[], Response],
+    ) -> Response:
+        """Run a create under a caller-supplied ``idem_key``, or return
+        the ref an earlier call with the same key already minted
+        (gr658432).
+
+        Race-safe the same way ``JobHandler.put`` is: a transaction-scoped
+        advisory lock keyed on ``(kind, key)`` serializes concurrent puts,
+        so the second caller's lookup sees the first's committed row.
+        ``store.atomic()`` pins the whole scope — dedupe check, the
+        ``create`` insert (its own ``tx()`` joins as a savepoint) and the
+        ``meta.idem_key`` stamp — to one transaction, so nothing commits
+        without its key. Kinds whose create path bypasses
+        :meth:`_create` (gripe's observation close) route their own
+        insert through here. Stateful pre-checks belong INSIDE
+        ``create``, not before this call: a same-key retry's own mint is
+        exactly the 'duplicate' a uniqueness guard would refuse (taxon's
+        ``_mint_checks``, memory's thread guard — gr658432).
+
+        The normalized key is bound on :data:`_PUT_IDEM_KEY` around
+        ``create()`` so a kind whose insert can record it inside its own
+        write boundary (gripe's ``file_gripe_readonly`` definer,
+        migration 0319) stamps it there; the post-hoc ``update_ref``
+        runs only when the mint didn't already carry the key — under
+        ``agent_ro`` that UPDATE is refused outright, so skipping it is
+        what lets a keyed read-only filing land at all.
+        """
+        idem = normalize_key(idem_key, kind=self.kind)
+        with self.store.atomic() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (idem_lock_key(f"{self.kind}:{idem}"),),
+            )
+            existing = ref_id_for_key(conn, self.kind, idem)
+            if existing is not None:
+                handle = (
+                    handle_registry.try_format(self.kind, existing) or f"id={existing}"
+                )
+                return Response(
+                    body=(
+                        f"existing {self._sense()} {handle} for "
+                        f"idem_key={idem!r} (returning that id instead of "
+                        "creating a duplicate)"
+                    ),
+                    ref_id=existing,
+                    reused=True,
+                )
+            with _PUT_IDEM_KEY.bind(idem):
+                resp = create()
+            if resp.ref_id is None:
+                # A create ack that doesn't name its ref leaves the key
+                # unstamped and the retry unsafe — rolling the atomic
+                # scope back here writes nothing at all.
+                raise Internal(
+                    f"put(kind={self.kind!r}) created a ref but reported "
+                    "no ref_id — idem_key cannot be recorded; nothing "
+                    "was written",
+                    next=f"retry without idem_key, or file a gripe on kind={self.kind!r}",
+                )
+            if not key_on_ref(conn, resp.ref_id, idem):
+                self.store.update_ref(
+                    resp.ref_id, meta_patch={"idem_key": idem}, conn=conn
+                )
+            return resp
 
     # ── seven-verb surface (delegates to the same private helpers) ─
 
@@ -4060,7 +4165,7 @@ class NumericRefHandler(Handler):
         nudge = self._first_line_nudge(text)
         if nudge is None:
             return ack
-        return Response(body=f"{ack.body}\n\nhint: {nudge}", cost=ack.cost)
+        return dataclasses.replace(ack, body=f"{ack.body}\n\nhint: {nudge}")
 
     @staticmethod
     def _facts_note(resp: Response, deferred: int) -> Response:
@@ -5041,7 +5146,7 @@ class NumericRefHandler(Handler):
         ident = handle or f"id={ref_id}"
         body = f"created {self.kind} {ident}."
         body += render_next_section(self._create_ack_next_hints(ref_id))
-        return Response(body=body)
+        return Response(body=body, ref_id=ref_id)
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         """Default TOON Next: rows for the create-ack trailer.

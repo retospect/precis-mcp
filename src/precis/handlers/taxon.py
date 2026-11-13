@@ -371,11 +371,23 @@ class TaxonHandler(NumericRefHandler):
         refused as a definition that does not separate (order in
         :meth:`_mint_checks`); candidates whose dimension explicitly differs
         are never offered (see :func:`_dimension_clash`)."""
-        if dedup is not False and _kw.get("id") is None and text and text.strip():
-            self._mint_checks(text, meta, _kw.get("link"), _kw.get("rel"))
-        return super().put(
-            text=text, auto_refresh_days=auto_refresh_days, meta=meta, **_kw
-        )
+        idem_key = _kw.pop("idem_key", None)
+        base_put = super().put  # zero-arg super() can't see self inside create()
+
+        def create() -> Response:
+            if dedup is not False and _kw.get("id") is None and text and text.strip():
+                self._mint_checks(text, meta, _kw.get("link"), _kw.get("rel"))
+            return base_put(
+                text=text, auto_refresh_days=auto_refresh_days, meta=meta, **_kw
+            )
+
+        if idem_key is not None:
+            # ``_mint_checks`` runs INSIDE the keyed scope, not before
+            # it: a same-key retry meets the node its first call minted,
+            # which is exactly the 'duplicate' the dedup check refuses —
+            # the key lookup must answer first (gr658432).
+            return self._run_idempotent(idem_key, create)
+        return create()
 
     def _mint_checks(
         self,

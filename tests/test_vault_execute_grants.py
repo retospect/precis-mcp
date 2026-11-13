@@ -53,6 +53,9 @@ KEPT_FUNCS = (
     "public.bump_ref_read(bigint, text, text)",
     "public.file_gripe_readonly(text)",
     "public.file_gripe_readonly(text, text)",
+    # 0319: the keyed overload — same ro carve-out, stamps meta.idem_key
+    # at mint so a keyed filing's dedupe survives a no-UPDATE role.
+    "public.file_gripe_readonly(text, text, text)",
     "vault.list()",
     "vault.mask(text)",
 )
@@ -158,7 +161,7 @@ def test_no_security_definer_function_grants_public_execute(store: Store) -> Non
     PUBLIC EXECUTE — that is how every connect-capable role, agent_ro
     included, gained vault writes (gr523021). The allowlist is the decided
     carve-outs: the read-path salience bump (0137), the ro gripe door
-    (0079/0244), and the non-secret vault verbs."""
+    (0079/0244/0319), and the non-secret vault verbs."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT n.nspname || '.' || p.proname || '(' || "

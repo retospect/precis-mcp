@@ -88,6 +88,7 @@ from precis.store.revision_context import current_revision_context
 from precis.store.types import _KIND_STATUS_VALUES, ChunkRow
 from precis.utils import handle_registry, search_trace
 from precis.utils.embed_query import query_vec_for
+from precis.utils.idem import idem_lock_key, normalize_key
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
@@ -1236,6 +1237,10 @@ class QuestHandler(NumericRefHandler):
         by: str | None = None,
         cost: float | None = None,
         prio: int | None = None,
+        # Blind-retry dedupe (gr658432): on a create the key stamps
+        # ``meta.idem_key`` on the minted ref; on ``id=N + text`` it
+        # dedupes the appended logbook entry instead.
+        idem_key: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``put(id=N, text=…)`` appends a quest_log chunk — the logbook-entry
@@ -1273,7 +1278,12 @@ class QuestHandler(NumericRefHandler):
                 )
             return self._append_then_link(
                 lambda: self._append_log(
-                    id=id, text=text, entry=entry, by=by, cost=cost
+                    id=id,
+                    text=text,
+                    entry=entry,
+                    by=by,
+                    cost=cost,
+                    idem_key=idem_key,
                 ),
                 id=id,
                 link=link,
@@ -1294,6 +1304,7 @@ class QuestHandler(NumericRefHandler):
                 link=link,
                 unlink=unlink,
                 rel=rel,
+                idem_key=idem_key,
             )
 
     def _append_log(
@@ -1304,6 +1315,7 @@ class QuestHandler(NumericRefHandler):
         entry: str | None,
         by: str | None,
         cost: float | None,
+        idem_key: str | None = None,
     ) -> Response:
         entry_type = (entry or _DEFAULT_ENTRY).strip().lower()
         if entry_type not in _ENTRY_TYPES:
@@ -1327,15 +1339,52 @@ class QuestHandler(NumericRefHandler):
         # Shared append path (precis.quest.logbook) — the same insert the
         # autonomous quest_tick writes through, so there is one logbook writer.
         receipt = StructureLinkReceipt()
-        entry_no = _append_logbook_entry(
-            self.store,
-            ref.id,
-            text=text,
-            entry_type=entry_type,
-            by=by_who,
-            cost=cost,
-            link_receipt=receipt,
-        )
+        key = normalize_key(idem_key, kind=self.kind) if idem_key is not None else None
+
+        def _insert() -> int:
+            return _append_logbook_entry(
+                self.store,
+                ref.id,
+                text=text,
+                entry_type=entry_type,
+                by=by_who,
+                cost=cost,
+                link_receipt=receipt,
+                extra_meta={"idem_key": key} if key is not None else None,
+            )
+
+        if key is not None:
+            # Lock-then-lookup inside one pinned transaction (gr658432):
+            # a retried append under the same key returns the first
+            # entry's block handle instead of logging a duplicate.
+            with self.store.atomic() as conn:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (idem_lock_key(f"{_LOG_KIND}:{ref.id}:{key}"),),
+                )
+                hit = next(
+                    (
+                        c
+                        for c in self.store.chunks.list_chunks_for_ref(ref.id)
+                        if c.chunk_kind == _LOG_KIND
+                        and (c.meta or {}).get("idem_key") == key
+                    ),
+                    None,
+                )
+                if hit is not None:
+                    block = handle_registry.format_handle("quest", ref.id)
+                    return Response(
+                        body=(
+                            f"existing logbook entry on {self._sense()} "
+                            f"id={ref.id} for idem_key={key!r} "
+                            f"({block}~{hit.ord}; returning it instead of "
+                            "appending a duplicate)"
+                        ),
+                        reused=True,
+                    )
+                entry_no = _insert()
+        else:
+            entry_no = _insert()
         deed = " (a deed)" if entry_type == "milestone" else ""
         # The ack prints the linkable block handle, not the bare 1-based
         # entry number — '~N' selects a chunk by its 0-based ord, so the
@@ -3440,7 +3489,7 @@ class QuestHandler(NumericRefHandler):
                 ),
             ]
         )
-        return Response(body=body)
+        return Response(body=body, ref_id=ref_id)
 
 
 __all__ = ["QuestHandler"]

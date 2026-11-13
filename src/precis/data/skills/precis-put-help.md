@@ -47,6 +47,39 @@ that declares only one spelling the other is accepted as an alias, and
 passing both at once errors. `todo` declares both — `text=` is the
 title, `body=` the details — and takes either or both.
 
+## Make a retry safe with idem_key
+## A put timed out — is it safe to retry?
+
+A `put` that stalls client-side ("server isn't responding") may have
+committed anyway — the client can't tell a dropped write from a slow
+one, so a blind retry risks double-filing. Pass a caller-chosen
+`idem_key=` to make the retry safe:
+
+```python
+put(kind="todo", text="Sweep patent backlog.", idem_key="sortie-2026-11:7")
+```
+
+A retry carrying the same `idem_key` returns the first write's ref
+("existing todo td<N> for idem_key=… — returning that id instead of
+creating a duplicate") instead of minting a second one. The key is
+stamped on the ref as `meta.idem_key`, deduped per kind under a
+transaction-scoped advisory lock, so concurrent same-key puts also
+collapse to one ref. Keep the key short and stable (`<session>:<serial>`,
+`<job>:<step>`); it is a name for the write, not a place for payload.
+
+Supported on creates for any kind whose `put` declares or forwards the
+kwarg — `job` (where it originated), `todo`, `gripe`, `memory`,
+`quest`, `taxon`, and the other shared-create-path kinds — and on the
+append forms: `put(kind='todo'|'gripe', id=N, text=...)` dedupes the
+comment chunk, `put(kind='quest', id=N, text=...)` the logbook entry,
+and `put(kind='todo', mode='plan', ...)` dedupes on the minted plan's
+root todo. On any other kind `idem_key` is not a dedupe — the
+dispatcher refuses to replay it, and the kwarg may be ignored
+entirely, so there it buys you nothing. A `put` without `idem_key`
+is never retried by the dispatcher either, so unconfirmed writes
+still need a manual check-then-refile (see `precis-gripe-help`,
+"When precis stops responding").
+
 ## Write content you already read without retransmitting it
 
 ```python

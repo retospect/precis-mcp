@@ -1019,6 +1019,12 @@ class TodoHandler(NumericRefHandler):
         iterations: int | None = None,
         after: str | None = None,
         context: str | None = None,
+        # Blind-retry dedupe (gr658432): on a create the key stamps
+        # ``meta.idem_key`` on the minted ref (a same-key retry returns
+        # the first todo); on ``id=N + text`` it dedupes the appended
+        # comment chunk instead; on ``mode='plan'`` it dedupes on the
+        # minted subtree's root.
+        idem_key: str | None = None,
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
@@ -1047,6 +1053,7 @@ class TodoHandler(NumericRefHandler):
                         kind=self.kind,
                         comment_kind=_COMMENT_KIND,
                         text=text,
+                        idem_key=idem_key,
                     ),
                     id=ref.id,
                     link=None,
@@ -1134,27 +1141,38 @@ class TodoHandler(NumericRefHandler):
         else:
             parent_int = None
         if mode == "plan":
-            return self._put_plan(
-                template=template,
-                template_args={
-                    "gripe_id": gripe_id,
-                    "section": section,
-                    "board": board,
-                    "lane": lane,
-                    "iterations": iterations,
-                    "after": after,
-                    "context": context,
-                },
-                parent_id=parent_int,
-                refused={
-                    "text": text,
-                    "tags": tags,
-                    "link": link,
-                    "meta": meta,
-                    "body": body,
-                    "prio": prio,
-                },
-            )
+
+            def plan_mint() -> Response:
+                return self._put_plan(
+                    template=template,
+                    template_args={
+                        "gripe_id": gripe_id,
+                        "section": section,
+                        "board": board,
+                        "lane": lane,
+                        "iterations": iterations,
+                        "after": after,
+                        "context": context,
+                    },
+                    parent_id=parent_int,
+                    refused={
+                        "text": text,
+                        "tags": tags,
+                        "link": link,
+                        "meta": meta,
+                        "body": body,
+                        "prio": prio,
+                    },
+                )
+
+            if idem_key is not None:
+                # The template mint is one keyed create unit: the lock
+                # serializes same-key puts, the key stamps
+                # ``meta.idem_key`` on the subtree ROOT, and a retried
+                # keyed mint returns that root instead of a second
+                # subtree (gr658432).
+                return self._run_idempotent(idem_key, plan_mint)
+            return plan_mint()
         # ``meta.tier`` (strategic|tactical|subtask) is the agent-facing
         # spelling of the facet booleans — translated here so the
         # owner-only gate below sees the derived booleans and enforces
@@ -1360,10 +1378,14 @@ class TodoHandler(NumericRefHandler):
                 unlink=unlink,
                 rel=rel,
                 auto_refresh_days=auto_refresh_days,
+                idem_key=idem_key,
             )
         # gr548800: an ask raised inside a plan is a quest-logbook event.
+        # A keyed retry returns the first write's ref (reused) — logging
+        # again would double-write the event (gr658432).
         if (
             resp.ref_id is not None
+            and not resp.reused
             and isinstance(meta, dict)
             and isinstance(meta.get("ask"), dict)
         ):
@@ -1428,7 +1450,10 @@ class TodoHandler(NumericRefHandler):
                 f"minted plan {tpl.name!r}: root id={mint.root_id}, "
                 f"{len(mint.ids)} nodes, all tagged plan:{mint.root_id}, "
                 "no auto-dispatch (meta.llm_tier unset)\n" + tree.body
-            )
+            ),
+            # ``ref_id`` names the subtree root so a caller-supplied
+            # ``idem_key`` stamps and dedupes on it (gr658432).
+            ref_id=mint.root_id,
         )
 
     def _create(

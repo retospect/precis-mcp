@@ -1497,13 +1497,18 @@ def scrub_upstream(err: PrecisError) -> None:
 # * ``get`` / ``search`` on a local-database kind (``_LOCAL_READ_KINDS``) or
 #   with no kind. Kinds that reach a paid or outside service are excluded:
 #   a replay could bill twice.
-# * ``put(kind='job', idem_key=...)`` — JobHandler.put dedupes on an active
-#   ``meta.idem_key``, so a replay returns the existing ref. Only jobs
-#   dedupe on it; a job that already finished before the replay is the one
-#   accepted gap (backoff is at most ~2.4s).
-# * never ``edit`` / ``delete`` / ``tag`` / ``link``, nor any other ``put``:
-#   a handler may have committed one of several steps before the fault,
-#   and a replay would double-apply it.
+# * ``put(kind=..., idem_key=...)`` where the kind's handler actually
+#   consumes the key — ``meta.idem_key`` dedupe (``precis.utils.idem``)
+#   under a transaction-scoped advisory lock makes the replay return the
+#   first write's ref instead of minting a duplicate. The handler check
+#   (``_put_accepts_idem_key``) is what makes this honest: a kind whose
+#   put can't see the kwarg stays replay-unsafe. A job that already
+#   finished before the replay is the one accepted gap (backoff is at
+#   most ~2.4s).
+# * never ``edit`` / ``delete`` / ``tag`` / ``link``, nor any ``put``
+#   without ``idem_key``: a handler may have committed one of several
+#   steps before the fault, and a replay would double-apply it
+#   (gr658432 — a blind retry after a stalled put risks double-filing).
 #
 # Attempts total ``_RETRY_ATTEMPTS`` (the first included); backoff is full
 # jitter over a doubling cap, ~2.4s worst-case sleep in all. Each attempt
@@ -1569,11 +1574,17 @@ def _is_transient_db_fault(exc: BaseException) -> bool:
 
 
 def _replay_safe(verb: str, args: dict[str, Any]) -> bool:
-    """May this call be re-run after a transient fault? See the rule above."""
+    """May this call be re-run after a transient fault? See the rule above.
+
+    For ``put`` this answers only "does the call carry a dedupe key";
+    ``DispatchMixin._dispatch_with_retry`` adds the handler-side check
+    (:meth:`_put_accepts_idem_key`) since it needs the hub to resolve the
+    kind's handler.
+    """
     kind = args.get("kind")
     if verb in _RETRY_VERBS:
         return kind is None or kind in _LOCAL_READ_KINDS
-    return verb == "put" and kind == "job" and bool(args.get("idem_key"))
+    return verb == "put" and bool(args.get("idem_key"))
 
 
 def _retry_sleep(attempt: int) -> None:
@@ -1591,6 +1602,11 @@ class DispatchMixin(RuntimeShape):
         times the call was retried; a replay-unsafe call (see the rule
         above) is never retried and surfaces through the normal mapping."""
         safe = _replay_safe(verb, args)
+        if safe and verb == "put":
+            # ``idem_key`` is only a dedupe where the kind's put declares
+            # it — everywhere else it would be silently swallowed and a
+            # replay could double-file (gr658432).
+            safe = self._put_accepts_idem_key(args.get("kind"))
         attempt = 1
         while True:
             try:
@@ -1617,6 +1633,26 @@ class DispatchMixin(RuntimeShape):
                 )
                 _retry_sleep(attempt)
                 attempt += 1
+
+    def _put_accepts_idem_key(self, kind: Any) -> bool:
+        """True when the kind's ``put`` declares ``idem_key`` — the
+        dedupe contract in :mod:`precis.utils.idem` makes the replay
+        return the first write's ref (gr658432).
+
+        The accepted-kwargs walk (:func:`_handler_accepted_kwargs`)
+        unions a forwarding override's base params, so a kind whose put
+        is a pass-through to ``NumericRefHandler.put`` is covered too.
+        A kind whose ``**_kw`` catch-all swallows the key without
+        forwarding it is a dead end here and stays replay-unsafe.
+        """
+        if not isinstance(kind, str):
+            return False
+        handler = self.hub.handler_for(self._expand_kind_code(kind.strip()))
+        if handler is None:
+            return False
+        # ``handler.__class__`` (not ``type(handler)``): the cached walk's
+        # signature wants a Hashable and ``type[Any]`` isn't one to mypy.
+        return "idem_key" in _handler_accepted_kwargs(handler.__class__, "put")
 
     def dispatch(self, verb: str, args: dict[str, Any], *, fold: bool = False) -> str:
         """Run one verb call. Returns the rendered string for the agent.

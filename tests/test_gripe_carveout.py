@@ -232,21 +232,84 @@ def test_set_role_effective_role_is_stamped_and_capped(store: Store) -> None:
     }
 
 
-def test_overload_shape_one_arg_wrapper_two_arg_no_default(store: Store) -> None:
-    """0244 keeps 0079's one-arg signature (squawk bans DROP FUNCTION): a
-    thin wrapper delegating with ``p_source = NULL``, plus the two-arg
-    overload that carries the stamp+cap logic. ``p_source`` must take NO
-    default — a default would make one-arg calls ambiguous between the
-    overloads (``function is not unique``)."""
+def test_overload_shape_wrappers_delegate_no_defaults(store: Store) -> None:
+    """Signatures grow by overload, never by replace (squawk bans DROP
+    FUNCTION): 0244 added the two-arg carrying the stamp+cap logic with
+    the one-arg left a thin wrapper; 0319 adds the keyed three-arg and
+    turns the two-arg into a wrapper over it (``p_idem_key = NULL``,
+    gr658432). No overload takes a default on its tail arg — a default
+    would make the shorter call ambiguous between the overloads
+    (``function is not unique``)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT pronargs, pronargdefaults, prosrc FROM pg_proc "
             "WHERE proname = 'file_gripe_readonly'"
         ).fetchall()
     by_nargs = {int(r[0]): r for r in rows}
-    assert set(by_nargs) == {1, 2}
-    assert int(by_nargs[2][1]) == 0  # no defaults on the two-arg overload
+    assert set(by_nargs) == {1, 2, 3}
+    assert int(by_nargs[3][1]) == 0  # no defaults on the three-arg overload
     assert "file_gripe_readonly(p_text, NULL)" in by_nargs[1][2]
+    assert "file_gripe_readonly(p_text, p_source, NULL)" in by_nargs[2][2]
+
+
+def test_idem_key_stamp_survives_a_no_update_role(store: Store) -> None:
+    """0319 (gr658432, td659660 review): ``put(idem_key=…)`` dedupes a
+    blind retry via the ``meta.idem_key`` stamp — but a read-scoped
+    caller (``write:none``/``agent_ro``) holds no UPDATE on ``refs``,
+    so a post-hoc stamp could never land. The key now rides into the
+    definer at INSERT. Proven role-constrained the carveout way:
+    ``SET ROLE pg_monitor`` — a role with no precis table grants."""
+    with store.pool.connection() as conn:
+        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO pg_monitor")
+        conn.commit()
+        conn.execute("SET ROLE pg_monitor")
+        try:
+            row = conn.execute(
+                "SELECT public.file_gripe_readonly(%s, %s, %s)",
+                ("keyed filing under a no-UPDATE role", None, "ro-key:1"),
+            ).fetchone()
+        finally:
+            conn.execute("RESET ROLE")
+            conn.execute("REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM pg_monitor")
+        conn.commit()
+    assert row is not None
+    ref_id = int(row[0])
+    ref = next(r for r in store.list_refs(kind="gripe", limit=50) if r.id == ref_id)
+    assert ref.meta.get("idem_key") == "ro-key:1"
+    # The effective-role probe still stamped the ro tags, exactly as
+    # an unstamped-source ro filing does.
+    assert _tag_strings(store, ref_id) == {
+        "STATUS:open",
+        "source:agent_ro",
+        "friction",
+    }
+
+
+def test_three_arg_null_key_files_byte_identical(store: Store) -> None:
+    """The keyed overload with ``p_idem_key = NULL`` is 0244's filing:
+    no ``idem_key`` on meta, same single ref + chunk + STATUS tag."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT public.file_gripe_readonly(%s, %s, %s)",
+            ("unkeyed filing through the keyed overload", None, None),
+        ).fetchone()
+        assert row is not None
+        conn.commit()
+    ref_id = int(row[0])
+    ref = next(r for r in store.list_refs(kind="gripe", limit=50) if r.id == ref_id)
+    assert "idem_key" not in ref.meta
+    assert _tag_strings(store, ref_id) == {"STATUS:open"}
+
+
+def test_idem_key_bounds_refused(store: Store) -> None:
+    with (
+        store.pool.connection() as conn,
+        pytest.raises(Exception, match="idem_key"),
+    ):
+        conn.execute(
+            "SELECT public.file_gripe_readonly(%s, %s, %s)",
+            ("x", None, "k" * 201),
+        )
 
 
 def test_cap_checks_serialize_on_an_advisory_lock(store: Store) -> None:
@@ -257,7 +320,7 @@ def test_cap_checks_serialize_on_an_advisory_lock(store: Store) -> None:
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT prosrc FROM pg_proc "
-            "WHERE proname = 'file_gripe_readonly' AND pronargs = 2"
+            "WHERE proname = 'file_gripe_readonly' AND pronargs = 3"
         ).fetchone()
     assert row is not None
     assert "pg_advisory_xact_lock" in row[0]

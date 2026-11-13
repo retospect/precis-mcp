@@ -1861,6 +1861,10 @@ def put(
     job_type: str | None = None,
     executor: str | None = None,
     params: dict[str, Any] | None = None,
+    # blind-retry dedupe key (gr658432; precis-put-help): jobs first,
+    # now any numeric-ref kind whose put declares it — a same-key retry
+    # after a stalled put returns the first write's ref instead of
+    # double-filing.
     idem_key: str | None = None,
     # job resource-slot reservation (see precis-job-help): explicit
     # {resource: units} tokens (e.g. {'gpu': 1}) stamped onto
