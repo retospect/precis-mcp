@@ -2,13 +2,15 @@
 id: precis-decomposition-help
 family: work
 title: precis — when to split a todo and how to size siblings
-summary: when to split vs do it yourself, how to size siblings, depth-at-leaves principle
+summary: the GTD interrogation — split vs self-do vs block vs wait, sibling sizing, depth-10 wall recovery
 answers:
   - should I split this task into subtasks or just do it myself?
+  - what's the next physical action — do, split, block, or wait?
   - how big should sibling subtasks be relative to each other?
   - when do I use ask-user instead of splitting further?
   - when do I use a halt:* tag instead of decomposing?
-applies-to: put (kind='todo', parent_id=…), link (rel='blocked-by')
+  - the tree hit the depth limit — how do I keep going?
+applies-to: put (kind='todo', parent_id=…), link (rel='blocked-by'|'parent')
 status: active
 tags: [workflow]
 kinds: [todo]
@@ -29,6 +31,38 @@ The two failure modes the LLM defaults to:
   Output is a brittle summary; misses depth.
 
 This skill is how to land between them.
+
+## Run the GTD interrogation first
+## What's the next physical action?
+
+Allen's two questions sort the todo before any split machinery:
+
+- **What does done look like?** The outcome. If it takes more than
+  one tick's work, this todo is a branch — its first line names the
+  outcome, and the split test below decides the children.
+- **What is the next physical action?** The concrete next move, not
+  the outcome. If this todo *is* that action, it's a leaf.
+
+The second question is the **split-vs-block-vs-wait** rule — the
+next action's *location* decides, not the work's size:
+
+- Yours, and single-shape → do it (self-do test).
+- Yours, and too big for one tick → split (split test).
+- Another ref's output → `blocked-by` link; the leaf leaves
+  `view='doable'` until the blocker closes.
+- Outside the tree — a person, a clock, an upstream service →
+  `waiting-for:<x>` tag.
+- A human decision → `ask-user:<the question>`; broken as specified
+  → `halt:*` (both sections below).
+
+```python
+link(kind="todo", id=67, target="todo:104", rel="blocked-by")  # wait on a ref
+tag(kind="todo", id=67, add=["waiting-for:reviewer-x"])        # wait outside the tree
+```
+
+Minting "wait for X" as a child instead of tagging the wait is
+procrastination-by-planning in tree shape — the child can't act
+either.
 
 ## Self-do test (apply every item)
 
@@ -143,6 +177,34 @@ intervenes." Use it when:
 Halt removes the task from the doable rotation entirely. Prefer
 `ask-user` for "I need a decision" and reserve `halt` for "this is
 broken."
+
+## Recover from the depth-10 wall
+## What to do when "depth limit hit" refuses a child
+
+Ancestry chains cap at 10 deep — a child `put` under a parent
+already at depth 9 refuses with `depth limit hit`, and a re-parent
+move that would push a subtree past it refuses the same way.
+Recovery, in order of preference:
+
+1. **Do the work in the leaf.** Its `body=` holds the remaining
+   step list; work it across ticks instead of fanning out.
+2. **Record the dependency without nesting** — `waiting-for:<x>`
+   tag or `blocked-by` link (the raise's own `next=` hint).
+3. **Re-parent to a shallower parent** — the whole subtree moves,
+   and the same guard runs on the move, so
+   depth(new parent) + 1 + subtree height must stay under 10:
+
+```python
+link(kind="todo", id=67, target="todo:98", rel="parent")  # move under td98
+link(kind="todo", id=67, rel="parent", mode="remove")     # detach to a root
+```
+
+4. **Flatten the chain.** One-child-per-level runs are the usual
+   cause — lift the leaves, drop the redundant mid-levels.
+
+The wall is diagnostic, not a quota: work that honestly needs ten
+levels of nesting is rare, so hitting it usually means the
+decomposition above was too fine-grained to begin with.
 
 ## Anti-patterns (do not do)
 

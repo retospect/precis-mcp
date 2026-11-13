@@ -300,6 +300,17 @@ def test_allowlist_entries_are_real_and_reasoned() -> None:
 #: mentions (``rel=``, ``rel=…``) and unquoted spellings never match.
 _REL_KWARG_RE = re.compile(r"\brel\s*=\s*[\"']([^\"']+)[\"']")
 
+#: ``rel='…'`` spellings a specific ``put`` call shape accepts by folding
+#: them into another arg — not seeded relations, legal only inside that
+#: kind's ``put(`` call span (gr661901 / td662279:
+#: ``put(kind='finding', link=<h>, rel='provenance')`` — and the seeded
+#: ``'derived-from'`` — folds into ``provenance=``). Outside the call the
+#: spelling reads as a graph-edge example an agent could paste onto
+#: another verb, where it dies on the links FK, so the allowance is
+#: scoped by call span (:func:`_verb_kind_call_spans`), same approach as
+#: the alias spans.
+_PUT_FOLD_RELS: dict[str, set[str]] = {"finding": {"provenance"}}
+
 #: ``INSERT INTO relations (cols) VALUES (…), (…);`` — every seeding
 #: statement across the core and plugin migration dirs.
 _RELATIONS_INSERT_RE = re.compile(
@@ -368,18 +379,18 @@ def _seeded_relation_slugs() -> set[str]:
     return slugs
 
 
-def _alias_call_spans(text: str) -> list[tuple[int, int]]:
-    """Spans of every ``put(kind='alias', …)``/``edit(kind='alias', …)``
-    call in ``text`` — a ``rel=`` inside one names the *alias* relation
-    vocabulary (``precis.handlers.alias.RELATIONS``), not the graph
-    ``relations`` seed, and is judged by
-    :func:`test_skill_examples_execute_on_the_live_surface` against the
-    live handler instead (td658272: the two namespaces spell the same
-    kwarg, and the live surface refuses ``args={'rel': …}`` on alias —
-    ``rel`` shadows the declared top-level kwarg — so the alias skill
-    *must* teach the top-level spelling)."""
+def _verb_kind_call_spans(text: str, *, verbs: str, kind: str) -> list[tuple[int, int]]:
+    """Balanced ``(…)`` spans of every ``<verb>(kind='<kind>', …)`` call
+    in ``text`` — ``verbs`` is a regex alternation (``put``,
+    ``put|edit``) and ``kind=`` must be the call's first argument. A
+    ``rel=`` inside such a span can belong to a per-call vocabulary the
+    whole-file scan can't see — the alias relation namespace
+    (:func:`_alias_call_spans`) or a put-level fold (``_PUT_FOLD_RELS``)
+    — instead of the graph ``relations`` seed."""
     spans: list[tuple[int, int]] = []
-    opener = re.compile(r"\b(?:put|edit)\s*(\()\s*kind\s*=\s*['\"]alias['\"]")
+    opener = re.compile(
+        r"\b(?:" + verbs + r")\s*(\()\s*kind\s*=\s*['\"]" + re.escape(kind) + r"['\"]"
+    )
     for m in opener.finditer(text):
         start = m.start(1)
         depth = 0
@@ -406,6 +417,19 @@ def _alias_call_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _alias_call_spans(text: str) -> list[tuple[int, int]]:
+    """Spans of every ``put(kind='alias', …)``/``edit(kind='alias', …)``
+    call in ``text`` — a ``rel=`` inside one names the *alias* relation
+    vocabulary (``precis.handlers.alias.RELATIONS``), not the graph
+    ``relations`` seed, and is judged by
+    :func:`test_skill_examples_execute_on_the_live_surface` against the
+    live handler instead (td658272: the two namespaces spell the same
+    kwarg, and the live surface refuses ``args={'rel': …}`` on alias —
+    ``rel`` shadows the declared top-level kwarg — so the alias skill
+    *must* teach the top-level spelling)."""
+    return _verb_kind_call_spans(text, verbs="put|edit", kind="alias")
+
+
 def test_skill_rel_examples_use_seeded_relation_slugs() -> None:
     """gr635127 — every graph ``rel='...'`` a skill prints must resolve
     to a seeded relation (or the reserved virtual ``parent``); an agent
@@ -414,22 +438,36 @@ def test_skill_rel_examples_use_seeded_relation_slugs() -> None:
     ``applies-to:`` front matter carry the same kwarg spelling. A
     ``rel=`` inside a ``kind='alias'`` call is the alias namespace
     (:func:`_alias_call_spans`) — the alias skill's rel vocabulary is
-    handler-side, not migration-seeded."""
+    handler-side, not migration-seeded. A ``rel=`` inside a
+    ``put(kind='<kind>', …)`` call may be a put-level fold spelling
+    (``_PUT_FOLD_RELS``), legal on that call shape only."""
     allowed = _seeded_relation_slugs()
     bad: list[str] = []
     for path in skill_files():
         text = path.read_text(encoding="utf-8")
         alias_spans = _alias_call_spans(text)
+        fold_spans = {
+            kind: _verb_kind_call_spans(text, verbs="put", kind=kind)
+            for kind in _PUT_FOLD_RELS
+        }
         for m in _REL_KWARG_RE.finditer(text):
             if any(a <= m.start() < b for a, b in alias_spans):
                 continue  # alias namespace — judged by the live drift gate
             slug = m.group(1)
-            if slug not in allowed:
-                line = text.count("\n", 0, m.start()) + 1
-                bad.append(f"  {path.relative_to(ROOT)}:{line}: rel={slug!r}")
+            if slug in allowed:
+                continue
+            if any(
+                slug in fold_rels
+                and any(a <= m.start() < b for a, b in fold_spans[kind])
+                for kind, fold_rels in _PUT_FOLD_RELS.items()
+            ):
+                continue  # put-level fold — legal on that call shape only
+            line = text.count("\n", 0, m.start()) + 1
+            bad.append(f"  {path.relative_to(ROOT)}:{line}: rel={slug!r}")
     assert not bad, (
         f"{len(bad)} skill example(s) pass rel= values no migration seeds "
         "— an agent copying one gets a refusal. Pick a seeded slug "
         "(precis-relations lists the vocabulary; the reserved virtual "
-        "'parent' is legal for folder placement):\n" + "\n".join(bad)
+        "'parent' is legal for folder placement; put-level fold spellings "
+        "are scoped to their put(kind=…) call in _PUT_FOLD_RELS):\n" + "\n".join(bad)
     )
