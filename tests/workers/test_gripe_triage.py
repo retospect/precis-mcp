@@ -1776,6 +1776,64 @@ class TestRetoBatch:
         assert _blocked_by(store, gid) == todos
 
 
+class TestTerminalGripesNoAsks:
+    """gr657346: a gripe at a terminal STATUS has nothing pending —
+    the ask minter skips it and the sweep retires any ask it left
+    behind, so Reto's queue never holds an empty decision on a closed
+    gripe."""
+
+    @pytest.mark.parametrize("terminal", ["done", "wontfix"])
+    def test_terminal_stranded_gripe_gets_no_ask_and_sheds_tag(
+        self, store: Store, terminal: str
+    ) -> None:
+        """gr517747's shape: closed at a gripe-terminal STATUS
+        (``done``/``wontfix``) while still tagged ``reto:ask`` and
+        with no live ask — the fallback mint must not fire, and the
+        tag leaves the decision queue."""
+        gid = _gripe(store, "closed while tagged", status=terminal)
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert _digest_todos(store) == []
+        assert "reto:ask" not in _open_tag_values(store, gid)
+
+    @pytest.mark.parametrize("terminal", ["done", "wontfix"])
+    def test_open_ask_retires_once_gripe_closes(
+        self, store: Store, terminal: str
+    ) -> None:
+        """An ask that was live when its gripe closed — at either
+        gripe-terminal STATUS — retires on the next tick, and the
+        stuck tag sheds with it."""
+        gid = _gripe(store, "asked then closed")
+        _light(store)
+        _run(
+            store,
+            _llm({"verdicts": [_verdict(gid, fix="reto", ask=_ask("do A?"))]}),
+            notify=True,
+        )
+        assert len(_digest_todos(store)) == 1
+        store.add_tag(
+            gid,
+            Tag.closed("STATUS", terminal),
+            set_by="system",
+            replace_prefix=True,
+        )
+        _run(store, _llm({"verdicts": []}), notify=True)
+        assert _digest_todos(store) == []
+        assert "reto:ask" not in _open_tag_values(store, gid)
+
+    def test_open_stranded_gripe_still_mints(self, store: Store) -> None:
+        """The terminal filter is the only new gate: a stranded
+        non-terminal gripe still gets its fallback ask."""
+        gid = _gripe(store, "still open", status="triaged")
+        store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+        _light(store)
+        _run(store, _llm({"verdicts": []}), notify=True)
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        assert _blocked_by(store, gid) == todos
+
+
 class TestRuledGripes:
     """gr633601: a ``Reto <date>:`` ruling comment is the recorded
     answer — the recommender never re-parks a ruled gripe

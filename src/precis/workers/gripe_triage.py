@@ -46,7 +46,11 @@ per-tick ask sync sheds a ``reto:ask`` that outlived its ruling
 gripe kept resurfacing in the decision queue with nothing pending).
 The suppression is scoped to the settled question (td652983): an
 ask minted AFTER the newest ruling is fresh and unanswered — its
-tag, todo and spec-park all stand.
+tag, todo and spec-park all stand. A gripe-terminal STATUS
+(``done``/``wontfix``, :data:`_GRIPE_TERMINAL_STATUSES`) settles
+everything (gr657346): the tag-shed and the ask-retire sweep both
+treat a closed gripe as having nothing pending, so an ask can never
+outlive the gripe it questions.
 
 Lease, not a lock (the 0045 lesson, 30766194a — never hold a transaction
 across the model call): the claim is one short transaction stamping
@@ -3044,6 +3048,18 @@ _DIGEST_META = "gripe_triage:reto"
 _ASK_OF_META = "ask_of"
 _ASK_TITLE_CAP = 160
 
+#: Terminal gripe STATUS values — a gripe here has nothing pending,
+#: so the ``reto:ask`` plumbing (tag-shed, ask-retire sweep, stranded
+#: fallback mint) treats it as settled whatever its tags say
+#: (gr657346). Local literal mirroring
+#: ``_numeric_ref._BROWSE_TERMINALS["gripe"]`` stripped of the
+#: ``STATUS:`` prefix — the same don't-depend-on-what-it-watches
+#: distance as :data:`_BACKFILL_STATUSES`. NOT the todo set: the ask
+#: todo itself still gates on ``TERMINAL_TODO_STATUSES`` — this set
+#: describes the gripe the ask questions, and a ``wontfix`` gripe is
+#: just as closed as a ``done`` one.
+_GRIPE_TERMINAL_STATUSES: tuple[str, ...] = ("done", "wontfix")
+
 
 def _live_reto_asks(conn: Any) -> dict[int | None, list[int]]:
     """Live ``meta.digest``-marked todos with a non-terminal STATUS,
@@ -3076,8 +3092,12 @@ def _live_reto_asks(conn: Any) -> dict[int | None, list[int]]:
 
 
 def _gripe_still_reto(conn: Any, gid: int) -> bool:
-    """The gripe still waits on the ruling — a live gripe carrying the
-    OPEN ``reto:ask`` tag."""
+    """The gripe still waits on the ruling — a live gripe at a
+    non-gripe-terminal STATUS (:data:`_GRIPE_TERMINAL_STATUSES`)
+    carrying the OPEN ``reto:ask`` tag (gr657346: a gripe closed
+    STATUS:done while tagged still carried the tag, so its ask stayed
+    live on Reto's queue — terminal means nothing is pending, whatever
+    the tag says)."""
     row = conn.execute(
         """
         SELECT 1 FROM refs r
@@ -3086,8 +3106,15 @@ def _gripe_still_reto(conn: Any, gid: int) -> bool:
                          JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
                           AND t.value = 'reto:ask')
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt
+                    JOIN tags t ON t.tag_id = rt.tag_id
+                   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                   LIMIT 1),
+                 'open'
+               ) <> ALL(%s)
         """,
-        (gid,),
+        (gid, list(_GRIPE_TERMINAL_STATUSES)),
     ).fetchone()
     return row is not None
 
@@ -3123,7 +3150,10 @@ def _stranded_reto_gripes(
     (gr633601) — the tag marks the question the ruling already
     answered, and the ruled-ask drop in :func:`_sync_reto_asks` sheds
     it — while a tag stamped AFTER the newest ruling is a fresh,
-    unanswered ask and does mint (td652983)."""
+    unanswered ask and does mint (td652983). A gripe at a
+    gripe-terminal STATUS (:data:`_GRIPE_TERMINAL_STATUSES`) is
+    excluded too (gr657346): the mint would be an empty decision on a
+    closed gripe."""
     try:
         with store.tx() as conn:
             live = {k for k in _live_reto_asks(conn) if k is not None}
@@ -3141,6 +3171,14 @@ def _stranded_reto_gripes(
                                 WHERE rt.ref_id = r.ref_id
                                   AND t.namespace = 'OPEN'
                                   AND t.value = 'reto:ask')
+                   AND COALESCE(
+                         (SELECT t.value FROM ref_tags rt
+                            JOIN tags t ON t.tag_id = rt.tag_id
+                           WHERE rt.ref_id = r.ref_id
+                             AND t.namespace = 'STATUS'
+                           LIMIT 1),
+                         'open'
+                       ) <> ALL(%s)
                    AND NOT EXISTS (SELECT 1 FROM chunks c
                                      WHERE c.ref_id = r.ref_id
                                        AND c.chunk_kind = ANY(%s)
@@ -3158,6 +3196,7 @@ def _stranded_reto_gripes(
                 (
                     _COMMENT_KIND,
                     f"{_RECOMMEND_PREFIX}%",
+                    list(_GRIPE_TERMINAL_STATUSES),
                     list(_RULING_CHUNK_KINDS),
                     _RULING_SQL,
                 ),
@@ -3184,10 +3223,14 @@ def _drop_ruled_asks(store: Store) -> int:
     one exists — an in-place refresh keeps it, so a re-stamped tag on
     a settled todo still sheds — else the tag's own stamp. A tag or
     todo stamped AFTER the newest ruling is a fresh, unanswered ask
-    and keeps its tag (td652983). The ask-retire sweep in
-    :func:`_sync_reto_asks` then clears the answered todo. Returns
-    the count dropped; any store fault logs and reads 0 — the sweep
-    is best-effort."""
+    and keeps its tag (td652983). A gripe at a gripe-terminal STATUS
+    (:data:`_GRIPE_TERMINAL_STATUSES`) sheds unconditionally
+    (gr657346: closing answers every pending question, so a closed
+    gripe leaves the queue even when its tag outlived the close — the
+    stranded scan and the ask-retire sweep both read the tag). The
+    ask-retire sweep in :func:`_sync_reto_asks` then clears the
+    answered todo. Returns the count dropped; any store fault logs
+    and reads 0 — the sweep is best-effort."""
     from precis.todo import TERMINAL_TODO_STATUSES
 
     try:
@@ -3208,7 +3251,11 @@ def _drop_ruled_asks(store: Store) -> int:
                                     JOIN tags st ON st.tag_id = srt.tag_id
                                    WHERE srt.ref_id = a.ref_id
                                      AND st.namespace = 'STATUS' LIMIT 1),
-                                 'open') <> ALL(%s)) AS ask_todo_at
+                                 'open') <> ALL(%s)) AS ask_todo_at,
+                       (SELECT st.value FROM ref_tags srt
+                          JOIN tags st ON st.tag_id = srt.tag_id
+                         WHERE srt.ref_id = rt.ref_id
+                           AND st.namespace = 'STATUS' LIMIT 1) AS gstatus
                   FROM ref_tags rt
                   JOIN tags t ON t.tag_id = rt.tag_id
                  WHERE t.namespace = 'OPEN' AND t.value = 'reto:ask'
@@ -3226,8 +3273,9 @@ def _drop_ruled_asks(store: Store) -> int:
             ).fetchall()
             settled = [
                 int(ref_id)
-                for ref_id, tag_at, ruled_at, todo_at in rows
-                if ruled_at is not None and ruled_at > (todo_at or tag_at)
+                for ref_id, tag_at, ruled_at, todo_at, gstatus in rows
+                if str(gstatus or "open") in _GRIPE_TERMINAL_STATUSES
+                or (ruled_at is not None and ruled_at > (todo_at or tag_at))
             ]
             if settled:
                 conn.execute(
