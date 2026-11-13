@@ -1083,6 +1083,21 @@ def run_finding_chase_pass(
     if taproot_enabled is None:
         taproot_enabled = bool(int(os.environ.get(_TAPROOT_CHASE_ENV, "0") or "0"))
 
+    # gr658507: close ``want-paper`` asks whose paper has landed and
+    # revive their ``dead_chain(unacquirable)`` findings. That status is
+    # terminal to the claim query, so without this sweep nothing ever
+    # notices the evidence arrived — the ask just rots on the owner's
+    # queue. Runs before the drain check: queue housekeeping, not new
+    # claim work (a revived finding simply waits out the drain as
+    # ``acquiring``).
+    try:
+        asks_closed = _sweep_want_paper_asks(store)
+    except Exception:  # pragma: no cover — defensive
+        log.warning("chase: want-paper sweep failed", exc_info=True)
+        asks_closed = 0
+    if asks_closed:
+        log.info("chase: closed %d satisfied want-paper ask(s)", asks_closed)
+
     if drain_requested():
         # A draining worker takes no new findings (gr575071): the pass's
         # LLM verdicts route through the same drain-refused slot arm, so
@@ -2361,6 +2376,375 @@ def _file_want_paper_todo(
             set_by="chase",
             conn=conn,
         )
+
+
+# ── want-paper ask sweep (gr658507) ───────────────────────────────
+
+
+def _open_want_paper_asks(conn: Connection) -> list[tuple[int, dict[str, Any]]]:
+    """Live ``want-paper`` asks: ``(todo_ref_id, meta)`` pairs.
+
+    "Live" = the queue state a person still has to answer — the ask is
+    tagged ``want-paper`` and carries any non-terminal ``STATUS:``
+    (``done``/``won't-do`` are history per the queue convention in
+    ``precis-user-queue-help``). Hand-filed asks ride along too: they
+    share the tag even without the chase mint's ``meta.stub_ref_ids``.
+    """
+    rows = conn.execute(
+        """
+        SELECT r.ref_id, r.meta
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL
+           AND t.namespace = 'OPEN' AND t.value = %s
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags srt
+                   JOIN tags st ON st.tag_id = srt.tag_id
+                  WHERE srt.ref_id = r.ref_id
+                    AND st.namespace = %s
+                    AND st.value <> ALL(%s)
+               )
+        """,
+        (_WANT_PAPER_TAG, _STATUS_NAMESPACE, ["done", "won't-do"]),
+    ).fetchall()
+    return [(int(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def _has_body_chunks(conn: Connection, ref_id: int) -> bool:
+    """True when ``ref_id`` holds at least one live body chunk.
+
+    ``ord >= 0`` only — a metadata-only stub's synthesized card chunks
+    (``ord < 0``) don't count, the same stub-vs-body distinction
+    ``db_writer``/``paper_ingested`` draw.
+    """
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM chunks "
+        "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL)",
+        (ref_id,),
+    ).fetchone()
+    return bool(row[0]) if row is not None else False
+
+
+def _held_paper_for_stub(conn: Connection, stub_ref_id: int) -> tuple[int, bool] | None:
+    """The live ref that now holds the paper this stub wanted, if any.
+
+    Returns ``(held_ref_id, needs_merge)``: ``needs_merge`` is True when
+    the held copy is a *different* live ref and the stub should be folded
+    into it (so the finding's ``awaits-evidence`` edge repoints onto the
+    chunks). Resolutions, cheapest first:
+
+    * the stub itself — ingest upgraded it in place
+      (``probe_existing`` hit → same ref gains the body);
+    * the ref it was superseded by — a dedup fold retired the stub
+      onto a chunked survivor (``meta.superseded_by``);
+    * a live ``paper`` sharing one of the stub's external identifiers
+      — only legacy case-variant DOI rows can co-live (the
+      ``(id_kind, id_value)`` PK plus the lowercase-on-write trigger
+      forbid new ones), the same residue ``reconcile_by_doi_case``
+      exists to clean;
+    * for an id-less stub only, a held paper whose title matches at the
+      same auto-merge gate ``reconcile_by_title_similarity`` uses
+      (``similarity`` ≥ ``_TITLE_AUTO_SIM`` +
+      :func:`title_merge_refusal` clean — matching year, agreeing first
+      author, enough distinctive tokens). A stub carrying external ids
+      asserts a distinct work, so a mere title match never auto-folds
+      it — the same narrow gate dedup keeps.
+    """
+    row = conn.execute(
+        "SELECT retired_at, meta->>'superseded_by', title, year, authors "
+        "FROM refs WHERE ref_id = %s",
+        (stub_ref_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    retired_at, superseded_by, stub_title, stub_year, stub_authors = row
+    if retired_at is not None:
+        try:
+            surv_id = int(superseded_by)
+        except (TypeError, ValueError):
+            return None
+        live = conn.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            (surv_id,),
+        ).fetchone()
+        if live is not None and _has_body_chunks(conn, surv_id):
+            return surv_id, False
+        return None
+    if _has_body_chunks(conn, stub_ref_id):
+        return stub_ref_id, False
+
+    from precis.ingest.dedup import (
+        _MIGRATABLE_ID_KINDS,
+        _TITLE_AUTO_SIM,
+        _TITLE_REVIEW_SIM,
+    )
+
+    twin = conn.execute(
+        """
+        SELECT r2.ref_id
+          FROM ref_identifiers i1
+          JOIN ref_identifiers i2
+            ON i2.id_kind = i1.id_kind
+           AND lower(i2.id_value) = lower(i1.id_value)
+          JOIN refs r2 ON r2.ref_id = i2.ref_id
+         WHERE i1.ref_id = %s
+           AND i1.id_kind = ANY(%s)
+           AND r2.ref_id <> %s
+           AND r2.kind = 'paper'
+           AND r2.retired_at IS NULL
+           AND EXISTS (
+                 SELECT 1 FROM chunks c
+                  WHERE c.ref_id = r2.ref_id
+                    AND c.ord >= 0 AND c.retired_at IS NULL
+               )
+         ORDER BY r2.ref_id
+         LIMIT 1
+        """,
+        (stub_ref_id, list(_MIGRATABLE_ID_KINDS), stub_ref_id),
+    ).fetchone()
+    if twin is not None:
+        return int(twin[0]), True
+
+    # Title match — id-less stubs only, per dedup's own narrow gate.
+    if not stub_title:
+        return None
+    has_id = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM ref_identifiers "
+        "WHERE ref_id = %s AND id_kind = ANY(%s))",
+        (stub_ref_id, list(_MIGRATABLE_ID_KINDS)),
+    ).fetchone()
+    if has_id is None or has_id[0]:
+        return None
+    cand = conn.execute(
+        """
+        SELECT r2.ref_id, r2.title, r2.year, r2.authors,
+               similarity(r2.title, %s) AS sim
+          FROM refs r2
+         WHERE r2.kind = 'paper' AND r2.retired_at IS NULL
+           AND r2.pdf_sha256 IS NOT NULL AND r2.title IS NOT NULL
+           AND r2.ref_id <> %s
+           AND similarity(r2.title, %s) >= %s
+           AND EXISTS (
+                 SELECT 1 FROM chunks c
+                  WHERE c.ref_id = r2.ref_id
+                    AND c.ord >= 0 AND c.retired_at IS NULL
+               )
+         ORDER BY sim DESC, r2.ref_id
+         LIMIT 1
+        """,
+        (stub_title, stub_ref_id, stub_title, _TITLE_REVIEW_SIM),
+    ).fetchone()
+    if cand is None or float(cand[4]) < _TITLE_AUTO_SIM:
+        return None
+    from precis.utils.title_merge import title_merge_refusal
+
+    if (
+        title_merge_refusal(
+            stub_title,
+            stub_year,
+            stub_authors,
+            cand[1],
+            cand[2],
+            cand[3],
+        )
+        is not None
+    ):
+        return None
+    return int(cand[0]), True
+
+
+def _close_want_paper_ask(
+    conn: Connection,
+    store: Store,
+    todo_id: int,
+    meta: dict[str, Any],
+) -> bool:
+    """Close one satisfied ``want-paper`` ask + revive its finding.
+
+    True when the ask was closed (the caller commits). "Satisfied" =
+    at least one wanted paper now resolves to a live ref with body
+    chunks (:func:`_held_paper_for_stub`) — one landed paper is all
+    the acquiring arm needs to ground the claim, so the whole ask
+    closes; a finding that still can't ground re-dies and re-files a
+    fresh ask on its own.
+
+    Two side effects ride the same transaction:
+
+    * a live stub whose paper landed under a *different* ref is folded
+      into that held twin via :func:`~precis.ingest.dedup.merge_duplicate`
+      — it IS a duplicate (shared external id), and the fold repoints
+      the finding's ``awaits-evidence`` edge onto the chunks. Without
+      it a revived finding would re-poll the dead stub and die again;
+    * the named finding flips ``dead_chain`` → ``acquiring`` (only
+      when its recorded death was ``unacquirable`` — the ask exists
+      because the give-up filed it, but the gate keeps a hand-tagged
+      ask from resurrecting a finding dead for another reason).
+    """
+    stub_ids: list[int] = []
+    for raw in meta.get("stub_ref_ids") or []:
+        try:
+            sid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if sid not in stub_ids:
+            stub_ids.append(sid)
+    try:
+        raw_fid = meta.get("finding_ref_id")
+        finding_id = int(raw_fid) if raw_fid is not None else None
+    except (TypeError, ValueError):
+        finding_id = None
+
+    # Hand-filed asks carry no meta.stub_ref_ids — the convention's
+    # related-to links to the wanted paper/finding are the fallback.
+    for dst, kind in conn.execute(
+        """
+        SELECT l.dst_ref_id, r.kind
+          FROM links l JOIN refs r ON r.ref_id = l.dst_ref_id
+         WHERE l.src_ref_id = %s AND l.relation = 'related-to'
+           AND r.kind IN ('paper', 'finding')
+        """,
+        (todo_id,),
+    ).fetchall():
+        if kind == "paper" and int(dst) not in stub_ids:
+            stub_ids.append(int(dst))
+        elif kind == "finding" and finding_id is None:
+            finding_id = int(dst)
+
+    held = [
+        (sid, hid, needs_merge)
+        for sid in stub_ids
+        if (hit := _held_paper_for_stub(conn, sid)) is not None
+        for hid, needs_merge in (hit,)
+    ]
+    if not held:
+        return False
+
+    from precis.ingest.dedup import merge_duplicate
+    from precis.store.types import ChunkInsert, Tag
+
+    for sid, hid, needs_merge in held:
+        if not needs_merge:
+            continue
+        live = conn.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            (sid,),
+        ).fetchone()
+        if live is not None:
+            merge_duplicate(
+                store,
+                survivor_ref_id=hid,
+                duplicate_ref_id=sid,
+                source=_SOURCE,
+                reason="want-paper satisfied: paper already held (gr658507)",
+                conn=conn,
+            )
+
+    revived = False
+    if finding_id is not None:
+        frow = conn.execute(
+            """
+            SELECT (SELECT st.value FROM ref_tags srt
+                      JOIN tags st ON st.tag_id = srt.tag_id
+                     WHERE srt.ref_id = r.ref_id
+                       AND st.namespace = %s
+                     ORDER BY srt.created_at DESC LIMIT 1) AS status,
+                   r.meta->>'dead_reason'
+              FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL
+            """,
+            (_STATUS_NAMESPACE, finding_id),
+        ).fetchone()
+        if frow is not None and frow[0] == _DEAD_CHAIN and frow[1] == _UNACQUIRABLE:
+            _set_status(conn, finding_id, _ACQUIRING)
+            revived = True
+            store.append_event(
+                finding_id,
+                source=_SOURCE,
+                event="revived",
+                payload={
+                    "ask_ref_id": todo_id,
+                    "held_ref_ids": [hid for _sid, hid, _m in held],
+                    "via": "want-paper sweep (gr658507)",
+                },
+                conn=conn,
+            )
+
+    store.add_tag(
+        todo_id,
+        Tag.closed(_STATUS_NAMESPACE, "done"),
+        set_by="chase",
+        replace_prefix=True,
+        conn=conn,
+    )
+    # The queue convention records the answer as a comment — mirror
+    # ``_comment_timeline._insert_next``'s ord rule inline so the comment
+    # commits in this same tx.
+    from precis import principal
+
+    labels = ", ".join(f"pa{hid}" for _sid, hid, _m in held)
+    note = (
+        f"auto-resolved: {labels} ingested — the want-paper ask is "
+        "satisfied (chase sweep, gr658507)"
+    )
+    if revived:
+        note += f"; finding fi{finding_id} is back to acquiring"
+    row = conn.execute(
+        "SELECT COALESCE(MAX(ord), 0) + 1 FROM chunks WHERE ref_id = %s AND ord >= 0",
+        (todo_id,),
+    ).fetchone()
+    next_ord = int(row[0]) if row is not None else 1
+    store.chunks.insert_chunks(
+        todo_id,
+        [
+            ChunkInsert(
+                ord=next_ord,
+                text=note,
+                meta={
+                    "chunk_kind": "todo_comment",
+                    "principal": principal.current(),
+                },
+            )
+        ],
+        conn=conn,
+    )
+    store.append_event(
+        todo_id,
+        source=_SOURCE,
+        event="want-paper-satisfied",
+        payload={
+            "finding_ref_id": finding_id,
+            "held_ref_ids": [hid for _sid, hid, _m in held],
+            "finding_revived": revived,
+        },
+        conn=conn,
+    )
+    return True
+
+
+def _sweep_want_paper_asks(store: Store) -> int:
+    """Auto-close ``want-paper`` asks whose paper has landed (gr658507).
+
+    Runs at the head of every :func:`run_finding_chase_pass`. Each ask
+    is processed in its own transaction — one bad row can't poison the
+    sweep, mirroring the per-finding loop below. Returns the number of
+    asks closed.
+    """
+    with store.pool.connection() as conn:
+        asks = _open_want_paper_asks(conn)
+    closed = 0
+    for todo_id, meta in asks:
+        try:
+            with store.pool.connection() as conn:
+                if _close_want_paper_ask(conn, store, todo_id, meta):
+                    conn.commit()
+                    closed += 1
+        except Exception:  # pragma: no cover — defensive
+            log.warning(
+                "chase: want-paper sweep failed on todo id=%d",
+                todo_id,
+                exc_info=True,
+            )
+    return closed
 
 
 def _clear_dead_reason(conn: Connection, finding_ref_id: int) -> None:

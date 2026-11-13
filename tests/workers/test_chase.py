@@ -1201,6 +1201,183 @@ def test_acquiring_regive_up_refiles_want_paper_once_prior_ask_closed(
     assert (new_meta or {}).get("finding_ref_id") == fid
 
 
+def _open_want_paper_todos(store) -> list[int]:
+    """ref_ids of live want-paper todos (any STATUS)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'want-paper'
+            """
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _give_up_and_file_ask(store, *, doi: str) -> tuple[int, int, int]:
+    """Seed an acquiring finding on ``doi``, exhaust the stub, run one
+    pass past the grace window. Returns ``(finding_id, stub_id, todo_id)``."""
+    fid, stub_id = _seed_acquiring_finding(store, wants=[{"doi": doi}])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.commit()
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+    todos = _open_want_paper_todos(store)
+    assert len(todos) == 1
+    assert _status_tag(store, todos[0]) == "open"
+    return fid, stub_id, todos[0]
+
+
+def test_want_paper_ask_autocloses_once_stub_gains_chunks(store) -> None:
+    """gr658507: when the wanted paper lands on the ask's stub itself,
+    the next chase pass's want-paper sweep closes the ask
+    (``STATUS:done``) and flips the ``dead_chain(unacquirable)`` finding
+    back to ``acquiring`` — which the SAME pass then claims and grounds,
+    ending at ``tracing``."""
+    claim_text = "a claim awaiting corpus evidence anywhere in the literature"
+    fid, stub_id, todo_id = _give_up_and_file_ask(store, doi="10.1/acq-wp3")
+
+    # The stub "lands a PDF": a body chunk appears on it, the way
+    # ingest-upgrades-the-stub-in-place would write it.
+    store.chunks.insert_chunks(
+        stub_id,
+        [ChunkInsert(ord=0, text=f"{claim_text}, stated directly.", meta={})],
+    )
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, todo_id) == "done"
+    # Revived + grounded in one pass: dead_chain → acquiring → tracing.
+    assert _status_tag(store, fid) == "tracing"
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (fid,)
+        ).fetchone()
+    assert (meta_row[0] or {}).get("dead_reason") is None
+
+
+def test_want_paper_ask_autocloses_when_stub_folded_onto_held(store) -> None:
+    """gr658507's exact report: the paper landed under a DIFFERENT ref
+    and the ask's dead stub was later folded into it by dedup
+    (``superseded_by`` + retired). The sweep follows the supersede
+    edge, closes the ask, and revives the finding — the awaits-evidence
+    edge the fold migrated already names the chunked survivor."""
+    from precis.ingest.dedup import merge_duplicate
+
+    claim_text = "a claim awaiting corpus evidence anywhere in the literature"
+    fid, stub_id, todo_id = _give_up_and_file_ask(store, doi="10.1/acq-wp4")
+
+    # The held copy under a separate ref (different bytes, no shared
+    # identifier rows — the (id_kind, id_value) PK forbids them), then
+    # the periodic dedup fold retires the stub onto it, migrating the
+    # finding's awaits-evidence edge.
+    held_id = _seed_paper(
+        store,
+        cite_key="heldtwin24",
+        blocks=[f"{claim_text}, stated directly."],
+    )
+    with store.tx() as conn:
+        merge_duplicate(
+            store,
+            survivor_ref_id=held_id,
+            duplicate_ref_id=stub_id,
+            source="test",
+            reason="test fold",
+            conn=conn,
+        )
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, todo_id) == "done"
+    assert _status_tag(store, fid) == "tracing"
+    awaits = store.links_for(fid, direction="out", relation="awaits-evidence")
+    assert {link.dst_ref_id for link in awaits} == {held_id}
+
+
+def test_want_paper_ask_autocloses_on_idless_title_match(store) -> None:
+    """An id-less ``title``+``url`` stub whose held twin is provably the
+    same work (reconcile's own auto-merge gate: trigram sim >=
+    ``_TITLE_AUTO_SIM`` + matching year + agreeing first author) is
+    folded into it, and the ask closes."""
+    claim_text = "a claim awaiting corpus evidence anywhere in the literature"
+    fid, stub_id = _seed_acquiring_finding(
+        store,
+        wants=[
+            {
+                "title": "Kinetic Monte Carlo of surface segregation in copper alloys",
+                "url": "https://example.invalid/kmc-seg",
+                "year": 2021,
+            }
+        ],
+        body=claim_text,
+    )
+    # An id-less stub is fetch-exhausted from mint — one aged waiting
+    # event carries the give-up straight over the grace window.
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+    todos = _open_want_paper_todos(store)
+    assert len(todos) == 1
+    todo_id = todos[0]
+
+    # The held copy lands later: same work, full text in.
+    held_id = _seed_paper(
+        store,
+        cite_key="kmcseg21",
+        blocks=[f"{claim_text}, stated directly."],
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/held') "
+            "ON CONFLICT (pdf_sha256) DO NOTHING",
+            (f"{held_id:064d}", f"{held_id:064d}"),
+        )
+        conn.execute(
+            "UPDATE refs SET title = %s, year = 2021, "
+            "authors = %s::jsonb, pdf_sha256 = %s "
+            "WHERE ref_id = %s",
+            (
+                "Kinetic Monte Carlo of surface segregation in copper alloys",
+                '[{"family": "Muller", "given": "A"}]',
+                f"{held_id:064d}",
+                held_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE refs SET year = 2021, authors = %s::jsonb WHERE ref_id = %s",
+            ('[{"family": "Muller", "given": "A"}]', stub_id),
+        )
+        conn.commit()
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, todo_id) == "done"
+    assert _status_tag(store, fid) == "tracing"
+    awaits = store.links_for(fid, direction="out", relation="awaits-evidence")
+    assert {link.dst_ref_id for link in awaits} == {held_id}
+
+
+def test_want_paper_ask_stays_open_while_paper_missing(store) -> None:
+    """The sweep only closes asks whose paper actually landed — an ask
+    whose stub is still bare and has no held twin stays on the queue."""
+    _fid, _stub_id, todo_id = _give_up_and_file_ask(store, doi="10.1/acq-wp5")
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert _status_tag(store, todo_id) == "open"
+
+
 def test_acquiring_waits_within_grace_window_even_when_exhausted(store) -> None:
     """A stub that's already fetch-exhausted does NOT trigger give-up
     before the grace window has elapsed -- age is required, not just

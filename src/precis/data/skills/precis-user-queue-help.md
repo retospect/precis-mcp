@@ -99,13 +99,16 @@ the owner wants by hand files the same shape: verb-first title naming
 the paper's best identifier (DOI / arXiv), the `want-paper` tag, the
 `waiting-for:<login>` park.
 
-Close it like any queue item once the PDF is ingested — then resume
-the finding by hand. A `dead_chain(reason=unacquirable)` is NOT
-revived by ingestion: the chase's auto-revive covers only
-`abandoned_waiting`, so an unacquirable finding stays dead until you
-flip it back to `acquiring` — it re-polls its `awaits-evidence`
-stubs and the now-ingested one grounds the claim on the next chase
-pass:
+Once the PDF is ingested the chase pass's want-paper sweep usually
+closes the ask for you (gr658507): when a wanted paper resolves to a
+live ref with body chunks — the stub upgraded in place, a dedup fold
+onto a chunked survivor, or a held twin sharing the stub's DOI /
+arXiv / S2 — the sweep flips the ask to `STATUS:done` and resumes a
+`dead_chain(reason=unacquirable)` finding to `acquiring` itself, so
+the same pass can ground the claim. To close by hand: comment the
+answer + `STATUS:done` like any queue item, then resume the finding
+— it re-polls its `awaits-evidence` stubs and the now-ingested one
+grounds the claim on the next chase pass:
 
 ```python
 tag(kind="finding", id=<finding_id>, add=["STATUS:acquiring"])
