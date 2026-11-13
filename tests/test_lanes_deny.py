@@ -436,7 +436,11 @@ def test_repo_refusal_fails_closed() -> None:
 def test_a_known_repo_stays_closed_without_a_readable_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(lanes, "KNOWN_REPOS", ("precis", "catpath"))
+    monkeypatch.setitem(
+        lanes.REPO_PROFILES,
+        "catpath",
+        replace(lanes.REPO_PROFILES["catpath"], lander="land_slice"),
+    )
     for s in (None, object()):
         assert lanes.open_repos(s) == frozenset({"precis"})
         err = lanes.repo_refusal(["catpath"], s)
@@ -453,9 +457,48 @@ def test_open_repos_lists_only_known_names(
         # Listed but profile-less: the setting alone opens nothing.
         assert lanes.open_repos(store) == frozenset({"precis"})
         assert lanes.repo_refusal(["catpath"], store) is not None
-        monkeypatch.setattr(lanes, "KNOWN_REPOS", ("precis", "catpath"))
+        monkeypatch.setitem(
+            lanes.REPO_PROFILES,
+            "catpath",
+            replace(lanes.REPO_PROFILES["catpath"], lander="land_slice"),
+        )
         assert lanes.open_repos(store) == frozenset({"precis", "catpath"})
         assert lanes.repo_refusal(["catpath"], store) is None
         assert lanes.repo_refusal(["hexfold"], store) is not None
     finally:
         psettings.clear_setting("factory.open_repos", store=store)
+
+
+def test_catpath_profile_is_fenced_and_unlanded() -> None:
+    prof = lanes.REPO_PROFILES["catpath"]
+    cmds = prof.setup_cmds + prof.lint_cmds + prof.test_cmds
+    assert cmds and not any("ruff format" in c for c in cmds)
+    assert prof.deny_paths == (".github/**",)
+    assert prof.lander is None
+    assert prof.remote.startswith("https://") and "@" not in prof.remote
+
+
+def test_profile_lookup_and_known_repos() -> None:
+    assert lanes.known_repos() == ("precis",)
+    precis = lanes.repo_profile("precis")
+    assert precis is not None and precis.lander == "land_slice"
+    assert lanes.repo_profile("nope") is None
+
+
+@pytest.mark.db
+def test_real_catpath_profile_stays_closed_under_the_setting(store: Store) -> None:
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        assert lanes.open_repos(store) == frozenset({"precis"})
+        assert lanes.repo_refusal(["catpath"], store) is not None
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+
+
+def test_every_profile_builds_from_main() -> None:
+    """``run_slice`` still takes a slice's base from the todo's land target
+    (``main`` unless a release fix): a profile with another base would be
+    refused at submit and measured against the wrong ref at poll. Carry the
+    base on the job before adding one."""
+    for name, profile in lanes.REPO_PROFILES.items():
+        assert profile.base == "main", name

@@ -346,11 +346,82 @@ def deny_paths_for(store: Any) -> tuple[str, ...]:
 #: carries a ``repo:`` tag.
 DEFAULT_REPO = "precis"
 
-#: Repos ``run_slice`` has a build profile for (worktree root, gates,
-#: lander). A ``repo:`` value outside this set is refused however the
-#: setting reads: without a profile the slice would be built in a precis
-#: worktree (td659522 step 0; the catpath profile joins in step 1).
-KNOWN_REPOS: tuple[str, ...] = (DEFAULT_REPO,)
+
+@dataclass(frozen=True)
+class RepoProfile:
+    """How the factory builds one repo's slices (td659522). Data only: the
+    workers look a profile up with :func:`repo_profile` at call time.
+
+    ``name`` is the ``repo:<name>`` tag value. ``remote`` is the https
+    origin URL the host clone must carry, never with userinfo. ``base`` is
+    the branch a slice worktree starts from. ``private`` means the worker
+    fetches under the factory credential and the session is told not to
+    fetch. ``setup_cmds``, ``lint_cmds`` and ``test_cmds`` are the shell
+    commands run in the worktree, in that order. ``deny_paths`` is the
+    write-deny list for the lane; ``None`` means :func:`deny_paths_for`
+    (the precis behaviour). ``read_first`` lists files the brief tells the
+    session to read. ``exclude`` lines are kept in the clone's
+    ``.git/info/exclude``. ``pin`` is ``(lockfile path on precis
+    origin/main, package name)``: the base must contain the git rev the
+    lockfile pins for that package. ``uv_python`` is the ``UV_PYTHON``
+    line for the repo's commands (``None``: the worker's own). ``mcp`` is
+    true when the tree carries the precis ``.mcp.json``. ``lander`` is the
+    job type that lands a slice of this repo; ``None`` means the repo is
+    not buildable end to end.
+    """
+
+    name: str
+    remote: str = ""
+    base: str = "main"
+    private: bool = False
+    setup_cmds: tuple[str, ...] = ()
+    lint_cmds: tuple[str, ...] = ()
+    test_cmds: tuple[str, ...] = ()
+    deny_paths: tuple[str, ...] | None = None
+    read_first: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    pin: tuple[str, str] | None = None
+    uv_python: str | None = None
+    mcp: bool = False
+    lander: str | None = None
+
+
+#: Build profiles by repo name, in registry order. A profile without a
+#: ``lander`` is data only: :func:`known_repos` leaves it out, so the
+#: ``factory.open_repos`` setting cannot open it until a lander exists.
+#: catpath is deliberately not ruff-formatted, so none of its commands
+#: run ``ruff format``.
+REPO_PROFILES: dict[str, RepoProfile] = {
+    DEFAULT_REPO: RepoProfile(name=DEFAULT_REPO, mcp=True, lander="land_slice"),
+    "catpath": RepoProfile(
+        name="catpath",
+        remote="https://github.com/retospect/catpath",
+        private=True,
+        setup_cmds=("uv sync --extra dev",),
+        lint_cmds=("uv run ruff check src tests",),
+        test_cmds=("uv run pytest",),
+        deny_paths=(".github/**",),
+        read_first=("CONTRIBUTING.md",),
+        exclude=("scratch/", ".devin/", ".claude/worktrees/"),
+        pin=("uv.lock", "autocatpath"),
+        # 3.12 is in catpath's CI matrix (3.10-3.12) and is precis's floor.
+        uv_python="3.12",
+        lander=None,
+    ),
+}
+
+
+def repo_profile(name: str) -> RepoProfile | None:
+    """The build profile for ``name``, looked up at call time."""
+    return REPO_PROFILES.get(name)
+
+
+def known_repos() -> tuple[str, ...]:
+    """Repos ``run_slice`` can build end to end: the :data:`REPO_PROFILES`
+    names whose profile has a ``lander``, in registry order. A ``repo:``
+    value outside this tuple is refused however the setting reads."""
+    return tuple(n for n, p in REPO_PROFILES.items() if p.lander is not None)
+
 
 _REPO_TAG = "repo:"
 
@@ -366,7 +437,7 @@ def repo_tags(tags: Iterable[Any]) -> list[str]:
 
 def open_repos(store: Any) -> frozenset[str]:
     """The repos the factory may build in, resolved at call time:
-    :data:`DEFAULT_REPO` always, plus each :data:`KNOWN_REPOS` name the
+    :data:`DEFAULT_REPO` always, plus each :func:`known_repos` name the
     DB-only setting ``factory.open_repos`` lists (comma-separated).
 
     ``store is None``, an unreadable store or the row absent all return
@@ -389,7 +460,7 @@ def open_repos(store: Any) -> frozenset[str]:
     if row is None:
         return default
     listed = {part.strip() for part in str(row[0]).split(",")}
-    return default | (listed & set(KNOWN_REPOS))
+    return default | (listed & set(known_repos()))
 
 
 def repo_refusal(repos: Iterable[str], store: Any) -> str | None:
@@ -398,7 +469,7 @@ def repo_refusal(repos: Iterable[str], store: Any) -> str | None:
 
     No tag or ``repo:precis`` builds here. Anything else fails closed:
     more than one value, a value without a build profile
-    (:data:`KNOWN_REPOS`), or a known repo ``factory.open_repos`` does
+    (:func:`known_repos`), or a known repo ``factory.open_repos`` does
     not list.
     """
     names = list(dict.fromkeys(repos))
@@ -410,10 +481,10 @@ def repo_refusal(repos: Iterable[str], store: Any) -> str | None:
             f"({', '.join(names)}); next: split it into one todo per repo"
         )
     name = names[0]
-    if name not in KNOWN_REPOS:
+    if name not in known_repos():
         return (
             f"repo:{name} has no factory build profile "
-            f"(known: {', '.join(KNOWN_REPOS)}); next: build it by hand in that "
+            f"(known: {', '.join(known_repos())}); next: build it by hand in that "
             "repo, or retag the todo"
         )
     if name not in open_repos(store):

@@ -5,6 +5,7 @@ its task done) between passes."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -316,7 +317,11 @@ def test_a_node_tagged_for_another_repo_is_not_dispatched(
             for n in res.notes
         ), held
     # A build profile alone opens nothing; the DB setting is the switch.
-    monkeypatch.setattr(L, "KNOWN_REPOS", ("precis", "catpath"))
+    monkeypatch.setitem(
+        L.REPO_PROFILES,
+        "catpath",
+        replace(L.REPO_PROFILES["catpath"], lander="land_slice"),
+    )
     assert pd.run_pass(store).dispatched == 0
     psettings.set_setting("factory.open_repos", "catpath", store=store)
     try:
@@ -325,6 +330,52 @@ def test_a_node_tagged_for_another_repo_is_not_dispatched(
         psettings.clear_setting("factory.open_repos", store=store)
     assert len(_jobs_under(store, engine)) == 1
     assert len(_jobs_under(store, inner)) == 1
+    # td659522 step 1: the build in another repo carries it on the job; a
+    # repo:precis node's params stay as they were.
+    for built in (engine, inner):
+        assert _jobs_under(store, built)[0][1]["params"]["repo"] == "catpath"
+    assert "repo" not in _jobs_under(store, glue)[0][1]["params"]
+
+
+def test_a_repo_node_routes_on_the_profile_deny_paths(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td659522 step 1: a brief for another repo that names a precis deny
+    path is not routed to the coordinator; one naming the profile's own
+    deny path (``.github/**``) is."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "plain",
+            "Plain",
+            {"op": "run_slice"},
+            body="Mirror the layout of src/precis/plans/lanes.py in the grid.",
+        )
+        m.node(
+            "ci",
+            "CI",
+            {"op": "run_slice"},
+            body="Edit .github/workflows/ci.yml to add 3.12.",
+        )
+
+    mint = T._run(store, None, build)
+    plain, ci = mint.ids["plain"], mint.ids["ci"]
+    for tid in (plain, ci):
+        store.add_tag(tid, Tag.open("repo:catpath"), set_by="system")
+    monkeypatch.setitem(
+        L.REPO_PROFILES,
+        "catpath",
+        replace(L.REPO_PROFILES["catpath"], lander="land_slice"),
+    )
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        res = pd.run_pass(store)
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+    assert len(_jobs_under(store, plain)) == 1
+    assert _jobs_under(store, ci) == []
+    assert any(n.startswith(f"td{ci}: routes to the coordinator") for n in res.notes)
 
 
 def test_expired_claim_is_released(store: Store) -> None:

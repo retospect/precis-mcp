@@ -5243,6 +5243,22 @@ def _step_dispatch(
             )
             continue
         job_type, params = _resolve_op(n)
+        # td659522 step 1: a build in another repo carries it on the job;
+        # a default-repo node gets no key, so its params are unchanged.
+        node_deny = deny
+        if job_type == DEFAULT_OP:
+            tagged = _node_repos(plan, n)
+            if tagged and tagged[0] != _lanes.DEFAULT_REPO:
+                params["repo"] = tagged[0]
+                profile = _lanes.repo_profile(tagged[0])
+                if profile is not None:
+                    # The precis deny set (and its governed skills) is no
+                    # reason to route a brief about another repo.
+                    node_deny = (
+                        profile.deny_paths
+                        if profile.deny_paths is not None
+                        else _lanes.deny_paths_for(w.store)
+                    )
         if plan.blocked(n) or plan.paused(n):
             continue
         reland = _reland_params(plan, n, w.store)
@@ -5260,7 +5276,7 @@ def _step_dispatch(
             # name deny paths legitimately.
             if node_kind(n.meta) != "generator":
                 body, brief = _route_text(w.store, n)
-                routed = _route.coordinator_route(body, deny, brief=brief)
+                routed = _route.coordinator_route(body, node_deny, brief=brief)
                 if routed is not None:
                     text = "\n\n".join(part for part in (body, brief) if part)
                     _block_route(plan, w, res, n, routed, text)

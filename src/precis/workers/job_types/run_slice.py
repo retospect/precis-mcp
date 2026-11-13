@@ -220,10 +220,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -244,6 +245,7 @@ from precis.utils.dispatch_score import (
 from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
 )
+from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import _lane_decide, _run_features
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
@@ -447,6 +449,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "effort": {"type": "string"},
         # ssh_node's host pin (the host holding the lane's credentials).
         "target_node": {"type": "string"},
+        # The repo the slice builds in (td659522): a lanes.REPO_PROFILES
+        # name; unset is the default repo. plan_dispatch stamps it from the
+        # node's repo: tag; validate_submit checks it against the todo's.
+        "repo": {"type": "string"},
         # The PR head sha the intake classified (the 'land after fixes'
         # slice); the brief merges that sha. Informational for the job.
         "head_sha": {"type": "string"},
@@ -621,6 +627,65 @@ def slice_root() -> Path:
         )
     common = Path(proc.stdout.strip())
     return common.parent if common.name == ".git" else common
+
+
+#: Env var mapping repo name to the absolute host path of its clone, for
+#: the repos the factory builds besides the default one (td659522).
+SLICE_REPOS_ENV = "PRECIS_SLICE_REPOS"
+
+
+def slice_root_for(repo: str) -> Path:
+    """The checkout a ``repo:<name>`` slice's worktrees are cut under: the
+    default repo is :func:`slice_root`; any other comes from the JSON object
+    in :data:`SLICE_REPOS_ENV` (name to absolute host path), read at call
+    time. A missing or malformed variable, or no entry for ``repo``, raises
+    ``RuntimeError`` (the worker never guesses a path for a private repo)."""
+    if repo == _lanes.DEFAULT_REPO:
+        return slice_root()
+    nxt = (
+        f"next: set {SLICE_REPOS_ENV} to a JSON object mapping '{repo}' "
+        "to its clone path on this host"
+    )
+    raw = os.environ.get(SLICE_REPOS_ENV, "")
+    if not raw.strip():
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} is not set, so repo '{repo}' has no clone; {nxt}"
+        )
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} is not valid JSON ({exc}); {nxt}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} must be a JSON object, "
+            f"not {type(parsed).__name__}; {nxt}"
+        )
+    path = parsed.get(repo)
+    if not isinstance(path, str) or not path.strip():
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} has no path entry for repo '{repo}'; {nxt}"
+        )
+    if not Path(path).is_absolute():
+        # A relative path would resolve against whatever cwd the worker has.
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} maps repo '{repo}' to a relative path; {nxt}"
+        )
+    return Path(path).resolve()
+
+
+def job_repo(job: Mapping[str, Any]) -> str:
+    """The repo a ``run_slice`` job builds in (td659522): ``params.repo``,
+    else :data:`lanes.DEFAULT_REPO`. ``job`` is the job meta (its
+    ``params`` dict is read, as ``submit`` and ``_land_params`` do) or the
+    params dict itself (as ``validate_submit`` gets it)."""
+    inner = job.get("params")
+    params = inner if isinstance(inner, Mapping) else job
+    repo = params.get("repo")
+    if isinstance(repo, str) and repo.strip():
+        return repo.strip()
+    return _lanes.DEFAULT_REPO
 
 
 def slice_name(todo_id: int) -> str:
@@ -928,6 +993,9 @@ def _land_params(
     node = run_params.get("target_node") or os.environ.get("PRECIS_NODE")
     if node:
         params["target_node"] = str(node)
+    repo = job_repo(run_params)
+    if repo != _lanes.DEFAULT_REPO:
+        params["repo"] = repo
     return params
 
 
@@ -1582,6 +1650,207 @@ def _land_lint_steps(base: str = "main") -> tuple[str, ...]:
 _MIGRATION_PATH_RE = re.compile(r"src/[\w-]+/migrations/")
 
 
+_SESSION_RULES = (
+    " You get one "
+    "turn: when your turn ends the session ends and any subagents "
+    "still running are killed with it — never start a background "
+    "subagent and wait for it; do your research in the foreground, "
+    "then finish the work in this same turn (gr571311: a builder "
+    "that yielded to wait on forks lost the whole session). Work "
+    "only in this worktree."
+)
+
+
+def _brief_intro(
+    todo_id: int,
+    title: str,
+    lane: str,
+    model: str | None,
+    effort: str,
+    base: str,
+) -> list[str]:
+    """The brief's heading and session paragraph, repo-neutral up to and
+    including "Work only in this worktree." — each brief appends its own
+    reading list."""
+    return [
+        f"# Slice td{todo_id}: {title.strip()}",
+        "",
+        f"You are a headless build session on lane `{lane}` "
+        f"(model `{model or 'account default'}`, "
+        f"effort `{effort}`), in git worktree `{slice_name(todo_id)}` on branch "
+        f"`{slice_branch(todo_id)}`, cut from `origin/{base}`." + _SESSION_RULES,
+    ]
+
+
+def _no_mcp_lines(read_mcp: str | None) -> list[str]:
+    """The brief paragraph for a lane without the full precis MCP: the
+    ``reader`` or ``triage`` scope's own text (gr574082), else the
+    no-MCP notice."""
+    if read_mcp == "reader":
+        return [
+            "",
+            "This lane has a read-only precis MCP (get and search). "
+            "Before grepping or reading a whole .py file: "
+            "search(kind='python', mode='pattern', q='<name>'), then "
+            "get(kind='python', id='main::<qualname>', view='source'). "
+            "wt-slice-td<id>::<qualname> reads your own tree if it "
+            "resolves; main:: is the shared checkout and may lag your "
+            "branch. Repo prose: get(kind='md', id='main/docs/...'). "
+            "Your task's comments: get(kind='todo', id='td<id>', "
+            "view='comments'). Skills: search(kind='skill', q='<task>'). "
+            "Nothing else is served and nothing is writable; your "
+            "hand-off is still your final message.",
+        ]
+    elif read_mcp == "triage":
+        return [
+            "",
+            "This lane's precis MCP is scoped to structure reads and "
+            "gripe triage. Reads: search(kind='python', mode='pattern', "
+            "q='<name>'), then get(kind='python', id='main::<qualname>', "
+            "view='source'); wt-slice-td<id>::<qualname> reads your own "
+            "tree if it resolves; main:: is the shared checkout and may "
+            "lag your branch. Repo prose: get(kind='md', "
+            "id='main/docs/...'). Your task's comments: get(kind='todo', "
+            "id='td<id>', view='comments'). Skills: search(kind='skill', "
+            "q='<task>'). Gripes: search(kind='gripe', q='STATUS:open') "
+            "and get(kind='gripe', id='gr<id>') on any gripe to pick one. "
+            "Writes: put(kind='todo', id='td<id>', text='…') comments on "
+            "your own todo and put(kind='gripe', id='gr<id>', text='…') "
+            "on any gripe; tag(kind=..., id=..., add=[...]) with "
+            "STATUS: or claimed-by: values on those; and "
+            "link(kind='todo', id='td<id>', target='gr<id>', "
+            "rel='fixes') for the gripe you pick. Everything else "
+            "refuses; your hand-off is still your final message.",
+        ]
+    else:
+        return [
+            "",
+            "This lane has no precis MCP. Do not try to reach it. "
+            "Everything you want recorded goes in your final message.",
+        ]
+
+
+def _deny_lines(deny_paths: tuple[str, ...]) -> list[str]:
+    """The "Paths you may not write" section; empty for an empty set."""
+    if not deny_paths:
+        return []
+    return [
+        "",
+        "## Paths you may not write",
+        "",
+        "Do not create, edit or delete these paths by any means (Bash "
+        "included). A branch or working tree that touches one fails this "
+        "attempt and reopens the todo. If the work needs a change there, "
+        "stop and say so in your final message.",
+        "",
+        *[f"- `{p}`" for p in deny_paths],
+    ]
+
+
+def _task_lines(body: str, latest: str | None, target: str | None) -> list[str]:
+    """The task itself: the todo body, the newest ``brief:``/``handoff:``
+    comment and a reviewer's inlined target."""
+    lines = [
+        "",
+        "## Brief",
+        "",
+        body.strip() or "(the todo has no body; the title is the brief)",
+    ]
+    if latest:
+        lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
+    if target:
+        lines += ["", "## Review target", "", target.strip()]
+    return lines
+
+
+def _devin_leave_edits(todo_id: int) -> str:
+    """The Devin contract's worktree-only, leave-the-edits sentences."""
+    return (
+        "Make the change only inside this slice worktree; cwd is pinned "
+        "and --sandbox is off by default (operator opt-in: "
+        "PRECIS_DEVIN_SANDBOX=1). Do not commit, push, land or "
+        "open a PR. Leave the edits in the working tree and write a "
+        f"conventional subject (`type(scope): what (td{todo_id})`) and "
+        "short body to `scratch/commit-msg.txt`."
+    )
+
+
+def _devin_verdict_text(base: str) -> str:
+    """The Devin final-message verdicts and the ``tests:`` marker poll
+    reads (:func:`tests_ran`, the first-line ``validated:``/``no-op:``/
+    ``moot:`` forms)."""
+    return (
+        "If no change is needed, make the first line of your final "
+        "output `validated: <why>` when the requested check passed, "
+        "`no-op: <why>` when the plan should continue without a change, "
+        "or `moot: gr<N> already fixed by <sha>` when its reason is gone. "
+        f"The SHA must name the fixing commit on origin/{base}; a bare "
+        "moot is refused for code builds. Supplied test files alone "
+        "must not hide that verdict in a worker commit. A silent exit "
+        "with no changes is a failed attempt. "
+        "Otherwise report what changed and what remains. End with "
+        "`tests: ran` or `tests: NOT RUN — <why>`; the harness still "
+        "runs the supplied tests itself before committing."
+    )
+
+
+_DEVIN_HANDOFF_TEXT = (
+    "Your final message is posted on the todo as the `handoff:` comment "
+    "the next session starts from: what changed, what is left, and "
+    "what you would do next."
+)
+
+_BUILDER_HANDOFF_TEXT = (
+    "Your final message is posted on the todo as the `handoff:` comment the "
+    "next session starts from: what you committed, what is left, what you "
+    "would do next."
+)
+
+#: The builder's ``tests:`` line instruction (:func:`tests_ran` reads it).
+_TESTS_MARKER_TEXT = (
+    "Fix every report and re-run until all are clean — do not commit "
+    "while any step is red. End your final message with exactly one "
+    "line naming the gate's outcome: `tests: ran`, or `tests: NOT RUN "
+    "— <which step, why>` when a step could not run in this sandbox "
+    "(a first-line `validated:`/`no-op:`/`moot:` verdict still comes "
+    "first)."
+)
+
+
+def _commit_steps(todo_id: int, first: int) -> tuple[str, str]:
+    """The builder's numbered commit step and clean-tree step, numbered
+    from ``first``: the ``subject:`` line, ``scratch/commit-msg.txt`` and
+    the worker-commits fallback for a sandbox that refuses ``git commit``."""
+    return (
+        f"{first}. Commit on `{slice_branch(todo_id)}` with a conventional "
+        f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
+        "message via `git commit -F scratch/commit-msg.txt`. One commit "
+        "is best: the lander squashes the branch under that subject — or "
+        "under a `subject: type(scope): what` line in your final message "
+        "when you state one (it wins over every commit subject).",
+        f"{first + 1}. Leave the working tree clean (`git status --porcelain` "
+        "prints nothing). If your sandbox refuses `git commit` (a "
+        "read-only `.git`), stop with the changes in the working tree and "
+        "`scratch/commit-msg.txt` written: the worker commits them with "
+        "that message after you exit.",
+    )
+
+
+def _builder_verdict_text(base: str) -> str:
+    """The builder's commit-less exits: the first-line ``validated:``/
+    ``no-op:``/``moot:`` verdicts poll reads."""
+    return (
+        "Nothing to commit on purpose? Say so as the FIRST line of your final "
+        "message: `validated: <why>` when the check you were asked for passed, "
+        "`no-op: <why>` when there is nothing to change and the plan should go "
+        "on, `moot: gr<N> already fixed by <sha>` when the plan's reason is "
+        f"gone — `<sha>` the commit on origin/{base} that fixed it, whose own "
+        "message names the gripe; a bare `moot: <why>` is not accepted for a "
+        "code build (it goes to rescue). The todo then closes done. Any other "
+        "commit-less exit counts as a failed attempt and is retried."
+    )
+
+
 def render_brief(
     *,
     todo_id: int,
@@ -1600,9 +1869,14 @@ def render_brief(
     target: str | None = None,
     adapter: str | None = None,
     base: str = "main",
+    profile: _lanes.RepoProfile | None = None,
 ) -> str:
     """The prompt a slice session starts from. ``base`` is the branch the
     worktree is cut from (``main``, or a release fix's ``release/r<N>``).
+    ``profile`` (td659522) names the repo: ``None`` or the default repo's
+    profile renders the precis brief below; any other profile renders
+    :func:`_render_repo_brief` (builder and Devin variants only — a
+    generator brief for another repo raises ``ValueError``).
     Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
@@ -1616,91 +1890,40 @@ def render_brief(
     ``read_mcp`` (:func:`_read_mcp_scope`) swaps the no-MCP paragraph for
     the scope's: ``reader`` reads only, ``triage`` also names its write
     set (gr574082)."""
-    name = slice_name(todo_id)
-    lines = [
-        f"# Slice td{todo_id}: {title.strip()}",
-        "",
-        f"You are a headless build session on lane `{lane}` "
-        f"(model `{model or 'account default'}`, "
-        f"effort `{effort}`), in git worktree `{name}` on branch "
-        f"`{slice_branch(todo_id)}`, cut from `origin/{base}`. You get one "
-        "turn: when your turn ends the session ends and any subagents "
-        "still running are killed with it — never start a background "
-        "subagent and wait for it; do your research in the foreground, "
-        "then finish the work in this same turn (gr571311: a builder "
-        "that yielded to wait on forks lost the whole session). Work "
-        "only in this worktree. Read CLAUDE.md and AGENTS.md here before "
+    if profile is not None and profile.name != _lanes.DEFAULT_REPO:
+        if generator:
+            raise ValueError(
+                "render_brief: generator briefs are precis-only; "
+                f"no brief for repo {profile.name!r}"
+            )
+        return _render_repo_brief(
+            profile,
+            todo_id=todo_id,
+            title=title,
+            body=body,
+            latest=latest,
+            lane=lane,
+            model=model,
+            effort=effort,
+            mcp=mcp,
+            read_mcp=read_mcp,
+            deny_paths=deny_paths,
+            target=target,
+            adapter=adapter,
+        )
+    lines = _brief_intro(todo_id, title, lane, model, effort, base)
+    lines[-1] += (
+        " Read CLAUDE.md and AGENTS.md here before "
         "editing; their rules bind you — except the round rule: a slice "
         "is not a round peer, so never run `scripts/round` (any verb); "
-        "the mark belongs to the coordinator.",
-    ]
+        "the mark belongs to the coordinator."
+    )
     if not mcp:
-        if read_mcp == "reader":
-            lines += [
-                "",
-                "This lane has a read-only precis MCP (get and search). "
-                "Before grepping or reading a whole .py file: "
-                "search(kind='python', mode='pattern', q='<name>'), then "
-                "get(kind='python', id='main::<qualname>', view='source'). "
-                "wt-slice-td<id>::<qualname> reads your own tree if it "
-                "resolves; main:: is the shared checkout and may lag your "
-                "branch. Repo prose: get(kind='md', id='main/docs/...'). "
-                "Your task's comments: get(kind='todo', id='td<id>', "
-                "view='comments'). Skills: search(kind='skill', q='<task>'). "
-                "Nothing else is served and nothing is writable; your "
-                "hand-off is still your final message.",
-            ]
-        elif read_mcp == "triage":
-            lines += [
-                "",
-                "This lane's precis MCP is scoped to structure reads and "
-                "gripe triage. Reads: search(kind='python', mode='pattern', "
-                "q='<name>'), then get(kind='python', id='main::<qualname>', "
-                "view='source'); wt-slice-td<id>::<qualname> reads your own "
-                "tree if it resolves; main:: is the shared checkout and may "
-                "lag your branch. Repo prose: get(kind='md', "
-                "id='main/docs/...'). Your task's comments: get(kind='todo', "
-                "id='td<id>', view='comments'). Skills: search(kind='skill', "
-                "q='<task>'). Gripes: search(kind='gripe', q='STATUS:open') "
-                "and get(kind='gripe', id='gr<id>') on any gripe to pick one. "
-                "Writes: put(kind='todo', id='td<id>', text='…') comments on "
-                "your own todo and put(kind='gripe', id='gr<id>', text='…') "
-                "on any gripe; tag(kind=..., id=..., add=[...]) with "
-                "STATUS: or claimed-by: values on those; and "
-                "link(kind='todo', id='td<id>', target='gr<id>', "
-                "rel='fixes') for the gripe you pick. Everything else "
-                "refuses; your hand-off is still your final message.",
-            ]
-        else:
-            lines += [
-                "",
-                "This lane has no precis MCP. Do not try to reach it. "
-                "Everything you want recorded goes in your final message.",
-            ]
+        lines += _no_mcp_lines(read_mcp)
     if deny_paths is None:
         deny_paths = _lanes.deny_paths_for(None)
-    if deny_paths:
-        lines += [
-            "",
-            "## Paths you may not write",
-            "",
-            "Do not create, edit or delete these paths by any means (Bash "
-            "included). A branch or working tree that touches one fails this "
-            "attempt and reopens the todo. If the work needs a change there, "
-            "stop and say so in your final message.",
-            "",
-            *[f"- `{p}`" for p in deny_paths],
-        ]
-    lines += [
-        "",
-        "## Brief",
-        "",
-        body.strip() or "(the todo has no body; the title is the brief)",
-    ]
-    if latest:
-        lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
-    if target:
-        lines += ["", "## Review target", "", target.strip()]
+    lines += _deny_lines(deny_paths)
+    lines += _task_lines(body, latest, target)
     if _MIGRATION_PATH_RE.search(
         "\n".join(t for t in (body, latest or "", target or "") if t)
     ):
@@ -1728,29 +1951,14 @@ def render_brief(
             "the land runs its normal --checked gate. Non-code and no-commit "
             "nodes are exempt from the worker acceptance-test gate.",
             "",
-            "Make the change only inside this slice worktree; cwd is pinned "
-            "and --sandbox is off by default (operator opt-in: "
-            "PRECIS_DEVIN_SANDBOX=1). Do not commit, push, land or "
-            "open a PR. Leave the edits in the working tree and write a "
-            f"conventional subject (`type(scope): what (td{todo_id})`) and "
-            "short body to `scratch/commit-msg.txt`. Our harness runs the "
+            _devin_leave_edits(todo_id) + " Our harness runs the "
             "available supplied tests with `scripts/test <test paths>`, "
             "commits the changes if that gate passes or is absent, and "
             "hands the branch to the separate land_slice job with --checked, "
             "subject to review. Worker-run tests do not replace the "
             "lander's impacted-test rerun.",
             "",
-            "If no change is needed, make the first line of your final "
-            "output `validated: <why>` when the requested check passed, "
-            "`no-op: <why>` when the plan should continue without a change, "
-            "or `moot: gr<N> already fixed by <sha>` when its reason is gone. "
-            f"The SHA must name the fixing commit on origin/{base}; a bare "
-            "moot is refused for code builds. Supplied test files alone "
-            "must not hide that verdict in a worker commit. A silent exit "
-            "with no changes is a failed attempt. "
-            "Otherwise report what changed and what remains. End with "
-            "`tests: ran` or `tests: NOT RUN — <why>`; the harness still "
-            "runs the supplied tests itself before committing.",
+            _devin_verdict_text(base),
             "",
             "Land lint steps (the last two inspect committed work and belong "
             "to the lander after the worker commit; run the earlier checks "
@@ -1763,9 +1971,7 @@ def render_brief(
             f"you added to origin/{base}'s next free number (filename and its "
             "own header); never renumber or edit an already-landed migration.",
             "",
-            "Your final message is posted on the todo as the `handoff:` comment "
-            "the next session starts from: what changed, what is left, and "
-            "what you would do next.",
+            _DEVIN_HANDOFF_TEXT,
         ]
         return "\n".join(lines) + "\n"
     n = len(_land_lint_steps(base))
@@ -1797,42 +2003,186 @@ def render_brief(
         "duplicated or already-landed one; a merge commit on the branch is "
         "fine too, the land squashes it away.",
         "",
-        "Fix every report and re-run until all are clean — do not commit "
-        "while any step is red. End your final message with exactly one "
-        "line naming the gate's outcome: `tests: ran`, or `tests: NOT RUN "
-        "— <which step, why>` when a step could not run in this sandbox "
-        "(a first-line `validated:`/`no-op:`/`moot:` verdict still comes "
-        "first).",
+        _TESTS_MARKER_TEXT,
         "",
-        f"{n + 2}. Commit on `{slice_branch(todo_id)}` with a conventional "
-        f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
-        "message via `git commit -F scratch/commit-msg.txt`. One commit "
-        "is best: the lander squashes the branch under that subject — or "
-        "under a `subject: type(scope): what` line in your final message "
-        "when you state one (it wins over every commit subject).",
-        f"{n + 3}. Leave the working tree clean (`git status --porcelain` "
-        "prints nothing). If your sandbox refuses `git commit` (a "
-        "read-only `.git`), stop with the changes in the working tree and "
-        "`scratch/commit-msg.txt` written: the worker commits them with "
-        "that message after you exit.",
+        *_commit_steps(todo_id, n + 2),
         f"{n + 4}. Stop. Do not land, push, comment `landed:` or tag this "
         "todo done: once you exit cleanly, the lander lands every commit "
         "on the branch, so commit only work fit to land. Never open a pull "
         "request (`gh pr create` and friends): the factory's squash merge "
         "is the only path to main (gr570506).",
         "",
-        "Nothing to commit on purpose? Say so as the FIRST line of your final "
-        "message: `validated: <why>` when the check you were asked for passed, "
-        "`no-op: <why>` when there is nothing to change and the plan should go "
-        "on, `moot: gr<N> already fixed by <sha>` when the plan's reason is "
-        f"gone — `<sha>` the commit on origin/{base} that fixed it, whose own "
-        "message names the gripe; a bare `moot: <why>` is not accepted for a "
-        "code build (it goes to rescue). The todo then closes done. Any other "
-        "commit-less exit counts as a failed attempt and is retried.",
+        _builder_verdict_text(base),
         "",
-        "Your final message is posted on the todo as the `handoff:` comment the "
-        "next session starts from: what you committed, what is left, what you "
-        "would do next.",
+        _BUILDER_HANDOFF_TEXT,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+#: What :func:`deny_violations` refuses on EVERY slice whatever the lane's
+#: deny list says (:data:`lanes.HUMAN_ONLY_PATHS`), in families: the
+#: brief for another repo names these without listing the ~60 globs or
+#: the precis rule files they include. ``test_repo_brief_always_denied_text``
+#: pins each family to the real set.
+_ALWAYS_DENIED_TEXT = (
+    "On every slice, whatever the list above says, the harness also refuses "
+    "any change to: credential, inventory and service-unit files under "
+    "`deploy/`; the agent-tool directories `.claude/`, `.codex/`, `.devin/` "
+    "and `.kimi-code/` (at any depth for `.claude/`); `.mcp.json`; "
+    "`scripts/hooks/`; and the agent rule files at any depth."
+)
+
+
+def _repo_rules_lines(
+    profile: _lanes.RepoProfile, todo_id: int, devin: bool
+) -> list[str]:
+    """The rules section of a non-default repo's brief. It binds over the
+    task text: task bodies written for precis still say to rebase on
+    ``origin/main``, bump the version or open a pull request."""
+    base = f"origin/{profile.base}"
+    finish = (
+        "Leave your edits in the working tree: the harness commits them."
+        if devin
+        else f"Commit your work on this branch (`{slice_branch(todo_id)}`) and stop."
+    )
+    return [
+        "",
+        f"## Rules for this repo ({profile.name}); they win over the task text",
+        "",
+        f"- This worktree is already current with `{base}`. Do not `git fetch`, "
+        "`git pull`, rebase or merge from origin.",
+        "- Do not push.",
+        "- Do not bump the version, edit the version line in `pyproject.toml`, "
+        "tag or release: a mechanical release job does that.",
+        "- Never open a pull request (`gh pr create` and friends).",
+        f"- {finish}",
+        "",
+        'If the task text below says otherwise (for example "rebase on '
+        f'origin/{profile.base}", "bump the version" or "open a pull '
+        'request"), this section wins.',
+    ]
+
+
+def _repo_check_lines(profile: _lanes.RepoProfile) -> list[str]:
+    """Setup, lint and test commands of a non-default repo's brief."""
+    lines: list[str] = []
+    if profile.setup_cmds:
+        lines += [
+            "",
+            "## Setup",
+            "",
+            "Run once, before anything else:",
+            "",
+            *[f"- `{c}`" for c in profile.setup_cmds],
+        ]
+    if profile.lint_cmds:
+        lines += [
+            "",
+            "## Lint",
+            "",
+            "Run each before you hand off and fix every report:",
+            "",
+            *[f"- `{c}`" for c in profile.lint_cmds],
+            "",
+            "Do not run a formatter and do not reformat code you did not "
+            "change: this repo is deliberately not auto-formatted.",
+        ]
+    if profile.test_cmds:
+        cmd = profile.test_cmds[0]
+        lines += [
+            "",
+            "## Tests",
+            "",
+            "Run the tests you added or touched with the repo's test command "
+            f"narrowed to those paths (`{cmd} <paths>`). Do not run the whole "
+            "suite: the lander runs it later.",
+        ]
+    return lines
+
+
+def _render_repo_brief(
+    profile: _lanes.RepoProfile,
+    *,
+    todo_id: int,
+    title: str,
+    body: str,
+    latest: str | None,
+    lane: str,
+    model: str | None,
+    effort: str,
+    mcp: bool = True,
+    read_mcp: str | None = None,
+    deny_paths: tuple[str, ...] | None = None,
+    target: str | None = None,
+    adapter: str | None = None,
+) -> str:
+    """The prompt for a slice in a repo other than the default (td659522),
+    from the repo's :class:`lanes.RepoProfile`: no precis convention docs,
+    scripts or lint guards, the repo's own setup/lint/test commands, and a
+    rules section that wins over the task text. Builder and Devin
+    (``adapter == "devin_tree"``) variants only. The task itself and the
+    final-message contract poll parses (the ``subject:`` line, the
+    ``tests:`` marker, the ``validated:``/``no-op:``/``moot:`` verdicts,
+    the ``handoff:`` comment) come from the helpers
+    :func:`render_brief` uses. The read-MCP paragraph is kept only for a
+    profile whose tree carries the precis MCP. ``deny_paths`` is the
+    lane's list, used only when the profile carries none."""
+    base = profile.base
+    devin = adapter == "devin_tree"
+    lines = _brief_intro(todo_id, title, lane, model, effort, base)
+    lines[-1] += f" This is the `{profile.name}` repository."
+    if profile.read_first:
+        lines[-1] += (
+            " Before editing, read "
+            + ", ".join(f"`{f}`" for f in profile.read_first)
+            + " here."
+        )
+    if profile.mcp and not mcp:
+        lines += _no_mcp_lines(read_mcp)
+    lines += _repo_rules_lines(profile, todo_id, devin)
+    lines += _repo_check_lines(profile)
+    deny = profile.deny_paths
+    if deny is None:
+        deny = deny_paths if deny_paths is not None else _lanes.deny_paths_for(None)
+    lines += _deny_lines(deny)
+    lines += ["", _ALWAYS_DENIED_TEXT]
+    lines += _task_lines(body, latest, target)
+    if devin:
+        lines += [
+            "",
+            "## Finishing contract (overrides conflicting task instructions)",
+            "",
+            "Supplied test files, if any, are already installed in this "
+            "worktree: use them as acceptance criteria and do not weaken "
+            "them.",
+            "",
+            _devin_leave_edits(todo_id)
+            + " Run lint and the tests you touched yourself; our harness runs "
+            "no tests here. It commits the changes and hands the branch to "
+            "the separate lander, which runs the full suite, subject to "
+            "review.",
+            "",
+            _devin_verdict_text(base),
+            "",
+            _DEVIN_HANDOFF_TEXT,
+        ]
+        return "\n".join(lines) + "\n"
+    commit, clean = _commit_steps(todo_id, 1)
+    lines += [
+        "",
+        "## When done: commit on the branch and hand off",
+        "",
+        _TESTS_MARKER_TEXT,
+        "",
+        commit,
+        clean,
+        "3. Stop. Do not land, push, comment `landed:` or tag this todo done: "
+        "once you exit cleanly, the lander lands every commit on the branch, "
+        "so commit only work fit to land.",
+        "",
+        _builder_verdict_text(base),
+        "",
+        _BUILDER_HANDOFF_TEXT,
     ]
     return "\n".join(lines) + "\n"
 
@@ -1928,6 +2278,56 @@ def _repo_rejection(store: Any, todo_id: Any) -> str | None:
     return None if problem is None else f"run_slice: todo {todo_id}: {problem}"
 
 
+def _slice_deny(store: Any, repo: str, lane: _lanes.Lane) -> tuple[str, ...]:
+    """The write-deny globs of a slice in ``repo`` (td659522): the lane's
+    ``deny_write_paths`` for the default repo (and for a profile that sets
+    none), else the profile's own ``deny_paths``. Governed precis skills
+    are not added here; they are precis-only and ``submit`` adds them."""
+    del store
+    profile = _lanes.repo_profile(repo)
+    if repo != _lanes.DEFAULT_REPO and profile is not None:
+        if profile.deny_paths is not None:
+            return profile.deny_paths
+    return lane.deny_write_paths
+
+
+def _repo_param_rejection(store: Any, todo_id: Any, repo: str) -> str | None:
+    """td659522 step 1: ``params.repo`` must name a profile, equal the repo
+    the todo resolves to (:func:`slice_repos`; no tag is the default), and a
+    non-default repo takes no generator node. ``store=None`` checks only
+    that the repo is known."""
+    if _lanes.repo_profile(repo) is None:
+        return (
+            f"run_slice: unknown params.repo {repo!r} "
+            f"(profiles: {', '.join(_lanes.REPO_PROFILES)}); "
+            "next: drop it or name a repo with a build profile"
+        )
+    if store is None or not isinstance(todo_id, int):
+        return None
+    tagged = slice_repos(store, todo_id)
+    resolved = ",".join(tagged) or _lanes.DEFAULT_REPO
+    if resolved != repo:
+        hint = f"resubmit with params.repo={resolved!r}"
+        if resolved == _lanes.DEFAULT_REPO:
+            hint = "drop params.repo"
+        return (
+            f"run_slice: todo {todo_id} resolves to repo {resolved!r} but "
+            f"params.repo is {repo!r}; next: {hint}"
+        )
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if (
+        repo != _lanes.DEFAULT_REPO
+        and ref is not None
+        and node_kind(ref.meta) == "generator"
+    ):
+        return (
+            f"run_slice: todo {todo_id}: generator and reviewer nodes are "
+            "precis-only until the repo reviewer exists (td659522 step 5); "
+            "next: build it in the precis repo or split out a builder node"
+        )
+    return None
+
+
 def validate_submit(
     store: Any,
     *,
@@ -1952,6 +2352,9 @@ def validate_submit(
     if reason is not None:
         return reason
     reason = _repo_rejection(store, params.get("todo_id"))
+    if reason is not None:
+        return reason
+    reason = _repo_param_rejection(store, params.get("todo_id"), job_repo(params))
     if reason is not None:
         return reason
     reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))
@@ -2079,7 +2482,201 @@ def _reset_reused_worktree(tree: Path, branch: str) -> None:
     _git(["worktree", "prune"], tree)
 
 
-def _ensure_worktree(root: Path, todo_id: int, base: str = "main") -> Path:
+#: Env vars a credentialed git needs besides PATH and HOME: locale, the
+#: TLS trust roots and the proxy a host may point git at. Nothing else of
+#: the worker's environment (DSN, tokens, session variables) reaches the
+#: child.
+_GIT_AUTH_PASSTHROUGH: tuple[str, ...] = (
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "GIT_SSL_CAINFO",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+#: ``-c`` overrides every credentialed git carries: no hooks, no fsmonitor
+#: program and no ``ext::`` transport, so nothing a session planted in the
+#: clone's config or hooks directory is run with the token in its
+#: environment. ``git_auth_env`` itself resets the credential helpers a
+#: local config names. The clone's other config (proxy, TLS) is still
+#: read: a session shares the worker's OS user, so this narrows the
+#: exposure and does not close it (gr659929).
+_GIT_AUTH_OVERRIDES: tuple[str, ...] = (
+    "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
+    "protocol.ext.allow=never",
+    "http.sslVerify=true",
+    "fetch.recurseSubmodules=false",
+)
+
+
+def _git_auth(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run ``git <args>`` in ``cwd`` under the factory credential, for a
+    network operation on a private repo. Never raises on a non-zero exit.
+
+    The env is a minimal base (PATH, HOME, :data:`_GIT_AUTH_PASSTHROUGH`)
+    plus :func:`factory_git.git_auth_env` and ``GIT_TERMINAL_PROMPT=0``; the
+    token travels only in that env, read back by the credential helper, never
+    in argv or a remote URL. :data:`_GIT_AUTH_OVERRIDES` come first: a hook
+    or fsmonitor program planted in a clone a session could write must not
+    run with the token in its environment, which is the reason this helper
+    exists apart from :func:`_git`. With no token configured ``git_auth_env`` returns the base
+    unchanged (it logs a warning) and git runs on the host's own
+    credentials; a failure then gets a ``no <SECRET> configured`` line
+    appended to its stderr so the caller can say why. The token is scrubbed
+    from the captured output."""
+    base = {
+        k: os.environ[k]
+        for k in ("PATH", "HOME", *_GIT_AUTH_PASSTHROUGH)
+        if k in os.environ
+    }
+    env = _factory_git.git_auth_env(base)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    token = env.get(_factory_git.SECRET_NAME, "")
+    overrides = [part for kv in _GIT_AUTH_OVERRIDES for part in ("-c", kv)]
+    proc = subprocess.run(
+        ["git", *overrides, *args],
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=300,
+    )
+    out, err = proc.stdout or "", proc.stderr or ""
+    if token:
+        out, err = out.replace(token, "***"), err.replace(token, "***")
+    elif proc.returncode != 0:
+        err = f"{err.rstrip()}\nno {_factory_git.SECRET_NAME} configured on this host"
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+def _ensure_info_exclude(root: Path, lines: tuple[str, ...]) -> None:
+    """Make each of ``lines`` present in the clone's ``info/exclude`` under
+    git's common dir (so a linked worktree of ``root`` works too). Appends
+    only the missing ones, keeps existing content, creates the file and
+    ``info/`` when absent; idempotent."""
+    if not lines:
+        return
+    proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(
+            f"{root} is not a git checkout (git: {proc.stderr.strip()[:200]}); "
+            "next: point the repo's clone path at a git checkout"
+        )
+    path = Path(proc.stdout.strip()) / "info" / "exclude"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    have = {ln.strip() for ln in text.splitlines()}
+    missing = [ln for ln in lines if ln.strip() not in have]
+    if not missing:
+        return
+    sep = "" if not text or text.endswith("\n") else "\n"
+    path.write_text(text + sep + "\n".join(missing) + "\n", encoding="utf-8")
+
+
+_HEX40 = re.compile(r"[0-9a-f]{40}")
+
+
+def pinned_git_rev(lock_text: str, package: str) -> str | None:
+    """The commit sha a ``uv.lock`` pins for ``package`` when its source is
+    a git source (``source = { git = "<url>?rev=<x>#<sha>" }``, the sha is
+    the fragment). ``None`` when the package is absent, not a git source,
+    carries no 40-hex fragment, or the text does not parse."""
+    try:
+        data = tomllib.loads(lock_text)
+    except tomllib.TOMLDecodeError:
+        return None
+    for pkg in data.get("package", []):
+        if not isinstance(pkg, dict) or pkg.get("name") != package:
+            continue
+        source = pkg.get("source")
+        url = source.get("git") if isinstance(source, dict) else None
+        if not isinstance(url, str) or "#" not in url:
+            continue
+        sha = url.rsplit("#", 1)[1].strip()
+        if _HEX40.fullmatch(sha):
+            return sha
+    return None
+
+
+def _norm_remote(url: str) -> str:
+    """``url`` without a trailing ``/`` and ``.git``, for comparing remotes."""
+    url = url.strip().rstrip("/")
+    return url[:-4] if url.endswith(".git") else url
+
+
+def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
+    """Ready a non-default repo's host clone before a worktree is cut.
+    ``None`` when ready, else a one-sentence refusal ending in ``next:``
+    (expected refusals do not raise). In order: ``root`` is a checkout whose
+    ``origin`` is ``profile.remote`` (the worker never clones; userinfo in
+    the URL refuses); the profile's ``exclude`` lines are in
+    ``info/exclude``; ``origin/<base>`` is fetched (under the credential for
+    a private repo); and, when ``profile.pin`` is set, the git rev the
+    precis ``origin/main`` lockfile pins for the package is an ancestor of
+    ``origin/<base>``. Any non-zero ``merge-base`` exit refuses: an unknown
+    rev and a rev off the base both fail closed."""
+    name = profile.name
+    top = _git(["rev-parse", "--show-toplevel"], root) if root.is_dir() else None
+    if (
+        top is None
+        or top.returncode != 0
+        or Path(top.stdout.strip()).resolve() != root.resolve()
+    ):
+        return (
+            f"{root} is not a git checkout of repo '{name}'; "
+            "next: clone it there, the worker never clones"
+        )
+    got = _git(["remote", "get-url", "origin"], root)
+    url = got.stdout.strip() if got.returncode == 0 else ""
+    if not url or "@" in url or _norm_remote(url) != _norm_remote(profile.remote):
+        return (
+            f"origin of the '{name}' clone at {root} is not {profile.remote} "
+            "or carries userinfo; next: git remote set-url origin to that "
+            "https URL without credentials"
+        )
+    _ensure_info_exclude(root, profile.exclude)
+    fetch_git = _git_auth if profile.private else _git
+    # An explicit refspec: the tracking ref moves whatever fetch refspec
+    # the clone's config carries.
+    base_ref = f"+refs/heads/{profile.base}:refs/remotes/origin/{profile.base}"
+    fetch = fetch_git(["fetch", "origin", base_ref], root)
+    if fetch.returncode != 0:
+        tail = " ".join((fetch.stderr or "").split())[-300:]
+        return (
+            f"git fetch origin {profile.base} failed in the '{name}' clone "
+            f"({tail}); next: check the clone's network and the factory git token"
+        )
+    if profile.pin is None:
+        return None
+    lockfile, package = profile.pin
+    shown = _git(["show", f"origin/main:{lockfile}"], slice_root())
+    rev = pinned_git_rev(shown.stdout, package) if shown.returncode == 0 else None
+    if rev is None:
+        return (
+            f"no git rev for '{package}' in {lockfile} on precis origin/main; "
+            "next: fix the lockfile pin or the repo profile"
+        )
+    anc = _git(["merge-base", "--is-ancestor", rev, f"origin/{profile.base}"], root)
+    if anc.returncode != 0:
+        return (
+            f"the '{name}' base origin/{profile.base} is behind the pin "
+            f"{rev[:12]} (or does not know it); next: land the pinned commit "
+            f"on {profile.base} first"
+        )
+    return None
+
+
+def _ensure_worktree(
+    root: Path, todo_id: int, base: str = "main", *, fetched: bool = False
+) -> Path:
     """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
     ``slice/<id>``, cut from ``origin/<base>`` — ``main``, or the
     ``release/r<N>`` a release fix lands on (``meta.land_target``,
@@ -2087,7 +2684,8 @@ def _ensure_worktree(root: Path, todo_id: int, base: str = "main") -> Path:
     tree and branch (the branch stays owned by its slice until it lands or
     is abandoned) — reset to a clean checkout of the branch tip first
     (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
-    renamed first."""
+    renamed first. ``fetched`` skips the fetch: the caller already fetched
+    ``origin/<base>`` under the credential (:func:`_prepare_repo`)."""
     tree = worktrees_dir(root) / slice_name(todo_id)
     branch = slice_branch(todo_id)
     _adopt_legacy_branch(root, todo_id)
@@ -2095,9 +2693,12 @@ def _ensure_worktree(root: Path, todo_id: int, base: str = "main") -> Path:
         _reset_reused_worktree(tree, branch)
         return tree
     extra = [] if base == "main" else [f"+refs/heads/{base}:refs/remotes/origin/{base}"]
-    fetch = _git(["fetch", "origin", "main", *extra], root)
-    if fetch.returncode != 0:
-        raise RuntimeError(f"git fetch origin {base} failed: {fetch.stderr.strip()}")
+    if not fetched:
+        fetch = _git(["fetch", "origin", "main", *extra], root)
+        if fetch.returncode != 0:
+            raise RuntimeError(
+                f"git fetch origin {base} failed: {fetch.stderr.strip()}"
+            )
     add = _git(["worktree", "add", "-b", branch, str(tree), f"origin/{base}"], root)
     if add.returncode != 0:
         # The branch outlived its tree (an earlier attempt): re-attach it.
@@ -2856,6 +3457,22 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     assert isinstance(todo_id, int)
     todo = store.get_ref(kind="todo", id=todo_id)
+    # td659522 step 1: the repo this job builds in. Every job repeats the
+    # validate_submit guard at claim time (the setting or the todo's tag may
+    # have changed since the mint, and a job minted before a todo was
+    # tagged for another repo must not build it here) and fails like the
+    # refusals above.
+    repo = job_repo(params)
+    reason = _repo_rejection(store, todo_id) or _repo_param_rejection(
+        store, todo_id, repo
+    )
+    if reason is not None:
+        ctx.record_failure(reason)
+        return None
+    profile: _lanes.RepoProfile | None = None
+    if repo != _lanes.DEFAULT_REPO:
+        profile = _lanes.repo_profile(repo)
+        assert profile is not None
 
     task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
     # A relaunch after a lane's quota/rate window (gr565359) skips that
@@ -3205,9 +3822,15 @@ def submit(ctx: Any, spec: Any) -> Any:
     # The scoped read grant is a code-class affordance of the read lanes
     # (codex_exec, devin_tree — gr574082): PRECIS_SLICE_READ_MCP names the
     # scope to mint, anything else is today's no-MCP launch (ships dark).
+    # A repo whose tree carries no precis ``.mcp.json`` (profile.mcp false)
+    # gets no MCP of either kind.
+    use_mcp = adapter.mcp and (profile is None or profile.mcp)
     read_scope = (
         _read_mcp_scope()
-        if adapter.read_mcp and task_class == _DEFAULT_TASK_CLASS and not is_generator
+        if adapter.read_mcp
+        and task_class == _DEFAULT_TASK_CLASS
+        and not is_generator
+        and (profile is None or profile.mcp)
         else None
     )
     brief_kwargs: dict[str, Any] = dict(
@@ -3220,8 +3843,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         effort=effort,
         generator=is_generator,
         role=_generate_role(todo.meta),
-        mcp=adapter.mcp,
-        deny_paths=lane.deny_write_paths,
+        mcp=use_mcp,
+        deny_paths=_slice_deny(store, repo, lane),
         lane_models=lane.models,
         target=_review_target(store, todo.meta),
         adapter=adapter.name,
@@ -3230,26 +3853,47 @@ def submit(ctx: Any, spec: Any) -> Any:
     base = _release.land_target_of(todo.meta, body, latest) or "main"
     if base != "main":
         brief_kwargs["base"] = base
+    if profile is not None:
+        brief_kwargs["profile"] = profile
     grant: dict[str, Any] | None = None
     mint_error: str | None = None
     read_url: str | None = None
     try:
-        _clear_slice_index_lock(ctx, worktrees_dir(slice_root()) / slice_name(todo_id))
-        tree = _ensure_worktree(
-            slice_root(), todo_id, *(() if base == "main" else (base,))
+        repo_root: Path | None = None
+        if profile is not None:
+            if base != profile.base:
+                raise RuntimeError(
+                    f"land target {base!r} is not the '{repo}' base "
+                    f"{profile.base!r}; release-branch fixes are precis-only"
+                )
+            repo_root = slice_root_for(repo)
+            not_ready = _prepare_repo(profile, repo_root)
+            if not_ready is not None:
+                raise RuntimeError(not_ready)
+        _clear_slice_index_lock(
+            ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
         )
-        # gr657066: governs:factory skills join the lane's deny set —
-        # resolved at the base ref so the branch cannot un-tag the
-        # fence, and fail-closed like every other gate read here.
-        governed = _governs.governed_skill_paths_at_ref(
-            tree, f"origin/{base}", git=_git
-        )
+        if profile is None:
+            tree = _ensure_worktree(
+                slice_root(), todo_id, *(() if base == "main" else (base,))
+            )
+        else:
+            assert repo_root is not None
+            tree = _ensure_worktree(repo_root, todo_id, base=profile.base, fetched=True)
+        governed: tuple[str, ...] | None = ()
+        if profile is None:
+            # gr657066: governs:factory skills join the lane's deny set —
+            # resolved at the base ref so the branch cannot un-tag the
+            # fence, and fail-closed like every other gate read here.
+            governed = _governs.governed_skill_paths_at_ref(
+                tree, f"origin/{base}", git=_git
+            )
         if governed is None:
             raise RuntimeError(
                 f"governed-skill scan failed at origin/{base}; refusing "
                 "to launch a slice whose deny set it cannot name"
             )
-        deny = lane.deny_write_paths + governed
+        deny = _slice_deny(store, repo, lane) + governed
         brief_kwargs["deny_paths"] = deny
         brief = render_brief(**brief_kwargs, read_mcp=read_scope)
         _install_acceptance_tests(tree, artifacts, deny)
@@ -3265,7 +3909,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
         exit_path.unlink(missing_ok=True)
-        if adapter.mcp:
+        if use_mcp:
             assert model is not None
             grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
         elif read_scope:
@@ -3330,6 +3974,11 @@ def submit(ctx: Any, spec: Any) -> Any:
             mcp_token=grant["token"] if grant else None,
             mcp=adapter.mcp,
         )
+        if profile is not None:
+            if not use_mcp:
+                env.pop("PRECIS_MCP_TOKEN", None)
+            if profile.uv_python:
+                env["UV_PYTHON"] = profile.uv_python
         if adapter.name == "devin_tree":
             # The checkout's worktrees dir is the slice's parent; seed it
             # before launch or the session stalls on the trust prompt.
@@ -3344,7 +3993,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             job = getattr(ctx, "ref_id", None)
             if isinstance(job, int) and not isinstance(job, bool):
                 _KIMI_SUBMIT_KEYS[job] = env["KIMI_MODEL_API_KEY"]
-        if adapter.mcp:
+        if use_mcp:
             _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
         pid = _launch(
             argv,
@@ -3401,7 +4050,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         else f"none ({mint_error})"
         if mint_error
         else "shared"
-        if adapter.mcp
+        if use_mcp
         else "none"
     )
     ctx.append_chunk(
@@ -3441,6 +4090,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         "exit_file": str(exit_path),
         "started_at": started_at,
     }
+    if profile is not None:
+        # Later phases read the repo off the handle, never the tag again.
+        handle["repo"] = repo
     if atif_path is not None:
         handle["atif"] = str(atif_path)
     if adapter.name == "devin_tree" and not is_generator:
@@ -4220,8 +4872,24 @@ def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
     return sorted(p for p in paths if p)
 
 
+def _poll_deny_paths(store: Any, repo: str) -> tuple[str, ...]:
+    """The deny globs ``poll`` checks the branch against (td659522 R5): the
+    profile's own ``deny_paths`` for a non-default repo that sets some, else
+    :func:`lanes.deny_paths_for` exactly as before. The human-only set holds
+    either way (:func:`deny_violations`)."""
+    profile = _lanes.repo_profile(repo)
+    if repo != _lanes.DEFAULT_REPO and profile is not None:
+        if profile.deny_paths is not None:
+            return profile.deny_paths
+    return _lanes.deny_paths_for(store)
+
+
 def _deny_reason(
-    tree: Path, deny_paths: tuple[str, ...], base: str = "origin/main"
+    tree: Path,
+    deny_paths: tuple[str, ...],
+    base: str = "origin/main",
+    *,
+    governed_scan: bool = True,
 ) -> tuple[str | None, list[str]]:
     """``(why the branch breaks the deny paths, human-only paths hit)``.
     The check still runs on an empty ``deny_paths`` — human-only paths
@@ -4231,7 +4899,8 @@ def _deny_reason(
     retrying a forbidden edit (td658272).
     ``governs:factory`` skills (gr657066) join the set at ``base`` so a
     branch cannot un-tag the fence; the scan failing closes like an
-    unreadable diff."""
+    unreadable diff. ``governed_scan=False`` (another repo's slice,
+    td659522) skips it: governed skills are precis files."""
     paths = changed_paths(tree, base)
     if paths is None:
         return (
@@ -4239,7 +4908,11 @@ def _deny_reason(
             "failing closed",
             [],
         )
-    governed = _governs.governed_skill_paths_at_ref(tree, base, git=_git)
+    governed = (
+        _governs.governed_skill_paths_at_ref(tree, base, git=_git)
+        if governed_scan
+        else ()
+    )
     if governed is None:
         return (
             f"governed-skill scan could not read {base} in {tree} (git failed); "
@@ -4954,7 +5627,18 @@ def poll(ctx: Any, handle: Any) -> bool:
     # whether the session honoured its deny rules (Bash writes included).
     # release-train T1: a release fix measures against its release branch.
     base = _land_base(ctx.store, todo_id)
-    denied, human_hits = _deny_reason(tree, _lanes.deny_paths_for(ctx.store), base)
+    # td659522 R5: the repo the slice built in, from the handle (submit
+    # stamps it for a non-default repo only). The precis-shaped steps
+    # below are gated on it; a handle without the key polls as before.
+    repo = str(handle.get("repo") or job_repo(ctx.meta or {}))
+    other_repo = repo != _lanes.DEFAULT_REPO
+    denied, human_hits = _deny_reason(
+        tree,
+        _poll_deny_paths(ctx.store, repo),
+        base,
+        # Governed skills are precis files: nothing to scan in another repo.
+        governed_scan=not other_repo,
+    )
     # Deny paths and commit lines are session text too (the session names
     # its files and writes its messages): the same scrub applies — redact
     # the known values; when a value could not be re-read, the entries
@@ -5014,7 +5698,14 @@ def poll(ctx: Any, handle: Any) -> bool:
     ):
         if not _is_generator(ctx.store, todo_id):
             if adapter.name == "devin_tree" and no_commit is None:
-                worker_tests_ran, test_failure = _devin_acceptance_tests(tree, handle)
+                if other_repo:
+                    # The worker env carries credentials: for another repo
+                    # only the session and the lander run its code.
+                    worker_tests_ran, test_failure = False, None
+                else:
+                    worker_tests_ran, test_failure = _devin_acceptance_tests(
+                        tree, handle
+                    )
                 if worker_tests_ran and test_failure is None:
                     after_denied, after_human_hits = _deny_reason(
                         tree, _lanes.deny_paths_for(ctx.store), base
@@ -5184,11 +5875,17 @@ def poll(ctx: Any, handle: Any) -> bool:
         # node untagged: the release plan is not moot, so
         # ``_verified_moot``'s ``verdict:moot`` + gripe stamp would kill
         # the pass the loop is fixing.
-        fix_node = no_commit is None and _fix_node(ctx.store, todo_id)
+        # The fix-node rulings read precis main (`_fetch_main`): precis-only.
+        fix_node = (
+            no_commit is None and not other_repo and _fix_node(ctx.store, todo_id)
+        )
         fix_moot = _fix_moot(tree, result, base) if fix_node else None
+        # Another repo's `moot:` cannot be checked against precis main (nor
+        # its tests run on the worker): never verified, so it fails closed
+        # below like an unverified devin claim.
         verified = (
             _verified_moot(ctx.store, tree, result, todo_id, base)
-            if no_commit is None and not fix_node
+            if no_commit is None and not fix_node and not other_repo
             else None
         )
         if verified is not None and verified.get("release_pass"):
@@ -5242,6 +5939,15 @@ def poll(ctx: Any, handle: Any) -> bool:
         ):
             # A bare claim cannot bypass the SHA-bearing code-build grammar
             # via the position-free fallback after _verified_moot refuses it.
+            found = None
+        if (
+            other_repo
+            and no_commit is None
+            and found is not None
+            and found[0] == "moot"
+        ):
+            # td659522: the same fail-closed path for another repo, any
+            # adapter — an unverifiable `moot:` must not close the todo.
             found = None
         # gr648125 (r288/r290): the fix node's declared ``moot:``/``no-op:``
         # close when ``_fix_moot``'s sha gates could not verify it — the
@@ -5462,7 +6168,9 @@ def poll(ctx: Any, handle: Any) -> bool:
             or not tests_ran(result)
             or (adapter.name == "devin_tree" and not worker_tests_ran)
         )
-        preland = _preland_reviewer(ctx.store, todo_id)
+        # The pre-land review (its branch push needs the credential) is
+        # precis-only until the repo reviewer exists (td659522 step 5).
+        preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
         if preland is not None:
             # gr570506 (Reto 2026-11-12): the review gates the land — the
             # squash onto main is the LAST step, minted by the tick on the
@@ -5483,6 +6191,23 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
         else:
             try:
+                if other_repo:
+                    # The mint runs no validate_submit; ask the lander now
+                    # so a refusal is this attempt's legible failure, not a
+                    # dead land job the todo never hears about (td659522).
+                    from precis.workers.job_types import land_slice as _ls
+
+                    refused = _ls.validate_submit(
+                        ctx.store,
+                        params=_land_params(ctx, todo_id, tree, lane, checked),
+                    )
+                    if refused:
+                        _append_comment(
+                            ctx.store,
+                            todo_id,
+                            f"{_LANDER_HANDOFF_PREFIX} land FAILED: {refused}",
+                        )
+                        raise RuntimeError(refused)
                 land_job = _mint_land(ctx, todo_id, tree, lane, checked=checked)
             except Exception as exc:
                 log.warning("run_slice: land_slice mint for td%d failed", todo_id)

@@ -545,6 +545,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # True asks for --checked — honoured only when the selector's
         # answer is a spot selection (:func:`ship_flag`); else --quick.
         "checked": {"type": "boolean"},
+        # The repo the slice was built in (td659522); only the default
+        # repo lands here, see :func:`_repo_refusal`.
+        "repo": {"type": "string"},
     },
     "required": ["todo_id"],
     "additionalProperties": False,
@@ -1546,16 +1549,41 @@ def _todo_rejection(store: Any, params: dict[str, Any]) -> str | None:
     return reason
 
 
+def _repo_refusal(store: Any, params: dict[str, Any]) -> str | None:
+    """td659522 step 1: this lander runs the tree's ``scripts/ship`` and
+    lands on precis main, so it lands the default repo only, whatever a
+    profile's ``lander`` field says. Another repo's lander is step 2.
+    A job without ``params.repo`` (a hand mint, a re-land) is held to the
+    todo's own ``repo:`` tag: a todo tagged for another repo never lands
+    here."""
+    todo_id = params.get("todo_id")
+    names = [params["repo"]] if params.get("repo") is not None else []
+    if store is not None and isinstance(todo_id, int):
+        names += _rs.slice_repos(store, todo_id)
+    other = [str(n) for n in names if n != _lanes.DEFAULT_REPO]
+    if not other:
+        return None
+    return (
+        f"land_slice: repo {other[0]!r} cannot be landed here: the lander for "
+        "it does not exist yet (td659522 step 2); next: land the slice by hand "
+        "or wait for that lander"
+    )
+
+
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
-    """Refuses while ``PRECIS_FACTORY=off`` and on a missing/closed todo."""
+    """Refuses while ``PRECIS_FACTORY=off``, for any repo but the default,
+    and on a missing/closed todo."""
     del gripe_id
     if _rs.factory_off():
         return (
             "land_slice: the factory is off (PRECIS_FACTORY=off); next: unset it "
             "on the worker host to land slices"
         )
+    wrong_repo = _repo_refusal(store, params)
+    if wrong_repo is not None:
+        return wrong_repo
     reason = _todo_rejection(store, params)
     return reason.replace("run_slice:", "land_slice:", 1) if reason else None
 
@@ -1774,6 +1802,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     todo_id = params.get("todo_id")
     if _rs.factory_off():
         ctx.record_failure("land_slice: the factory is off (PRECIS_FACTORY=off)")
+        return None
+    wrong_repo = _repo_refusal(ctx.store, params)
+    if wrong_repo is not None:
+        ctx.record_failure(wrong_repo)
         return None
     reason = _todo_rejection(ctx.store, params)
     if reason is not None:

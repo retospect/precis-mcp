@@ -726,14 +726,19 @@ def test_validate_submit_refuses_a_todo_tagged_for_another_repo(
     two = run_slice.validate_submit(store, params={"todo_id": 11})
     assert two is not None and "2 repo: tags" in two
     # A profiled repo still needs the setting; opened, the submit passes.
-    monkeypatch.setattr(run_slice._lanes, "KNOWN_REPOS", ("precis", "catpath"))
+    monkeypatch.setitem(
+        run_slice._lanes.REPO_PROFILES,
+        "catpath",
+        replace(run_slice._lanes.REPO_PROFILES["catpath"], lander="land_slice"),
+    )
     closed = run_slice.validate_submit(store, params={"todo_id": 9})
     assert closed is not None and "factory.open_repos" in closed
     monkeypatch.setattr(
         run_slice._lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
     )
-    assert run_slice.validate_submit(store, params={"todo_id": 9}) is None
-    assert run_slice.validate_submit(store, params={"todo_id": 12}) is None
+    cat = {"repo": "catpath"}
+    assert run_slice.validate_submit(store, params={"todo_id": 9, **cat}) is None
+    assert run_slice.validate_submit(store, params={"todo_id": 12, **cat}) is None
 
 
 # ── brief ──────────────────────────────────────────────────────────
@@ -9542,3 +9547,951 @@ def test_poll_gate_failure_vetoes_the_no_commit_close(
     rec = pctx.meta_set["outcome"]
     assert rec["gates"]["within_step_cap"] is False
     assert rec["gate_pass"] is False
+
+
+# ── Per-repo host helpers (td659522 step 1 R2): unwired ───────────────
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+}
+
+
+def _rg(cwd: Path, *args: str) -> str:
+    """Real git in ``cwd`` (test setup); raises on failure, returns stdout."""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+    return proc.stdout.strip()
+
+
+def _commit(repo: Path, name: str, text: str = "x") -> str:
+    (repo / name).write_text(text, encoding="utf-8")
+    _rg(repo, "add", name)
+    _rg(repo, "commit", "-q", "-m", f"add {name}")
+    return _rg(repo, "rev-parse", "HEAD")
+
+
+def _repo_with_origin(tmp_path: Path, label: str) -> tuple[Path, Path]:
+    """A bare ``origin`` and a clone on ``main`` with one pushed commit."""
+    origin = tmp_path / f"{label}-origin.git"
+    _rg(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    clone = tmp_path / label
+    _rg(tmp_path, "clone", "-q", str(origin), str(clone))
+    _rg(clone, "checkout", "-q", "-b", "main")
+    _commit(clone, "first.txt")
+    _rg(clone, "push", "-q", "origin", "main")
+    return origin, clone
+
+
+def test_slice_root_for_default_and_mapped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path / "prec"))
+    assert run_slice.slice_root_for(lanes.DEFAULT_REPO) == run_slice.slice_root()
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"catpath": str(tmp_path)}))
+    assert run_slice.slice_root_for("catpath") == tmp_path.resolve()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "{not json",
+        '["catpath"]',
+        '{"other": "/x"}',
+        '{"catpath": 3}',
+        '{"catpath": "relative/clone"}',
+    ],
+)
+def test_slice_root_for_refuses_bad_map(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("PRECIS_SLICE_REPOS", raising=False)
+    else:
+        monkeypatch.setenv("PRECIS_SLICE_REPOS", raw)
+    with pytest.raises(RuntimeError, match="PRECIS_SLICE_REPOS") as ei:
+        run_slice.slice_root_for("catpath")
+    assert "catpath" in str(ei.value) and "next:" in str(ei.value)
+
+
+def test_ensure_info_exclude_creates_is_idempotent_and_keeps(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    _rg(tmp_path, "init", "-q", "-b", "main", str(repo))
+    _commit(repo, "a.txt")
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    exclude.write_text("keep-me\n", encoding="utf-8")
+    run_slice._ensure_info_exclude(repo, ("scratch/", "keep-me"))
+    run_slice._ensure_info_exclude(repo, ("scratch/", "keep-me"))
+    assert exclude.read_text(encoding="utf-8").splitlines() == ["keep-me", "scratch/"]
+    (repo / "scratch").mkdir()
+    (repo / "scratch" / "x").write_text("1", encoding="utf-8")
+    assert "scratch" not in _rg(repo, "status", "--porcelain")
+
+
+def test_ensure_info_exclude_creates_missing_file(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    _rg(tmp_path, "init", "-q", "-b", "main", str(repo))
+    shutil.rmtree(repo / ".git" / "info", ignore_errors=True)
+    run_slice._ensure_info_exclude(repo, ("a/", "b/"))
+    exclude = repo / ".git" / "info" / "exclude"
+    assert exclude.read_text(encoding="utf-8").splitlines() == ["a/", "b/"]
+
+
+def test_ensure_info_exclude_from_a_linked_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    _rg(tmp_path, "init", "-q", "-b", "main", str(repo))
+    _commit(repo, "a.txt")
+    wt = tmp_path / "wt"
+    _rg(repo, "worktree", "add", "-q", "-b", "side", str(wt))
+    run_slice._ensure_info_exclude(wt, ("scratch/",))
+    exclude = repo / ".git" / "info" / "exclude"
+    assert "scratch/" in exclude.read_text(encoding="utf-8").splitlines()
+    (wt / "scratch").mkdir()
+    (wt / "scratch" / "x").write_text("1", encoding="utf-8")
+    assert "scratch" not in _rg(wt, "status", "--porcelain")
+
+
+def test_pinned_git_rev_real_lock_and_misses() -> None:
+    lock = (Path(__file__).resolve().parents[1] / "uv.lock").read_text(encoding="utf-8")
+    rev = run_slice.pinned_git_rev(lock, "autocatpath")
+    assert rev is not None and re.fullmatch(r"[0-9a-f]{40}", rev)
+    assert f"#{rev}" in lock
+    assert run_slice.pinned_git_rev(lock, "ase") is None  # registry source
+    assert run_slice.pinned_git_rev(lock, "no-such-package") is None
+    assert run_slice.pinned_git_rev("[[package\nbroken", "autocatpath") is None
+
+
+def test_git_auth_argv_env_and_no_token_in_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    token = "tok-SECRET-123"
+    monkeypatch.setenv("PRECIS_DSN_TEST_CANARY", "leak-me")
+    monkeypatch.setattr(
+        run_slice._factory_git,
+        "git_auth_env",
+        lambda base=None: {**(base or {}), run_slice._factory_git.SECRET_NAME: token},
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen["argv"], seen["env"] = argv, kw["env"]
+        return subprocess.CompletedProcess(argv, 0, "", f"boom {token}")
+
+    monkeypatch.setattr(run_slice.subprocess, "run", fake_run)
+    proc = run_slice._git_auth(["fetch", "origin", "main"], tmp_path)
+    argv = seen["argv"]
+    # The overrides come before the subcommand, each as its own ``-c``.
+    assert argv[0] == "git" and argv[-3:] == ["fetch", "origin", "main"]
+    assert argv[1:-3] == [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "http.sslVerify=true",
+        "-c",
+        "fetch.recurseSubmodules=false",
+    ]
+    assert not any(token in a or "@" in a for a in argv)
+    assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert seen["env"][run_slice._factory_git.SECRET_NAME] == token
+    assert "PRECIS_DSN_TEST_CANARY" not in seen["env"]
+    assert token not in proc.stderr and "***" in proc.stderr
+
+
+def test_git_auth_without_token_adds_a_legible_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        run_slice._factory_git, "git_auth_env", lambda base=None: dict(base or {})
+    )
+    monkeypatch.setattr(
+        run_slice.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 128, "", "denied"),
+    )
+    proc = run_slice._git_auth(["fetch"], tmp_path)
+    assert proc.returncode == 128
+    assert "denied" in proc.stderr and "PRECIS_FACTORY_GIT_TOKEN" in proc.stderr
+
+
+def _prep_world(tmp_path: Path) -> dict[str, Any]:
+    """Origin + clone of the target repo, and a fake precis root whose
+    ``origin/main`` carries a ``uv.lock`` pinning the target's first commit."""
+    c_origin, c_root = _repo_with_origin(tmp_path, "cat")
+    pin = _rg(c_root, "rev-parse", "HEAD")
+    _commit(c_root, "second.txt")
+    _rg(c_root, "push", "-q", "origin", "main")
+    _p_origin, p_root = _repo_with_origin(tmp_path, "prec")
+    lock = (
+        '[[package]]\nname = "autocat"\nversion = "1"\n'
+        f'source = {{ git = "https://example.invalid/o/r?rev={pin}#{pin}" }}\n'
+    )
+    (p_root / "uv.lock").write_text(lock, encoding="utf-8")
+    _rg(p_root, "add", "uv.lock")
+    _rg(p_root, "commit", "-q", "-m", "lock")
+    _rg(p_root, "push", "-q", "origin", "main")
+    profile = lanes.RepoProfile(
+        name="cat",
+        remote=str(c_origin),
+        exclude=("scratch/",),
+        pin=("uv.lock", "autocat"),
+    )
+    return {"profile": profile, "root": c_root, "prec": p_root, "pin": pin}
+
+
+def _repin(w: dict[str, Any], rev: str) -> None:
+    lock = (w["prec"] / "uv.lock").read_text(encoding="utf-8").replace(w["pin"], rev)
+    (w["prec"] / "uv.lock").write_text(lock, encoding="utf-8")
+    _rg(w["prec"], "commit", "-q", "-am", "repin")
+    _rg(w["prec"], "push", "-q", "origin", "main")
+
+
+def test_prepare_repo_ready_when_pin_is_an_ancestor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    assert run_slice._prepare_repo(w["profile"], w["root"]) is None
+    exclude = w["root"] / ".git" / "info" / "exclude"
+    assert "scratch/" in exclude.read_text(encoding="utf-8")
+
+
+def test_prepare_repo_refuses_pin_not_an_ancestor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    root = w["root"]
+    _rg(root, "checkout", "-q", "-b", "offbase", "HEAD~1")
+    off = _commit(root, "off.txt")  # known to the clone, not on origin/main
+    _repin(w, off)
+    why = run_slice._prepare_repo(w["profile"], root)
+    assert why is not None and "behind the pin" in why and "next:" in why
+
+
+def test_prepare_repo_refuses_pin_unknown_to_the_clone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    _repin(w, "a" * 40)
+    why = run_slice._prepare_repo(w["profile"], w["root"])
+    assert why is not None and "behind the pin" in why
+
+
+def test_prepare_repo_refuses_remote_mismatch_and_non_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    other = replace(w["profile"], remote="https://example.invalid/o/other")
+    why = run_slice._prepare_repo(other, w["root"])
+    assert why is not None and "origin" in why and "next:" in why
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    why = run_slice._prepare_repo(w["profile"], plain)
+    assert why is not None and "not a git checkout" in why and "next:" in why
+    why = run_slice._prepare_repo(w["profile"], tmp_path / "absent")
+    assert why is not None and "not a git checkout" in why
+
+
+def test_prepare_repo_refuses_userinfo_remote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    clean = "https://example.invalid/o/r"
+    # Built at runtime: the repo's credential scan refuses a literal URL
+    # with inline userinfo, fake or not.
+    fake = "-".join(("not", "a", "real", "secret"))
+    with_userinfo = "https://" + "user:" + fake + "@" + "example.invalid/o/r.git"
+    _rg(w["root"], "remote", "set-url", "origin", with_userinfo)
+    prof = replace(w["profile"], remote=clean)
+    why = run_slice._prepare_repo(prof, w["root"])
+    assert why is not None and "userinfo" in why and fake not in why
+
+
+def test_prepare_repo_private_fetches_through_git_auth_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    w = _prep_world(tmp_path)
+    monkeypatch.setattr(run_slice, "slice_root", lambda: w["prec"])
+    real_git = run_slice._git
+    calls: list[str] = []
+
+    def spy_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append("git:" + args[0])
+        return real_git(args, cwd)
+
+    def spy_auth(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append("auth:" + args[0])
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(run_slice, "_git", spy_git)
+    monkeypatch.setattr(run_slice, "_git_auth", spy_auth)
+    private = replace(w["profile"], private=True)
+    assert run_slice._prepare_repo(private, w["root"]) is None
+    assert "auth:fetch" in calls and "git:fetch" not in calls
+    calls.clear()
+    assert run_slice._prepare_repo(w["profile"], w["root"]) is None
+    assert "git:fetch" in calls and "auth:fetch" not in calls
+
+
+def test_ensure_worktree_fetched_skips_the_fetch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        seen.append(args)
+        return _proc()
+
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    run_slice._ensure_worktree(tmp_path, 7, fetched=True)
+    assert not any(a[:1] == ["fetch"] for a in seen)
+    assert any(a[:2] == ["worktree", "add"] for a in seen)
+    seen.clear()
+    run_slice._ensure_worktree(tmp_path, 8)
+    assert ["fetch", "origin", "main"] in seen
+
+
+# ── Repo-aware brief (td659522 step 1, R3) ─────────────────────────
+
+
+def _repo_brief_kw(**over: Any) -> dict[str, Any]:
+    kw: dict[str, Any] = {
+        "todo_id": 42,
+        "title": "Widen the catalyst grid",
+        "body": "Add the Pd row to the grid. Rebase on origin/main first.",
+        "latest": "brief: use the 0.1 eV tolerance",
+        "lane": "claude-sub",
+        "model": "m",
+        "effort": "high",
+    }
+    kw.update(over)
+    return kw
+
+
+_VARIANTS: dict[str, dict[str, Any]] = {
+    "builder": {},
+    "devin": {"adapter": "devin_tree", "mcp": False},
+}
+
+
+@pytest.mark.parametrize("variant", sorted(_VARIANTS))
+def test_render_brief_default_profile_is_byte_identical(variant: str) -> None:
+    kw = _repo_brief_kw(**_VARIANTS[variant])
+    plain = run_slice.render_brief(**kw)
+    assert plain == run_slice.render_brief(
+        **kw, profile=lanes.REPO_PROFILES[lanes.DEFAULT_REPO]
+    )
+    assert "CLAUDE.md" in plain  # still the precis brief
+
+
+@pytest.mark.parametrize("variant", sorted(_VARIANTS))
+def test_repo_brief_for_catpath(variant: str) -> None:
+    profile = lanes.REPO_PROFILES["catpath"]
+    brief = run_slice.render_brief(
+        **_repo_brief_kw(**_VARIANTS[variant]), profile=profile
+    )
+    for gone in (
+        "CLAUDE.md",
+        "AGENTS.md",
+        "scripts/test",
+        "ruff format",
+        "src/precis/",
+        "scripts/round",
+        "scripts/ship",
+        "--checked",
+    ):
+        assert gone not in brief, gone
+    for kept in (
+        "CONTRIBUTING.md",
+        "uv sync --extra dev",
+        "uv run ruff check src tests",
+        "uv run pytest <paths>",
+        ".github/**",
+        "`origin/main`",
+        # the rules section and its precedence
+        "Do not `git fetch`, `git pull`, rebase or merge from origin",
+        "Do not push.",
+        "Do not bump the version, edit the version line in `pyproject.toml`, "
+        "tag or release",
+        "Never open a pull request",
+        "this section wins",
+        "deliberately not auto-formatted",
+        # the task
+        "Widen the catalyst grid",
+        "Add the Pd row to the grid.",
+        "brief: use the 0.1 eV tolerance",
+        # the final-message contract poll reads
+        "`tests: ran`",
+        "`tests: NOT RUN",
+        "`validated:",
+        "`no-op:",
+        "moot: gr<N> already fixed by <sha>",
+        "`handoff:` comment",
+    ):
+        assert kept in brief, kept
+    if variant == "builder":
+        assert "`subject: type(scope): what`" in brief
+        assert "git commit -F scratch/commit-msg.txt" in brief
+        assert "Commit your work on this branch" in brief
+    else:
+        assert "scratch/commit-msg.txt" in brief
+        assert "Leave your edits in the working tree" in brief
+        assert "Commit your work on this branch" not in brief
+    # no precis MCP instructions for a tree without the precis .mcp.json
+    assert "precis MCP" not in brief
+
+
+def test_repo_brief_uses_the_profile_base_and_deny_list() -> None:
+    profile = replace(
+        lanes.REPO_PROFILES["catpath"], base="dev", deny_paths=("a/**", "b.txt")
+    )
+    brief = run_slice.render_brief(**_repo_brief_kw(), profile=profile)
+    assert "cut from `origin/dev`" in brief
+    assert "current with `origin/dev`" in brief
+    assert "- `a/**`" in brief and "- `b.txt`" in brief
+    assert ".github/**" not in brief
+
+
+def test_repo_brief_always_denied_text() -> None:
+    """The always-denied line names families of ``lanes.HUMAN_ONLY_PATHS``:
+    one real path per family must be refused by ``deny_violations`` with an
+    empty lane list, and each family must appear in the line."""
+    text = run_slice._ALWAYS_DENIED_TEXT
+    samples = {
+        "`deploy/`": "deploy/inventory-x/hosts",
+        "`.claude/`": "sub/.claude/settings.json",
+        "`.codex/`": ".codex/config.toml",
+        "`.devin/`": ".devin/hooks.json",
+        "`.kimi-code/`": ".kimi-code/x",
+        "`.mcp.json`": ".mcp.json",
+        "`scripts/hooks/`": "scripts/hooks/pre-commit",
+        "agent rule files": "pkg/CLAUDE.md",
+    }
+    for family, path in samples.items():
+        assert family in text, family
+        assert run_slice.deny_violations([path], ()) == [path], path
+    # a path outside every family is not always-denied
+    assert run_slice.deny_violations(["src/catpath/grid.py"], ()) == []
+
+
+def test_repo_brief_read_mcp_follows_the_profile() -> None:
+    kw = _repo_brief_kw(mcp=False, read_mcp="reader")
+    on = replace(lanes.REPO_PROFILES["catpath"], mcp=True)
+    off = replace(lanes.REPO_PROFILES["catpath"], mcp=False)
+    assert "read-only precis MCP (get and search)" in run_slice.render_brief(
+        **kw, profile=on
+    )
+    assert "precis MCP" not in run_slice.render_brief(**kw, profile=off)
+
+
+def test_repo_brief_refuses_a_generator() -> None:
+    with pytest.raises(ValueError, match="precis-only"):
+        run_slice.render_brief(
+            **_repo_brief_kw(),
+            generator=True,
+            profile=lanes.REPO_PROFILES["catpath"],
+        )
+
+
+# ── Submit side for a second repo (td659522 step 1, R4) ───────────────
+
+
+@pytest.fixture
+def catpath_build(
+    monkeypatch: pytest.MonkeyPatch, seams: dict[str, Any], tmp_path: Path
+) -> dict[str, Any]:
+    """A buildable, opened ``catpath`` (fake lander, patched setting) whose
+    clone is ``tmp_path/cat``; ``_prepare_repo`` is stubbed and records the
+    git calls already made when it ran (``seams["git"]`` length)."""
+    profile = replace(lanes.REPO_PROFILES["catpath"], lander="land_slice")
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+    root = tmp_path / "cat"
+    root.mkdir()
+    monkeypatch.setenv("PRECIS_SLICE_REPOS", json.dumps({"catpath": str(root)}))
+    state: dict[str, Any] = {
+        "profile": profile,
+        "root": root.resolve(),
+        "prepared": [],
+        "refusal": None,
+    }
+
+    def fake_prepare(prof: Any, where: Path) -> str | None:
+        state["prepared"].append((prof, where, len(seams["git"])))
+        return state["refusal"]
+
+    monkeypatch.setattr(run_slice, "_prepare_repo", fake_prepare)
+    return state
+
+
+def test_validate_submit_repo_param_must_agree_with_the_todo(
+    monkeypatch: pytest.MonkeyPatch, catpath_build: dict[str, Any]
+) -> None:
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    use_lanes(monkeypatch, *SEED_LANES)
+    store = _Store()
+    store.add_todo(7, "untagged")
+    store.add_todo(9, "engine", tags=("repo:catpath",))
+    store.add_todo(10, "child", parent_id=9)
+    store.add_todo(11, "engine generator", tags=("repo:catpath",))
+    store.refs[11].meta["generate"] = {"role": "reviewer"}
+    missing = run_slice.validate_submit(store, params={"todo_id": 9})
+    assert missing is not None and "'catpath'" in missing and "'precis'" in missing
+    assert "next:" in missing
+    stray = run_slice.validate_submit(store, params={"todo_id": 7, "repo": "catpath"})
+    assert stray is not None and "'precis'" in stray and "'catpath'" in stray
+    assert "next:" in stray
+    cat = {"repo": "catpath"}
+    assert run_slice.validate_submit(store, params={"todo_id": 9, **cat}) is None
+    assert run_slice.validate_submit(store, params={"todo_id": 10, **cat}) is None
+    # An explicit default matches an untagged todo.
+    assert (
+        run_slice.validate_submit(store, params={"todo_id": 7, "repo": "precis"})
+        is None
+    )
+    gen = run_slice.validate_submit(store, params={"todo_id": 11, **cat})
+    assert gen is not None and "precis-only until the repo reviewer exists" in gen
+    assert "td659522 step 5" in gen
+    # No store: only the param's own validity.
+    assert run_slice.validate_submit(None, params={"todo_id": 7, **cat}) is None
+    nope = run_slice.validate_submit(None, params={"todo_id": 7, "repo": "nope"})
+    assert nope is not None and "unknown params.repo 'nope'" in nope
+
+
+def test_job_repo_reads_params_or_meta() -> None:
+    assert run_slice.job_repo({}) == lanes.DEFAULT_REPO
+    assert run_slice.job_repo({"todo_id": 1}) == lanes.DEFAULT_REPO
+    assert run_slice.job_repo({"repo": "catpath"}) == "catpath"
+    assert run_slice.job_repo({"params": {"repo": "catpath"}}) == "catpath"
+    assert run_slice.job_repo({"params": {}}) == lanes.DEFAULT_REPO
+
+
+def test_submit_in_another_repo_cuts_and_launches_under_its_root(
+    seams: dict[str, Any], catpath_build: dict[str, Any]
+) -> None:
+    store = _Store()
+    store.add_todo(42, "Widen the grid", body="Do X.", tags=("repo:catpath",))
+    ctx, handle = _submit(store, seams, repo="catpath", effort="medium")
+    assert ctx.failure is None, ctx.failure
+    root = catpath_build["root"]
+    tree = root / ".claude" / "worktrees" / "slice-td42"
+    assert handle["worktree"] == str(tree) and handle["repo"] == "catpath"
+    assert run_slice.worktrees_dir(run_slice.slice_root()) not in tree.parents
+    # _prepare_repo ran once, on the repo root, before any worktree git call.
+    [(prof, where, before)] = catpath_build["prepared"]
+    assert prof is catpath_build["profile"] and where == root
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert not any(a[:1] == ["worktree"] for a in git_cmds[:before])
+    assert ["worktree", "add", "-b", "slice/42", str(tree), "origin/main"] in git_cmds
+    # The fetch belongs to _prepare_repo, not the worktree cut.
+    assert ["fetch", "origin", "main"] not in git_cmds
+    assert all(cwd == root for args, cwd in seams["git"] if args[0] == "worktree")
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "uv sync --extra dev" in brief and "scripts/test" not in brief
+    assert "- `.github/**`" in brief and "src/precis/plans" not in brief
+    [(argv, kw)] = seams["launch"]
+    assert kw["cwd"] == tree
+    deny = json.loads(argv[-1])["permissions"]["deny"]
+    assert f"Edit(/{tree.as_posix()}/.github/**)" in deny
+    assert not any("src/precis/plans" in d for d in deny)
+    assert kw["env"]["UV_PYTHON"] == "3.12"
+    assert "PRECIS_MCP_TOKEN" not in kw["env"]
+    assert "claimed-by:lane-claude-sub" in store.tag_strings(42)
+
+
+def test_submit_default_repo_is_unchanged(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """No ``repo`` param: the old git calls in the old order, the old brief,
+    no UV_PYTHON, and no ``repo`` on the handle or the land params."""
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    ctx, handle = _submit(store, seams)
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    assert "repo" not in handle and ctx.failure is None
+    git_cmds = [args for args, _cwd in seams["git"]]
+    add = ["worktree", "add", "-b", "slice/42", str(tree), "origin/main"]
+    assert git_cmds.index(["fetch", "origin", "main"]) < git_cmds.index(add)
+    [(_argv, kw)] = seams["launch"]
+    assert "UV_PYTHON" not in kw["env"]
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "scripts/test" in brief
+    plain = run_slice._land_params(ctx, 42, tree, "claude-sub", False)
+    assert "repo" not in plain
+    ctx.meta["params"]["repo"] = "catpath"
+    carried = run_slice._land_params(ctx, 42, tree, "claude-sub", False)
+    assert carried["repo"] == "catpath"
+
+
+def test_submit_in_another_repo_fails_when_the_clone_is_not_ready(
+    seams: dict[str, Any], catpath_build: dict[str, Any]
+) -> None:
+    catpath_build["refusal"] = "origin of the 'catpath' clone is wrong; next: fix it"
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:catpath",))
+    ctx, handle = _submit(store, seams, repo="catpath")
+    assert handle is None and ctx.status == "failed"
+    assert "origin of the 'catpath' clone is wrong; next: fix it" in str(ctx.failure)
+    assert seams["launch"] == []
+    assert not any(a[:2] == ["worktree", "add"] for a, _c in seams["git"])
+
+
+def test_submit_in_another_repo_fails_without_a_clone_path(
+    monkeypatch: pytest.MonkeyPatch,
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+) -> None:
+    monkeypatch.delenv("PRECIS_SLICE_REPOS", raising=False)
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:catpath",))
+    ctx, handle = _submit(store, seams, repo="catpath")
+    assert handle is None and ctx.status == "failed"
+    assert "PRECIS_SLICE_REPOS" in str(ctx.failure)
+    assert seams["launch"] == [] and catpath_build["prepared"] == []
+
+
+def test_submit_in_another_repo_refuses_a_release_land_target(
+    seams: dict[str, Any], catpath_build: dict[str, Any]
+) -> None:
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:catpath",), meta={"land_target": "release/r12"})
+    ctx, handle = _submit(store, seams, repo="catpath")
+    assert handle is None and ctx.status == "failed"
+    assert "release-branch fixes are precis-only" in str(ctx.failure)
+    assert seams["launch"] == []
+    assert not any(a[:2] == ["worktree", "add"] for a, _c in seams["git"])
+
+
+def test_submit_in_another_repo_rechecks_the_tag_at_claim_time(
+    seams: dict[str, Any], catpath_build: dict[str, Any]
+) -> None:
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:precis",))
+    ctx, handle = _submit(store, seams, repo="catpath")
+    assert handle is None and ctx.status == "failed"
+    assert "'precis'" in str(ctx.failure) and "'catpath'" in str(ctx.failure)
+    assert seams["launch"] == [] and catpath_build["prepared"] == []
+    # Untouched: the todo was never claimed.
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_submit_with_an_unopened_repo_is_refused_by_the_claim_time_guard(
+    seams: dict[str, Any],
+) -> None:
+    """The real registry has no lander for catpath: refused at claim time."""
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:catpath",))
+    ctx, handle = _submit(store, seams, repo="catpath")
+    assert handle is None and ctx.status == "failed"
+    assert "no factory build profile" in str(ctx.failure)
+    assert seams["launch"] == [] and seams["git"] == []
+
+
+def test_submit_refuses_a_default_job_whose_todo_was_tagged_for_another_repo(
+    seams: dict[str, Any], catpath_build: dict[str, Any]
+) -> None:
+    """A job minted before its todo was tagged carries no ``repo`` param:
+    the claim-time guard refuses it, never building catpath work in a
+    precis tree, with the repo closed and with it open."""
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:catpath",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert "'catpath'" in str(ctx.failure) and "params.repo" in str(ctx.failure)
+    assert seams["launch"] == [] and seams["git"] == []
+    assert catpath_build["prepared"] == []
+
+
+def test_slice_deny_per_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    lane = Lane(
+        "l", "claude_p", "sub", 1, frozenset({ANY_CLASS}), deny_write_paths=("x/**",)
+    )
+    assert run_slice._slice_deny(None, lanes.DEFAULT_REPO, lane) == ("x/**",)
+    assert run_slice._slice_deny(None, "catpath", lane) == (".github/**",)
+    bare = replace(lanes.REPO_PROFILES["catpath"], deny_paths=None)
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", bare)
+    assert run_slice._slice_deny(None, "catpath", lane) == ("x/**",)
+
+
+# ── Poll side for a second repo (td659522 step 1, R5) ─────────────────
+
+
+def _cat_sentinels(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stand failing sentinels on every precis-shaped step another repo's
+    poll must skip; the returned list records any that were reached."""
+    reached: list[str] = []
+
+    def boom(name: str) -> Any:
+        def call(*_a: Any, **_kw: Any) -> Any:
+            reached.append(name)
+            raise AssertionError(f"{name} reached for a catpath poll")
+
+        return call
+
+    monkeypatch.setattr(
+        run_slice._governs, "governed_skill_paths_at_ref", boom("governed scan")
+    )
+    for name in (
+        "_devin_acceptance_tests",
+        "_fetch_main",
+        "_verified_moot",
+        "_tests_green_on_main",
+        "_fix_moot",
+        "_fix_declared",
+        "_defer_land_for_review",
+    ):
+        monkeypatch.setattr(run_slice, name, boom(name))
+    return reached
+
+
+def _cat_poll(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    result: str,
+    *,
+    devin: bool = False,
+    diff: str = "",
+    porcelain_z: str = "",
+    ahead: str = "",
+) -> tuple[_Ctx, _Store, dict[str, Any]]:
+    store = _Store()
+    store.add_todo(42, "t", tags=("repo:catpath",))
+    if devin:
+        ctx, handle = _devin_lane_submit(store, seams, monkeypatch, repo="catpath")
+    else:
+        ctx, handle = _submit(store, seams, repo="catpath")
+    assert ctx.failure is None and handle["repo"] == "catpath"
+    seams.update(diff=diff, porcelain_z=porcelain_z, ahead=ahead)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": result}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    return pctx, store, handle
+
+
+def test_poll_catpath_deny_uses_the_profile_set(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reached = _cat_sentinels(monkeypatch)
+    pctx, store, _ = _cat_poll(
+        seams,
+        monkeypatch,
+        "Done.",
+        diff="src/x.py\n",
+        porcelain_z="?? .github/workflows/x.yml\0",
+    )
+    assert pctx.status == "failed" and "deny_write_paths" in str(pctx.failure)
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: attempt FAILED, touched deny_write_paths:")
+    assert "`.github/workflows/x.yml`" in handoff and "src/x.py" not in handoff
+    assert seams["lands"] == [] and reached == []
+    # Not a human-only path: an ordinary failure, no stamp.
+    assert run_slice.HUMAN_ONLY_KEY not in pctx.meta_set
+
+
+def test_poll_catpath_does_not_deny_precis_only_paths(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path precis denies (its engine) is ordinary catpath code."""
+    precis_denied = "src/precis/plans/lanes.py"
+    assert precis_denied in run_slice.deny_violations(
+        [precis_denied], lanes.deny_paths_for(None)
+    )
+    _cat_sentinels(monkeypatch)
+    pctx, _store, _ = _cat_poll(
+        seams,
+        monkeypatch,
+        "Done.\ntests: ran",
+        diff=precis_denied + "\n",
+        ahead="def5678 feat(x): thing (td42)\n",
+    )
+    assert "deny_write_paths" not in str(pctx.failure)
+    assert run_slice.HUMAN_ONLY_KEY not in pctx.meta_set
+
+
+@pytest.mark.parametrize("path", [".devin/config.json", ".claude/settings.json"])
+def test_poll_catpath_keeps_the_always_denied_set(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    _cat_sentinels(monkeypatch)
+    pctx, _store, _ = _cat_poll(seams, monkeypatch, "Done.", diff=path + "\n")
+    assert pctx.status == "failed" and "deny_write_paths" in str(pctx.failure)
+    assert pctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [path]
+
+
+@pytest.mark.parametrize("devin", [False, True])
+def test_poll_catpath_skips_the_precis_shaped_steps(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    devin: bool,
+) -> None:
+    """No governed scan, no worker-side tests, no main fetch/moot check, no
+    pre-land defer or push: the sentinels fail the test if any is reached.
+    The Devin case still commits the session's edits with the fallback."""
+    reached = _cat_sentinels(monkeypatch)
+    seams["preland"] = 99
+    seams["porcelain"] = " M widget.py\n"
+    seams["staged"] = True
+    pctx, store, _handle = _cat_poll(
+        seams,
+        monkeypatch,
+        "Done.\ntests: ran",
+        devin=devin,
+        diff="widget.py\n",
+        ahead="def5678 fix(slice): complete (td42)\n",
+    )
+    assert reached == [] and seams["push"] == [] and seams["run"] == []
+    assert "pending_land" not in store.refs[42].meta
+    assert "preland_review" not in pctx.meta_set
+    if devin:
+        assert any(a[:1] == ["commit"] for a, _cwd in seams["git"])
+        assert pctx.meta_set["acceptance_tests"]["passed"] is None
+
+
+@pytest.mark.parametrize("devin", [False, True])
+@pytest.mark.parametrize(
+    "claim", ["moot: gr7 already fixed by abc1234def", "moot: nothing to do"]
+)
+def test_poll_catpath_moot_fails_closed(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    devin: bool,
+    claim: str,
+) -> None:
+    """An unverifiable `moot:` takes the unverified path (the one devin's
+    bare claim takes): a failed attempt with the no-commit mark, the todo
+    not closed and not tagged."""
+    reached = _cat_sentinels(monkeypatch)
+    pctx, store, _ = _cat_poll(seams, monkeypatch, claim, devin=devin)
+    assert reached == []
+    assert pctx.status == "failed"
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    tags = store.tag_strings(42)
+    assert "STATUS:done" not in tags and run_slice.MOOT_TAG not in tags
+    assert "STATUS:open" in tags and "attempt:1" in tags
+    assert seams["lands"] == []
+
+
+def test_poll_catpath_land_params_carry_the_repo_and_the_refusal_is_legible(
+    seams: dict[str, Any],
+    catpath_build: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mint runs no ``validate_submit``, so ``poll`` asks the lander:
+    this lander refuses catpath, and that is the attempt's failure."""
+    asked: list[dict[str, Any]] = []
+    real = land_slice.validate_submit
+
+    def spy(store: Any, *, gripe_id: int | None = None, params: dict[str, Any]) -> Any:
+        asked.append(dict(params))
+        return real(store, gripe_id=gripe_id, params=params)
+
+    monkeypatch.setattr(land_slice, "validate_submit", spy)
+    _cat_sentinels(monkeypatch)
+    pctx, store, _ = _cat_poll(
+        seams,
+        monkeypatch,
+        "Done.\ntests: ran",
+        diff="widget.py\n",
+        ahead="def5678 feat(x): thing (td42)\n",
+    )
+    [params] = asked
+    assert params["repo"] == "catpath" and params["todo_id"] == 42
+    assert params["branch"] == "slice/42"
+    assert seams["lands"] == [] and "land_job" not in pctx.meta_set
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert "land_slice mint failed" in pctx.failure
+    assert "'catpath'" in pctx.failure and "td659522 step 2" in pctx.failure
+    assert "attempt:1" in pctx.failure
+    note = store.comments(42)[-1]
+    assert note.startswith(run_slice._LANDER_HANDOFF_PREFIX)
+    assert "land FAILED" in note and "td659522 step 2" in note
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_poll_default_repo_is_unchanged(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``repo`` on the handle: the governed scan runs against the base
+    ref, the deny set is ``deny_paths_for``, and the land mints without
+    asking the lander first."""
+    scans: list[str] = []
+
+    def fake_scan(
+        repo: Path, ref: str, *, governs: str = "factory", git: Any = None
+    ) -> tuple[str, ...]:
+        scans.append(ref)
+        return ()
+
+    monkeypatch.setattr(run_slice._governs, "governed_skill_paths_at_ref", fake_scan)
+    monkeypatch.setattr(
+        land_slice,
+        "validate_submit",
+        lambda *a, **kw: pytest.fail("poll asked the lander for a default repo"),
+    )
+    deny_args: list[tuple[str, ...]] = []
+    real_reason = run_slice._deny_reason
+
+    def spy(
+        tree: Path, deny: tuple[str, ...], base: str = "origin/main", **kw: Any
+    ) -> Any:
+        deny_args.append(deny)
+        return real_reason(tree, deny, base, **kw)
+
+    monkeypatch.setattr(run_slice, "_deny_reason", spy)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert "repo" not in handle
+    scans.clear()  # submit scans too; count the poll's own
+    seams["ahead"] = "def5678 feat(x): thing (td42)\n"
+    _finish(
+        handle, 0, json.dumps({"is_error": False, "result": "ok\ntests: ran"}) + "\n"
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert scans == ["origin/main"]
+    assert deny_args == [lanes.deny_paths_for(store)]
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+    assert run_slice._poll_deny_paths(store, lanes.DEFAULT_REPO) == (
+        lanes.deny_paths_for(store)
+    )
+
+
+def test_repo_devin_brief_does_not_claim_the_harness_runs_tests() -> None:
+    brief = run_slice.render_brief(
+        **_repo_brief_kw(**_VARIANTS["devin"]),
+        profile=lanes.REPO_PROFILES["catpath"],
+    )
+    assert "harness runs the supplied tests" not in brief
+    assert "our harness runs no tests here" in brief
+    assert "the separate lander, which runs the full suite" in brief

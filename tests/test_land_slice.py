@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -432,6 +432,83 @@ def test_validate_submit_admits_a_closed_todo_carrying_pending_land(
     assert land_slice.validate_submit(store, params={"todo_id": 44}) is None
     closed = land_slice.validate_submit(store, params={"todo_id": 45})
     assert closed is not None and "is closed" in closed
+
+
+@pytest.fixture(params=["real-registry", "fake-lander-profile"])
+def catpath_registry(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """``catpath`` as the registry has it (no lander), and as a profile that
+    names ``land_slice`` as its lander: this lander refuses it either way."""
+    if request.param == "fake-lander-profile":
+        profile = replace(lanes.REPO_PROFILES["catpath"], lander="land_slice")
+        monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    return str(request.param)
+
+
+def test_validate_submit_refuses_another_repo(
+    monkeypatch: pytest.MonkeyPatch, catpath_registry: str
+) -> None:
+    """td659522 step 1 R5: land_slice runs the tree's scripts/ship and lands
+    on precis main, so it lands the default repo only."""
+    store = _Store()
+    store.add_todo(42)
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    refused = land_slice.validate_submit(
+        store, params={"todo_id": 42, "repo": "catpath"}
+    )
+    assert refused is not None and refused.startswith("land_slice:")
+    assert "'catpath'" in refused and "td659522 step 2" in refused
+    assert "next:" in refused
+    assert land_slice.validate_submit(store, params={"todo_id": 42}) is None
+    assert (
+        land_slice.validate_submit(store, params={"todo_id": 42, "repo": "precis"})
+        is None
+    )
+    assert "repo" in land_slice.PARAMS_SCHEMA["properties"]
+
+
+def test_submit_refuses_another_repo_before_any_work(
+    seams: dict[str, Any], catpath_registry: str, tmp_path: Path
+) -> None:
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, {**_params(seams), "repo": "catpath"})
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed" and ctx.failure is not None
+    assert "'catpath'" in ctx.failure and "td659522 step 2" in ctx.failure
+    assert "next:" in ctx.failure
+    # Nothing ran: no git, no ship, the worktree is still there.
+    assert seams["git"] == [] and seams["launch"] == []
+    assert seams["tree"].is_dir() and ctx.meta_set == {}
+    # An explicit default repo lands as before.
+    ctx = _Ctx(store, {**_params(seams), "repo": "precis"})
+    handle = land_slice.submit(ctx, None)
+    assert ctx.failure is None and handle is not None
+    assert seams["launch"]
+
+
+def test_a_todo_tagged_for_another_repo_never_lands_here(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, catpath_registry: str
+) -> None:
+    """A land job without ``params.repo`` (a hand mint, a re-land) is held
+    to the todo's own tag: catpath-tagged work is refused before any git or
+    ship call, with the repo closed and with a buildable profile opened."""
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    store.add_todo(43, tags=("repo:precis",))
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    refused = land_slice.validate_submit(store, params={"todo_id": 42})
+    assert refused is not None and refused.startswith("land_slice:")
+    assert "'catpath'" in refused and "td659522 step 2" in refused
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed" and "'catpath'" in str(ctx.failure)
+    assert seams["git"] == [] and seams["launch"] == []
+    assert land_slice.validate_submit(store, params={"todo_id": 43}) is None
 
 
 def test_record_land_clears_pending_land() -> None:

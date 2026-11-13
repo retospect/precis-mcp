@@ -639,13 +639,47 @@ The other settings a slice host reads:
   (`PRECIS_SLICE_OPS_DIR` overrides the parent), not the service account's
   `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned
   home cache (a `sudo` bootstrap) killed every Bash hook in jo546987.
-- Slices build in the precis repo only. A todo tagged `repo:<name>` other
-  than `repo:precis` (its own tag, else its nearest tagged ancestor's) is
-  skipped by `plan_dispatch` and refused by `run_slice`'s submit gate
-  (`lanes.repo_refusal`). Another repo opens only when
-  `lanes.KNOWN_REPOS` carries a build profile for it and the DB-only
-  setting `factory.open_repos` lists it; today no other repo has a
-  profile, so the setting opens nothing (td659522).
+- A todo's repo is its own `repo:<name>` tag, else its nearest tagged
+  ancestor's; no tag means precis. `plan_dispatch` skips a node whose repo
+  is not buildable and open (`lanes.repo_refusal`) and stamps
+  `params.repo` on the `run_slice` job for a non-default repo; submit
+  refuses a `params.repo` that differs from the todo's tag, and later
+  phases read the job, not the tag. `land_slice` lands the precis repo
+  only and refuses another `params.repo`. Generator and reviewer nodes are
+  refused for a non-default repo.
+- A non-default repo builds from its `lanes.RepoProfile`
+  (`lanes.REPO_PROFILES`). `run_slice.submit` finds the clone through
+  `PRECIS_SLICE_REPOS`, writes the profile's exclude lines into the
+  clone's `.git/info/exclude`, fetches the base (under the factory git
+  credential, hooks disabled, for a private repo) and refuses unless the
+  rev the precis `origin/main` `uv.lock` pins for the package is an
+  ancestor of the repo's `origin/<base>` (`run_slice._prepare_repo`). The
+  session gets a repo-specific brief (`run_slice._render_repo_brief`:
+  read-first files, setup and lint commands, touched tests only, the
+  profile's deny paths, and rules that beat the task text: no fetch,
+  rebase, push, version bump, tag or pull request), those deny paths, the
+  profile's `UV_PYTHON` and no precis MCP.
+
+Opening a second repo, in order:
+
+1. Clone it once on the slice host with an https origin and no
+   credentials in the URL. The worker never clones; it refuses a missing
+   clone, an `origin` that is not the profile's https remote, or one with
+   userinfo.
+2. Set `PRECIS_SLICE_REPOS` in the worker's environment: a JSON object,
+   repo name to absolute clone path on that host, e.g.
+   `{"<repo>": "/path/to/clone"}`.
+3. Prove the factory git token from that host against the repo:
+   `git ls-remote` under the credential, plus one API read.
+4. The repo's profile must have a lander: `lanes.known_repos()` lists
+   only those and the setting cannot open any other. catpath's `lander`
+   is `None` until td659522 step 2.
+5. List the repo in the DB-only setting `factory.open_repos`
+   (`lanes.open_repos`: the setting intersected with `known_repos()`).
+
+Today no second repo can be opened: catpath is the only other profile and
+it has no lander.
+
 - The session runs `--permission-mode bypassPermissions` with the lane's
   `deny_write_paths` (`STRICT_DENY` in `src/precis/plans/lanes.py` — the
   full `FACTORY_DENY_WRITE_PATHS` plus the never-relaxable

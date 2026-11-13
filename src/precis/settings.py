@@ -565,8 +565,8 @@ REGISTRY: dict[str, SettingSpec] = {
             default=None,
             doc="DB-only. Comma-separated repos besides precis the factory "
             "may build slices in (lanes.open_repos, td659522). A name "
-            "counts only when lanes.KNOWN_REPOS has a build profile for "
-            "it. Unset, absent or unreadable: a todo tagged repo:<other> "
+            "counts only when lanes.known_repos() has a build profile "
+            "with a lander for it. Unset, absent or unreadable: a todo tagged repo:<other> "
             "is skipped by plan_dispatch and refused by run_slice.",
         ),
         SettingSpec(
