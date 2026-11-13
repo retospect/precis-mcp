@@ -687,19 +687,41 @@ def _ilike_contains(term: str) -> str:
     )
 
 
+def _verbatim_backstop(
+    scope_ref_id: Any, include_ref_ids: Any, kind: str | None
+) -> bool:
+    """Whether the ``mode='verbatim'`` scan is bounded enough to afford
+    the phrase-substring backstop (see :func:`_verbatim_pred`).
+
+    True for a single-ref scope or an explicit ref-id set, and for the
+    agent-authored memory corpus (``kind='memory'``): the join filters
+    ``refs`` via ``refs_kind_idx`` and probes ``chunks_ref_id_idx``, so
+    the ILIKE leg evaluates only memory-chunk text, never the
+    multi-million-row paper corpus. gr662452: verbatim search is the
+    dedup check the remember/search-first recipes trust, and an exact
+    sentence fails ``keywords @>`` whenever KeyBERT never stored one of
+    its words (stopwords, LaTeX tokens) — a miss then mints duplicates.
+    A memory body is one ``memory_body`` chunk, so a phrase found in the
+    body is always wholly inside that chunk's text. Multi-kind
+    ``kinds=`` filters are never bounded this way (a paper member would
+    reopen the seq-scan), so only the singular ``kind`` counts.
+    """
+    return scope_ref_id is not None or include_ref_ids is not None or kind == "memory"
+
+
 def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list[Any]]:
     """The ``mode='verbatim'`` match predicate as ``(sql, params)``.
 
     ``c.keywords @> terms`` (KeyBERT containment, GIN-indexed). When
-    ``scoped`` (a single ref or an explicit ref-id set bounds the scan),
-    OR the whole query phrase as one literal ``text`` ILIKE substring —
-    the backstop for a term the keyword extractor never stored
-    (gr518172: 'MSEP' returned 1 of 5 matching chunks). Unscoped
-    searches keep containment only: the chunks table has no trigram
-    index, so a substring leg would seq-scan millions of rows. The
-    phrase is matched contiguously, so '7 nm' never matches a chunk with
-    "7" and "nm" apart. One predicate shared by
-    :meth:`ChunkStore.search_chunks_keywords` and
+    ``scoped`` (per :func:`_verbatim_backstop`: a single ref, an explicit
+    ref-id set, or the memory corpus bounds the scan), OR the whole query
+    phrase as one literal ``text`` ILIKE substring — the backstop for a
+    term the keyword extractor never stored (gr518172: 'MSEP' returned
+    1 of 5 matching chunks). Unbounded searches keep containment only:
+    the chunks table has no trigram index, so a substring leg would
+    seq-scan millions of rows. The phrase is matched contiguously, so
+    '7 nm' never matches a chunk with "7" and "nm" apart. One predicate
+    shared by :meth:`ChunkStore.search_chunks_keywords` and
     :meth:`ChunkStore.count_chunks_keywords` so results and the "N of K"
     header can never diverge.
 
@@ -1050,7 +1072,7 @@ class ChunkStore:
         """Count chunks matching the ``mode='verbatim'`` filter (no
         LIMIT). Companion to :meth:`search_chunks_keywords` for the
         "N of K" header — same :func:`_verbatim_pred` clause (keyword
-        containment OR per-term text substring, noise-floor guard,
+        containment OR whole-phrase text substring, noise-floor guard,
         ``card_kinds`` opt-in, control-tag fences, year range) so a
         verbatim search's
         header reports *its own* universe rather than
@@ -1059,7 +1081,9 @@ class ChunkStore:
         actually searched, so a verbatim query with e.g. zero keyword
         hits could still claim "N of 386" from an unrelated FTS
         universe; prod-measured 846 lexical vs 8 verbatim for a
-        two-word query).
+        two-word query). The substring leg's gate is
+        :func:`_verbatim_backstop`, shared verbatim with
+        :meth:`search_chunks_keywords`.
 
         The ``DREAM:speculative`` / ``ORIGIN:wikipedia`` / ``STATUS:refuted``
         fences and the ``after=``/``before=`` year-range predicate MUST
@@ -1081,7 +1105,8 @@ class ChunkStore:
         if not norm:
             return 0
         pred, pred_params = _verbatim_pred(
-            norm, scoped=scope_ref_id is not None or include_ref_ids is not None
+            norm,
+            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind),
         )
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
@@ -1415,13 +1440,18 @@ class ChunkStore:
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Verbatim keyword search — chunks whose ``keywords`` array contains
         **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
-        KeyBERT terms, F20) OR whose ``text`` literally carries each term
-        as a substring. The ``search(mode='verbatim')`` leg: exact,
-        embedder-independent term matching for when an agent wants a literal
-        keyword rather than fuzzy relevance. The substring backstop covers
-        terms KeyBERT never extracted — a bulk-edit pass trusting verbatim
-        to find every occurrence must not leave stale text behind
-        (gr518172). Shares every filter with the lexical leg
+        KeyBERT terms, F20) OR whose ``text`` literally carries the whole
+        query phrase as one substring. The ``search(mode='verbatim')``
+        leg: exact, embedder-independent term matching for when an agent
+        wants a literal keyword rather than fuzzy relevance. The
+        substring backstop covers terms KeyBERT never extracted — a
+        bulk-edit pass trusting verbatim to find every occurrence must
+        not leave stale text behind (gr518172) — and runs whenever
+        :func:`_verbatim_backstop` bounds the scan: a single ref, an
+        explicit ref-id set, or the memory corpus (gr662452: a verbatim
+        sentence search is the dedup check the remember recipes trust,
+        and ``keywords @>`` alone misses any sentence with a word
+        KeyBERT never stored). Shares every filter with the lexical leg
         (kind/date/scope/tags/fences/year/chunk-scope/exclude).
 
         Terms are lowercased (KeyBERT stores lowercased; ILIKE is
@@ -1435,7 +1465,8 @@ class ChunkStore:
         if not norm:
             return []
         pred, pred_params = _verbatim_pred(
-            norm, scoped=scope_ref_id is not None or include_ref_ids is not None
+            norm,
+            scoped=_verbatim_backstop(scope_ref_id, include_ref_ids, kind),
         )
         clauses = [
             "r.retired_at IS NULL",

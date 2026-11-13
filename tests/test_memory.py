@@ -563,6 +563,29 @@ def test_search_no_match(handler: MemoryHandler) -> None:
     assert "no memory entries match" in r.body
 
 
+def test_search_verbatim_finds_exact_sentence(handler: MemoryHandler) -> None:
+    """gr662452: verbatim search is the dedup gate the remember and
+    search-first recipes trust. A full sentence that sits in a live
+    body must surface — including LaTeX-heavy prose and sentences whose
+    words KeyBERT never stored — or a "verbatim: no match" mints
+    duplicates."""
+    sentence = (
+        "the rollback window closes when $\\nabla \\cdot \\mathbf{u} = 0$ "
+        "holds across the merged mesh"
+    )
+    handler.put(text=f"Left: none.\n\n{sentence}", title="Rollback window")
+    handler.put(text="an unrelated note about indexing", title="Unrelated")
+
+    r = handler.search(q=sentence, mode="verbatim")
+    assert "no memory entries match" not in r.body
+    assert "Rollback window" in r.body
+    assert "1 memory" in r.body
+
+    # Absent the sentence, the answer is an honest no-match again.
+    r = handler.search(q="this sentence is nowhere in the graph", mode="verbatim")
+    assert "no memory entries match" in r.body
+
+
 def test_tag_listing_names_size_for_sub_kb_memory(handler: MemoryHandler) -> None:
     """gr568219: every listing row names a size — a sub-kB body reports
     raw bytes instead of the blank cell ``size_cell`` gives under 1 kB."""

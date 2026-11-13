@@ -138,6 +138,77 @@ def test_verbatim_matches_text_when_keywords_miss(store: Store) -> None:
     assert [b.id for b, r, _s in hits if r.id == rid] == [ours[0].id]
 
 
+def test_verbatim_memory_unscoped_matches_sentence_in_body(store: Store) -> None:
+    """gr662452: verbatim search is the dedup check the remember and
+    search-first recipes trust. A sentence in a live memory body must
+    surface even when KeyBERT never stored its words (stopwords, LaTeX
+    tokens) — ``keywords @>`` alone can never match such a sentence.
+    The memory corpus is bounded (``refs_kind_idx`` →
+    ``chunks_ref_id_idx`` probes), so the whole-phrase substring
+    backstop applies unscoped here — unlike the paper corpus, which
+    keeps containment-only (gr518172, pinned above)."""
+    tag = uuid4().hex[:8]
+    sentence = (
+        f"the {tag} invariant $\\mathcal{{O}}(n^2)$ bound holds for the "
+        "rewritten index and every caller"
+    )
+    ref = store.insert_ref(kind="memory", slug=None, title=f"mem {tag}")
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=f"Left: none.\n\n{sentence}", embedding=None)],
+    )
+    other = store.insert_ref(kind="memory", slug=None, title=f"oth {tag}")
+    store.chunks.insert_chunks(
+        other.id,
+        [ChunkInsert(ord=0, text="something else entirely", embedding=None)],
+    )
+    with store.pool.connection() as conn:
+        # Simulate a KeyBERT pass that stored only unrelated labels —
+        # none of the sentence's words are keywords on any chunk.
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE ref_id = ANY(%s)",
+            (["unrelated", "labels"], [ref.id, other.id]),
+        )
+        conn.commit()
+
+    # Keyword containment cannot match; only the substring backstop finds it.
+    hits = store.chunks.search_chunks(q=sentence, mode="verbatim", kind="memory")
+    assert [r.id for _b, r, _s in hits] == [ref.id]
+
+    # The count shares the predicate — the "N of K" header can't diverge.
+    total = store.chunks.count_chunks_keywords(terms=sentence.split(), kind="memory")
+    assert total == len(hits)
+
+    # Papers keep the unscoped containment-only ruling (gr518172).
+    paper = store.insert_ref(kind="paper", slug=f"pp{tag}", title="paper")
+    store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text=sentence, embedding=None)]
+    )
+    hits = store.chunks.search_chunks(q=sentence, mode="verbatim", kind="paper")
+    assert [r.id for _b, r, _s in hits] == []
+
+
+def test_verbatim_memory_scoped_via_include_ref_ids(store: Store) -> None:
+    """The ref-id-set scope already earned the backstop before
+    gr662452; pin that it still does for memory, so the domain-space
+    default (``include_ref_ids``) and the bare ``kind='memory'`` scan
+    behave identically."""
+    tag = uuid4().hex[:8]
+    sentence = f"the {tag} rollback window closes at midnight utc"
+    ref = store.insert_ref(kind="memory", slug=None, title=f"inc {tag}")
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=sentence, embedding=None)],
+    )
+    hits = store.chunks.search_chunks(
+        q=sentence,
+        mode="verbatim",
+        kind="memory",
+        include_ref_ids=[ref.id],
+    )
+    assert [r.id for _b, r, _s in hits] == [ref.id]
+
+
 def test_count_chunks_keywords_mirrors_search_chunks_keywords_predicate(
     store: Store,
 ) -> None:

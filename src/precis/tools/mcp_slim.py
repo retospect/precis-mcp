@@ -58,7 +58,8 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 
 `page_size` ≤ 100 bounds the top-N set (`k=`/`limit=` read as it). Omit
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
-'lexical' / 'semantic' / 'verbatim'.
+'lexical' / 'semantic' / 'verbatim' (on one ref or the memory corpus the
+whole query also matches as one text substring).
 `scope=` searches inside one ref (handle or slug) — the find-in-ref
 read; only kinds that implement it accept scope=, and their refusal
 names the ones that do. `status=` filters by
