@@ -36,13 +36,7 @@ from precis.patent.ingest import (
     FULLTEXT_UNAVAILABLE_TAG,
     ingest_patent,
 )
-from precis.patent.ops import (
-    OpsAuthError,
-    OpsClientProto,
-    OpsError,
-    OpsHttpError,
-    OpsQuotaError,
-)
+from precis.patent.ops import OpsClientProto, OpsError, OpsHttpError
 from precis.patent.slug import looks_like_docdb, parse_docdb_id
 from precis.patent.xml import OpsHit, parse_search_response
 from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
@@ -353,6 +347,7 @@ class PatentHandler(Handler):
         # specific patent doesn't make sense remotely) AND the caller
         # didn't ask for local-only.
         remote_hits: list[OpsHit] = []
+        remote_error: str | None = None
         cql_used: str | None = None
         if scope_ref_id is None and reach != "local":
             try:
@@ -402,31 +397,33 @@ class PatentHandler(Handler):
                             f"HTTP {e.status}): {e}",
                             next="retry shortly, or check EPO OPS status",
                         ) from e
+                    remote_error = f"{type(e).__name__}, HTTP {e.status}"
                     remote_hits = []
                 except OpsError as e:
                     # Network/auth/quota — best-effort when there's a
                     # local leg to fall back on (reach='both'): the
                     # remote leg empties rather than failing the whole
-                    # search, but auth/quota failures must NOT
-                    # masquerade as "no patents matched" — leave a
-                    # breadcrumb so a misconfigured sweep is
-                    # diagnosable. reach='remote' skips the local leg
-                    # entirely (:262) — an OPS failure there IS the
-                    # whole search, so it must not render as an
-                    # ordinary zero-result response (gr340056).
+                    # search, but failures must NOT masquerade as "no
+                    # patents matched" — record ``remote_error`` so the
+                    # response marks the leg as failed (gr648500) and
+                    # log so a misconfigured sweep is diagnosable.
+                    # reach='remote' skips the local leg entirely
+                    # (:262) — an OPS failure there IS the whole
+                    # search, so it must not render as an ordinary
+                    # zero-result response (gr340056).
                     if reach == "remote":
                         raise Upstream(
                             f"remote OPS search failed ({type(e).__name__}): {e}",
                             next=("retry shortly, or check EPO OPS credentials/quota"),
                         ) from e
-                    if isinstance(e, (OpsAuthError, OpsQuotaError)):
-                        log.warning(
-                            "patent remote search leg failed (%s): %s; "
-                            "returning local-only results",
-                            type(e).__name__,
-                            e,
-                        )
+                    remote_error = type(e).__name__
                     remote_hits = []
+                if remote_error is not None:
+                    log.warning(
+                        "patent remote search leg failed (%s); "
+                        "returning local-only results",
+                        remote_error,
+                    )
 
         # reach='remote' — dedupe against local so the caller sees
         # only patents they haven't fetched yet. One point lookup per
@@ -443,6 +440,7 @@ class PatentHandler(Handler):
             cql=cql_used,
             local_hits=local_hits,
             remote_hits=remote_hits,
+            remote_error=remote_error,
             page_size=page_size,
             score_is_distance=local_distances,
         )
@@ -818,6 +816,7 @@ class PatentHandler(Handler):
         local_hits: list[tuple[Any, Ref, float]],
         remote_hits: list[OpsHit],
         page_size: int,
+        remote_error: str | None = None,
         score_is_distance: bool = False,
     ) -> Response:
         """Merge local + remote hits into one rendered response.
@@ -861,6 +860,19 @@ class PatentHandler(Handler):
             response = Response(
                 body=response.body
                 + f"\n\n_See Espacenet: {_espacenet_search_url(cql)}_",
+                cost=response.cost,
+                result_count=response.result_count,
+                result_ids=response.result_ids,
+            )
+        if remote_error is not None:
+            # In-band marker: a failed remote leg must render
+            # distinguishably from a remote leg that ran and found
+            # nothing (gr648500 — reach='both' used to drop the leg
+            # silently, so "all hits [local]" looked like a genuine
+            # zero-remote-hit answer).
+            response = Response(
+                body=response.body + f"\n\n_remote OPS leg failed ({remote_error}) - "
+                "local hits only; retry shortly or check EPO OPS status_",
                 cost=response.cost,
                 result_count=response.result_count,
                 result_ids=response.result_ids,

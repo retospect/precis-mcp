@@ -27,6 +27,12 @@ Errors:
     OpsAuthError   — bad/expired credentials.
     OpsHttpError   — any other non-2xx, with status + body preview.
     OpsQuotaError  — fair-use quota exceeded (X-Throttling-Control).
+    OpsNotFound    — document endpoints only: the patent doesn't exist.
+                     On the *search* endpoint OPS answers a zero-hit
+                     query with HTTP 404 too (its upstream error name
+                     is literally ``OpsNotFound``), so ``search()``
+                     maps a 404 to an empty ``OpsSearchResponse``
+                     rather than raising (gr648500).
 
 The live integration test (``PRECIS_PATENT_TEST_LIVE=1``) hits real
 OPS; unit tests use a ``FakeOpsClient`` from this module.
@@ -200,7 +206,18 @@ class OpsClient:
                 constituents=["biblio"],
             )
         except Exception as e:
-            raise self._wrap_exc(e) from e
+            wrapped = self._wrap_exc(e)
+            if isinstance(wrapped, OpsNotFound):
+                # A 404 on the *search* endpoint is OPS's "zero hits"
+                # answer, not the retrieval-path "no such patent"
+                # (gr648500 — every remote-leg query surfaced as an
+                # infra failure; zero-hit phrase queries are the
+                # common case). Return an empty response so callers
+                # see a real no-match result, distinguishable from a
+                # network/auth/quota failure. ``parse_search_response``
+                # reads empty bytes as ``([], 0)``.
+                return OpsSearchResponse(xml=b"", bytes_out=0)
+            raise wrapped from e
         body = bytes(response.content)
         return OpsSearchResponse(xml=body, bytes_out=len(body))
 
@@ -245,13 +262,32 @@ class OpsClient:
         and (sometimes) attaches the HTTP status. We sniff for
         common failure modes by string content + response code.
         """
-        status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        # ``requests.HTTPError`` carries the code on ``.response``,
+        # not ``.status_code`` — without the fallback every real
+        # upstream HTTP failure classified by body-text sniffing
+        # alone (the "404 Client Error: Not Found …" message just
+        # happens to contain "not found").
+        status = (
+            getattr(exc, "status_code", None)
+            or getattr(exc, "code", None)
+            or getattr(getattr(exc, "response", None), "status_code", None)
+        )
         body = str(exc)
-        if status == 401 or "auth" in body.lower():
+        low = body.lower()
+        if status == 401 or "auth" in low:
             return OpsAuthError(f"OPS auth failed: {body[:200]}")
-        if status == 403 and "throttl" in body.lower():
+        if status == 403 and (
+            "throttl" in low or "quota" in type(exc).__name__.lower()
+        ):
+            # Upstream raises ``IndividualQuotaPerHourExceeded`` /
+            # ``RegisteredQuotaPerWeekExceeded`` — HTTPError
+            # subclasses whose message carries no "throttl" marker,
+            # so class-name sniffing is the reliable signal here.
             return OpsQuotaError(f"OPS quota exceeded: {body[:200]}")
-        if status == 404 or "not found" in body.lower():
+        # ``"notfound"`` catches OPS's own error name (``OpsNotFound``,
+        # one word) when a layer forwards the server-side message
+        # rather than requests' "Not Found" phrasing.
+        if status == 404 or "not found" in low or "notfound" in low:
             return OpsNotFound(f"OPS not found: {body[:200]}")
         if isinstance(status, int):
             return OpsHttpError(status, body)

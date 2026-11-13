@@ -526,6 +526,39 @@ class TestSearchReachKwarg:
         r = bad_handler.search(q="photocatalytic", reach="both")
         assert "no patents match" in r.body.lower()
 
+    # -- gr648500: a zero-hit remote search is a real answer (OPS
+    # returns 404 for it — the shim maps that to an empty response),
+    # while a genuinely-failed remote leg must be distinguishable
+    # from a leg that ran and found nothing. ------------------------
+
+    def test_reach_remote_zero_hits_renders_empty_not_upstream(
+        self, hub: Hub, raw_root: Path
+    ) -> None:
+        # The OPS 404 → empty response mapping happens in
+        # ``OpsClient.search`` (tests/test_patent_ops.py); this pins
+        # the downstream contract: an empty remote page under
+        # reach='remote' renders the normal no-match body.
+        cql = '(ti="integral prong strain relief" OR ab="integral prong strain relief")'
+        ops = FakeOpsClient(searches={cql: b""})
+        h = PatentHandler(hub=hub, ops=ops, raw_root=raw_root)
+        r = h.search(q="integral prong strain relief", reach="remote")
+        assert "no patents match" in r.body.lower()
+
+    def test_reach_both_remote_failure_marked_in_body(
+        self, hub: Hub, raw_root: Path
+    ) -> None:
+        # A failed remote leg under reach='both' used to drop
+        # silently — all-[local] output looked like a genuine
+        # zero-remote-hit answer. The body now carries a marker.
+        cql = '(ti="photocatalytic" OR ab="photocatalytic")'
+        bad_ops = FakeOpsClient(
+            raises={("search", cql): OpsError("connection reset by peer")}
+        )
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+        r = bad_handler.search(q="photocatalytic", reach="both")
+        assert "remote OPS leg failed" in r.body
+        assert "OpsError" in r.body
+
 
 # ---------------------------------------------------------------------------
 # Overview affordance: missing full text is explained via a single
