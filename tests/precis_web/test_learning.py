@@ -19,7 +19,7 @@ pytest.importorskip("fastapi")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from precis.learning import LearningStore
+from precis.learning import LearningStore, timezone_choices
 from precis.user_context import current_principal, user_scope
 from precis.users import hash_password
 from precis_web.app import create_app
@@ -191,6 +191,35 @@ def test_rest_form_preserves_history_without_study_minutes(
         assert day["status"] == "rest" and day["minutes"] is None
         assert day["event_id"] != original
         assert LearningStore(store).get_event(original).minutes == 2
+
+
+@pytest.mark.db
+def test_settings_form_renders_timezone_dropdown_with_current_zone_selected(
+    store: Any, learning_users: Any
+) -> None:
+    client = _client(store)
+    page = client.get("/learning", headers=_auth())
+    assert page.status_code == 200
+    assert '<select id="learning-timezone" name="timezone"' in page.text
+    assert '<option value="UTC" selected>' in page.text
+    response = client.post(
+        "/learning/settings",
+        data={"timezone": "Europe/Dublin", "typical_session_minutes": ""},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    page = client.get("/learning", headers=_auth())
+    assert '<option value="Europe/Dublin" selected>' in page.text
+
+
+def test_timezone_choices_list_geographic_zones_and_keep_the_current_one() -> None:
+    choices = timezone_choices()
+    assert choices == sorted(choices)
+    assert "UTC" in choices and "Europe/Dublin" in choices
+    assert all("/" in zone or zone == "UTC" for zone in choices)
+    legacy = timezone_choices("Eire")
+    assert legacy == sorted(legacy) and "Eire" in legacy
 
 
 @pytest.mark.db

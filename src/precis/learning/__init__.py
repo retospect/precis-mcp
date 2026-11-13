@@ -19,6 +19,10 @@ Calendar dates are reported local dates, retained across timezone changes.
 The activity grid reduces the latest unsuperseded check-in for each date;
 ``last_studied`` considers all current past dates, beyond the displayed grid.
 No aggregate from another source is treated as dated learning evidence.
+
+The settings form renders ``timezone_choices`` as its dropdown; every choice
+is a name ``_zone`` accepts, and the saved value is always listed even when
+a tzdata update drops it from the host's available set.
 """
 
 from __future__ import annotations
@@ -27,8 +31,9 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import cache
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 import psycopg
 
@@ -38,7 +43,7 @@ from precis.user_context import require_user
 if TYPE_CHECKING:
     from precis.store import Store
 
-__all__ = ["LearningEvent", "LearningSettings", "LearningStore"]
+__all__ = ["LearningEvent", "LearningSettings", "LearningStore", "timezone_choices"]
 
 _EVENT_COLS = "event_id, study_date, status, minutes, note, source, created_at"
 
@@ -89,6 +94,29 @@ def _zone(value: str) -> ZoneInfo:
             "unknown timezone",
             next="set timezone='UTC' or a valid IANA name such as 'Europe/Dublin'",
         ) from exc
+
+
+@cache
+def _zone_names() -> tuple[str, ...]:
+    """Sorted geographic IANA names offered in the settings dropdown.
+
+    Only canonical ``Region/City`` keys (plus ``UTC``) are listed; legacy
+    aliases such as ``Eire`` or ``GB`` would double the list with names a
+    user rarely recognises. The scan happens once per process.
+    """
+    return tuple(
+        sorted(key for key in available_timezones() if "/" in key or key == "UTC")
+    )
+
+
+def timezone_choices(current: str = "UTC") -> list[str]:
+    """Sorted dropdown choices, always including the owner's saved zone.
+
+    A zone saved before a tzdata update may vanish from the available set;
+    listing the current value anyway keeps the form's selection round-trippable
+    instead of silently falling back to the first option on save.
+    """
+    return sorted({*_zone_names(), current})
 
 
 def _now(value: datetime | None) -> datetime:

@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from precis.errors import BadInput, Conflict, Denied, NotFound
-from precis.learning import LearningStore
+from precis.learning import LearningStore, timezone_choices
 from precis.user_context import user_scope
 from precis.users import WebUser
 from precis_web.auth import current_user
@@ -123,6 +123,7 @@ def _render(
             "settings": settings,
             "activity": activity,
             "selected": selected,
+            "timezones": timezone_choices(settings.timezone),
             "error": error,
             "notice": notice,
             "studied_key": uuid4().hex,
