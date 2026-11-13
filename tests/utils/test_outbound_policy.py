@@ -400,7 +400,7 @@ class TestReviewFixes:
         _seed_slot(bound, 1)
         calls = {"n": 0}
 
-        def fake_polite(send: Any, url: str) -> bytes:
+        def fake_polite(send: Any, url: str, **_kw: Any) -> bytes:
             calls["n"] += 1
             assert _slot_free(bound) == 0  # hold still taken mid-retry
             return send()
