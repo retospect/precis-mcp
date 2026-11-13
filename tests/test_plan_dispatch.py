@@ -7902,3 +7902,11 @@ def test_a_dry_run_logs_no_cut_refusal(store: Store) -> None:
     pd._log_cut_refusal(pd._Writer(store, False), res, node, "td1: refused")
     assert res.logged == ["td1: refused"]
     assert _meta(store, int(ref.id))[pd.CUT_REFUSAL_LOGGED_KEY] == "td1: refused"
+
+
+def test_hidden_meta_key_matches_the_comment_timeline() -> None:
+    """plan_dispatch keeps its own copy of the hidden-comment meta key
+    (workers never import handlers); the two must stay one string."""
+    from precis.handlers._comment_timeline import HIDDEN_META_KEY
+
+    assert pd._HIDDEN_META_KEY == HIDDEN_META_KEY

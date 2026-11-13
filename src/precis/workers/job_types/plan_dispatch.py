@@ -409,6 +409,11 @@ TICK_LOCK_APP_NAME = "precis plan_tick lock"
 #: ``service_config.service`` of the kill switch (a ``prio = 0`` row).
 SERVICE = "plan_dispatch"
 
+#: ``meta`` key of a ref's hidden comment numbers — the same string as
+#: ``handlers._comment_timeline.HIDDEN_META_KEY`` (workers never import
+#: handlers; a test pins the two equal).
+_HIDDEN_META_KEY = "hidden_comments"
+
 #: A ``claimed-by:`` tag older than this, with no live job, is released.
 CLAIM_STALE = timedelta(hours=4)
 
@@ -4935,12 +4940,11 @@ def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
     never the brief either (gr653037). ``route.strip_direct_head``
     removes the ``gripe-fix-direct`` instruction head for the same
     reason."""
-    from precis.handlers._comment_timeline import HIDDEN_META_KEY
     from precis.workers.job_types import run_slice as _rs
 
     chunks = _rs._todo_chunks(store, n.id)
     parts = [str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text]
-    hidden = set(n.meta.get(HIDDEN_META_KEY) or ())
+    hidden = set(n.meta.get(_HIDDEN_META_KEY) or ())
     brief = next(
         (
             str(c.text).lstrip()
