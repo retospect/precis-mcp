@@ -9251,7 +9251,11 @@ def test_submit_validate_refuses_when_no_model_differs(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The different-model MUST refuses the launch — a same-model test
-    is no test, not a fallback the old pick may ride (review td655142)."""
+    is no test, not a fallback the old pick may ride (review td655142).
+    The avoid set covers the lane's declared model AND the prefix
+    fallbacks: a ``claude_p`` lane offers every ``claude-`` id
+    (gr660610), so only an avoid that names the fallbacks leaves it
+    nothing to launch."""
     monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
     use_lanes(
         monkeypatch,
@@ -9269,7 +9273,10 @@ def test_submit_validate_refuses_when_no_model_differs(
     monkeypatch.setattr(
         run_slice._outcome,
         "code_session_models",
-        lambda store, todo_id: (frozenset({"m1"}), None),
+        lambda store, todo_id: (
+            frozenset({"m1", *run_slice._outcome.PREFIX_LANE_FALLBACK_MODELS}),
+            None,
+        ),
     )
     store = _Store()
     store.add_todo(42, "Validate the fix", meta={"task_class": "validate"})

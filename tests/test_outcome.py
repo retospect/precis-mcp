@@ -6,7 +6,7 @@ Pure tests against fake stores/conns: no DB, no sessions.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -630,6 +630,35 @@ def test_diverse_pick_crosses_lanes_when_same_lane_has_no_alternate() -> None:
     assert note and "re-picked lane" in note
 
 
+def test_diverse_pick_pins_prefix_lane_model_outside_code_set() -> None:
+    """gr660610: a claude lane whose declared models are all inside the
+    code set still offers every ``claude-`` id via ``model_prefix`` —
+    the pick pins a known one outside the set (review td661037: the
+    lane must carry declared models inside ``avoid`` here, else the
+    ``claude_p`` account-default arm answers first and the fallback
+    arm is never reached)."""
+    codex = _lane("codex", models=("swe-2-high",), default_model=None)
+    claude = replace(
+        _lane("claude-sub", models=("claude-opus-5-5",)),
+        model_prefix="claude-",
+    )
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=codex,
+        model=None,
+        candidates=(codex, claude),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset({"swe-2-high", "kimi-for-coding", "claude-opus-5-5"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert new_lane is claude
+    assert model == "claude-sonnet-5-5"
+    assert note and "re-picked lane" in note
+
+
 def test_diverse_pick_refuses_when_no_lane_differs() -> None:
     """review td655142: one model on the fleet cannot satisfy
     "different" — the MUST refuses the launch, it does not ride the
@@ -655,7 +684,7 @@ def test_diverse_pick_refuses_an_unknown_account_default() -> None:
     """A resolved ``None`` — the lane's unnamed account default — is
     UNKNOWN, not "different": it could be the code model under another
     name, so the pick either pins a declared outside model or fails."""
-    lane = _lane("default-only")  # models=() — the account default
+    lane = replace(_lane("default-only"), adapter="api")  # nameless default
     new_lane, model, note = outcome.diverse_model_pick(
         None,
         lane=lane,
@@ -688,6 +717,92 @@ def test_diverse_pick_refuses_an_unknown_account_default() -> None:
     )
     assert (new_lane, model) == (lane, "m2")
     assert note and "account default" in note
+
+
+def test_diverse_pick_names_a_codex_account_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr660610: a codex lane with no declared models runs the config's
+    named model; outside the code set it is pinned, inside it refuses."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text(
+        'model = "gpt-5.1-codex"\n', encoding="utf-8"
+    )
+    lane = replace(_lane("codex"), adapter="codex_exec")
+
+    def _pick(avoid: frozenset[str]) -> tuple[Any, str | None, str | None]:
+        return outcome.diverse_model_pick(
+            None,
+            lane=lane,
+            model=None,
+            candidates=(lane,),
+            counts={},
+            backoffs=None,
+            paid_ok=True,
+            avoid=avoid,
+            model_pin=None,
+            task_class="validate",
+        )
+
+    assert _pick(frozenset({"swe-2-high"}))[:2] == (lane, "gpt-5.1-codex")
+    assert _pick(frozenset({"gpt-5.1-codex"}))[:2] == (None, None)
+
+
+def test_diverse_pick_never_pins_a_default_the_adapter_cannot_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td661037: devin's argv raises ``ValueError`` on a model
+    outside the lane's ``models`` — on a ``models=()`` devin lane the
+    named account default is not a launchable pin, so the pick refuses
+    rather than mint the deterministic ``launch failed`` loop it stood
+    before."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = tmp_path / ".config" / "devin"
+    cfg.mkdir(parents=True)
+    (cfg / "config.json").write_text(
+        '{"agent": {"model": "swe-2-max"}}\n', encoding="utf-8"
+    )
+    devin = replace(_lane("devin"), adapter="devin_tree")  # models=()
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=devin,
+        model=None,
+        candidates=(devin,),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset({"gpt-5.1-codex"}),
+        model_pin=None,
+        task_class="validate",
+    )
+    assert (new_lane, model) == (None, None)
+    assert note and "refusing the launch" in note
+
+
+def test_allowlist_model_adapters_derives_from_argv(tmp_path: Path) -> None:
+    """The restated allowlist set drifts against ``Adapter.argv``:
+    exactly the adapters whose argv raises ``ValueError`` on a pinned
+    model outside ``models`` belong in it."""
+    from precis.workers.job_types._slice_adapters import ADAPTERS
+
+    brief = tmp_path / "brief.md"
+    brief.write_text("x", encoding="utf-8")
+    gated: set[str] = set()
+    for name, adapter in ADAPTERS.items():
+        try:
+            adapter.argv(
+                model="__outside_allowlist__",
+                effort="high",
+                tree=tmp_path,
+                brief_path=brief,
+                deny_paths=(),
+                max_turns=1,
+                models=(),
+            )
+        except ValueError:
+            gated.add(name)
+    assert gated == set(outcome.ALLOWLIST_MODEL_ADAPTERS)
 
 
 def test_diverse_pick_noops_when_model_already_differs() -> None:

@@ -638,6 +638,23 @@ def build_outcome(
     }
 
 
+#: Pinnable ids for a lane that accepts a whole ``model_prefix`` family
+#: but declares no ``models`` outside the avoid set (gr660610).
+PREFIX_LANE_FALLBACK_MODELS: tuple[str, ...] = (
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+)
+
+#: Adapters whose ``argv`` refuses a pinned model outside the lane's
+#: ``models`` — ``devin_tree``'s allowlist raises ``ValueError``
+#: (``_slice_adapters.Adapter.argv``; restated like ``lanes``' adapter
+#: facts — this package stays below the workers layer, and a drift test
+#: derives the set from argv itself). On one, a named account default is
+#: not a launchable pin: offering it died as ``launch failed`` on every
+#: retry (review td661037).
+ALLOWLIST_MODEL_ADAPTERS: frozenset[str] = frozenset({"devin_tree"})
+
+
 def diverse_model_pick(
     store: Any,
     *,
@@ -665,17 +682,51 @@ def diverse_model_pick(
     contract: it only re-picks its model, never hops.
 
     A resolved ``model=None`` — the lane's unnamed account default — is
-    UNKNOWN, not "different": the pick either pins a declared model
-    outside ``avoid`` or fails, since the default could be the code
-    model under another name.
+    UNKNOWN unless this host's vendor config names it
+    (:func:`account_default_model`, gr660610): a named default outside
+    ``avoid`` is pinned where the lane's adapter can launch the pin, so
+    a codex lane whose ``config.toml`` names its model stays fit; a
+    default that cannot be named, or one only an allowlist adapter
+    (:data:`ALLOWLIST_MODEL_ADAPTERS`) would run, still needs a declared
+    model outside ``avoid`` or the pick fails (review td661037).
     """
     from precis.plans import lanes as _lanes
 
     if not avoid or lane is None:
         return lane, model, None
 
+    def _pinnable(ln: Any, candidate: str) -> bool:
+        """``True`` when the lane's adapter can launch ``candidate`` as
+        a pin — an allowlist adapter (:data:`ALLOWLIST_MODEL_ADAPTERS`)
+        takes only ids in ``models`` and raises ``ValueError`` on
+        anything else; the rest carry any id."""
+        return candidate in ln.models or ln.adapter not in ALLOWLIST_MODEL_ADAPTERS
+
     def _alt(ln: Any) -> str | None:
-        return next((m for m in ln.models if m not in avoid), None)
+        declared = next((m for m in ln.models if m not in avoid), None)
+        if declared is not None:
+            return declared
+        # An unpinned lane runs the account default; where the vendor
+        # config names it, that named id may be the different model —
+        # but only where the adapter can launch the pin.
+        if not ln.models:
+            named = account_default_model(ln.adapter)
+            if named is not None and named not in avoid and _pinnable(ln, named):
+                return named
+        # A prefix lane (``claude -p``) runs every ``model_prefix`` id
+        # whether or not ``models`` lists it (gr660610): pin a known
+        # one outside ``avoid`` rather than call the lane unfit.
+        return next(
+            (
+                m
+                for m in PREFIX_LANE_FALLBACK_MODELS
+                if m not in avoid
+                and ln.model_prefix
+                and ln.accepts_model(m)
+                and _pinnable(ln, m)
+            ),
+            None,
+        )
 
     # A resolved model that already differs needs nothing; a resolved
     # None (the account default) is unknown — it could BE a code model.
